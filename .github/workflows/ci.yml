@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT
+
+# Builds ntdlib on its own and runs ctest whenever main changes: on macOS ARM64, and on Windows x64 with clang-cl.
+# Changes to documentation alone don't start a run.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push cancels the run it replaces.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64 (clang-cl)
+            os: windows-2025
+            cmake: -A x64 -T ClangCL
+          - name: macOS ARM64 (Apple Clang)
+            os: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake }}
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure --parallel 4
