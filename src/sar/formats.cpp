@@ -1488,6 +1488,16 @@ std::span<const uint8_t> SoundArchive::FileData(uint32_t file_id) const
     return std::span<const uint8_t>(holder).subspan(f.offset, f.size);
 }
 
+std::optional<std::size_t> SoundArchive::FileOffset(uint32_t file_id) const
+{
+    if (file_id >= files_.size() || !files_[file_id].internal || files_[file_id].source != 0)
+    {
+        return std::nullopt;
+    }
+
+    return files_[file_id].offset;
+}
+
 std::string SoundArchive::ExternalPath(uint32_t file_id) const
 {
     return file_id < files_.size() ? files_[file_id].external_path : "";

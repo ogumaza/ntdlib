@@ -833,15 +833,16 @@ void TestBankOfSharedRegionsIsReported(Flavor flavor)
 void TestGroupFilesBesideTheArchiveAreAdded(Flavor flavor)
 {
     // The archive lists group GROUP_SE with no file, and file 0 with no location: only the group's file holds it.
-    // Adding that file makes file 0 readable; a file that isn't a group is rejected.
+    // Adding that file makes file 0 readable; a file that isn't a group is rejected. The archive keeps the group file.
     const Format f = FormatOf(flavor);
     std::vector<ArchiveFile> files(1);
     files[0].place = ArchiveFile::kNullLocation;
     SoundArchive archive = SoundArchive::Load(
         Archive(f, files, {.groups = {0xffffffff}, .names = {{0x06000000, "GROUP_SE"}}}), OptionsOf(flavor));
     const bool missing_before = archive.FileData(0).empty() && !archive.FileMissing(0);
+    const std::vector<uint8_t> group = Group(f, {{0, "kept beside"}}, {});
 
-    archive.AddGroupFile(Group(f, {{0, "kept beside"}}, {}));
+    archive.AddGroupFile(group);
     const std::string refused = ErrorOf([&] { archive.AddGroupFile(SequenceFile(f, {0xff})); });
 
     const std::string on = " (" + NameOf(flavor) + ")";
@@ -849,6 +850,7 @@ void TestGroupFilesBesideTheArchiveAreAdded(Flavor flavor)
           "a group kept beside the archive" + on);
     Check(Text(archive.FileData(0)) == "kept beside" && refused == "bad magic, expected " + MagicOf(f, "GRP"),
           "its file once added" + on);
+    Check(archive.GroupFiles() == std::vector<std::vector<uint8_t>>{group}, "the group file kept" + on);
 }
 
 void TestSarcFilesAreRead()

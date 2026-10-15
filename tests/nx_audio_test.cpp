@@ -3,7 +3,7 @@
 // Checks the model of the audio renderer without game data: the decoders on hand-made buffers, the sample-rate
 // converter's filters at a ratio of 1, the biquad on filters whose output is known, the gains, mixes and depop against
 // their formulas, a voice's frames through the renderer (its samples, what the updates report and when, and the fade
-// when it stops), and the I3DL2 reverb with a density below 0.
+// when it stops), and the I3DL2 reverb with a density below 0 and with each of nn::audio's presets.
 
 #include <algorithm>
 #include <array>
@@ -477,18 +477,12 @@ void TestRendererMeters()
     XSFLIB_CHECK(refused);
 }
 
-// The output of a new reverb at the density given, for 64 frames (320 ms) from a click. The feedback lines' longest
-// delays reach 272 ms.
-std::vector<int32_t> I3dl2Click(float density)
+// The output of a new reverb with `parameters`, for 64 frames (320 ms) from a click. The feedback lines' longest delays
+// reach 272 ms.
+std::vector<int32_t> I3dl2Click(const audio::I3dl2ReverbParameterSet& parameters)
 {
     audio::AuxI3dl2Reverb reverb(48'000);
     reverb.SetInputOutput({0, 1}, {0, 1});
-    audio::I3dl2ReverbParameterSet parameters;
-    parameters.late_reverb_decay_time = 1.0f;
-    parameters.late_reverb_hf_decay_ratio = 0.5f;
-    parameters.late_reverb_density = density;
-    parameters.hf_reference = 5000.0f;
-    parameters.dry_gain = 1.0f;
     reverb.SetParameters(parameters);
 
     std::vector<int32_t> samples(static_cast<std::size_t>(kFrame) * 2);
@@ -506,6 +500,19 @@ std::vector<int32_t> I3dl2Click(float density)
     return output;
 }
 
+// The same with a decay of 1 s, at the density given.
+std::vector<int32_t> I3dl2Click(float density)
+{
+    audio::I3dl2ReverbParameterSet parameters;
+    parameters.late_reverb_decay_time = 1.0f;
+    parameters.late_reverb_hf_decay_ratio = 0.5f;
+    parameters.late_reverb_density = density;
+    parameters.hf_reference = 5000.0f;
+    parameters.dry_gain = 1.0f;
+
+    return I3dl2Click(parameters);
+}
+
 void TestI3dl2NegativeDelay()
 {
     // A density below 0 gives the feedback lines delays below 0. The lines of a new reverb then keep their longest
@@ -518,6 +525,28 @@ void TestI3dl2NegativeDelay()
 
     XSFLIB_CHECK(below == longest);
     XSFLIB_CHECK(below != shorter);
+}
+
+void TestI3dl2Presets()
+{
+    std::vector<std::vector<int32_t>> outputs;
+    for (const audio::I3dl2ReverbParameterSet& preset : audio::kI3dl2ReverbPresets)
+    {
+        outputs.push_back(I3dl2Click(preset));
+    }
+
+    // Each preset passes the click through at its dry gain, rings on to the end, and sounds unlike the others.
+    const auto sounds = [](int32_t sample)
+    {
+        return sample != 0;
+    };
+    for (std::size_t p = 0; p < outputs.size(); ++p)
+    {
+        const std::vector<int32_t>& output = outputs[p];
+        XSFLIB_CHECK(output[0] == static_cast<int32_t>(audio::kI3dl2ReverbPresets[p].dry_gain * 0x4000));
+        XSFLIB_CHECK(std::any_of(output.end() - kFrame * 2, output.end(), sounds));
+        XSFLIB_CHECK(std::count(outputs.begin(), outputs.end(), output) == 1);
+    }
 }
 
 } // namespace
@@ -538,6 +567,7 @@ int main()
     TestRendererRestoreMuted();
     TestRendererMeters();
     TestI3dl2NegativeDelay();
+    TestI3dl2Presets();
     if (failures)
     {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

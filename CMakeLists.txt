@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.1.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.2.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -108,6 +108,13 @@ endif()
 xsflib_add_project_library(ntdlib rsar src/rsar/formats.cpp src/rsar/decode.cpp)
 target_link_libraries(ntdlib_rsar PUBLIC ntdlib::common ntdlib::wave)
 xsflib_add_project_test(ntdlib rsar ntdlib::rsar)
+
+# The readers of Factor 5's MusyX data for the GameCube: a project's groups, a pool's macros, tables, keymaps and layers,
+# a sample directory with the decoding of its samples, and songs.
+xsflib_add_project_library(ntdlib musyx src/musyx/pool.cpp src/musyx/project.cpp src/musyx/samples.cpp
+                           src/musyx/song.cpp)
+target_link_libraries(ntdlib_musyx PUBLIC xsflib::common PRIVATE ntdlib::wave)
+xsflib_add_project_test(ntdlib musyx ntdlib::musyx)
 
 # The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files.
 if (NTDLIB_SEQUENCE_EXPORT)
@@ -220,6 +227,10 @@ xsflib_add_project_library(ntdlib ax src/ax/lpf.cpp src/ax/voices.cpp)
 target_link_libraries(ntdlib_ax PUBLIC xsflib::common)
 xsflib_add_project_test(ntdlib ax ntdlib::ax)
 
+# A common form for the commands of the consoles' sequences, and the units of their values. Each console's decoder and
+# encoder use it.
+xsflib_add_project_library(ntdlib commands src/commands/sequence.cpp src/commands/units.cpp)
+
 # The model of NintendoWare's sound libraries (nw::snd in NintendoWare for Cafe, nn::atk on the Switch, the 3DS's
 # nw::snd and the Wii's NW4R SND): their tables, each console's arithmetic, the envelope and the LFO, and the sequence
 # player as a template on a policy.
@@ -231,6 +242,13 @@ xsflib_add_project_test(ntdlib nwsnd_voice ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_channel ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_ctr ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_revolution ntdlib::nwsnd)
+
+# The decoder and the encoder of the bytecode of NintendoWare's sequences, in the form of ntdlib::commands, and the
+# units of each console's values. It's a separate target: the players and the converters use ntdlib::nwsnd without it.
+xsflib_add_project_library(ntdlib nwsnd_commands src/nwsnd/commands.cpp src/nwsnd/units.cpp)
+target_link_libraries(ntdlib_nwsnd_commands PUBLIC ntdlib::commands ntdlib::nwsnd)
+xsflib_add_project_test(ntdlib nwsnd_commands ntdlib::nwsnd_commands)
+xsflib_add_project_test(ntdlib nwsnd_units ntdlib::nwsnd_commands)
 
 # The banks, wave archives and waves that the model's engine loads for its notes from a sound archive of the Wii U or
 # the Switch (ntdlib/nwsnd/archive_files.h), read with ntdlib::sar. It's a target of its own: the Wii's model uses
@@ -244,6 +262,14 @@ target_compile_features(ntdlib_nwsnd_archive INTERFACE cxx_std_20)
 set_target_properties(ntdlib_nwsnd_archive PROPERTIES EXPORT_NAME nwsnd_archive)
 set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_nwsnd_archive)
 xsflib_add_project_test(ntdlib nwsnd_archive_files ntdlib::nwsnd_archive)
+
+# A sound archive of the 3DS, the Wii U or the Switch cut into pieces for an editor, and joined again: its sequence
+# files, decoded into commands, and the runs of bytes between them. Also the reader and the writer of the sequence files
+# (CSEQ and FSEQ).
+xsflib_add_project_library(ntdlib sar_layout src/sar/layout.cpp src/sar/sequence_file.cpp)
+target_link_libraries(ntdlib_sar_layout PUBLIC ntdlib::nwsnd_commands ntdlib::sar)
+xsflib_add_project_test(ntdlib sar_layout ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib sar_sequence_file ntdlib::sar_layout)
 
 # The Switch's audio renderer (nn::audio) with its I3DL2 reverb, and archive mode's model of nn::atk on it: an engine
 # that plays a sound archive's sequences as the Switch does, without the game's code. It came from HSF.

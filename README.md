@@ -10,6 +10,7 @@ the ones it uses.
 
 | Module | What it holds |
 |---|---|
+| `ntdlib::commands` | A common form for the commands of the consoles' sequences, with their values in units that are the same on every console |
 | `ntdlib::common` | The GameCube's and the Wii's address types, the PowerPC's negated fused multiply-adds, AArch64's floating-point minimum and maximum, DOL executables, and the builds of the Wii's sound code that a main.dol links |
 | `ntdlib::ppc` | A PowerPC interpreter for the GameCube, the Wii and the Wii U |
 | `ntdlib::dsp` | The GameCube and Wii DSP, with each console's memory, and the accelerator's reads and the accumulators' helpers for models of a DSP program |
@@ -18,11 +19,14 @@ the ones it uses.
 | `ntdlib::disc` | GameCube and Wii disc images: ISO, NKit, WBFS and WDF, and extracted discs. With `GameOptions::titles`, also the Wii's titles, such as WiiWare games, from a folder with their TMD and decrypted contents. Titles and file names come out in UTF-8. They're decoded from Shift-JIS, or from Windows-1252 for the title of a disc from outside Japan. With `GameOptions::cpk_sound_archives`, also the sound archives inside CRI's CPK archives, stored as they are or compressed with CRILAYLA (`ntdlib/disc/cpk.h`). It requires no other library |
 | `ntdlib::disc_containers` | The compressed containers of disc images: GCZ, CISO, WIA and RVZ, opened through `ntdlib::disc` |
 | `ntdlib::sar` | NintendoWare's sound archives for the 3DS (CSAR), the Wii U and the Switch (FSAR), and their parts |
+| `ntdlib::sar_layout` | A sound archive of the 3DS, the Wii U or the Switch cut into pieces for an editor: its sequence files, decoded into the form of `ntdlib::commands`, and the runs of bytes between them. Joining the pieces gives the archive back byte for byte. After an edit, joining lays the pieces out again and writes the archive's offsets and sizes. WriteTableValues writes new values into the archive's tables. Also a reader and a writer of the sequence files (CSEQ and FSEQ) |
 | `ntdlib::rsar` | NintendoWare's sound archives for the Wii (RSAR), and their parts |
+| `ntdlib::musyx` | The readers of Factor 5's MusyX data for the GameCube: a project's groups with their pages, MIDI setups and sound effects, a pool's macros, tables, keymaps and layers, a sample directory with the decoding of its samples, and songs |
 | `ntdlib::jaudio` | The readers of JAudio2's sound data: the start-up archive (BAA) with its sound table, sequence collection, wave systems (WSYS) and banks (IBNK), and RARC archives, compressed with Yaz0 or not, and refilled from another release's sequence table. The readers of JAudio1's start-up archive (AAF): its sound table, its wave systems, and the sequence index of an earlier JAudio1. Also the length analysis of a sound in game mode, for JAudio2 and JAudio1 |
 | `ntdlib::wave` | Decoders of DSP-ADPCM (the DSP accelerator's step among its forms), IMA-ADPCM, the GameCube's AFC, PCM8 and PCM16, and the decoding of a sound archive's waves |
 | `ntdlib::rip_archive` | Ripping the Wii U's and the Switch's sound archives into PSF sets: the sounds to rip, the data they require, the groups kept outside an archive, the timing helpers, and the libraries and minis that a rip writes. Built when xsflib has `xsflib::psf` |
 | `ntdlib::nwsnd` | The tables of NintendoWare's sound libraries, and a model of their sequence player and channels for the Wii, the 3DS, the Wii U and the Switch, and of the Wii U's and the Switch's voices |
+| `ntdlib::nwsnd_commands` | A decoder and an encoder of the bytecode of NintendoWare's sequences in the form of `ntdlib::commands`, and the units of each console's values. The encoder gives back the bytes that the decoder read |
 | `ntdlib::nx` | A model of the Switch's audio renderer (`nn::audio`) with its I3DL2 reverb, and archive mode's model of `nn::atk` on it: an engine that plays a sound archive's sequences as the Switch does, without the game's code |
 | `ntdlib::sequence_export` | Conversion of Nintendo's sound data to MIDI, SoundFont 2 and SFZ files, through seqlib |
 

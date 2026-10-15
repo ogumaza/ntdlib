@@ -34,6 +34,16 @@ struct I3dl2ReverbParameterSet
     float dry_gain = 0.0f;
 };
 
+// The presets that LoadI3dl2ReverbPreset gives, by their numbers 0 to 4, in the order of the set's fields. Each one
+// sets the room's high-frequency gain to -1000 mB and the reference frequency to 5000 Hz.
+inline constexpr std::array<I3dl2ReverbParameterSet, 5> kI3dl2ReverbPresets = {{
+    {-1045.0f, -1000.0f, 1.0f, 0.2f, -310.0f, 0.0046f, -602.0f, 0.012f, 100.0f, 61.0f, 5000.0f, 0.24f},
+    {-1045.0f, -1000.0f, 1.7f, 0.3f, -310.0f, 0.0092f, -310.0f, 0.04f, 100.0f, 61.0f, 5000.0f, 0.24f},
+    {-1045.0f, -1000.0f, 2.2f, 0.8f, -796.0f, 0.0058f, -310.0f, 0.05f, 80.0f, 69.0f, 5000.0f, 0.24f},
+    {-1398.0f, -1000.0f, 6.0f, 0.65f, -1398.0f, 0.09f, -602.0f, 0.05f, 50.0f, 61.0f, 5000.0f, 0.4f},
+    {-1045.0f, -1000.0f, 1.1f, 0.3f, -10000.0f, 0.006f, -444.0f, 0.0f, 100.0f, 0.0f, 5000.0f, 0.4f},
+}};
+
 // An I3DL2 reverb over two channels of a frame's samples (nn::audio::AuxI3dl2ReverbType and its buffer).
 class AuxI3dl2Reverb
 {

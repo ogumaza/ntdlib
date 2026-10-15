@@ -388,8 +388,18 @@ public:
     // kind. At least one file must be such a file.
     bool MatchesGroupFile(std::span<const uint8_t> bytes) const;
 
+    // The group files that AddGroupFile took, in the order it took them. A program can keep them with the archive.
+    const std::vector<std::vector<uint8_t>>& GroupFiles() const
+    {
+        return group_files_;
+    }
+
     // Returns a file's contents, or an empty span for external files and files absent from all readable groups.
     std::span<const uint8_t> FileData(uint32_t file_id) const;
+
+    // Where a file starts in the archive, for a file that the archive holds, directly or in a group inside it. Nothing
+    // for an external file, for a file in a group file added, or for a file absent from all readable groups.
+    std::optional<std::size_t> FileOffset(uint32_t file_id) const;
 
     // The path that the file table gives an external file. Read with kStopAtFirstProblem on the Wii U and the Switch.
     // Empty for a file in the archive.
