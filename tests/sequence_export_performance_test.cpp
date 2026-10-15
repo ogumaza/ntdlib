@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of sequence_export's performance types: the envelope overrides, the LFO units of each engine, and the
-// Performance that seqlib's MIDI writer takes.
+// Tests of sequence_export's performance types: the envelope overrides, the LFO units of each engine, the Performance
+// that seqlib's MIDI writer takes, and how FitParts fits a Performance's parts into MIDI's channels.
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
 
+#include "ntdlib/sequence_export/passes.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "seqlib/midi/performance_writer.h"
 #include "xsflib/testing/check.h"
@@ -119,6 +121,63 @@ void TestPerformanceWritesAsMidi()
     XSFLIB_CHECK(report.channels == 1);
 }
 
+// A performance in which the first `tracks` tracks play a note each. Track 0 also plays two notes of key 60 at once on
+// its second part.
+Performance PartsWithALayer(int tracks)
+{
+    Performance perf;
+    perf.tempo = {{0, 120.0}};
+    uint32_t note = 1;
+    for (int t = 0; t < tracks; t++)
+    {
+        perf.tracks[t].push_back({0, EventKind::kNoteOn, 48, 100, 0, 0.0f, note});
+        perf.tracks[t].push_back({96, EventKind::kNoteOff, 48, 0, 0, 0.0f, note});
+        note++;
+    }
+    perf.tracks[0].push_back({0, EventKind::kNoteOn, 60, 100, 0, 0.0f, note, 1});
+    perf.tracks[0].push_back({48, EventKind::kNoteOn, 60, 100, 0, 0.0f, note + 1, 1});
+    perf.tracks[0].push_back({96, EventKind::kNoteOff, 60, 0, 0, 0.0f, note, 1});
+    perf.tracks[0].push_back({96, EventKind::kNoteOff, 60, 0, 0, 0.0f, note + 1, 1});
+    perf.end_tick = 96;
+    perf.presets.push_back(PresetKey{});
+
+    return perf;
+}
+
+// The parts that PartsWithALayer's tracks use.
+std::array<uint8_t, 16> PartsUsed(int tracks)
+{
+    std::array<uint8_t, 16> used{};
+    std::fill_n(used.begin(), tracks, 1);
+    used[0] = 2;
+
+    return used;
+}
+
+// With one channel spare, FitParts gives it to track 0's second part by default. With SpareChannels::kForLayers, the
+// second note of key 60 takes it instead, and track 0 keeps one part.
+void TestFitPartsKeepsAChannelForALayer()
+{
+    const Performance perf = PartsWithALayer(15);
+
+    const std::array<uint8_t, 16> for_parts = FitParts(perf, PartsUsed(15));
+    const std::array<uint8_t, 16> for_layers = FitParts(perf, PartsUsed(15), SpareChannels::kForLayers);
+
+    XSFLIB_CHECK(for_parts[0] == 2);
+    XSFLIB_CHECK(for_layers[0] == 1);
+    XSFLIB_CHECK(std::count(for_layers.begin(), for_layers.end(), 1) == 16);
+}
+
+// With channels to spare for both, track 0 keeps both of its parts.
+void TestFitPartsGivesPartsTheChannelsThatLayersLeave()
+{
+    const Performance perf = PartsWithALayer(14);
+
+    const std::array<uint8_t, 16> limits = FitParts(perf, PartsUsed(14), SpareChannels::kForLayers);
+
+    XSFLIB_CHECK(limits[0] == 2);
+}
+
 } // namespace
 
 int main()
@@ -127,6 +186,8 @@ int main()
     TestLfoOnTheWiiUAndTheSwitchIsInHzAndMilliseconds();
     TestLfoOnThe3dsAndTheWiiIsInTheBytecodesUnits();
     TestPerformanceWritesAsMidi();
+    TestFitPartsKeepsAChannelForALayer();
+    TestFitPartsGivesPartsTheChannelsThatLayersLeave();
 
     if (xsflib::testing::failures != 0)
     {

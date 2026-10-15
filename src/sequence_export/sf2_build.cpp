@@ -31,6 +31,21 @@ namespace
 // the bits' layout.
 constexpr uint16_t kSrcFilterController = 0x0080 | kFilterController;
 
+// The modulator source of the note-on key: linear, unipolar, positive. With kBipolar, it runs from -1 at key 0 through
+// 0 at key 64. With kNegative, it runs from 1 at key 0 to 0 at key 128.
+constexpr uint16_t kSrcKeyNumber = sf2::kNoteOnKeyNumber;
+
+// The cutoff of the resampling low-passes rises by 100 cents a key, as the pitch does.
+constexpr int kResamplingSlope = 100;
+
+// The SoundFont cutoff of the low-pass `filter` for a note at key 0 on `region`, in absolute cents.
+int CutoffAtKey0(const ResamplingFilter& filter, const ResamplingRegion& region)
+{
+    const double cents = 1200.0 * std::log2(ResamplingCutoffHz(filter.cutoff, 0, region) / 8.176);
+
+    return static_cast<int>(std::lround(std::clamp(cents, -32768.0, 32767.0)));
+}
+
 } // namespace
 
 sf2::Zone GlobalZone(const PresetKey& key, const Settings& settings)
@@ -66,7 +81,8 @@ sf2::Zone GlobalZone(const PresetKey& key, const Settings& settings)
     const int delay = ToTimecents(LfoDelayMs(key, settings), -12000, 5000);
     if (key.lfo_type == 1 && lfo)
     {
-        const int16_t db = amount(60.0 * key.lfo_range * kDepthScale);
+        // A note whose volume LFO the voice holds at full level swings less (PresetKey::lfo_swing).
+        const int16_t db = amount(60.0 * key.lfo_range * kDepthScale * key.lfo_swing / 16.0);
         global.modulators.push_back({sf2::kSrcModWheel, sf2::kModLfoToVolume, db, 0});
         global.generators.push_back(sf2::Generator::Value(sf2::kFreqModLfo, freq));
         global.generators.push_back(sf2::Generator::Value(sf2::kDelayModLfo, delay));
@@ -101,6 +117,125 @@ sf2::Zone RegionZone(const RegionGenerators& g, const std::pair<int, int>& keys,
     values.sample = sample;
 
     return sf2::RegionZone(values);
+}
+
+std::vector<ResamplingSpan> ZoneSpans(std::pair<int, int> keys, const ResamplingRegion& region, const PresetKey& key,
+                                      const Settings& settings)
+{
+    if (key.filter_controller)
+    {
+        return {{keys, nullptr}};
+    }
+
+    std::vector<ResamplingSpan> spans;
+    const auto add = [&spans](std::pair<int, int> span_keys, const ResamplingFilter* filter)
+    {
+        if (!spans.empty() && spans.back().filter == filter)
+        {
+            spans.back().keys.second = span_keys.second;
+        }
+        else
+        {
+            spans.push_back({span_keys, filter});
+        }
+    };
+
+    for (const ResamplingSpan& span : ResamplingSpans(keys, region, settings))
+    {
+        // From key `split` on, the track's fixed filter has the lower cutoff.
+        int split = span.keys.first;
+        if (span.filter && key.filter.cutoff != kFilterOpen && !FitsTrackLowPass(key, settings))
+        {
+            const int base = CutoffAtKey0(*span.filter, region);
+            while (split <= span.keys.second && base + kResamplingSlope * split < key.filter.cutoff)
+            {
+                split++;
+            }
+        }
+        else
+        {
+            split = span.keys.second + 1;
+        }
+
+        if (split > span.keys.first)
+        {
+            add({span.keys.first, split - 1}, span.filter);
+        }
+        if (split <= span.keys.second)
+        {
+            add({split, span.keys.second}, nullptr);
+        }
+    }
+
+    return spans;
+}
+
+void AddTrackingCutoff(sf2::Zone& zone, int base, int slope)
+{
+    // The key at which the generator holds the cutoff, and the modulator that adds the rest.
+    const auto in_range = [](int cents)
+    {
+        return cents >= 1500 && cents <= 13500;
+    };
+    int key = 0;
+    uint16_t source = kSrcKeyNumber;
+    int amount = 128 * slope;
+    if (!in_range(base) && in_range(base + 64 * slope))
+    {
+        key = 64;
+        source = kSrcKeyNumber | sf2::kBipolar;
+        amount = 64 * slope;
+    }
+    else if (!in_range(base) && in_range(base + 128 * slope))
+    {
+        key = 128;
+        source = kSrcKeyNumber | sf2::kNegative;
+        amount = -128 * slope;
+    }
+
+    // The sample's generator stays last.
+    const int cutoff = std::clamp(base + key * slope, -32768, 32767);
+    zone.generators.insert(zone.generators.empty() ? zone.generators.end() : zone.generators.end() - 1,
+                           sf2::Generator::Value(sf2::kInitialFilterFc, cutoff));
+    if (slope != 0)
+    {
+        zone.modulators.push_back(
+            {source, sf2::kInitialFilterFc, static_cast<int16_t>(std::clamp(amount, -32768, 32767)), 0});
+    }
+}
+
+void AddResamplingFilter(sf2::Zone& zone, const ResamplingFilter& filter, const ResamplingRegion& region,
+                         const PresetKey& key)
+{
+    AddTrackingCutoff(zone, CutoffAtKey0(filter, region), kResamplingSlope);
+
+    // The sample's generator stays last.
+    if (key.filter.resonance != 0)
+    {
+        zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(sf2::kInitialFilterQ, 0));
+    }
+}
+
+void AddZoneLowPass(sf2::Zone& zone, const ResamplingFilter* filter, const std::optional<FittedCutoff>& fitted,
+                    const ResamplingRegion& region, const PresetKey& key, const Settings& settings)
+{
+    // The resampling low-pass, where it has the lower cutoff at the original key or ZoneSpans gave the span to it.
+    if (filter != nullptr)
+    {
+        const int root = region.original_key;
+        const int track = fitted ? fitted->base + fitted->slope * root : key.filter.cutoff;
+        if (!FitsTrackLowPass(key, settings) || CutoffAtKey0(*filter, region) + kResamplingSlope * root < track)
+        {
+            AddResamplingFilter(zone, *filter, region, key);
+            return;
+        }
+    }
+
+    // Otherwise the fitted cutoff, or the preset's.
+    if (fitted)
+    {
+        AddTrackingCutoff(zone, fitted->base, fitted->slope);
+    }
 }
 
 std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys, bool bank_slots)
@@ -162,9 +297,11 @@ RegionGenerators ConvertRegion(const PresetKey& key, const EnvelopeValues& env, 
     g.coarse_tune = total / 100;
     g.fine_tune = total - g.coarse_tune * 100;
 
-    // A lift raises the zone up to full level and no further (PresetKey::lift).
+    // A lift raises the zone up to full level and no further (PresetKey::lift). A note whose volume LFO the voice holds
+    // at full level plays lower (PresetKey::lfo_cut).
     const double below = volume != 0 ? -200.0 * std::log10(volume / 127.0) : 0.0;
-    g.attenuation = volume != 0 ? quieter + (key.lift > 0 ? std::max(0.0, below - key.lift) : below) : 1440.0;
+    g.attenuation =
+        volume != 0 ? quieter + (key.lift > 0 ? std::max(0.0, below - key.lift) : below) + key.lfo_cut : 1440.0;
     g.root_key = original_key;
     g.loop = loop;
 

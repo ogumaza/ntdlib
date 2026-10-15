@@ -10,7 +10,7 @@
 #include <span>
 #include <string>
 
-#include "disc/jis0208.h"
+#include "disc/cp932.h"
 
 namespace ntdlib::disc::detail
 {
@@ -35,9 +35,9 @@ void AppendEscape(std::string& out, uint8_t byte)
     out += kDigits[byte & 15];
 }
 
-// The character of the double-byte code `lead`, `trail` in JIS X 0208, or 0 if there's none. `lead` is 0x81 to 0x9F, or
-// 0xE0 to 0xFC.
-uint16_t Jis0208(uint8_t lead, uint8_t trail)
+// The character of the double-byte code `lead`, `trail` in code page 932, or 0 if there's none. `lead` is 0x81 to 0x9F,
+// or 0xE0 to 0xFC.
+uint16_t Cp932(uint8_t lead, uint8_t trail)
 {
     if (trail < 0x40 || trail == 0x7F || trail > 0xFC)
     {
@@ -46,7 +46,7 @@ uint16_t Jis0208(uint8_t lead, uint8_t trail)
 
     const size_t index = size_t{lead - (lead < 0xA0 ? 0x81u : 0xC1u)} * 188 + trail - (trail < 0x80 ? 0x40u : 0x41u);
 
-    return index < kJis0208.size() ? kJis0208[index] : 0;
+    return index < kCp932.size() ? kCp932[index] : 0;
 }
 
 } // namespace
@@ -77,7 +77,7 @@ std::string DecodeShiftJis(std::span<const uint8_t> text)
 
         // For a code that the table lacks, an ASCII second byte decodes as itself.
         const uint8_t trail = text[i + 1];
-        if (const uint16_t code = Jis0208(byte, trail))
+        if (const uint16_t code = Cp932(byte, trail))
         {
             AppendUtf8(out, code);
             ++i;

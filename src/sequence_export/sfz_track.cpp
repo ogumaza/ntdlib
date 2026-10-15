@@ -67,7 +67,8 @@ std::string LfoOpcodes(const PresetKey& key, const Settings& settings)
     }
     else if (key.lfo_type == 1)
     {
-        s += " lfo1_volume_oncc1=" + Number(6.0 * key.lfo_range * kDepthScale, 6);
+        // A note whose volume LFO the voice holds at full level swings less (PresetKey::lfo_swing).
+        s += " lfo1_volume_oncc1=" + Number(6.0 * key.lfo_range * kDepthScale * key.lfo_swing / 16.0, 6);
     }
     else
     {
@@ -143,20 +144,23 @@ seqlib::sfz::TrackText TrackAdditions(const Performance& perf, int t, const Sett
                       std::to_string(kCutoffSpan) + " cutoff_curvecc" + cc + "=" + std::to_string(kLowPassCurve) + "\n";
     }
 
-    text.preset = [&perf, &settings, &regions_of, biquad, biquad_filter](uint32_t p)
+    // The regions' low-passes take the slot after the track's filters. With the biquad on, a track that uses the
+    // low-pass too has no slot left.
+    const int free_slot = low_pass ? 2 : 1;
+    text.preset = [&perf, &settings, &regions_of, biquad, biquad_filter, free_slot](uint32_t p)
     {
         const PresetKey& key = perf.presets[p];
         std::string s = LfoOpcodes(key, settings);
-        const std::string regions = regions_of(key, perf.level_cut_db);
         if (biquad == 0)
         {
-            s += "<group>\n" + regions;
+            s += "<group>\n" + regions_of(key, perf.level_cut_db, free_slot);
         }
         else
         {
             const std::string cc = std::to_string(kSfzBiquadController);
-            s += "<group> hicc" + cc + "=0\n" + regions;
-            s += "<group> locc" + cc + "=1 " + BiquadOpcodes(biquad, biquad_filter, settings) + "\n" + regions;
+            s += "<group> hicc" + cc + "=0\n" + regions_of(key, perf.level_cut_db, free_slot);
+            s += "<group> locc" + cc + "=1 " + BiquadOpcodes(biquad, biquad_filter, settings) + "\n" +
+                 regions_of(key, perf.level_cut_db, biquad_filter == 1 ? 2 : 0);
         }
 
         return s;
@@ -188,6 +192,7 @@ const SfzWave& SfzSampleSet::Get(std::pair<uint32_t, uint32_t> key, const std::f
             made.names.push_back(name);
         }
 
+        made.sample_rate = decoded->sample_rate;
         made.loop = w.loop;
         if (w.loop)
         {
@@ -212,6 +217,20 @@ std::string SfzRegionStart(const std::string& sample, std::pair<int, int> keys, 
     }
 
     return s;
+}
+
+std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const ResamplingRegion& region, int slot)
+{
+    std::string s = " " + FilterOpcode("fil", slot) + "_type=" + (filter.sfz_two_pole ? "lpf_2p" : "lpf_1p") + " " +
+                    FilterOpcode("cutoff", slot) + "=" +
+                    Number(ResamplingCutoffHz(filter.sfz_cutoff, region.original_key, region), 1);
+    if (filter.sfz_two_pole)
+    {
+        s += " " + FilterOpcode("resonance", slot) + "=" + Number(filter.sfz_resonance, 1);
+    }
+
+    return s + " " + FilterOpcode("fil", slot) + "_keytrack=100 " + FilterOpcode("fil", slot) +
+           "_keycenter=" + std::to_string(region.original_key);
 }
 
 std::string SfzPitchOpcodes(uint8_t original_key, float tune)

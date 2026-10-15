@@ -717,6 +717,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         {
             r.sr = Pop(1);
             r.pc = Pop(0);
+            RaiseCpuInterrupt();
         }
         break;
 
@@ -738,6 +739,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
 
     case Op::kSbset:
         r.sr |= static_cast<uint16_t>(1u << ((op & 7) + 6));
+        RaiseCpuInterrupt();
         break;
 
     case Op::kLsl:

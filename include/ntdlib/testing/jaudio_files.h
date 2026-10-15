@@ -276,8 +276,8 @@ struct SoundTableBlocks
 
 // A sound table of `sections`, and its name table. Each sound's entry is 12 bytes. A type with bit 0x40 set has the
 // later layout: the volume at +1 and the sequence archive's file at +2. Any other type has the earlier one: the volume
-// at +2 and the file at +8.
-inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections)
+// at +2 and the file at +8. With `first_layouts`, every entry has the first layouts: the volume at +8 and no file.
+inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, bool first_layouts = false)
 {
     // The table: the root lists the sections, each section its groups, each group its sounds.
     Bytes t;
@@ -313,7 +313,11 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections)
             for (std::size_t i = 0; i < sounds.size(); i++)
             {
                 t.Put32(group + 8 + 4 * i, uint32_t{sounds[i].type} << 24 | static_cast<uint32_t>(t.Size()));
-                if (sounds[i].type & 0x40)
+                if (first_layouts)
+                {
+                    t.U32(0).U32(0).U8(sounds[i].volume).U8(0).U16(0);
+                }
+                else if (sounds[i].type & 0x40)
                 {
                     t.U8(0).U8(sounds[i].volume).U16(sounds[i].file).U32(0).U32(0);
                 }
@@ -507,12 +511,23 @@ struct AafSoundSpec
     uint16_t file = 0;
 };
 
+// A sequence of an AAF's sequence index: its name, and its offset and size in the sequence archive.
+struct AafSequenceSpec
+{
+    std::string name;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+};
+
 // JAudio1's start-up archive (AAF) with a sound table of `sounds`, one bank, and a wave system (WaveSystemFile) of one
 // wave for each name in `archives`. Wave system n has the id n. The systems' load types alternate: 1 (at start-up),
 // then 2 (for a scene). The table lists the sounds of each category in the order given. The sequences' entries come
-// first. The Wind Waker's table has them first too. The archive also has a chunk of a type that the sound library
-// skips.
-inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, const std::vector<std::string>& archives)
+// first. The Wind Waker's table has them first too. The table's header gives the effects and the streams format 6, and
+// the sequences `sequence_format`. The Wind Waker's sequences have format 5, whose bit 0 makes an entry give the file.
+// Luigi's Mansion's have format 0. The archive also has a chunk of a type that the sound library skips. With `index`,
+// it has a sequence index (BARC, chunk type 4) of those sequences, in the order given, as Luigi's Mansion's has.
+inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, const std::vector<std::string>& archives,
+                                    uint8_t sequence_format = 5, const std::vector<AafSequenceSpec>& index = {})
 {
     std::vector<uint8_t> b;
     const auto put32 = [&b](std::size_t at, uint32_t value)
@@ -528,26 +543,37 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     };
 
     // The chunks: the sound table, the bank list, the wave system list, a chunk that the sound library skips up to its
-    // 0 word, and the end.
+    // 0 word, the sequence index if there is one, and the end. The index follows the wave systems.
     constexpr std::size_t kTable = 0x100;
     constexpr std::size_t kBank = 0x700;
     constexpr std::size_t kSystems = 0x800;
     constexpr std::size_t kSystemSize = 0x200;
+    const std::size_t index_at = kSystems + archives.size() * kSystemSize;
+    const std::size_t index_size = 0x20 + 0x20 * index.size();
     std::vector<uint32_t> chunks = {1, kTable, 0x600, 0, 2, kBank, 0x10, 0, 0, 3};
     for (std::size_t s = 0; s < archives.size(); s++)
     {
         chunks.insert(chunks.end(),
                       {static_cast<uint32_t>(kSystems + s * kSystemSize), kSystemSize, s % 2 == 0 ? 1u : 2u});
     }
-    chunks.insert(chunks.end(), {0, 0x10, 5, 6, 0, 0});
+    chunks.insert(chunks.end(), {0, 0x10, 5, 6, 0});
+    if (!index.empty())
+    {
+        chunks.insert(chunks.end(), {4, static_cast<uint32_t>(index_at), static_cast<uint32_t>(index_size), 0});
+    }
+    chunks.push_back(0);
 
     for (std::size_t i = 0; i < chunks.size(); i++)
     {
         put32(i * 4, chunks[i]);
     }
 
-    // The table's header gives each category its count and its first entry. Entries are 16 bytes from +0x50. An entry
-    // has a sequence's file at +6 and the volume at +0xc.
+    // The table's header gives the formats of the effects, the sequences and the streams, then each category's count
+    // and first entry. Entries are 16 bytes from +0x50. An entry has a sequence's file at +6 and the volume at +0xc.
+    b.resize(std::max(b.size(), kTable + 3));
+    b[kTable] = 6;
+    b[kTable + 1] = sequence_format;
+    b[kTable + 2] = 6;
     std::size_t entry = 0;
     for (const uint32_t category : {16u, 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u})
     {
@@ -577,7 +603,30 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
         std::copy(system.begin(), system.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
     }
 
-    b.resize(std::max(b.size(), kSystems + archives.size() * kSystemSize));
+    b.resize(std::max(b.size(), index_at));
+
+    // The sequence index: "BARC", four dashes, a word, the count, and the archive's file name. Then each sequence's
+    // name, 0xffff (it shares no other sequence's data), two words, and its offset and size.
+    if (!index.empty())
+    {
+        b.resize(index_at + index_size);
+        const std::string header = "BARC----";
+        std::copy(header.begin(), header.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at));
+        put32(index_at + 12, static_cast<uint32_t>(index.size()));
+        const std::string archive = "JaiArcS.arc";
+        std::copy(archive.begin(), archive.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at + 16));
+        for (std::size_t i = 0; i < index.size(); i++)
+        {
+            const std::size_t at = index_at + 0x20 + 0x20 * i;
+            const std::string name = index[i].name.substr(0, 13);
+            std::copy(name.begin(), name.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
+            put16(at + 14, 0xffff);
+            put32(at + 16, 2);
+            put32(at + 20, 3);
+            put32(at + 24, index[i].offset);
+            put32(at + 28, index[i].size);
+        }
+    }
 
     return b;
 }

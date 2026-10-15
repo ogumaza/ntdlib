@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -41,6 +42,7 @@
 #include "seqlib/midi/reader.h"
 #include "seqlib/read_error.h"
 #include "seqlib/sf2/reader.h"
+#include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
 #include "seqlib/wav.h"
 #include "xsflib/testing/check.h"
@@ -108,6 +110,11 @@ T ByConsole(T wii_u, T nx, T ctr)
         return wii_u;
     }
 }
+
+// The report of the low-passes for the consoles' resampling filters (resampling.h): a note above a rate of 1 on a
+// preset with kFilterController.
+inline const std::string kResamplingWithController =
+    "resampling filter on a preset whose filter changes during notes (omitted from SoundFont)";
 
 // A test: a function that checks with XSFLIB_CHECK.
 using Test = void (*)();
@@ -246,6 +253,79 @@ inline std::string Sf2Problem(const std::vector<uint8_t>& d)
 {
     const std::vector<std::string> problems = seqlib::sf2::Check(d);
     return problems.empty() ? "" : problems.front();
+}
+
+// An instrument zone of a SoundFont that plays a sample: its keys, its initialFilterFc generator, and the source and
+// amount of its modulator to initialFilterFc. -1 for a generator or a modulator that the zone lacks.
+struct ZoneCutoff
+{
+    std::pair<int, int> keys;
+    int cutoff = -1;
+    int source = -1;
+    int amount = -1;
+
+    bool operator==(const ZoneCutoff&) const = default;
+};
+
+// The ZoneCutoff of each instrument zone of the SoundFont `d` that plays a sample, in order.
+inline std::vector<ZoneCutoff> ZoneCutoffs(const std::vector<uint8_t>& d)
+{
+    const auto u16 = [](const uint8_t* p)
+    {
+        return static_cast<uint16_t>(p[0] | p[1] << 8);
+    };
+
+    const seqlib::sf2::Records v = seqlib::sf2::Read(d);
+    std::vector<ZoneCutoff> zones;
+    for (std::size_t z = 0; z + 1 < v.Count("ibag", 4); z++)
+    {
+        const std::map<uint16_t, uint16_t> gens = v.ZoneGens(z);
+        if (!gens.contains(seqlib::sf2::kSampleId))
+        {
+            continue;
+        }
+
+        ZoneCutoff zone;
+        const uint16_t keys = gens.contains(seqlib::sf2::kKeyRange) ? gens.at(seqlib::sf2::kKeyRange) : 0x7f00;
+        zone.keys = {keys & 0xff, keys >> 8};
+        const auto cutoff = gens.find(seqlib::sf2::kInitialFilterFc);
+        if (cutoff != gens.end())
+        {
+            zone.cutoff = static_cast<int16_t>(cutoff->second);
+        }
+
+        // The zone's modulators run from its bag's modulator index to the next bag's.
+        const uint16_t end = u16(v.Record("ibag", 4, z + 1) + 2);
+        for (uint16_t m = u16(v.Record("ibag", 4, z) + 2); m < end; m++)
+        {
+            const uint8_t* mod = v.Record("imod", 10, m);
+            if (u16(mod + 2) == seqlib::sf2::kInitialFilterFc)
+            {
+                zone.source = u16(mod);
+                zone.amount = static_cast<int16_t>(u16(mod + 4));
+            }
+        }
+        zones.push_back(zone);
+    }
+
+    return zones;
+}
+
+// The resampling low-pass of the first SFZ region in `text` for keys `keys`: the region line from its fil_type or
+// fil2_type opcode on. Empty for a region without a low-pass, and "no region" when no region has those keys.
+inline std::string RegionLowPass(const std::string& text, std::pair<int, int> keys)
+{
+    const std::string at = " lokey=" + std::to_string(keys.first) + " hikey=" + std::to_string(keys.second) + " ";
+    const std::size_t found = text.find(at);
+    if (found == std::string::npos)
+    {
+        return "no region";
+    }
+
+    const std::string line = text.substr(found, text.find('\n', found) - found);
+    const std::size_t low_pass = std::min(line.find(" fil_type="), line.find(" fil2_type="));
+
+    return low_pass == std::string::npos ? "" : line.substr(low_pass);
 }
 
 // A MIDI note: track, channel, key, velocity and start/end ticks.

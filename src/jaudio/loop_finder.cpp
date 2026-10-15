@@ -44,8 +44,8 @@ bool JAudio1ChangesSound(uint8_t command)
            (command >= 0xeb && command <= 0xf4) || command == 0xf9 || command >= 0xfd;
 }
 
-LoopFinder::LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command))
-    : sample_rate_(sample_rate), changes_sound_(changes_sound)
+LoopFinder::LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command), bool idle_in_calls)
+    : sample_rate_(sample_rate), changes_sound_(changes_sound), idle_in_calls_(idle_in_calls)
 {
     order_.push_back(root);
     tracks_[root] = {};
@@ -113,13 +113,19 @@ void LoopFinder::Command(Track& track, const TrackEvent& event)
         track.call_site = event.at;
         track.reached[event.at] = {event.frame, taken_};
     }
+    else if (idle_in_calls_)
+    {
+        track.reached_in_calls[event.at] = {event.frame, taken_};
+    }
 
     if (changes_sound_(event.command))
     {
         track.changed = taken_;
     }
 
-    if (track.idle && (event.depth > 0 || (event.at >= track.idle->start && event.at < track.idle->end)))
+    const auto& idle = track.idle;
+    if (idle && (event.depth > idle->depth ||
+                 (event.depth == idle->depth && event.at >= idle->start && event.at < idle->end)))
     {
         return;
     }
@@ -147,8 +153,18 @@ uint64_t LoopFinder::LastMove(const Track& track)
 // track before this one holds it back.
 LoopFinder::Verdict LoopFinder::Jump(uint32_t id, Track& track, const TrackEvent& event, const Sounded& sounded)
 {
-    if (event.depth != 0 || event.to >= event.at)
+    if (event.to >= event.at)
     {
+        return Verdict::kNone;
+    }
+
+    if (event.depth != 0)
+    {
+        if (idle_in_calls_)
+        {
+            JumpInCall(track, event);
+        }
+
         return Verdict::kNone;
     }
 
@@ -197,6 +213,26 @@ LoopFinder::Verdict LoopFinder::Jump(uint32_t id, Track& track, const TrackEvent
     track.counted = Loop{event.to, event.at};
 
     return track.loops == 2 ? Verdict::kLoops : Verdict::kNone;
+}
+
+// With idle_in_calls: a jump back inside a call. The pass started when the track last reached the jump's target. A pass
+// that changes nothing waits, or polls the game. The track then idles in that loop. The pass's commands weren't moves,
+// and neither are its later commands in the loop and in calls from it. The commands in the call before the pass were.
+// They count at the call, as at most the pass's start.
+void LoopFinder::JumpInCall(Track& track, const TrackEvent& event)
+{
+    const auto start = track.reached_in_calls.find(event.to);
+    if (start == track.reached_in_calls.end() || track.changed >= start->second.order)
+    {
+        return;
+    }
+
+    track.idle = Loop{event.to, event.at, event.depth};
+    const auto call = track.moves.find(track.call_site);
+    if (call != track.moves.end())
+    {
+        call->second = std::min(call->second, start->second.frame);
+    }
 }
 
 bool LoopFinder::Settled(const Track& track, uint64_t now) const

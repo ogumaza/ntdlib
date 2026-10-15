@@ -140,6 +140,9 @@ public:
     std::map<uint32_t, uint8_t> bytes;
     std::function<void(FakeMachine&, uint64_t block, int16_t* out, std::size_t frames)> step;
 
+    // Whether a JAudio1 track's reader holds its position as an offset from the data's start, as in an earlier JAudio1.
+    bool relative_positions = false;
+
 private:
     uint64_t blocks_ = 0;
 };
@@ -473,7 +476,7 @@ void StartJAudio1Sound(FakeMachine& m)
 void JAudio1Command(FakeMachine& m, uint32_t track, uint32_t at, uint8_t command, uint8_t next = 0)
 {
     m.words[track + 0xc] = kTrackData;
-    m.words[track + 0x10] = kTrackData + at;
+    m.words[track + 0x10] = (m.relative_positions ? 0 : kTrackData) + at;
     m.bytes[kTrackData + at] = command;
     m.bytes[kTrackData + at + 1] = next;
     m.cpu.state_.gpr[kCommandTrack] = track;
@@ -484,7 +487,7 @@ void JAudio1Command(FakeMachine& m, uint32_t track, uint32_t at, uint8_t command
 void JAudio1Jump(FakeMachine& m, uint32_t track, uint32_t at, uint32_t to)
 {
     m.words[track + 0xc] = kTrackData;
-    m.words[track + 0x10] = kTrackData + at;
+    m.words[track + 0x10] = (m.relative_positions ? 0 : kTrackData) + at;
     m.cpu.state_.gpr[kJumpTrack] = track;
     m.cpu.state_.gpr[kJumpTarget] = to;
     m.cpu.on_watch(kJump);
@@ -595,6 +598,27 @@ void TestJAudio1Sequence()
         jaudio::AnalyzeGameSound(machine, kHandleAddress, JAudio1Watch(), kRules, nullptr, false, 0x80000001);
 
     XSFLIB_CHECK(child && child->length_ms == 2 && child->fade_ms == 10'000);
+
+    // A game without an effects sequence. The sequence's root track loops as in TestLoop. The word at address 0 holds
+    // the sound's JAISound. The analysis mustn't take it for the effects sequence's.
+    machine = FakeMachine{};
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            m.words[kHandleAddress] = kHandle;
+            m.words[kHandle + 0x38] = kJAudio1Parameters;
+            m.words[0] = kHandle;
+        }
+        JAudio1Pass(m, kJAudio1Root, block);
+    };
+    jaudio::GameWatch watch = JAudio1Watch();
+    watch.effects_sequence = 0;
+
+    const auto alone = jaudio::AnalyzeGameSound(machine, kHandleAddress, watch, kRules, nullptr, false, 0x80000001);
+
+    XSFLIB_CHECK(alone && alone->length_ms == 6 && alone->fade_ms == 10'000);
 }
 
 void TestJAudio1Effect()
@@ -624,6 +648,344 @@ void TestJAudio1Effect()
     XSFLIB_CHECK(timing && timing->length_ms == 6 && timing->fade_ms == 10'000);
 }
 
+// A later JAudio1's layout, as in Pikmin 2: a JAISound contains a sequence's parameters from +0x48, and the root track
+// lies in the parameters at +0x2c4. The sound's root track and the effects sequence's root track lie in their
+// JAISounds.
+constexpr uint32_t kInlineRoot = kHandle + 0x48 + 0x2c4;
+constexpr uint32_t kInlineEffectsRoot = kEffectsSound + 0x48 + 0x2c4;
+
+jaudio::GameWatch InlineJAudio1Watch()
+{
+    jaudio::GameWatch watch = JAudio1Watch();
+    watch.parameters_offset = 0x48;
+    watch.parameters_inline = true;
+    watch.parameters_track_offset = 0x2c4;
+
+    return watch;
+}
+
+// The game has started a sound in the later layout. The effects sequence's root track has a child of slot 1 whose
+// child of slot 2 is kSlotTrack.
+void StartInlineJAudio1Sound(FakeMachine& m)
+{
+    m.words[kHandleAddress] = kHandle;
+    m.words[kEffectsHandleAddress] = kEffectsSound;
+    m.words[kInlineEffectsRoot + 0x2fc + 1 * 4] = kSlotParent;
+    m.words[kSlotParent + 0x2f8] = kInlineEffectsRoot;
+    m.words[kSlotParent + 0x2fc + 2 * 4] = kSlotTrack;
+    m.words[kSlotTrack + 0x2f8] = kSlotParent;
+}
+
+void TestInlineJAudio1()
+{
+    // The sequence's root track loops as in TestLoop. The effects sequence's track of slot 0x12 loops sooner. That
+    // track isn't part of the sound.
+    FakeMachine machine;
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartInlineJAudio1Sound(m);
+        }
+        JAudio1Pass(m, kInlineRoot, block);
+        OtherLoop(m, kSlotTrack, block);
+    };
+
+    const auto sequence =
+        jaudio::AnalyzeGameSound(machine, kHandleAddress, InlineJAudio1Watch(), kRules, nullptr, false, 0x80000001);
+
+    XSFLIB_CHECK(sequence && sequence->length_ms == 6 && sequence->fade_ms == 10'000);
+
+    // An effect in slot 0x12 loops as in TestJAudio1Effect.
+    machine = FakeMachine{};
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartInlineJAudio1Sound(m);
+            m.bytes[kHandle] = 0x12;
+        }
+        JAudio1Pass(m, kSlotTrack, block);
+    };
+
+    const auto effect = jaudio::AnalyzeGameSound(machine, kHandleAddress, InlineJAudio1Watch(), kRules, nullptr, false,
+                                                 jaudio::kAafToEnd | 0x5000);
+
+    XSFLIB_CHECK(effect && effect->length_ms == 6 && effect->fade_ms == 10'000);
+}
+
+// A track's interrupt, as in Pikmin 2: while the root track runs an interrupt, its word at +0x50 holds the position to
+// return to. The interrupt syncs with the game's code and returns. Neither command changes the sound.
+constexpr uint32_t kInterruptOffset = 0x50;
+constexpr uint8_t kJAudio1SyncCpu = 0xe7;
+constexpr uint8_t kJAudio1ReturnFromInterrupt = 0xe3;
+
+// The sequence's root track waits and jumps back once a block, and then runs the interrupt. A child of the root track
+// loops as in TestJAudio1Sequence.
+std::optional<xsflib::rip::Timing> AnalyzeInterrupts(uint32_t interrupt_offset)
+{
+    FakeMachine machine;
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartJAudio1Sound(m);
+            return;
+        }
+
+        JAudio1Command(m, kJAudio1Root, 0x08, kJAudio1Wait);
+        JAudio1Jump(m, kJAudio1Root, 0x0a, 0x08);
+        m.words[kJAudio1Root + kInterruptOffset] = kTrackData + 0x0a;
+        JAudio1Command(m, kJAudio1Root, 0x40, kJAudio1SyncCpu);
+        JAudio1Command(m, kJAudio1Root, 0x43, kJAudio1ReturnFromInterrupt);
+        m.words[kJAudio1Root + kInterruptOffset] = 0;
+        JAudio1Pass(m, kChildTrack, block);
+    };
+
+    jaudio::GameWatch watch = JAudio1Watch();
+    watch.interrupt_offset = interrupt_offset;
+    jaudio::GameLengthRules rules = kRules;
+    rules.limit_ms = 100;
+
+    return jaudio::AnalyzeGameSound(machine, kHandleAddress, watch, rules, nullptr, false, 0x80000001);
+}
+
+void TestJAudio1Interrupt()
+{
+    // The interrupt's commands lie outside the loop that the root track idles in. They count as commands of a call.
+    // Such commands aren't moves of a track that idles. The child's loop is the sound's loop.
+    const auto interrupts = AnalyzeInterrupts(kInterruptOffset);
+
+    XSFLIB_CHECK(interrupts && interrupts->length_ms == 6 && interrupts->fade_ms == 10'000);
+
+    // Without `interrupt_offset`, the interrupt's commands are moves of the root track. They hold back the child's
+    // loop, and the sound plays to the limit.
+    const auto off = AnalyzeInterrupts(0);
+
+    XSFLIB_CHECK(off && off->length_ms == 100 && off->fade_ms == 10'000);
+}
+
+// An earlier JAudio1's layout, as in Luigi's Mansion: a track's reader holds its position as an offset from the data's
+// start, and a table of 16 words holds the root tracks of the sequences that play. A sequence's parameters hold its
+// root track's number in the table at +0. The effects sequence has number 0. The sound's sequence gets number 2 when
+// the sound library gives it its tracks. Until then, its parameters hold 0.
+constexpr uint32_t kRootTracks = 0x80480000;
+
+jaudio::GameWatch PooledJAudio1Watch()
+{
+    jaudio::GameWatch watch = JAudio1Watch();
+    watch.relative_positions = true;
+    watch.root_tracks = kRootTracks;
+    watch.root_track_count = 16;
+    watch.parameters_track_offset = 0;
+
+    return watch;
+}
+
+void StartPooledJAudio1Sound(FakeMachine& m)
+{
+    StartJAudio1Sound(m);
+    m.relative_positions = true;
+    m.words[kJAudio1Parameters] = 0;
+    m.words[kEffectsParameters] = 0;
+    m.words[kRootTracks] = kEffectsRoot;
+}
+
+// The sound library gives the sound's sequence its tracks: root track number `number`.
+void GivePooledTracks(FakeMachine& m, uint32_t number)
+{
+    m.words[kJAudio1Parameters] = number;
+    m.words[kRootTracks + number * 4] = kJAudio1Root;
+}
+
+void TestPooledJAudio1()
+{
+    // The sequence gets its tracks in block 1. Its root track, from the table, then waits and jumps back once a block.
+    // That loop changes nothing, so the track idles. A child of the root track loops as in TestJAudio1Sequence, and
+    // that's the sound's loop. The root track's loop is idle only if the analysis finds its commands at their offsets.
+    // The effects sequence's track loops sooner. That track isn't part of the sound, though the sequence's parameters
+    // name the effects sequence's root track in block 0.
+    FakeMachine machine;
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartPooledJAudio1Sound(m);
+        }
+        else
+        {
+            if (block == 1)
+            {
+                GivePooledTracks(m, 2);
+            }
+            JAudio1Command(m, kJAudio1Root, 0x08, kJAudio1Wait);
+            JAudio1Jump(m, kJAudio1Root, 0x0a, 0x08);
+        }
+        JAudio1Pass(m, kChildTrack, block);
+        OtherLoop(m, kSlotTrack, block);
+    };
+
+    const auto sequence =
+        jaudio::AnalyzeGameSound(machine, kHandleAddress, PooledJAudio1Watch(), kRules, nullptr, false, 0x80000001);
+
+    XSFLIB_CHECK(sequence && sequence->length_ms == 6 && sequence->fade_ms == 10'000);
+
+    // A number past the table's end gives the sound no root track. Then no loop counts, and the sound plays to the
+    // limit.
+    machine = FakeMachine{};
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartPooledJAudio1Sound(m);
+            m.words[kJAudio1Parameters] = 16;
+        }
+        JAudio1Pass(m, kJAudio1Root, block);
+    };
+    jaudio::GameLengthRules rules = kRules;
+    rules.limit_ms = 100;
+
+    const auto past =
+        jaudio::AnalyzeGameSound(machine, kHandleAddress, PooledJAudio1Watch(), rules, nullptr, false, 0x80000001);
+
+    XSFLIB_CHECK(past && past->length_ms == 100 && past->fade_ms == 10'000);
+
+    // An effect in slot 0x12 of the effects sequence, whose root track comes from the table, loops as in
+    // TestJAudio1Effect.
+    machine = FakeMachine{};
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartPooledJAudio1Sound(m);
+            m.bytes[kHandle] = 0x12;
+        }
+        JAudio1Pass(m, kSlotTrack, block);
+        OtherLoop(m, kOtherSlotTrack, block);
+    };
+
+    const auto effect = jaudio::AnalyzeGameSound(machine, kHandleAddress, PooledJAudio1Watch(), kRules, nullptr, false,
+                                                 jaudio::kAafToEnd | 0x5000);
+
+    XSFLIB_CHECK(effect && effect->length_ms == 6 && effect->fade_ms == 10'000);
+}
+
+// An effect in slot 0x12 whose slot track polls once a block. That loop changes nothing, so the track idles. In block
+// 1, a child of the slot track plays a note and then waits `wait` ticks, for longer than the sound plays. It sounds all
+// along.
+std::optional<xsflib::rip::Timing> AnalyzeLongWait(uint32_t endless_wait, int32_t wait)
+{
+    FakeMachine machine;
+    machine.step = [wait](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartPooledJAudio1Sound(m);
+            m.bytes[kHandle] = 0x12;
+            m.words[kChildTrack + 0x2f8] = kSlotTrack;
+            return;
+        }
+
+        JAudio1Command(m, kSlotTrack, 0x08, kJAudio1Wait);
+        JAudio1Jump(m, kSlotTrack, 0x0a, 0x08);
+        if (block == 1)
+        {
+            JAudio1Command(m, kChildTrack, 0x20, kNote);
+            m.words[kChildTrack + 0x14] = static_cast<uint32_t>(wait);
+        }
+    };
+
+    jaudio::GameWatch watch = PooledJAudio1Watch();
+    watch.endless_wait = endless_wait;
+    jaudio::GameLengthRules rules = kRules;
+    rules.limit_ms = 20'000;
+
+    return jaudio::AnalyzeGameSound(machine, kHandleAddress, watch, rules, nullptr, false, jaudio::kAafToEnd | 0x5000);
+}
+
+void TestEndlessWait()
+{
+    // A wait with at least `endless_wait` ticks left counts as a wait for the notes. The child track settles 10 s after
+    // its note, and the sound holds there. It still sounds, so it loops there.
+    const auto endless = AnalyzeLongWait(0x4000, 32'000);
+
+    XSFLIB_CHECK(endless && endless->length_ms == 10'001 && endless->fade_ms == 10'000);
+
+    // A shorter wait counts down to the child track's next move, and so does every wait without `endless_wait`. The
+    // sound then never holds, and it plays to the limit.
+    const auto shorter = AnalyzeLongWait(0x4000, 0x3fff);
+    const auto off = AnalyzeLongWait(0, 32'000);
+
+    XSFLIB_CHECK(shorter && shorter->length_ms == 20'000 && shorter->fade_ms == 10'000);
+    XSFLIB_CHECK(off && off->length_ms == 20'000 && off->fade_ms == 10'000);
+}
+
+// An effect in slot 0x12 whose slot track polls once a block, as in AnalyzeLongWait. In block 1, a child of the slot
+// track plays a note and waits for it. From block 2 on, the child runs its interrupt routine every 5 blocks: a command
+// on a register, a conditional jump forward and the return. The child holds the routine's return position at +0x50
+// while the routine runs. It sounds all along.
+std::optional<xsflib::rip::Timing> AnalyzeInterruptRoutine(uint32_t interrupt_return_offset)
+{
+    FakeMachine machine;
+    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    {
+        Sound(out, frames);
+        if (block == 0)
+        {
+            StartPooledJAudio1Sound(m);
+            m.bytes[kHandle] = 0x12;
+            m.words[kChildTrack + 0x2f8] = kSlotTrack;
+            return;
+        }
+
+        JAudio1Command(m, kSlotTrack, 0x08, kJAudio1Wait);
+        JAudio1Jump(m, kSlotTrack, 0x0a, 0x08);
+        if (block == 1)
+        {
+            JAudio1Command(m, kChildTrack, 0x20, kNote);
+            m.words[kChildTrack + 0x14] = static_cast<uint32_t>(-1);
+        }
+        else if (block % 5 == 2)
+        {
+            m.words[kChildTrack + 0x50] = kTrackData + 0x25;
+            JAudio1Command(m, kChildTrack, 0x40, 0xa7);
+            JAudio1Command(m, kChildTrack, 0x43, 0xc8);
+            JAudio1Jump(m, kChildTrack, 0x48, 0x4f);
+            JAudio1Command(m, kChildTrack, 0x4f, 0xe3);
+            m.words[kChildTrack + 0x50] = 0;
+        }
+    };
+
+    jaudio::GameWatch watch = PooledJAudio1Watch();
+    watch.interrupt_return_offset = interrupt_return_offset;
+    jaudio::GameLengthRules rules = kRules;
+    rules.limit_ms = 20'000;
+
+    return jaudio::AnalyzeGameSound(machine, kHandleAddress, watch, rules, nullptr, false, jaudio::kAafToEnd | 0x5000);
+}
+
+void TestInterruptRoutine()
+{
+    // The routine's commands and jumps aren't the child's. The child settles 10 s after its note, and the sound holds
+    // there. It still sounds, so it loops there.
+    const auto left_out = AnalyzeInterruptRoutine(0x50);
+
+    XSFLIB_CHECK(left_out && left_out->length_ms == 10'001 && left_out->fade_ms == 10'000);
+
+    // Without the offset, the routine's commands are the child's moves. The child never settles, and the sound plays to
+    // the limit.
+    const auto counted = AnalyzeInterruptRoutine(0);
+
+    XSFLIB_CHECK(counted && counted->length_ms == 20'000 && counted->fade_ms == 10'000);
+}
+
 } // namespace
 
 int main()
@@ -636,6 +998,11 @@ int main()
     TestConditionalJump();
     TestJAudio1Sequence();
     TestJAudio1Effect();
+    TestInlineJAudio1();
+    TestJAudio1Interrupt();
+    TestPooledJAudio1();
+    TestEndlessWait();
+    TestInterruptRoutine();
 
     return xsflib::testing::Summary("game lengths");
 }

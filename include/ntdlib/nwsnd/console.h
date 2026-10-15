@@ -1231,10 +1231,12 @@ struct RevolutionPolicy
         return CafePolicy::Shift(current, value);
     }
 
-    // The channel's track volume (SeqTrack::UpdateChannelParam, 0x80046d0c): the squares of the track's volume, volume2
-    // and the player's main volume over 127, multiplied in that order from 1, then the sound's volume. The Wii's track
-    // has no float volume.
-    static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float, float player_volume)
+    // The channel's track volume (SeqTrack::UpdateChannelParam, 0x800403e0): the squares of the track's volume, volume2
+    // and the player's main volume over 127, multiplied in that order from 1, then the track's float volume
+    // (SeqTrack::SetVolume) and the sound's volume. The build of October 2006 multiplies them in the same order
+    // (0x800e7308 in WarioWare: Smooth Moves' main.dol).
+    static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float track_volume,
+                             float player_volume)
     {
         const float track = static_cast<float>(volume) / 127.0f;
         const float track2 = static_cast<float>(volume2) / 127.0f;
@@ -1244,6 +1246,7 @@ struct RevolutionPolicy
         value *= track * track;
         value *= track2 * track2;
         value *= main * main;
+        value *= track_volume;
         value *= player_volume;
 
         return value;
@@ -1285,11 +1288,11 @@ struct RevolutionPolicy
         return value * value;
     }
 
-    // The sequence's ticks in a millisecond, from its timebase and tempo (SeqPlayer::UpdateTick, 0x8003eec4). The tempo
-    // ratio is 1.
-    static float TicksPerMs(int timebase, int tempo, float)
+    // The sequence's ticks in a millisecond, from its timebase, its tempo and the tempo ratio (SeqPlayer::UpdateTick,
+    // 0x8003eec4). The ratio multiplies first.
+    static float TicksPerMs(int timebase, int tempo, float tempo_ratio)
     {
-        return 1.0f * static_cast<float>(timebase * tempo) / 60000.0f;
+        return tempo_ratio * static_cast<float>(timebase * tempo) / 60000.0f;
     }
 
     // The table LFO's step of its phase in `msec` milliseconds (Lfo::Update, 0x8003b280), and its level from the
@@ -1623,6 +1626,16 @@ void RevolutionPolicy::UpdateChannel(Channel& channel, Engine& engine, bool peri
         if (lfo_target == 1 && (ve_init_volume > 1.0f || ve_target_volume > 1.0f))
         {
             engine.OnGainAboveFull(channel);
+        }
+    }
+
+    // An engine with this hook follows every frame of a volume LFO: the envelope's level and the LFO's, in decibels,
+    // where the voice's ramp ends.
+    if constexpr (requires { engine.OnVolumeLfo(channel, 0.0f, 0.0f); })
+    {
+        if (lfo_target == 1)
+        {
+            engine.OnVolumeLfo(channel, channel.envelope.GetValue(), 6.0f * next_lfo_value);
         }
     }
 

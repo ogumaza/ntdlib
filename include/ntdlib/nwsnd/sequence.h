@@ -15,6 +15,8 @@
 // The engine may also give LoopsForEver(player, track, address). While that returns true, the counted loop whose body
 // starts at `address` loops for ever like a loop of count 0. The loop's passes count as loops. The game's counted loops
 // end. An analysis can take one as endless when the game plays it for longer than a rip lasts.
+// The engine may also give OnTrackLoop(player, track, target). While FollowsLoops() is true, it gets every track's
+// passes of a loop, idle ones included. The track's IsIdle() then says whether the pass changed the sound.
 //
 // An engine can also follow the sequence as it plays. The model then calls these, in the game's order, if the engine
 // has them. They report what happened. Only OnParseLimit and StopsTick also change what the model does.
@@ -503,7 +505,7 @@ private:
     // pass of the main track (SequenceSoundPlayer::IsMainTrack) that played a note on the way round. A pass that played
     // no note is one too while the track holds a note that sounds until the game stops it (HoldsSustainedNote) and
     // every other open track rests (SequenceSoundPlayer::OthersRest). The pass then changes that note, such as its
-    // volume or pitch.
+    // volume or pitch. The engine's OnTrackLoop gets every pass.
     void CountLoop(Player& player, Engine& engine, uint32_t target);
 
     // Whether the engine takes the counted loop whose body starts at `address` as endless (its LoopsForEver).
@@ -528,7 +530,8 @@ private:
     int index_;
     bool open_ = false; // +0x01
 
-    // SetTrackVolume, SetTrackPitch and the rest: 1 and the defaults. The game calls them, and archive mode doesn't.
+    // SetTrackVolume, SetTrackPitch and the rest: 1 and the defaults. The game calls them. The player's SetTrackVolume
+    // sets the volume, and the others keep their defaults.
     float volume_ = 1.0f;              // +0x04
     float pitch_ = 1.0f;               // +0x08
     float pan_range_ = 1.0f;           // +0x0C
@@ -606,6 +609,8 @@ private:
 // The track is track 0, or the main track if it played a note on the way round (see IsMainTrack). A later track also
 // counts if it holds a note that sounds until the game stops it while every other open track rests (see OthersRest). A
 // jump back into code that the track hasn't run isn't a loop. Sequences that share their start make such jumps.
+// The engine's OnTrackLoop(player, track, target), if it has one, gets every track's passes. A rip tool can then wait
+// for the cycles of the tracks other than the main track.
 template <typename Policy>
 class SequenceSoundPlayer
 {
@@ -691,15 +696,16 @@ public:
         return clock_ticks_due_;
     }
 
-    // Whether the clock gives no ticks: the tempo or the timebase is 0. A clock in 416ths of a tick
-    // (Policy::CountsTickParts) gives none once the tempo is 0 and less than a whole tick is counted.
+    // Whether the clock gives no ticks: the tempo, the timebase or the tempo ratio is 0. A clock in 416ths of a tick
+    // (Policy::CountsTickParts) gives none once the tempo times the tempo ratio truncates to 0 and less than a whole
+    // tick is counted.
     bool ClockStopped() const
     {
         if constexpr (Policy::kFloatClock)
         {
             if (Policy::CountsTickParts(build_))
             {
-                return tempo_ == 0 && tick_parts_ < 416;
+                return Policy::ToInt32(static_cast<float>(tempo_) * tempo_ratio_) == 0 && tick_parts_ < 416;
             }
         }
 
@@ -721,6 +727,28 @@ public:
         if (int16_t* variable = Variable(engine, index))
         {
             *variable = value;
+        }
+    }
+
+    // Sets the tempo ratio, by which the clock multiplies the tempo. It starts at 1. A game sets it through the sound's
+    // handle (SeqPlayer::SetTempoRatio, 0x8003e818 in Wii Sports' main.dol). The 3DS's library has no tempo ratio.
+    void SetTempoRatio(float ratio)
+    {
+        tempo_ratio_ = ratio;
+    }
+
+    // Sets the volume of each allocated track whose bit is set in `track_flags`, bit 0 for track 0. Policy::TrackVolume
+    // multiplies it into the volume of the track's channels. It starts at 1, and opening a track keeps it. Set it after
+    // Start, which allocates the tracks. A game sets it through the sound's handle (SeqPlayer::SetTrackVolume,
+    // 0x8003e8b0 in Wii Sports' main.dol). The 3DS's policy leaves it out.
+    void SetTrackVolume(uint32_t track_flags, float volume)
+    {
+        for (int i = 0; i < 16; ++i)
+        {
+            if ((track_flags & (1u << i)) != 0 && tracks_[i])
+            {
+                tracks_[i]->volume_ = volume;
+            }
         }
     }
 

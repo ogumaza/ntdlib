@@ -20,15 +20,17 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/ascii.h"
+#include "xsflib/bytes.h"
+#include "xsflib/sha1.h"
+
+#include "disc/cpk_files.h"
 #include "disc/encodings.h"
 #include "disc/file_table.h"
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/source.h"
 #include "ntdlib/dol.h"
-#include "xsflib/ascii.h"
-#include "xsflib/bytes.h"
-#include "xsflib/sha1.h"
 
 namespace ntdlib::disc::detail
 {
@@ -531,6 +533,22 @@ void LoadTitle(const std::filesystem::path& folder, GameFiles& out, const GameOp
 
         return true;
     };
+
+    if (options.cpk_sound_archives)
+    {
+        const auto read_range = [files](const std::string& path, uint64_t offset, size_t size)
+        {
+            const TitleFile& file = files->at(path);
+            if (offset > file.size || size > file.size - offset)
+            {
+                throw Error("the file is truncated");
+            }
+
+            const uint8_t* start = file.data->data() + file.offset + offset;
+            return std::vector<uint8_t>(start, start + size);
+        };
+        AddCpkSoundArchives(out, read_range);
+    }
 }
 
 void RejectTitleFile(const std::filesystem::path& path, const GameOptions& options)

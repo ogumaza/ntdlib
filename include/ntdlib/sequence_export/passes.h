@@ -135,9 +135,19 @@ LoopChoice ChooseSteadyPass(const std::vector<std::pair<uint32_t, uint32_t>>& ow
 // Scale factor that keeps rounded CC11 values within 127 for a maximum unscaled value of `peak` (Perform).
 double LevelScale(double peak);
 
+// What FitParts does with the channels that the tracks' first parts leave. A part plays a note of a key that one of its
+// notes still plays on another layer: a further channel of the part. The MIDI writer gives a part's layers the channels
+// that the parts leave. Without a channel, the writer cuts the earlier note of that key short.
+enum class SpareChannels
+{
+    kForParts,  // gives every spare channel to the tracks' other parts, track by track
+    kForLayers, // keeps a channel for each layer that the parts' notes require, then gives the rest to other parts
+};
+
 // Fits the parts that each track of `perf` used (Performer::PartsUsed) into MIDI's 16 channels. Gives them out as the
 // MIDI writer does: a channel for the first part of each track that plays notes, then the other parts, track by track.
-// Returns the parts each track may have.
-std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const std::array<uint8_t, 16>& used);
+// `spare` says whether the layers' channels come first. Returns the parts each track may have.
+std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const std::array<uint8_t, 16>& used,
+                                 SpareChannels spare = SpareChannels::kForParts);
 
 } // namespace ntdlib::sequence_export

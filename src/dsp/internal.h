@@ -62,6 +62,20 @@ inline uint64_t Unsigned40(int64_t value)
     return static_cast<uint64_t>(value) & 0xffffffffff;
 }
 
+// Raises the CPU's interrupt request (DSPCR bit 1) as exception 7 if `$sr.EIE` is set. A request that the CPU makes
+// while EIE is clear stays in DSPCR. The DSP takes it once EIE is set again: by an RTI, an SBSET or a move to $sr, or
+// at the CPU's next write of DSPCR. Super Mario Sunshine's microcode clears EIE while it decrements a count that its
+// handler of the CPU's interrupt increments. A request lost in that window would leave the game waiting for the DSP.
+template <typename Memory>
+NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::RaiseCpuInterrupt()
+{
+    if ((control_ & control::kInterrupt) && (regs_.sr & kSrExternalEnable))
+    {
+        RaiseException(7);
+        control_ &= ~control::kInterrupt;
+    }
+}
+
 template <typename Memory>
 NTDLIB_DSP_FORCE_INLINE uint16_t Dsp<Memory>::ReadReg(int reg)
 {
@@ -125,6 +139,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::WriteReg(int reg, uint16_t value)
         break;
     case 0x13:
         r.sr = value & ~0x0100;
+        RaiseCpuInterrupt();
         break;
     case 0x14:
         r.prod_l = value;

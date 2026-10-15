@@ -54,6 +54,14 @@ struct GameOptions
     // title's main program serves as main.dol. The files of the title's U8 archives make up its file system. WiiBrew
     // documents the TMD, U8 archives, the banner and the NAND Boot Program.
     bool titles = false;
+
+    // Whether LoadGame lists the sound archives (.brsar) inside the game's CPK archives (.cpk, see cpk.h). A sound
+    // archive inside a CPK is listed at the CPK's path, a slash and the archive's path in the CPK, such as
+    // "data.cpk/SOUND/a.brsar". Its size is the size once decompressed. The CPK stays among the files too. A CPK
+    // whose tables are damaged adds nothing. Neither does a CPK that lists its files by ID only. LoadGame reads only
+    // each CPK's first chunk and its TOC. read_file reads a sound archive's bytes from the CPK. It decompresses the
+    // bytes that the CPK stores with CRILAYLA.
+    bool cpk_sound_archives = false;
 };
 
 // A file in the game's file system.
@@ -63,7 +71,8 @@ struct GameFile
     uint64_t size;
 
     // The file's entry in the file system table. The table lists the files in the disc's order. For an extracted disc
-    // or a title, the file's place in `files`.
+    // or a title, the file's place in `files`. A sound archive inside a CPK (GameOptions::cpk_sound_archives) takes
+    // the CPK's index. The other files' indices stay the same with that option.
     uint32_t index = 0;
 };
 
@@ -101,7 +110,8 @@ struct GameFiles
     std::optional<uint32_t> region;
 
     // Every file in the game's file system, sorted by path. The names on a disc are Shift-JIS. The paths are UTF-8,
-    // with %XX for each byte that doesn't decode. A title's files are those of its U8 archives.
+    // with %XX for each byte that doesn't decode. A title's files are those of its U8 archives. With
+    // GameOptions::cpk_sound_archives, the sound archives inside CPKs are listed too.
     std::vector<GameFile> files;
 
     // Reads a file by its path in `files`. The read shares the image's caches. Only one thread may call it at a time.

@@ -460,12 +460,7 @@ void Dsp<Memory>::WriteControl(uint16_t value, uint64_t time_base)
     control_ = value;
     if (value & control::kInterrupt)
     {
-        if (regs_.sr & kSrExternalEnable)
-        {
-            RaiseException(7);
-            control_ &= ~control::kInterrupt;
-        }
-
+        RaiseCpuInterrupt();
         CheckExceptions();
     }
 }

@@ -39,16 +39,17 @@ public:
     {
     }
 
-    // `track` runs the command at `at`.
-    void Command(uint32_t track, uint32_t at, uint8_t command)
+    // `track` runs the command at `at`, `depth` calls deep.
+    void Command(uint32_t track, uint32_t at, uint8_t command, uint32_t depth = 0)
     {
-        Take({TrackEvent::Kind::kCommand, track, at, 0, 0, command, frame_});
+        Take({TrackEvent::Kind::kCommand, track, at, 0, depth, command, frame_});
     }
 
-    // `track` jumps back to `to` from the jump command that ends at `at`. Returns the jump's verdict.
-    Verdict Jump(uint32_t track, uint32_t at, uint32_t to)
+    // `track` jumps back to `to` from the jump command that ends at `at`, `depth` calls deep. Returns the jump's
+    // verdict.
+    Verdict Jump(uint32_t track, uint32_t at, uint32_t to, uint32_t depth = 0)
     {
-        return Take({TrackEvent::Kind::kJump, track, at, to, 0, 0xc7, frame_});
+        return Take({TrackEvent::Kind::kJump, track, at, to, depth, 0xc7, frame_});
     }
 
     uint64_t Frame() const
@@ -217,6 +218,57 @@ void TestLaterTrack()
     XSFLIB_CHECK(while_polling == (std::vector{Verdict::kNone, Verdict::kLoops}));
 }
 
+// The root track plays a note, then calls a routine that polls the game, while a later track loops. Returns the
+// verdicts of the later track's jumps back, one for each of `passes` passes. With `return_at`, the routine returns in
+// that pass, and the root track plays another note.
+std::vector<Verdict> PollInCall(bool idle_in_calls, int passes, int return_at = -1)
+{
+    constexpr uint8_t kCall = 0xc4;
+    LoopFinder finder(kRoot, kRate, ChangesSound, idle_in_calls);
+    Feeder feeder(finder);
+    std::vector<Verdict> verdicts;
+    feeder.Command(kRoot, 0x08, kNote);
+    feeder.Command(kRoot, 0x0c, kCall);
+    for (int pass = 0; pass < passes; pass++)
+    {
+        const bool polls = return_at < 0 || pass < return_at;
+        if (polls)
+        {
+            feeder.Command(kRoot, 0x40, kReadRegister, 1);
+        }
+        else if (pass == return_at)
+        {
+            feeder.Command(kRoot, 0x11, kNote);
+        }
+
+        feeder.Command(kLater, 0x80, kNote);
+        feeder.Command(kLater, 0x82, kWait);
+        if (polls)
+        {
+            feeder.Command(kRoot, 0x45, kWait, 1);
+            XSFLIB_CHECK(feeder.Jump(kRoot, 0x4a, 0x40, 1) == Verdict::kNone);
+        }
+
+        verdicts.push_back(feeder.Jump(kLater, 0x88, 0x80));
+    }
+
+    return verdicts;
+}
+
+void TestIdleInCall()
+{
+    // The routine polls for ever, and its passes change nothing. With idle_in_calls, the root track idles there, and
+    // the later track loops at its second jump back. The root track's note and its commands up to the routine's first
+    // pass came before the later track's first pass. Without the option, each poll is a move of the root track, and
+    // the later track never loops.
+    XSFLIB_CHECK(PollInCall(true, 2) == (std::vector{Verdict::kNone, Verdict::kLoops}));
+    XSFLIB_CHECK(PollInCall(false, 4) == std::vector(4, Verdict::kNone));
+
+    // The routine returns in the second pass, and the root track plays a note. The root track then moves again, and
+    // the later track's passes don't count.
+    XSFLIB_CHECK(PollInCall(true, 3, 1) == std::vector(3, Verdict::kNone));
+}
+
 void TestJAudio1Commands()
 {
     // JAudio1's notes, the ends of its notes and the track's parameters change the sound. Its waits, registers, ports,
@@ -262,6 +314,7 @@ int main()
     TestPollBetweenPasses();
     TestPollHolds();
     TestLaterTrack();
+    TestIdleInCall();
     TestJAudio1Commands();
 
     if (xsflib::testing::failures)

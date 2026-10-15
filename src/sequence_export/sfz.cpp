@@ -17,8 +17,10 @@
 #include <cstddef>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ntdlib/sequence_export/instruments.h"
+
 #include "sequence_export/sfz_track.h"
 
 namespace ntdlib::sequence_export
@@ -57,9 +59,10 @@ std::string RegionOpcodes(const PresetKey& key, const sar::VelocityRegion& r, co
     return s;
 }
 
-// Writes one line per region in preset `key`. Adds `gain_db` to each volume.
+// Writes one line per region in preset `key`. Adds `gain_db` to each volume. A region's low-pass takes filter slot
+// `resampling_slot`, or none with 0 (PresetRegionsFunction).
 std::string PresetRegions(const PresetKey& key, BankSet& banks, SfzSampleSet& samples, double gain_db,
-                          const Settings& settings)
+                          int resampling_slot, const Settings& settings)
 {
     std::string s;
     const sar::Instrument* inst = banks.GetInstrument(key.bank_slot, key.program);
@@ -83,19 +86,28 @@ std::string PresetRegions(const PresetKey& key, BankSet& banks, SfzSampleSet& sa
         // The engine's pan: (region pan + track initial pan - 64) / 63. Stereo channels get an additional -1 or +1.
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
         const std::string opcodes = RegionOpcodes(key, r, wave, gain_db, settings);
+        const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation};
         for (const std::pair<int, int>& keys : played.keys)
         {
-            for (const std::pair<int, int>& velocities : played.velocities)
+            const std::vector<ResamplingSpan> spans = resampling_slot != 0
+                                                          ? ResamplingSpans(keys, resampling, settings)
+                                                          : std::vector<ResamplingSpan>{{keys, nullptr}};
+            for (const ResamplingSpan& span : spans)
             {
-                for (std::size_t c = 0; c < wave.names.size(); c++)
+                const std::string low_pass =
+                    span.filter ? SfzResamplingOpcodes(*span.filter, resampling, resampling_slot) : "";
+                for (const std::pair<int, int>& velocities : played.velocities)
                 {
-                    double p = pan;
-                    if (wave.names.size() == 2)
+                    for (std::size_t c = 0; c < wave.names.size(); c++)
                     {
-                        p += c == 0 ? -1.0 : 1.0;
-                    }
+                        double p = pan;
+                        if (wave.names.size() == 2)
+                        {
+                            p += c == 0 ? -1.0 : 1.0;
+                        }
 
-                    s += SfzRegionStart(wave.names[c], keys, velocities, p) + opcodes + "\n";
+                        s += SfzRegionStart(wave.names[c], span.keys, velocities, p) + opcodes + low_pass + "\n";
+                    }
                 }
             }
         }
@@ -111,9 +123,9 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
                         const Settings& settings, const std::string& program)
 {
     SfzSampleSet samples;
-    auto regions = [&](const PresetKey& key, double gain_db)
+    auto regions = [&](const PresetKey& key, double gain_db, int resampling_slot)
     {
-        return PresetRegions(key, banks, samples, gain_db, settings);
+        return PresetRegions(key, banks, samples, gain_db, resampling_slot, settings);
     };
 
     SfzInstruments out = BuildTrackFiles(perf, midi, title, preset_names, settings, program, regions);

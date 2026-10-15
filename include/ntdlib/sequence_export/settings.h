@@ -9,7 +9,9 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
+#include "ntdlib/ax/lpf.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sound_build.h"
 
@@ -17,6 +19,7 @@ namespace ntdlib::sequence_export
 {
 
 struct FilterTables;
+struct ResamplingRule;
 
 // The sound engine that the performer models. The engine selects the core that plays the sequence, with the console's
 // policy (nwsnd/console.h). The core has the console's parse, clock, call stack, channels, envelopes, LFOs, sweeps and
@@ -98,6 +101,14 @@ struct Settings
     // tools/sequence_export/filter_tables.py fits them to the renderer's coefficients: 32 kHz with 23 low-pass steps
     // (W), 32 kHz with 58 steps (R), 32728 Hz (3), or 48 kHz with biquad types 6 to 10 (S).
     const FilterTables* filters = nullptr;
+
+    // The low-passes that stand in for the console's resampling filters in the SoundFonts and the SFZ files
+    // (resampling.h): for AX's sets (W, R), the renderer's sets (S) or the DSP's kernels (3). nullptr: none.
+    const ResamplingRule* resampling = nullptr;
+
+    // AX's one-pole low-pass, to which each SoundFont zone fits its cutoff for the track low-pass (zone_low_pass.h in
+    // the sources): AXComputeLpfCoefs (W) or AXGetLpfCoefs (R). Unset: the zones take the table's cutoff (S, 3).
+    std::optional<ax::LpfSettings> zone_low_pass;
 
     // NW4R SND's build (R only).
     SndBuild wii_build;

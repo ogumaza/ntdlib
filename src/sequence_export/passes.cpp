@@ -370,10 +370,51 @@ double LevelScale(double peak)
     return peak >= 127.5 ? 127.0 / peak : 1.0;
 }
 
+namespace
+{
+
+// The layers beyond the first that the parts of a track's `events` require. A part requires as many layers as the most
+// notes of one key that it plays at once. The MIDI writer counts its layers the same way (LayerDemand).
+int ExtraLayers(const std::vector<TrackEvent>& events)
+{
+    std::map<std::pair<uint8_t, uint8_t>, int> playing;    // per part and key: the notes that play
+    std::map<uint32_t, std::pair<uint8_t, uint8_t>> notes; // per note: its part and key
+    std::map<uint8_t, int> layers;                         // per part: the most notes of one key at once
+    for (const TrackEvent& e : events)
+    {
+        if (e.kind == EventKind::kNoteOn)
+        {
+            const std::pair<uint8_t, uint8_t> at{e.part, e.key};
+            notes[e.note] = at;
+            layers[e.part] = std::max(layers[e.part], ++playing[at]);
+        }
+        else if (e.kind == EventKind::kNoteOff)
+        {
+            const auto it = notes.find(e.note);
+            if (it != notes.end())
+            {
+                playing[it->second]--;
+                notes.erase(it);
+            }
+        }
+    }
+
+    int extra = 0;
+    for (const auto& [part, most] : layers)
+    {
+        extra += most - 1;
+    }
+
+    return extra;
+}
+
+} // namespace
+
 // Fits the parts that each track of `perf` used (Performer::PartsUsed) into MIDI's 16 channels. Gives them out as the
 // MIDI writer does: a channel for the first part of each track that plays notes, then the other parts, track by track.
-// Returns the parts each track may have.
-std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const std::array<uint8_t, 16>& used)
+// `spare` says whether the layers' channels come first. Returns the parts each track may have.
+std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const std::array<uint8_t, 16>& used,
+                                 SpareChannels spare)
 {
     std::array<bool, 16> plays{};
     int channels = 0;
@@ -385,6 +426,18 @@ std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const st
         };
         plays[t] = std::ranges::any_of(perf.tracks[t], note_on);
         channels += plays[t] ? 1 : 0;
+    }
+
+    // The layers' channels come before the other parts', while every track that plays keeps its first channel.
+    if (spare == SpareChannels::kForLayers)
+    {
+        for (int t = 0; t < 16; t++)
+        {
+            if (plays[t])
+            {
+                channels = std::min(channels + ExtraLayers(perf.tracks[t]), 16);
+            }
+        }
     }
 
     std::array<uint8_t, 16> limits;

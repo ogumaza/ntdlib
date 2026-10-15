@@ -1514,6 +1514,13 @@ void SequenceTrack<Policy>::CountLoop(Player& player, Engine& engine, uint32_t t
     }
 
     quiet_ = !noted;
+    if constexpr (requires { engine.OnTrackLoop(player, index_, target); })
+    {
+        if (FollowsLoops(engine))
+        {
+            engine.OnTrackLoop(player, index_, target);
+        }
+    }
 }
 
 template <typename Policy>
@@ -2201,8 +2208,9 @@ void SequenceSoundPlayer<Policy>::StartClock([[maybe_unused]] int frames)
 {
     // NW4R SND's clock counts each frame's milliseconds in floats (SeqPlayer::UpdateTick, 0x8003eec4 in Wii Sports'
     // main.dol). The clock of its build of October 2006 counts in 416ths of a tick (0x800e6588 in WarioWare: Smooth
-    // Moves' main.dol). Each frame takes out the whole ticks first, then adds the tempo, then runs the ticks that it
-    // took out. The timebase plays no part. The tempo ratio is 1, as in Policy::TicksPerMs.
+    // Moves' main.dol). Each frame takes out the whole ticks first, then adds the tempo times the tempo ratio, then
+    // runs the ticks that it took out. The product is a float, truncated to an integer (0x800e6618 to 0x800e664c). The
+    // timebase plays no part.
     clock_rest_ms_ = Policy::kFrameMs;
     clock_ticked_ = false;
 
@@ -2215,7 +2223,8 @@ void SequenceSoundPlayer<Policy>::StartClock([[maybe_unused]] int frames)
             tick_parts_ -= 416;
         }
 
-        tick_parts_ = static_cast<uint16_t>(tick_parts_ + tempo_);
+        const int32_t parts = Policy::ToInt32(static_cast<float>(tempo_) * tempo_ratio_);
+        tick_parts_ = static_cast<uint16_t>(tick_parts_ + parts);
     }
 }
 

@@ -203,6 +203,11 @@ public:
     int owner_player = -1;
     int owner_track = -1;
 
+    // The player and the track whose note the channel plays. Unlike the owner, they stay when the track lets the
+    // channel go. The game has no such fields. A host uses them to find the track that a sound comes from.
+    int source_player = -1;
+    int source_track = -1;
+
     VoiceId voice = kNoVoice;             // +0x238
     ChannelId next_in_track = kNoChannel; // +0x23C: the next channel of the track
     ChannelId place = kNoChannel;         // the channel's place among the engine's channels

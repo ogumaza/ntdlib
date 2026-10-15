@@ -19,7 +19,8 @@
 // never ends, and one that a conditional command leaves after three passes. In the next, a later track's passes play no
 // note and only change a note that the game stops. In the next, each pass of a later track plays a note and then counts
 // ticks in a loop. In the next two, a note comes before loops that make no sound, or before a rest of more than 180 s.
-// The two end at the same frame. In the last, a later track's inner loop counts ticks after its note.
+// The two end at the same frame. In the next, a later track's inner loop counts ticks after its note. In the last, two
+// tracks loop at lengths that don't divide each other.
 
 #pragma once
 
@@ -191,7 +192,9 @@ private:
 
 // A case: the sound's label, its sequence, where the sound starts in it, the sound's volume and the tracks it
 // allocates, and the timing that the analysis gives it. The length lies from min_ms to max_ms, or equals the length of
-// case `same_length_as` when that's 0 or more.
+// case `same_length_as` when that's 0 or more. Where others_min_ms is set, an analysis that waits for the loops of the
+// tracks other than the main track (a model with xsflib's OthersLooped) gives a length from others_min_ms to
+// others_max_ms instead.
 struct Case
 {
     const char* name;
@@ -204,6 +207,8 @@ struct Case
     long long fade_ms = 0;
     bool silent = false;
     int same_length_as = -1;
+    long long others_min_ms = -1;
+    long long others_max_ms = -1;
 };
 
 // Every case, by its sound's index in the archive. The comment on each case says what its sequence does, then why the
@@ -473,6 +478,14 @@ inline const std::vector<Case>& Cases()
              c.Jump(19).Jump(11).End();
          },
          0, 127, 3, 995, 1015, 10000},
+
+        // Track 0 opens track 1, then plays a note of 24 ticks and jumps back to it (from 10). Track 1 plays a note of
+        // 60 ticks and jumps back to it (from 18). Neither loop's length divides the other's. Track 0's loops at 24 and
+        // 48 ticks count, as in SEQ_JUMP. An analysis that waits for the other tracks' loops starts the fade at track
+        // 1's second loop, at 120 ticks.
+        {"SEQ_OTHER_LOOP",
+         [](Code& c) { c.OpenTrack(1, 18).Note(60, 127, 24).Jump(10).End().Note(60, 127, 60).Jump(18).End(); }, 0, 127,
+         3, 495, 515, 10000, false, -1, 1245, 1265},
     };
 
     return kCases;
@@ -550,9 +563,10 @@ inline std::vector<uint8_t> Archive(bool big_endian)
 }
 
 // Checks every case's timing. `analyze(index)` gives the timing of the archive's sound `index` (with length_ms, fade_ms
-// and silent), or nothing. A sound past the last case has no timing.
+// and silent), or nothing. A sound past the last case has no timing. `waits_for_others` says whether the analysis waits
+// for the other tracks' loops (see Case).
 template <typename Analyze>
-void CheckCases(const Analyze& analyze)
+void CheckCases(const Analyze& analyze, bool waits_for_others = false)
 {
     for (std::size_t i = 0; i < Cases().size(); ++i)
     {
@@ -566,6 +580,12 @@ void CheckCases(const Analyze& analyze)
 
         long long min_ms = item.min_ms;
         long long max_ms = item.max_ms;
+        if (waits_for_others && item.others_min_ms >= 0)
+        {
+            min_ms = item.others_min_ms;
+            max_ms = item.others_max_ms;
+        }
+
         if (item.same_length_as >= 0)
         {
             const auto other = analyze(static_cast<uint32_t>(item.same_length_as));

@@ -50,9 +50,19 @@ struct GameWatch
     uint32_t conditional_arguments_register = 31;
 
     // A track's sequence reader is at `reader_offset` in the track. The reader starts with the data's start (+0) and
-    // the position (+4). The track's stack depth is at `depth_offset`.
+    // the position (+4). With `relative_positions`, the position is an offset from the data's start, as in an earlier
+    // JAudio1 such as Luigi's Mansion's. Otherwise it's an address. The track's stack depth is at `depth_offset`.
+    //
+    // A JAudio1 track can run an interrupt, as Pikmin 2's root tracks do. While a track runs one, the word at
+    // `interrupt_offset` in the track holds the position to return to. Otherwise the word is 0. The analysis counts an
+    // interrupt's commands one level deeper, as in a call. An `interrupt_offset` of 0 leaves interrupts out.
     uint32_t reader_offset = 0;
     uint32_t depth_offset = 8;
+    bool relative_positions = false;
+    uint32_t interrupt_offset = 0;
+
+    // With `idle_in_calls`, a track can idle in a loop inside a call (see LoopFinder).
+    bool idle_in_calls = false;
 
     // A sequence's and an effect's JAISound, by their vtables, and where each holds its root track. The handle points
     // at the JAISound. Its vtable pointer is at `vtable_offset`: 0 where the compiler puts it first, after the members
@@ -80,22 +90,43 @@ struct GameWatch
     // commands and the place in the jump command (0xC8) where the parser takes the jump. There, register
     // `jump_target_register` holds the jump's target itself. A command from 0xb0 to 0xbf runs the command after it. A
     // track that waits for its notes waits -1 ticks. The analysis doesn't read the JAISounds' vtables or
-    // `note_wait_offset`.
+    // `note_wait_offset`. A track with at least `endless_wait` ticks left to wait counts as a track that waits for its
+    // notes. Luigi's Mansion's effects hold a note that way until the game stops them. With 0 there, every wait counts
+    // down to a move.
     //
     // A JAudio1 sound's root track comes from its ID. A sequence's JAISound points to its parameters at
-    // `parameters_offset`. They hold the root track at `parameters_track_offset`. An effect plays in a track of the
-    // effects sequence. The word at `effects_sequence` points to that sequence's JAISound. The effect's JAISound holds
-    // the effect's slot in its byte at `effect_slot_offset`: 0xff until the sound library gives the effect a slot. The
-    // slot's high nibble picks a child of the effects sequence's root track, and its low nibble picks a child of that
-    // track. A track holds its parent at `parent_offset` and its 16 children from `children_offset`. The effects
-    // sequence plays all along. The analysis takes only the events of the sound's tracks, by each track's parents.
+    // `parameters_offset`. In The Wind Waker, the root track lies in the parameters at `parameters_track_offset`. An
+    // earlier JAudio1, such as Luigi's Mansion's, takes its tracks from a pool. A table of `root_track_count` words at
+    // `root_tracks` then holds the root track of each sequence that plays. The parameters hold the number of the
+    // sequence's root track in that table, as a word at `parameters_track_offset`. With 0 at `root_tracks`, the root
+    // track lies in the parameters. An effect plays in a track of the effects sequence. The word at `effects_sequence`
+    // points to that sequence's JAISound. A game whose rips play no effects can leave `effects_sequence` 0. The
+    // effect's JAISound holds the effect's slot in its byte at `effect_slot_offset`: 0xff until the sound library gives
+    // the effect a slot. The slot's high nibble picks a child of the effects sequence's root track, and its low nibble
+    // picks a child of that track. A track holds its parent at `parent_offset` and its 16 children from
+    // `children_offset`. The effects sequence plays all along. The analysis takes only the events of the sound's
+    // tracks, by each track's parents.
+    //
+    // A later JAudio1, such as Pikmin 2's, keeps a sequence's parameters in the sequence's JAISound. With
+    // `parameters_inline`, the parameters start at `parameters_offset` in the JAISound. The root track then lies in
+    // them at `parameters_track_offset`.
     bool jaudio1 = false;
     uint32_t parameters_offset = 0;
+    bool parameters_inline = false;
     uint32_t parameters_track_offset = 0;
+    uint32_t root_tracks = 0;
+    uint32_t root_track_count = 0;
     uint32_t effects_sequence = 0;
     uint32_t effect_slot_offset = 0;
     uint32_t parent_offset = 0;
     uint32_t children_offset = 0;
+    uint32_t endless_wait = 0;
+
+    // A JAudio1 track that runs its interrupt routine holds the position to return to at `interrupt_return_offset`. The
+    // word is 0 outside the routine. The analysis leaves out the routine's commands and jumps. They aren't the track's
+    // moves. In Super Mario Sunshine, an effect holds a note while a timer routine polls the game every 5 ticks. With 0
+    // there, the routine's commands count as the track's.
+    uint32_t interrupt_return_offset = 0;
 };
 
 // The analysis's rules, in the output's frames and in milliseconds. A sample louder than 8 of 32,767 (-72 dB) is sound
@@ -190,8 +221,15 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
         const uint32_t track = s.gpr[kind == TrackEvent::Kind::kCommand ? watch.command_track_register
                                      : conditional                      ? watch.conditional_track_register
                                                                         : watch.jump_track_register];
+        if (watch.jaudio1 && watch.interrupt_return_offset &&
+            machine.Word(track + watch.interrupt_return_offset) != 0)
+        {
+            return;
+        }
+
         const uint32_t reader = track + watch.reader_offset;
-        const uint32_t position = machine.Word(reader + 4);
+        const uint32_t start = machine.Word(reader);
+        const uint32_t position = machine.Word(reader + 4) + (watch.relative_positions ? start : 0);
         uint8_t command = machine.Byte(position).value_or(0);
         if (watch.jaudio1 && command >= 0xb0 && command <= 0xbf)
         {
@@ -209,8 +247,8 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
             to = watch.jaudio1 ? target : machine.Word(target);
         }
 
-        events.push_back({kind, track, position - machine.Word(reader), to, machine.Word(track + watch.depth_offset),
-                          command, frames});
+        events.push_back(
+            {kind, track, position - start, to, machine.Word(track + watch.depth_offset), command, frames});
         if (watch.jaudio1)
         {
             std::array<uint32_t, 4> up = {};
@@ -221,6 +259,12 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
             }
 
             parents.push_back(up);
+        }
+
+        // An interrupt's commands, one level deeper.
+        if (watch.interrupt_offset && machine.Word(track + watch.interrupt_offset))
+        {
+            events.back().depth++;
         }
     };
 
@@ -244,7 +288,14 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
     const auto read_wait = [&](uint32_t track) -> TrackWait
     {
         const auto ticks = static_cast<int32_t>(machine.Word(track + watch.wait_offset));
-        return {ticks, watch.jaudio1 ? ticks < 0 : machine.Byte(track + watch.note_wait_offset).value_or(0) != 0};
+        if (watch.jaudio1)
+        {
+            const bool endless =
+                watch.endless_wait != 0 && ticks >= 0 && static_cast<uint32_t>(ticks) >= watch.endless_wait;
+            return {ticks, ticks < 0 || endless};
+        }
+
+        return {ticks, machine.Byte(track + watch.note_wait_offset).value_or(0) != 0};
     };
 
     // A JAudio1 sound's root track, or 0 while the sound has none. A sequence's parameters give its root track. An
@@ -253,17 +304,32 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
     {
         const auto root_of = [&](uint32_t sequence) -> uint32_t
         {
-            const uint32_t parameters = sequence ? machine.Word(sequence + watch.parameters_offset) : 0;
-            return parameters ? parameters + watch.parameters_track_offset : 0;
+            uint32_t parameters = 0;
+            if (sequence)
+            {
+                const uint32_t field = sequence + watch.parameters_offset;
+                parameters = watch.parameters_inline ? field : machine.Word(field);
+            }
+            if (!parameters || !watch.root_tracks)
+            {
+                return parameters ? parameters + watch.parameters_track_offset : 0;
+            }
+
+            const uint32_t number = machine.Word(parameters + watch.parameters_track_offset);
+            return number < watch.root_track_count ? machine.Word(watch.root_tracks + 4 * number) : 0;
         };
+        // A sequence's root track is never the effects sequence's. In a table of root tracks, a sequence's parameters
+        // hold number 0, the effects sequence's, until the sound library has given the sequence its tracks. A game
+        // without an effects sequence leaves `effects_sequence` 0.
+        const uint32_t effects = watch.effects_sequence ? root_of(machine.Word(watch.effects_sequence)) : 0;
         if ((sound & kAafTypeMask) == kAafSequence)
         {
-            return root_of(handle);
+            const uint32_t root = root_of(handle);
+            return root != effects ? root : 0;
         }
 
         constexpr uint8_t kNoSlot = 0xff;
         const uint8_t slot = machine.Byte(handle + watch.effect_slot_offset).value_or(kNoSlot);
-        const uint32_t effects = root_of(machine.Word(watch.effects_sequence));
         const auto child = static_cast<uint32_t>(slot >> 4);
         const auto grandchild = static_cast<uint32_t>(slot & 0xf);
         const uint32_t parent =
@@ -313,7 +379,7 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
             root = jaudio1_root(handle);
             if (root)
             {
-                finder.emplace(root, rules.sample_rate, JAudio1ChangesSound);
+                finder.emplace(root, rules.sample_rate, JAudio1ChangesSound, watch.idle_in_calls);
             }
         }
         else if (handle && !finder)
@@ -324,7 +390,7 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
                                                                     : 0;
             if (offset)
             {
-                finder.emplace(handle + offset, rules.sample_rate);
+                finder.emplace(handle + offset, rules.sample_rate, ChangesSound, watch.idle_in_calls);
             }
         }
 

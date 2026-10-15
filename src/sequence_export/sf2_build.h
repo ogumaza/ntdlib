@@ -8,16 +8,19 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/wave/decode.h"
 #include "seqlib/loop.h"
 #include "seqlib/sf2/soundfont.h"
+#include "sequence_export/zone_low_pass.h"
 
 namespace ntdlib::sequence_export
 {
@@ -58,6 +61,32 @@ RegionGenerators ConvertRegion(const PresetKey& key, const EnvelopeValues& env, 
 // (the engine's -1, left, to 1, right) that adds `extra` centibels of attenuation.
 seqlib::sf2::Zone RegionZone(const RegionGenerators& g, const std::pair<int, int>& keys,
                              const std::pair<int, int>& velocities, double pan, double extra, uint16_t sample);
+
+// The spans of a region's `keys` for the zones of preset `key`: ResamplingSpans, without a low-pass where the track's
+// fixed filter has the lower cutoff. Those keys keep the track's filter. A preset whose filter changes during notes
+// (filter_controller) takes no low-pass. A preset whose zones fit their cutoff to the track's one-pole low-pass
+// (FitsTrackLowPass) keeps ResamplingSpans' spans. Each of its zones picks one of the two low-passes (AddZoneLowPass).
+std::vector<ResamplingSpan> ZoneSpans(std::pair<int, int> keys, const ResamplingRegion& region, const PresetKey& key,
+                                      const Settings& settings);
+
+// Adds a cutoff that tracks the key to `zone`: `base` + `slope` * k absolute cents at key k. The generator holds the
+// cutoff at key 0, 64 or 128, the first that keeps it within SoundFont's range of 1500 to 13500 cents, or at key 0 when
+// none does. A modulator from the note-on key adds the rest: unipolar from key 0, bipolar from key 64, or unipolar and
+// negative from key 128. A slope of 0 takes no modulator.
+void AddTrackingCutoff(seqlib::sf2::Zone& zone, int base, int slope);
+
+// Adds the low-pass `filter` of a zone that plays `region` in preset `key` to `zone`: a cutoff that rises by 100 cents
+// a key (AddTrackingCutoff). Where the track's filter has a resonance, the zone sets a resonance of 0.
+void AddResamplingFilter(seqlib::sf2::Zone& zone, const ResamplingFilter& filter, const ResamplingRegion& region,
+                         const PresetKey& key);
+
+// Adds the low-pass of a zone that plays `region` in preset `key` to `zone`. The zone's span (ZoneSpans) has the
+// resampling low-pass `filter`, or none. `fitted` is the zone's cutoff for the track's one-pole low-pass
+// (ZoneLowPass::Fit), or nothing where the zone keeps the preset's cutoff. A zone of a preset that FitsTrackLowPass
+// takes the lower of its two low-passes at the region's original key, with that low-pass's key tracking. Other zones
+// take the resampling low-pass wherever their span has one.
+void AddZoneLowPass(seqlib::sf2::Zone& zone, const ResamplingFilter* filter, const std::optional<FittedCutoff>& fitted,
+                    const ResamplingRegion& region, const PresetKey& key, const Settings& settings);
 
 // Names presets by bank slot and program ("b0 p12"), or by program alone ("p12") without `bank_slots`. Adds a number
 // when different track settings produce several presets from the same instrument (seqlib::sf2::PresetNames).

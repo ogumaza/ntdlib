@@ -40,6 +40,8 @@ void Channel<Policy>::InitParam(int player, int track)
     release_priority_fix = false;
     owner_player = player;
     owner_track = track;
+    source_player = player;
+    source_track = track;
     cached_pitch = 0.0f;
     init_pan = 0.0f;
     lpf = 0.0f;

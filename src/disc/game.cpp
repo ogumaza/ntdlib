@@ -21,16 +21,19 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/ascii.h"
+#include "xsflib/bytes.h"
+#include "xsflib/files.h"
+
+#include "disc/cpk_files.h"
 #include "disc/encodings.h"
 #include "disc/file_table.h"
 #include "disc/image_parts.h"
 #include "disc/title.h"
 #include "ntdlib/disc/header.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/disc/source.h"
 #include "ntdlib/dol.h"
-#include "xsflib/ascii.h"
-#include "xsflib/bytes.h"
-#include "xsflib/files.h"
 
 namespace ntdlib::disc
 {
@@ -39,6 +42,7 @@ namespace
 
 namespace fs = std::filesystem;
 
+using detail::AddCpkSoundArchives;
 using detail::DecodeShiftJis;
 using detail::DecodeWindows1252;
 using detail::FileEntry;
@@ -409,6 +413,15 @@ void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
 
         return true;
     };
+
+    if (options.cpk_sound_archives)
+    {
+        const auto read_range = [game, files](const std::string& name, uint64_t offset, size_t size)
+        {
+            return game->Read(files->at(name).offset + offset, size);
+        };
+        AddCpkSoundArchives(out, read_range);
+    }
 }
 
 void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options)
@@ -475,6 +488,15 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     {
         return ReadHostFile(files / xsflib::PathFromUtf8(name), data);
     };
+
+    if (options.cpk_sound_archives)
+    {
+        const auto read_range = [files](const std::string& name, uint64_t offset, size_t size)
+        {
+            return Source({files / xsflib::PathFromUtf8(name)}, "file").Read(offset, size);
+        };
+        AddCpkSoundArchives(out, read_range);
+    }
 }
 
 } // namespace

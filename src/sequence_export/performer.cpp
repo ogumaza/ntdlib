@@ -33,6 +33,7 @@
 #include "ntdlib/sequence_export/passes.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/recording_engine.h"
+#include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "seqlib/midi/recorder.h"
 #include "seqlib/sf2/units.h"
@@ -178,6 +179,25 @@ private:
     int start_ = 0, target_ = 0, duration_ = 0, counter_ = 0;
 };
 
+// On the Wii: the swing and the cut that fit the level of a MIDI note whose volume LFO the voice holds at full level
+// (PresetKey::lfo_swing and lfo_cut, MidiRecorder::VolumeLfoFits).
+struct VolumeLfoFit
+{
+    bool operator==(const VolumeLfoFit&) const = default;
+
+    uint8_t swing = 16;
+    int16_t cut = 0;
+};
+
+// The weighted sums of a MIDI note's frames with a volume LFO (MidiRecorder::OnVolumeLfo): the weights, the level that
+// the SoundFont and SFZ play the LFO at, its square, the level that the game plays it at, and the product of the two
+// levels. `held`: in some frame, the voice held the note at full level.
+struct VolumeLfoSums
+{
+    double w = 0.0, x = 0.0, xx = 0.0, y = 0.0, xy = 0.0;
+    bool held = false;
+};
+
 // The MIDI note that the performer plays a channel as.
 struct MidiNote
 {
@@ -200,6 +220,7 @@ struct MidiNote
     float level = -1.0f;          // the Wii: its level before the track's volumes, -1 if CC11 sets it (CheckFullLevel)
     bool over_full_level = false; // reported as played at another level than in the game (CheckFullLevel)
     bool lfo_above_full = false;  // the Wii: reported with a volume LFO above full level (FollowGainAboveFull)
+    VolumeLfoFit lfo_fit;         // the Wii: its volume LFO's fit from an earlier pass (VolumeLfoFits)
 
     // A MIDI note whose pitch LFO changes while it sounds plays on a part of its own (MidiNoteOn). Its preset has no
     // LFO. The pitch bends of the part add the value of the core channel's pitch LFO in each frame (PartPitch).
@@ -396,6 +417,21 @@ struct LfoSetting
     uint8_t phase = 0; // the cycle's start, in 127ths
     uint8_t type = 0;  // 0 pitch, 1 volume, 2 pan
 };
+
+// Returns the CC1 value that holds the depth of LFO `lfo`. A volume LFO changes a channel's level by
+// CalcVolumeRatio(6 * its value) dB. That can't rise more than 6 dB. The SoundFont and SFZ LFOs swing as far up as
+// down. A deeper LFO therefore keeps to a 6 dB swing and dips less than in the game. The game's LFO value reaches depth
+// / 128 * range. Both outputs swing 12 * range * CC1 / 128 dB. A 6 dB swing takes CC1 = 64 / range.
+int ModulationValue(const LfoSetting& lfo)
+{
+    int mod = std::min(127, (lfo.depth + 1) / 2);
+    if (lfo.type == 1 && lfo.depth * lfo.range > 128)
+    {
+        mod = std::min(mod, static_cast<int>(64.0 / lfo.range));
+    }
+
+    return mod;
+}
 
 // The legato gain of the notes on a part that their track has left (MidiRecorder::Switch).
 struct LeftPart
@@ -732,6 +768,10 @@ public:
     // (RevolutionPolicy::UpdateChannel). The voice limits the gain to full level.
     void OnGainAboveFull(Channel& channel);
 
+    // The Wii: a frame of a channel's volume LFO, with the envelope's level and the LFO's in decibels
+    // (RevolutionPolicy::UpdateChannel).
+    void OnVolumeLfo(Channel& channel, float envelope_db, float lfo_db);
+
     // A pass that stops the performance stops the track's tick at the jump. A copy of the performer then runs the rest
     // of the tick (Performer::PlayOn).
     bool StopsTick(Player& player, int track);
@@ -876,6 +916,14 @@ public:
     // more than 1 dB quieter than that attack has reached (EarlyReleases).
     void RecordEarlyRelease(Performer& engine, const Note& n);
 
+    // Adds a frame of MIDI note `id`'s volume LFO to the note's sums. The envelope stood at `envelope_db` and the LFO
+    // at `lfo_db`. The SoundFont and SFZ play the LFO `scale` times as deep (ModulationValue).
+    void OnVolumeLfo(uint32_t id, float envelope_db, float lfo_db, double scale);
+
+    // The fits of the MIDI notes whose volume LFO the voice holds at full level, by note id. Unlisted notes keep the
+    // LFO's full swing.
+    std::map<uint32_t, VolumeLfoFit> VolumeLfoFits() const;
+
     // Detaches track `t`'s channels. They keep sounding.
     void DetachAll(Performer& engine, int t);
 
@@ -976,6 +1024,8 @@ public:
     std::map<uint32_t, int> rises;
     std::map<uint32_t, int16_t> attacks; // from an earlier pass's EarlyReleases
     std::map<uint32_t, int16_t> early_releases;
+    std::map<uint32_t, VolumeLfoFit> lfo_fits; // from an earlier pass's VolumeLfoFits
+    std::map<uint32_t, VolumeLfoSums> lfo_sums;
     std::set<uint32_t> lfo_notes; // from an earlier pass's LfoChanges
     std::set<uint32_t> lfo_changes;
     std::array<TrackMidi, 16> tracks{}; // what each track's MIDI channels have been sent
@@ -1003,21 +1053,23 @@ public:
 
     // `filter_controller` selects tracks with controller-driven filters (FilterMoves). `start_velocities` gives the
     // velocity to start MIDI notes at, by note id, from an earlier pass (Rises), and `attacks` the attacks of MIDI
-    // notes the game releases during their attack (EarlyReleases). `lfo_notes` gives the MIDI notes whose pitch LFO
+    // notes the game releases during their attack (EarlyReleases). `lfo_fits` gives the fits of the MIDI notes whose
+    // volume LFO the voice holds at full level (VolumeLfoFits). `lfo_notes` gives the MIDI notes whose pitch LFO
     // changes while they sound (LfoChanges). CC11 is multiplied by `level_scale` (LevelPeak). Each track gets at most
     // `part_limits` parts (Switch). The main loop's choices in `loop_choices` come from an earlier pass (LoopChoices).
     // ChooseSteadyPass selects after them.
     Performer(const Settings& settings, const SoundInfo& sound, const Sequence& seq, Regions& banks,
               const PerformOptions& options, const std::array<bool, 16>& filter_controller,
               const std::map<uint32_t, int>& start_velocities, const std::map<uint32_t, int16_t>& attacks,
-              const std::set<uint32_t>& lfo_notes, double level_scale, const std::array<uint8_t, 16>& part_limits,
-              const std::vector<LoopChoice>& loop_choices)
+              const std::map<uint32_t, VolumeLfoFit>& lfo_fits, const std::set<uint32_t>& lfo_notes, double level_scale,
+              const std::array<uint8_t, 16>& part_limits, const std::vector<LoopChoice>& loop_choices)
         : settings_(settings), sound_(sound), seq_(seq), banks_(banks), options_(options), replay_(loop_choices)
     {
         midi_.rec.SetLevelScale(level_scale);
         midi_.filter_controller = filter_controller;
         midi_.start_velocities = start_velocities;
         midi_.attacks = attacks;
+        midi_.lfo_fits = lfo_fits;
         midi_.lfo_notes = lfo_notes;
         midi_.rec.SetPartLimits(part_limits);
         for (Track& tr : tracks_)
@@ -1114,6 +1166,13 @@ public:
     const std::map<uint32_t, int16_t>& EarlyReleases() const
     {
         return midi_.early_releases;
+    }
+
+    // On the Wii: the fits of the MIDI notes whose volume LFO the voice holds at full level, by note id. A later pass
+    // gives the notes presets with those fits (MidiNoteOn).
+    std::map<uint32_t, VolumeLfoFit> VolumeLfoFits() const
+    {
+        return midi_.VolumeLfoFits();
     }
 
     // The MIDI notes whose pitch LFO changes while they sound, by note id. A later pass gives each of them a part of
@@ -1258,6 +1317,10 @@ private:
     // holds the gain at full level there. The LFOs of the SoundFont and the SFZ swing above it. Each note is reported
     // once.
     void FollowGainAboveFull(int t, nwsnd::ChannelId channel);
+
+    // On the Wii, channel `channel` of track `t` played a frame of its volume LFO. The envelope stood at `envelope_db`
+    // and the LFO at `lfo_db`. The frame goes into the sums of the note on the channel (MidiRecorder::OnVolumeLfo).
+    void FollowVolumeLfo(int t, nwsnd::ChannelId channel, float envelope_db, float lfo_db);
 
     // The core released channel `channel`, or ran a note-off on it. While the core counts down a track's lengths
     // (SequenceTrack::UpdateChannelLength, 0x022B6E88), FollowRelease keeps the channels whose lengths ran out. After
@@ -1715,6 +1778,12 @@ void SequenceCore<Console, VoiceLayer>::OnGainAboveFull(Channel& channel)
 }
 
 template <typename Console, template <typename> class VoiceLayer>
+void SequenceCore<Console, VoiceLayer>::OnVolumeLfo(Channel& channel, float envelope_db, float lfo_db)
+{
+    performer->FollowVolumeLfo(channel.owner_track, channel.place, envelope_db, lfo_db);
+}
+
+template <typename Console, template <typename> class VoiceLayer>
 bool SequenceCore<Console, VoiceLayer>::StopsTick(Player&, int)
 {
     return performer->stop_;
@@ -1888,6 +1957,8 @@ PresetKey Performer::NoteKey(int t, const Note& n) const
     PresetKey pk = ChannelPresetKey(tracks_[t], n);
     pk.attack_timecents = n.midi.attack_timecents;
     pk.lift = n.midi.lift;
+    pk.lfo_swing = n.midi.lfo_fit.swing;
+    pk.lfo_cut = n.midi.lfo_fit.cut;
     if (midi_.filter_controller[t])
     {
         pk.filter_controller = true;
@@ -2146,6 +2217,60 @@ void MidiRecorder::RecordEarlyRelease(Performer& engine, const Note& n)
 
     const double attack_ms = held_ms * std::pow(10.0, -level_db / 20.0);
     early_releases[n.midi.id] = static_cast<int16_t>(ToTimecents(attack_ms, -12000, 8000));
+}
+
+void MidiRecorder::OnVolumeLfo(uint32_t id, float envelope_db, float lfo_db, double scale)
+{
+    // The SoundFont and SFZ play the LFO at `x` decibels. The game raises a level by 6 dB at most (CalcVolumeRatio).
+    // The voice holds the envelope's level plus the LFO's at full level. The game then plays the LFO at `y`. A frame
+    // counts by the envelope's power. The note's quiet frames then count for little.
+    const double envelope = envelope_db;
+    const double game = std::min(static_cast<double>(lfo_db), 6.0);
+    const double x = scale * lfo_db;
+    const double y = std::min(0.0, envelope + game) - envelope;
+    const double w = std::pow(10.0, envelope / 10.0);
+    VolumeLfoSums& sums = lfo_sums[id];
+    sums.w += w;
+    sums.x += w * x;
+    sums.xx += w * x * x;
+    sums.y += w * y;
+    sums.xy += w * x * y;
+    sums.held = sums.held || envelope + game > 0.0;
+}
+
+std::map<uint32_t, VolumeLfoFit> MidiRecorder::VolumeLfoFits() const
+{
+    // The SoundFont and SFZ play a fitted note's LFO at `swing` times `x`, `offset` decibels lower: the weighted
+    // least-squares fit to the game's `y` (OnVolumeLfo). The swing stays between 0 and 1, and the offset at 0 or
+    // below. A note whose envelope stays at full level then swings half as far, a third of the LFO's depth lower. The
+    // fit's steps are 16ths of the swing and 5 centibels. Only the notes that the voice holds at full level get a fit.
+    std::map<uint32_t, VolumeLfoFit> fits;
+    for (const auto& [id, sums] : lfo_sums)
+    {
+        const double det = sums.w * sums.xx - sums.x * sums.x;
+        if (!sums.held || sums.w <= 0.0 || det <= 1e-12 * sums.w * sums.xx)
+        {
+            continue;
+        }
+
+        double swing = std::clamp((sums.w * sums.xy - sums.x * sums.y) / det, 0.0, 1.0);
+        double offset = (sums.y - swing * sums.x) / sums.w;
+        if (offset > 0.0)
+        {
+            offset = 0.0;
+            swing = std::clamp(sums.xy / sums.xx, 0.0, 1.0);
+        }
+
+        VolumeLfoFit fit;
+        fit.swing = static_cast<uint8_t>(std::lround(16.0 * swing));
+        fit.cut = static_cast<int16_t>(5 * std::lround(-2.0 * offset));
+        if (fit != VolumeLfoFit{})
+        {
+            fits[id] = fit;
+        }
+    }
+
+    return fits;
 }
 
 void MidiRecorder::EndMidiNote(Performer& engine, int t, Note& n)
@@ -2661,16 +2786,7 @@ void MidiRecorder::UpdateOutputs(Performer& engine, int t)
     }
     control(pan, EventKind::kPan);
 
-    // A volume LFO changes a channel's level by CalcVolumeRatio(6 * its value) dB. That can't rise more than 6 dB. The
-    // SoundFont and SFZ LFOs swing as far up as down. A deeper LFO therefore keeps to a 6 dB swing and dips less than
-    // in the game. The game's LFO value reaches depth / 128 * range. Both outputs swing 12 * range * CC1 / 128 dB. A 6
-    // dB swing takes CC1 = 64 / range.
-    const LfoSetting& lfo = tr.lfos[0];
-    int mod = std::min(127, (lfo.depth + 1) / 2);
-    if (lfo.type == 1 && lfo.depth * lfo.range > 128)
-    {
-        mod = std::min(mod, static_cast<int>(64.0 / lfo.range));
-    }
+    const int mod = ModulationValue(tr.lfos[0]);
     control(mod, EventKind::kModulation);
     // The game's code sets up the effects on the aux buses, and a send to a bus without an effect is lost (sndcore2).
     // The games put an effect on bus A. Bus A becomes the synth's reverb. Bus B usually has none, and CC93 stays at 0.
@@ -3204,8 +3320,22 @@ void MidiRecorder::MidiNoteOn(Performer& engine, int t, Note& n, int velocity, c
 
     const auto attack = attacks.find(rec.NextNote());
     n.midi.attack_timecents = attack != attacks.end() ? std::optional<int16_t>(attack->second) : std::nullopt;
+    const auto fit = lfo_fits.find(rec.NextNote());
+    n.midi.lfo_fit = fit != lfo_fits.end() ? fit->second : VolumeLfoFit{};
     n.midi.preset = engine.NoteKey(t, n);
     n.midi.lfo_moved = false;
+
+    // The SoundFont leaves the zone's low-pass for the console's resampling filter out of a preset whose filter changes
+    // during notes (ZoneSpans).
+    const Pcm* wave = region && n.midi.preset.filter_controller
+                          ? engine.banks_.GetWave(n.bank_slot, region->wave_id_index)
+                          : nullptr;
+    if (wave && ResamplingFilterOf(n.midi.key,
+                                   {region->original_key, region->pitch, wave->sample_rate, region->interpolation},
+                                   engine.settings_))
+    {
+        Approximate("resampling filter on a preset whose filter changes during notes (omitted from SoundFont)");
+    }
     const PresetKey sent = n.midi.lfo_bends ? WithoutLfo(n.midi.preset) : n.midi.preset;
     if (rec.SendPreset(out, tracks[t].output, engine.tick_, seqlib::midi::PresetIndex(out.presets, sent)))
     {
@@ -4285,8 +4415,43 @@ void Performer::FollowGainAboveFull(int t, nwsnd::ChannelId channel)
         if (!found->midi.lfo_above_full)
         {
             found->midi.lfo_above_full = true;
-            midi_.Approximate(
-                "volume LFO above full level (limited in the game; the SoundFont and SFZ swing above it)");
+            midi_.Approximate(found->midi.lfo_fit != VolumeLfoFit{}
+                                  ? "volume LFO above full level (limited in the game; the SoundFont and SFZ swing "
+                                    "less, from a lower level)"
+                                  : "volume LFO above full level (limited in the game; the SoundFont and SFZ swing "
+                                    "above it)");
+        }
+
+        return;
+    }
+}
+
+void Performer::FollowVolumeLfo(int t, nwsnd::ChannelId channel, float envelope_db, float lfo_db)
+{
+    if (t < 0 || static_cast<std::size_t>(t) >= tracks_.size())
+    {
+        return;
+    }
+
+    // The track's newest note on the channel, on the track or let go (FollowGainAboveFull). A note without a MIDI note
+    // has id 0.
+    const auto on_channel = [channel](const Note& n)
+    {
+        return n.core_channel == channel;
+    };
+    for (auto* list : {&tracks_[t].notes, &tracks_[t].detached})
+    {
+        const auto found = std::find_if(list->rbegin(), list->rend(), on_channel);
+        if (found == list->rend())
+        {
+            continue;
+        }
+
+        if (found->midi.id != 0)
+        {
+            const LfoSetting& lfo = tracks_[t].lfos[0];
+            const double scale = lfo.depth != 0 ? 2.0 * ModulationValue(lfo) / lfo.depth : 0.0;
+            midi_.OnVolumeLfo(found->midi.id, envelope_db, lfo_db, scale);
         }
 
         return;
@@ -5254,7 +5419,8 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
     // controllers. When legatos raise MIDI notes above the velocities they start at, the rerun starts those notes
     // higher (Rises). When rounded CC11 exceeds 127, the rerun scales every value equally, and the tracks keep their
     // balance. When a note's pitch LFO changes while it sounds, the rerun gives the note a part of its own. The pitch
-    // bends of that part add the LFO (LfoChanges).
+    // bends of that part add the LFO (LfoChanges). On the Wii, when the voice holds a note's volume LFO at full level,
+    // the rerun gives the note a preset that fits its level (VolumeLfoFits).
     //
     // Only MIDI events and presets change between passes, but each change can move the others. With a controller-driven
     // filter, a legato may continue its MIDI note (Legato). That numbers the notes differently and changes the peak
@@ -5265,6 +5431,7 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
     std::array<bool, 16> filters{};
     std::map<uint32_t, int> starts;
     std::map<uint32_t, int16_t> attacks;
+    std::map<uint32_t, VolumeLfoFit> lfo_fits;
     std::set<uint32_t> lfo_notes;
     double peak = 0.0;    // the CC11 peak the next pass scales for
     double applied = 0.0; // the peak the last pass scaled for
@@ -5275,8 +5442,8 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
     Performance performance;
     for (int pass = 0; pass < 4; pass++)
     {
-        Performer performer(settings, sound, seq, banks, options, filters, starts, attacks, lfo_notes, LevelScale(peak),
-                            part_limits, loop_choices);
+        Performer performer(settings, sound, seq, banks, options, filters, starts, attacks, lfo_fits, lfo_notes,
+                            LevelScale(peak), part_limits, loop_choices);
         performer.SetEndlessLoops(endless_loops);
         performance = performer.Run();
 
@@ -5310,8 +5477,10 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
         const std::map<uint32_t, int> rises = same_filters ? performer.Rises() : std::map<uint32_t, int>{};
         const std::map<uint32_t, int16_t> early =
             same_filters ? performer.EarlyReleases() : std::map<uint32_t, int16_t>{};
+        const std::map<uint32_t, VolumeLfoFit> fits =
+            same_filters ? performer.VolumeLfoFits() : std::map<uint32_t, VolumeLfoFit>{};
         const std::set<uint32_t> lfo = same_filters ? performer.LfoChanges() : std::set<uint32_t>{};
-        if (parts_fit && same_filters && rises == starts && early == attacks && lfo == lfo_notes &&
+        if (parts_fit && same_filters && rises == starts && early == attacks && fits == lfo_fits && lfo == lfo_notes &&
             LevelScale(performer.LevelPeak()) == LevelScale(peak))
         {
             break;
@@ -5320,6 +5489,7 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
         filters = performer.FilterMoves();
         starts = rises;
         attacks = early;
+        lfo_fits = fits;
         lfo_notes = lfo;
         peak = performer.LevelPeak();
     }

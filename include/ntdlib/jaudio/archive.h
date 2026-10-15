@@ -2,10 +2,12 @@
 
 // JAudio2's start-up archive (BAA): a list of commands that each name a block of the archive. The archive holds the
 // sound table and its names, the sequence collection, the wave systems (WSYS) and the instrument banks (IBNK). The
-// layouts are the ones that JAudio2 reads in Four Swords Adventures (2004), the earliest game known to use it: banks of
-// both versions, instruments with effects and velocity regions, and wave systems that name their AW files. The sound
-// table's entries can also have a later layout (Twilight Princess, 2006; see LayoutOf). A game keeps its sequence
-// archive, an RARC of BMS files, beside it (rarc.h).
+// layouts are the ones that JAudio2 reads in Four Swords Adventures (2004): banks of both versions, instruments with
+// effects and velocity regions, and wave systems that name their AW files. The sound table's entries can also have a
+// later layout (Twilight Princess, 2006; see LayoutOf). A game keeps its sequence archive, an RARC of BMS files, beside
+// it (rarc.h). Mario Kart: Double Dash!! (2003), the earliest game known to use JAudio2, keeps its music in sequence
+// blocks of the start-up archive instead ("bms "). Its sound table's entries have the first layouts (see
+// FirstLayoutOf).
 
 #pragma once
 
@@ -29,6 +31,7 @@ struct SoundEntry
     {
         kCollection, // a sequence of the archive's sequence collection
         kArchive,    // a file of the sequence archive
+        kBlock,      // a sequence block of the start-up archive ("bms "), found by the sound's ID
     };
 
     // The ID that the game passes to the sound library for the sound: the section, the group and the index.
@@ -40,16 +43,18 @@ struct SoundEntry
     std::string name; // from the name table, or empty
     uint8_t section = 0, group = 0;
     uint16_t index = 0;
-    uint8_t type = 0; // the table's type byte. It gives the entry's layout (see LayoutOf)
+    uint8_t type = 0; // the table's type byte. It gives the entry's layout (see LayoutOf and FirstLayoutOf)
     uint8_t volume = 127;
+    bool stream = false; // whether the sound plays a stream: an audio file on the disc
 
     // The names of the sound's section and group in the name table, or empty.
     std::string section_name, group_name;
 
     Source source = Source::kCollection;
-    uint32_t resource = 0; // the collection's sequence, or the archive's file id
+    uint32_t resource = 0; // the collection's sequence, the archive's file id, or the block's ID
 
-    // Where the sound's entry starts in the archive. LayoutOf gives where the entry holds the volume and the file.
+    // Where the sound's entry starts in the archive. LayoutOf or FirstLayoutOf gives where the entry holds the volume
+    // and the file.
     uint32_t offset = 0;
 };
 
@@ -64,9 +69,15 @@ struct ItemLayout
     uint32_t volume = 2;          // the volume's offset in the entry
     std::optional<uint32_t> file; // the offset of the file's number, for a type that plays a file
     bool stream = false;          // whether the type plays a stream
+    bool block = false;           // whether the type plays the sequence block ("bms ") with the sound's ID
 };
 
 ItemLayout LayoutOf(uint8_t type);
+
+// The first layouts (Mario Kart: Double Dash!!, 2003). Type 0x10 plays a sequence of the sequence collection, type 0x20
+// a sequence block, and type 0x30 a stream. Each entry holds the volume in the ninth byte. The game divides it by 255.
+// The game's code compares the whole type byte with the three types. BaaOptions::first_layouts selects these layouts.
+ItemLayout FirstLayoutOf(uint8_t type);
 
 // How the readers below treat a damaged archive, and the words of their messages. SoundArchive::Parse reads by the
 // defaults. `BaaOptions` can select stricter rules and other messages.
@@ -112,6 +123,9 @@ struct BaaOptions
     // Give each sound its source and resource, and its section's and group's names.
     bool sources = true;
     bool section_names = false;
+
+    // Read the sound table's entries by FirstLayoutOf, not by LayoutOf.
+    bool first_layouts = false;
 };
 
 // The sounds of the archive's sound table, in its order. Reads the command list and the sound table, and none of the

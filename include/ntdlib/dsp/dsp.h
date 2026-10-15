@@ -265,6 +265,7 @@ private:
     uint16_t SubtractIndex(uint16_t address, uint16_t index, uint16_t wrap) const;
     void RaiseException(int number);
     void CheckExceptions();
+    void RaiseCpuInterrupt();
     void CheckLoop();
 
     // Memory and hardware (hardware.cpp).

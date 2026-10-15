@@ -10,6 +10,7 @@
 
 #include "ntdlib/sequence_export/convert.h"
 
+#include <optional>
 #include <utility>
 
 #include "ntdlib/sequence_export/conversion.h"
@@ -18,6 +19,7 @@
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/presets.h"
 #include "sequence_export/sf2_build.h"
+#include "sequence_export/zone_low_pass.h"
 
 namespace ntdlib::sequence_export
 {
@@ -31,9 +33,10 @@ namespace
 class SoundFontBuilder : public SoundFontParts
 {
 public:
-    // Adds `quieter` centibels of attenuation to every region (see SoundFontCut).
-    SoundFontBuilder(BankSet& banks, double quieter, const Settings& settings)
-        : banks_(banks), quieter_(quieter), settings_(settings)
+    // Adds `quieter` centibels of attenuation to every region (see SoundFontCut). The zones fit their cutoff for the
+    // track's low-pass to the keys that `perf` plays (ZoneLowPass).
+    SoundFontBuilder(BankSet& banks, double quieter, const Performance& perf, const Settings& settings)
+        : banks_(banks), quieter_(quieter), settings_(settings), low_pass_(perf, settings)
     {
     }
 
@@ -49,6 +52,7 @@ private:
     BankSet& banks_;
     double quieter_;
     const Settings& settings_;
+    ZoneLowPass low_pass_;
 };
 
 const std::vector<uint16_t>& SoundFontBuilder::WaveSamples(int slot, uint32_t wave_id_index, uint8_t root_key)
@@ -93,24 +97,33 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
 
         // The engine's pan: (region pan + track initial pan - 64) / 63. Stereo channels get an additional -1 or +1.
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
+        const wave::Pcm& wave = *banks_.GetWave(key.bank_slot, r.wave_id_index);
         RegionGenerators g =
             ConvertRegion(key, {r.adshr.attack, r.adshr.decay, r.adshr.sustain, r.adshr.hold, r.adshr.release},
-                          r.ignore_note_off, r.pitch, r.volume, r.original_key,
-                          banks_.GetWave(key.bank_slot, r.wave_id_index)->loop, quieter_, settings_);
+                          r.ignore_note_off, r.pitch, r.volume, r.original_key, wave.loop, quieter_, settings_);
         g.exclusive_class = r.key_group;
+        const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation};
+        const std::pair<uint32_t, uint32_t> wave_key = *banks_.WaveKey(key.bank_slot, r.wave_id_index);
         for (const std::pair<int, int>& keys : played.keys)
         {
-            for (const std::pair<int, int>& velocities : played.velocities)
+            for (const ResamplingSpan& span : ZoneSpans(keys, resampling, key, settings_))
             {
-                for (std::size_t c = 0; c < ids.size(); c++)
+                const std::optional<FittedCutoff> fitted =
+                    low_pass_.Fit(index, key, span.keys, r.original_key, r.pitch, wave_key, wave);
+                for (const std::pair<int, int>& velocities : played.velocities)
                 {
-                    double p = pan;
-                    if (ids.size() == 2)
+                    for (std::size_t c = 0; c < ids.size(); c++)
                     {
-                        p += c == 0 ? -1.0 : 1.0;
-                    }
+                        double p = pan;
+                        if (ids.size() == 2)
+                        {
+                            p += c == 0 ? -1.0 : 1.0;
+                        }
 
-                    inst.zones.push_back(RegionZone(g, keys, velocities, p, 0.0, ids[c]));
+                        sf2::Zone zone = RegionZone(g, span.keys, velocities, p, 0.0, ids[c]);
+                        AddZoneLowPass(zone, span.filter, fitted, resampling, key, settings_);
+                        inst.zones.push_back(std::move(zone));
+                    }
                 }
             }
         }
@@ -139,7 +152,7 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
     };
     const double quieter = SoundFontCut(c.performance, volume_of);
 
-    SoundFontBuilder builder(banks, quieter, settings);
+    SoundFontBuilder builder(banks, quieter, c.performance, settings);
     const std::vector<std::string> names = PresetNames(c.performance.presets, true);
     for (std::size_t i = 0; i < c.performance.presets.size(); i++)
     {

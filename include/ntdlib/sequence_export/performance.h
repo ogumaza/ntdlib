@@ -59,6 +59,12 @@ struct PresetKey
     // voice limits a channel's volume to full level. MIDI's velocity and track controllers stop at full level. The
     // zones take the rest of a note's volume (MidiRecorder::ZoneLift).
     int16_t lift = 0;
+
+    // On the Wii: a note whose volume LFO the voice holds at full level. The SoundFont and SFZ LFOs can't stop there.
+    // They swing `lfo_swing` 16ths of the LFO's depth instead. The zones play `lfo_cut` centibels quieter. The values
+    // fit the note's level to the game's (MidiRecorder::VolumeLfoFits).
+    uint8_t lfo_swing = 16;
+    int16_t lfo_cut = 0;
 };
 
 // Applies the track envelope overrides in `key` to `env`.

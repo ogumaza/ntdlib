@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.0.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.1.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -125,13 +125,15 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/passes.cpp
         src/sequence_export/performance.cpp
         src/sequence_export/performer.cpp
+        src/sequence_export/resampling.cpp
         src/sequence_export/rsar_instruments.cpp
         src/sequence_export/sf2_build.cpp
         src/sequence_export/sfz.cpp
         src/sequence_export/sfz_rsar.cpp
-        src/sequence_export/sfz_track.cpp)
-    target_link_libraries(ntdlib_sequence_export PUBLIC seqlib::seqlib ntdlib::common ntdlib::nwsnd ntdlib::sar
-                                                        ntdlib::rsar xsflib::console)
+        src/sequence_export/sfz_track.cpp
+        src/sequence_export/zone_low_pass.cpp)
+    target_link_libraries(ntdlib_sequence_export PUBLIC seqlib::seqlib ntdlib::ax ntdlib::common ntdlib::nwsnd
+                                                        ntdlib::sar ntdlib::rsar xsflib::console)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_frame ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export ntdlib::sequence_export)
@@ -142,6 +144,16 @@ if (NTDLIB_SEQUENCE_EXPORT)
     endif()
     xsflib_add_project_test(ntdlib sequence_export_switch ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_ctr ntdlib::sequence_export)
+    xsflib_add_project_test(ntdlib sequence_export_resampling ntdlib::sequence_export)
+    if (NTDLIB_TESTS)
+        # The tests of the zones' low-passes read sf2_build.h, a private header of sequence_export.
+        target_include_directories(ntdlib_sequence_export_resampling_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    endif()
+    xsflib_add_project_test(ntdlib sequence_export_zone_low_pass ntdlib::sequence_export)
+    if (NTDLIB_TESTS)
+        # The tests of the zones' low-pass read zone_low_pass.h and sf2_build.h, private headers of sequence_export.
+        target_include_directories(ntdlib_sequence_export_zone_low_pass_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    endif()
 endif()
 
 # The PowerPC interpreter of the GameCube's Gekko, the Wii's Broadway and the Wii U's Espresso, for game mode. Its
@@ -168,11 +180,13 @@ endif()
 xsflib_add_project_test(ntdlib dsp ntdlib::dsp)
 xsflib_add_project_test(ntdlib dsp_accelerator ntdlib::dsp)
 
-# Disc images of the GameCube and the Wii, and a game's files on them: plain images (ISO, NKit), WBFS, WDF and extracted
-# discs. It requires no other library.
-xsflib_add_project_library(ntdlib disc src/disc/cx.cpp src/disc/encodings.cpp src/disc/file_table.cpp src/disc/game.cpp
-                           src/disc/image.cpp src/disc/source.cpp src/disc/title.cpp)
+# Disc images of the GameCube and the Wii, and a game's files on them: plain images (ISO, NKit), WBFS, WDF, extracted
+# discs and titles, and the sound archives inside CPK archives. It requires no other library.
+xsflib_add_project_library(ntdlib disc src/disc/cpk.cpp src/disc/cpk_files.cpp src/disc/cx.cpp src/disc/encodings.cpp
+                           src/disc/file_table.cpp src/disc/game.cpp src/disc/image.cpp src/disc/source.cpp
+                           src/disc/title.cpp)
 target_link_libraries(ntdlib_disc PUBLIC ntdlib::common)
+xsflib_add_project_test(ntdlib disc_cpk ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_options ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_title ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_text ntdlib::disc)
@@ -230,6 +244,16 @@ target_compile_features(ntdlib_nwsnd_archive INTERFACE cxx_std_20)
 set_target_properties(ntdlib_nwsnd_archive PROPERTIES EXPORT_NAME nwsnd_archive)
 set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_nwsnd_archive)
 xsflib_add_project_test(ntdlib nwsnd_archive_files ntdlib::nwsnd_archive)
+
+# The Switch's audio renderer (nn::audio) with its I3DL2 reverb, and archive mode's model of nn::atk on it: an engine
+# that plays a sound archive's sequences as the Switch does, without the game's code. It came from HSF.
+xsflib_add_project_library(ntdlib nx src/nx/audio/dsp.cpp src/nx/audio/i3dl2.cpp src/nx/audio/renderer.cpp
+                           src/nx/audio/voice.cpp src/nx/atk/effect.cpp src/nx/atk/engine.cpp
+                           src/nx/atk/low_level_voice.cpp src/nx/atk/sequence.cpp src/nx/atk/voice_renderer.cpp)
+target_link_libraries(ntdlib_nx PUBLIC ntdlib::nwsnd_archive PRIVATE ntdlib::common ntdlib::wave)
+xsflib_add_project_test(ntdlib nx_audio ntdlib::nx)
+xsflib_add_project_test(ntdlib nx_atk ntdlib::nx)
+xsflib_add_project_test(ntdlib nx_atk_engine ntdlib::nx)
 
 # The archive play test's main, for a test that plays a sound archive's sounds on a model of the sound library
 # (ntdlib/testing/archive_play.h).

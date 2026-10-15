@@ -132,6 +132,78 @@ void TestLaterLayout()
           "an earlier sound in the same table");
 }
 
+// The first layouts of a sound's entry (Mario Kart: Double Dash!!), and a start-up archive with "bms " and "baac"
+// commands.
+void TestFirstLayouts()
+{
+    const jaudio::ItemLayout effect = jaudio::FirstLayoutOf(0x10);
+    const jaudio::ItemLayout music = jaudio::FirstLayoutOf(0x20);
+    const jaudio::ItemLayout stream = jaudio::FirstLayoutOf(0x30);
+    Check(effect.volume == 8 && music.volume == 8 && stream.volume == 8 && !effect.file && !music.file && !stream.file,
+          "the first layouts hold the volume at +8 and no file");
+    Check(music.block && !effect.block && !stream.block && stream.stream && !effect.stream && !music.stream,
+          "type 0x20 plays a sequence block, and type 0x30 a stream");
+    Check(!jaudio::LayoutOf(0x20).block && !jaudio::LayoutOf(0x30).stream, "the other layouts play no block");
+
+    const files::SoundTableBlocks blocks = files::SoundTable(
+        {
+            {"TYPE_SE", {{"SE_SYSTEM", {{0x10, 90, 0, "SE_A"}, {0x10, 80, 0, "SE_B"}}}}},
+            {"TYPE_BGM", {{"MAIN_BGM", {{0x20, 70, 0, "BGM_TITLE"}}}}},
+            {"TYPE_STREAM", {{"MAIN_BGM", {{0x30, 60, 0, "STRM_GOAL"}}}}},
+        },
+        true);
+    const std::vector<uint8_t> ws = files::WaveSystemFile(0, 2);
+
+    // The block of "baac": a count, an offset, and a start-up archive with no commands.
+    files::Bytes more;
+    more.U32(1).U32(8).Tag("AA_<").Tag(">_AA");
+
+    // The command list: "AA_<", bst and bstn with two arguments each, bms with three, baac with two, ws with three,
+    // then ">_AA". The table, the names, the sequence block, baac's block and the wave system follow it.
+    const uint32_t table_at = 4 + 12 + 12 + 16 + 12 + 16 + 4;
+    const auto names_at = static_cast<uint32_t>(table_at + blocks.table.size());
+    const auto sequence_at = static_cast<uint32_t>(names_at + blocks.names.size());
+    const uint32_t more_at = sequence_at + 4;
+    const auto ws_at = static_cast<uint32_t>(more_at + more.Size());
+    files::Bytes a;
+    a.Tag("AA_<");
+    a.Tag("bst ").U32(table_at).U32(names_at);
+    a.Tag("bstn").U32(names_at).U32(sequence_at);
+    a.Tag("bms ").U32(0x01000000).U32(sequence_at).U32(more_at);
+    a.Tag("baac").U32(more_at).U32(ws_at);
+    a.Tag("ws  ").U32(0).U32(ws_at).U32(0xffffffff);
+    a.Tag(">_AA").Append(blocks.table).Append(blocks.names).U32(0xc1000000).Append(more.Data()).Append(ws);
+
+    jaudio::BaaOptions first;
+    first.first_layouts = true;
+    const std::vector<jaudio::SoundEntry> sounds = jaudio::ReadSounds(a.Data(), first);
+    Check(sounds.size() == 4, "the archive with the first layouts has four sounds");
+    if (sounds.size() != 4)
+    {
+        return;
+    }
+
+    Check(sounds[0].volume == 90 && sounds[0].source == jaudio::SoundEntry::Source::kCollection &&
+              sounds[0].resource == 0 && sounds[1].volume == 80 && sounds[1].resource == 1,
+          "an effect plays the collection's sequence at its place in its group");
+    Check(sounds[2].volume == 70 && sounds[2].source == jaudio::SoundEntry::Source::kBlock &&
+              sounds[2].resource == 0x01000000 && !sounds[2].stream,
+          "music plays the sequence block with its ID");
+    Check(sounds[3].volume == 60 && sounds[3].stream && !sounds[0].stream, "a stream");
+
+    // By default, the entries are read by LayoutOf. The bytes at +2 are 0.
+    const std::vector<jaudio::SoundEntry> by_default = jaudio::ReadSounds(a.Data());
+    Check(by_default.size() == 4 && by_default[0].volume == 0 &&
+              by_default[2].source == jaudio::SoundEntry::Source::kCollection && !by_default[3].stream,
+          "the first layouts are off by default");
+
+    // Every reader walks past the "baac" command.
+    Check(jaudio::WaveArchiveNames(a.Data()) == std::vector<std::string>{"test.aw"} &&
+              jaudio::ReadWaveSystems(a.Data()).size() == 1,
+          "the wave system after a baac command");
+    Check(ErrorOf([&] { jaudio::SoundArchive::Parse(a.Data()); }).empty(), "Parse walks past a baac command");
+}
+
 void TestBanks()
 {
     const jaudio::Bank v0 = jaudio::Bank::Parse(files::BankV0File(7, 100), 3);
@@ -637,6 +709,7 @@ int main()
     TestWaveGroups();
     TestSoundTable();
     TestLaterLayout();
+    TestFirstLayouts();
     TestRarc();
     TestRepackSequenceTable();
     TestYaz0();

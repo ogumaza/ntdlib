@@ -1,6 +1,6 @@
 # Third-party notices
 
-ntdlib is under the MIT licence (`LICENSE`). One file is the exception: `src/disc/jis0208.h` contains data from Unicode
+ntdlib is under the MIT licence (`LICENSE`). One file is the exception: `src/disc/cp932.h` contains data from Unicode
 and is under the Unicode License v3 (see "Data from Unicode" below). The libraries that ntdlib uses have the following
 licences. None of their code is stored here.
 
@@ -21,15 +21,15 @@ also includes seqlib's MIT notice.
 
 ## Data from Unicode
 
-`src/disc/jis0208.h` maps the double-byte characters of JIS X 0208 to Unicode, by their Shift-JIS codes. `ntdlib::disc`
-decodes the Shift-JIS text of GameCube and Wii discs with it: the names in their file systems, and the titles of
-Japanese discs. `tools/write_jis0208_table.py` derives the table from Unicode's JIS0208.TXT, the mapping of JIS X 0208
-(1990) to Unicode, table version 2.0 (https://www.unicode.org/Public/MAPPINGS/OBSOLETE/EASTASIA/JIS/JIS0208.TXT). ntdlib
-doesn't store that file. The file's notice reads "© 2015 Unicode®, Inc. For terms of use, see
-http://www.unicode.org/terms_of_use.html". Those terms put Unicode's data files under the Unicode License v3 (SPDX
-`Unicode-3.0`). The licence permits anyone to use, copy, modify, publish and distribute the data. Its copyright and
-permission notice must appear with all copies, or in the documentation that goes with them. The notice is at the end of
-this file. `src/disc/jis0208.h` has the SPDX identifier `Unicode-3.0`.
+`src/disc/cp932.h` maps the double-byte characters of code page 932, Windows' Shift-JIS, to Unicode, by their codes.
+`ntdlib::disc` decodes the Shift-JIS text of GameCube and Wii discs with it: the names in their file systems, and the
+titles of Japanese discs. `tools/write_cp932_table.py` derives the table from CP932.TXT, Microsoft's table of code page
+932, table version 2.01, as Unicode publishes it
+(https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP932.TXT). ntdlib doesn't store that file. Unicode's
+terms of use (https://www.unicode.org/copyright.html) put the data files under https://www.unicode.org/Public/ under
+the Unicode License v3 (SPDX `Unicode-3.0`). The licence permits anyone to use, copy, modify, publish and distribute
+the data. Its copyright and permission notice must appear with all copies, or in the documentation that goes with
+them. The notice is at the end of this file. `src/disc/cp932.h` has the SPDX identifier `Unicode-3.0`.
 
 ## Reference material (no code taken)
 
@@ -38,6 +38,10 @@ this file. `src/disc/jis0208.h` has the SPDX identifier `Unicode-3.0`.
   The writer hadn't read Dolphin's source for that part. Dolphin's documentation of the WIA and RVZ formats
   (`docs/WiaAndRvz.md`) describes those formats and the generator of the padding data on GameCube and Wii discs
   (`ntdlib::disc`).
+- [yuzu](https://github.com/yuzu-emu/yuzu) (GPL-3.0) and [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) are
+  references for how the Switch's audio renderer behaves (`ntdlib::nx`). No code is taken from them. The model of the
+  renderer was written from a description of their behaviour and from a study of the renderer's build for the CPU that
+  games' `sdk` modules hold. The writer hadn't read their source for that part.
 - [Wiimm's ISO Tools](https://wit.wiimm.de) document the WDF and CISO formats.
 - YAGCD (Yet Another GameCube Documentation) documents the GameCube's hardware and disc format. WiiBrew documents the
   Wii disc's layout, and the TMD, U8 archives, banner and NAND Boot Program of the Wii's titles. GBATEK documents the CX
@@ -54,7 +58,9 @@ holders.
 `include/ntdlib/nwsnd/tables.h` holds the numeric tables of NintendoWare's sound libraries: powers of two, decibel
 levels, envelope attack multipliers, pan curves, low-pass cutoffs, biquad filter coefficients and sines. The models use
 the exact values to reproduce the consoles' output. `src/sequence_export/filter_tables_*.cpp` hold each console's
-filters fitted to SoundFont 2 and SFZ settings.
+filters fitted to SoundFont 2 and SFZ settings. `src/nx/audio/tables.h` holds the Switch's audio renderer's tables:
+the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early reflections, powers of ten and
+sines. The model uses the exact values to reproduce the console's output.
 
 `include/ntdlib/dsp/coef_rom.h` holds the DSP's coefficient ROM. Every GameCube and Wii has the same ROM. The ROM holds
 4-tap filters: 128 phases for each of three cutoffs. DSP programs that resample, such as the SDK's AX, read them. The

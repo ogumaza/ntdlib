@@ -15,6 +15,7 @@
 #include <exception>
 #include <iterator>
 #include <map>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <span>
@@ -114,10 +115,14 @@ using ntdlib::sequence_export::SoundFontFilter;
 using ntdlib::sequence_export::TrackEvent;
 using ntdlib::sequence_export::TrackFilters;
 using ntdlib::sequence_export::WaveChannelPan;
+using ntdlib::sequence_export::tests::RegionLowPass;
 using ntdlib::sequence_export::tests::Report;
 using ntdlib::sequence_export::tests::RunOn;
+using ntdlib::sequence_export::tests::Sf2Problem;
 using ntdlib::sequence_export::tests::Test;
 using ntdlib::sequence_export::tests::Wii;
+using ntdlib::sequence_export::tests::ZoneCutoff;
+using ntdlib::sequence_export::tests::ZoneCutoffs;
 using xsflib::FormatError;
 using xsflib::testing::failures;
 using PlayedRanges = ntdlib::sequence_export::RsarPlayedRanges;
@@ -1275,6 +1280,25 @@ void TestTrackAboveFullLevelLiftsTheZones()
         XSFLIB_CHECK(f.text.find(" lovel=0 hivel=63 volume=-3.96 pitch_keycenter=60") != std::string::npos);
         XSFLIB_CHECK(f.text.find(" lovel=64 hivel=127 pitch_keycenter=60") != std::string::npos);
     }
+}
+
+// NW4R SND picks the resampling filter before the voice has its pitch, by the wave's rate alone. A 44.1 kHz wave plays
+// through the 8 kHz set at every key, bent or not. Every zone takes the set's low-pass: 0.2518 of 44.1 kHz at the
+// original key, so 347.0 Hz or 6489 cents at key 0, and 100 cents more a key. The SFZ region takes lpf_1p at 0.1784 of
+// 44.1 kHz. Nothing is approximated.
+void TestTheWavesRateAlonePicksTheLowPass()
+{
+    const SoundArchive archive = SequenceArchive({{0xc4, 0x40, 0x3c, 0x7f, 0x30, 0xff}},
+                                                 {.wave = Rwav(64, std::vector<int16_t>(64, 1000), 1, true, 44100)});
+
+    const Conversion c = ConvertSequence(archive, 0);
+
+    const std::vector<ZoneCutoff> kZones = {{{0, 127}, 6489, 0x0003, 12800}};
+    XSFLIB_CHECK(Sf2Problem(c.sf2).empty() && ZoneCutoffs(c.sf2) == kZones);
+    const std::string text = c.sfz.files.size() == 1 ? c.sfz.files[0].text : "";
+    XSFLIB_CHECK(RegionLowPass(text, {0, 127}) ==
+                 " fil_type=lpf_1p cutoff=7867.4 fil_keytrack=100 fil_keycenter=60");
+    XSFLIB_CHECK(c.performance.approximations.empty());
 }
 
 void TestLegatoLeavesOutTheRegionsVolume()
@@ -2819,8 +2843,9 @@ void TestVolumeLfoAboveFullLevelIsReported()
 {
     // A volume LFO at depth 127 and range 1 swings almost 6 dB. At sustain 127, the envelope's gain is at full level.
     // The LFO's upper half lifts the gain above full level. The game's voice holds the gain at full level there
-    // (Voice::SetVeVolume). Keys 60 and 62 are each reported once. At sustain 64 (-11.9 dB), with the LFO 500 ms late
-    // (lfo_delay 100), the gain stays below full level. A pitch LFO doesn't change the gain.
+    // (Voice::SetVeVolume). Keys 60 and 62 are each reported once. Both get a fit (TestVolumeLfoAboveFullLevelIsFitted).
+    // At sustain 64 (-11.9 dB), with the LFO 500 ms late (lfo_delay 100), the gain stays below full level. A pitch LFO
+    // doesn't change the gain.
     const SoundArchive archive =
         SequenceArchive({{0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0x3e, 0x64, 0x30, 0xff},
                          {0xd2, 0x40, 0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0xe0, 0x00, 0x64, 0x3c, 0x64, 0x60, 0xff},
@@ -2830,9 +2855,122 @@ void TestVolumeLfoAboveFullLevelIsReported()
     const Performance below = PerformSound(archive, 1);
     const Performance vibrato = PerformSound(archive, 2);
 
-    const char* kReport = "volume LFO above full level (limited in the game; the SoundFont and SFZ swing above it)";
+    const char* kReport =
+        "volume LFO above full level (limited in the game; the SoundFont and SFZ swing less, from a lower level)";
     XSFLIB_CHECK(lifted.approximations.count(kReport) == 1 && lifted.approximations.at(kReport) == 2);
-    XSFLIB_CHECK(below.approximations.count(kReport) == 0 && vibrato.approximations.count(kReport) == 0);
+    XSFLIB_CHECK(below.approximations.empty() && vibrato.approximations.empty());
+}
+
+void TestVolumeLfoAboveFullLevelIsFitted()
+{
+    // As in TestVolumeLfoAboveFullLevelIsReported, a volume LFO at depth 127 and range 1 swings 5.95 dB on a note at
+    // full level. The game holds the LFO's upper half at full level. The least-squares fit to the game's level halves
+    // the swing and lowers the note by a third of the swing (5.95 dB / pi, 1.9 dB). The SoundFont's modulator from CC1
+    // to the volume LFO has half the amount, 60 cB, and the zone's attenuation takes the cut. The SFZ's LFO swings half
+    // as far, and the region's volume takes the cut. At sustain 64 with the LFO 500 ms late, the gain stays below full
+    // level, and the note keeps the full swing.
+    const SoundArchive archive =
+        SequenceArchive({{0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff},
+                         {0xd2, 0x40, 0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0xe0, 0x00, 0x64, 0x3c, 0x64, 0x60, 0xff}});
+
+    const Conversion lifted = ConvertSequence(archive, 0);
+    const Conversion below = ConvertSequence(archive, 1);
+
+    const std::vector<PresetKey>& presets = lifted.performance.presets;
+    XSFLIB_CHECK(presets.size() == 1 && presets[0].lfo_swing == 8 && presets[0].lfo_cut == 20);
+    XSFLIB_CHECK(below.performance.presets.size() == 1 && below.performance.presets[0].lfo_swing == 16 &&
+                 below.performance.presets[0].lfo_cut == 0);
+
+    // The SoundFont: the CC1 modulator's amount, and the attenuation of the zone, whose region is at full volume.
+    const sf2::Records v = sf2::Read(lifted.sf2);
+    const auto word = [](const uint8_t* r)
+    {
+        return static_cast<uint16_t>(r[0] | r[1] << 8);
+    };
+    int lfo_amount = -1;
+    for (std::size_t m = 0; m < v.Count("imod", 10); m++)
+    {
+        const uint8_t* r = v.Record("imod", 10, m);
+        if (word(r) == sf2::kSrcModWheel && word(r + 2) == sf2::kModLfoToVolume)
+        {
+            lfo_amount = static_cast<int16_t>(word(r + 4));
+        }
+    }
+    int attenuation = -1;
+    for (std::size_t z = 0; z + 1 < v.Count("ibag", 4); z++)
+    {
+        const std::map<uint16_t, uint16_t> gens = v.ZoneGens(z);
+        if (gens.contains(sf2::kSampleId))
+        {
+            const auto found = gens.find(sf2::kInitialAttenuation);
+            attenuation = found == gens.end() ? 0 : found->second;
+        }
+    }
+    XSFLIB_CHECK(seqlib::sf2::Check(lifted.sf2).empty() && lfo_amount == 60 && attenuation == 20);
+
+    // The SFZ: 6 dB * 2 * 127 / 128 at full CC1, halved, and the region 2 dB lower.
+    XSFLIB_CHECK(lifted.sfz.files.size() == 1);
+    for (const SfzFile& f : lifted.sfz.files)
+    {
+        XSFLIB_CHECK(f.text.find(" lfo1_volume_oncc1=5.953125") != std::string::npos);
+        XSFLIB_CHECK(f.text.find(" volume=-2 ") != std::string::npos);
+    }
+}
+
+void TestTrackLowPassFitsEachZone()
+{
+    // A looping wave of a sine at 3 kHz plays through the low-pass at argument 10, AX's 92 Hz. The preset's global zone
+    // takes the table's cutoff, 5770 cents. At key 60 alone, the region's zone takes the cutoff at which FluidSynth
+    // passes as much of the sine as AX does: 7244 cents (sequence_export_zone_low_pass_test). Keys 48 and 72 need
+    // 6615 and 7965 cents. Their zone's cutoff tracks the key, through a modulator from the note-on key.
+    std::vector<int16_t> sine;
+    for (int n = 0; n < 4096; n++)
+    {
+        const double value = 10000.0 * std::sin(2.0 * std::numbers::pi * 3000.0 * n / 32000.0);
+        sine.push_back(static_cast<int16_t>(std::lround(value)));
+    }
+    const SoundArchive archive =
+        SequenceArchive({{0xd8, 0x0a, 0x3c, 0x64, 0x30, 0xff}, {0xd8, 0x0a, 0x30, 0x64, 0x30, 0x48, 0x64, 0x30, 0xff}},
+                        {.wave = Rwav(4096, sine, 1, true)});
+
+    const Conversion one = ConvertSequence(archive, 0);
+    const Conversion two = ConvertSequence(archive, 1);
+
+    // Each SoundFont's cutoffs: the global zone's, the region's zone's, and the modulator from the key.
+    const auto cutoffs = [](const Conversion& c)
+    {
+        const sf2::Records v = sf2::Read(c.sf2);
+        std::vector<int> found(2, -1);
+        for (std::size_t z = 0; z + 1 < v.Count("ibag", 4); z++)
+        {
+            const std::map<uint16_t, uint16_t> gens = v.ZoneGens(z);
+            if (const auto fc = gens.find(sf2::kInitialFilterFc); fc != gens.end())
+            {
+                found[gens.contains(sf2::kSampleId) ? 1 : 0] = static_cast<int16_t>(fc->second);
+            }
+        }
+        for (std::size_t m = 0; m < v.Count("imod", 10); m++)
+        {
+            const uint8_t* r = v.Record("imod", 10, m);
+            if ((r[0] | r[1] << 8) == sf2::kNoteOnKeyNumber && (r[2] | r[3] << 8) == sf2::kInitialFilterFc)
+            {
+                found.push_back(static_cast<int16_t>(r[4] | r[5] << 8));
+            }
+        }
+
+        return found;
+    };
+    const std::vector<int> fixed = cutoffs(one);
+    const std::vector<int> tracking = cutoffs(two);
+    XSFLIB_CHECK(seqlib::sf2::Check(one.sf2).empty() && seqlib::sf2::Check(two.sf2).empty());
+    XSFLIB_CHECK(fixed.size() == 2 && fixed[0] == 5770 && std::abs(fixed[1] - 7244) <= 3);
+    XSFLIB_CHECK(tracking.size() == 3 && tracking[0] == 5770 && tracking[2] % 128 == 0);
+    if (tracking.size() == 3)
+    {
+        const int slope = tracking[2] / 128;
+        XSFLIB_CHECK(std::abs(tracking[1] + 48 * slope - 6615) <= 15 &&
+                     std::abs(tracking[1] + 72 * slope - 7965) <= 15);
+    }
 }
 
 void TestNoteReleasedInItsAttackKeepsTheGamesLevel()
@@ -3598,6 +3736,7 @@ const Test kTests[] = {
     TestLevelTooLoudForMidiIsCut,
     TestFullLevelStopsTheTrackVolumes,
     TestTrackAboveFullLevelLiftsTheZones,
+    TestTheWavesRateAlonePicksTheLowPass,
     TestLegatoLeavesOutTheRegionsVolume,
     TestRisingLegatoCarriesItsNoteOn,
     TestRisingLegatoBesideATailTakesAnotherPart,
@@ -3670,6 +3809,8 @@ const Test kTests[] = {
     TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,
     TestDeepTremoloIsKeptTo6dB,
     TestVolumeLfoAboveFullLevelIsReported,
+    TestVolumeLfoAboveFullLevelIsFitted,
+    TestTrackLowPassFitsEachZone,
     TestNoteReleasedInItsAttackKeepsTheGamesLevel,
     TestTrackWaitingForeverEnds,
     TestHeldNoteHoldsUntilStopped,

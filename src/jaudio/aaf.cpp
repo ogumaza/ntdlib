@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -23,16 +24,31 @@ constexpr uint32_t kEnd = 0;
 constexpr uint32_t kSoundTable = 1;
 constexpr uint32_t kBankList = 2;
 constexpr uint32_t kWaveSystemList = 3;
+constexpr uint32_t kSequenceIndex = 4;
 constexpr uint32_t kLastBlockType = 8;
 
-// The sound table: a header, then 16-byte entries. The header gives each of 18 categories its count of sounds and the
-// index of its first entry: 16 categories of effects, then the sequences, then the streams. An entry gives the sound's
-// offset number (for a sequence, its file's number in the sequence archive) and its volume (kAafItemLayout).
+// The sound table: a header, then 16-byte entries. The header's first three bytes give the formats of the effects', the
+// sequences' and the streams' entries. Its words from +6 give each of 18 categories its count of sounds and the index
+// of its first entry: 16 categories of effects, then the sequences, then the streams. An entry gives the sound's volume
+// and, with bit 0 of its format, its offset number (for a sequence, its file's number in the sequence archive).
+// Without that bit, the offset number is the sound's index in its category.
 constexpr std::size_t kTableHeader = 0x50;
 constexpr std::size_t kEntrySize = 0x10;
+constexpr std::size_t kSequenceFormat = 1;
+constexpr uint8_t kGivesOffsetNumber = 1;
 constexpr uint32_t kEffectCategories = 16;
 constexpr uint32_t kSequenceCategory = 16;
 constexpr uint32_t kMaxPerCategory = 0x400;
+
+// The sequence index (BARC): "BARC", four bytes, a word, the count of sequences, and the name of the archive's file in
+// 16 bytes. Then a 32-byte entry for each sequence: its name in up to 14 bytes, the sequence whose data it shares, two
+// words, and the sequence's offset and size in the archive.
+constexpr std::size_t kIndexHeader = 0x20;
+constexpr std::size_t kIndexEntrySize = 0x20;
+constexpr std::size_t kIndexNameSize = 14;
+constexpr std::size_t kIndexOffset = 0x18;
+constexpr std::size_t kIndexSize = 0x1c;
+constexpr uint32_t kMaxIndexEntries = 0x10000;
 
 // A wave system of this load type loads for a scene. The others load at start-up.
 constexpr uint32_t kSceneLoad = 2;
@@ -46,6 +62,7 @@ struct Blocks
 {
     std::size_t table = 0;
     std::size_t table_size = 0;
+    std::optional<std::size_t> sequence_index;
     std::vector<std::size_t> wave_systems;
     std::vector<uint32_t> load_types; // the load type of each wave system
 };
@@ -82,6 +99,10 @@ Blocks FindBlocks(const xsflib::Reader& r)
             {
                 blocks.table = r.U32(at);
                 blocks.table_size = r.U32(at + 4);
+            }
+            else if (type == kSequenceIndex)
+            {
+                blocks.sequence_index = r.U32(at);
             }
 
             at += 12;
@@ -142,6 +163,7 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
 {
     const xsflib::Reader r(aaf, true, kReaderOptions);
     const std::size_t table = SoundTable(r, FindBlocks(r));
+    const bool gives_offset_number = (r.U8(table + kSequenceFormat) & kGivesOffsetNumber) != 0;
     std::vector<SoundEntry> sounds;
     for (uint32_t category = 0; category <= kSequenceCategory; category++)
     {
@@ -165,7 +187,7 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
             if (category == kSequenceCategory)
             {
                 sound.source = SoundEntry::Source::kArchive;
-                sound.resource = r.U16(entry + *kAafItemLayout.file);
+                sound.resource = gives_offset_number ? r.U16(entry + *kAafItemLayout.file) : index;
             }
 
             sounds.push_back(std::move(sound));
@@ -189,8 +211,50 @@ uint16_t AafEffectsSequenceFile(std::span<const uint8_t> aaf)
         throw xsflib::FormatError("the AAF archive's sound table lists no sequences");
     }
 
+    // The effects sequence is the first sequence: its index is 0.
+    if ((r.U8(table + kSequenceFormat) & kGivesOffsetNumber) == 0)
+    {
+        return 0;
+    }
+
     const uint32_t first = r.U16(table + 8 + 4 * std::size_t{kSequenceCategory});
     return r.U16(table + kTableHeader + std::size_t{first} * kEntrySize + *kAafItemLayout.file);
+}
+
+std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uint8_t> aaf,
+                                                             std::span<const uint8_t> archive)
+{
+    const xsflib::Reader r(aaf, true, kReaderOptions);
+    const std::optional<std::size_t> block = FindBlocks(r).sequence_index;
+    if (!block)
+    {
+        return std::nullopt;
+    }
+
+    r.Sub(*block, kIndexHeader);
+    const uint32_t count = r.U32(*block + 12);
+    if (!r.Magic(*block, "BARC") || count > kMaxIndexEntries)
+    {
+        throw xsflib::FormatError("the AAF archive's sequence index is damaged");
+    }
+
+    std::vector<ArchiveFile> files;
+    for (uint32_t number = 0; number < count; number++)
+    {
+        const std::size_t entry = *block + kIndexHeader + std::size_t{number} * kIndexEntrySize;
+        r.Sub(entry, kIndexEntrySize);
+        const uint32_t offset = r.U32(entry + kIndexOffset);
+        const uint32_t size = r.U32(entry + kIndexSize);
+        if (offset > archive.size() || size > archive.size() - offset)
+        {
+            throw xsflib::FormatError("the AAF archive's sequence index names a sequence outside the sequence archive");
+        }
+
+        files.push_back(
+            {static_cast<uint16_t>(number), r.CString(entry, kIndexNameSize), archive.subspan(offset, size)});
+    }
+
+    return files;
 }
 
 std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf)

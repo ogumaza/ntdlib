@@ -51,6 +51,22 @@ void TestArithmetic()
     XSFLIB_CHECK(Bits(Wii::TicksPerMs(48, 120, 1.0f)) == 0x3dc49ba6);
     XSFLIB_CHECK(Bits(Wii::VelocityVolume(100)) == 0x3f1eb866 && Bits(Wii::SendOfValue(64)) == 0x3f010204);
 
+    // The track's float volume multiplies after the main volume and before the sound's volume
+    // (SeqTrack::UpdateChannelParam, 0x800403e0). The tempo ratio multiplies before the division by 60,000
+    // (SeqPlayer::UpdateTick, 0x8003eec4). Both products follow the game's order.
+    const float track = 100.0f / 127.0f;
+    const float track2 = 90.0f / 127.0f;
+    const float main = 120.0f / 127.0f;
+    float in_order = 1.0f;
+    in_order *= track * track;
+    in_order *= track2 * track2;
+    in_order *= main * main;
+    in_order *= 0.3f;
+    in_order *= Wii::PlayerVolume(100);
+    XSFLIB_CHECK(Bits(Wii::TrackVolume(100, 90, 120, 0.3f, Wii::PlayerVolume(100))) == Bits(in_order));
+    XSFLIB_CHECK(Wii::TrackVolume(100, 90, 127, 0.0f, Wii::PlayerVolume(100)) == 0.0f);
+    XSFLIB_CHECK(Bits(Wii::TicksPerMs(48, 120, 1.1f)) == Bits(1.1f * 5760.0f / 60000.0f));
+
     // The sound's volume is held to 1.
     XSFLIB_CHECK(Wii::PlayerVolume(200) == 1.0f && Wii::PlayerVolume(127) == 1.0f);
 

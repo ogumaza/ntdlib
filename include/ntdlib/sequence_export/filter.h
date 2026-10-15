@@ -58,6 +58,7 @@ struct SoundFontFilter
 
     uint16_t cutoff = kFilterOpen; // initialFilterFc, in absolute cents
     uint8_t resonance = 0;         // initialFilterQ, in centibels
+    uint16_t low_pass_hz = 0;      // the one-pole's cutoff in Hz that `cutoff` stands for, or 0 for a biquad's or none
 };
 
 // An SFZ biquad setting: cutoff/centre frequency in cents relative to kSfzBiquadBase, plus resonance (Q in dB) and gain

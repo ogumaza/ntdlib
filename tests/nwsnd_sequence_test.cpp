@@ -215,6 +215,12 @@ struct TestPolicy : Console
             quiet_at_loop.push_back(looping.Track(track) && looping.Track(track)->IsQuiet());
         }
 
+        void OnTrackLoop(const ntdlib::nwsnd::SequenceSoundPlayer<TestPolicy>& looping, int track, uint32_t target)
+        {
+            track_loops.push_back(static_cast<uint32_t>(track) << 24 | target);
+            idle_at_track_loop.push_back(looping.Track(track) && looping.Track(track)->IsIdle());
+        }
+
         bool LoopsForEver(const ntdlib::nwsnd::SequenceSoundPlayer<TestPolicy>&, int track, uint32_t address) const
         {
             const uint32_t loop = static_cast<uint32_t>(track) << 24 | address;
@@ -376,6 +382,8 @@ struct TestPolicy : Console
         std::vector<int> init_pans;
         std::vector<uint32_t> loops;
         std::vector<bool> quiet_at_loop; // whether the looping track was quiet when the loop was reported
+        std::vector<uint32_t> track_loops;    // each track's passes, as (track << 24) | the loop's start
+        std::vector<bool> idle_at_track_loop; // whether each of those passes was idle
         bool follow_loops = true;
         std::vector<uint32_t> endless; // each (track << 24) | the loop's body
         ChannelPool pool;
@@ -907,8 +915,9 @@ void TestWiiClock()
 }
 
 // What a short sequence did: its notes' keys and lengths, whether a volume moved at the third frame, and whether the
-// sequence ended. With the loops followed: the loops reported, and whether each looping track was quiet then. At the
-// end: whether track 0 had a note that ends, and whether the player was stuck and moving.
+// sequence ended. With the loops followed: the loops reported, and whether each looping track was quiet then, and every
+// track's passes, and whether each was idle. At the end: whether track 0 had a note that ends, and whether the player
+// was stuck and moving.
 struct Played
 {
     std::vector<int> keys;
@@ -917,6 +926,8 @@ struct Played
     bool finished = false;
     std::vector<uint32_t> loops;
     std::vector<bool> quiet_at_loop;
+    std::vector<uint32_t> track_loops;
+    std::vector<bool> idle_at_track_loop;
     bool ending_note = false;
     bool stuck = false;
     bool moving_at_end = false;
@@ -957,6 +968,8 @@ Played Play(const std::vector<uint8_t>& data, const typename Console::Build& bui
     played.finished = player.IsFinished();
     played.loops = engine.loops;
     played.quiet_at_loop = engine.quiet_at_loop;
+    played.track_loops = engine.track_loops;
+    played.idle_at_track_loop = engine.idle_at_track_loop;
     played.ending_note = player.Track(0) && player.Track(0)->HasEndingNote(engine);
     played.stuck = player.IsStuck(engine);
     played.moving_at_end = player.IsMoving();
@@ -981,6 +994,76 @@ void TestEndlessCountedLoop(const std::string& name)
     Check(!endless.loops.empty() && endless.loops.size() + 1 == endless.keys.size() &&
               std::all_of(endless.loops.begin(), endless.loops.end(), [](uint32_t loop) { return loop == 5; }),
           name + ": each pass of an endless counted loop counts as a loop at its body");
+}
+
+// Track 0 opens tracks 1 and 2, plays C4 for two ticks and loops. Track 1 plays E4 for three ticks and loops. Track 2
+// waits a tick and loops, which changes nothing. The offsets are in the console's byte order.
+std::vector<uint8_t> TrackLoopsSequence(bool little_endian)
+{
+    // An offset below 256, in three bytes.
+    const auto offset = [little_endian](uint8_t value)
+    {
+        return little_endian ? std::vector<uint8_t>{value, 0, 0} : std::vector<uint8_t>{0, 0, value};
+    };
+
+    // Track 0 opens the others. Tracks 0, 1 and 2 then start at offsets 10, 17 and 24.
+    const std::vector<std::vector<uint8_t>> parts = {{0x88, 0x01},
+                                                     offset(17),
+                                                     {0x88, 0x02},
+                                                     offset(24),
+                                                     {0x3C, 0x64, 0x02, 0x89},
+                                                     offset(10),
+                                                     {0x40, 0x64, 0x03, 0x89},
+                                                     offset(17),
+                                                     {0x80, 0x01, 0x89},
+                                                     offset(24)};
+    std::vector<uint8_t> bytes;
+    for (const std::vector<uint8_t>& part : parts)
+    {
+        bytes.insert(bytes.end(), part.begin(), part.end());
+    }
+
+    return bytes;
+}
+
+// The engine's OnLoop gets only track 0's loops of TrackLoopsSequence. Its OnTrackLoop gets the passes of all three
+// tracks, each at the start of its track's loop, and only track 2's passes are idle.
+template <typename Console>
+void TestTrackLoops(const std::string& name)
+{
+    using xsflib::testing::Check;
+
+    const Played played = Play<Console>(TrackLoopsSequence(Console::kLittleEndianArguments), {}, 0x7, true);
+
+    // Each track's passes, the idle ones among them, and the passes that went back elsewhere.
+    constexpr std::array<uint32_t, 3> kStarts = {10, 17, 24};
+    std::array<int, 3> passes{};
+    std::array<int, 3> idle{};
+    int elsewhere = 0;
+    for (std::size_t i = 0; i < played.track_loops.size() && i < played.idle_at_track_loop.size(); ++i)
+    {
+        const uint32_t track = played.track_loops[i] >> 24;
+        if (track >= kStarts.size() || (played.track_loops[i] & 0xFFFFFF) != kStarts[track])
+        {
+            ++elsewhere;
+            continue;
+        }
+
+        ++passes[track];
+        idle[track] += played.idle_at_track_loop[i] ? 1 : 0;
+    }
+
+    const auto track_0 = [](uint32_t loop)
+    {
+        return loop == 10;
+    };
+    Check(!played.loops.empty() && std::all_of(played.loops.begin(), played.loops.end(), track_0),
+          name + ": the loops of the sequence are track 0's");
+    Check(passes[0] == static_cast<int>(played.loops.size()) && passes[1] >= 2 && passes[2] >= 2 && elsewhere == 0 &&
+              played.track_loops.size() == played.idle_at_track_loop.size(),
+          name + ": every track's passes reach OnTrackLoop");
+    Check(idle[0] == 0 && idle[1] == 0 && idle[2] == passes[2],
+          name + ": only the passes that change nothing are idle");
 }
 
 // The Wii's parser against the Wii U's parser, on sequences in big-endian order.
@@ -1220,6 +1303,92 @@ void TestWiiTempo()
                            "the Wii's builds before 2008: a tempo of 2000 runs faster than 1023");
 }
 
+// The tempo ratio on the Wii's two clocks. In float milliseconds, the ratio multiplies the ticks in a millisecond
+// before the division by 60,000 (SeqPlayer::UpdateTick, 0x8003eec4 in Wii Sports' main.dol). A ratio of 2 then ticks as
+// twice the tempo does, and a ratio of 0.5 as half the tempo. In 416ths of a tick, each frame adds the tempo times the
+// ratio, truncated (0x800e6618 to 0x800e664c in WarioWare: Smooth Moves' main.dol). The first frame adds the default
+// tempo of 120 times the ratio, and the first tick sets the sequence's tempo T. After N frames, for N of 2 or more,
+// the ticks are (416 + int(120 r) + (N - 2) int(T r)) / 416.
+void TestWiiTempoRatio()
+{
+    using Policy = TestPolicy<ntdlib::nwsnd::RevolutionPolicy>;
+    using Player = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
+
+    const auto ticks = [](bool october_2006, uint16_t tempo, float ratio, int frames)
+    {
+        typename Policy::Engine engine;
+        const typename Policy::SoundInfo kInfo;
+        const std::vector<uint8_t> data = ClockSequence(48, tempo);
+        Player player(0, kInfo, data);
+        engine.player = &player;
+        ntdlib::SndBuild build;
+        build.october_2006 = october_2006;
+        player.SetBuild(build);
+        player.SetTempoRatio(ratio);
+
+        player.Start();
+        for (int i = 0; i < frames; ++i)
+        {
+            player.Update(engine);
+        }
+
+        return player.TickCount();
+    };
+
+    xsflib::testing::Check(ticks(false, 120, 2.0f, 1000) == ticks(false, 240, 1.0f, 1000),
+                           "the Wii's clock: a tempo ratio of 2 ticks as twice the tempo does");
+    xsflib::testing::Check(ticks(false, 136, 0.5f, 1000) == ticks(false, 68, 1.0f, 1000),
+                           "the Wii's clock: a tempo ratio of 0.5 ticks as half the tempo does");
+
+    struct Case
+    {
+        uint16_t tempo;
+        float ratio;
+    };
+    const Case kCases[] = {{120, 2.0f}, {137, 1.1f}, {255, 0.5f}, {500, 0.25f}};
+    for (const Case& c : kCases)
+    {
+        const int first = static_cast<int>(120.0f * c.ratio);
+        const int each = static_cast<int>(static_cast<float>(c.tempo) * c.ratio);
+        for (const int frames : {4, 100, 1000})
+        {
+            const auto expected = static_cast<uint32_t>((416 + first + (frames - 2) * each) / 416);
+            const uint32_t got = ticks(true, c.tempo, c.ratio, frames);
+            xsflib::testing::Check(got == expected, "the Wii's clock of October 2006, tempo " +
+                                                        std::to_string(c.tempo) + " and tempo ratio " +
+                                                        std::to_string(c.ratio) + ": " + std::to_string(got) +
+                                                        " ticks after " + std::to_string(frames) + " frames, not " +
+                                                        std::to_string(expected));
+        }
+    }
+
+    // A step that truncates to 0 stops the clock of October 2006 once less than a tick is left: 3 times 0.25 adds
+    // nothing, and 4 times 0.25 adds 1.
+    const auto stopped = [](uint16_t tempo, float ratio)
+    {
+        typename Policy::Engine engine;
+        const typename Policy::SoundInfo kInfo;
+        const std::vector<uint8_t> data = ClockSequence(48, tempo);
+        Player player(0, kInfo, data);
+        engine.player = &player;
+        ntdlib::SndBuild build;
+        build.october_2006 = true;
+        player.SetBuild(build);
+        player.SetTempoRatio(ratio);
+
+        player.Start();
+        for (int i = 0; i < 4; ++i)
+        {
+            player.Update(engine);
+        }
+
+        return player.ClockStopped();
+    };
+
+    xsflib::testing::Check(stopped(3, 0.25f) && !stopped(4, 0.25f),
+                           "the Wii's clock of October 2006: a step that truncates to 0 stops it");
+}
+
 // Track 0 turns the note wait off, plays C4 and D4 for 96 ticks each from the same tick, and waits. With `envelope`, it
 // first sets the attack to 0x80, the decay to 0x10 and the release to 0xFE. The allocation mask is in the console's
 // byte order.
@@ -1371,6 +1540,37 @@ void TestWiiEnvelopeRange()
     }
 }
 
+// The Wii's track volume (SeqPlayer::SetTrackVolume, 0x8003e8b0 in Wii Sports' main.dol). Track 0 plays two notes. A
+// track volume of 0.5 halves the volume of the track's channels: the product with 0.5 is exact. A track volume of 0
+// silences them. A track whose bit isn't set keeps its volume. Track 1 isn't allocated.
+void TestWiiTrackVolume()
+{
+    using Policy = TestPolicy<ntdlib::nwsnd::RevolutionPolicy>;
+    using Player = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
+
+    const auto volume = [](uint32_t track_flags, float track_volume)
+    {
+        typename Policy::Engine engine;
+        const typename Policy::SoundInfo kInfo;
+        const std::vector<uint8_t> data = KeyGroupSequence(false, false);
+        Player player(0, kInfo, data);
+        engine.player = &player;
+
+        player.Start();
+        player.SetTrackVolume(track_flags, track_volume);
+        player.Update(engine);
+
+        return engine.pool.channels.empty() ? -1.0f : engine.pool.channels[0].track_volume;
+    };
+
+    const float full = volume(0, 1.0f);
+    xsflib::testing::Check(full > 0.0f, "the Wii: the track's channel has a volume");
+    xsflib::testing::Check(volume(1, 0.5f) == full * 0.5f,
+                           "the Wii: a track volume of 0.5 halves the channel's volume");
+    xsflib::testing::Check(volume(1, 0.0f) == 0.0f, "the Wii: a track volume of 0 silences the track");
+    xsflib::testing::Check(volume(2, 0.0f) == full, "the Wii: a track whose bit isn't set keeps its volume");
+}
+
 int main()
 {
     TestLoop<ntdlib::nwsnd::CafePolicy>("the Wii U");
@@ -1397,11 +1597,16 @@ int main()
     TestEndlessCountedLoop<ntdlib::nwsnd::CafePolicy>("the Wii U");
     TestEndlessCountedLoop<ntdlib::nwsnd::NxPolicy>("the Switch");
     TestEndlessCountedLoop<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
+    TestTrackLoops<ntdlib::nwsnd::CafePolicy>("the Wii U");
+    TestTrackLoops<ntdlib::nwsnd::NxPolicy>("the Switch");
+    TestTrackLoops<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
     TestWiiParser();
     TestWiiCallStack();
     TestWiiLengthRules();
     TestWiiPansAndSweep();
     TestWiiTempo();
+    TestWiiTempoRatio();
+    TestWiiTrackVolume();
     TestNoteOn<ntdlib::nwsnd::CafePolicy>("the Wii U");
     TestNoteOn<ntdlib::nwsnd::NxPolicy>("the Switch");
     TestNoteOn<ntdlib::nwsnd::RevolutionPolicy>("the Wii");

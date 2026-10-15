@@ -15,6 +15,7 @@
 
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/wave/decode.h"
@@ -28,6 +29,7 @@ namespace ntdlib::sequence_export
 struct SfzWave
 {
     std::vector<std::string> names;
+    uint32_t sample_rate = 0;
     bool loop = false;
     uint32_t loop_start = 0, loop_end = 0; // inclusive: SFZ requires that
 };
@@ -68,8 +70,14 @@ std::string SfzVolumeOpcode(uint8_t volume, double gain_db, bool silent, int16_t
 std::string SfzEnvelopeOpcodes(const PresetKey& key, const EnvelopeValues& env, bool ignore_note_off,
                                const SfzWave& wave, const Settings& settings);
 
-// Writes the regions of preset `key`, one line each. `gain_db` raises each volume.
-using PresetRegionsFunction = std::function<std::string(const PresetKey& key, double gain_db)>;
+// The opcodes of the low-pass `filter` in filter slot `slot` (1 or 2) of a region that plays `region`: the cutoff at
+// the region's original key, which tracks the key at 100 cents a key.
+std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const ResamplingRegion& region, int slot);
+
+// Writes the regions of preset `key`, one line each. `gain_db` raises each volume. `resampling_slot` is the filter slot
+// (1 or 2) that the regions' low-passes take (resampling.h), or 0 where the track's filters take both slots. The
+// regions then have no low-pass.
+using PresetRegionsFunction = std::function<std::string(const PresetKey& key, double gain_db, int resampling_slot)>;
 
 // Returns the SFZ file of each track that has a MIDI channel in `midi`. `regions` writes each preset's regions. The
 // caller adds the samples.

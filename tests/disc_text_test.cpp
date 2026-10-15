@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of the text that ntdlib::disc decodes to UTF-8: the title in a disc's header, by the disc's region, and the
-// names in a disc's file system. The expected text comes from Unicode's JIS0208.TXT and JIS0201.TXT, and from
-// Microsoft's table of code page 1252. The images and extracted discs are made up here, in a temporary folder.
+// names in a disc's file system. The expected text comes from Microsoft's tables of code pages 932 and 1252, as Unicode
+// publishes them (CP932.TXT and CP1252.TXT). The images and extracted discs are made up here, in a temporary folder.
 
 #include <algorithm>
 #include <cstddef>
@@ -64,19 +64,28 @@ struct Entry
 };
 
 // The test discs' file system: a folder named in double-byte katakana with a file named in kanji, a file named in
-// half-width katakana, and a file whose name contains bytes that don't decode. Each file holds 16 bytes. The paths that
-// LoadGame lists follow, in the order of `GameFiles::files`.
+// half-width katakana, a file whose name contains bytes that don't decode, and a file named in the codes that code page
+// 932 adds to JIS X 0208 or maps otherwise. Each file holds 16 bytes. The paths that LoadGame lists follow, in the
+// order of `GameFiles::files`.
 const std::vector<Entry> kEntries = {
-    {true, "", 0, 5},
+    {true, "", 0, 6},
     {true, "\x83\x54\x83\x45\x83\x93\x83\x68", 0, 3},
     {false, "\x89\xB9\x8A\x79.aw", kFiles, 16},
     {false, "\xBB\xB3\xDD\xC4\xDE.bin", kFiles + 16, 16},
     {false, "\x85\x40\xFD.bin", kFiles + 32, 16},
+    {false, "\x87\x55\x81\x60\xFA\x40\xED\x40\x81\x5F\xF0\x40.bin", kFiles + 48, 16},
 };
+
+// The size of the files' data.
+constexpr uint32_t kFilesSize = 64;
 
 const std::vector<std::string> kPaths = {
     // 0x85 0x40 isn't in the table. 0x40 stays '@'. 0xFD starts no character.
     "%85@%FD.bin",
+    // NEC's row 13 (0x8755, U+2161), FULLWIDTH TILDE (0x8160, U+FF5E), an IBM extension (0xFA40, U+2170), NEC's
+    // selection of the IBM extensions (0xED40, U+7E8A) and FULLWIDTH REVERSE SOLIDUS (0x815F, U+FF3C). JIS0208.TXT
+    // maps 0x8160 to U+301C and 0x815F to a backslash. The user area's 0xF040 maps to nothing.
+    "\xE2\x85\xA1\xEF\xBD\x9E\xE2\x85\xB0\xE7\xBA\x8A\xEF\xBC\xBC%F0@.bin",
     // U+30B5 U+30A6 U+30F3 U+30C9, then U+97F3 U+697D.
     "\xE3\x82\xB5\xE3\x82\xA6\xE3\x83\xB3\xE3\x83\x89/\xE9\x9F\xB3\xE6\xA5\xBD.aw",
     // U+FF7B U+FF73 U+FF9D U+FF84 U+FF9E.
@@ -120,7 +129,7 @@ Bytes GameData(disc::Console console, const std::string& id, const std::string& 
     const bool wii = console == disc::Console::kWii;
     const int shift = wii ? 2 : 0;
     const Bytes fst = FileTable(shift);
-    Bytes data(kFiles + 48, 0);
+    Bytes data(kFiles + kFilesSize, 0);
     std::copy(id.begin(), id.end(), data.begin());
     xsflib::StoreBe32(data.data() + (wii ? 0x18 : 0x1C), wii ? 0x5D1C9EA3 : 0xC2339F3D);
     std::copy(title.begin(), title.end(), data.begin() + 0x20);
@@ -129,7 +138,7 @@ Bytes GameData(disc::Console console, const std::string& id, const std::string& 
     xsflib::StoreBe32(data.data() + 0x428, static_cast<uint32_t>(fst.size()) >> shift);
     xsflib::StoreBe32(data.data() + kBi2 + 0x18, bi2_region);
     std::copy(fst.begin(), fst.end(), data.begin() + kFst);
-    for (uint32_t i = 0; i < 48; ++i)
+    for (uint32_t i = 0; i < kFilesSize; ++i)
     {
         data[kFiles + i] = static_cast<uint8_t>(i);
     }
@@ -228,16 +237,19 @@ void TestJapaneseTitles()
     check("kanji and half-width katakana", "\x8E\x8E\x8C\xB1\xC3\xBD\xC4",
           "\xE8\xA9\xA6\xE9\xA8\x93\xEF\xBE\x83\xEF\xBD\xBD\xEF\xBE\x84");
 
-    // 0x815F is U+005C and 0x8160 is U+301C (WAVE DASH) in Unicode's table.
+    // 0x815F is U+FF3C (FULLWIDTH REVERSE SOLIDUS) and 0x8160 is U+FF5E (FULLWIDTH TILDE) in code page 932. Unicode's
+    // JIS0208.TXT gives U+005C and U+301C (WAVE DASH).
     check("0x815F and 0x8160",
           "A\x81\x5F"
           "B\x81\x60",
-          "A\\B\xE3\x80\x9C");
+          "A\xEF\xBC\xBC"
+          "B\xEF\xBD\x9E");
 
     // 0x8140 is U+3000, 0x817E U+00D7, 0x8180 U+00F7, 0x889F U+4E9C, 0x9FFC U+6ECC, 0xE040 U+6F3E and 0xEAA4 U+7199,
-    // the table's last character. 0xEAA5 isn't in the table.
-    check("the ends of the rows", "\x81\x40\x81\x7E\x81\x80\x88\x9F\x9F\xFC\xE0\x40\xEA\xA4\xEA\xA5",
-          "\xE3\x80\x80\xC3\x97\xC3\xB7\xE4\xBA\x9C\xE6\xBB\x8C\xE6\xBC\xBE\xE7\x86\x99%EA%A5");
+    // the last character of JIS X 0208. 0xEAA5 isn't in the table. 0xFC4B is U+9ED1, the table's last character. 0xFC4C
+    // isn't in the table, and its second byte stays 'L'.
+    check("the ends of the rows", "\x81\x40\x81\x7E\x81\x80\x88\x9F\x9F\xFC\xE0\x40\xEA\xA4\xEA\xA5\xFC\x4B\xFC\x4C",
+          "\xE3\x80\x80\xC3\x97\xC3\xB7\xE4\xBA\x9C\xE6\xBB\x8C\xE6\xBC\xBE\xE7\x86\x99%EA%A5\xE9\xBB\x91%FCL");
 
     // 0x8540 and 0x859F aren't in the table. An ASCII second byte decodes as itself. 0x80, 0xA0 and 0xFD start no
     // character. 0xF0's codes are beyond the table. A lead byte at the end has no second byte.

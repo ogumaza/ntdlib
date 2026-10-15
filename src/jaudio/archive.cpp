@@ -37,14 +37,17 @@ xsflib::ReaderOptions ReaderOptionsOf(const BaaOptions& options)
     return reader;
 }
 
-// The number of argument bytes after a command's tag, or nothing for a command that isn't known.
+// The number of argument bytes after a command's tag, or nothing for a command that isn't known. Mario Kart: Double
+// Dash!!'s code handles "baac" (0x80122f50), not its sound library. The command gives a block's start and end. The game
+// copies the block: a count, the offsets of more start-up archives, and the archives. The readers here skip it.
 std::optional<std::size_t> ArgumentBytes(const std::string& tag)
 {
     if (tag == "ws  " || tag == "bms ")
     {
         return 12;
     }
-    if (tag == "bnk " || tag == "bst " || tag == "bstn" || tag == "bsc " || tag == "bl_<" || tag == "vbnk")
+    if (tag == "bnk " || tag == "bst " || tag == "bstn" || tag == "bsc " || tag == "bl_<" || tag == "vbnk" ||
+        tag == "baac")
     {
         return 8;
     }
@@ -195,9 +198,10 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
                 sound.section = static_cast<uint8_t>(s);
                 sound.group = static_cast<uint8_t>(g);
                 sound.index = static_cast<uint16_t>(i);
-                // The volume is in 127ths.
-                const ItemLayout layout = LayoutOf(sound.type);
+                // The volume is in 127ths, or in 255ths in the first layouts.
+                const ItemLayout layout = options.first_layouts ? FirstLayoutOf(sound.type) : LayoutOf(sound.type);
                 sound.volume = table.U8(entry + layout.volume);
+                sound.stream = layout.stream;
                 if (names_group && (!options.check_name_counts || i < names->U32(*names_group)))
                 {
                     sound.name = name(names->U32(*names_group + 8 + 4 * i));
@@ -207,12 +211,18 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
                 sound.group_name = group_name;
 
                 // A sound of a type that plays a file of the sequence archive names the file in the low half of the
-                // word that ends with the file's number. The others play the collection's sequence at their place in
-                // their group. The group is their category in the collection.
+                // word that ends with the file's number. A sound of the first layouts' type 0x20 plays the sequence
+                // block with the sound's ID. The others play the collection's sequence at their place in their group.
+                // The group is their category in the collection.
                 if (options.sources && layout.file)
                 {
                     sound.source = SoundEntry::Source::kArchive;
                     sound.resource = table.U32(entry + *layout.file - 2) & 0xffff;
+                }
+                else if (options.sources && layout.block)
+                {
+                    sound.source = SoundEntry::Source::kBlock;
+                    sound.resource = sound.Id();
                 }
                 else if (options.sources)
                 {
@@ -385,6 +395,11 @@ ItemLayout LayoutOf(uint8_t type)
     }
 
     return {2, type == 0x11 ? std::optional<uint32_t>(10) : std::nullopt};
+}
+
+ItemLayout FirstLayoutOf(uint8_t type)
+{
+    return {.volume = 8, .file = std::nullopt, .stream = type == 0x30, .block = type == 0x20};
 }
 
 SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)

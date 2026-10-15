@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -87,6 +88,86 @@ void TestEffectsSequence()
     XSFLIB_CHECK(jaudio::AafEffectsSequenceFile(files::AafFile(kSounds, {})) == 7);
 }
 
+void TestSequenceFormat()
+{
+    // Without bit 0 of the sequences' format, a sequence's file is its index, whatever its entry holds there. The
+    // effects sequence is index 0.
+    const std::vector<uint8_t> aaf = files::AafFile(kSounds, {}, 0);
+    const std::vector<jaudio::SoundEntry> sounds = jaudio::ReadAafSounds(aaf);
+
+    XSFLIB_CHECK(sounds.size() == 5);
+    if (sounds.size() == 5)
+    {
+        XSFLIB_CHECK(sounds[3].Id() == 0x80000001 && sounds[3].resource == 1);
+        XSFLIB_CHECK(sounds[4].Id() == 0x80000002 && sounds[4].resource == 2);
+        XSFLIB_CHECK(sounds[0].resource == 0 && sounds[0].source == jaudio::SoundEntry::Source::kCollection);
+    }
+
+    XSFLIB_CHECK(jaudio::AafEffectsSequenceFile(aaf) == 0);
+
+    // Any format with bit 0 gives the entry's file.
+    XSFLIB_CHECK(jaudio::AafEffectsSequenceFile(files::AafFile(kSounds, {}, 3)) == 7);
+}
+
+// The sequences of TestSequenceIndex: their names and where they lie in a 0x100-byte archive.
+const std::vector<files::AafSequenceSpec> kIndex = {
+    {"se.bms", 0, 0x40}, {"Mansion.com", 0x40, 0x80}, {"VeryLongNameOfAPiece.com", 0xc0, 0x40}};
+
+// The message with which ReadAafSequenceFiles rejects the archive, or an empty one.
+std::string IndexRefusal(std::span<const uint8_t> aaf, std::span<const uint8_t> archive)
+{
+    try
+    {
+        jaudio::ReadAafSequenceFiles(aaf, archive);
+    }
+    catch (const xsflib::FormatError& error)
+    {
+        return error.what();
+    }
+
+    return {};
+}
+
+void TestSequenceIndex()
+{
+    // The index's sequences, by their numbers. A name keeps its first 13 characters. The data lies in the archive.
+    std::vector<uint8_t> archive(0x100);
+    for (std::size_t i = 0; i < archive.size(); i++)
+    {
+        archive[i] = static_cast<uint8_t>(i);
+    }
+
+    const std::vector<uint8_t> aaf = files::AafFile(kSounds, {"a_0.aw"}, 0, kIndex);
+    const std::optional<std::vector<jaudio::ArchiveFile>> sequences = jaudio::ReadAafSequenceFiles(aaf, archive);
+
+    XSFLIB_CHECK(sequences && sequences->size() == 3);
+    if (sequences && sequences->size() == 3)
+    {
+        const auto& s = *sequences;
+        XSFLIB_CHECK(s[0].id == 0 && s[0].name == "se.bms" && s[0].data.data() == archive.data());
+        XSFLIB_CHECK(s[0].data.size() == 0x40);
+        XSFLIB_CHECK(s[1].id == 1 && s[1].name == "Mansion.com" && s[1].data.size() == 0x80 && s[1].data[0] == 0x40);
+        XSFLIB_CHECK(s[2].id == 2 && s[2].name == "VeryLongNameO" && s[2].data.size() == 0x40 && s[2].data[0] == 0xc0);
+    }
+
+    // The other readers skip the index.
+    XSFLIB_CHECK(jaudio::ReadAafSounds(aaf).size() == 5 && jaudio::ReadAafWaveSystems(aaf).size() == 1);
+
+    // An archive without an index gives nothing.
+    XSFLIB_CHECK(!jaudio::ReadAafSequenceFiles(files::AafFile(kSounds, {}), archive));
+
+    // A sequence that ends past the archive, an index that isn't one, and an index cut short are rejected.
+    XSFLIB_CHECK(IndexRefusal(aaf, archive).empty());
+    XSFLIB_CHECK(IndexRefusal(aaf, std::span(archive).first(0xff)) ==
+                 "the AAF archive's sequence index names a sequence outside the sequence archive");
+
+    std::vector<uint8_t> not_index = aaf;
+    const std::size_t index_at = 0x800 + 0x200;
+    not_index[index_at] = 'X';
+    XSFLIB_CHECK(IndexRefusal(not_index, archive) == "the AAF archive's sequence index is damaged");
+    XSFLIB_CHECK(IndexRefusal(std::span(aaf).first(index_at + 0x20 + 0x30), archive) == "the AAF archive is damaged");
+}
+
 void TestWaveSystems()
 {
     // Each system is numbered by its place in the list. Two systems with the same archive name it once. Systems 0 and 2
@@ -113,6 +194,8 @@ int main()
     TestSounds();
     TestDamaged();
     TestEffectsSequence();
+    TestSequenceFormat();
+    TestSequenceIndex();
     TestWaveSystems();
 
     return xsflib::testing::Summary("aaf");

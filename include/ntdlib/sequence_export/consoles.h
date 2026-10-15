@@ -10,6 +10,7 @@
 
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/filter.h"
+#include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sound_build.h"
 
@@ -27,6 +28,8 @@ inline Settings CafeSettings()
     settings.engine = Engine::kCafe;
     settings.archive = {sar::Flavor::kCafe, {}, true};
     settings.filters = &kCafeFilters;
+    settings.resampling = &kCafeResampling;
+    settings.zone_low_pass = ax::LpfSettings{.fused = true};
     settings.voice_limit = 96;
 
     return settings;
@@ -42,6 +45,7 @@ inline Settings SwitchSettings()
     settings.engine = Engine::kSwitch;
     settings.archive = {sar::Flavor::kNx, {}, true};
     settings.filters = &kSwitchFilters;
+    settings.resampling = &kSwitchResampling;
     settings.frame_ms = 5.0;
     settings.env_step_ms = 5;
     settings.random_steps_before_start = 1;
@@ -66,6 +70,7 @@ inline Settings CtrSettings()
     settings.engine = Engine::kCtr;
     settings.archive = {sar::Flavor::kCtr, {}, false};
     settings.filters = &kCtrFilters;
+    settings.resampling = &kCtrResampling;
     settings.frame_ms = 160.0 * 8192.0 * 1000.0 / 268111856.0;
     settings.env_step_ms = 5;
     settings.env_time_scale = settings.frame_ms / settings.env_step_ms;
@@ -90,6 +95,8 @@ inline Settings RevolutionSettings(const SndBuild& build)
     settings.surround_pan = true;
     settings.keep_first_region_volume = false;
     settings.filters = &kRevolutionFilters;
+    settings.resampling = &kRevolutionResampling;
+    settings.zone_low_pass = ax::LpfSettings{.double_precision = true};
     settings.wii_build = build;
     settings.early_ticks_ms = 0.0;
     settings.subroutine_loop_rule = false;

@@ -121,7 +121,9 @@ SoundFontFilter ToSoundFont(const GameFilters& filters, const Settings& settings
     SoundFontFilter sf;
     if (filters.low_pass >= 0)
     {
-        sf.cutoff = tables.low_pass_cutoff[static_cast<std::size_t>(filters.low_pass)];
+        const auto step = static_cast<std::size_t>(filters.low_pass);
+        sf.cutoff = tables.low_pass_cutoff[step];
+        sf.low_pass_hz = tables.low_pass_hz.empty() ? nwsnd::tables::kLpfFreq[step] : tables.low_pass_hz[step];
     }
 
     // Two active low-passes use the lower cutoff.

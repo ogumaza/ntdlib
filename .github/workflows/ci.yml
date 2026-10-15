@@ -39,7 +39,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
       - name: Configure
         run: cmake -S . -B build ${{ matrix.cmake }}
       - name: Build

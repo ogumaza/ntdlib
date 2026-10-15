@@ -66,6 +66,10 @@ bool JAudio1ChangesSound(uint8_t command);
 // back. A pass of a loop runs from the track's last visit to the jump's target up to the jump back. A loop inside the
 // pass belongs to the pass. A track idles in a loop whose passes poll or change nothing. It moves when it runs a
 // command outside that loop.
+//
+// A loop inside a call never counts. With `idle_in_calls`, a track can still idle in one. Pikmin 2's root tracks call
+// a routine that polls the game once a beat and never returns. Without the option, every poll is a move, and the root
+// track holds back the loops of the tracks after it.
 class LoopFinder
 {
 public:
@@ -80,7 +84,8 @@ public:
     // `root` is the sound's root track. The other tracks follow it in the order in which they first run a command. The
     // events' frames count at `sample_rate` frames a second: the rate of the output. `changes_sound` is the test of
     // whether a command changes the sound.
-    LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command) = ChangesSound);
+    LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command) = ChangesSound,
+               bool idle_in_calls = false);
 
     // Takes one event, in the order in which the events happened.
     Verdict Take(const TrackEvent& event, const Sounded& sounded);
@@ -92,11 +97,13 @@ public:
     bool Holds(uint64_t now) const;
 
 private:
-    // A loop, from the command that its jump back goes to up to the jump back.
+    // A loop, from the command that its jump back goes to up to the jump back. Its commands run at `depth`: 0 outside
+    // any call.
     struct Loop
     {
         uint32_t start;
         uint32_t end;
+        uint32_t depth = 0;
     };
 
     // When a track ran a command: the frame, and the number of events before it.
@@ -114,6 +121,8 @@ private:
         std::map<uint32_t, uint64_t> moves; // where it moved that no jump back has judged, and the frame it last did
         uint64_t judged_move = 0;           // the frame of its last move that a jump back has judged
         std::map<uint32_t, Time> reached;   // where it ran commands outside any call, and when it last did
+        std::map<uint32_t, Time> reached_in_calls; // with idle_in_calls: where it ran commands in calls, and when it
+                                                   // last did
         uint64_t first_command = 0;
         uint64_t last_command = 0;
         uint64_t pass_start = 0;     // the frame at which the track last reached the command that it jumps back to
@@ -130,6 +139,7 @@ private:
     static uint64_t LastMove(const Track& track);
 
     Verdict Jump(uint32_t id, Track& track, const TrackEvent& event, const Sounded& sounded);
+    void JumpInCall(Track& track, const TrackEvent& event);
 
     // Whether a track can't move by itself: it idles, it has finished, or it has run no command for 10 s and has no
     // ticks left to wait.
@@ -143,6 +153,7 @@ private:
     uint64_t taken_ = 0; // the events taken so far
     uint32_t sample_rate_;
     bool (*changes_sound_)(uint8_t command);
+    bool idle_in_calls_;
 };
 
 } // namespace ntdlib::jaudio

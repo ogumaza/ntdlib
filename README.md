@@ -15,14 +15,15 @@ the ones it uses.
 | `ntdlib::dsp` | The GameCube and Wii DSP, with each console's memory, and the accelerator's reads and the accumulators' helpers for models of a DSP program |
 | `ntdlib::flipper` | The devices that the GameCube and the Wii share (the DSP interface, EXI, a disc of files and the hardware page's shared blocks), and the parts of a machine for game mode that don't depend on its other devices, with a snapshot of the devices that both consoles have |
 | `ntdlib::ax` | What the Wii's and the Wii U's AX libraries share: the constants, the voice allocation and the low-pass coefficients |
-| `ntdlib::disc` | GameCube and Wii disc images: ISO, NKit, WBFS and WDF, and extracted discs. With `GameOptions::titles`, also the Wii's titles, such as WiiWare games, from a folder with their TMD and decrypted contents. Titles and file names come out in UTF-8. They're decoded from Shift-JIS, or from Windows-1252 for the title of a disc from outside Japan. It requires no other library |
+| `ntdlib::disc` | GameCube and Wii disc images: ISO, NKit, WBFS and WDF, and extracted discs. With `GameOptions::titles`, also the Wii's titles, such as WiiWare games, from a folder with their TMD and decrypted contents. Titles and file names come out in UTF-8. They're decoded from Shift-JIS, or from Windows-1252 for the title of a disc from outside Japan. With `GameOptions::cpk_sound_archives`, also the sound archives inside CRI's CPK archives, stored as they are or compressed with CRILAYLA (`ntdlib/disc/cpk.h`). It requires no other library |
 | `ntdlib::disc_containers` | The compressed containers of disc images: GCZ, CISO, WIA and RVZ, opened through `ntdlib::disc` |
 | `ntdlib::sar` | NintendoWare's sound archives for the 3DS (CSAR), the Wii U and the Switch (FSAR), and their parts |
 | `ntdlib::rsar` | NintendoWare's sound archives for the Wii (RSAR), and their parts |
-| `ntdlib::jaudio` | The readers of JAudio2's sound data: the start-up archive (BAA) with its sound table, sequence collection, wave systems (WSYS) and banks (IBNK), and RARC archives, compressed with Yaz0 or not, and refilled from another release's sequence table. The readers of JAudio1's start-up archive (AAF): its sound table and wave systems. Also the length analysis of a sound in game mode, for JAudio2 and JAudio1 |
+| `ntdlib::jaudio` | The readers of JAudio2's sound data: the start-up archive (BAA) with its sound table, sequence collection, wave systems (WSYS) and banks (IBNK), and RARC archives, compressed with Yaz0 or not, and refilled from another release's sequence table. The readers of JAudio1's start-up archive (AAF): its sound table, its wave systems, and the sequence index of an earlier JAudio1. Also the length analysis of a sound in game mode, for JAudio2 and JAudio1 |
 | `ntdlib::wave` | Decoders of DSP-ADPCM (the DSP accelerator's step among its forms), IMA-ADPCM, the GameCube's AFC, PCM8 and PCM16, and the decoding of a sound archive's waves |
 | `ntdlib::rip_archive` | Ripping the Wii U's and the Switch's sound archives into PSF sets: the sounds to rip, the data they require, the groups kept outside an archive, the timing helpers, and the libraries and minis that a rip writes. Built when xsflib has `xsflib::psf` |
 | `ntdlib::nwsnd` | The tables of NintendoWare's sound libraries, and a model of their sequence player and channels for the Wii, the 3DS, the Wii U and the Switch, and of the Wii U's and the Switch's voices |
+| `ntdlib::nx` | A model of the Switch's audio renderer (`nn::audio`) with its I3DL2 reverb, and archive mode's model of `nn::atk` on it: an engine that plays a sound archive's sequences as the Switch does, without the game's code |
 | `ntdlib::sequence_export` | Conversion of Nintendo's sound data to MIDI, SoundFont 2 and SFZ files, through seqlib |
 
 `ntdlib::testing` holds builders of small synthetic sound archives, JAudio2 files and DOL executables for unit tests,
@@ -38,8 +39,8 @@ header. It requires a clang with the PowerPC target, such as LLVM's releases or 
 that target. A driver can include the shared sources in `drivers/`. `drivers/jaudio/z2.h` holds the start-up of Z2,
 the sound layer that Twilight Princess puts on JAudio2. A driver supplies the console's steps, and
 `include/ntdlib/flipper/z2_params.h` gives the host's side of its parameters.
-`tools/write_jis0208_table.py` writes `src/disc/jis0208.h`, the table of Shift-JIS's double-byte characters, from
-Unicode's JIS0208.TXT. The user downloads that file. Building ntdlib requires none of these scripts.
+`tools/write_cp932_table.py` writes `src/disc/cp932.h`, the table of Shift-JIS's double-byte characters in code page
+932, from Unicode's CP932.TXT. The user downloads that file. Building ntdlib requires none of these scripts.
 
 ## Building
 
@@ -118,6 +119,6 @@ ntdlib's package finds xsflib, and seqlib with `NTDLIB_SEQUENCE_EXPORT`. A proje
 
 ## Licence
 
-ntdlib is under the MIT licence (`LICENSE`). One file, `src/disc/jis0208.h`, contains data from Unicode and is under
+ntdlib is under the MIT licence (`LICENSE`). One file, `src/disc/cp932.h`, contains data from Unicode and is under
 the Unicode License v3. `THIRD-PARTY-NOTICES.md` gives that licence's text. It also lists the libraries that ntdlib
 uses and their licences, and the documentation that parts of ntdlib were written from.

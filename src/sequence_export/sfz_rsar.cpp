@@ -8,9 +8,11 @@
 #include <cstddef>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ntdlib/sequence_export/rsar_instruments.h"
 #include "ntdlib/sequence_export/sfz.h"
+
 #include "sequence_export/sfz_track.h"
 #include "sequence_export/wii_pan.h"
 
@@ -19,10 +21,11 @@ namespace ntdlib::sequence_export
 namespace
 {
 
-// Writes one line per region in preset `key`. Adds `gain_db` to each volume. `balance` plays stereo waves in balance
-// pan mode, and `since_2008` applies the region's hold and note-off type.
-std::string PresetRegions(const PresetKey& key, RsarBankSet& banks, SfzSampleSet& samples, double gain_db, bool balance,
-                          bool since_2008, const Settings& settings)
+// Writes one line per region in preset `key`. Adds `gain_db` to each volume. A region's low-pass takes filter slot
+// `resampling_slot`, or none with 0 (PresetRegionsFunction). `balance` plays stereo waves in balance pan mode, and
+// `since_2008` applies the region's hold and note-off type.
+std::string PresetRegions(const PresetKey& key, RsarBankSet& banks, SfzSampleSet& samples, double gain_db,
+                          int resampling_slot, bool balance, bool since_2008, const Settings& settings)
 {
     std::string s;
     const rsar::Bank* bank = banks.GetBank();
@@ -47,16 +50,27 @@ std::string PresetRegions(const PresetKey& key, RsarBankSet& banks, SfzSampleSet
         const std::string opcodes =
             SfzPitchOpcodes(r.original_key, r.tune) +
             SfzEnvelopeOpcodes(key, RegionEnvelope(r, since_2008), since_2008 && r.note_off_type == 1, wave, settings);
+        const ResamplingRegion resampling = {r.original_key, r.tune, wave.sample_rate, 0};
         for (const std::pair<int, int>& keys : played.keys)
         {
-            for (const std::pair<int, int>& velocities : played.velocities)
+            const std::vector<ResamplingSpan> spans = resampling_slot != 0
+                                                          ? ResamplingSpans(keys, resampling, settings)
+                                                          : std::vector<ResamplingSpan>{{keys, nullptr}};
+            for (const ResamplingSpan& span : spans)
             {
-                for (std::size_t c = 0; c < wave.names.size(); c++)
+                const std::string low_pass =
+                    span.filter ? SfzResamplingOpcodes(*span.filter, resampling, resampling_slot) : "";
+                for (const std::pair<int, int>& velocities : played.velocities)
                 {
-                    const ChannelPan place = WaveChannelPan(pan, c, wave.names.size(), balance);
-                    s += SfzRegionStart(wave.names[c], keys, velocities, place.pan) +
-                         SfzVolumeOpcode(r.volume, gain_db + place.gain_db, place.gain_db <= -144.0, key.lift) +
-                         opcodes + "\n";
+                    for (std::size_t c = 0; c < wave.names.size(); c++)
+                    {
+                        const ChannelPan place = WaveChannelPan(pan, c, wave.names.size(), balance);
+                        // A note whose volume LFO the voice holds at full level plays lower (PresetKey::lfo_cut).
+                        s += SfzRegionStart(wave.names[c], span.keys, velocities, place.pan) +
+                             SfzVolumeOpcode(r.volume, gain_db + place.gain_db - key.lfo_cut / 10.0,
+                                             place.gain_db <= -144.0, key.lift) +
+                             opcodes + low_pass + "\n";
+                    }
                 }
             }
         }
@@ -72,9 +86,9 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
                         const Settings& settings, const std::string& program)
 {
     SfzSampleSet samples;
-    auto regions = [&](const PresetKey& key, double gain_db)
+    auto regions = [&](const PresetKey& key, double gain_db, int resampling_slot)
     {
-        return PresetRegions(key, banks, samples, gain_db, balance, perf.since_2008, settings);
+        return PresetRegions(key, banks, samples, gain_db, resampling_slot, balance, perf.since_2008, settings);
     };
 
     SfzInstruments out = BuildTrackFiles(perf, midi, title, preset_names, settings, program, regions);

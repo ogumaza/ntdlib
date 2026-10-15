@@ -9,6 +9,7 @@
 // also get a copy in bank 128. Synths take drum instruments from there.
 
 #include <cmath>
+#include <optional>
 #include <utility>
 
 #include "ntdlib/sequence_export/conversion.h"
@@ -20,6 +21,7 @@
 #include "seqlib/sf2/presets.h"
 #include "sequence_export/sf2_build.h"
 #include "sequence_export/wii_pan.h"
+#include "sequence_export/zone_low_pass.h"
 
 namespace ntdlib::sequence_export
 {
@@ -34,9 +36,16 @@ class SoundFontBuilder : public SoundFontParts
 {
 public:
     // Adds `quieter` centibels of attenuation to every region (see SoundFontCut). `balance` plays stereo waves in
-    // balance pan mode, and `since_2008` applies regions' holds and note-off types.
-    SoundFontBuilder(RsarBankSet& banks, double quieter, bool balance, bool since_2008, const Settings& settings)
-        : banks_(banks), quieter_(quieter), balance_(balance), since_2008_(since_2008), settings_(settings)
+    // balance pan mode, and `since_2008` applies regions' holds and note-off types. The zones fit their cutoff for the
+    // track's low-pass to the keys that `perf` plays (ZoneLowPass).
+    SoundFontBuilder(RsarBankSet& banks, double quieter, bool balance, bool since_2008, const Performance& perf,
+                     const Settings& settings)
+        : banks_(banks),
+          quieter_(quieter),
+          balance_(balance),
+          since_2008_(since_2008),
+          settings_(settings),
+          low_pass_(perf, settings)
     {
     }
 
@@ -54,6 +63,7 @@ private:
     bool balance_;
     bool since_2008_;
     const Settings& settings_;
+    ZoneLowPass low_pass_;
 };
 
 const std::vector<uint16_t>& SoundFontBuilder::WaveSamples(uint32_t wave_index, uint8_t root_key)
@@ -104,19 +114,28 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
         // NW4R SND pan: (region pan + track initial pan - 64) / 63, for each channel of a stereo wave as its pan mode
         // places it. Balance mode's samples are already 3 dB down.
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
+        const rsar::Pcm& wave = *banks_.GetWave(wave_index);
         const RegionGenerators g =
             ConvertRegion(key, RegionEnvelope(r, since_2008_), since_2008_ && r.note_off_type == 1, r.tune, r.volume,
-                          r.original_key, banks_.GetWave(wave_index)->loop, quieter_, settings_);
+                          r.original_key, wave.loop, quieter_, settings_);
+        const ResamplingRegion resampling = {r.original_key, r.tune, wave.sample_rate, 0};
         for (const std::pair<int, int>& keys : played.keys)
         {
-            for (const std::pair<int, int>& velocities : played.velocities)
+            for (const ResamplingSpan& span : ZoneSpans(keys, resampling, key, settings_))
             {
-                for (std::size_t c = 0; c < ids.size(); c++)
+                const std::optional<FittedCutoff> fitted =
+                    low_pass_.Fit(index, key, span.keys, r.original_key, r.tune, banks_.WaveKey(wave_index), wave);
+                for (const std::pair<int, int>& velocities : played.velocities)
                 {
-                    const ChannelPan place = WaveChannelPan(pan, c, ids.size(), balance_);
-                    const double gain_db = ids.size() == 2 && balance_ ? place.gain_db - kBalanceDb : place.gain_db;
-                    const double extra = gain_db <= -144.0 ? 1440.0 : -10.0 * gain_db;
-                    inst.zones.push_back(RegionZone(g, keys, velocities, place.pan, extra, ids[c]));
+                    for (std::size_t c = 0; c < ids.size(); c++)
+                    {
+                        const ChannelPan place = WaveChannelPan(pan, c, ids.size(), balance_);
+                        const double gain_db = ids.size() == 2 && balance_ ? place.gain_db - kBalanceDb : place.gain_db;
+                        const double extra = gain_db <= -144.0 ? 1440.0 : -10.0 * gain_db;
+                        sf2::Zone zone = RegionZone(g, span.keys, velocities, place.pan, extra, ids[c]);
+                        AddZoneLowPass(zone, span.filter, fitted, resampling, key, settings_);
+                        inst.zones.push_back(std::move(zone));
+                    }
                 }
             }
         }
@@ -147,7 +166,7 @@ Conversion ConvertSequence(const rsar::SoundArchive& archive, uint32_t sound_ind
     const double quieter = SoundFontCut(c.performance, volume_of);
 
     const bool balance = c.performance.balance;
-    SoundFontBuilder builder(banks, quieter, balance, c.performance.since_2008, settings);
+    SoundFontBuilder builder(banks, quieter, balance, c.performance.since_2008, c.performance, settings);
     const std::vector<std::string> names = PresetNames(c.performance.presets, false);
     for (std::size_t i = 0; i < c.performance.presets.size(); i++)
     {

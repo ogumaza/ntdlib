@@ -798,6 +798,85 @@ void CheckWiiU()
           "Wii U: the accelerator's address extension");
 }
 
+// The CPU's interrupt request (DSPCR bit 1) while `$sr.EIE` is clear. The request waits in DSPCR, and the DSP takes
+// it once EIE is set again: by an SBSET, a move to $sr or the RTI at the end of the handler. The handler counts its
+// runs in $ar1. Dolphin's model drops such a request until the CPU's next write of DSPCR, so these checks have no
+// hash from Dolphin. Super Mario Sunshine's microcode relies on the wait (see RaiseCpuInterrupt).
+void CheckCpuInterrupt()
+{
+    dsp::GameCubeMemory memory;
+    const std::array<uint16_t, 2> kVector = {0x029f, 0x0040};  // jmp 0x0040
+    const std::array<uint16_t, 2> kHandler = {0x0009, 0x02ff}; // iar $ar1; rti
+
+    // Loads `program` at 0x0010 with the handler and starts it with IE and EIE set.
+    const auto start = [&](std::span<const uint16_t> program)
+    {
+        dsp::Dsp<dsp::GameCubeMemory> dsp(memory);
+        dsp.LoadIram(0x000e, kVector);
+        dsp.LoadIram(0x0040, kHandler);
+        dsp.LoadIram(0x0010, program);
+        dsp.StartAt(0x0010);
+        dsp.regs_.sr = 0x0a00;
+        return dsp;
+    };
+    const auto requested = [](dsp::Dsp<dsp::GameCubeMemory>& dsp)
+    {
+        return (dsp.Control(0) & dsp::control::kInterrupt) != 0;
+    };
+
+    // SBSET: the request comes after SBCLR clears EIE. It waits through the NOPs and is taken after the SBSET.
+    const std::array<uint16_t, 6> kSbset = {
+        0x1205, // sbclr #5: EIE off
+        0x0000, // nop
+        0x0000, // nop
+        0x1305, // sbset #5: EIE on
+        0x0000, // nop
+        0x0021, // halt
+    };
+    auto dsp = start(kSbset);
+    dsp.Step();
+    dsp.WriteControl(dsp::control::kInterrupt, 0);
+    const bool waited = requested(dsp) && (dsp.PendingExceptions() & 0x80) == 0;
+    dsp.Step();
+    dsp.Step();
+    const bool still_waited = requested(dsp) && dsp.regs_.ar[1] == 0;
+    dsp.Step();
+    const bool raised = !requested(dsp) && (dsp.PendingExceptions() & 0x80) != 0;
+    dsp.Step();
+    const bool taken = dsp.TakenException() == 7;
+    dsp.Run(100);
+
+    Check(waited && still_waited && raised && taken && dsp.Halted() && dsp.regs_.ar[1] == 1 && dsp.regs_.pc == 0x0015,
+          "the CPU's interrupt waits while EIE is clear, and is taken after SBSET sets it");
+
+    // A move to $sr that sets EIE.
+    const std::array<uint16_t, 5> kMove = {
+        0x1205,         // sbclr #5: EIE off
+        0x0000,         // nop
+        0x0093, 0x0a00, // lri $sr, #0x0a00: IE and EIE on
+        0x0021,         // halt
+    };
+    dsp = start(kMove);
+    dsp.Step();
+    dsp.WriteControl(dsp::control::kInterrupt, 0);
+    dsp.Run(100);
+
+    Check(dsp.Halted() && dsp.regs_.ar[1] == 1 && !requested(dsp), "the CPU's interrupt is taken after a move to $sr");
+
+    // The RTI at the end of the handler: a second request comes while the first one's handler runs with EIE clear.
+    const std::array<uint16_t, 4> kRti = {0x0000, 0x0000, 0x0000, 0x0021}; // nop; nop; nop; halt
+    dsp = start(kRti);
+    dsp.WriteControl(dsp::control::kInterrupt, 0);
+    const bool at_once = dsp.regs_.pc == 0x000e && !requested(dsp);
+    dsp.Step();
+    dsp.WriteControl(dsp::control::kInterrupt, 0);
+    const bool in_handler = requested(dsp) && dsp.regs_.pc == 0x0040;
+    dsp.Run(100);
+
+    Check(at_once && in_handler && dsp.Halted() && dsp.regs_.ar[1] == 2 && !requested(dsp),
+          "a CPU interrupt that comes during the handler is taken after its RTI");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -814,6 +893,7 @@ int main(int argc, char** argv)
         CheckAll<dsp::WiiMemory>("Wii");
         CheckAll<dsp::GameCubeMemory>("GameCube");
         CheckWiiU();
+        CheckCpuInterrupt();
     }
     catch (const std::exception& e)
     {
