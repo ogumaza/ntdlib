@@ -98,6 +98,12 @@ using RegionVolumeFunction = std::function<int(const PresetKey& key, int note, i
 // Finds the highest region volume used by `perf`. Like the synth, it matches regions by preset, key and velocity.
 int LoudestRegion(const Performance& perf, const RegionVolumeFunction& volume_of);
 
+// The attenuation in centibels that brings a region of volume `loudest` down to 127, or 0 for a region of 127 or less.
+double RegionVolumeCut(int loudest);
+
+// The approximation that a SoundFont notes when its zones take `quieter` centibels of attenuation (RegionVolumeCut).
+std::string RegionVolumeCutText(double quieter);
+
 // The attenuation in centibels that every zone of a sequence's SoundFont takes. Region volumes can reach 255, but
 // SoundFont zones can't amplify their samples. If the loudest region that `perf` plays (LoudestRegion) is above 127,
 // every zone takes the same attenuation. That keeps the zones' relative levels, and `perf` notes the approximation. SFZ

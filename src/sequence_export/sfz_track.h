@@ -85,4 +85,10 @@ SfzInstruments BuildTrackFiles(const Performance& perf, const seqlib::midi::Midi
                                const std::vector<std::string>& preset_names, const Settings& settings,
                                const std::string& program, const PresetRegionsFunction& regions);
 
+// Returns the text of an SFZ file that plays preset `key` by itself, without MIDI. `name` names the preset and `title`
+// its bank in the first comment. The file has the frame of a track's file, with the bend range that a track starts
+// with, then the preset's LFO and regions. `regions` writes the regions. `key` sets no track filter.
+std::string InstrumentFile(const PresetKey& key, const std::string& name, const std::string& title,
+                           const Settings& settings, const std::string& program, const PresetRegionsFunction& regions);
+
 } // namespace ntdlib::sequence_export

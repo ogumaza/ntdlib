@@ -10,12 +10,18 @@
 
 #include "ntdlib/sequence_export/convert.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "ntdlib/sequence_export/conversion.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performer.h"
+#include "ntdlib/sequence_export/sfz.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/presets.h"
 #include "sequence_export/sf2_build.h"
@@ -177,6 +183,57 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
     c.sfz = BuildSfz(c.performance, midi, banks, sound.name, names, settings, program);
 
     CollectWarnings(c, midi, builder.Warnings(), banks.Errors());
+
+    return c;
+}
+
+BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings,
+                           const std::string& program)
+{
+    // The programs that hold an instrument, and the loudest of their regions.
+    BankSet banks(archive, bank, settings);
+    std::vector<uint32_t> programs;
+    int loudest = 0;
+    if (const sar::Bank* parsed = banks.GetBank(0))
+    {
+        for (std::size_t p = 0; p < parsed->instruments.size(); p++)
+        {
+            if (!parsed->instruments[p])
+            {
+                continue;
+            }
+
+            programs.push_back(static_cast<uint32_t>(p));
+            for (const PlayedRanges& played : RegionRanges(*parsed->instruments[p]))
+            {
+                loudest = std::max(loudest, static_cast<int>(played.region->volume));
+            }
+        }
+    }
+
+    // Region volumes can reach 255, but SoundFont zones can't amplify their samples. Above 127, every zone takes the
+    // attenuation that keeps the loudest region at full level, as in a sequence's SoundFont (SoundFontCut).
+    BankConversion c;
+    const double quieter = RegionVolumeCut(loudest);
+    if (quieter > 0.0)
+    {
+        c.warnings.push_back(RegionVolumeCutText(quieter));
+    }
+
+    // Each instrument becomes a preset at its program, with a track's starting settings. Those set no filter. The
+    // presets therefore need no performance for the fit of their low-passes (ZoneLowPass).
+    const Performance none;
+    SoundFontBuilder builder(banks, quieter, none, settings);
+    for (const uint32_t p : programs)
+    {
+        builder.Add(p, StartingPresetKey(p, settings), "Program " + std::to_string(p));
+    }
+
+    const std::string& name = banks.BankName(0);
+    WriteSoundFont(c, builder.Result(), name, "Converted by " + program + " from bank " + name + ".", program);
+    c.sfz = BuildBankSfz(programs, banks, name, settings, program);
+    c.warnings.insert(c.warnings.end(), builder.Warnings().begin(), builder.Warnings().end());
+    c.warnings.insert(c.warnings.end(), banks.Errors().begin(), banks.Errors().end());
 
     return c;
 }

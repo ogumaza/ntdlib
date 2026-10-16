@@ -31,4 +31,8 @@ Performance Perform(const sar::SoundArchive& archive, uint32_t sound_index, Bank
 Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, RsarBankSet& banks,
                     const PerformOptions& options, const Settings& settings);
 
+// The preset key of a note of `program` of the bank in slot 0, on a track that keeps the settings that it starts with:
+// no envelope overrides, an LFO of depth 0 and the centre as its initial pan.
+PresetKey StartingPresetKey(uint32_t program, const Settings& settings);
+
 } // namespace ntdlib::sequence_export

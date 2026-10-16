@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -41,5 +42,12 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
 SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport& midi, RsarBankSet& banks,
                         const std::string& title, const std::vector<std::string>& preset_names, bool balance,
                         const Settings& settings, const std::string& program);
+
+// Builds an SFZ file for each of `programs` of the bank in slot 0 of `banks`, for the CSAR and FSAR formats. Each file
+// plays its instrument by itself, as a track plays it with its starting settings. Program p's file is
+// "<title>_<p>.sfz", with p padded to the digits of the last program. `title` names the bank. The files find their
+// samples in the samples' folder beside their folder. `program` is the name that goes in each file's first comment.
+SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, BankSet& banks, const std::string& title,
+                            const Settings& settings, const std::string& program);
 
 } // namespace ntdlib::sequence_export

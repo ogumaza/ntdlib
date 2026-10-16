@@ -5651,4 +5651,14 @@ Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, Rsa
     return PerformRsar(archive, sound_index, banks, options, settings);
 }
 
+PresetKey StartingPresetKey(uint32_t program, const Settings& settings)
+{
+    Track track;
+    track.engine = settings.engine;
+    track.Init();
+    track.program = program;
+
+    return TrackPresetKey(track);
+}
+
 } // namespace ntdlib::sequence_export

@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -41,6 +42,10 @@ public:
     // Reads the banks of `sound` with the archive options of `settings`.
     BankSet(const sar::SoundArchive& archive, const sar::SoundInfo& sound, const Settings& settings);
 
+    // Reads bank `bank` of the archive's banks into slot 0, with the archive options of `settings`. The other slots
+    // stay empty.
+    BankSet(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings);
+
     // Returns the bank in `slot`, or nullptr. Only four slots exist. nw::snd accepts higher slots and reads past its
     // bank table. Those slots are silent here.
     const sar::Bank* GetBank(int slot) const;
@@ -71,6 +76,9 @@ public:
     }
 
 private:
+    // Reads bank `index` of the archive's banks into `slot`. A bank that can't be read is added to Errors().
+    void ReadBank(std::size_t slot, std::size_t index);
+
     // Reports an invalid wave reference that WaveKey could not resolve. Each entry is reported only once.
     void ReportBrokenWaveId(int slot, uint32_t wave_id_index);
 

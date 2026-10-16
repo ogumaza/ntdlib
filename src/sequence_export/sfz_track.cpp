@@ -301,4 +301,30 @@ SfzInstruments BuildTrackFiles(const Performance& perf, const seqlib::midi::Midi
     return out;
 }
 
+std::string InstrumentFile(const PresetKey& key, const std::string& name, const std::string& title,
+                           const Settings& settings, const std::string& program, const PresetRegionsFunction& regions)
+{
+    // The frame of seqlib's track files: the samples' folder, CC10's pan curve, the bend range, and CC7, CC10 and CC11
+    // without smoothing. A track's bend range starts at 2 semitones. sfizz divides the pitch wheel's values by 8191,
+    // and a bend's full range has 8192 steps.
+    constexpr int kPanCurve = 7;
+    constexpr int kBendRange = 2;
+    constexpr double kBendScale = 8191.0 / 8192.0;
+    std::string s = "// " + seqlib::sfz::CommentText(name) + " of " + seqlib::sfz::CommentText(title) +
+                    ", converted by " + program + ".\n\n";
+    s += "<control>\ndefault_path=../" + seqlib::sfz::kSamplesFolder + "/\nhint_ram_based=1\n\n";
+    s += Curve(kPanCurve, "CC10 to pan", [](int v) { return (v - 64) / 64.0; });
+    const std::string bend = Number(kBendRange * 100.0 * kBendScale, 6);
+    s += "<global>\nbend_up=" + bend + " bend_down=-" + bend + "\n";
+    s += "pan_oncc10=100 pan_curvecc10=" + std::to_string(kPanCurve) + " pan_smoothcc10=0\n";
+    s += "amplitude_oncc7=100 amplitude_curvecc7=4 amplitude_smoothcc7=0 amplitude_oncc11=100 amplitude_curvecc11=4 "
+         "amplitude_smoothcc11=0\n";
+
+    // The preset's LFO and regions, as a track's file gives them. With no track filter, the regions' low-passes take
+    // filter slot 1.
+    s += "\n" + LfoOpcodes(key, settings) + "<group>\n" + regions(key, 0.0, 1);
+
+    return s;
+}
+
 } // namespace ntdlib::sequence_export

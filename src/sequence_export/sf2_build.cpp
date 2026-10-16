@@ -308,17 +308,26 @@ RegionGenerators ConvertRegion(const PresetKey& key, const EnvelopeValues& env, 
     return g;
 }
 
+double RegionVolumeCut(int loudest)
+{
+    return loudest > 127 ? 200.0 * std::log10(loudest / 127.0) : 0.0;
+}
+
+std::string RegionVolumeCutText(double quieter)
+{
+    char what[160];
+    std::snprintf(what, sizeof(what),
+                  "region volume exceeds 127 (SoundFont attenuated by %.1f dB; SFZ keeps the original volume)",
+                  quieter / 10.0);
+    return what;
+}
+
 double SoundFontCut(Performance& perf, const RegionVolumeFunction& volume_of)
 {
-    const int loudest = LoudestRegion(perf, volume_of);
-    const double quieter = loudest > 127 ? 200.0 * std::log10(loudest / 127.0) : 0.0;
-    if (loudest > 127)
+    const double quieter = RegionVolumeCut(LoudestRegion(perf, volume_of));
+    if (quieter > 0.0)
     {
-        char what[160];
-        std::snprintf(what, sizeof(what),
-                      "region volume exceeds 127 (SoundFont attenuated by %.1f dB; SFZ keeps the original volume)",
-                      quieter / 10.0);
-        perf.approximations[what] = seqlib::midi::NoteCount(perf);
+        perf.approximations[RegionVolumeCutText(quieter)] = seqlib::midi::NoteCount(perf);
     }
 
     return quieter;

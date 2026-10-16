@@ -3035,6 +3035,166 @@ void TestSfzFileHasTheTracksPresetsAndFilters()
     XSFLIB_CHECK(has("<group> hicc104=0\n<group> locc104=1 fil2_type=hpf_2p cutoff2=1000 "));
 }
 
+// The archive of the tests of a bank's conversion. Its sequence plays program 0 at key 60, then program 2 at key 64.
+// Program 1 of the bank holds no instrument. Program 0 plays a mono wave. Program 2 plays a stereo wave, at its
+// original key, volume, pan and envelope. `volume` is program 2's volume.
+SoundArchive BankTestArchive(uint8_t volume = 100)
+{
+    const auto table = [](const files::Region& region)
+    {
+        const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, region}}};
+        return files::KeyTable{files::KeyTable::kDirect, 0, {{127, velocities}}};
+    };
+    files::Region second;
+    second.wave = 1;
+    second.original_key = 64;
+    second.volume = volume;
+    second.pan = 40;
+    second.adshr = std::array<uint8_t, 5>{120, 100, 90, 0, 110};
+
+    std::vector<ArchiveFile> archive_files(3);
+    archive_files[0].data = Fseq({0x81, 0x00, 0x3c, 0x64, 0x30, 0x81, 0x02, 0x40, 0x64, 0x30, 0xff});
+    archive_files[1].data = files::Bank(console->settings.archive.flavor,
+                                        {{{0x05000000, 0}, {0x05000000, 1}}, {table({}), std::nullopt, table(second)}});
+    archive_files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true),
+                                  Pcm16Fwav(32, std::vector<int16_t>(32, -2000), 2, true)});
+
+    return SoundArchive::Load(
+        Fsar(archive_files, {.sequences = {{.banks = {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
+        console->settings.archive);
+}
+
+// A bank's SoundFont holds each instrument at its program. Each instrument's zones and samples are those of a
+// sequence that plays the instrument with a track's starting settings.
+void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
+{
+    const SoundArchive archive = BankTestArchive();
+    const auto u16 = [](const uint8_t* p)
+    {
+        return p[0] | p[1] << 8;
+    };
+
+    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
+    const Conversion sequence = ConvertSequence(archive, 0);
+
+    const seqlib::sf2::Records v = seqlib::sf2::Read(bank.sf2);
+    const seqlib::sf2::Records w = seqlib::sf2::Read(sequence.sf2);
+    XSFLIB_CHECK(Sf2Problem(bank.sf2).empty() && bank.warnings.empty() && bank.samples == 3);
+    XSFLIB_CHECK(v.Count("phdr", 38) == 3);
+    XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 0))) == "Program 0");
+    XSFLIB_CHECK(u16(v.Record("phdr", 38, 0) + 20) == 0 && u16(v.Record("phdr", 38, 0) + 22) == 0);
+    XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 1))) == "Program 2");
+    XSFLIB_CHECK(u16(v.Record("phdr", 38, 1) + 20) == 2 && u16(v.Record("phdr", 38, 1) + 22) == 0);
+    for (const char* chunk : {"ibag", "igen", "imod", "shdr", "smpl"})
+    {
+        XSFLIB_CHECK(v.chunks.at(chunk) == w.chunks.at(chunk));
+    }
+}
+
+// A bank's SFZ files play each instrument by itself, under the bank's name and the program. Each file's regions and
+// samples are those of a sequence's track file that plays the instrument with a track's starting settings.
+void TestBankSfzFilesPlayEachInstrumentByItself()
+{
+    const SoundArchive archive = BankTestArchive();
+    const std::string& name = archive.Banks()[0].name;
+
+    // A preset's text in a track's file runs from its <master> line to the next preset's comment. In an instrument's
+    // file, it follows <global>. A track's file numbers the presets in the order that the sequence plays them. Program
+    // 2 of the bank is preset 1 there.
+    const auto preset = [](const std::string& text, const std::string& after)
+    {
+        const std::size_t found = text.find(after);
+        if (found == std::string::npos)
+        {
+            return std::string("no preset");
+        }
+
+        const std::size_t start = found + after.size();
+        const std::size_t end = text.find("\n// ", start);
+        return text.substr(start, end == std::string::npos ? end : end - start);
+    };
+
+    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
+    const Conversion sequence = ConvertSequence(archive, 0);
+
+    XSFLIB_CHECK(bank.sfz.files.size() == 2 && sequence.sfz.files.size() == 1);
+    if (bank.sfz.files.size() != 2 || sequence.sfz.files.size() != 1)
+    {
+        return;
+    }
+    const std::string& track = sequence.sfz.files[0].text;
+    const std::string& first = bank.sfz.files[0].text;
+    const std::string& second = bank.sfz.files[1].text;
+    const std::string global = "amplitude_smoothcc11=0\n\n";
+    XSFLIB_CHECK(bank.sfz.files[0].name == seqlib::SafeFileName(name) + "_0.sfz");
+    XSFLIB_CHECK(bank.sfz.files[1].name == seqlib::SafeFileName(name) + "_2.sfz");
+    XSFLIB_CHECK(first.starts_with("// Program 0 of " + name + ", converted by " + console->program + ".\n\n"));
+    XSFLIB_CHECK(first.find("<control>\ndefault_path=../samples/\n") != std::string::npos);
+    XSFLIB_CHECK(first.find("bend_up=199.975586 bend_down=-199.975586\n") != std::string::npos);
+    XSFLIB_CHECK(first.find("<master>") == std::string::npos && first.find("<region> ") != std::string::npos);
+    XSFLIB_CHECK(preset(first, global) == preset(track, "<master> loprog=0 hiprog=0\n"));
+    XSFLIB_CHECK(preset(second, global) == preset(track, "<master> loprog=1 hiprog=1\n"));
+    XSFLIB_CHECK(bank.sfz.samples.size() == 3 && sequence.sfz.samples.size() == 3);
+    for (std::size_t i = 0; i < bank.sfz.samples.size() && i < sequence.sfz.samples.size(); i++)
+    {
+        XSFLIB_CHECK(bank.sfz.samples[i].name == sequence.sfz.samples[i].name);
+        XSFLIB_CHECK(bank.sfz.samples[i].wav == sequence.sfz.samples[i].wav);
+    }
+}
+
+// Programs above 127 take the SoundFont's next banks: program 130 is program 2 of bank 1. The SFZ files' names pad the
+// programs to the digits of the last one.
+void TestBankProgramsAbove127TakeTheNextBank()
+{
+    const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, files::Region{}}}};
+    const files::KeyTable keys{files::KeyTable::kDirect, 0, {{127, velocities}}};
+    std::vector<std::optional<files::KeyTable>> instruments(131);
+    instruments[0] = keys;
+    instruments[130] = keys;
+    std::vector<ArchiveFile> archive_files(2);
+    archive_files[0].data = files::Bank(console->settings.archive.flavor, {{{0x05000000, 0}}, instruments});
+    archive_files[1].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
+    const SoundArchive archive =
+        SoundArchive::Load(Fsar(archive_files, {.banks = {0}, .wave_archives = {1}}), console->settings.archive);
+    const auto u16 = [](const uint8_t* p)
+    {
+        return p[0] | p[1] << 8;
+    };
+
+    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
+
+    const seqlib::sf2::Records v = seqlib::sf2::Read(bank.sf2);
+    XSFLIB_CHECK(Sf2Problem(bank.sf2).empty() && v.Count("phdr", 38) == 3);
+    XSFLIB_CHECK(u16(v.Record("phdr", 38, 1) + 20) == 2 && u16(v.Record("phdr", 38, 1) + 22) == 1);
+    XSFLIB_CHECK(bank.sfz.files.size() == 2 && bank.sfz.files.front().name == "BANK_0_000.sfz" &&
+                 bank.sfz.files.back().name == "BANK_0_130.sfz");
+}
+
+// A region above volume 127 attenuates every zone of the SoundFont, as in a sequence's SoundFont, and the conversion
+// says so. A bank that the archive lacks throws.
+void TestLoudBankIsAttenuatedAndAMissingBankThrows()
+{
+    const SoundArchive archive = BankTestArchive(254);
+    bool threw = false;
+
+    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
+    const Conversion sequence = ConvertSequence(archive, 0);
+    try
+    {
+        ConvertBank(archive, 1, console->settings, console->program);
+    }
+    catch (const std::out_of_range&)
+    {
+        threw = true;
+    }
+
+    XSFLIB_CHECK(bank.warnings ==
+                 std::vector<std::string>{
+                     "region volume exceeds 127 (SoundFont attenuated by 6.0 dB; SFZ keeps the original volume)"});
+    XSFLIB_CHECK(seqlib::sf2::Read(bank.sf2).chunks.at("igen") == seqlib::sf2::Read(sequence.sf2).chunks.at("igen"));
+    XSFLIB_CHECK(threw);
+}
+
 void TestDirectVelocityTableTakesVelocitiesAbove127()
 {
     // With velocity range 255 (0xb3), key 60 at velocity 127 plays at velocity 255, and at velocity 255 at 512. Like
@@ -3226,6 +3386,10 @@ const Test kWiiUTests[] = {
     TestDirectVelocityTableTakesVelocitiesAbove127,
     TestSfzRegionFollowsLinearInterpolation,
     TestSfzCommentKeepsTheNameOnItsLine,
+    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
+    TestBankSfzFilesPlayEachInstrumentByItself,
+    TestBankProgramsAbove127TakeTheNextBank,
+    TestLoudBankIsAttenuatedAndAMissingBankThrows,
 };
 
 // The tests that run on the Switch.
@@ -3345,6 +3509,10 @@ const Test kSwitchTests[] = {
     TestSfzFileHasTheTracksPresetsAndFilters,
     TestDirectVelocityTableTakesVelocitiesAbove127,
     TestSfzCommentKeepsTheNameOnItsLine,
+    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
+    TestBankSfzFilesPlayEachInstrumentByItself,
+    TestBankProgramsAbove127TakeTheNextBank,
+    TestLoudBankIsAttenuatedAndAMissingBankThrows,
 };
 
 // The tests that run on the 3DS.
@@ -3452,6 +3620,10 @@ const Test kCtrTests[] = {
     TestMidiWriterSplitsLongDeltaTimes,
     TestSfzFileHasTheTracksPresetsAndFilters,
     TestSfzCommentKeepsTheNameOnItsLine,
+    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
+    TestBankSfzFilesPlayEachInstrumentByItself,
+    TestBankProgramsAbove127TakeTheNextBank,
+    TestLoudBankIsAttenuatedAndAMissingBankThrows,
 };
 
 // The tests that run on the Wii as well: those that build no archive. sequence_export_revolution_test.cpp builds the

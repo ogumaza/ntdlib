@@ -19,7 +19,10 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/file_name.h"
+
 #include "ntdlib/sequence_export/instruments.h"
+#include "ntdlib/sequence_export/performer.h"
 
 #include "sequence_export/sfz_track.h"
 
@@ -129,6 +132,31 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
     };
 
     SfzInstruments out = BuildTrackFiles(perf, midi, title, preset_names, settings, program, regions);
+    out.samples = samples.Take();
+
+    return out;
+}
+
+SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, BankSet& banks, const std::string& title,
+                            const Settings& settings, const std::string& program)
+{
+    SfzSampleSet samples;
+    auto regions = [&](const PresetKey& key, double gain_db, int resampling_slot)
+    {
+        return PresetRegions(key, banks, samples, gain_db, resampling_slot, settings);
+    };
+
+    // Each file's name pads its program to the digits of the last program.
+    SfzInstruments out;
+    const std::size_t digits = programs.empty() ? 1 : std::to_string(programs.back()).size();
+    for (const uint32_t p : programs)
+    {
+        const PresetKey key = StartingPresetKey(p, settings);
+        std::string number = std::to_string(p);
+        number.insert(0, digits - number.size(), '0');
+        out.files.push_back({seqlib::SafeFileName(title) + "_" + number + ".sfz",
+                             InstrumentFile(key, "Program " + std::to_string(p), title, settings, program, regions)});
+    }
     out.samples = samples.Take();
 
     return out;

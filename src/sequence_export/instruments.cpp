@@ -114,23 +114,34 @@ BankSet::BankSet(const SoundArchive& archive, const SoundInfo& sound, const Sett
             continue;
         }
 
-        const BankInfo& info = archive_.Banks()[*index];
-        bank_names_[slot] = info.name;
-        const auto data = archive_.FileData(info.file_id);
-        if (data.empty())
-        {
-            errors_.push_back("bank " + bank_names_[slot] + NoData(archive_, info.file_id, options_.flavor));
-            continue;
-        }
+        ReadBank(slot, *index);
+    }
+}
 
-        try
-        {
-            banks_[slot] = Bank::Parse(data, options_);
-        }
-        catch (const xsflib::FormatError& e)
-        {
-            errors_.push_back("bank " + bank_names_[slot] + ": " + e.what());
-        }
+BankSet::BankSet(const SoundArchive& archive, std::size_t bank, const Settings& settings)
+    : archive_(archive), options_(settings.archive)
+{
+    ReadBank(0, bank);
+}
+
+void BankSet::ReadBank(std::size_t slot, std::size_t index)
+{
+    const BankInfo& info = archive_.Banks().at(index);
+    bank_names_[slot] = info.name;
+    const auto data = archive_.FileData(info.file_id);
+    if (data.empty())
+    {
+        errors_.push_back("bank " + bank_names_[slot] + NoData(archive_, info.file_id, options_.flavor));
+        return;
+    }
+
+    try
+    {
+        banks_[slot] = Bank::Parse(data, options_);
+    }
+    catch (const xsflib::FormatError& e)
+    {
+        errors_.push_back("bank " + bank_names_[slot] + ": " + e.what());
     }
 }
 
