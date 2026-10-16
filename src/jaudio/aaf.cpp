@@ -63,6 +63,7 @@ struct Blocks
     std::size_t table = 0;
     std::size_t table_size = 0;
     std::optional<std::size_t> sequence_index;
+    std::vector<std::pair<std::size_t, uint32_t>> banks; // each bank's offset and its wave system
     std::vector<std::size_t> wave_systems;
     std::vector<uint32_t> load_types; // the load type of each wave system
 };
@@ -88,6 +89,10 @@ Blocks FindBlocks(const xsflib::Reader& r)
                 {
                     blocks.wave_systems.push_back(r.U32(at));
                     blocks.load_types.push_back(r.U32(at + 8));
+                }
+                else
+                {
+                    blocks.banks.emplace_back(r.U32(at), r.U32(at + 8));
                 }
             }
 
@@ -158,6 +163,17 @@ std::vector<std::string> ArchiveNames(std::span<const uint8_t> aaf, bool staying
 }
 
 } // namespace
+
+bool IsAaf(std::span<const uint8_t> data)
+{
+    if (data.size() < 4)
+    {
+        return false;
+    }
+
+    const uint32_t first = xsflib::LoadBe32(data.data());
+    return first >= kSoundTable && first <= kLastBlockType;
+}
 
 std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
 {
@@ -270,6 +286,26 @@ std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf)
     return systems;
 }
 
+std::vector<Bank> ReadAafBanks(std::span<const uint8_t> aaf, std::vector<std::string>& warnings)
+{
+    const xsflib::Reader r(aaf, true, kReaderOptions);
+    std::vector<Bank> banks;
+    for (const auto& [offset, wave_system] : FindBlocks(r).banks)
+    {
+        try
+        {
+            r.Sub(offset, 1);
+            banks.push_back(Bank::Parse(aaf.subspan(offset), wave_system));
+        }
+        catch (const xsflib::FormatError& e)
+        {
+            warnings.push_back("bank at offset " + std::to_string(offset) + ": " + e.what());
+        }
+    }
+
+    return banks;
+}
+
 std::vector<std::string> AafWaveArchiveNames(std::span<const uint8_t> aaf)
 {
     return ArchiveNames(aaf, false);
@@ -278,6 +314,31 @@ std::vector<std::string> AafWaveArchiveNames(std::span<const uint8_t> aaf)
 std::vector<std::string> AafStayingWaveArchiveNames(std::span<const uint8_t> aaf)
 {
     return ArchiveNames(aaf, true);
+}
+
+std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn)
+{
+    constexpr std::size_t kHeaderBytes = 16;
+    constexpr std::size_t kRecordBytes = 32;
+    constexpr std::size_t kNameBytes = 28;
+    constexpr std::size_t kCategories = 18;
+    constexpr std::size_t kFirst = kHeaderBytes + kCategories * kRecordBytes;
+
+    const xsflib::Reader r(asn, true);
+    const uint32_t count = asn.size() >= kHeaderBytes ? r.U32(12) : 0;
+    if (asn.size() < kFirst || (asn.size() - kFirst) / kRecordBytes < count)
+    {
+        throw xsflib::FormatError("the name file is too short for its sounds");
+    }
+
+    std::vector<AsnSound> sounds;
+    for (std::size_t i = 0; i < count; i++)
+    {
+        const std::size_t record = kFirst + i * kRecordBytes;
+        sounds.push_back({r.U32(record + kNameBytes), r.CString(record, kNameBytes)});
+    }
+
+    return sounds;
 }
 
 } // namespace ntdlib::jaudio

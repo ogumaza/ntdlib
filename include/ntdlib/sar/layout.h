@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <variant>
@@ -89,6 +90,12 @@ Layout Cut(std::span<const uint8_t> archive, const Options& options);
 // place past its piece, a field outside a run, or a distance below zero or past 32 bits.
 std::vector<uint8_t> Join(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
                           std::span<const Field> fields);
+
+// Where each of `pieces` starts in `archive`, the archive of `flavor` that they join to: the position of each piece's
+// first byte, then the end of the last piece. A sequence piece takes the size in its file's header. A sound's file
+// starts at a sequence piece when the archive's FileOffset for it is that piece's start. Throws std::invalid_argument
+// for a piece that runs past the archive's end.
+std::vector<std::size_t> Starts(std::span<const uint8_t> archive, Flavor flavor, std::span<const Piece> pieces);
 
 // Writes the values of `sounds` and `players` into the tables of `archive`, an archive of `flavor`. Each value goes
 // where SoundArchive reads it with Rules::kStopAtFirstProblem. Sound i takes the values of `sounds[i]`: its player,

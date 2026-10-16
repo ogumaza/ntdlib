@@ -1017,6 +1017,44 @@ std::vector<uint8_t> Join(Flavor flavor, std::span<const commands::Sequence> seq
     return bytes;
 }
 
+std::vector<std::size_t> Starts(std::span<const uint8_t> archive, Flavor flavor, std::span<const Piece> pieces)
+{
+    // A file's header gives the file's size in its 32 bits at 0x0C.
+    constexpr std::size_t kSizeField = 0x0C;
+    const xsflib::Reader reader(archive, flavor == Flavor::kCafe);
+    std::vector<std::size_t> starts;
+    std::size_t position = 0;
+    for (const Piece& piece : pieces)
+    {
+        starts.push_back(position);
+        if (const auto* run = std::get_if<std::vector<uint8_t>>(&piece))
+        {
+            position += run->size();
+        }
+        else if (std::holds_alternative<SequencePiece>(piece))
+        {
+            if (position + kSizeField + 4 > archive.size())
+            {
+                throw std::invalid_argument("a sequence piece starts past the archive's end");
+            }
+
+            position += reader.U32(position + kSizeField);
+        }
+        else
+        {
+            position = AlignUp(position, std::max<uint32_t>(std::get<Padding>(piece).alignment, 1));
+        }
+
+        if (position > archive.size())
+        {
+            throw std::invalid_argument("a piece runs past the archive's end");
+        }
+    }
+    starts.push_back(position);
+
+    return starts;
+}
+
 void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const SoundInfo> sounds,
                       std::span<const PlayerInfo> players)
 {

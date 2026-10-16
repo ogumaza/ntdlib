@@ -327,38 +327,40 @@ void TestRarc()
     Check(decoded == rarc && jaudio::ReadRarc(decoded).size() == 2, "a Yaz0 archive decodes to the archive");
 }
 
+// A sequence table: the count, zeros up to 0x20, then each sequence's offset and size, then the sequences.
+std::vector<uint8_t> SequenceTable(const std::vector<std::string>& sequences)
+{
+    std::vector<uint8_t> table(0x20 + sequences.size() * 8);
+    xsflib::StoreBe32(table.data(), static_cast<uint32_t>(sequences.size()));
+    for (std::size_t i = 0; i < sequences.size(); i++)
+    {
+        xsflib::StoreBe32(table.data() + 0x20 + i * 8, static_cast<uint32_t>(table.size()));
+        xsflib::StoreBe32(table.data() + 0x24 + i * 8, static_cast<uint32_t>(sequences[i].size()));
+        table.insert(table.end(), sequences[i].begin(), sequences[i].end());
+    }
+
+    return table;
+}
+
+// The text that `data` holds.
+std::string Text(std::span<const uint8_t> data)
+{
+    return std::string(data.begin(), data.end());
+}
+
 // RepackSequenceTable: each file of the archive takes the table's sequence whose index is the file's id.
 void TestRepackSequenceTable()
 {
-    // A sequence table: the count, zeros up to 0x20, then each sequence's offset and size.
-    const auto table_of = [](const std::vector<std::string>& sequences)
-    {
-        std::vector<uint8_t> table(0x20 + sequences.size() * 8);
-        xsflib::StoreBe32(table.data(), static_cast<uint32_t>(sequences.size()));
-        for (std::size_t i = 0; i < sequences.size(); i++)
-        {
-            xsflib::StoreBe32(table.data() + 0x20 + i * 8, static_cast<uint32_t>(table.size()));
-            xsflib::StoreBe32(table.data() + 0x24 + i * 8, static_cast<uint32_t>(sequences[i].size()));
-            table.insert(table.end(), sequences[i].begin(), sequences[i].end());
-        }
-
-        return table;
-    };
-    const auto text = [](std::span<const uint8_t> data)
-    {
-        return std::string(data.begin(), data.end());
-    };
-
     // Each file keeps its id, its name and its place.
     const std::string kField = "the field sequence from the table, longer than 32 bytes";
     const std::vector<uint8_t> rarc =
         files::RarcFile({{2, "se.bms", {'o', 'l', 'd'}}, {0, "field.bms", {'o', 'l', 'd'}}, {1, "b.bms", {'b'}}});
-    const std::vector<uint8_t> table = table_of({kField, "boss", "se"});
+    const std::vector<uint8_t> table = SequenceTable({kField, "boss", "se"});
     const std::vector<uint8_t> out = jaudio::RepackSequenceTable(rarc, table);
     const std::vector<jaudio::ArchiveFile> read = jaudio::ReadRarc(out);
-    Check(read.size() == 3 && read[0].id == 2 && read[0].name == "se.bms" && text(read[0].data) == "se" &&
-              read[1].id == 0 && read[1].name == "field.bms" && text(read[1].data) == kField && read[2].id == 1 &&
-              read[2].name == "b.bms" && text(read[2].data) == "boss",
+    Check(read.size() == 3 && read[0].id == 2 && read[0].name == "se.bms" && Text(read[0].data) == "se" &&
+              read[1].id == 0 && read[1].name == "field.bms" && Text(read[1].data) == kField && read[2].id == 1 &&
+              read[2].name == "b.bms" && Text(read[2].data) == "boss",
           "each file takes the sequence at its id");
 
     // Each file's data starts on a 32-byte boundary. The header gives the archive's size, and the data's size twice.
@@ -389,11 +391,30 @@ void TestRepackSequenceTable()
     Check(jaudio::RepackSequenceTable(yaz0.Data(), table) == out, "a Yaz0 archive is decoded first");
 
     // A file whose id is past the table's end, and a table cut short, are rejected.
-    Check(ErrorOf([&] { jaudio::RepackSequenceTable(rarc, table_of({kField, "boss"})); }) ==
+    Check(ErrorOf([&] { jaudio::RepackSequenceTable(rarc, SequenceTable({kField, "boss"})); }) ==
               "the sequence table has no sequence for file 2 of the sequence archive",
           "a file past the table's end");
     Check(!ErrorOf([&] { jaudio::RepackSequenceTable(rarc, std::span(table).first(table.size() - 1)); }).empty(),
           "a table cut short");
+}
+
+// ReadSequenceTable: each sequence of the table, by its index, without a name. An empty entry is left out.
+void TestReadSequenceTable()
+{
+    const std::vector<uint8_t> table = SequenceTable({"field", "", "boss"});
+
+    const std::vector<jaudio::ArchiveFile> files = jaudio::ReadSequenceTable(table);
+
+    Check(files.size() == 2 && files[0].id == 0 && files[0].name.empty() && Text(files[0].data) == "field" &&
+              files[1].id == 2 && files[1].name.empty() && Text(files[1].data) == "boss",
+          "the table's sequences by their indices");
+    Check(files.size() == 2 && files[0].data.data() == table.data() + 0x38, "the data lies in the table");
+
+    // A table too short for its entries, and an entry past the table's end, are rejected.
+    Check(ErrorOf([&] { jaudio::ReadSequenceTable(std::span(table).first(0x30)); }) == "the sequence table is damaged",
+          "a table cut short in its entries");
+    Check(!ErrorOf([&] { jaudio::ReadSequenceTable(std::span(table).first(table.size() - 1)); }).empty(),
+          "an entry past the table's end");
 }
 
 // Yaz0's repeats: a short one, one whose length takes a third byte, and the damaged cases.
@@ -712,6 +733,7 @@ int main()
     TestFirstLayouts();
     TestRarc();
     TestRepackSequenceTable();
+    TestReadSequenceTable();
     TestYaz0();
     TestMessages();
     TestLightReaders();

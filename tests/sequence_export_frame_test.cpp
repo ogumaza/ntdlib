@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <regex>
 #include <span>
 #include <string>
 #include <utility>
@@ -383,6 +384,36 @@ void TestBatchInputs()
     Check(fake.before_inputs == 5, "the hook runs for each run with inputs, after the options are checked");
 }
 
+void TestOtherInputs()
+{
+    // An input that another of the program's converters reads doesn't reach the converter. Its status counts.
+    const TempFolder folder("sequence_export_frame_test");
+    const fs::path a = folder.Path() / "x.a";
+    const fs::path b = folder.Path() / "y.other";
+    WriteFile(a, std::string("One\n"));
+    WriteFile(b, std::string("Two\n"));
+    FakeConverter fake;
+    std::vector<std::string> others;
+    const OtherInput<PerformOptions> other = [&others](const std::string& path, const Options<PerformOptions>& options,
+                                                       const std::regex&, bool several,
+                                                       std::vector<std::pair<fs::path, std::string>>&)
+    {
+        if (!path.ends_with(".other"))
+        {
+            return std::optional<int>();
+        }
+
+        others.push_back(Utf8(PathFromUtf8(path).filename()) + (options.quiet && several ? " quiet, several" : ""));
+        return std::optional<int>(1);
+    };
+
+    const int rc = Run({"fake", "--quiet", Utf8(a), Utf8(b)}, fake.converter, other);
+
+    Check(rc == 1 && others == std::vector<std::string>{"y.other quiet, several"}, "the other converter's input");
+    Check(Text(ReadFile(folder.Path() / "x_fake" / "One.mid")) == "MIDI One", "the converter's input");
+    Check(!fs::exists(folder.Path() / "y_fake"), "nothing of the other input from the converter");
+}
+
 void TestRunMain()
 {
     char program[] = "fake";
@@ -452,6 +483,7 @@ int main()
     TestSwitchHasNoVoices();
     TestBatch();
     TestBatchInputs();
+    TestOtherInputs();
     TestRunMain();
     TestUsage();
 

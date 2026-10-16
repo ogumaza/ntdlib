@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -280,6 +281,62 @@ void TestEdits(Flavor flavor)
     XSFLIB_CHECK(SameCommands(Cut(copies, flavor), both));
 }
 
+void TestStarts(Flavor flavor)
+{
+    // Twenty more waits in the first sequence move the pieces after it.
+    Layout layout = Cut(Archive(flavor), flavor);
+    Insert(layout, 0, 2, 20, 1);
+    const std::vector<uint8_t> archive = Join(layout);
+    const ntdlib::sar::SoundArchive tables = Read(archive, flavor);
+
+    const std::vector<std::size_t> starts = ntdlib::sar::Starts(archive, flavor, layout.pieces);
+
+    // The files of the songs, of the other sound and of the copy that only the group holds start at their sequences'
+    // pieces. The odd file starts at none. Each run holds its bytes, but for the fields that Join writes.
+    XSFLIB_CHECK(starts.size() == layout.pieces.size() + 1 && starts.back() == archive.size());
+    const auto sequence_of = [&](uint32_t sound) -> std::optional<uint32_t>
+    {
+        const auto start = std::ranges::find(starts, tables.FileOffset(tables.Sounds()[sound].file_id));
+        const std::size_t piece = static_cast<std::size_t>(start - starts.begin());
+        const auto* file = piece < layout.pieces.size() ? std::get_if<SequencePiece>(&layout.pieces[piece]) : nullptr;
+
+        return file ? std::optional(file->sequence) : std::nullopt;
+    };
+    XSFLIB_CHECK(sequence_of(0) == 0u && sequence_of(1) == 0u && sequence_of(2) == 1u && sequence_of(4) == 2u);
+    XSFLIB_CHECK(!sequence_of(3));
+    for (std::size_t i = 0; i < layout.pieces.size(); ++i)
+    {
+        const auto* run = std::get_if<std::vector<uint8_t>>(&layout.pieces[i]);
+        if (!run || starts[i] + run->size() > archive.size())
+        {
+            XSFLIB_CHECK(!run);
+            continue;
+        }
+
+        std::vector<uint8_t> laid(archive.begin() + starts[i], archive.begin() + starts[i] + run->size());
+        for (const Field& field : layout.fields)
+        {
+            if (field.at.piece == i)
+            {
+                std::copy_n(run->begin() + field.at.offset, 4, laid.begin() + field.at.offset);
+            }
+        }
+        XSFLIB_CHECK(laid == *run);
+    }
+
+    // Pieces that run past the archive's end.
+    bool refused = false;
+    try
+    {
+        ntdlib::sar::Starts(std::span(archive).first(archive.size() - 1), flavor, layout.pieces);
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+    XSFLIB_CHECK(refused);
+}
+
 void TestRefusals(Flavor flavor)
 {
     const Layout layout = Cut(Archive(flavor), flavor);
@@ -446,6 +503,7 @@ int main()
     {
         TestCut(flavor);
         TestEdits(flavor);
+        TestStarts(flavor);
         TestRefusals(flavor);
         TestBytes(flavor);
         TestTableValues(flavor);

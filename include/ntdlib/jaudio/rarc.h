@@ -30,11 +30,15 @@ bool IsYaz0(std::span<const uint8_t> data);
 // Decodes data compressed with Yaz0. Throws FormatError if it's damaged, or if it decodes to more than 64 MiB.
 std::vector<uint8_t> DecodeYaz0(std::span<const uint8_t> data);
 
-// A sequence archive with the sequences of another release's sequence table, such as The Wind Waker HD's
-// `Seqs/JaiSeq.bdt`. The table is a 32-bit count, zeros up to 0x20, and then a 32-bit offset and size for each
-// sequence. The result is `rarc` with each file's data replaced by the table's entry whose index is the file's id. Each
-// file keeps its entry: its id, its name and its flags. Each file's data starts on a 32-byte boundary. A Yaz0 archive
-// is decoded first. Throws FormatError if either is damaged, or if a file's id is past the table's end.
+// A sequence archive with the sequences of another release's sequence table. The table is a 32-bit count, zeros up to
+// 0x20, and then a 32-bit offset and size for each sequence. The result is `rarc` with each file's data replaced by the
+// table's entry whose index is the file's id. Each file keeps its entry: its id, its name and its flags. Each file's
+// data starts on a 32-byte boundary. A Yaz0 archive is decoded first. Throws FormatError if either is damaged, or if a
+// file's id is past the table's end.
 std::vector<uint8_t> RepackSequenceTable(std::span<const uint8_t> rarc, std::span<const uint8_t> table);
+
+// The sequences of a sequence table (see RepackSequenceTable), as ReadRarc gives a RARC's files: each entry's index as
+// its id, no name, and its data in `table`. An entry of size 0 is left out. Throws FormatError if the table is damaged.
+std::vector<ArchiveFile> ReadSequenceTable(std::span<const uint8_t> table);
 
 } // namespace ntdlib::jaudio

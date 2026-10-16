@@ -77,6 +77,64 @@ double LfoHz(const PresetKey& key, const Settings& settings);
 // Returns the delay of `key`'s LFO in milliseconds, in SoundFont and SFZ time.
 double LfoDelayMs(const PresetKey& key, const Settings& settings);
 
+// How a stretch of a track's commands began (Stretch::entry).
+enum class Entry : uint8_t
+{
+    kOpen,   // the track opened
+    kJump,   // a jump
+    kCall,   // a call
+    kReturn, // a return from a call
+    kLoop,   // a loop's end, back to the loop's start
+};
+
+// A stretch of a track's commands that ran one after another, for an editor. A stretch begins where its track opens,
+// jumps, calls, returns or loops back. It ends at the next such command, or where the track ends. Its commands run at
+// the ticks that its waits give, from `tick` on.
+struct Stretch
+{
+    bool operator==(const Stretch&) const = default;
+
+    uint32_t tick = 0;  // when its first command ran
+    uint32_t first = 0; // its first command's offset in the sequence's bytecode
+    uint32_t last = 0;  // its last command's offset
+    Entry entry = Entry::kOpen;
+    uint8_t depth = 0;      // the calls and loops on the track's stack
+    bool note_wait = false; // at its start, a note made the track wait for the note's length (MML notewait)
+};
+
+// The note command that started a MIDI note, for an editor.
+struct NoteCommand
+{
+    bool operator==(const NoteCommand&) const = default;
+
+    uint32_t offset = 0;  // the command's offset in the sequence's bytecode
+    uint32_t stretch = 0; // the stretch that ran it, in Performance::stretches of the note's track
+};
+
+// A setting of a track's mix, for an editor. The values are those that the console's sound library holds. On the
+// Switch, they're in the units of commands/units.h.
+enum class Mix : uint8_t
+{
+    kVolume, // from 0 to 255, and 127 before a command sets it
+    kPan,    // from -64 for the left to 63 for the right, and 0 before a command sets it
+    kSendA,  // the send to aux bus A, from 0 to 255, and 0 before a command sets it
+    kSendB,
+    kSendC,
+};
+
+// The number of a track's mix settings.
+inline constexpr int kMixSettingCount = 5;
+
+// A setting of a track's mix that changed in a tick, for an editor, with its value at the end of the tick.
+struct MixChange
+{
+    bool operator==(const MixChange&) const = default;
+
+    uint32_t tick = 0;
+    Mix setting = Mix::kVolume;
+    int16_t value = 0;
+};
+
 // A recorded sequence: PerformanceBase, with its presets and what the NintendoWare performer adds to it.
 struct Performance : PerformanceBase
 {
@@ -91,10 +149,29 @@ struct Performance : PerformanceBase
 
     // On the Wii: stereo waves play in balance mode (SoundInfo::pan_mode). The builds of 2006 have only dual mode.
     bool balance = false;
+
+    // For an editor: each track's stretches of commands, in the order that they ran, and the note command of each MIDI
+    // note, at the note's ID less 1 (TrackEvent::note).
+    std::array<std::vector<Stretch>, 16> stretches;
+    std::vector<NoteCommand> note_commands;
+
+    // For an editor: each track's changes of its volume, pan and sends, in the order of their ticks. A ramp changes
+    // its setting in each tick until it ends.
+    std::array<std::vector<MixChange>, 16> mix;
 };
 
 // The most voices that --voices takes. Without --voices, a track can start this many new notes in one tick.
 constexpr uint32_t kMaxVoiceLimit = 1024;
+
+// A game's change of a variable while the sequence plays, through the sound's handle. Variable `index` takes `value` at
+// the start of sound frame `frame`, before the frame's ticks. Frame 0 is the frame of the sequence's first tick.
+// Indices 0 to 15 are the player's variables, and 16 to 31 the global ones. Other indices change nothing.
+struct VariableChange
+{
+    uint64_t frame = 0;
+    uint8_t index = 0;
+    int16_t value = -1;
+};
 
 // Options for playing a sequence.
 struct PerformOptions
@@ -110,6 +187,11 @@ struct PerformOptions
     // Values for player variables (0-15) and global variables (16-31), set before the sequence starts. Some sequences
     // play nothing until the game sets one of their variables.
     std::map<uint8_t, int16_t> variables = {};
+
+    // The game's changes of player and global variables while the sequence plays. Changes in one frame come in this
+    // order. A loop's passes before a change can play otherwise than the passes after it. The main loop is therefore
+    // a pass that starts after the last change. The performance plays on to find it.
+    std::vector<VariableChange> changes = {};
 
     // The voices for the notes that the game drops when no voice is free, from --voices: a count, or 0 to keep every
     // note. Without --voices, every note is kept.

@@ -4,7 +4,7 @@
 // for the 3DS, the Wii U or the Switch reads CSAR and FSAR archives with sar. A converter for the Wii reads RSAR
 // archives with rsar. Each converter gives its name, its version line, the parts of its help that differ (UsageText)
 // and its console's settings (consoles.h). A converter for the Wii also fills the hooks for its --dol option and for
-// each archive's settings.
+// each archive's settings. A converter can take the start-up archives of JAudio games too (jaudio/game_input.h).
 
 #pragma once
 
@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <regex>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -24,6 +25,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
+#include "ntdlib/sequence_export/jaudio/game_input.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
@@ -52,6 +54,11 @@ struct ArchiveConverter
 
     // Whether to add the group files that the game keeps beside an archive, as on the Wii U and the Switch.
     bool group_files = false;
+
+    // Whether the program converts JAudio games too. An input that starts as a JAudio start-up archive does
+    // (jaudio::IsStartUpArchive), with the game's other files beside it (jaudio::Game::FromFolder). The game takes the
+    // program's options. Of those beyond the frame's, only --voices applies to its sequences.
+    bool jaudio_games = false;
 
     // Reads the program's options. Every program on the frame takes --var.
     OptionHandler<PerformOptions> option = VarOption<PerformOptions>;
@@ -239,9 +246,27 @@ int RunArchiveConverter(int argc, char** argv, const ArchiveConverter<Archive>& 
         return ConvertSequence(archive, static_cast<uint32_t>(index), perform, settings, c.program);
     };
 
-    const auto run = [&converter](const std::vector<std::string>& args)
+    // With jaudio_games, a JAudio game's start-up archive converts with the frame's converter of JAudio games.
+    const jaudio::GameConverter games = jaudio::MakeGameConverter(
+        c.program, c.version_line, jaudio::ArchiveProgramOptions(converter.option), converter.usage);
+    const auto run = [&c, &converter, &games](const std::vector<std::string>& args)
     {
-        return Run(args, converter);
+        if (!c.jaudio_games)
+        {
+            return Run(args, converter);
+        }
+
+        const Options<jaudio::PerformOptions> game_options = ParseOptions<jaudio::PerformOptions>(args, games.option);
+        const OtherInput<PerformOptions> game =
+            [&games, &game_options](const std::string& path, const Options<PerformOptions>&, const std::regex& only,
+                                    bool several, std::vector<std::pair<std::filesystem::path, std::string>>& used)
+        {
+            return jaudio::IsStartUpArchiveFile(PathFromUtf8(path))
+                       ? std::optional<int>(ConvertInput(path, game_options, only, several, used, games))
+                       : std::nullopt;
+        };
+
+        return Run(args, converter, game);
     };
 
     return RunMain(argc, argv, run);

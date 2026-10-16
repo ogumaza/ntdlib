@@ -148,6 +148,78 @@ void TestCallsNestTenDeep()
     XSFLIB_CHECK(NoteKeys(p) == kKeys);
 }
 
+void TestNotesKeepTheirCommands()
+{
+    // With note wait off, key 60 plays at tick 0. The track waits 24 ticks and calls the subroutine at 24 twice. Key 64
+    // plays there for 6 ticks. A loop of two passes then plays key 62 for 12 ticks in each. Each command's offset
+    // comes first in its comment.
+    std::vector<uint8_t> commands;
+    Append(commands, {0xc7, 0x00});       // 0: note wait off
+    Append(commands, {0x3c, 0x64, 0x18}); // 2: key 60 for 24 ticks
+    Append(commands, {0x80, 0x18});       // 5: wait 24 ticks
+    Append(commands, {0x8a, U24(24)});    // 7: call 24
+    Append(commands, {0x8a, U24(24)});    // 11: call 24
+    Append(commands, {0xd4, 0x02});       // 15: loop twice
+    Append(commands, {0x3e, 0x64, 0x0c}); // 17: key 62 for 12 ticks
+    Append(commands, {0x80, 0x0c});       // 20: wait 12 ticks
+    Append(commands, {0xfc});             // 22: the loop's end
+    Append(commands, {0xff});             // 23: the end
+    Append(commands, {0x40, 0x64, 0x06}); // 24: key 64 for 6 ticks
+    Append(commands, {0x80, 0x06});       // 27: wait 6 ticks
+    Append(commands, {0xfd});             // 29: return
+
+    const Performance p = PerformOnBank(commands, OneRegionFbnk({{0x05000000, 0}}));
+
+    // The calls, the returns and the loop's end begin the stretches of commands. The note commands lie in them.
+    const std::vector<Stretch> kStretches = {
+        {.tick = 0, .first = 0, .last = 7, .entry = Entry::kOpen, .depth = 0, .note_wait = true},
+        {.tick = 24, .first = 24, .last = 29, .entry = Entry::kCall, .depth = 1, .note_wait = false},
+        {.tick = 30, .first = 11, .last = 11, .entry = Entry::kReturn, .depth = 0, .note_wait = false},
+        {.tick = 30, .first = 24, .last = 29, .entry = Entry::kCall, .depth = 1, .note_wait = false},
+        {.tick = 36, .first = 15, .last = 22, .entry = Entry::kReturn, .depth = 0, .note_wait = false},
+        {.tick = 48, .first = 17, .last = 23, .entry = Entry::kLoop, .depth = 1, .note_wait = false},
+    };
+    const std::vector<NoteCommand> kCommands = {{2, 0}, {24, 1}, {24, 3}, {17, 4}, {17, 5}};
+    XSFLIB_CHECK((NoteKeys(p) == std::vector<int>{60, 64, 64, 62, 62}));
+    XSFLIB_CHECK(p.stretches[0] == kStretches && p.note_commands == kCommands);
+}
+
+void TestMixChangesAreRecorded()
+{
+    // The track sets its volume, its pan and send A before a note of 24 ticks, then sends B and C. Its volume then
+    // falls to 50 over 4 ticks (a time prefix on 0xc1) during a note of 8 ticks. A command that gives a setting the
+    // value that it has records nothing.
+    const std::vector<uint8_t> commands = Code({
+        0xc1, 0x64,               // volume 100
+        0xc0, 0x20,               // pan 32, or -32 from the centre
+        0xd9, 0x28,               // send A 40
+        0xc1, 0x64,               // volume 100 again
+        0x3c, 0x64, 0x18,         // key 60 for 24 ticks
+        0xda, 0x0a,               // send B 10
+        0xde, 0x05,               // send C 5
+        0xa3, 0xc1, 0x32, U16(4), // volume 50 over 4 ticks
+        0x3e, 0x64, 0x08,         // key 62 for 8 ticks
+        0xff,
+    });
+
+    const Performance p = PerformOnBank(commands, OneRegionFbnk({{0x05000000, 0}}));
+
+    // The ramp moves the volume down in each of the 4 ticks after its command.
+    const std::vector<MixChange> kChanges = {
+        {0, Mix::kVolume, 100}, {0, Mix::kPan, -32}, {0, Mix::kSendA, 40}, {24, Mix::kSendB, 10}, {24, Mix::kSendC, 5},
+    };
+    const std::vector<MixChange>& mix = p.mix[0];
+    XSFLIB_CHECK(mix.size() == kChanges.size() + 4 && std::equal(kChanges.begin(), kChanges.end(), mix.begin()));
+    for (std::size_t i = kChanges.size(); i < mix.size(); i++)
+    {
+        const int16_t before = i == kChanges.size() ? 100 : mix[i - 1].value;
+        XSFLIB_CHECK(mix[i].setting == Mix::kVolume && mix[i].tick == 25 + i - kChanges.size() &&
+                     mix[i].value < before);
+    }
+    XSFLIB_CHECK(mix.back().value == 50);
+    XSFLIB_CHECK(std::all_of(p.mix.begin() + 1, p.mix.end(), [](const auto& changes) { return changes.empty(); }));
+}
+
 void TestWiiUCommandsAreRead()
 {
     // First: the main volume falls to 64 over 48 ticks (a time prefix on 0xc2) during a 96-tick note. Second: the
@@ -1600,6 +1672,48 @@ void TestVariableOptionSetsAVariableBeforeTheStart()
     XSFLIB_CHECK(note_ons(unset) == 0 && note_ons(set) == 1);
 }
 
+void TestVariableChangeComesBeforeTheTicksOfItsFrame()
+{
+    // Wait a tick and check again while variable `variable` isn't 1, then play key 60 and end. A tick lasts 10.4 ms at
+    // 120 BPM. A change in the frame that holds 216 ms comes after tick 20, which lies in an earlier frame. Tick 21
+    // sees it. A change in frame 0 comes before the first tick. The idle passes before a change at 15.005 s don't end
+    // the performance. Tick 1441 sees that one.
+    const auto first_note = [](uint8_t variable, double ms)
+    {
+        PerformOptions options;
+        options.changes = {{static_cast<uint64_t>(ms / console->settings.frame_ms), variable, 1}};
+        const Performance p = PerformOnBank(Code({0xf0, 0x95, variable, U16(0x0001), 0xa2, 0x80, 0x01, 0xa2, 0x89,
+                                                  U24(0x000000), 0x3c, 0x64, 0x18, 0xff}),
+                                            OneRegionFbnk({{0x05000000, 0}}), 1, options);
+        const auto note = std::ranges::find(p.tracks[0], EventKind::kNoteOn, &TrackEvent::kind);
+        return note != p.tracks[0].end() ? std::optional<uint32_t>(note->tick) : std::nullopt;
+    };
+
+    XSFLIB_CHECK(first_note(0, 216.0) == 21u);
+    XSFLIB_CHECK(first_note(16, 216.0) == 21u);
+    XSFLIB_CHECK(first_note(0, 0.0) == 0u);
+    XSFLIB_CHECK(first_note(0, 15005.0) == 1441u);
+}
+
+void TestMainLoopStartsAfterTheLastVariableChange()
+{
+    // Play key 72 for 48 ticks while variable 0 is 1, else key 60, and jump back. The game sets the variable at
+    // 20.25 s, in the middle of the pass from tick 1920. That pass plays key 60 to its end. The next pass plays key 72,
+    // and it's the main loop. Without the change, the first pass is.
+    const std::vector<uint8_t> code = Code({0xf0, 0x90, 0x00, U16(0x0001), 0xa2, 0x89, U24(0x000011), 0x3c, 0x64, 0x30,
+                                            0x89, U24(0x000000), 0x48, 0x64, 0x30, 0x89, U24(0x000000)});
+    PerformOptions options;
+    options.changes = {{static_cast<uint64_t>(20250.0 / console->settings.frame_ms), 0, 1}};
+
+    const Performance unchanged = PerformOnBank(code, OneRegionFbnk({{0x05000000, 0}}));
+    const Performance changed = PerformOnBank(code, OneRegionFbnk({{0x05000000, 0}}), 1, options);
+
+    const std::vector<int> keys = NoteKeys(changed);
+    XSFLIB_CHECK(unchanged.loop && unchanged.loop->start == 0 && unchanged.loop->end == 48);
+    XSFLIB_CHECK(changed.loop && changed.loop->start == 1968 && changed.loop->end == 2016 && changed.loops == 1);
+    XSFLIB_CHECK(keys.size() == 42 && keys[40] == 60 && keys[41] == 72);
+}
+
 void TestWaitingForAVariableIsNoLoop()
 {
     // Track 1 waits 96 ticks and sets variable 0. Track 0 repeatedly sets volume and polls the variable without waits.
@@ -3006,6 +3120,8 @@ const Test kWiiUTests[] = {
     TestBrokenBankAndWaveReferencesAreReported,
     TestLittleEndianFilesAreRead,
     TestCallsNestTenDeep,
+    TestNotesKeepTheirCommands,
+    TestMixChangesAreRecorded,
     TestWiiUCommandsAreRead,
     TestVariableShiftsAreThePowerPcs,
     TestSequenceStartingPastItsEndPlaysNothing,
@@ -3067,6 +3183,8 @@ const Test kWiiUTests[] = {
     TestPassOnAnotherPartPlaysAsTheNext,
     TestSequenceThatFinishesHasNoLoop,
     TestVariableOptionSetsAVariableBeforeTheStart,
+    TestVariableChangeComesBeforeTheTicksOfItsFrame,
+    TestMainLoopStartsAfterTheLastVariableChange,
     TestWaitingForAVariableIsNoLoop,
     TestPollingInASubroutineAfterAOneShotIsNoLoop,
     TestLoopLeftBeforeASilentTimeLimitIsDropped,
@@ -3126,6 +3244,8 @@ const Test kSwitchTests[] = {
     TestShortFileIsReported,
     TestBrokenBankAndWaveReferencesAreReported,
     TestCallsNestTenDeep,
+    TestNotesKeepTheirCommands,
+    TestMixChangesAreRecorded,
     TestWiiUCommandsAreRead,
     TestSequenceStartingPastItsEndPlaysNothing,
     TestBankSlotPastTheFourthHasNoBank,
@@ -3185,6 +3305,8 @@ const Test kSwitchTests[] = {
     TestPassOnAnotherPartPlaysAsTheNext,
     TestSequenceThatFinishesHasNoLoop,
     TestVariableOptionSetsAVariableBeforeTheStart,
+    TestVariableChangeComesBeforeTheTicksOfItsFrame,
+    TestMainLoopStartsAfterTheLastVariableChange,
     TestWaitingForAVariableIsNoLoop,
     TestPollingInASubroutineAfterAOneShotIsNoLoop,
     TestLoopLeftBeforeASilentTimeLimitIsDropped,
@@ -3228,6 +3350,7 @@ const Test kSwitchTests[] = {
 // The tests that run on the 3DS.
 const Test kCtrTests[] = {
     TestEnvelopeValuesMatchTheGame,
+    TestNotesKeepTheirCommands,
     TestInstantEnvelopeIsAnOrgan,
     TestTrackFiltersFollowTheGame,
     TestSoundFontFilterStandsInForTheGames,
@@ -3304,6 +3427,8 @@ const Test kCtrTests[] = {
     TestTrackWaitingForAVariableGoesOn,
     TestLoopMarksAPassThatPlaysAsTheNext,
     TestVariableOptionSetsAVariableBeforeTheStart,
+    TestVariableChangeComesBeforeTheTicksOfItsFrame,
+    TestMainLoopStartsAfterTheLastVariableChange,
     TestWaitingForAVariableIsNoLoop,
     TestSequenceWithoutNotesEndsAtItsStart,
     TestTrackStartsNoMoreNotesATickThanTheGameHasVoices,

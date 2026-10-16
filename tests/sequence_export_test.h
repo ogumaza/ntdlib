@@ -606,10 +606,10 @@ inline std::vector<uint8_t> Fseq(const std::vector<uint8_t>& commands)
     return files::Sequence(console->settings.archive.flavor, commands, {});
 }
 
-// Performs `commands` as the one sequence of an archive with `bank`. The bank's wave table entry 0 is a looping wave.
-// The sound allocates the tracks in `track_flags`.
+// Performs `commands` as the one sequence of an archive with `bank`, with `options`. The bank's wave table entry 0 is a
+// looping wave. The sound allocates the tracks in `track_flags`.
 inline Performance PerformOnBank(const std::vector<uint8_t>& commands, const std::vector<uint8_t>& bank,
-                                 uint32_t track_flags = 1)
+                                 uint32_t track_flags = 1, const PerformOptions& options = {})
 {
     std::vector<ArchiveFile> files(3);
     files[0].data = Fseq(commands);
@@ -620,7 +620,7 @@ inline Performance PerformOnBank(const std::vector<uint8_t>& commands, const std
              {.sequences = {{.banks = {0x03000000}, .track_flags = track_flags}}, .banks = {1}, .wave_archives = {2}}),
         console->settings.archive);
     BankSet banks(archive, archive.Sounds()[0], console->settings);
-    return Perform(archive, 0, banks, {});
+    return Perform(archive, 0, banks, options);
 }
 
 // The keys of the notes `p` plays on track 0, in order.

@@ -2,8 +2,8 @@
 
 // Builds small JAudio2 files for tests, in the layout of Four Swords Adventures' files: wave systems (WSYS) with their
 // AW file, banks (IBNK) of both versions, sound tables with their names (BST and BSTN), sequence archives (RARC) and
-// start-up archives (BAA). It also builds JAudio1's start-up archive (AAF), in The Wind Waker's layout. The GameCube's
-// formats are big-endian.
+// start-up archives (BAA). It also builds JAudio1's start-up archive (AAF), in The Wind Waker's layout, and writes a
+// small JAudio2 game's files. The GameCube's formats are big-endian.
 
 #pragma once
 
@@ -11,11 +11,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
+#include "xsflib/files.h"
 
 namespace ntdlib::testing::jaudio_files
 {
@@ -629,6 +632,47 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     }
 
     return b;
+}
+
+// A sequence that opens track 0 at 0x20, and the track there, which plays key 60 for a beat on program 0 of bank 0.
+inline std::vector<uint8_t> OneNoteSequence()
+{
+    Bytes s;
+    s.U8(0xc1).U8(0).U24(0x20);  // open track 0
+    s.U8(0xd8).U8(0x62).U16(48); // a timebase of 48
+    s.U8(0xe0).U16(120);         // a tempo of 120
+    s.U8(0xf1).U8(200).U8(0xff); // wait, then finish
+    while (s.Size() < 0x20)
+    {
+        s.U8(0xfe);
+    }
+
+    s.U8(0xe2).U8(0).U8(0xe3).U8(0); // bank 0, program 0
+    s.U8(60).U8(1).U8(100);          // key 60 on note 1, at a velocity of 100
+    s.U8(0xf1).U8(48).U8(0x81);      // a beat, then note 1's end
+    s.U8(0xff);
+
+    return s.Data();
+}
+
+// Write the sound files of a small JAudio2 game in `folder`, as a disc holds them: the start-up archive test.baa, its
+// sequence archive Seqs/test.arc and its wave archive Waves/test.aw. The sound table holds one piece of music,
+// BGM_FIELD, which plays OneNoteSequence. Throw std::runtime_error if a file can't be written.
+inline void WriteGameFiles(const std::filesystem::path& folder)
+{
+    const SoundTableBlocks sounds = SoundTable({{"BGM", {{"FIELD", {{0x11, 127, 7, "BGM_FIELD"}}}}}});
+    const std::vector<std::pair<std::filesystem::path, std::vector<uint8_t>>> game = {
+        {"test.baa", StartUpArchive(BankV0File(0, 60), {}, sounds)},
+        {std::filesystem::path("Seqs") / "test.arc", RarcFile({{7, "field.bms", OneNoteSequence()}})},
+        {std::filesystem::path("Waves") / "test.aw", AwFile()}};
+    for (const auto& [path, bytes] : game)
+    {
+        std::filesystem::create_directories((folder / path).parent_path());
+        if (const std::optional<std::string> error = xsflib::WriteFile(folder / path, bytes))
+        {
+            throw std::runtime_error(*error);
+        }
+    }
 }
 
 } // namespace ntdlib::testing::jaudio_files

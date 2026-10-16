@@ -4,6 +4,7 @@
 
 #include "ntdlib/jaudio/aaf.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "ntdlib/jaudio/archive.h"
+#include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
 #include "xsflib/binary.h"
@@ -187,6 +189,76 @@ void TestWaveSystems()
     XSFLIB_CHECK(jaudio::AafStayingWaveArchiveNames(aaf) == (std::vector<std::string>{"a_0.aw"}));
 }
 
+void TestIsAaf()
+{
+    // An AAF starts with the type of a chunk that gives a block, 1 to 8. A BAA starts with "AA_<".
+    XSFLIB_CHECK(jaudio::IsAaf(files::AafFile(kSounds, {})));
+    XSFLIB_CHECK(!jaudio::IsAaf(std::vector<uint8_t>{'A', 'A', '_', '<', 0, 0, 0, 0}));
+    XSFLIB_CHECK(!jaudio::IsAaf(std::vector<uint8_t>{0, 0, 0, 0}) && !jaudio::IsAaf(std::vector<uint8_t>{0, 0, 0, 9}));
+    XSFLIB_CHECK(jaudio::IsAaf(std::vector<uint8_t>{0, 0, 0, 8}) && !jaudio::IsAaf(std::vector<uint8_t>{0, 0, 1}));
+}
+
+void TestBanks()
+{
+    // The made-up archive's bank is only its magic. It can't be read, and a warning names its offset.
+    std::vector<std::string> warnings;
+    const std::vector<jaudio::Bank> banks = jaudio::ReadAafBanks(files::AafFile(kSounds, {"a_0.aw"}), warnings);
+
+    XSFLIB_CHECK(banks.empty());
+    XSFLIB_CHECK(warnings.size() == 1 && warnings[0].starts_with("bank at offset 1792: "));
+}
+
+// A name file of `sounds`: the 16-byte header with the count, 18 records for the categories, then a record for each
+// sound. A record is a name of up to 28 bytes, then the sound's ID.
+std::vector<uint8_t> NameFile(const std::vector<jaudio::AsnSound>& sounds)
+{
+    std::vector<uint8_t> b(16 + (18 + sounds.size()) * 32);
+    xsflib::StoreBe32(b.data() + 12, static_cast<uint32_t>(sounds.size()));
+    for (std::size_t i = 0; i < 18; i++)
+    {
+        const std::string category = std::to_string(i) + " CATEGORY";
+        std::copy(category.begin(), category.end(), b.begin() + static_cast<std::ptrdiff_t>(16 + i * 32));
+    }
+    for (std::size_t i = 0; i < sounds.size(); i++)
+    {
+        const std::size_t at = 16 + (18 + i) * 32;
+        std::copy(sounds[i].name.begin(), sounds[i].name.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
+        xsflib::StoreBe32(b.data() + at + 28, sounds[i].id);
+    }
+
+    return b;
+}
+
+void TestAsnSounds()
+{
+    // The sounds follow the category records, in the file's order. A name can fill its 28 bytes.
+    const std::string kLongest(28, 'N');
+    const std::vector<uint8_t> asn =
+        NameFile({{0x80000800, "JA_BGM_SE_SEQUENCE"}, {0x80000001, "JA_BGM_FIELD"}, {0x00000805, kLongest}});
+
+    const std::vector<jaudio::AsnSound> sounds = jaudio::ReadAsnSounds(asn);
+
+    XSFLIB_CHECK(sounds.size() == 3);
+    if (sounds.size() == 3)
+    {
+        XSFLIB_CHECK(sounds[0].id == 0x80000800 && sounds[0].name == "JA_BGM_SE_SEQUENCE");
+        XSFLIB_CHECK(sounds[1].id == 0x80000001 && sounds[1].name == "JA_BGM_FIELD");
+        XSFLIB_CHECK(sounds[2].id == 0x805 && sounds[2].name == kLongest);
+    }
+
+    // A file too short for its count is rejected.
+    std::string refusal;
+    try
+    {
+        jaudio::ReadAsnSounds(std::span(asn).first(asn.size() - 1));
+    }
+    catch (const xsflib::FormatError& error)
+    {
+        refusal = error.what();
+    }
+    XSFLIB_CHECK(refusal == "the name file is too short for its sounds");
+}
+
 } // namespace
 
 int main()
@@ -197,6 +269,9 @@ int main()
     TestSequenceFormat();
     TestSequenceIndex();
     TestWaveSystems();
+    TestIsAaf();
+    TestBanks();
+    TestAsnSounds();
 
     return xsflib::testing::Summary("aaf");
 }

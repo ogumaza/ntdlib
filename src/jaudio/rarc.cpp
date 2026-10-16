@@ -166,4 +166,27 @@ std::vector<uint8_t> RepackSequenceTable(std::span<const uint8_t> rarc, std::spa
     return out;
 }
 
+std::vector<ArchiveFile> ReadSequenceTable(std::span<const uint8_t> table)
+{
+    const xsflib::Reader r(table, true, kReaderOptions);
+    const uint32_t count = r.U32(0);
+    if (table.size() < 0x20 || (table.size() - 0x20) / 8 < count)
+    {
+        throw xsflib::FormatError("the sequence table is damaged");
+    }
+
+    std::vector<ArchiveFile> files;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const std::size_t at = 0x20 + std::size_t{i} * 8;
+        const uint32_t size = r.U32(at + 4);
+        if (size != 0)
+        {
+            files.push_back({static_cast<uint16_t>(i), {}, r.Sub(r.U32(at), size)});
+        }
+    }
+
+    return files;
+}
+
 } // namespace ntdlib::jaudio

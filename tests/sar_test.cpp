@@ -614,6 +614,21 @@ void TestFilesKeptInGroupsAreFound(Flavor flavor)
     Check(a.ExternalGroups() == std::vector<std::string>{"GROUP_2"}, "the group kept outside" + on);
 }
 
+void TestGroupsListTheFilesTheyLoad(Flavor flavor)
+{
+    // The first group holds a copy of file 3 and links to file 0 in the archive. The second holds copies of files 3
+    // and 4. The third has no file.
+    const Format f = FormatOf(flavor);
+
+    const SoundArchive a =
+        SoundArchive::Load(Archive(f, GroupTestFiles(f), {.groups = {1, 2, 0xffffffff}}), StrictOptionsOf(flavor));
+
+    const std::string on = " (" + NameOf(flavor) + ")";
+    Check(a.GroupFileIds(0) == std::vector<uint32_t>{3, 0} && a.GroupFileIds(1) == std::vector<uint32_t>{3, 4},
+          "the files that each group loads" + on);
+    Check(a.GroupFileIds(2).empty() && a.GroupFileIds(3).empty(), "a group kept outside, and no group" + on);
+}
+
 void TestBrokenGroupIsReported(Flavor flavor)
 {
     const Format f = FormatOf(flavor);
@@ -1358,6 +1373,9 @@ int main()
         TestKeyBoundsFollowTheRules(flavor);
     }
 
+    // Only the Wii U's and the Switch's readers list the groups.
+    TestGroupsListTheFilesTheyLoad(Flavor::kCafe);
+    TestGroupsListTheFilesTheyLoad(Flavor::kNx);
     TestArchivesOfOtherConsolesAreRefused();
     TestSarcFilesAreRead();
     TestSarcNamesAreRead();

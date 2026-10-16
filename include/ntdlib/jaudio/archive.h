@@ -147,6 +147,10 @@ public:
     // Reads a BAA file by BaaOptions' defaults. Throws FormatError if it isn't one, or is damaged.
     static SoundArchive Parse(std::vector<uint8_t> baa);
 
+    // Reads JAudio1's start-up archive (AAF, aaf.h): its sound table (ReadAafSounds), its wave systems and its banks.
+    // It has no sequence collection. Throws FormatError if it's damaged.
+    static SoundArchive ParseAaf(std::vector<uint8_t> aaf);
+
     // The sound table's sounds, in its order.
     const std::vector<SoundEntry>& Sounds() const
     {

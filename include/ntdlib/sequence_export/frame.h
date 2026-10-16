@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -455,9 +456,18 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
     return ConvertAll<Conversion>(selected, out_dir, options.quiet, converter.samples_folder, convert) > 0 ? 1 : 0;
 }
 
-// Processes the inputs named on the command line and returns the exit status.
+// Converts an input that another of the program's converters reads, as ConvertInput does, with the options that Run
+// parsed. Returns nothing for an input of Run's converter.
+template <typename Perform>
+using OtherInput = std::function<std::optional<int>(
+    const std::string& path, const Options<Perform>& options, const std::regex& only, bool several,
+    std::vector<std::pair<std::filesystem::path, std::string>>& used_folders)>;
+
+// Processes the inputs named on the command line and returns the exit status. `other`, if set, converts the inputs
+// that another of the program's converters reads.
 template <typename Perform, typename Source, typename Conversion>
-int Run(const std::vector<std::string>& args, const Converter<Perform, Source, Conversion>& converter)
+int Run(const std::vector<std::string>& args, const Converter<Perform, Source, Conversion>& converter,
+        const std::type_identity_t<OtherInput<Perform>>& other = {})
 {
     const Options<Perform> options = ParseOptions<Perform>(args, converter.option);
     if (options.help)
@@ -501,7 +511,10 @@ int Run(const std::vector<std::string>& args, const Converter<Perform, Source, C
         const std::string& path = options.archives[i];
         try
         {
-            rc = std::max(rc, ConvertInput(path, options, only, several, used_folders, converter));
+            const std::optional<int> other_rc =
+                other ? other(path, options, only, several, used_folders) : std::nullopt;
+            rc = std::max(rc,
+                          other_rc ? *other_rc : ConvertInput(path, options, only, several, used_folders, converter));
         }
         catch (const std::exception& e)
         {

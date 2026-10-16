@@ -57,8 +57,8 @@ void CheckDisc(uint32_t unit)
     const std::vector<uint8_t> kSound(1000, 0x5a);
     const std::vector<uint8_t> kSequences = {1, 2, 3, 4, 5, 6, 7};
     const std::vector<std::pair<std::string, std::span<const uint8_t>>> files = {
-        {"AudioRes/JaiInit.baa", kSound},
-        {"AudioRes/Seqs/JaiSeqs.arc", kSequences},
+        {"AudioRes/a.baa", kSound},
+        {"AudioRes/Seqs/b.arc", kSequences},
     };
     ntdlib::flipper::FileDisc disc(std::vector<uint8_t>(0x440, 0), files, unit);
 
@@ -81,7 +81,7 @@ void CheckDisc(uint32_t unit)
         return;
     }
 
-    // Root, AudioRes, JaiInit.baa, Seqs and JaiSeqs.arc: the files are entries 2 and 4.
+    // Root, AudioRes, a.baa, Seqs and b.arc: the files are entries 2 and 4.
     Check(xsflib::LoadBe32(&fst[8]) == 5, name + ": the table has five entries");
     for (const auto& [index, data] : {std::pair<int, const std::vector<uint8_t>*>{2, &kSound}, {4, &kSequences}})
     {

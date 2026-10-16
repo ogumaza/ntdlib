@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.2.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.3.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -116,7 +116,8 @@ xsflib_add_project_library(ntdlib musyx src/musyx/pool.cpp src/musyx/project.cpp
 target_link_libraries(ntdlib_musyx PUBLIC xsflib::common PRIVATE ntdlib::wave)
 xsflib_add_project_test(ntdlib musyx ntdlib::musyx)
 
-# The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files.
+# The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files: NintendoWare's sound archives,
+# and JAudio's sound data (src/sequence_export/jaudio).
 if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_library(ntdlib sequence_export
         src/sequence_export/convert.cpp
@@ -129,6 +130,14 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/filter_tables_switch.cpp
         src/sequence_export/frame.cpp
         src/sequence_export/instruments.cpp
+        src/sequence_export/jaudio/convert.cpp
+        src/sequence_export/jaudio/envelope.cpp
+        src/sequence_export/jaudio/game.cpp
+        src/sequence_export/jaudio/game_input.cpp
+        src/sequence_export/jaudio/instruments.cpp
+        src/sequence_export/jaudio/performance.cpp
+        src/sequence_export/jaudio/sfz.cpp
+        src/sequence_export/jaudio/wave.cpp
         src/sequence_export/passes.cpp
         src/sequence_export/performance.cpp
         src/sequence_export/performer.cpp
@@ -139,12 +148,14 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/sfz_rsar.cpp
         src/sequence_export/sfz_track.cpp
         src/sequence_export/zone_low_pass.cpp)
-    target_link_libraries(ntdlib_sequence_export PUBLIC seqlib::seqlib ntdlib::ax ntdlib::common ntdlib::nwsnd
-                                                        ntdlib::sar ntdlib::rsar xsflib::console)
+    target_link_libraries(ntdlib_sequence_export PUBLIC seqlib::seqlib ntdlib::ax ntdlib::common ntdlib::disc
+                                                        ntdlib::jaudio ntdlib::nwsnd ntdlib::sar ntdlib::rsar
+                                                        ntdlib::wave xsflib::console)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_frame ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_revolution ntdlib::sequence_export)
+    xsflib_add_project_test(ntdlib sequence_export_jaudio ntdlib::sequence_export)
     if (NTDLIB_TESTS)
         # The Wii's tests read wii_pan.h, a private header of sequence_export.
         target_include_directories(ntdlib_sequence_export_revolution_test PRIVATE ${PROJECT_SOURCE_DIR}/src)

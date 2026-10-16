@@ -1503,6 +1503,29 @@ std::string SoundArchive::ExternalPath(uint32_t file_id) const
     return file_id < files_.size() ? files_[file_id].external_path : "";
 }
 
+std::vector<uint32_t> SoundArchive::GroupFileIds(std::size_t group) const
+{
+    const std::span<const uint8_t> file =
+        group < groups_.size() ? FileData(groups_[group].file_id) : std::span<const uint8_t>();
+    if (file.empty())
+    {
+        return {};
+    }
+
+    // INFO lists each file's ID, then where the group's FILE block holds the file. A null reference there links to the
+    // archive's copy.
+    const xsflib::Reader g = OpenFile(file, "GRP", options_);
+    const std::size_t table = RequiredBlock(BlockTable(g), 0x7800, "INFO").first + 8;
+    const uint32_t count = g.U32(table);
+    std::vector<uint32_t> ids;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        ids.push_back(g.U32(table + ReadRef(g, table + 4 + i * 8).offset));
+    }
+
+    return ids;
+}
+
 std::optional<uint32_t> SoundArchive::FindSound(const std::string& name) const
 {
     for (uint32_t i = 0; i < sounds_.size(); i++)

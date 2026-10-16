@@ -719,9 +719,9 @@ public:
         build_ = build;
     }
 
-    // Sets variable `index` to `value` before the sequence starts. A game can do that through the sound's handle. 0 to
-    // 15 are the player's variables, and 16 to 31 the global ones. `engine` holds the global variables. Other indices
-    // change nothing.
+    // Sets variable `index` to `value`. A game can do that through the sound's handle, before the sequence starts or
+    // while it plays. 0 to 15 are the player's variables, and 16 to 31 the global ones. `engine` holds the global
+    // variables. Other indices change nothing.
     void SetVariable(Engine& engine, int index, int16_t value)
     {
         if (int16_t* variable = Variable(engine, index))

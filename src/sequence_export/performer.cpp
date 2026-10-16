@@ -457,6 +457,9 @@ struct TrackMidi
 
     // The parts the track has left.
     std::array<LeftPart, 16> left{};
+
+    // The track's volume, pan and sends at the end of its last tick (Performance::mix).
+    std::array<int16_t, kMixSettingCount> mix = {127, 0, 0, 0, 0};
 };
 
 // A sequence track: its state and settings from the core's track (Performer::TakeCoreTrack), its channels, and the
@@ -491,6 +494,11 @@ struct Track
     bool note_wait = true; // a note makes the track wait for its length (MML notewait)
     bool tie = false;
     bool mono = false;
+
+    // The offset of the command that the track runs, and how the track's next stretch of commands begins, if its next
+    // command begins one (Performance::stretches).
+    uint32_t command = 0;
+    std::optional<Entry> next_stretch = Entry::kOpen;
     std::array<CallEntry, kCallDepth> calls{};
     int call_depth = 0;
     int32_t wait = 0; // ticks until the next command
@@ -885,6 +893,9 @@ public:
     // Track `t`'s commands for the tick have run, and its settings reach its channels.
     void OnTickEnd(Performer& engine, int t);
 
+    // Records the changes of track `t`'s volume, pan and sends in the tick (Performance::mix).
+    void RecordMix(const Performer& engine, int t);
+
     // Track `t` releases all its channels (SequenceTrack::ReleaseAllChannel). OnReleaseAll comes before the channels
     // are released, and OnReleasedAll after.
     void OnReleaseAll(Performer& engine, int t);
@@ -1031,13 +1042,31 @@ public:
     std::array<TrackMidi, 16> tracks{}; // what each track's MIDI channels have been sent
 };
 
-// A note command that waits for the core's verdict on its channel (Performer::FollowNoteCommand).
+// How a track's next stretch of commands begins after `command` moved the track elsewhere (Performance::stretches).
+Entry EntryAfter(uint32_t command)
+{
+    switch (command)
+    {
+    case 0x8a:
+        return Entry::kCall;
+    case 0xfd:
+        return Entry::kReturn;
+    case 0xfc:
+        return Entry::kLoop;
+    default:
+        return Entry::kJump;
+    }
+}
+
+// A note command that waits for the core's verdict on its channel (Performer::FollowNoteCommand), and where the command
+// lies.
 struct PendingNote
 {
     int t = 0;
     int key = 0;
     int velocity = 0;
     int32_t length = 0;
+    NoteCommand command;
 };
 
 // Executes a sequence tick by tick, following nw::snd::SequenceSoundPlayer, and records its output.
@@ -1094,6 +1123,9 @@ public:
                 global_vars_[index - 16] = value;
             }
         }
+
+        // The game's changes come in the order of their frames.
+        std::ranges::stable_sort(options_.changes, {}, &VariableChange::frame);
 
         main_volume_.Init(127);
 
@@ -1427,6 +1459,10 @@ private:
     // Starts a tick: the core begins it and moves the main volume a tick on. The performer takes the main volume.
     void StartTick();
 
+    // Makes the game's changes of variables that come by the current frame (PerformOptions::changes), before the
+    // frame's first tick. The search for the main loop then starts again.
+    void ChangeVariables();
+
     // Runs the open tracks from track `first` on for one tick, and closes those that finish. Returns true if one of
     // them is still open.
     bool ParseTracks(int first);
@@ -1616,9 +1652,11 @@ private:
     int note_to_pair_ = -1;
 
     // The note command that waits for the core's verdict (FollowNoteCommand, SettleNote), and the core's channel for it
-    // while FollowNoteOn and FollowLegato settle it.
+    // while FollowNoteOn and FollowLegato settle it. The MIDI notes that NoteOn starts while SettleNote settles a note
+    // command take `settling_command_` (Performance::note_commands).
     std::optional<PendingNote> pending_note_;
     nwsnd::ChannelId settling_channel_ = nwsnd::kNoChannel;
+    NoteCommand settling_command_;
 
     // The core counts down a track's lengths, and the channels that the count releases (FollowRelease).
     bool counting_lengths_ = false;
@@ -1653,6 +1691,8 @@ private:
     std::vector<std::pair<uint32_t, uint32_t>> owner_passes_; // the owner's counted passes, start and end ticks
     std::size_t marked_ = 0;                                  // the marked one of them (MarkSteadyPass)
     bool extended_ = false;                       // the performance ran past the passes it had to find one to mark
+    std::size_t next_change_ = 0;                 // the first of the game's changes still to come (ChangeVariables)
+    uint32_t changed_at_ = 0;                     // the tick of the last change
     std::optional<uint32_t> last_draw_;           // the last tick a track drew a random number in
     std::array<uint16_t, 32> variable_readers_{}; // the tracks that have read each player or global variable
     std::vector<LoopChoice> replay_;              // the choices of an earlier pass to make again (MarkSteadyPass)
@@ -2131,6 +2171,7 @@ void Performer::OpenTrack(int t, uint32_t offset)
 
     tr.open = true;
     tr.opened = tick_;
+    tr.next_stretch = Entry::kOpen;
 }
 
 void MidiRecorder::MidiNoteOff(Performer& engine, int t, Note& n)
@@ -3348,6 +3389,8 @@ void MidiRecorder::MidiNoteOn(Performer& engine, int t, Note& n, int velocity, c
     n.midi.start_velocity = velocity;
     n.midi.frame = engine.frame_;
     n.midi.id = rec.NoteOn(out, tracks[t].output, engine.tick_, n.midi.key, n.midi.velocity);
+    out.note_commands.resize(n.midi.id);
+    out.note_commands[n.midi.id - 1] = engine.settling_command_;
     NoteChange(engine, t, EventKind::kNoteOn);
     if (engine.Wii())
     {
@@ -3896,6 +3939,13 @@ void Performer::OnLoop(int t, uint32_t target, bool jump)
         }
     }
 
+    // A pass that started before the game's last change of a variable can play otherwise than the passes after it
+    // (ChangeVariables). It doesn't count.
+    if (start < changed_at_)
+    {
+        return;
+    }
+
     // A pass that changed something, of another loop than the marked one, means the marked pass doesn't repeat what
     // plays now. That happens when an earlier track has gone idle while a later track's loop plays on. Mark this pass
     // instead. An idle pass counts only while nothing else changes. Any idle pass then repeats the sound. Such a pass
@@ -3924,8 +3974,10 @@ void Performer::OnLoop(int t, uint32_t target, bool jump)
         midi_.out.loop = Performance::Loop{start, tick_};
     }
 
+    // The performance stops at a pass that repeats, once it has played the passes asked for and kMinLoopSeconds. It
+    // plays on while a change of a variable is still to come. The change can change what the loop plays.
     if (midi_.out.loops >= options_.loops && now_ms_ >= kMinLoopSeconds * 1000.0 - settings_.early_ticks_ms &&
-        MarkSteadyPass(t, target))
+        next_change_ == options_.changes.size() && MarkSteadyPass(t, target))
     {
         stop_ = true;
         stopped_by_ = t;
@@ -4083,6 +4135,8 @@ void Performer::MakeCore(Regions& banks, int channels, int voices)
 
 void Performer::StartTick()
 {
+    ChangeVariables();
+
     // The core begins its tick: SequenceSoundPlayer::ParseNextTick (0x022B70AC) moves the main volume a tick on before
     // the tracks' ticks. The performer takes the main volume from the core.
     const auto begin_tick = [&](auto& core)
@@ -4093,6 +4147,36 @@ void Performer::StartTick()
         main_volume_.Take(core.GetPlayer().MainVolume());
     };
     WithCore(begin_tick);
+}
+
+void Performer::ChangeVariables()
+{
+    const std::vector<VariableChange>& changes = options_.changes;
+    if (next_change_ == changes.size() || changes[next_change_].frame > frame_)
+    {
+        return;
+    }
+
+    // The core and the performer take each change of a player or a global variable.
+    while (next_change_ < changes.size() && changes[next_change_].frame <= frame_)
+    {
+        const VariableChange& change = changes[next_change_++];
+        if (change.index < 32)
+        {
+            *Variable(0, change.index) = change.value;
+            WithCore([&](auto& core) { core.GetPlayer().SetVariable(core, change.index, change.value); });
+        }
+    }
+
+    // The passes of the main loop so far can play otherwise than the passes after the change. The search for the main
+    // loop starts again with the first pass that starts after it (OnLoop).
+    changed_at_ = tick_;
+    midi_.out.loop.reset();
+    midi_.out.loops = 0;
+    loop_owner_.reset();
+    owner_passes_.clear();
+    marked_ = 0;
+    extended_ = false;
 }
 
 bool Performer::ParseTracks(int first)
@@ -4183,6 +4267,24 @@ void Performer::FollowCommandStart(int t, uint32_t offset, uint32_t command, boo
     last_run_[t][offset] = {tick_, commands_run_++, InnermostCall(t)};
     tr.held_wait = false;
 
+    // The command runs on in the track's stretch of commands, or begins the next stretch (Performance::stretches).
+    std::vector<Stretch>& stretches = midi_.out.stretches[t];
+    tr.command = offset;
+    if (tr.next_stretch)
+    {
+        stretches.push_back({.tick = tick_,
+                             .first = offset,
+                             .last = offset,
+                             .entry = *tr.next_stretch,
+                             .depth = static_cast<uint8_t>(tr.call_depth),
+                             .note_wait = tr.note_wait});
+        tr.next_stretch.reset();
+    }
+    else
+    {
+        stretches.back().last = offset;
+    }
+
     // A conditional jump, call, return or fin can leave a loop (see OnLoop).
     if (conditional && (command == 0x89 || command == 0x8a || command == 0xfd || command == 0xff))
     {
@@ -4203,6 +4305,12 @@ void Performer::FollowCommand(int t, uint32_t command, int32_t arg1, int32_t arg
 
     tracks_[t].current = next;
     WithCore([&](auto& core) { RecordCoreCommand(core, t, command, arg1, arg2); });
+
+    // A command that moved the track elsewhere ends the track's stretch of commands.
+    if (tracks_[t].current != next)
+    {
+        tracks_[t].next_stretch = EntryAfter(command);
+    }
 }
 
 template <typename Core>
@@ -4636,7 +4744,8 @@ void Performer::FollowNoteCommand(int t, int key, int velocity, int32_t length)
     note_to_pair_ = -1;
     if (!tr.mute)
     {
-        pending_note_ = PendingNote{t, key, velocity, length};
+        const auto stretch = static_cast<uint32_t>(midi_.out.stretches[t].size() - 1);
+        pending_note_ = PendingNote{t, key, velocity, length, {tr.command, stretch}};
     }
 
     if (tr.note_wait)
@@ -4660,6 +4769,7 @@ void Performer::SettleNote(bool drop)
     // A note that NoteOn starts waits for the core's channel (FollowNoteOn).
     const PendingNote note = *pending_note_;
     pending_note_.reset();
+    settling_command_ = note.command;
     const uint64_t started = notes_started_;
     if (NoteOn(note.t, note.key, note.velocity, note.length > 0 ? note.length : -1, drop))
     {
@@ -4765,11 +4875,29 @@ void Performer::TakeCorePlayer(Core& core)
 
 void MidiRecorder::OnTickEnd(Performer& engine, int t)
 {
+    RecordMix(engine, t);
     UpdateOutputs(engine, t);
     CheckLfo(engine, t);
     if (tracks[t].played && engine.tracks_[t].open && engine.TrackBusy(t))
     {
         rec.RaiseLevelPeak(TrackLevel(engine, t) * tracks[t].legato_gain);
+    }
+}
+
+void MidiRecorder::RecordMix(const Performer& engine, int t)
+{
+    const Track& tr = engine.tracks_[t];
+    const std::array<int16_t, kMixSettingCount> values = {static_cast<int16_t>(tr.vol.Get()),
+                                                          static_cast<int16_t>(tr.pan.Get()), tr.fx_send_a,
+                                                          tr.fx_send_b, tr.fx_send_c};
+    std::array<int16_t, kMixSettingCount>& last = tracks[t].mix;
+    for (int setting = 0; setting < kMixSettingCount; setting++)
+    {
+        if (values[setting] != last[setting])
+        {
+            out.mix[t].push_back({engine.tick_, static_cast<Mix>(setting), values[setting]});
+            last[setting] = values[setting];
+        }
     }
 }
 

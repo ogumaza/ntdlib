@@ -361,6 +361,11 @@ public:
         return groups_;
     }
 
+    // The IDs of the files that group `group` of Groups() loads, in the order of its file's table. The game loads them
+    // all with the group: the files whose copies the group's file holds, and the files in the archive that it links to.
+    // Empty for a group that the game keeps outside the archive. Throws FormatError if the group's file can't be read.
+    std::vector<uint32_t> GroupFileIds(std::size_t group) const;
+
     // The index of the first sound named `name`.
     std::optional<uint32_t> FindSound(const std::string& name) const;
 

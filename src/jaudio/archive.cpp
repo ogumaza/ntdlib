@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "jaudio/reader.h"
+#include "ntdlib/jaudio/aaf.h"
 #include "xsflib/binary.h"
 
 namespace ntdlib::jaudio
@@ -490,6 +491,17 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
             bstn.empty() ? std::nullopt : std::optional<xsflib::Reader>(xsflib::Reader(bstn, true, kReaderOptions));
         archive.sounds_ = ReadSoundTable(xsflib::Reader(bst, true, kReaderOptions), bst_offset, names, options);
     }
+
+    return archive;
+}
+
+SoundArchive SoundArchive::ParseAaf(std::vector<uint8_t> aaf)
+{
+    SoundArchive archive;
+    archive.data_ = std::move(aaf);
+    archive.sounds_ = ReadAafSounds(archive.data_);
+    archive.wave_systems_ = ReadAafWaveSystems(archive.data_);
+    archive.banks_ = ReadAafBanks(archive.data_, archive.warnings_);
 
     return archive;
 }
