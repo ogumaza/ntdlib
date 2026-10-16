@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-// NintendoWare sound format readers: the 3DS's BCSAR archives and their CSEQ, CBNK, CWAR, CWAV and CGRP files, and the
-// BFSAR archives of the Wii U and the Switch, with their FSEQ, FBNK, FWAR, FWAV and FGRP files. The F formats are the
-// 3DS's C formats with new names, laid out the same way. Each file is in the byte order that its byte order mark gives:
-// little-endian on the 3DS and the Switch, big-endian on the Wii U. The readers support CSAR 2.3 on the 3DS, FSAR 2.0.0
-// to 2.3.0 on the Wii U, and FSAR 2.2.0 and 2.5.0 on the Switch. The layouts follow nw::snd's readers on the 3DS.
+// NintendoWare sound format readers: the 3DS's BCSAR archives and their CSEQ, CBNK, CWAR, CWAV, CWSD and CGRP files,
+// and the BFSAR archives of the Wii U and the Switch, with their FSEQ, FBNK, FWAR, FWAV, FWSD and FGRP files. The F
+// formats are the 3DS's C formats with new names, laid out the same way. Each file is in the byte order that its byte
+// order mark gives: little-endian on the 3DS and the Switch, big-endian on the Wii U. The readers support CSAR 2.3 on
+// the 3DS, FSAR 2.0.0 to 2.3.0 on the Wii U, and FSAR 2.2.0 and 2.5.0 on the Switch. The layouts follow nw::snd's
+// readers on the 3DS. A wave sound file's layout comes from the files of games instead (see WaveSoundFile).
 
 #pragma once
 
@@ -240,6 +241,42 @@ struct Bank
     std::vector<std::optional<Instrument>> instruments;
 };
 
+// A wave sound file (CWSD or FWSD): the waves that its wave sounds play, and the wave sounds. A wave sound plays its
+// tracks. Each note event of a track plays one of the sound's notes. A note holds its wave and its settings as a bank's
+// velocity region holds them. The layout comes from the wave sound files of games for all three consoles, not from
+// nw::snd's reader. The INFO block (0x6800) holds a reference to a table of the waves (0x0100) and one to a table of
+// references to the wave sounds (0x0101). A wave sound (0x4900) holds references to its settings (0x4901), to its
+// tracks (0x4903) and to its notes (0x4902). A track holds a reference to its note events (0x4904).
+struct WaveSoundFile
+{
+    // A note event: its position, its length and the note that it plays, an index into WaveSound::notes. The reader
+    // gives the position and the length in the file's units.
+    struct NoteEvent
+    {
+        float position = 0.0f;
+        float length = 0.0f;
+        uint32_t note = 0;
+    };
+
+    // A wave sound: its pan, its pitch and its envelope, its tracks of note events and its notes. A note's
+    // `wave_id_index` is an index into WaveSoundFile::waves. The reader leaves out the sound's sends and filter.
+    struct WaveSound
+    {
+        uint8_t pan = 64;
+        float pitch = 1.0f;
+        Adshr adshr;
+        std::vector<std::vector<NoteEvent>> tracks;
+        std::vector<VelocityRegion> notes;
+    };
+
+    // Reads `file`. Throws xsflib::FormatError for a file that isn't a wave sound file of `options.flavor`'s
+    // generation, and for one whose tables can't be read.
+    static WaveSoundFile Parse(std::span<const uint8_t> file, const Options& options);
+
+    std::vector<WaveId> waves;
+    std::vector<WaveSound> sounds;
+};
+
 // A sequence file's (CSEQ or FSEQ) bytecode. Its bytecode may hold several sequences. Each starts at one of its labels.
 struct Sequence
 {
@@ -280,6 +317,9 @@ struct SoundInfo
     uint32_t player_id = 0; // 0x04xxxxxx item ID
     uint8_t player_priority = 64;
     uint8_t actor_player_id = 0;
+
+    // Wave sounds only: the sound's place among the wave sounds of its wave sound file (WaveSoundFile::sounds).
+    uint32_t wave_sound_index = 0;
 
     // Sequence sounds only.
     std::vector<uint32_t> banks; // up to four bank item IDs (0x03xxxxxx), or 0xFFFFFFFF for an empty slot

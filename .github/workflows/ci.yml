@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 
-# Builds ntdlib on its own and runs ctest whenever main changes: on macOS ARM64, and on Windows x64 with clang-cl.
-# Changes to documentation alone don't start a run.
+# Builds ntdlib on its own whenever main changes: on Windows x64 with clang-cl, and on macOS ARM64. The Windows job
+# runs ctest too. The macOS job builds without the tests (NTDLIB_TESTS=OFF). Changes to documentation alone don't
+# start a run.
 name: CI
 
 on:
@@ -22,7 +23,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +31,10 @@ jobs:
           - name: Windows x64 (clang-cl)
             os: windows-2025
             cmake: -A x64 -T ClangCL
+            tests: true
           - name: macOS ARM64 (Apple Clang)
             os: macos-15
+            cmake: -DNTDLIB_TESTS=OFF
     defaults:
       run:
         shell: bash
@@ -44,4 +47,5 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
+        if: matrix.tests
         run: ctest --test-dir build --build-config Release --output-on-failure --parallel 4

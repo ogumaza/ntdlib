@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // Builds small sound files of NintendoWare for tests, laid out as the real ones are: waves, wave archives, banks,
-// sequences, groups, sound archives and SARC archives. Each builder takes the flavor of ntdlib's sar reader. The 3DS's
-// files (CWAV, CWAR, CBNK, CSEQ, CGRP and CSAR) are little-endian. The Wii U's files (FWAV, FWAR, FBNK, FSEQ, FGRP and
-// FSAR) are big-endian. The Switch's files are the Wii U's formats, little-endian. A builder given a bool builds the
-// Wii U's files for true and the Switch's files for false.
+// wave sound files, sequences, groups, sound archives and SARC archives. Each builder takes the flavor of ntdlib's sar
+// reader. The 3DS's files (CWAV, CWAR, CBNK, CWSD, CSEQ, CGRP and CSAR) are little-endian. The Wii U's files (FWAV,
+// FWAR, FBNK, FWSD, FSEQ, FGRP and FSAR) are big-endian. The Switch's files are the Wii U's formats, little-endian. A
+// builder given a bool builds the Wii U's files for true and the Switch's files for false.
 
 #pragma once
 
@@ -456,6 +456,123 @@ inline std::vector<uint8_t> Bank(bool big_endian, const BankSpec& spec)
     return Bank(detail::FlavorOf(big_endian), spec);
 }
 
+// A note event of a wave sound's track: its position, its length and the note that it plays.
+struct NoteEventSpec
+{
+    float position = 0.0f;
+    float length = 0.0f;
+    uint32_t note = 0;
+};
+
+// A wave sound: its pan, pitch and envelope when they're set, its tracks of note events, and its notes. A note is laid
+// out as a bank's region. Its wave is an index into the file's waves.
+struct WaveSoundSpec
+{
+    std::optional<int> pan;
+    std::optional<float> pitch;
+    std::optional<std::array<uint8_t, 5>> adshr;
+    std::vector<std::vector<NoteEventSpec>> tracks;
+    std::vector<Region> notes;
+};
+
+struct WaveSoundFileSpec
+{
+    std::vector<std::pair<uint32_t, uint32_t>> waves; // wave archive item ID and index
+    std::vector<WaveSoundSpec> sounds;
+};
+
+// A wave sound file. INFO holds the table of the waves and the table of the wave sounds. Each wave sound holds
+// references to its settings, to its table of tracks and to its table of notes. A track holds a reference to its table
+// of note events.
+inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFileSpec& spec)
+{
+    const bool big_endian = detail::BigEndian(flavor);
+    Bytes info(big_endian);
+    info.Add(16);
+    const size_t waves = info.Add(4 + 8 * spec.waves.size());
+    info.Ref(0, 0x0100, waves, 0);
+    info.U32(waves, static_cast<uint32_t>(spec.waves.size()));
+    for (size_t i = 0; i < spec.waves.size(); ++i)
+    {
+        info.U32(waves + 4 + 8 * i, spec.waves[i].first);
+        info.U32(waves + 8 + 8 * i, spec.waves[i].second);
+    }
+
+    const size_t sounds = info.Add(4 + 8 * spec.sounds.size());
+    info.Ref(8, 0x0101, sounds, 0);
+    info.U32(sounds, static_cast<uint32_t>(spec.sounds.size()));
+    for (size_t i = 0; i < spec.sounds.size(); ++i)
+    {
+        const WaveSoundSpec& sound = spec.sounds[i];
+        const size_t data = info.Add(24);
+        info.Ref(sounds + 4 + 8 * i, 0x4900, data, sounds);
+
+        // The settings: optional parameters, with the envelope behind a reference.
+        std::vector<std::pair<int, uint32_t>> values;
+        if (sound.pan)
+        {
+            values.push_back({0, static_cast<uint8_t>(*sound.pan)});
+        }
+        if (sound.pitch)
+        {
+            values.push_back({1, std::bit_cast<uint32_t>(*sound.pitch)});
+        }
+        if (sound.adshr)
+        {
+            values.push_back({9, 0});
+        }
+        const size_t settings = info.Options(values);
+        info.Ref(data, 0x4901, settings, data);
+        if (sound.adshr)
+        {
+            const size_t ref = info.Add(8);
+            const size_t envelope = info.Add(8);
+            info.U32(settings + 4 * values.size(), static_cast<uint32_t>(ref - settings));
+            info.Ref(ref, 0x0000, envelope, ref);
+            std::memcpy(info.data.data() + envelope, sound.adshr->data(), 5);
+        }
+
+        // The tracks, each with its table of note events.
+        const size_t tracks = info.Add(4 + 8 * sound.tracks.size());
+        info.Ref(data + 8, 0x0101, tracks, data);
+        info.U32(tracks, static_cast<uint32_t>(sound.tracks.size()));
+        for (size_t k = 0; k < sound.tracks.size(); ++k)
+        {
+            const size_t track = info.Add(8);
+            info.Ref(tracks + 4 + 8 * k, 0x4903, track, tracks);
+            const size_t events = info.Add(4 + 8 * sound.tracks[k].size());
+            info.Ref(track, 0x0101, events, track);
+            info.U32(events, static_cast<uint32_t>(sound.tracks[k].size()));
+            for (size_t e = 0; e < sound.tracks[k].size(); ++e)
+            {
+                const NoteEventSpec& note_event = sound.tracks[k][e];
+                const size_t event = info.Add(16);
+                info.Ref(events + 4 + 8 * e, 0x4904, event, events);
+                info.U32(event, std::bit_cast<uint32_t>(note_event.position));
+                info.U32(event + 4, std::bit_cast<uint32_t>(note_event.length));
+                info.U32(event + 8, note_event.note);
+            }
+        }
+
+        // The notes.
+        const size_t notes = info.Add(4 + 8 * sound.notes.size());
+        info.Ref(data + 16, 0x0101, notes, data);
+        info.U32(notes, static_cast<uint32_t>(sound.notes.size()));
+        for (size_t k = 0; k < sound.notes.size(); ++k)
+        {
+            info.Ref(notes + 4 + 8 * k, 0x4902, detail::PutRegion(info, sound.notes[k]), notes);
+        }
+    }
+
+    return File(big_endian, detail::Magic(flavor, "WSD").c_str(), detail::Version(flavor, 0x01000000, 0x00010100),
+                {{0x6800, "INFO", info.data}});
+}
+
+inline std::vector<uint8_t> WaveSoundFile(bool big_endian, const WaveSoundFileSpec& spec)
+{
+    return WaveSoundFile(detail::FlavorOf(big_endian), spec);
+}
+
 // A sequence file: its bytecode, and labels by name and offset.
 inline std::vector<uint8_t> Sequence(sar::Flavor flavor, const std::vector<uint8_t>& bytecode,
                                      const std::vector<std::pair<std::string, uint32_t>>& labels)
@@ -531,6 +648,9 @@ struct SoundSpec
     uint8_t volume = 100;
     std::optional<uint32_t> pan = std::nullopt;      // pan mode | pan curve << 8
     std::optional<uint32_t> priority = std::nullopt; // player priority | actor player ID << 8
+
+    // Wave sounds only: the sound's place in its wave sound file.
+    uint32_t wave_sound_index = 0;
 
     // Sequences only.
     std::vector<uint32_t> banks = {}; // indices into the banks, or 0xFFFFFFFF for an empty slot
@@ -651,6 +771,10 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
 
         const size_t detail = info.Add(12);
         info.Ref(s + 12, static_cast<uint16_t>(sound.kind), detail, s);
+        if (sound.kind == SoundSpec::kWaveSound)
+        {
+            info.U32(detail, sound.wave_sound_index);
+        }
         if (sound.kind != SoundSpec::kSequence)
         {
             continue;

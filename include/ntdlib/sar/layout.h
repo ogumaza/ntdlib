@@ -6,12 +6,14 @@
 // holds an offset or a size becomes a distance between two places in the pieces. Joining lays the pieces out again and
 // writes the distances into the fields. The pieces of an archive join to give the archive back byte for byte. After an
 // edit, each sequence file takes the size that its commands give, and the files after it move. WriteTableValues writes
-// the values of the tables that have a place there, such as a sound's volume.
+// the values of the tables that have a place there, such as a sound's volume. StartFields finds where the tables hold
+// each sound's start.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <variant>
 #include <vector>
@@ -107,5 +109,12 @@ std::vector<std::size_t> Starts(std::span<const uint8_t> archive, Flavor flavor,
 // keeps its byte. Throws xsflib::FormatError if the tables can't be read.
 void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const SoundInfo> sounds,
                       std::span<const PlayerInfo> players);
+
+// Where the tables of `archive`, an archive of `flavor`, hold each sound's start in its sequence file's bytecode: the
+// position of the 32-bit field from the archive's start, for each sound of the sound table in order. A sound that isn't
+// a sequence sound has none. Neither has a sequence sound whose entry leaves the start out: it starts where the
+// bytecode starts. Cut makes each of these fields one of the layout's fields when the sound's file becomes a piece. An
+// editor finds a sound's start among them. Throws xsflib::FormatError if the tables can't be read.
+std::vector<std::optional<std::size_t>> StartFields(std::span<const uint8_t> archive, Flavor flavor);
 
 } // namespace ntdlib::sar

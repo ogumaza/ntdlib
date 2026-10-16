@@ -4,7 +4,8 @@
 // flavor's format: the 3DS's, the Wii U's and the Switch's. Each archive holds two sequence files, a file of other
 // bytes, a sequence file laid out otherwise than the writer lays it out, and a group. The group holds a copy of a file
 // that only it holds, and a copy of one of the archive's sequence files. Another archive holds a sequence file with
-// bytes that no command reaches. A third archive's tables take new values.
+// bytes that no command reaches. A third archive's tables take new values. A fourth holds a wave sound beside a sequence
+// sound, for the fields of the sounds' starts.
 
 #include <algorithm>
 #include <cstddef>
@@ -337,6 +338,54 @@ void TestStarts(Flavor flavor)
     XSFLIB_CHECK(refused);
 }
 
+// The fields of the sounds' starts. Song starts at 0 and Entry at 5, each with the option. The other sounds' entries
+// leave the start out. Cut makes both fields fields of the layout. A wave sound has no start. StartFields refuses an
+// archive read in the other byte order.
+void TestStartFields(Flavor flavor)
+{
+    const std::vector<uint8_t> archive = Archive(flavor);
+    const Layout layout = Cut(archive, flavor);
+    const std::vector<std::size_t> starts = ntdlib::sar::Starts(archive, flavor, layout.pieces);
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Wave", .kind = sar_files::SoundSpec::kWaveSound, .file = 1},
+                   {.name = "Song", .file = 0, .start_offset = 5}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})}, {.bytes = {1, 2, 3, 4}}};
+    const std::vector<uint8_t> waves = sar_files::Archive(flavor, spec);
+    const Flavor other = flavor == Flavor::kCafe ? Flavor::kNx : Flavor::kCafe;
+
+    const std::vector<std::optional<std::size_t>> fields = ntdlib::sar::StartFields(archive, flavor);
+    const std::vector<std::optional<std::size_t>> wave_fields = ntdlib::sar::StartFields(waves, flavor);
+    bool refused = false;
+    try
+    {
+        ntdlib::sar::StartFields(archive, other);
+    }
+    catch (const xsflib::FormatError&)
+    {
+        refused = true;
+    }
+
+    // A missing position reads the archive's first bytes, and its check fails.
+    const bool big_endian = flavor == Flavor::kCafe;
+    const xsflib::Reader r(archive, big_endian);
+    const auto in_layout = [&](const std::optional<std::size_t>& at)
+    {
+        const auto lies_at = [&](const Field& field)
+        {
+            return field.to.item && at && starts[field.at.piece] + field.at.offset == *at;
+        };
+
+        return std::ranges::any_of(layout.fields, lies_at);
+    };
+    XSFLIB_CHECK(fields.size() == 5 && fields[0] && fields[1] && !fields[2] && !fields[3] && !fields[4]);
+    XSFLIB_CHECK(r.U32(fields[0].value_or(0)) == 0 && r.U32(fields[1].value_or(0)) == 5);
+    XSFLIB_CHECK(in_layout(fields[0]) && in_layout(fields[1]));
+    XSFLIB_CHECK(wave_fields.size() == 2 && !wave_fields[0] && wave_fields[1]);
+    XSFLIB_CHECK(xsflib::Reader(waves, big_endian).U32(wave_fields[1].value_or(0)) == 5);
+    XSFLIB_CHECK(refused);
+}
+
 void TestRefusals(Flavor flavor)
 {
     const Layout layout = Cut(Archive(flavor), flavor);
@@ -504,6 +553,7 @@ int main()
         TestCut(flavor);
         TestEdits(flavor);
         TestStarts(flavor);
+        TestStartFields(flavor);
         TestRefusals(flavor);
         TestBytes(flavor);
         TestTableValues(flavor);

@@ -1132,4 +1132,30 @@ void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const
     }
 }
 
+std::vector<std::optional<std::size_t>> StartFields(std::span<const uint8_t> archive, Flavor flavor)
+{
+    const xsflib::Reader r(archive, flavor == Flavor::kCafe);
+    if (r.U16(4) != 0xFEFF)
+    {
+        throw xsflib::FormatError("an archive in another byte order");
+    }
+
+    std::vector<Distance> distances;
+    const std::map<uint16_t, std::size_t> tables = TablesOf(r, BlockOf(ReadBlocks(r, 0, distances), kInfoBlock) + 8);
+
+    // A sequence sound's start is its first option, as ReadStructure reads it.
+    std::vector<std::optional<std::size_t>> fields;
+    for (const std::size_t sound : EntriesOf(r, tables, kSoundTable))
+    {
+        const Reference detail = ReadRef(r, sound + 12);
+        std::optional<std::size_t>& field = fields.emplace_back();
+        if (detail.type == kSequenceSound)
+        {
+            field = OptionAt(r, sound + static_cast<uint32_t>(detail.offset) + 12, 0);
+        }
+    }
+
+    return fields;
+}
+
 } // namespace ntdlib::sar

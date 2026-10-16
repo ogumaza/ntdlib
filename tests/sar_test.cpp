@@ -1151,6 +1151,136 @@ void TestSarFilesBuildThe3dsFiles()
           "the 3DS's IMA-ADPCM wave");
 }
 
+void TestWaveSoundFilesAreRead(Flavor flavor)
+{
+    // Two wave sounds: one with its settings, and one without them whose second track has no events. The archive gives
+    // each sound's place in the file, in both rules.
+    namespace sar_files = ntdlib::testing::sar_files;
+    sar_files::Region pitched;
+    pitched.wave = 1;
+    pitched.original_key = 72;
+    sar_files::Region panned;
+    panned.pan = 100;
+    sar_files::WaveSoundSpec set;
+    set.pan = 20;
+    set.pitch = 1.5f;
+    set.adshr = std::array<uint8_t, 5>{1, 2, 3, 4, 5};
+    set.tracks = {{{0.0f, 0.0f, 0}}};
+    set.notes = {pitched};
+    sar_files::WaveSoundSpec plain;
+    plain.tracks = {{{0.0f, 1.0f, 1}, {0.5f, 0.25f, 0}}, {}};
+    plain.notes = {sar_files::Region{}, panned};
+    sar_files::WaveSoundFileSpec wsd;
+    wsd.waves = {{0x05000000, 3}, {0x05000001, 0}};
+    wsd.sounds = {set, plain};
+
+    sar_files::SoundSpec first;
+    first.name = "WSD_PLAIN";
+    first.kind = sar_files::SoundSpec::kWaveSound;
+    first.wave_sound_index = 1;
+    sar_files::SoundSpec second = first;
+    second.name = "WSD_SET";
+    second.wave_sound_index = 0;
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {first, second};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{sar_files::WaveSoundFile(flavor, wsd), "", false}};
+    const std::vector<uint8_t> bytes = sar_files::Archive(flavor, spec);
+
+    const SoundArchive lenient = SoundArchive::Load(bytes, OptionsOf(flavor));
+    const SoundArchive strict = SoundArchive::Load(bytes, StrictOptionsOf(flavor));
+    const WaveSoundFile read = WaveSoundFile::Parse(lenient.FileData(0), OptionsOf(flavor));
+    const WaveSoundFile read_strictly = WaveSoundFile::Parse(strict.FileData(0), StrictOptionsOf(flavor));
+
+    const std::string console = NameOf(flavor);
+    for (const SoundArchive* archive : {&lenient, &strict})
+    {
+        Check(archive->Sounds().size() == 2 && archive->Sounds()[0].type == SoundType::kWaveSound &&
+                  archive->Sounds()[0].wave_sound_index == 1 && archive->Sounds()[1].wave_sound_index == 0,
+              console + ": the wave sounds' places in their file");
+    }
+    Check(read.waves.size() == 2 && read.waves[0].wave_archive_item == 0x05000000 && read.waves[0].index == 3 &&
+              read.waves[1].wave_archive_item == 0x05000001 && read.waves[1].index == 0,
+          console + ": the wave sound file's waves");
+    Check(read.sounds.size() == 2, console + ": the wave sound file's sounds");
+    if (read.sounds.size() == 2)
+    {
+        const WaveSoundFile::WaveSound& a = read.sounds[0];
+        const WaveSoundFile::WaveSound& b = read.sounds[1];
+        Check(a.pan == 20 && a.pitch == 1.5f && a.adshr.attack == 1 && a.adshr.decay == 2 && a.adshr.sustain == 3 &&
+                  a.adshr.hold == 4 && a.adshr.release == 5,
+              console + ": a wave sound's settings");
+        Check(a.tracks.size() == 1 && a.tracks[0].size() == 1 && a.tracks[0][0].note == 0 && a.notes.size() == 1 &&
+                  a.notes[0].wave_id_index == 1 && a.notes[0].original_key == 72,
+              console + ": a wave sound's track and note");
+        Check(b.pan == 64 && b.pitch == 1.0f && b.adshr.attack == 127 && b.adshr.release == 127,
+              console + ": a wave sound's default settings");
+        Check(b.tracks.size() == 2 && b.tracks[0].size() == 2 && b.tracks[1].empty() && b.tracks[0][0].length == 1.0f &&
+                  b.tracks[0][0].note == 1 && b.tracks[0][1].position == 0.5f && b.tracks[0][1].length == 0.25f &&
+                  b.tracks[0][1].note == 0,
+              console + ": a wave sound's note events");
+        Check(b.notes.size() == 2 && b.notes[0].wave_id_index == 0 && b.notes[0].pan == 64 && b.notes[1].pan == 100 &&
+                  b.notes[1].original_key == 60,
+              console + ": a wave sound's notes");
+    }
+    Check(read_strictly.sounds.size() == read.sounds.size() && read_strictly.waves.size() == read.waves.size(),
+          console + ": a wave sound file read strictly");
+    Check(!ErrorOf([&] { WaveSoundFile::Parse(sar_files::Bank(flavor, {}), OptionsOf(flavor)); }).empty(),
+          console + ": a bank isn't a wave sound file");
+}
+
+void TestWaveSoundFileOfSharedTablesIsReported()
+{
+    // One wave sound whose table of tracks names the same track 100 times. That track's table of events names the same
+    // event 100 times. The 10,100 entries outnumber the file's bytes.
+    namespace sar_files = ntdlib::testing::sar_files;
+    sar_files::Bytes info(false);
+    info.Add(16);
+    const std::size_t waves = info.Add(4);
+    info.Ref(0, 0x0100, waves, 0);
+    const std::size_t sounds = info.Add(12);
+    info.Ref(8, 0x0101, sounds, 0);
+    info.U32(sounds, 1);
+    const std::size_t data = info.Add(24);
+    info.Ref(sounds + 4, 0x4900, data, sounds);
+    const std::size_t settings = info.Options({});
+    info.Ref(data, 0x4901, settings, data);
+    const std::size_t tracks = info.Add(4 + 8 * 100);
+    info.Ref(data + 8, 0x0101, tracks, data);
+    info.U32(tracks, 100);
+    const std::size_t track = info.Add(8);
+    const std::size_t events = info.Add(4 + 8 * 100);
+    info.Ref(track, 0x0101, events, track);
+    info.U32(events, 100);
+    const std::size_t event = info.Add(16);
+    for (std::size_t i = 0; i < 100; ++i)
+    {
+        info.Ref(tracks + 4 + 8 * i, 0x4903, track, tracks);
+        info.Ref(events + 4 + 8 * i, 0x4904, event, events);
+    }
+    const std::size_t notes = info.Add(4);
+    info.Ref(data + 16, 0x0101, notes, data);
+    const std::vector<uint8_t> file = sar_files::File(false, "FWSD", 0x00010100, {{0x6800, "INFO", info.data}});
+
+    const std::string message = ErrorOf([&] { WaveSoundFile::Parse(file, OptionsOf(Flavor::kNx)); });
+
+    Check(file.size() < 10100 && message.find("more entries than bytes") != std::string::npos,
+          "a wave sound file of shared tables: " + message);
+}
+
+void TestWaveSoundFileWithoutTablesIsReported()
+{
+    // An INFO block whose two references are empty.
+    namespace sar_files = ntdlib::testing::sar_files;
+    sar_files::Bytes info(false);
+    info.Add(16);
+    const std::vector<uint8_t> file = sar_files::File(false, "FWSD", 0x00010100, {{0x6800, "INFO", info.data}});
+
+    const std::string message = ErrorOf([&] { WaveSoundFile::Parse(file, OptionsOf(Flavor::kNx)); });
+
+    Check(message.find("without its tables") != std::string::npos, "a wave sound file without its tables: " + message);
+}
+
 void TestDspAdpcmSumsAsTheConsoleDoes()
 {
     // A frame at the largest scale, after two full-scale samples, with both coefficients at their largest. The sum
@@ -1373,6 +1503,7 @@ int main()
         TestStrictRulesKeepTheArchivesNames(flavor);
         TestStrictRulesCountRegionsAsTheyComeToThem(flavor);
         TestKeyBoundsFollowTheRules(flavor);
+        TestWaveSoundFilesAreRead(flavor);
     }
 
     // Only the Wii U's and the Switch's readers list the groups.
@@ -1386,6 +1517,8 @@ int main()
     TestImaAdpcmDecodesOnlyOnThe3ds();
     TestSarFilesBuildThe3dsFiles();
     TestDspAdpcmSumsAsTheConsoleDoes();
+    TestWaveSoundFileOfSharedTablesIsReported();
+    TestWaveSoundFileWithoutTablesIsReported();
     TestStrictRulesRefuseOtherArchivesInTheirWords();
     TestStrictRulesReportMissingBlocksTheirWay();
     TestStrictRulesReadTheirFields();

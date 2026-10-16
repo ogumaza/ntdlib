@@ -427,7 +427,9 @@ SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std:
         break;
 
     case 0x2202:
+        // The wave sound's details start with its index in its wave sound file.
         s.type = SoundType::kWaveSound;
+        s.wave_sound_index = r.U32(p + detail.offset);
         break;
 
     case 0x2203:
@@ -757,6 +759,103 @@ Bank Bank::Parse(std::span<const uint8_t> file, const Options& options)
     }
 
     return bank;
+}
+
+WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options& options)
+{
+    const xsflib::Reader r = OpenFile(file, "WSD", options);
+    const Blocks blocks = BlockTable(r);
+    const auto [info_off, info_size] = BlockOf(blocks, 0x6800, "INFO", "a wave sound file (CWSD)", options);
+
+    // INFO holds a reference to the table of the waves and one to the table of the wave sounds.
+    const std::size_t b = info_off + 8;
+    std::optional<std::size_t> wave_table;
+    std::optional<std::size_t> sound_table;
+    for (int i = 0; i < 2; i++)
+    {
+        const Reference ref = ReadRef(r, b + i * 8);
+        if (ref.type == 0x0100)
+        {
+            wave_table = b + ref.offset;
+        }
+        else if (ref.type == 0x0101)
+        {
+            sound_table = b + ref.offset;
+        }
+    }
+    if (!wave_table || !sound_table)
+    {
+        throw xsflib::FormatError("a wave sound file without its tables of waves and wave sounds");
+    }
+
+    WaveSoundFile wsd;
+    const uint32_t waves = r.U32(*wave_table);
+    for (uint32_t i = 0; i < waves; i++)
+    {
+        wsd.waves.push_back({r.U32(*wave_table + 4 + i * 8), r.U32(*wave_table + 8 + i * 8)});
+    }
+
+    // A table of references: a count, then each reference, from the table's start. Tables can share their entries. Each
+    // entry counts, and a file has fewer of them than bytes.
+    std::size_t entries = 0;
+    const auto table = [&](std::size_t at)
+    {
+        std::vector<std::size_t> targets;
+        const uint32_t count = r.U32(at);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            if (++entries > file.size())
+            {
+                throw xsflib::FormatError("the wave sound file has more entries than bytes");
+            }
+            targets.push_back(at + ReadRef(r, at + 4 + i * 8).offset);
+        }
+
+        return targets;
+    };
+
+    // Each wave sound: references to its settings, its tracks and its notes. The settings are optional parameters: the
+    // pan in the first, the pitch in the second, and the offset of a reference to the envelope in the tenth.
+    for (const std::size_t sound_at : table(*sound_table))
+    {
+        WaveSound sound;
+        const std::size_t settings = sound_at + ReadRef(r, sound_at).offset;
+        const OptionParams opt = OptionParams::Read(r, settings);
+        if (opt.values[0])
+        {
+            sound.pan = static_cast<uint8_t>(*opt.values[0]);
+        }
+        if (opt.values[1])
+        {
+            sound.pitch = r.F32(opt.value_offset[1]);
+        }
+        if (opt.values[9])
+        {
+            const std::size_t ref_at = settings + *opt.values[9];
+            const std::size_t a = ref_at + ReadRef(r, ref_at).offset;
+            sound.adshr = {r.U8(a), r.U8(a + 1), r.U8(a + 2), r.U8(a + 3), r.U8(a + 4)};
+        }
+
+        // A track holds a reference to the table of its note events. An event holds its position, its length and its
+        // note.
+        for (const std::size_t track_at : table(sound_at + ReadRef(r, sound_at + 8).offset))
+        {
+            std::vector<NoteEvent> events;
+            for (const std::size_t event : table(track_at + ReadRef(r, track_at).offset))
+            {
+                events.push_back({r.F32(event), r.F32(event + 4), r.U32(event + 8)});
+            }
+            sound.tracks.push_back(std::move(events));
+        }
+        for (const std::size_t note : table(sound_at + ReadRef(r, sound_at + 16).offset))
+        {
+            sound.notes.push_back(ReadVelocityRegion(r, note));
+        }
+
+        wsd.sounds.push_back(std::move(sound));
+    }
+
+    return wsd;
 }
 
 Sequence Sequence::Parse(std::span<const uint8_t> file, const Options& options)
@@ -1200,6 +1299,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
 
         case 0x2202:
             s.type = SoundType::kWaveSound;
+            s.wave_sound_index = r.U32(p + detail.offset);
             break;
 
         case 0x2203:
