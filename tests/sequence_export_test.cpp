@@ -3077,10 +3077,16 @@ void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
     const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
     const Conversion sequence = ConvertSequence(archive, 0);
 
-    const seqlib::sf2::Records v = seqlib::sf2::Read(bank.sf2);
+    XSFLIB_CHECK(bank.sound_fonts.size() == 1);
+    if (bank.sound_fonts.size() != 1)
+    {
+        return;
+    }
+    const BankSoundFont& sound_font = bank.sound_fonts[0];
+    const seqlib::sf2::Records v = seqlib::sf2::Read(sound_font.sf2);
     const seqlib::sf2::Records w = seqlib::sf2::Read(sequence.sf2);
-    XSFLIB_CHECK(Sf2Problem(bank.sf2).empty() && bank.warnings.empty() && bank.samples == 3);
-    XSFLIB_CHECK(v.Count("phdr", 38) == 3);
+    XSFLIB_CHECK(Sf2Problem(sound_font.sf2).empty() && bank.warnings.empty() && sound_font.samples == 3);
+    XSFLIB_CHECK(sound_font.first == 0 && sound_font.last == 2 && v.Count("phdr", 38) == 3);
     XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 0))) == "Program 0");
     XSFLIB_CHECK(u16(v.Record("phdr", 38, 0) + 20) == 0 && u16(v.Record("phdr", 38, 0) + 22) == 0);
     XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 1))) == "Program 2");
@@ -3163,8 +3169,9 @@ void TestBankProgramsAbove127TakeTheNextBank()
 
     const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
 
-    const seqlib::sf2::Records v = seqlib::sf2::Read(bank.sf2);
-    XSFLIB_CHECK(Sf2Problem(bank.sf2).empty() && v.Count("phdr", 38) == 3);
+    const std::vector<uint8_t>& sf2 = bank.sound_fonts.at(0).sf2;
+    const seqlib::sf2::Records v = seqlib::sf2::Read(sf2);
+    XSFLIB_CHECK(bank.sound_fonts.size() == 1 && Sf2Problem(sf2).empty() && v.Count("phdr", 38) == 3);
     XSFLIB_CHECK(u16(v.Record("phdr", 38, 1) + 20) == 2 && u16(v.Record("phdr", 38, 1) + 22) == 1);
     XSFLIB_CHECK(bank.sfz.files.size() == 2 && bank.sfz.files.front().name == "BANK_0_000.sfz" &&
                  bank.sfz.files.back().name == "BANK_0_130.sfz");
@@ -3191,8 +3198,78 @@ void TestLoudBankIsAttenuatedAndAMissingBankThrows()
     XSFLIB_CHECK(bank.warnings ==
                  std::vector<std::string>{
                      "region volume exceeds 127 (SoundFont attenuated by 6.0 dB; SFZ keeps the original volume)"});
-    XSFLIB_CHECK(seqlib::sf2::Read(bank.sf2).chunks.at("igen") == seqlib::sf2::Read(sequence.sf2).chunks.at("igen"));
+    XSFLIB_CHECK(seqlib::sf2::Read(bank.sound_fonts.at(0).sf2).chunks.at("igen") ==
+                 seqlib::sf2::Read(sequence.sf2).chunks.at("igen"));
     XSFLIB_CHECK(threw);
+}
+
+// The archive of a bank of 100 instruments, programs 0 to 99, or of those from `first` to `last` alone. Each
+// instrument has a region for each key, on one mono wave. The bank's zones then need more than the SoundFont format's
+// 65,535 generators.
+SoundArchive LargeBankArchive(uint32_t first = 0, uint32_t last = 99)
+{
+    const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, files::Region{}}}};
+    files::KeyTable keys{files::KeyTable::kIndex, 0, {}};
+    for (int key = 0; key < 128; key++)
+    {
+        keys.entries.emplace_back(key, velocities);
+    }
+    std::vector<std::optional<files::KeyTable>> instruments(100);
+    for (uint32_t p = first; p <= last; p++)
+    {
+        instruments[p] = keys;
+    }
+    std::vector<ArchiveFile> archive_files(2);
+    archive_files[0].data = files::Bank(console->settings.archive.flavor, {{{0x05000000, 0}}, instruments});
+    archive_files[1].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
+
+    return SoundArchive::Load(Fsar(archive_files, {.banks = {0}, .wave_archives = {1}}), console->settings.archive);
+}
+
+// Instruments past the SoundFont format's limits go into several SoundFonts. Each holds a run of programs in order, at
+// their places, under a name that gives them. The first SoundFont's instruments have the zones and samples of a bank
+// that holds them alone. The SFZ files hold every instrument.
+void TestLargeBankSplitsItsSoundFont()
+{
+    const SoundArchive archive = LargeBankArchive();
+    const auto u16 = [](const uint8_t* p)
+    {
+        return p[0] | p[1] << 8;
+    };
+
+    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
+
+    XSFLIB_CHECK(bank.sound_fonts.size() >= 2 && bank.sfz.files.size() == 100 && bank.warnings.empty());
+    if (bank.sound_fonts.size() < 2)
+    {
+        return;
+    }
+    uint32_t next = 0;
+    for (const BankSoundFont& sound_font : bank.sound_fonts)
+    {
+        const seqlib::sf2::Records v = seqlib::sf2::Read(sound_font.sf2);
+        XSFLIB_CHECK(Sf2Problem(sound_font.sf2).empty() && sound_font.first == next);
+        XSFLIB_CHECK(v.Count("phdr", 38) == sound_font.last - sound_font.first + 2);
+        for (uint32_t p = sound_font.first; p <= sound_font.last && p - sound_font.first + 1 < v.Count("phdr", 38); p++)
+        {
+            XSFLIB_CHECK(u16(v.Record("phdr", 38, p - sound_font.first) + 20) == static_cast<int>(p));
+        }
+        const std::string name =
+            "BANK_0, programs " + std::to_string(sound_font.first) + " to " + std::to_string(sound_font.last);
+        XSFLIB_CHECK(std::string(v.chunks.at("INAM").begin(), v.chunks.at("INAM").end()).starts_with(name + '\0'));
+        next = sound_font.last + 1;
+    }
+    XSFLIB_CHECK(next == 100);
+    const BankSoundFont& run = bank.sound_fonts[0];
+    const BankConversion alone =
+        ConvertBank(LargeBankArchive(run.first, run.last), 0, console->settings, console->program);
+    const seqlib::sf2::Records v = seqlib::sf2::Read(run.sf2);
+    const seqlib::sf2::Records w = seqlib::sf2::Read(alone.sound_fonts.at(0).sf2);
+    XSFLIB_CHECK(alone.sound_fonts.size() == 1);
+    for (const char* chunk : {"ibag", "igen", "imod", "phdr", "shdr", "smpl"})
+    {
+        XSFLIB_CHECK(v.chunks.at(chunk) == w.chunks.at(chunk));
+    }
 }
 
 void TestDirectVelocityTableTakesVelocitiesAbove127()
@@ -3390,6 +3467,7 @@ const Test kWiiUTests[] = {
     TestBankSfzFilesPlayEachInstrumentByItself,
     TestBankProgramsAbove127TakeTheNextBank,
     TestLoudBankIsAttenuatedAndAMissingBankThrows,
+    TestLargeBankSplitsItsSoundFont,
 };
 
 // The tests that run on the Switch.
@@ -3513,6 +3591,7 @@ const Test kSwitchTests[] = {
     TestBankSfzFilesPlayEachInstrumentByItself,
     TestBankProgramsAbove127TakeTheNextBank,
     TestLoudBankIsAttenuatedAndAMissingBankThrows,
+    TestLargeBankSplitsItsSoundFont,
 };
 
 // The tests that run on the 3DS.
@@ -3624,6 +3703,7 @@ const Test kCtrTests[] = {
     TestBankSfzFilesPlayEachInstrumentByItself,
     TestBankProgramsAbove127TakeTheNextBank,
     TestLoudBankIsAttenuatedAndAMissingBankThrows,
+    TestLargeBankSplitsItsSoundFont,
 };
 
 // The tests that run on the Wii as well: those that build no archive. sequence_export_revolution_test.cpp builds the

@@ -46,19 +46,29 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
 Conversion ConvertSequence(const rsar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
                            const Settings& settings, const std::string& program);
 
-// A bank's instruments as a SoundFont and as SFZ files, with the samples that the SFZ files share, and the warnings.
+// A SoundFont of a bank's instruments, from program `first` to program `last`.
+struct BankSoundFont
+{
+    uint32_t first = 0;
+    uint32_t last = 0;
+    std::vector<uint8_t> sf2;
+    std::size_t samples = 0; // SoundFont samples (two per stereo wave)
+};
+
+// A bank's instruments as SoundFonts and as SFZ files, with the samples that the SFZ files share, and the warnings. One
+// SoundFont holds every instrument, unless the instruments exceed the format's 65,535 zones, generators or modulators.
+// They then go into several SoundFonts, each with the instruments of a run of programs, in order.
 struct BankConversion
 {
-    std::vector<uint8_t> sf2;
+    std::vector<BankSoundFont> sound_fonts;
     SfzInstruments sfz;
-    std::size_t samples = 0; // SoundFont samples (two per stereo wave)
     std::vector<std::string> warnings;
 };
 
-// Builds a SoundFont and SFZ files of every instrument of bank `bank` of a CSAR or FSAR archive. Program p's instrument
-// becomes the SoundFont's preset p % 128 in bank p / 128, and an SFZ file by itself (BuildBankSfz). Each instrument
+// Builds SoundFonts and SFZ files of every instrument of bank `bank` of a CSAR or FSAR archive. Program p's instrument
+// becomes preset p % 128 in bank p / 128 of a SoundFont, and an SFZ file by itself (BuildBankSfz). Each instrument
 // plays as a track plays it with its starting settings: without envelope overrides or a filter, at the centre, with an
-// LFO whose depth CC1 sets. `program` is the name that goes in the SoundFont's ISFT and comment and in the SFZ files.
+// LFO whose depth CC1 sets. `program` is the name that goes in the SoundFonts' ISFT and comments and in the SFZ files.
 // Throws std::out_of_range when the archive lacks the bank.
 BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings,
                            const std::string& program);
