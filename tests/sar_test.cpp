@@ -627,6 +627,8 @@ void TestGroupsListTheFilesTheyLoad(Flavor flavor)
     Check(a.GroupFileIds(0) == std::vector<uint32_t>{3, 0} && a.GroupFileIds(1) == std::vector<uint32_t>{3, 4},
           "the files that each group loads" + on);
     Check(a.GroupFileIds(2).empty() && a.GroupFileIds(3).empty(), "a group kept outside, and no group" + on);
+    Check(a.ReadOptions().flavor == flavor && a.ReadOptions().rules == Rules::kStopAtFirstProblem,
+          "the options it was read with" + on);
 }
 
 void TestBrokenGroupIsReported(Flavor flavor)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.3.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.4.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -283,7 +283,7 @@ xsflib_add_project_test(ntdlib sar_layout ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_sequence_file ntdlib::sar_layout)
 
 # The Switch's audio renderer (nn::audio) with its I3DL2 reverb, and archive mode's model of nn::atk on it: an engine
-# that plays a sound archive's sequences as the Switch does, without the game's code. It came from HSF.
+# that plays a sound archive's sequences as the Switch does, without the game's code.
 xsflib_add_project_library(ntdlib nx src/nx/audio/dsp.cpp src/nx/audio/i3dl2.cpp src/nx/audio/renderer.cpp
                            src/nx/audio/voice.cpp src/nx/atk/effect.cpp src/nx/atk/engine.cpp
                            src/nx/atk/low_level_voice.cpp src/nx/atk/sequence.cpp src/nx/atk/voice_renderer.cpp)
@@ -291,6 +291,19 @@ target_link_libraries(ntdlib_nx PUBLIC ntdlib::nwsnd_archive PRIVATE ntdlib::com
 xsflib_add_project_test(ntdlib nx_audio ntdlib::nx)
 xsflib_add_project_test(ntdlib nx_atk ntdlib::nx)
 xsflib_add_project_test(ntdlib nx_atk_engine ntdlib::nx)
+
+# The Wii U's AX, the system library's effects for AX's aux buses (AXFX), and archive mode's model of nw::snd on them:
+# an engine that plays a sound archive's sequences as the Wii U does, without the game's code. The renderer follows the
+# DSP microcode of the system's sound library.
+xsflib_add_project_library(ntdlib cafe src/cafe/ax/render.cpp src/cafe/ax/resample.cpp src/cafe/ax/system.cpp
+                           src/cafe/axfx/chorus.cpp src/cafe/axfx/delay.cpp src/cafe/axfx/math.cpp
+                           src/cafe/axfx/reverb_hi.cpp src/cafe/axfx/reverb_std.cpp src/cafe/snd/ax_voice.cpp
+                           src/cafe/snd/effects.cpp src/cafe/snd/engine.cpp src/cafe/snd/renderer.cpp
+                           src/cafe/snd/sequence.cpp)
+target_link_libraries(ntdlib_cafe PUBLIC ntdlib::ax ntdlib::dsp ntdlib::nwsnd_archive PRIVATE ntdlib::common
+                                                                                              xsflib::rip)
+xsflib_add_project_test(ntdlib cafe_ax ntdlib::cafe)
+xsflib_add_project_test(ntdlib cafe_snd ntdlib::cafe xsflib::rip)
 
 # The archive play test's main, for a test that plays a sound archive's sounds on a model of the sound library
 # (ntdlib/testing/archive_play.h).

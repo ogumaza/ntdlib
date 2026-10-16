@@ -42,6 +42,10 @@ them. The notice is at the end of this file. `src/disc/cp932.h` has the SPDX ide
   references for how the Switch's audio renderer behaves (`ntdlib::nx`). No code is taken from them. The model of the
   renderer was written from a description of their behaviour and from a study of the renderer's build for the CPU that
   games' `sdk` modules hold. The writer hadn't read their source for that part.
+- [Cemu](https://github.com/cemu-project/Cemu) (MPL-2.0) and [decaf-emu](https://github.com/decaf-emu/decaf-emu)
+  (GPL-3.0) are references for how the Wii U's AX behaves (`ntdlib::cafe`). No code is taken from them. Where the model
+  follows their behaviour, the code was written from a description of that behaviour. The writer hadn't read their
+  source for that part. The renderer follows the DSP microcode that the system's sound library uploads.
 - [Wiimm's ISO Tools](https://wit.wiimm.de) document the WDF and CISO formats.
 - YAGCD (Yet Another GameCube Documentation) documents the GameCube's hardware and disc format. WiiBrew documents the
   Wii disc's layout, and the TMD, U8 archives, banner and NAND Boot Program of the Wii's titles. GBATEK documents the CX
@@ -62,9 +66,14 @@ filters fitted to SoundFont 2 and SFZ settings. `src/nx/audio/tables.h` holds th
 the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early reflections, powers of ten and
 sines. The model uses the exact values to reproduce the console's output.
 
+`src/cafe/ax/system.cpp` holds the taps of the FIR filter that the Wii U system's sound library uses to convert its
+output to 48 kHz. `src/cafe/axfx/reverb_tables.h` holds the lengths of the library's reverb lines, and the early taps
+and gains of its high-quality reverb. The models use the library's exact values to reproduce its output.
+
 `include/ntdlib/dsp/coef_rom.h` holds the DSP's coefficient ROM. Every GameCube and Wii has the same ROM. The ROM holds
 4-tap filters: 128 phases for each of three cutoffs. DSP programs that resample, such as the SDK's AX, read them. The
-DSP uses the exact values to reproduce the console's output.
+DSP uses the exact values to reproduce the console's output. The Wii U's DSP is taken to share the ROM's filters
+(`ntdlib::cafe`).
 
 ## Licence texts
 

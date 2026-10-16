@@ -288,6 +288,13 @@ public:
         return voices_[static_cast<std::size_t>(place)];
     }
 
+    // The MultiVoices that the queue has tried to hand out, at the places from 0 up. A copy of the manager can put
+    // them at other addresses: the deque's assignment frees the blocks that the copy doesn't fill.
+    int AddedCount() const
+    {
+        return static_cast<int>(voices_.size());
+    }
+
 private:
     friend class MultiVoice<Policy>;
 

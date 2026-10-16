@@ -334,6 +334,12 @@ public:
         return version_;
     }
 
+    // The options that Load read the archive with. A program finds the archive's flavor there.
+    const Options& ReadOptions() const
+    {
+        return options_;
+    }
+
     const std::vector<SoundInfo>& Sounds() const
     {
         return sounds_;

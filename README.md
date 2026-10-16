@@ -28,6 +28,7 @@ the ones it uses.
 | `ntdlib::nwsnd` | The tables of NintendoWare's sound libraries, and a model of their sequence player and channels for the Wii, the 3DS, the Wii U and the Switch, and of the Wii U's and the Switch's voices |
 | `ntdlib::nwsnd_commands` | A decoder and an encoder of the bytecode of NintendoWare's sequences in the form of `ntdlib::commands`, and the units of each console's values. The encoder gives back the bytes that the decoder read |
 | `ntdlib::nx` | A model of the Switch's audio renderer (`nn::audio`) with its I3DL2 reverb, and archive mode's model of `nn::atk` on it: an engine that plays a sound archive's sequences as the Switch does, without the game's code |
+| `ntdlib::cafe` | A model of the Wii U's AX and of the effects that its system library runs on AX's aux buses (AXFX), and archive mode's model of `nw::snd` on them: an engine that plays a sound archive's sequences as the Wii U does, without the game's code. The renderer follows the DSP microcode that the system's sound library uploads |
 | `ntdlib::sequence_export` | Conversion of NintendoWare's sound archives and of JAudio's sound data to MIDI, SoundFont 2 and SFZ files, through seqlib |
 
 `ntdlib::testing` holds builders of small synthetic sound archives, JAudio2 files and DOL executables for unit tests,
