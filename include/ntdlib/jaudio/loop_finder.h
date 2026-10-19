@@ -22,6 +22,10 @@ long long FramesToMs(uint64_t frames, uint32_t sample_rate);
 // track idles and nothing else has moved for 10 s holds.
 inline constexpr long long kStillMs = 10'000;
 
+// The sequence command that ends a track, in JAudio1 and JAudio2. A track that runs it outside any call (at depth 0)
+// has finished.
+inline constexpr uint8_t kFinishCommand = 0xff;
+
 // The events of a track that the length analysis takes as the track plays: the start of each command, and each jump.
 // `at` is where the track reads: at a command's start, or after a jump.
 struct TrackEvent
@@ -121,8 +125,7 @@ private:
         std::map<uint32_t, uint64_t> moves; // where it moved that no jump back has judged, and the frame it last did
         uint64_t judged_move = 0;           // the frame of its last move that a jump back has judged
         std::map<uint32_t, Time> reached;   // where it ran commands outside any call, and when it last did
-        std::map<uint32_t, Time> reached_in_calls; // with idle_in_calls: where it ran commands in calls, and when it
-                                                   // last did
+        std::map<uint32_t, Time> reached_in_calls; // with idle_in_calls: the same for its commands in calls
         uint64_t first_command = 0;
         uint64_t last_command = 0;
         uint64_t pass_start = 0;     // the frame at which the track last reached the command that it jumps back to
@@ -138,11 +141,11 @@ private:
     // The frame of the track's last move.
     static uint64_t LastMove(const Track& track);
 
-    Verdict Jump(uint32_t id, Track& track, const TrackEvent& event, const Sounded& sounded);
+    Verdict Jump(Track& track, const TrackEvent& event, const Sounded& sounded);
     void JumpInCall(Track& track, const TrackEvent& event);
 
-    // Whether a track can't move by itself: it idles, it has finished, or it has run no command for 10 s and has no
-    // ticks left to wait.
+    // Whether a track can't move by itself: it idles, it has finished (kFinishCommand), or it has run no command for
+    // 10 s and has no ticks left to wait.
     bool Settled(const Track& track, uint64_t now) const;
 
     // Whether a track that opened before `id` holds back its loop: it moved during the pass, or it can still move.

@@ -8,21 +8,20 @@
 // and over mustn't take memory without limit.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
-using namespace xsflib::testing;
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/testing/sar_files.h"
 
-using namespace ntdlib::testing;
+using namespace xsflib::testing;
 
 namespace
 {
@@ -444,12 +443,5 @@ int main()
 
     TestRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("sar_stop_at_first_problem");
 }

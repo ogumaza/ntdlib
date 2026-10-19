@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 #include <random>
 #include <utility>
@@ -190,15 +189,10 @@ void TestVoices()
                     const auto b = model.Take(priority);
                     same = a.has_value() == b.has_value() && (!a || (a->voice == b->voice && a->stolen == b->stolen));
 
-                    if (a && priority != ax::kPriorityFree)
+                    if (a)
                     {
                         tested.Push(a->voice, priority);
                         model.Push(b->voice, priority);
-                    }
-                    else if (a)
-                    {
-                        tested.Push(a->voice, ax::kPriorityFree);
-                        model.Push(b->voice, ax::kPriorityFree);
                     }
                     break;
                 }
@@ -334,13 +328,5 @@ int main()
     TestLpf();
     TestLpfAgainstFilterTables();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("ax tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("ax");
 }

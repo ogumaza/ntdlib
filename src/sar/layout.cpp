@@ -569,16 +569,25 @@ std::size_t AlignUp(std::size_t position, std::size_t alignment)
     return (position + alignment - 1) / alignment * alignment;
 }
 
-// A copy of a sequence file among the pieces: where it starts, ends and its padding ends, and its pieces.
+// Where the padding after a copy that ends at `end` ends, in an archive of `size` bytes. A copy that ends the archive
+// has no padding after it.
+std::size_t PaddedEnd(std::size_t end, std::size_t alignment, std::size_t size)
+{
+    return end == size ? end : AlignUp(end, alignment);
+}
+
+// A copy of a sequence file among the pieces, or another file that becomes a run of its own: where it starts, ends and
+// its padding ends, and its pieces.
 struct Copy
 {
-    std::size_t family = 0;
+    std::size_t family = 0; // a sequence file's family
     std::size_t start = 0;
     std::size_t end = 0;
     std::size_t padded = 0;
     uint32_t piece = 0;
     std::optional<uint32_t> padding;
     uint32_t next = 0; // the piece after the copy and its padding
+    bool run = false;  // a file that becomes a run, with no family
 };
 
 // A run of bytes among the pieces.
@@ -589,8 +598,8 @@ struct Run
     uint32_t piece = 0;
 };
 
-// The copies of the families kept, in order, with each copy's padding.
-std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t alignment)
+// The copies of the families kept, in order, with each copy's padding in an archive of `size` bytes.
+std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t alignment, std::size_t size)
 {
     std::vector<Copy> copies;
     for (std::size_t i = 0; i < families.size(); ++i)
@@ -600,7 +609,7 @@ std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t alig
             if (families[i].kept)
             {
                 const std::size_t end = start + families[i].size;
-                copies.push_back({.family = i, .start = start, .end = end, .padded = AlignUp(end, alignment)});
+                copies.push_back({.family = i, .start = start, .end = end, .padded = PaddedEnd(end, alignment, size)});
             }
         }
     }
@@ -621,23 +630,24 @@ bool FallsInside(const Copy& copy, std::size_t x, bool size)
     return x != copy.end || !size;
 }
 
-// Leaves out the families that the archive's layout keeps in the bytes: a copy whose padding isn't zeros, a field that
-// points inside a copy or lies in one, and copies that overlap.
-void LeaveOut(std::span<const uint8_t> archive, const Structure& structure, std::size_t alignment,
-              std::vector<Family>& families)
+// Whether `archive` holds the range from `end` to `padded`, and zeros fill it.
+bool PaddedWithZeros(std::span<const uint8_t> archive, std::size_t end, std::size_t padded)
 {
-    for (const Copy& copy : CopiesOf(families, alignment))
+    if (padded > archive.size())
     {
-        const bool zeros =
-            copy.padded <= archive.size() && std::all_of(archive.begin() + static_cast<std::ptrdiff_t>(copy.end),
-                                                         archive.begin() + static_cast<std::ptrdiff_t>(copy.padded),
-                                                         [](uint8_t byte) { return byte == 0; });
-        families[copy.family].kept = families[copy.family].kept && zeros;
+        return false;
     }
 
-    // Each copy that a field's position falls in. A copy that starts further before a position than the longest copy
-    // with its padding can't reach it.
-    std::vector<Copy> copies = CopiesOf(families, alignment);
+    return std::all_of(archive.begin() + static_cast<std::ptrdiff_t>(end),
+                       archive.begin() + static_cast<std::ptrdiff_t>(padded), [](uint8_t byte) { return byte == 0; });
+}
+
+// Calls `leave_out` with the index of each of `copies`, in order of their starts, that a field of `structure` lies in
+// or points inside. A copy that starts further before a position than the longest copy with its padding can't reach
+// it.
+template <class LeaveOutCopy>
+void ForEachInside(const Structure& structure, const std::vector<Copy>& copies, const LeaveOutCopy& leave_out)
+{
     std::size_t longest = 0;
     for (const Copy& copy : copies)
     {
@@ -645,7 +655,7 @@ void LeaveOut(std::span<const uint8_t> archive, const Structure& structure, std:
     }
 
     // The `length` bytes at `x`, or a position of the kind given when `length` is 0.
-    auto leave_out = [&](std::size_t x, std::size_t length, bool size)
+    const auto check = [&](std::size_t x, std::size_t length, bool size)
     {
         auto copy = std::ranges::upper_bound(copies, x + length, {}, &Copy::start);
         while (copy != copies.begin() && std::prev(copy)->start + longest >= x)
@@ -654,20 +664,34 @@ void LeaveOut(std::span<const uint8_t> archive, const Structure& structure, std:
             const bool overlaps = length > 0 && x < copy->padded && x + length > copy->start;
             if (overlaps || (length == 0 && FallsInside(*copy, x, size)))
             {
-                families[copy->family].kept = false;
+                leave_out(static_cast<std::size_t>(copy - copies.begin()));
             }
         }
     };
 
     for (const Distance& distance : structure.distances)
     {
-        leave_out(distance.at, 4, false);
-        leave_out(distance.from, 0, false);
-        leave_out(distance.to, 0, distance.size);
+        check(distance.at, 4, false);
+        check(distance.from, 0, false);
+        check(distance.to, 0, distance.size);
+    }
+}
+
+// Leaves out the families that the archive's layout keeps in the bytes: a copy whose padding isn't zeros, a field that
+// points inside a copy or lies in one, and copies that overlap.
+void LeaveOut(std::span<const uint8_t> archive, const Structure& structure, std::size_t alignment,
+              std::vector<Family>& families)
+{
+    for (const Copy& copy : CopiesOf(families, alignment, archive.size()))
+    {
+        families[copy.family].kept = families[copy.family].kept && PaddedWithZeros(archive, copy.end, copy.padded);
     }
 
+    std::vector<Copy> copies = CopiesOf(families, alignment, archive.size());
+    ForEachInside(structure, copies, [&](std::size_t i) { families[copies[i].family].kept = false; });
+
     // Of two copies that overlap, the later one stays in the bytes.
-    copies = CopiesOf(families, alignment);
+    copies = CopiesOf(families, alignment, archive.size());
     std::size_t end = 0;
     for (const Copy& copy : copies)
     {
@@ -681,12 +705,58 @@ void LeaveOut(std::span<const uint8_t> archive, const Structure& structure, std:
     }
 }
 
+// Adds to `copies`, the copies of the sequence files kept, each other file that becomes a run of its own, and sorts
+// them by their starts. A file does when the archive holds it whole, when zeros pad it to `alignment` or it ends the
+// archive, and when no field lies in it or points inside it. A group's fields lie in it. Each file's offset and size
+// are fields too. A field therefore points inside a file that holds another, or overlaps one. Several file IDs can name
+// one file.
+void AddRuns(std::span<const uint8_t> archive, const Structure& structure, std::size_t alignment,
+             std::vector<Copy>& copies)
+{
+    // Each file once, by where it lies, but for the sequence pieces.
+    std::set<std::pair<std::size_t, std::size_t>> files;
+    for (const Location& file : structure.files)
+    {
+        if (file.size > 0)
+        {
+            files.insert({file.start, file.size});
+        }
+    }
+    for (const Copy& copy : copies)
+    {
+        files.erase({copy.start, copy.end - copy.start});
+    }
+
+    std::vector<Copy> runs;
+    for (const auto& [start, size] : files)
+    {
+        const std::size_t end = start + size;
+        const std::size_t padded = PaddedEnd(end, alignment, archive.size());
+        if (PaddedWithZeros(archive, end, padded))
+        {
+            runs.push_back({.start = start, .end = end, .padded = padded, .run = true});
+        }
+    }
+
+    std::vector<bool> inside(runs.size(), false);
+    ForEachInside(structure, runs, [&](std::size_t i) { inside[i] = true; });
+    for (std::size_t i = 0; i < runs.size(); ++i)
+    {
+        if (!inside[i])
+        {
+            copies.push_back(runs[i]);
+        }
+    }
+    std::ranges::sort(copies, {}, &Copy::start);
+}
+
 // The pieces of a cut, and the places of the archive's positions in them.
 class Pieces
 {
 public:
-    Pieces(std::span<const uint8_t> archive, std::vector<Family>& families, std::size_t alignment, Layout& layout)
-        : copies_(CopiesOf(families, alignment)), size_(archive.size())
+    Pieces(std::span<const uint8_t> archive, std::vector<Family>& families, std::vector<Copy> copies,
+           std::size_t alignment, Layout& layout)
+        : copies_(std::move(copies)), size_(archive.size())
     {
         std::size_t cursor = 0;
         for (Copy& copy : copies_)
@@ -696,19 +766,30 @@ public:
                 AddRun(archive, cursor, copy.start, layout);
             }
 
-            Family& family = families[copy.family];
             copy.piece = static_cast<uint32_t>(layout.pieces.size());
-            if (family.copies.front() == copy.start)
+            if (copy.run)
             {
-                family.sequence = static_cast<uint32_t>(layout.sequences.size());
-                family.piece = copy.piece;
-                layout.sequences.push_back(std::move(family.decoded->sequence));
+                files_.insert(copy.piece);
+                layout.pieces.emplace_back(
+                    std::vector<uint8_t>(archive.begin() + static_cast<std::ptrdiff_t>(copy.start),
+                                         archive.begin() + static_cast<std::ptrdiff_t>(copy.end)));
             }
-            layout.pieces.emplace_back(SequencePiece{family.sequence, family.decoded->version});
+            else
+            {
+                Family& family = families[copy.family];
+                if (family.copies.front() == copy.start)
+                {
+                    family.sequence = static_cast<uint32_t>(layout.sequences.size());
+                    family.piece = copy.piece;
+                    layout.sequences.push_back(std::move(family.decoded->sequence));
+                }
+                layout.pieces.emplace_back(SequencePiece{family.sequence, family.decoded->version});
+            }
+            // The padding after a copy that ends the archive adds no bytes.
             if (alignment > 1)
             {
                 copy.padding = static_cast<uint32_t>(layout.pieces.size());
-                layout.pieces.emplace_back(Padding{static_cast<uint32_t>(alignment)});
+                layout.pieces.emplace_back(Padding{copy.end == size_ ? uint32_t{1} : static_cast<uint32_t>(alignment)});
             }
             copy.next = static_cast<uint32_t>(layout.pieces.size());
             cursor = copy.padded;
@@ -774,6 +855,12 @@ public:
         return Place{std::prev(run)->piece, static_cast<uint32_t>(at - std::prev(run)->start), false};
     }
 
+    // Whether piece `piece` is a run that holds one file.
+    bool IsFile(std::size_t piece) const
+    {
+        return files_.contains(static_cast<uint32_t>(piece));
+    }
+
 private:
     void AddRun(std::span<const uint8_t> archive, std::size_t start, std::size_t end, Layout& layout)
     {
@@ -799,12 +886,13 @@ private:
 
     std::vector<Copy> copies_;
     std::vector<Run> runs_;
+    std::set<uint32_t> files_; // the runs that hold one file
     std::size_t size_ = 0;
     uint32_t end_ = 0;
 };
 
-// Cuts `archive` by its structure: the families of sequence files that decode, with their padding, and the fields.
-// Throws xsflib::FormatError for a field that the pieces can't place.
+// Cuts `archive` by its structure: the families of sequence files that decode, the other files that become runs, each
+// with its padding, and the fields. Throws xsflib::FormatError for a field that the pieces can't place.
 Layout CutBy(std::span<const uint8_t> archive, const Structure& structure, Flavor flavor)
 {
     // Each family's starts, and its commands when every copy holds the same bytes and they decode.
@@ -836,16 +924,19 @@ Layout CutBy(std::span<const uint8_t> archive, const Structure& structure, Flavo
 
     const std::size_t alignment = AlignmentOf(structure);
     LeaveOut(archive, structure, alignment, families);
+    std::vector<Copy> copies = CopiesOf(families, alignment, archive.size());
+    AddRuns(archive, structure, alignment, copies);
 
     Layout layout;
     layout.flavor = flavor;
-    const Pieces pieces(archive, families, alignment, layout);
+    const Pieces pieces(archive, families, std::move(copies), alignment, layout);
 
-    // A field whose places lie in one run, or in runs with no sequence or padding between them, can't change.
+    // A field whose places lie in one run, or in runs with no sequence, file or padding between them, can't change.
     std::vector<uint32_t> changing(layout.pieces.size() + 1, 0);
     for (std::size_t i = 0; i < layout.pieces.size(); ++i)
     {
-        changing[i + 1] = changing[i] + (std::holds_alternative<std::vector<uint8_t>>(layout.pieces[i]) ? 0 : 1);
+        const bool fixed = std::holds_alternative<std::vector<uint8_t>>(layout.pieces[i]) && !pieces.IsFile(i);
+        changing[i + 1] = changing[i] + (fixed ? 0 : 1);
     }
 
     for (const Distance& distance : structure.distances)
@@ -923,6 +1014,42 @@ std::size_t PositionOf(const Place& place, const std::vector<Laid>& laid)
     }
 
     return piece.start + place.offset;
+}
+
+// The bytes of `location` that `archive` holds: all of them, or those before its end.
+std::span<const uint8_t> BytesOf(std::span<const uint8_t> archive, const Location& location)
+{
+    const std::size_t start = std::min(location.start, archive.size());
+
+    return archive.subspan(start, std::min(location.size, archive.size() - start));
+}
+
+// Whether `joined`, whose tables `after` reads, holds `bytes` in each copy of file `file` that `copies` lists, and the
+// bytes of `archive`, whose tables `before` reads, in every other file that holds no copy.
+bool Follows(std::span<const uint8_t> archive, const Structure& before, std::span<const uint8_t> joined,
+             const Structure& after, uint32_t file, const std::vector<Location>& copies, std::span<const uint8_t> bytes)
+{
+    if (after.files.size() != before.files.size())
+    {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < before.files.size(); ++i)
+    {
+        const Location& old = before.files[i];
+        const auto holds = [&](const Location& copy)
+        {
+            return old.start <= copy.start && copy.start + copy.size <= old.start + old.size;
+        };
+        const std::span<const uint8_t> now = BytesOf(joined, after.files[i]);
+        if (old.file == file ? !std::ranges::equal(now, bytes)
+                             : !std::ranges::any_of(copies, holds) && !std::ranges::equal(now, BytesOf(archive, old)))
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 } // namespace
@@ -1053,6 +1180,106 @@ std::vector<std::size_t> Starts(std::span<const uint8_t> archive, Flavor flavor,
     starts.push_back(position);
 
     return starts;
+}
+
+std::vector<Piece> ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences,
+                               std::span<const Piece> pieces, std::span<const Field> fields, uint32_t file,
+                               std::span<const uint8_t> bytes)
+{
+    const std::vector<uint8_t> archive = Join(flavor, sequences, pieces, fields);
+    const Structure before = ReadStructure(archive, flavor);
+    const std::vector<std::size_t> starts = Starts(archive, flavor, pieces);
+
+    // Each copy of the file, in the FILE block and in the groups, is a run of its own. The run takes the bytes. Several
+    // pieces can start where the copy starts: padding of no bytes, then the run.
+    const std::string name = "file " + std::to_string(file);
+    std::vector<Piece> replaced(pieces.begin(), pieces.end());
+    std::vector<Location> copies;
+    for (const Location& location : before.files)
+    {
+        if (location.file != file)
+        {
+            continue;
+        }
+
+        auto piece = static_cast<std::size_t>(std::ranges::lower_bound(starts, location.start) - starts.begin());
+        const auto holds_copy = [&](std::size_t i)
+        {
+            const auto* run = std::get_if<std::vector<uint8_t>>(&pieces[i]);
+            return run && run->size() == location.size;
+        };
+        while (piece < pieces.size() && starts[piece] == location.start && !holds_copy(piece))
+        {
+            ++piece;
+        }
+        if (piece == pieces.size() || starts[piece] != location.start)
+        {
+            throw std::invalid_argument("a copy of " + name + " isn't a piece of its own");
+        }
+
+        replaced[piece] = std::vector<uint8_t>(bytes.begin(), bytes.end());
+        copies.push_back(location);
+    }
+    if (copies.empty())
+    {
+        throw std::invalid_argument("the archive holds no " + name);
+    }
+
+    // Another file ID that names the same bytes would take them too.
+    for (const Location& location : before.files)
+    {
+        const auto same = [&](const Location& copy)
+        {
+            return copy.start == location.start && copy.size == location.size;
+        };
+        if (location.file != file && std::ranges::any_of(copies, same))
+        {
+            throw std::invalid_argument(name + " shares its bytes with file " + std::to_string(location.file));
+        }
+    }
+
+    // The tables follow when each copy holds the bytes, and every other file keeps its bytes.
+    const std::vector<uint8_t> joined = Join(flavor, sequences, replaced, fields);
+    if (!Follows(archive, before, joined, ReadStructure(joined, flavor), file, copies, bytes))
+    {
+        throw std::invalid_argument("the archive's tables don't follow the new bytes of " + name);
+    }
+
+    return replaced;
+}
+
+std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
+                                 std::span<const Piece> pieces, std::span<const Field> fields, uint32_t file)
+{
+    const std::vector<uint8_t> archive = Join(flavor, sequences, pieces, fields);
+    const Structure structure = ReadStructure(archive, flavor);
+
+    // Each copy, and the larger file that holds it whole, if one does: a group's file.
+    std::vector<FileCopy> copies;
+    for (const Location& location : structure.files)
+    {
+        if (location.file != file)
+        {
+            continue;
+        }
+
+        FileCopy& copy = copies.emplace_back();
+        copy.start = location.start;
+        const std::span<const uint8_t> bytes = BytesOf(archive, location);
+        copy.bytes.assign(bytes.begin(), bytes.end());
+        for (const Location& other : structure.files)
+        {
+            const bool holds =
+                other.start <= location.start && location.start + location.size <= other.start + other.size;
+            if (other.file != file && holds && other.size > location.size)
+            {
+                copy.group = other.file;
+            }
+        }
+    }
+    std::ranges::sort(copies, {}, &FileCopy::start);
+
+    return copies;
 }
 
 void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const SoundInfo> sounds,

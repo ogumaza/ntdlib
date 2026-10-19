@@ -2,7 +2,14 @@
 
 // Tests the archive mode of rip tools (rip/archive_mode.h) with a made-up rip format, on archives built with
 // sar_files.h in a temporary folder: the search for a loose archive's group files past an entry whose type can't be
-// read, and a game's rip that goes on past an archive whose rip throws.
+// read, the line for a loose archive without sequences, a game's rip that goes on past an archive whose rip throws,
+// and the lines of --list for a game's archives.
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <cstdint>
 #include <cstdio>
@@ -33,7 +40,6 @@ namespace sar_files = ntdlib::testing::sar_files;
 
 using ntdlib::testing::TempFolder;
 using xsflib::testing::Check;
-using xsflib::testing::failures;
 
 // A rip format for the tests: the archive and its group files as FILE chunks, and a descriptor with their paths.
 struct TestFormat
@@ -110,10 +116,63 @@ std::vector<uint8_t> ArchiveWithoutGroups()
     return sar_files::Archive(false, spec);
 }
 
+// A Switch archive with one stream, STRM, and no sequences. The stream's file lies outside the archive.
+std::vector<uint8_t> ArchiveWithoutSequences()
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "STRM", .kind = sar_files::SoundSpec::kStream, .file = 0, .player = 0}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{{}, "stream/STRM.bfstm", false}};
+
+    return sar_files::Archive(false, spec);
+}
+
 // GROUP_A's file: a copy of file 1, a bank without instruments.
 std::vector<uint8_t> GroupA()
 {
     return sar_files::Group(false, {{1, sar_files::Bank(false, sar_files::BankSpec{})}});
+}
+
+// The text that `run` writes to `stream`, stdout or stderr. While `run` runs, the stream's file descriptor points at a
+// temporary file.
+template <typename Run>
+std::string OutputOf(std::FILE* stream, const Run& run)
+{
+    std::FILE* file = std::tmpfile();
+    if (file == nullptr)
+    {
+        return "no temporary file";
+    }
+
+    std::fflush(stream);
+#ifdef _WIN32
+    const int descriptor = _fileno(stream);
+    const int saved = _dup(descriptor);
+    _dup2(_fileno(file), descriptor);
+#else
+    const int descriptor = fileno(stream);
+    const int saved = dup(descriptor);
+    dup2(fileno(file), descriptor);
+#endif
+    run();
+    std::fflush(stream);
+#ifdef _WIN32
+    _dup2(saved, descriptor);
+    _close(saved);
+#else
+    dup2(saved, descriptor);
+    close(saved);
+#endif
+
+    std::string text;
+    std::rewind(file);
+    for (int c; (c = std::fgetc(file)) != EOF;)
+    {
+        text.push_back(static_cast<char>(c));
+    }
+    std::fclose(file);
+
+    return text;
 }
 
 // A loose archive's group file is found past an entry whose type can't be read: a broken symbolic link here. Without
@@ -139,6 +198,42 @@ void TestLooseArchiveGroupPastBrokenLink()
     Check(result == 0, "a loose archive rips");
     Check(fs::exists(out / "loose.tstlib") && fs::exists(out / "0000 SEQ.minitst"),
           "SEQ rips with its bank from the group file past the broken link");
+}
+
+// A loose archive without sequences rips nothing, and the rip says so in a line of its own. The exit code is 0. With
+// --bgm, the rip reports instead that no sequence is music, and the exit code is 1.
+void TestLooseArchiveWithoutSequences()
+{
+    const TempFolder folder("rip_archive_mode_test");
+    const fs::path input = folder.Write("streams.bfsar", ArchiveWithoutSequences());
+    const fs::path out = folder.Path() / "out";
+    const auto describe = [](std::vector<uint8_t>)
+    {
+        return std::string();
+    };
+    xsflib::cli::RipOptions bgm = NoLengths();
+    bgm.bgm = true;
+    int result = -1;
+    int bgm_result = -1;
+    const auto rip_archive = [&]
+    {
+        xsflib::rip::FileNames names(".tstlib", ".minitst");
+        result = rip::RipLooseArchive(TestTool(), input.string(), out, NoLengths(), names, TestRip{}, describe);
+    };
+    const auto rip_music = [&]
+    {
+        xsflib::rip::FileNames names(".tstlib", ".minitst");
+        bgm_result = rip::RipLooseArchive(TestTool(), input.string(), out, bgm, names, TestRip{}, describe);
+    };
+
+    const std::string messages = OutputOf(stderr, rip_archive);
+    const std::string bgm_messages = OutputOf(stderr, rip_music);
+
+    Check(result == 0 && messages == "streams.bfsar: no sequences to rip\n",
+          "the rip of an archive without sequences says so: " + messages);
+    Check(bgm_result == 1 && bgm_messages == "error: no sequence is music (--bgm)\n",
+          "with --bgm, the rip reports that no sequence is music: " + bgm_messages);
+    Check(!fs::exists(out), "neither rip writes a file");
 }
 
 // A game's rip goes on past an archive whose rip throws. The first archive's group file is damaged. AddGroupFile throws
@@ -187,19 +282,46 @@ void TestGameRipGoesOnPastAnError()
           "the next archive rips");
 }
 
+// --list prints a line for each of a game's archives: its path, its size and what it holds, or that it can't be read.
+void TestListArchives()
+{
+    const std::vector<uint8_t> archive = ArchiveWithoutGroups();
+    const auto read_file = [&archive](const std::string& path, std::vector<uint8_t>& bytes)
+    {
+        if (path != "Sound/whole.bfsar")
+        {
+            return false;
+        }
+
+        bytes = archive;
+
+        return true;
+    };
+    const auto describe = [](std::vector<uint8_t> bytes)
+    {
+        return "described in " + std::to_string(bytes.size()) + " bytes";
+    };
+    const auto list = [&]
+    {
+        rip::ListArchives({"Sound/whole.bfsar", "Sound/gone.bfsar"}, read_file, describe);
+    };
+
+    const std::string lines = OutputOf(stdout, list);
+
+    const std::string size = std::to_string(archive.size());
+    Check(lines == "  Sound/whole.bfsar: " + size + " bytes, described in " + size + " bytes\n" +
+                       "  Sound/gone.bfsar: 0 bytes, can't be read\n",
+          "the lines of a game's archives: " + lines);
+}
+
 } // namespace
 
 int main()
 {
     TestLooseArchiveGroupPastBrokenLink();
+    TestLooseArchiveWithoutSequences();
     TestGameRipGoesOnPastAnError();
+    TestListArchives();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("rip_archive_mode");
 }

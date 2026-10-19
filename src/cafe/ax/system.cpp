@@ -522,15 +522,15 @@ void System::SetVoiceBiquadCoefs(Voice& voice, int16_t b0, int16_t b1, int16_t b
     voice.sync |= sync::kBiquadCoefs;
 }
 
-std::pair<uint16_t, uint16_t> System::ComputeLpfCoefs(uint32_t frequency) const
+ntdlib::ax::LpfCoefs System::ComputeLpfCoefs(uint32_t frequency) const
 {
     // b0 is the pole of a one-pole low-pass filter at the cutoff. a0 + b0 is unity. snd_core uses 32 kHz. sndcore2
     // takes the renderer's rate and computes k k - 1 in one fused step.
     const bool sndcore2 = library_ == Library::kSndCore2;
-    const ntdlib::ax::LpfCoefs coefs = ntdlib::ax::ComputeLpfCoefs(
+
+    return ntdlib::ax::ComputeLpfCoefs(
         frequency,
         {.rate = sndcore2 ? static_cast<float>(samples_per_frame_ * 1000 / 3) : 32000.0f, .fused = sndcore2});
-    return {coefs.a0, coefs.b0};
 }
 
 int System::UserBegin()
@@ -631,55 +631,67 @@ void System::SetAuxReturnVolume(Device device, uint32_t index, int bus, uint16_t
     }
 }
 
+System::Mixer* System::MixerOf(Device device)
+{
+    if (device == Device::kTv)
+    {
+        return &mixers_[0];
+    }
+    if (device == Device::kDrc)
+    {
+        return &mixers_[1];
+    }
+
+    return nullptr;
+}
+
 void System::RegisterDeviceFinalMixCallback(Device device, FinalMixCallback callback)
 {
-    if (device == Device::kTv || device == Device::kDrc)
+    if (Mixer* mixer = MixerOf(device))
     {
-        mixers_[device == Device::kTv ? 0 : 1].callback = std::move(callback);
+        mixer->callback = std::move(callback);
     }
 }
 
 void System::SetDeviceUpsampleStage(Device device, bool after_final_mix)
 {
-    if (device == Device::kTv || device == Device::kDrc)
+    if (Mixer* mixer = MixerOf(device))
     {
-        mixers_[device == Device::kTv ? 0 : 1].upsample_after = after_final_mix;
+        mixer->upsample_after = after_final_mix;
     }
 }
 
 int System::SetDeviceLinearUpsampler(Device device, uint32_t index, bool linear)
 {
-    if (device != Device::kTv && device != Device::kDrc)
+    Mixer* mixer = MixerOf(device);
+    if (mixer == nullptr)
     {
         return -1;
     }
-
-    Mixer& mixer = mixers_[device == Device::kTv ? 0 : 1];
-    if (index >= static_cast<uint32_t>(mixer.devices))
+    if (index >= static_cast<uint32_t>(mixer->devices))
     {
         return -2;
     }
 
-    mixer.linear[index] = linear;
+    mixer->linear[index] = linear;
 
     return 0;
 }
 
 int System::SetDeviceRemixMatrix(Device device, uint32_t in, uint32_t out, std::span<const float> matrix)
 {
-    if (device != Device::kTv && device != Device::kDrc)
+    Mixer* mixer = MixerOf(device);
+    if (mixer == nullptr)
     {
         return -1;
     }
-
-    Mixer& mixer = mixers_[device == Device::kTv ? 0 : 1];
-    if (in == 0 || in > static_cast<uint32_t>(mixer.channels) || out == 0 || matrix.size() < in * out)
+    if (in == 0 || in > static_cast<uint32_t>(mixer->channels) || out == 0 || matrix.size() < in * out)
     {
         return -7;
     }
 
     RemixMatrix remix{in, out, std::vector<float>(matrix.begin(), matrix.begin() + in * out)};
-    for (RemixMatrix& old : mixer.matrices)
+    for (RemixMatrix& old : mixer->matrices)
     {
         if (old.in == in && old.out == out)
         {
@@ -687,7 +699,7 @@ int System::SetDeviceRemixMatrix(Device device, uint32_t in, uint32_t out, std::
             return 0;
         }
     }
-    mixer.matrices.push_back(std::move(remix));
+    mixer->matrices.push_back(std::move(remix));
 
     return 0;
 }
@@ -951,7 +963,9 @@ void System::Sync(Voice& voice)
         return;
     }
 
-    // The game's changes reach the renderer's copy. Where two bits cover the same fields, the narrower one wins.
+    // The game's changes reach the renderer's copy. Where two bits cover the same fields, one of them wins: the bit of
+    // the whole addresses over each address's bit, and the whole SRC's over the ratio's. For the low-pass and the
+    // biquad, the coefficients' bit wins over the whole filter's.
     if (bits & sync::kSrcType)
     {
         renderer.src_mode = game.src_mode;

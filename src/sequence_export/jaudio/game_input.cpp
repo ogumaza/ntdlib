@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <fstream>
 #include <ios>
+#include <regex>
 #include <utility>
 #include <vector>
 
@@ -110,11 +111,11 @@ GameConverter MakeGameConverter(const std::string& program, const std::string& v
 
 OptionHandler<PerformOptions> ArchiveProgramOptions(OptionHandler<sequence_export::PerformOptions> archive_options)
 {
-    return [archive_options = std::move(archive_options)](const std::string& option, OptionReader& reader,
+    return [archive_handler = std::move(archive_options)](const std::string& option, OptionReader& reader,
                                                           PerformOptions& perform)
     {
         sequence_export::PerformOptions archive;
-        if (!archive_options || !archive_options(option, reader, archive))
+        if (!archive_handler || !archive_handler(option, reader, archive))
         {
             return false;
         }
@@ -127,13 +128,28 @@ OptionHandler<PerformOptions> ArchiveProgramOptions(OptionHandler<sequence_expor
     };
 }
 
+OtherInput<sequence_export::PerformOptions> ArchiveProgramGames(const std::vector<std::string>& args,
+                                                                const GameConverter& games)
+{
+    const GameConverter* g = &games;
+
+    return [g, options = ParseOptions<PerformOptions>(args, games.option)](
+               const std::string& path, const Options<sequence_export::PerformOptions>&, const std::regex& only,
+               bool several, std::vector<std::pair<std::filesystem::path, std::string>>& used_folders)
+    {
+        return IsStartUpArchiveFile(PathFromUtf8(path))
+                   ? std::optional<int>(ConvertInput(path, options, only, several, used_folders, *g))
+                   : std::nullopt;
+    };
+}
+
 GameConverter MakeOpenGameConverter(const GameConverter& converter, std::function<std::optional<Game>()> open)
 {
     GameConverter opened = converter;
-    opened.open = [open = std::move(open)](const std::filesystem::path&,
-                                           const std::string& name) -> std::optional<std::unique_ptr<GameInput>>
+    opened.open = [open_game = std::move(open)](const std::filesystem::path&,
+                                                const std::string& name) -> std::optional<std::unique_ptr<GameInput>>
     {
-        std::optional<Game> game = open();
+        std::optional<Game> game = open_game();
         if (!game)
         {
             return std::nullopt;

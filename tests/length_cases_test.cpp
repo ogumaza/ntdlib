@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <set>
 #include <string>
 #include <vector>
@@ -84,13 +83,5 @@ int main()
     CheckArchive(false);
     CheckByteOrders();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("length_cases_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("length_cases");
 }

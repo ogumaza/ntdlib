@@ -10,6 +10,29 @@
 
 namespace ntdlib::nwsnd
 {
+namespace
+{
+
+// The LFOs' delay: `msec` milliseconds more of it. Returns whether the delay has ended. `msec` then holds the
+// milliseconds after its end.
+bool PassDelay(uint32_t& counter, uint32_t delay, int& msec)
+{
+    if (counter < delay)
+    {
+        if (counter + static_cast<uint32_t>(msec) <= delay)
+        {
+            counter += static_cast<uint32_t>(msec);
+            return false;
+        }
+
+        msec -= static_cast<int>(delay - counter);
+        counter = delay;
+    }
+
+    return true;
+}
+
+} // namespace
 
 float DecibelSquare(int sustain)
 {
@@ -169,19 +192,7 @@ void CurveLfo<Policy>::Reset()
 template <typename Policy>
 void CurveLfo<Policy>::Update(int msec)
 {
-    if (delay_counter_ < param.delay)
-    {
-        if (delay_counter_ + static_cast<uint32_t>(msec) <= param.delay)
-        {
-            delay_counter_ += static_cast<uint32_t>(msec);
-            return;
-        }
-
-        msec -= static_cast<int>(param.delay - delay_counter_);
-        delay_counter_ = param.delay;
-    }
-
-    if (!(param.speed > 0.0f))
+    if (!PassDelay(delay_counter_, param.delay, msec) || !(param.speed > 0.0f))
     {
         return;
     }
@@ -257,16 +268,9 @@ void TableLfo<Policy>::Reset()
 template <typename Policy>
 void TableLfo<Policy>::Update(int msec)
 {
-    if (delay_counter_ < param.delay)
+    if (!PassDelay(delay_counter_, param.delay, msec))
     {
-        if (delay_counter_ + static_cast<uint32_t>(msec) <= param.delay)
-        {
-            delay_counter_ += static_cast<uint32_t>(msec);
-            return;
-        }
-
-        msec -= static_cast<int>(param.delay - delay_counter_);
-        delay_counter_ = param.delay;
+        return;
     }
 
     const float counter = counter_ + Policy::LfoPhaseStep(param.speed, msec);

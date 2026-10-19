@@ -17,8 +17,8 @@
 
 #include "disc/file_table.h"
 #include "ntdlib/disc/cpk.h"
+#include "ntdlib/disc/error.h"
 #include "ntdlib/disc/game.h"
-#include "ntdlib/disc/source.h"
 
 namespace ntdlib::disc::detail
 {

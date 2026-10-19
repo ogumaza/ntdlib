@@ -7,20 +7,7 @@
 //
 // Every sequence starts with timebase 48 and tempo 120: 48 ticks take 500 ms. Program 0 plays a wave of 1 s that ends,
 // and program 1 a wave of 0.1 s that loops. Both have the fastest attack, decay and release, a sustain at full volume
-// and no hold. A note then settles at once. The cases are: a sequence that ends; one that loops by jumping back, and
-// one that loops for ever; one that never sounds; held notes on a looping wave and on one that ends; a jump back into
-// code the track hasn't run (not a loop); notes at a track volume and at a sound volume of 0 (which never sound
-// either); and a track that loops every tick before another track's note starts. In the rest, another track plays while
-// a track polls or counts a variable once a tick or marks beats for the game; a track that changes its volume but plays
-// no notes comes before the track that plays, or is track 0; a tied note's wave ends during a pass; or a note runs out
-// while its track polls, or would but for a held length or the damper. In the next four, another track plays while
-// track 0 waits for a note that never ends, waits out a held note, waits for notes that do end, or plays a note that
-// never ends without waiting for it. In the next two, track 0 plays notes in a loop inside a subroutine: a loop that
-// never ends, and one that a conditional command leaves after three passes. In the next, a later track's passes play no
-// note and only change a note that the game stops. In the next, each pass of a later track plays a note and then counts
-// ticks in a loop. In the next two, a note comes before loops that make no sound, or before a rest of more than 180 s.
-// The two end at the same frame. In the next, a later track's inner loop counts ticks after its note. In the last, two
-// tracks loop at lengths that don't divide each other.
+// and no hold. A note then settles at once. The comment on each case in Cases() says what its sequence does.
 
 #pragma once
 
@@ -486,6 +473,15 @@ inline const std::vector<Case>& Cases()
         {"SEQ_OTHER_LOOP",
          [](Code& c) { c.OpenTrack(1, 18).Note(60, 127, 24).Jump(10).End().Note(60, 127, 60).Jump(18).End(); }, 0, 127,
          3, 495, 515, 10000, false, -1, 1245, 1265},
+
+        // Track 0 opens track 1 at 17, waits 48 ticks and jumps back to the open (to 5), over and over. Track 1 plays a
+        // note of 24 ticks, waits 96 ticks and ends. Each pass of track 0 opens track 1 again before that wait runs
+        // out. Track 1 never loops and never ends. Track 0's loops at 48 and 96 ticks are the sequence's loops. An
+        // analysis that waits for the other tracks' loops gives the same length only if it counts each open of a
+        // track after the first as a pass of that track. Otherwise it waits for track 1's loops until its limit. On
+        // the Wii U and the Switch, an open clears the track's wait, and the track starts its part again at once.
+        {"SEQ_REOPEN", [](Code& c) { c.OpenTrack(1, 17).Wait(48).Jump(5).End().Note(60, 127, 24).Wait(96).End(); }, 0,
+         127, 3, 995, 1015, 10000},
     };
 
     return kCases;

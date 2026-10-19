@@ -2,11 +2,6 @@
 
 #include "ntdlib/disc/compression.h"
 
-#include <bzlib.h>
-#include <lzma.h>
-#include <zlib.h>
-#include <zstd.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -15,8 +10,13 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/disc/source.h"
 #include "xsflib/bytes.h"
+#include <bzlib.h>
+#include <lzma.h>
+#include <zlib.h>
+#include <zstd.h>
+
+#include "ntdlib/disc/error.h"
 
 namespace ntdlib::disc
 {

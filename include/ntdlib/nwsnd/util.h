@@ -115,7 +115,7 @@ float CalcSurroundPanRatio(float span, const PanInfo& info)
 
 // The entry of kLpfFreq for a low-pass value from 0 to 1 (Util::CalcLpfFreq, 0x0229CE40): 0 (80 Hz) below the first
 // step at 0.13561438, 23 (16000 Hz) from 0.9, and the steps a thirtieth apart between them. Policy::LpfSteps counts the
-// steps. The Wii has no table (see CalcLpfFreq).
+// steps. The Wii's builds before November 2008 have no table (see CalcLpfFreq).
 template <typename Policy>
 int LpfFreqIndex(float lpf)
 {
@@ -133,18 +133,28 @@ int LpfFreqIndex(float lpf)
     return Policy::ToInt32(Policy::LpfSteps(value - kFirstStep));
 }
 
-// The cutoff in Hz for a low-pass value from 0 to 1 (Util::CalcLpfFreq): kLpfFreq's entry (see LpfFreqIndex). The Wii's
-// policy works the cutoff out instead, in LpfFreq.
+// The cutoff in Hz for a low-pass value from 0 to 1 (Util::CalcLpfFreq): kLpfFreq's entry (see LpfFreqIndex). On the
+// Wii, the cutoff depends on the build of the library. Its policy therefore takes the overload with a build.
 template <typename Policy>
+    requires(!requires(const typename Policy::Build& build) { Policy::LpfFreq(build, 0.0f); })
 uint16_t CalcLpfFreq(float lpf)
 {
-    if constexpr (requires { Policy::LpfFreq(lpf); })
+    return tables::kLpfFreq[LpfFreqIndex<Policy>(lpf)];
+}
+
+// The cutoff in Hz for a low-pass value from 0 to 1 in `build` of the library (Util::CalcLpfFreq). A policy whose
+// cutoff depends on the build gives it in LpfFreq: the Wii's policy does. On the other consoles, the cutoff is
+// kLpfFreq's entry, in every build.
+template <typename Policy>
+uint16_t CalcLpfFreq(float lpf, const typename Policy::Build& build)
+{
+    if constexpr (requires { Policy::LpfFreq(build, lpf); })
     {
-        return Policy::LpfFreq(Policy::LpfValue(lpf));
+        return Policy::LpfFreq(build, Policy::LpfValue(lpf));
     }
     else
     {
-        return tables::kLpfFreq[LpfFreqIndex<Policy>(lpf)];
+        return CalcLpfFreq<Policy>(lpf);
     }
 }
 

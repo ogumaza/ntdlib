@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
-#include <limits>
 #include <map>
 #include <string>
 #include <tuple>
@@ -24,12 +23,6 @@ namespace
 
 // A region table entry with no target. Notes in this region are silent.
 constexpr std::size_t kNoTarget = static_cast<std::size_t>(-1);
-
-// The upper bound of a direct velocity table. The game's lookup returns a direct table's region without comparing the
-// value: code.bin 0x490a24 on the 3DS, GetRegion (0x022BBA30) on the Wii U and Bank::NoteOn's lookup (0xc02290) on the
-// Switch. A note above velocity 127, through the velocity range command (0xb3) or a velocity byte above 127, still
-// plays that region.
-constexpr int kAnyVelocity = std::numeric_limits<int>::max();
 
 // Optional parameters: 32 flag bits followed by one 32-bit value per set bit.
 struct OptionParams
@@ -59,19 +52,22 @@ struct OptionParams
 // Block offsets and sizes in a NintendoWare binary file, indexed by type.
 using Blocks = std::map<uint16_t, std::pair<uint32_t, uint32_t>>;
 
-// Checks a 3DS file's magic (CSAR, CWAV, etc.), its byte order and the fixed header size, and returns a little-endian
-// reader.
-xsflib::Reader OpenCtrFile(std::span<const uint8_t> file, const std::string& magic,
-                           const xsflib::ReaderOptions& reader_options)
+// Checks a 3DS file's magic (CSAR, CWAV, etc.) and its byte order, and returns a little-endian reader. With
+// kReadPastDamage, a file too short for the fixed header fails first. With kStopAtFirstProblem, no size check comes
+// first, as in the 3DS's player: a file too short for its header fails as its first read past the end does. The rule
+// sets word the refusal of a Wii U or Switch archive differently.
+xsflib::Reader OpenCtrFile(std::span<const uint8_t> file, const std::string& magic, const Options& options)
 {
-    const xsflib::Reader r(file, false, reader_options);
-    if (r.Size() < 0x14)
+    const bool strict = options.rules == Rules::kStopAtFirstProblem;
+    const xsflib::Reader r(file, false, options.reader);
+    if (!strict && r.Size() < 0x14)
     {
         throw xsflib::FormatError("too short to be a " + magic + " file");
     }
-    if (magic == "CSAR" && r.Magic(0, "FSAR"))
+    if (magic == "CSAR" && r.Size() >= 4 && r.Magic(0, "FSAR"))
     {
-        throw xsflib::FormatError("unsupported FSAR archive (Wii U/Switch); expected CSAR (3DS)");
+        throw xsflib::FormatError(strict ? "a Wii U or Switch sound archive (FSAR), not a 3DS one (CSAR)"
+                                         : "unsupported FSAR archive (Wii U/Switch); expected CSAR (3DS)");
     }
     if (!r.Magic(0, magic.c_str()))
     {
@@ -85,78 +81,27 @@ xsflib::Reader OpenCtrFile(std::span<const uint8_t> file, const std::string& mag
     return r;
 }
 
-// Checks a Wii U or Switch file's magic (FSAR, FWAV, etc.), its byte order mark and the fixed header size, and returns
-// a reader in the file's byte order. The mark reads 0xFEFF in that order.
+// Checks a Wii U or Switch file's size, its magic (FSAR, FWAV, etc.) and its byte order mark, and returns a reader in
+// the file's byte order. The mark reads 0xFEFF in that order. The rule sets word the refusals of a short file and of
+// another console's archive differently.
 xsflib::Reader OpenCafeFile(std::span<const uint8_t> file, const std::string& magic, const Options& options)
 {
+    const bool strict = options.rules == Rules::kStopAtFirstProblem;
     const std::string console = options.flavor == Flavor::kNx ? "Switch" : "Wii U";
     const xsflib::Reader probe(file, true, options.reader);
     if (probe.Size() < 0x14)
     {
-        throw xsflib::FormatError("too short to be an " + magic + " file");
+        throw xsflib::FormatError(strict ? "too short for " + magic : "too short to be an " + magic + " file");
     }
     if (magic == "FSAR" && probe.Magic(0, "CSAR"))
     {
-        throw xsflib::FormatError("unsupported CSAR archive (3DS); expected FSAR (" + console + ")");
+        throw xsflib::FormatError(strict ? "a 3DS sound archive (CSAR), not a " + console + " one"
+                                         : "unsupported CSAR archive (3DS); expected FSAR (" + console + ")");
     }
     if (magic == "FSAR" && probe.Magic(0, "RSAR"))
     {
-        throw xsflib::FormatError("unsupported RSAR archive (Wii); expected FSAR (" + console + ")");
-    }
-    if (!probe.Magic(0, magic.c_str()))
-    {
-        throw xsflib::FormatError("bad magic, expected " + magic);
-    }
-
-    const uint16_t mark = probe.U16(4);
-    if (mark != 0xFEFF && mark != 0xFFFE)
-    {
-        throw xsflib::FormatError("unknown byte order mark");
-    }
-
-    return xsflib::Reader(file, mark == 0xFEFF, options.reader);
-}
-
-// Checks a 3DS file's magic and byte order as the 3DS's player does, and returns a little-endian reader. No size check
-// comes first: a file too short for its header fails as its first read past the end does.
-xsflib::Reader OpenCtrFileStrictly(std::span<const uint8_t> file, const std::string& magic,
-                                   const xsflib::ReaderOptions& reader_options)
-{
-    const xsflib::Reader r(file, false, reader_options);
-    if (magic == "CSAR" && r.Size() >= 4 && r.Magic(0, "FSAR"))
-    {
-        throw xsflib::FormatError("a Wii U or Switch sound archive (FSAR), not a 3DS one (CSAR)");
-    }
-    if (!r.Magic(0, magic.c_str()))
-    {
-        throw xsflib::FormatError("bad magic, expected " + magic);
-    }
-    if (r.U16(4) != 0xFEFF)
-    {
-        throw xsflib::FormatError("unsupported byte order");
-    }
-
-    return r;
-}
-
-// Checks a Wii U or Switch file's size, magic and byte order mark with kStopAtFirstProblem, and returns a reader in the
-// file's byte order.
-xsflib::Reader OpenCafeFileStrictly(std::span<const uint8_t> file, const std::string& magic, const Options& options)
-{
-    if (file.size() < 0x14)
-    {
-        throw xsflib::FormatError("too short for " + magic);
-    }
-
-    const std::string console = options.flavor == Flavor::kNx ? "Switch" : "Wii U";
-    const xsflib::Reader probe(file, true, options.reader);
-    if (magic == "FSAR" && probe.Magic(0, "CSAR"))
-    {
-        throw xsflib::FormatError("a 3DS sound archive (CSAR), not a " + console + " one");
-    }
-    if (magic == "FSAR" && probe.Magic(0, "RSAR"))
-    {
-        throw xsflib::FormatError("a Wii sound archive (RSAR), not a " + console + " one");
+        throw xsflib::FormatError(strict ? "a Wii sound archive (RSAR), not a " + console + " one"
+                                         : "unsupported RSAR archive (Wii); expected FSAR (" + console + ")");
     }
     if (!probe.Magic(0, magic.c_str()))
     {
@@ -177,14 +122,8 @@ xsflib::Reader OpenCafeFileStrictly(std::span<const uint8_t> file, const std::st
 xsflib::Reader OpenFile(std::span<const uint8_t> file, const char* kind, const Options& options)
 {
     const std::string magic = std::string(options.flavor == Flavor::kCtr ? "C" : "F") + kind;
-    if (options.rules == Rules::kStopAtFirstProblem)
-    {
-        return options.flavor == Flavor::kCtr ? OpenCtrFileStrictly(file, magic, options.reader)
-                                              : OpenCafeFileStrictly(file, magic, options);
-    }
 
-    return options.flavor == Flavor::kCtr ? OpenCtrFile(file, magic, options.reader)
-                                          : OpenCafeFile(file, magic, options);
+    return options.flavor == Flavor::kCtr ? OpenCtrFile(file, magic, options) : OpenCafeFile(file, magic, options);
 }
 
 // The block table of a NintendoWare binary file: {type, offset, size} entries after a 0x14-byte header.
@@ -235,7 +174,15 @@ std::pair<std::size_t, std::size_t> BlockOf(const Blocks& blocks, uint16_t type,
     return it->second;
 }
 
-// Reads a bank's velocity region at `p`: its wave and optional playback parameters.
+// The envelope that the reference at `ref_at` points to.
+Adshr ReadAdshr(const xsflib::Reader& r, std::size_t ref_at)
+{
+    const std::size_t a = ref_at + ReadRef(r, ref_at).offset;
+    return {r.U8(a), r.U8(a + 1), r.U8(a + 2), r.U8(a + 3), r.U8(a + 4)};
+}
+
+// Reads a velocity region at `p`: its wave and optional playback parameters. A bank's velocity regions and a wave
+// sound's notes share the layout.
 VelocityRegion ReadVelocityRegion(const xsflib::Reader& r, std::size_t p)
 {
     // nw::snd BankFileReader (code.bin 0x48e2f8 and accessors 0x490b28..0x490cc4 on the 3DS).
@@ -273,10 +220,7 @@ VelocityRegion ReadVelocityRegion(const xsflib::Reader& r, std::size_t p)
     if (opt.values[9])
     {
         // The value points to a {type, offset} reference. The ADSHR data is at that reference plus its offset.
-        const std::size_t ref_at = p + *opt.values[9];
-        const Reference ref = ReadRef(r, ref_at);
-        const std::size_t a = ref_at + ref.offset;
-        v.adshr = {r.U8(a), r.U8(a + 1), r.U8(a + 2), r.U8(a + 3), r.U8(a + 4)};
+        v.adshr = ReadAdshr(r, p + *opt.values[9]);
     }
 
     return v;
@@ -340,9 +284,8 @@ std::vector<std::tuple<int, int, std::size_t>> ReadRegionTable(const xsflib::Rea
     return out;
 }
 
-// Reads the STRG block at `strg_off`, of length `strg_size`: a string table and a Patricia tree mapping names to item
-// IDs.
-std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size_t strg_off, std::size_t strg_size)
+// The positions of the STRG block's two parts at `strg_off`: its string table and its Patricia tree.
+std::pair<std::size_t, std::size_t> StringParts(const xsflib::Reader& r, std::size_t strg_off)
 {
     const std::size_t b = strg_off + 8;
     std::size_t st = 0, pt = 0;
@@ -359,14 +302,26 @@ std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size
         }
     }
 
-    // Strings are stored consecutively, one per item. A corrupt table or tree could reference the same long string many
-    // times and exhaust memory. Reject it if the total string length exceeds the block size.
-    const std::size_t room = std::min(strg_size, r.Size());
-    auto check_room = [&](std::size_t used)
+    return {st, pt};
+}
+
+// Reads the STRG block at `strg_off`, of length `strg_size`: a string table and a Patricia tree mapping names to item
+// IDs. The strings lie in the block, and each names one item. So neither the strings nor the names can add up to more
+// than the block. A crafted table could otherwise point every entry at one long string and take memory without limit.
+// kReadPastDamage makes each string printable, and also bounds the strings by the archive's size. Its caller takes a
+// throw for damaged names and shows no message.
+std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size_t strg_off, std::size_t strg_size,
+                                              Rules rules)
+{
+    const bool strict = rules == Rules::kStopAtFirstProblem;
+    const auto [st, pt] = StringParts(r, strg_off);
+    const std::size_t room = strict ? strg_size : std::min(strg_size, r.Size());
+    const auto check_room = [&](std::size_t used, const char* strict_message)
     {
         if (used > room)
         {
-            throw xsflib::FormatError("invalid string table (total string length exceeds block size)");
+            throw xsflib::FormatError(strict ? strict_message
+                                             : "invalid string table (total string length exceeds block size)");
         }
     };
 
@@ -376,10 +331,10 @@ std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size
     for (uint32_t i = 0; i < n; i++)
     {
         const std::size_t e = st + 4 + i * 12;
-        const std::string& name =
-            strings.emplace_back(xsflib::PrintableName(r.CString(st + r.U32(e + 4), r.U32(e + 8))));
-        string_bytes += name.size();
-        check_room(string_bytes);
+        std::string text = r.CString(st + r.U32(e + 4), r.U32(e + 8));
+        strings.push_back(strict ? std::move(text) : xsflib::PrintableName(text));
+        string_bytes += strings.back().size();
+        check_room(string_bytes, "the strings don't fit in the string block");
     }
 
     std::map<uint32_t, std::string> item_names;
@@ -393,9 +348,9 @@ std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size
             const uint32_t sid = r.U32(e + 12), iid = r.U32(e + 16);
             if (sid < strings.size())
             {
-                item_names[iid] = strings[sid];
                 name_bytes += strings[sid].size();
-                check_room(name_bytes);
+                check_room(name_bytes, "the names don't fit in the string block");
+                item_names[iid] = strings[sid];
             }
         }
     }
@@ -403,23 +358,9 @@ std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size
     return item_names;
 }
 
-// Reads sound `index` from the INFO entry at `p`.
-SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std::string name)
+// The type of the sound at the INFO entry at `p`, and the details of that type, from the entry's reference `detail`.
+void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& detail, SoundInfo& s)
 {
-    SoundInfo s;
-    s.name = std::move(name);
-    s.file_id = r.U32(p);
-    s.volume = r.U8(p + 8);
-
-    // Pan mode and curve share the second optional parameter.
-    const OptionParams options = OptionParams::Read(r, p + 20);
-    if (options.values[1])
-    {
-        s.pan_mode = static_cast<uint8_t>(*options.values[1]);
-        s.pan_curve = static_cast<uint8_t>(*options.values[1] >> 8);
-    }
-
-    const Reference detail = ReadRef(r, p + 12);
     switch (detail.type)
     {
     case 0x2201:
@@ -437,7 +378,8 @@ SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std:
             s.type = SoundType::kSequence;
             const std::size_t q = p + detail.offset;
 
-            // nw::snd and nn::atk have four bank slots. A corrupt table may claim many more.
+            // nw::snd and nn::atk have four bank slots. A corrupt table may claim many more. A crafted archive could
+            // otherwise give every sound one long list and take memory without limit.
             const Reference banks = ReadRef(r, q);
             const std::size_t bt = q + banks.offset;
             const uint32_t nb = r.U32(bt);
@@ -464,8 +406,11 @@ SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std:
     default:
         break;
     }
+}
 
-    // Generate a name from the sound's type and index if the archive has none.
+// A name from the sound's type and index, for sound `index` if the archive has no name for it.
+void NameUnnamedSound(SoundInfo& s, uint32_t index)
+{
     if (s.name.empty())
     {
         const char* prefix = s.type == SoundType::kSequence    ? "SEQ_"
@@ -474,8 +419,54 @@ SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std:
                                                                : "SOUND_";
         s.name = prefix + std::to_string(index);
     }
+}
+
+// Reads sound `index` from the INFO entry at `p`.
+SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std::string name)
+{
+    SoundInfo s;
+    s.name = std::move(name);
+    s.file_id = r.U32(p);
+    s.volume = r.U8(p + 8);
+
+    // Pan mode and curve share the second optional parameter.
+    const OptionParams options = OptionParams::Read(r, p + 20);
+    if (options.values[1])
+    {
+        s.pan_mode = static_cast<uint8_t>(*options.values[1]);
+        s.pan_curve = static_cast<uint8_t>(*options.values[1] >> 8);
+    }
+
+    ReadSoundDetails(r, p, ReadRef(r, p + 12), s);
+    NameUnnamedSound(s, index);
 
     return s;
+}
+
+// The places of the INFO block's tables at `info_off`, by type. The block's eight references lead to the tables of
+// sounds, sound groups, banks, wave archives, groups, players and files, and to the archive player's settings.
+std::map<uint16_t, std::size_t> InfoTables(const xsflib::Reader& r, std::size_t info_off)
+{
+    const std::size_t b = info_off + 8;
+    std::map<uint16_t, std::size_t> tables;
+    for (int i = 0; i < 8; i++)
+    {
+        const Reference ref = ReadRef(r, b + i * 8);
+        tables[ref.type] = b + ref.offset;
+    }
+
+    return tables;
+}
+
+// Calls `read` with the index and position of each entry of the INFO table at `table`.
+template <typename Read>
+void ForEachEntry(const xsflib::Reader& r, std::size_t table, Read read)
+{
+    const uint32_t n = r.U32(table);
+    for (uint32_t i = 0; i < n; i++)
+    {
+        read(i, table + ReadRef(r, table + 4 + i * 8).offset);
+    }
 }
 
 // Calls `use` with the file ID, and the start and size within the group file, of each file that group file `g` embeds.
@@ -521,6 +512,8 @@ std::vector<std::tuple<uint32_t, uint64_t, uint32_t>> GroupItems(const xsflib::R
 
 // The files that group file `file` embeds, read as kStopAtFirstProblem reads them on the Wii U and the Switch: each
 // one's file ID, and its bytes within the group file. An item whose bytes lie past the group file's end throws.
+// AddGroupFile and MatchesGroupFile read a 3DS group file this way too. ReadTablesStrictly walks the 3DS's groups as
+// its player does.
 std::vector<std::pair<uint32_t, std::span<const uint8_t>>> GroupItemsStrictly(std::span<const uint8_t> file,
                                                                               const Options& options)
 {
@@ -727,9 +720,13 @@ Bank Bank::Parse(std::span<const uint8_t> file, const Options& options)
             k.lo = lo;
             k.hi = hi;
 
+            // A direct velocity table's region covers every velocity. The game's lookup returns the region without
+            // comparing the value: code.bin 0x490a24 on the 3DS, GetRegion (0x022BBA30) on the Wii U and
+            // Bank::NoteOn's lookup (0xc02290) on the Switch. A note above velocity 127, through the velocity range
+            // command (0xb3) or a velocity byte above 127, still plays that region.
             if (key_off != kNoTarget)
             {
-                for (auto [vlo, vhi, vel_off] : ReadRegionTable(r, key_off, kAnyVelocity, !strict))
+                for (auto [vlo, vhi, vel_off] : ReadRegionTable(r, key_off, KeyRegion::kAnyValue, !strict))
                 {
                     if (strict)
                     {
@@ -746,10 +743,13 @@ Bank Bank::Parse(std::span<const uint8_t> file, const Options& options)
                 }
             }
 
-            regions += strict ? 0 : 1 + k.velocities.size();
-            if (regions > file.size())
+            if (!strict)
             {
-                throw xsflib::FormatError("invalid region tables (region count exceeds bank size in bytes)");
+                regions += 1 + k.velocities.size();
+                if (regions > file.size())
+                {
+                    throw xsflib::FormatError("invalid region tables (region count exceeds bank size in bytes)");
+                }
             }
 
             inst.keys.push_back(std::move(k));
@@ -831,9 +831,7 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
         }
         if (opt.values[9])
         {
-            const std::size_t ref_at = settings + *opt.values[9];
-            const std::size_t a = ref_at + ReadRef(r, ref_at).offset;
-            sound.adshr = {r.U8(a), r.U8(a + 1), r.U8(a + 2), r.U8(a + 3), r.U8(a + 4)};
+            sound.adshr = ReadAdshr(r, settings + *opt.values[9]);
         }
 
         // A track holds a reference to the table of its note events. An event holds its position, its length and its
@@ -945,7 +943,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
     {
         try
         {
-            item_names = ReadItemNames(r, strg->second.first, strg->second.second);
+            item_names = ReadItemNames(r, strg->second.first, strg->second.second, Rules::kReadPastDamage);
         }
         catch (const xsflib::FormatError&)
         {
@@ -959,14 +957,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
         return it == item_names.end() ? std::string() : it->second;
     };
 
-    // INFO starts with references to the sound, bank, player, wave archive, file and other tables.
-    const std::size_t b = info_off + 8;
-    std::map<uint16_t, std::size_t> tables;
-    for (int i = 0; i < 8; i++)
-    {
-        const Reference ref = ReadRef(r, b + i * 8);
-        tables[ref.type] = b + ref.offset;
-    }
+    const std::map<uint16_t, std::size_t> tables = InfoTables(r, info_off);
 
     // Calls `read` with each table entry's index and position.
     auto for_each_entry = [&](uint16_t type, const char* name, auto read)
@@ -977,12 +968,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
             throw xsflib::FormatError(std::string("no ") + name + " table");
         }
 
-        const std::size_t t = table->second;
-        const uint32_t n = r.U32(t);
-        for (uint32_t i = 0; i < n; i++)
-        {
-            read(i, t + ReadRef(r, t + 4 + i * 8).offset);
-        }
+        ForEachEntry(r, table->second, read);
     };
 
     auto read_sound = [&](uint32_t i, std::size_t p)
@@ -1177,62 +1163,11 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
 
     // STRG: a string table, and a Patricia tree that maps names to item IDs. An archive may be built without it (no
     // names; the block's offset is then 0xFFFFFFFF).
-    std::vector<std::string> strings;
     std::map<uint32_t, std::string> item_names;
     const auto strg = blocks.find(0x2000);
     if (strg != blocks.end() && strg->second.first != 0xFFFFFFFF && strg->second.first < bytes_.size())
     {
-        const std::size_t b = strg->second.first + 8;
-        std::size_t st = 0, pt = 0;
-        for (int i = 0; i < 2; i++)
-        {
-            const Reference ref = ReadRef(r, b + i * 8);
-            if (ref.type == 0x2400)
-            {
-                st = b + ref.offset;
-            }
-            else if (ref.type == 0x2401)
-            {
-                pt = b + ref.offset;
-            }
-        }
-
-        // The strings lie in the block, and each names one item. So neither the strings nor the names can add up to
-        // more than the block. A crafted table could otherwise point every entry at one long string and take memory
-        // without limit.
-        const std::size_t block_size = strg->second.second;
-        std::size_t string_bytes = 0, name_bytes = 0;
-        const uint32_t n = r.U32(st);
-        for (uint32_t i = 0; i < n; i++)
-        {
-            const std::size_t e = st + 4 + i * 12;
-            strings.push_back(r.CString(st + r.U32(e + 4), r.U32(e + 8)));
-            string_bytes += strings.back().size();
-            if (string_bytes > block_size)
-            {
-                throw xsflib::FormatError("the strings don't fit in the string block");
-            }
-        }
-
-        const uint32_t nodes = r.U32(pt + 4);
-        for (uint32_t i = 0; i < nodes; i++)
-        {
-            const std::size_t e = pt + 8 + i * 20;
-            if (r.U16(e) & 1)
-            {
-                const uint32_t sid = r.U32(e + 12), iid = r.U32(e + 16);
-                if (sid < strings.size())
-                {
-                    name_bytes += strings[sid].size();
-                    if (name_bytes > block_size)
-                    {
-                        throw xsflib::FormatError("the names don't fit in the string block");
-                    }
-
-                    item_names[iid] = strings[sid];
-                }
-            }
-        }
+        item_names = ReadItemNames(r, strg->second.first, strg->second.second, Rules::kStopAtFirstProblem);
     }
 
     const auto name_of = [&](uint32_t item) -> std::string
@@ -1241,13 +1176,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
         return it == item_names.end() ? std::string() : it->second;
     };
 
-    const std::size_t b = info_off + 8;
-    std::map<uint16_t, std::size_t> tables;
-    for (int i = 0; i < 8; i++)
-    {
-        const Reference ref = ReadRef(r, b + i * 8);
-        tables[ref.type] = b + ref.offset;
-    }
+    const std::map<uint16_t, std::size_t> tables = InfoTables(r, info_off);
 
     // Calls `fn` with each table entry's index and position. A missing table throws FormatError.
     const auto for_each = [&](uint16_t type, auto fn)
@@ -1259,12 +1188,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
                                       xsflib::Hex(type, 4, true));
         }
 
-        const std::size_t t = table->second;
-        const uint32_t n = r.U32(t);
-        for (uint32_t i = 0; i < n; i++)
-        {
-            fn(i, t + ReadRef(r, t + 4 + i * 8).offset);
-        }
+        ForEachEntry(r, table->second, fn);
     };
 
     const auto read_sound = [&](uint32_t i, std::size_t p)
@@ -1291,60 +1215,8 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
             s.actor_player_id = static_cast<uint8_t>(*opt.values[2] >> 8);
         }
 
-        switch (detail.type)
-        {
-        case 0x2201:
-            s.type = SoundType::kStream;
-            break;
-
-        case 0x2202:
-            s.type = SoundType::kWaveSound;
-            s.wave_sound_index = r.U32(p + detail.offset);
-            break;
-
-        case 0x2203:
-            {
-                s.type = SoundType::kSequence;
-                const std::size_t q = p + detail.offset;
-                const Reference banks = ReadRef(r, q);
-                const std::size_t bt = q + banks.offset;
-                // The sequence player uses four banks at most. A crafted archive could otherwise give every sound one
-                // long list and take memory without limit.
-                const uint32_t nb = std::min<uint32_t>(r.U32(bt), 4);
-                for (uint32_t k = 0; k < nb; k++)
-                {
-                    s.banks.push_back(r.U32(bt + 4 + k * 4));
-                }
-
-                s.allocate_track_flags = r.U32(q + 8);
-                const OptionParams so = OptionParams::Read(r, q + 12);
-                if (so.values[0])
-                {
-                    s.start_offset = *so.values[0];
-                }
-
-                if (so.values[1])
-                {
-                    s.channel_priority = static_cast<uint8_t>(*so.values[1]);
-                    s.release_priority_fix = ((*so.values[1] >> 8) & 0xff) != 0;
-                }
-                break;
-            }
-
-        default:
-            break;
-        }
-
-        if (s.name.empty())
-        {
-            // An archive without a string table has no names: make them up from the index.
-            const char* prefix = s.type == SoundType::kSequence    ? "SEQ_"
-                                 : s.type == SoundType::kStream    ? "STRM_"
-                                 : s.type == SoundType::kWaveSound ? "WSD_"
-                                                                   : "SOUND_";
-            s.name = prefix + std::to_string(i);
-        }
-
+        ReadSoundDetails(r, p, detail, s);
+        NameUnnamedSound(s, i);
         sounds_.push_back(std::move(s));
     };
     for_each(0x2100, read_sound);
@@ -1413,32 +1285,29 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
 
     // A group file embeds copies of other files. Some files are only there: their entries have no location, or an
     // offset of 0xFFFFFFFF. A file that the archive holds already keeps that copy.
-    const auto read_group = [&](uint32_t, std::size_t p)
+    const auto take_copy = [&](uint32_t file_id, std::span<const uint8_t> copy)
     {
-        const uint32_t group_file = r.U32(p);
-        if (group_file >= files_.size() || !files_[group_file].internal)
-        {
-            return; // no group file, or one outside the archive
-        }
+        files_[file_id] = FileEntry{};
+        files_[file_id].offset = static_cast<uint32_t>(copy.data() - bytes_.data());
+        files_[file_id].size = static_cast<uint32_t>(copy.size());
+        files_[file_id].internal = true;
+    };
 
-        const std::span<const uint8_t> group =
-            std::span<const uint8_t>(bytes_).subspan(files_[group_file].offset, files_[group_file].size);
-        if (!ctr)
+    // The Wii U's and the Switch's players read a group file's whole table first.
+    const auto take_cafe_copies = [&](std::span<const uint8_t> group)
+    {
+        for (const auto& [file_id, embedded] : GroupItemsStrictly(group, options_))
         {
-            for (const auto& [file_id, embedded] : GroupItemsStrictly(group, options_))
+            if (file_id < files_.size() && !files_[file_id].internal)
             {
-                if (file_id < files_.size() && !files_[file_id].internal)
-                {
-                    files_[file_id] = FileEntry{};
-                    files_[file_id].offset = static_cast<uint32_t>(embedded.data() - bytes_.data());
-                    files_[file_id].size = static_cast<uint32_t>(embedded.size());
-                    files_[file_id].internal = true;
-                }
+                take_copy(file_id, embedded);
             }
-            return;
         }
+    };
 
-        // The 3DS's player reads each item's file ID first, and the bytes of the items it takes.
+    // The 3DS's player reads each item's file ID first, and the bytes of the items it takes.
+    const auto take_ctr_copies = [&](std::span<const uint8_t> group)
+    {
         const xsflib::Reader g = OpenFile(group, "GRP", options_);
         const Blocks group_blocks = BlockTable(g);
         const auto items =
@@ -1456,11 +1325,27 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
                 continue; // not embedded, or the archive holds it already
             }
 
-            const std::span<const uint8_t> bytes = g.Sub(data + where.offset, g.U32(e + 12));
-            files_[file_id] = FileEntry{};
-            files_[file_id].offset = static_cast<uint32_t>(bytes.data() - bytes_.data());
-            files_[file_id].size = static_cast<uint32_t>(bytes.size());
-            files_[file_id].internal = true;
+            take_copy(file_id, g.Sub(data + where.offset, g.U32(e + 12)));
+        }
+    };
+
+    const auto read_group = [&](uint32_t, std::size_t p)
+    {
+        const uint32_t group_file = r.U32(p);
+        if (group_file >= files_.size() || !files_[group_file].internal)
+        {
+            return; // no group file, or one outside the archive
+        }
+
+        const std::span<const uint8_t> group =
+            std::span<const uint8_t>(bytes_).subspan(files_[group_file].offset, files_[group_file].size);
+        if (ctr)
+        {
+            take_ctr_copies(group);
+        }
+        else
+        {
+            take_cafe_copies(group);
         }
     };
     for_each(0x2105, read_group);

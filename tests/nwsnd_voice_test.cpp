@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -570,13 +569,5 @@ int main()
     TestOutputParam<CafePolicy>(false);
     TestOutputParam<NxPolicy>(true);
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d checks failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("nwsnd_voice_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("nwsnd_voice");
 }

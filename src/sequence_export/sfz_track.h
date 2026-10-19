@@ -2,10 +2,11 @@
 
 // The SFZ text that NintendoWare's bank models share: what each track's file adds to seqlib's track file
 // (seqlib/sfz/track_file.h). That's the filters' curves and opcodes, each preset's LFO, and the biquad's groups. The
-// bank model writes each preset's regions, from the samples and the parts of a region's line below.
+// bank model writes each preset's regions with RegionLines, from the samples and the parts of a region's line below.
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -73,6 +74,20 @@ std::string SfzEnvelopeOpcodes(const PresetKey& key, const EnvelopeValues& env, 
 // The opcodes of the low-pass `filter` in filter slot `slot` (1 or 2) of a region that plays `region`: the cutoff at
 // the region's original key, which tracks the key at 100 cents a key.
 std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const ResamplingRegion& region, int slot);
+
+// A region's line up to its low-pass, for the wave's channel `channel`, the keys `keys` and the velocities
+// `velocities`.
+using RegionLineFunction =
+    std::function<std::string(std::size_t channel, std::pair<int, int> keys, std::pair<int, int> velocities)>;
+
+// The lines of a region that plays the key ranges `keys` at the velocity ranges `velocities`: one for each resampling
+// span of a key range (ResamplingSpans), each velocity range and each of the wave's `channels`. `line` gives each line
+// up to its low-pass. The span's low-pass then takes filter slot `resampling_slot`, or none with 0
+// (PresetRegionsFunction). `region` gives the low-passes their rates and their key.
+std::string RegionLines(const std::vector<std::pair<int, int>>& keys,
+                        const std::vector<std::pair<int, int>>& velocities, std::size_t channels,
+                        const ResamplingRegion& region, int resampling_slot, const Settings& settings,
+                        const RegionLineFunction& line);
 
 // Writes the regions of preset `key`, one line each. `gain_db` raises each volume. `resampling_slot` is the filter slot
 // (1 or 2) that the regions' low-passes take (resampling.h), or 0 where the track's filters take both slots. The

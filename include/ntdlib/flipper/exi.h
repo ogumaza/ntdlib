@@ -79,8 +79,8 @@ public:
     }
 
 private:
-    // The RTC/SRAM device's side of a transfer of `size` bytes. Returns the bytes that the device sends back for a
-    // read. They depend on the bytes it received.
+    // The RTC/SRAM device's side of a transfer of `size` bytes. For a read, the device's reply replaces `bytes`. The
+    // reply depends on the bytes that the device received.
     void DeviceTransfer(uint8_t* bytes, uint32_t size, bool write);
     void Transfer(Channel& channel, int index);
 

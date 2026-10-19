@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <span>
@@ -31,7 +30,6 @@ using namespace xsflib;
 using namespace ntdlib;
 using namespace ntdlib::testing::rsar_files;
 using xsflib::testing::Check;
-using xsflib::testing::failures;
 
 // The rules of playback: the sentences, names as the archive has them, every field, and the sound type of an archive
 // before version 1.1 from the sound table.
@@ -106,6 +104,121 @@ size_t Find(const Bytes& bytes, const std::string& text)
     const auto at = std::search(bytes.begin(), bytes.end(), text.begin(), text.end());
 
     return static_cast<size_t>(at - bytes.begin());
+}
+
+// The banks of versions 1.1 and 1.2 under the rules of playback: their instruments and waves. A version 1.0 bank's
+// regions take full volume.
+void CheckBanks()
+{
+    // The banks' waves point into the bytes they're read from. Those bytes must outlive the banks.
+    const Bytes old_file = MakeOldBank();
+    const Bytes old_waves = MakeOldWaveData();
+    const rsar::Bank old_bank = rsar::Bank::Parse(old_file, old_waves, kPlayback);
+    CheckInstruments("version 1.1 bank", old_bank);
+    CheckWaves("version 1.1 bank", old_bank, 0x21);
+
+    // A bank before version 1.1 plays its regions at full volume, whatever volume they hold (100 here).
+    Bytes first_file = MakeOldBank();
+    xsflib::StoreBe16(&first_file[6], 0x0100);
+    const rsar::Bank first_bank = rsar::Bank::Parse(first_file, old_waves, kPlayback);
+    const rsar::Region* first_region = first_bank.Find(0, 60, 64);
+    const rsar::Region* old_region = old_bank.Find(0, 60, 64);
+
+    Check(first_region != nullptr && first_region->volume == 127 && first_region->tune == 1.0f,
+          "a version 1.0 bank's regions take full volume");
+    Check(old_region != nullptr && old_region->volume == 100, "a version 1.1 bank's regions take their volume");
+
+    const Bytes new_file = MakeNewBank();
+    const Bytes rwar = MakeRwar();
+    const rsar::Bank new_bank = rsar::Bank::Parse(new_file, rwar, kPlayback);
+    CheckInstruments("version 1.2 bank", new_bank);
+    CheckWaves("version 1.2 bank", new_bank, 0x31);
+}
+
+// A sequence file of 16 bytes of commands, 0x2C to 0x3B, with labels at 0 and 8.
+Bytes TestSequence()
+{
+    Bytes commands(16);
+    for (size_t i = 0; i < commands.size(); ++i)
+    {
+        commands[i] = static_cast<uint8_t>(0x2C + i);
+    }
+
+    return MakeSequence(commands);
+}
+
+// Under the rules of playback: a sequence's commands and labels, and an archive that holds the sequence and a bank in
+// a group, whole and cut short.
+void CheckArchive()
+{
+    const Bytes sequence_bytes = TestSequence();
+    const rsar::Sequence sequence = rsar::Sequence::Parse(sequence_bytes, kPlayback);
+    Check(sequence.data.size() == 16 && sequence.labels.size() == 2 && sequence.labels[1].name == "SEQ_BB" &&
+              sequence.labels[1].offset == 8,
+          "a sequence's commands and labels");
+
+    const Bytes bytes = MakeArchive(sequence_bytes, 8, 0);
+    const rsar::SoundArchive archive = rsar::SoundArchive::Load(bytes, kPlayback);
+    Check(archive.Version() == 0x0104 && archive.Sounds().size() == 1 && archive.Banks().size() == 1 &&
+              !archive.Truncated(),
+          "an archive's tables");
+    const rsar::SoundInfo& sound = archive.Sounds()[0];
+    Check(sound.name == "SEQ_TEST" && sound.type == rsar::SoundType::kSequence && sound.volume == 90 &&
+              sound.pan_mode == 0 && sound.pan_curve == 3 && sound.start_offset == 8 && sound.channel_priority == 70 &&
+              sound.release_priority_fix && sound.bank == 0,
+          "a sequence sound's info");
+    Check(archive.Banks()[0].name == "BANK_TEST" && archive.FindSound("SEQ_TEST") == 0u &&
+              !archive.FindSound("SEQ_OTHER"),
+          "names");
+    const auto sequence_file = archive.File(0);
+    const auto bank_file = archive.File(1);
+    Check(sequence_file && rsar::Sequence::Parse(sequence_file->file, kPlayback).labels.size() == 2 &&
+              sequence_file->wave_data.empty(),
+          "the sequence from the group");
+    Check(bank_file && rsar::Bank::Parse(bank_file->file, bank_file->wave_data, kPlayback).Waves().size() == 2,
+          "the bank and its RWAR from the group");
+    const std::span<const uint8_t> all = archive.Bytes();
+    const auto inside = [&all](std::span<const uint8_t> data)
+    {
+        return data.data() >= all.data() && data.data() + data.size() <= all.data() + all.size();
+    };
+    Check(std::equal(all.begin(), all.end(), bytes.begin(), bytes.end()) && sequence_file &&
+              inside(sequence_file->file) && bank_file && inside(bank_file->file) && inside(bank_file->wave_data),
+          "the files lie in the archive's bytes");
+
+    // Cut short in the bank's wave data. The sequence is still there. The bank isn't.
+    const Bytes cut(bytes.begin(), bytes.end() - 100);
+    const rsar::SoundArchive truncated = rsar::SoundArchive::Load(cut, kPlayback);
+    Check(truncated.Truncated() && truncated.File(0) && !truncated.File(1), "a truncated archive");
+}
+
+// An archive's tables of sounds and players.
+void CheckSoundTable()
+{
+    const Bytes table_bytes = MakeSoundTable({{"SEQ_FIELD", 1, 1}, {"STRM_TITLE", 2, 0}}, {"PLAYER_BGM", "PLAYER_SE"});
+    const rsar::SoundArchive table = rsar::SoundArchive::Load(table_bytes, kPlayback);
+    Check(table.Players().size() == 2 && table.Players()[0].name == "PLAYER_BGM" &&
+              table.Players()[1].name == "PLAYER_SE" && table.Players()[1].sound_count == 2,
+          "an archive's players");
+    Check(table.Sounds().size() == 2 && table.Sounds()[0].name == "SEQ_FIELD" && table.Sounds()[0].player_id == 1 &&
+              table.Sounds()[1].type == rsar::SoundType::kStream,
+          "the sounds' players");
+}
+
+// Archives of the 3DS and later consoles, a little-endian archive and a file that isn't an archive are refused with a
+// message.
+void CheckOtherFormats()
+{
+    const Bytes bytes = MakeArchive(TestSequence(), 8, 0);
+    Bytes ctr = bytes;
+    std::memcpy(ctr.data(), "CSAR", 4);
+    CheckRefused("a 3DS archive", ctr, "3DS");
+    std::memcpy(ctr.data(), "FSAR", 4);
+    CheckRefused("a Wii U or Switch archive", ctr, "Wii U or Switch");
+    Bytes little = bytes;
+    xsflib::StoreBe16(&little[4], 0xFFFE);
+    CheckRefused("a little-endian archive", little, "big-endian");
+    CheckRefused("something else", Bytes(64, 'x'), "RSAR");
 }
 
 // The default rules: the short texts, printable names that are made up where they're empty, no field that only playback
@@ -189,96 +302,10 @@ int main()
 {
     try
     {
-        // The banks' waves point into the bytes they're read from. Those bytes must outlive the banks.
-        const Bytes old_file = MakeOldBank();
-        const Bytes old_waves = MakeOldWaveData();
-        const rsar::Bank old_bank = rsar::Bank::Parse(old_file, old_waves, kPlayback);
-        CheckInstruments("version 1.1 bank", old_bank);
-        CheckWaves("version 1.1 bank", old_bank, 0x21);
-
-        // A bank before version 1.1 plays its regions at full volume, whatever volume they hold (100 here).
-        Bytes first_file = MakeOldBank();
-        xsflib::StoreBe16(&first_file[6], 0x0100);
-        const rsar::Bank first_bank = rsar::Bank::Parse(first_file, old_waves, kPlayback);
-        const rsar::Region* first_region = first_bank.Find(0, 60, 64);
-        const rsar::Region* old_region = old_bank.Find(0, 60, 64);
-
-        Check(first_region != nullptr && first_region->volume == 127 && first_region->tune == 1.0f,
-              "a version 1.0 bank's regions take full volume");
-        Check(old_region != nullptr && old_region->volume == 100, "a version 1.1 bank's regions take their volume");
-
-        const Bytes new_file = MakeNewBank();
-        const Bytes rwar = MakeRwar();
-        const rsar::Bank new_bank = rsar::Bank::Parse(new_file, rwar, kPlayback);
-        CheckInstruments("version 1.2 bank", new_bank);
-        CheckWaves("version 1.2 bank", new_bank, 0x31);
-
-        Bytes commands(16);
-        for (size_t i = 0; i < commands.size(); ++i)
-        {
-            commands[i] = static_cast<uint8_t>(0x2C + i);
-        }
-
-        const Bytes sequence_bytes = MakeSequence(commands);
-        const rsar::Sequence sequence = rsar::Sequence::Parse(sequence_bytes, kPlayback);
-        Check(sequence.data.size() == 16 && sequence.labels.size() == 2 && sequence.labels[1].name == "SEQ_BB" &&
-                  sequence.labels[1].offset == 8,
-              "a sequence's commands and labels");
-
-        const Bytes bytes = MakeArchive(sequence_bytes, 8, 0);
-        const rsar::SoundArchive archive = rsar::SoundArchive::Load(bytes, kPlayback);
-        Check(archive.Version() == 0x0104 && archive.Sounds().size() == 1 && archive.Banks().size() == 1 &&
-                  !archive.Truncated(),
-              "an archive's tables");
-        const rsar::SoundInfo& sound = archive.Sounds()[0];
-        Check(sound.name == "SEQ_TEST" && sound.type == rsar::SoundType::kSequence && sound.volume == 90 &&
-                  sound.pan_mode == 0 && sound.pan_curve == 3 && sound.start_offset == 8 &&
-                  sound.channel_priority == 70 && sound.release_priority_fix && sound.bank == 0,
-              "a sequence sound's info");
-        Check(archive.Banks()[0].name == "BANK_TEST" && archive.FindSound("SEQ_TEST") == 0u &&
-                  !archive.FindSound("SEQ_OTHER"),
-              "names");
-        const auto sequence_file = archive.File(0);
-        const auto bank_file = archive.File(1);
-        Check(sequence_file && rsar::Sequence::Parse(sequence_file->file, kPlayback).labels.size() == 2 &&
-                  sequence_file->wave_data.empty(),
-              "the sequence from the group");
-        Check(bank_file && rsar::Bank::Parse(bank_file->file, bank_file->wave_data, kPlayback).Waves().size() == 2,
-              "the bank and its RWAR from the group");
-        const std::span<const uint8_t> all = archive.Bytes();
-        const auto inside = [&all](std::span<const uint8_t> data)
-        {
-            return data.data() >= all.data() && data.data() + data.size() <= all.data() + all.size();
-        };
-        Check(std::equal(all.begin(), all.end(), bytes.begin(), bytes.end()) && sequence_file &&
-                  inside(sequence_file->file) && bank_file && inside(bank_file->file) && inside(bank_file->wave_data),
-              "the files lie in the archive's bytes");
-
-        // Cut short in the bank's wave data. The sequence is still there. The bank isn't.
-        const Bytes cut(bytes.begin(), bytes.end() - 100);
-        const rsar::SoundArchive truncated = rsar::SoundArchive::Load(cut, kPlayback);
-        Check(truncated.Truncated() && truncated.File(0) && !truncated.File(1), "a truncated archive");
-
-        const Bytes table_bytes =
-            MakeSoundTable({{"SEQ_FIELD", 1, 1}, {"STRM_TITLE", 2, 0}}, {"PLAYER_BGM", "PLAYER_SE"});
-        const rsar::SoundArchive table = rsar::SoundArchive::Load(table_bytes, kPlayback);
-        Check(table.Players().size() == 2 && table.Players()[0].name == "PLAYER_BGM" &&
-                  table.Players()[1].name == "PLAYER_SE" && table.Players()[1].sound_count == 2,
-              "an archive's players");
-        Check(table.Sounds().size() == 2 && table.Sounds()[0].name == "SEQ_FIELD" && table.Sounds()[0].player_id == 1 &&
-                  table.Sounds()[1].type == rsar::SoundType::kStream,
-              "the sounds' players");
-
-        Bytes ctr = bytes;
-        std::memcpy(ctr.data(), "CSAR", 4);
-        CheckRefused("a 3DS archive", ctr, "3DS");
-        std::memcpy(ctr.data(), "FSAR", 4);
-        CheckRefused("a Wii U or Switch archive", ctr, "Wii U or Switch");
-        Bytes little = bytes;
-        xsflib::StoreBe16(&little[4], 0xFFFE);
-        CheckRefused("a little-endian archive", little, "big-endian");
-        CheckRefused("something else", Bytes(64, 'x'), "RSAR");
-
+        CheckBanks();
+        CheckArchive();
+        CheckSoundTable();
+        CheckOtherFormats();
         CheckDefaultRules();
         CheckDecoding();
     }
@@ -287,12 +314,5 @@ int main()
         Check(false, std::string("unexpected error: ") + e.what());
     }
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("rsar");
 }

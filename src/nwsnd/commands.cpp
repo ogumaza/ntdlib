@@ -335,6 +335,20 @@ bool TakesTime(uint32_t code)
     return code >= 0xB0 && code <= 0xDF;
 }
 
+// Whether the command with opcode `code` has a number before its value: the track that an open of a track (0x88)
+// opens, or the variable of an extended command on a variable or comparison with one.
+bool TakesIndex(uint32_t code)
+{
+    return code == 0x88 || (code >= 0xF080 && code <= 0xF09F);
+}
+
+// Whether the command with opcode `code` takes a 24-bit target in place of a value: an open of a track, a jump or a
+// call.
+bool TakesTarget(uint32_t code)
+{
+    return code == 0x88 || code == 0x89 || code == 0x8A;
+}
+
 // The bytes that `value` takes as a variable-length number.
 uint8_t VariableLengthBytes(uint32_t value)
 {
@@ -536,12 +550,12 @@ Command ParseCommand(Reader& r, const Grammar& grammar)
     }
 
     // The operands before the value: a track's number and a variable's.
-    if (code == 0x88 || (code >= 0xF080 && code <= 0xF09F))
+    if (TakesIndex(code))
     {
         command.index = r.Byte();
     }
 
-    if (code == 0x88 || code == 0x89 || code == 0x8A)
+    if (TakesTarget(code))
     {
         command.target = r.Bits24();
     }
@@ -723,12 +737,12 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
     {
         out.push_back(static_cast<uint8_t>(command.velocity));
     }
-    if (code == 0x88 || (code >= 0xF080 && code <= 0xF09F))
+    if (TakesIndex(code))
     {
         out.push_back(command.index);
     }
 
-    if (code == 0x88 || code == 0x89 || code == 0x8A)
+    if (TakesTarget(code))
     {
         if (target > kMaxOffset)
         {
@@ -748,34 +762,38 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
     }
 }
 
-// Converts `argument` from the console's values to the units, or back to the nearest console values.
-void Convert(Argument& argument, const Scale& scale, bool to_units)
+// A conversion of a value by its scale: ToUnit, from the console's values to the units, or FromUnit, back to the
+// nearest console values.
+using Conversion = int64_t (*)(int64_t, const Scale&);
+
+// Converts `argument` with `convert`. A variable's index stays as it is.
+void Convert(Argument& argument, const Scale& scale, Conversion convert)
 {
     if (argument.source == Source::kVariable)
     {
         return;
     }
 
-    argument.value = to_units ? ToUnit(argument.value, scale) : FromUnit(argument.value, scale);
+    argument.value = convert(argument.value, scale);
     if (argument.source == Source::kRandom)
     {
-        argument.high = to_units ? ToUnit(argument.high, scale) : FromUnit(argument.high, scale);
+        argument.high = convert(argument.high, scale);
     }
 }
 
-// Converts the values of `command` from the console's values to the units, or back to the nearest console values.
-void Convert(Command& command, const Grammar& grammar, bool to_units)
+// Converts the values of `command` with `convert`.
+void Convert(Command& command, const Grammar& grammar, Conversion convert)
 {
     if (command.kind == Kind::kData)
     {
         return;
     }
 
-    command.velocity = to_units ? ToUnit(command.velocity, kLevelScale) : FromUnit(command.velocity, kLevelScale);
-    Convert(command.value, ScaleOf(command.kind, grammar), to_units);
+    command.velocity = convert(command.velocity, kLevelScale);
+    Convert(command.value, ScaleOf(command.kind, grammar), convert);
     if (command.time)
     {
-        Convert(*command.time, kTicksScale, to_units);
+        Convert(*command.time, kTicksScale, convert);
     }
 }
 
@@ -848,7 +866,7 @@ std::optional<Read> ReadAt(std::span<const uint8_t> data, uint32_t at, const Gra
     std::vector<uint8_t> again;
     AppendCommand(again, read.command, read.command.target, grammar);
     read.raw = !std::equal(again.begin(), again.end(), data.begin() + at, data.begin() + at + read.size);
-    Convert(read.command, grammar, true);
+    Convert(read.command, grammar, ToUnit);
 
     return read;
 }
@@ -976,30 +994,9 @@ void Guess(std::span<const uint8_t> data, const std::set<uint32_t>& cuts, const 
     }
 }
 
-// The whole bytecode as data, split at `cuts`. Gives the item at each cut and at the end.
-commands::Sequence Opaque(std::span<const uint8_t> data, std::set<uint32_t> cuts, std::map<uint32_t, uint32_t>& items)
-{
-    commands::Sequence sequence;
-    cuts.insert(0);
-    for (auto cut = cuts.begin(); cut != cuts.end(); ++cut)
-    {
-        const uint32_t end = std::next(cut) == cuts.end() ? static_cast<uint32_t>(data.size()) : *std::next(cut);
-        items[*cut] = static_cast<uint32_t>(sequence.items.size());
-        if (end > *cut)
-        {
-            Command item;
-            item.kind = Kind::kData;
-            item.bytes.assign(data.begin() + *cut, data.begin() + end);
-            sequence.items.push_back(std::move(item));
-        }
-    }
-    items[static_cast<uint32_t>(data.size())] = static_cast<uint32_t>(sequence.items.size());
-
-    return sequence;
-}
-
 // The items of `data` in the order of their bytes, from the commands in `found`. Data splits at `cuts`. Gives the item
-// at each offset where one starts, and at the end.
+// at each offset where one starts, and at the end. Without commands, the items are the whole bytecode as data, split at
+// `cuts`.
 commands::Sequence Items(std::span<const uint8_t> data, const Found& found, const std::set<uint32_t>& cuts,
                          std::map<uint32_t, uint32_t>& items)
 {
@@ -1088,6 +1085,8 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
         cuts.insert(entry);
     }
 
+    const std::set<uint32_t> starts = cuts; // the labels and the entries
+
     Found found;
     found.cover.assign(data.size(), Cover::kFree);
     bool opaque = !Follow(data, std::vector<uint32_t>(cuts.begin(), cuts.end()), grammar, found);
@@ -1105,13 +1104,8 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
     std::map<uint32_t, uint32_t> items; // byte offset to item
     if (opaque)
     {
-        std::set<uint32_t> starts;
-        for (const LabelOffset& label : labels)
-        {
-            starts.insert(label.offset);
-        }
-        starts.insert(entries.begin(), entries.end());
-        decoded.sequence = Opaque(data, starts, items);
+        // The whole bytecode as data, split at the labels and the entries.
+        decoded.sequence = Items(data, Found{}, starts, items);
         decoded.opaque = true;
     }
     else
@@ -1138,7 +1132,7 @@ Encoded EncodeSequence(const commands::Sequence& sequence, const Grammar& gramma
     std::vector<Command> items = sequence.items;
     for (Command& item : items)
     {
-        Convert(item, grammar, false);
+        Convert(item, grammar, FromUnit);
     }
 
     // Each item's size doesn't depend on its target's offset. The sizes give the offsets.

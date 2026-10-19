@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Checks the Wii U's model of nw::snd: its voices on AX, the engine on a small sound archive, and the effects on the
-// aux buses. ntdlib's tests check the arithmetic helpers, the envelope and the LFO.
+// aux buses. The tests of the nwsnd module check the arithmetic helpers, the envelope and the LFO.
 
 #include <algorithm>
 #include <array>
@@ -17,9 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include "xsflib/rip/length.h"
-#include "xsflib/testing/check.h"
-
 #include "ntdlib/cafe/ax/memory.h"
 #include "ntdlib/cafe/ax/system.h"
 #include "ntdlib/cafe/snd/ax_voice.h"
@@ -28,6 +25,10 @@
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
+#include "xsflib/rip/length.h"
+#include "xsflib/testing/check.h"
+
+#include "nwsnd_engine_files.h"
 
 namespace fsar_files = ntdlib::testing::sar_files;
 
@@ -44,25 +45,19 @@ using ntdlib::cafe::snd::EffectSetup;
 using ntdlib::cafe::snd::EffectType;
 using ntdlib::cafe::snd::OutputMode;
 using ntdlib::cafe::snd::WaveBuffer;
+using nwsnd_engine_files::ConstantPcmWave;
+using nwsnd_engine_files::ConstantWave;
+using nwsnd_engine_files::LoopingAdpcmWave;
+using nwsnd_engine_files::ProgramArchive;
 
-// A constant PCM16 wave of `count` samples.
-std::vector<uint8_t> ConstantWave(int count, int16_t value)
-{
-    std::vector<uint8_t> bytes;
-    for (int i = 0; i < count; ++i)
-    {
-        bytes.push_back(static_cast<uint8_t>(static_cast<uint16_t>(value) >> 8));
-        bytes.push_back(static_cast<uint8_t>(value));
-    }
-
-    return bytes;
-}
+// The Wii U's files and samples are big-endian.
+constexpr bool kBigEndian = true;
 
 void TestAxVoice()
 {
     // A voice set up to play a buffer starts its AX voice with the buffer's offsets, the volume, the TV's mix and the
     // ratio. The ratio chooses the 4-tap filter.
-    const std::vector<uint8_t> wave = ConstantWave(100, 1000);
+    const std::vector<uint8_t> wave = ConstantWave(kBigEndian, 100, 1000);
     ntdlib::cafe::ax::Memory memory;
     memory.Map(0x10000000, wave);
     ntdlib::cafe::ax::System system(memory);
@@ -122,8 +117,8 @@ void TestWaveBufferQueue()
     // A voice moves on to the buffer queued behind the one it's playing. The queued buffer lies past the first buffer's
     // end. The voice moves on when the loop count shows that it has reached the queued buffer. It then plays that
     // buffer to its end.
-    const std::vector<uint8_t> first_wave = ConstantWave(100, 1000);
-    const std::vector<uint8_t> second_wave = ConstantWave(300, 2000);
+    const std::vector<uint8_t> first_wave = ConstantWave(kBigEndian, 100, 1000);
+    const std::vector<uint8_t> second_wave = ConstantWave(kBigEndian, 300, 2000);
     ntdlib::cafe::ax::Memory memory;
     memory.Map(0x10000000, first_wave);
     memory.Map(0x10001000, second_wave);
@@ -160,10 +155,6 @@ void TestWaveBufferQueue()
     XSFLIB_CHECK(system.VoiceBuses().tv[0][0][0] == 2000);
 }
 
-// The engine plays a sequence from a small archive: at a timebase of 48 and 120 beats a minute, a note of 24 ticks
-// (250 ms) on a PCM16 wave of 100 ms, then the end. The note starts in the second frame. The first frame takes the
-// start to the sound thread. AX sets the note's voice up at the end of the third frame and plays it from the fourth.
-// The sequence ends after its 24 ticks.
 // An archive with one sequence, SEQ_NOTE, that plays `bytecode` on a bank whose one note is a constant wave.
 ntdlib::sar::SoundArchive NoteArchive(const std::vector<uint8_t>& bytecode)
 {
@@ -203,6 +194,10 @@ ntdlib::sar::SoundArchive NoteArchive(const std::vector<uint8_t>& bytecode)
     return ntdlib::sar::SoundArchive::Load(fsar_files::Archive(true, spec), kSarOptions);
 }
 
+// The engine plays a sequence from a small archive: at a timebase of 48 and 120 beats a minute, a note of 24 ticks
+// (250 ms) on a PCM16 wave of 100 ms, then the end. The note starts in the second frame. The first frame takes the
+// start to the sound thread. AX sets the note's voice up at the end of the third frame and plays it from the fourth.
+// The sequence ends after its 24 ticks.
 void TestEngine()
 {
     const ntdlib::sar::SoundArchive archive = NoteArchive({0xB0, 48, 0xE1, 0x00, 120, 60, 127, 24, 0xFF});
@@ -402,86 +397,6 @@ void TestEngineEffects()
 
 namespace snd = ntdlib::cafe::snd;
 
-// A PCM16 wave of `samples` samples of `value` at 48 kHz.
-fsar_files::WaveSpec ConstantPcmWave(int samples, int16_t value = 0x1000)
-{
-    fsar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.sample_rate = 48000;
-    wave.loop_end = static_cast<uint32_t>(samples);
-    wave.channels = {ConstantWave(samples, value)};
-
-    return wave;
-}
-
-// A stereo DSP-ADPCM wave at 32 kHz that loops from sample 2800 to its end at sample 15988. Each frame's header picks
-// one of the 8 coefficient pairs and a scale. The nibbles are pseudo-random.
-fsar_files::WaveSpec LoopingAdpcmWave()
-{
-    constexpr int kSamples = 15988;
-    fsar_files::WaveSpec wave;
-    wave.encoding = 2;
-    wave.loop = true;
-    wave.sample_rate = 32000;
-    wave.loop_start = 2800;
-    wave.loop_end = kSamples;
-    uint32_t seed = 1;
-    for (int channel = 0; channel < 2; ++channel)
-    {
-        std::vector<uint8_t> bytes;
-        for (int frame = 0; frame < kSamples / 14; ++frame)
-        {
-            bytes.push_back(static_cast<uint8_t>((frame % 8) << 4 | (frame + channel) % 12));
-            for (int i = 0; i < 7; ++i)
-            {
-                seed = seed * 1103515245u + 12345u;
-                bytes.push_back(static_cast<uint8_t>(seed >> 16));
-            }
-        }
-        wave.channels.push_back(std::move(bytes));
-    }
-
-    return wave;
-}
-
-// An archive with one sequence sound that plays `bytecode` on a bank with an instrument for each of `waves`. Program i
-// plays wave i for every key, at original key 60. The sound allocates the tracks in `tracks`, a bit each.
-ntdlib::sar::SoundArchive ProgramArchive(const std::vector<uint8_t>& bytecode,
-                                         const std::vector<fsar_files::WaveSpec>& waves, uint32_t tracks = 1)
-{
-    fsar_files::BankSpec bank;
-    std::vector<std::vector<uint8_t>> wave_files;
-    for (std::size_t i = 0; i < waves.size(); ++i)
-    {
-        fsar_files::Region region;
-        region.wave = static_cast<uint32_t>(i);
-        region.original_key = 60;
-        fsar_files::VelocityTable velocities;
-        velocities.entries = {{0, region}};
-        fsar_files::KeyTable keys;
-        keys.entries = {{0, velocities}};
-        bank.waves.push_back({0x05000000, static_cast<uint32_t>(i)});
-        bank.instruments.push_back(keys);
-        wave_files.push_back(fsar_files::Wave(true, waves[i]));
-    }
-
-    fsar_files::SoundSpec sound;
-    sound.name = "SEQ_NOTE";
-    sound.volume = 127;
-    sound.banks = {0};
-    sound.allocate_track_flags = tracks;
-    fsar_files::ArchiveSpec spec;
-    spec.sounds = {sound};
-    spec.banks = {{"BANK_NOTE", 1}};
-    spec.wave_archives = {{"WARC_NOTE", 2}};
-    spec.players = {{"PLAYER_NOTE", 1}};
-    spec.files = {{fsar_files::Sequence(true, bytecode, {{"Note", 0}}), "", false},
-                  {fsar_files::Bank(true, bank), "", false},
-                  {fsar_files::WaveArchive(true, wave_files), "", false}};
-
-    return ntdlib::sar::SoundArchive::Load(fsar_files::Archive(true, spec), kSarOptions);
-}
-
 // An archive whose sequence plays two tracks that loop for ever. Track 0 plays a looping stereo wave in DSP-ADPCM at
 // 32 kHz, in notes of random lengths from 12 to 48 ticks, and sends to aux bus A. Track 1 plays a loud wave of 21 ms
 // that doesn't loop, 7 semitones up. Each note sounds for 14 ms, until the wave's end. Without `track_1_plays`, track 1
@@ -510,7 +425,9 @@ ntdlib::sar::SoundArchive LoopingArchive(bool track_1_plays = true, uint8_t send
         tracks.insert(tracks.begin() + 0x23, {0x80, 48});
     }
 
-    return ProgramArchive(tracks, {LoopingAdpcmWave(), ConstantPcmWave(1000, 0x7000)}, 0x3);
+    return ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, tracks, {LoopingAdpcmWave(), ConstantPcmWave(kBigEndian, 1000, 0x7000)}, 0x3),
+        kSarOptions);
 }
 
 // Options with a standard reverb on the TV's aux bus A.
@@ -700,8 +617,10 @@ void TestMuteTrack()
 // a restore of a snapshot taken while the track was muted, once the track is unmuted.
 void TestMuteRelease()
 {
-    const ntdlib::sar::SoundArchive archive =
-        ProgramArchive({0xB0, 48, 0xE1, 0x00, 120, 0xD3, 100, 60, 127, 24, 0xFF}, {ConstantPcmWave(48000)});
+    const ntdlib::sar::SoundArchive archive = ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, {0xB0, 48, 0xE1, 0x00, 120, 0xD3, 100, 60, 127, 24, 0xFF},
+                       {ConstantPcmWave(kBigEndian, 48000)}),
+        kSarOptions);
     snd::ArchiveModel model(archive);
     snd::Engine& engine = *model.engine;
     engine.StartSequence(0);
@@ -868,6 +787,74 @@ void TestMeterOnePlayer()
     XSFLIB_CHECK(second && heard && silent);
 }
 
+// An open that the open hook got: the track that ran the command, the track that it opened, and where that track
+// starts.
+struct Open
+{
+    int track;
+    int opened;
+    uint32_t offset;
+
+    bool operator==(const Open&) const = default;
+};
+
+// An archive whose track 0 opens track 1 at 0x1D again at the start of each of its passes of 24 ticks. Track 1 plays a
+// note of 12 ticks and rests for 48, and never reaches its end. Before its loop, track 0 opens itself and track 2,
+// which the sound doesn't allocate. The player ignores both.
+ntdlib::sar::SoundArchive ReopeningArchive()
+{
+    const std::vector<uint8_t> tracks = {
+        0xFE, 0x00, 0x03,             // tracks 0 and 1
+        0xB0, 48,   0xE1, 0x00, 120,  // a timebase of 48, 120 beats a minute
+        0x88, 0x00, 0x00, 0x00, 0x1D, // track 0 at 0x1D: the track itself
+        0x88, 0x02, 0x00, 0x00, 0x1D, // track 2 at 0x1D: not allocated
+        0x88, 0x01, 0x00, 0x00, 0x1D, // 0x12: track 1 at 0x1D
+        0x80, 24,                     // a rest
+        0x89, 0x00, 0x00, 0x12,       // back to 0x12
+        60,   127,  12,               // 0x1D: track 1's key 60
+        0x80, 48,                     // a rest
+        0xFF,                         // the end, which track 1 never reaches
+    };
+
+    return ntdlib::sar::SoundArchive::Load(ProgramArchive(kBigEndian, tracks, {ConstantPcmWave(kBigEndian, 4800)}, 0x3),
+                                           kSarOptions);
+}
+
+// The open hook gets every open of track 1 by track 0, the first included, without the loop hook. Track 0's passes
+// start at ticks 0, 24, 48 and so on, and each opens track 1. Track 0's opens of itself and of track 2 don't reach the
+// hook. The hook changes nothing in the output.
+void TestOpenTrackHook()
+{
+    const ntdlib::sar::SoundArchive archive = ReopeningArchive();
+    snd::ArchiveModel hooked(archive);
+    snd::ArchiveModel plain(archive);
+    std::vector<Open> opens;
+    const auto record_open = [&opens](int track, int opened, uint32_t offset)
+    {
+        opens.push_back({track, opened, offset});
+    };
+    hooked.engine->SetOpenTrackHook(record_open);
+    const snd::SequenceSoundPlayer* player = hooked.engine->StartSequence(0);
+    plain.engine->StartSequence(0);
+    if (!Check(player != nullptr, "the sequence starts"))
+    {
+        return;
+    }
+
+    const std::vector<int16_t> heard = RunFrames(hooked, 600);
+    const std::vector<int16_t> expected = RunFrames(plain, 600);
+
+    const uint32_t ticks = player->TickCount();
+    const auto of_track_1 = [](const Open& open)
+    {
+        return open == Open{0, 1, 0x1D};
+    };
+    Check(ticks >= 48 && opens.size() == (ticks + 23) / 24 && std::all_of(opens.begin(), opens.end(), of_track_1),
+          "every open of track 1 reaches the hook: " + std::to_string(opens.size()) + " in " + std::to_string(ticks) +
+              " ticks");
+    XSFLIB_CHECK(Sounds(heard) && heard == expected);
+}
+
 } // namespace
 
 int main()
@@ -888,6 +875,7 @@ int main()
     TestMeterTracks();
     TestMeterLeavesOutEffects();
     TestMeterOnePlayer();
+    TestOpenTrackHook();
 
     return xsflib::testing::Summary("cafe_snd");
 }

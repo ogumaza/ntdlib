@@ -26,13 +26,17 @@ public:
     void Generate(uint8_t* out, size_t size);
 
 private:
+    // The words in the buffer (k), the lag (j), the words of the seed, and the bytes of output that the buffer holds.
     static constexpr size_t kWords = 521;
+    static constexpr size_t kLag = 32;
+    static constexpr size_t kSeedWords = 17;
+    static constexpr size_t kBufferBytes = kWords * 4;
 
     // Advances the whole buffer by one generation.
     void Advance();
 
     std::array<uint32_t, kWords> buffer_;
-    size_t position_ = 0; // the next byte to output, within the 521 * 4 bytes of the buffer
+    size_t position_ = 0; // the next byte to output, within the kBufferBytes bytes of the buffer
 };
 
 } // namespace ntdlib::disc

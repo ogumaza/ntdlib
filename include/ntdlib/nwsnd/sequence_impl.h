@@ -190,11 +190,7 @@ void SequenceTrack<Policy>::ReleaseAllChannel(Player& player, Engine& engine, in
                 channel->envelope.SetRelease(static_cast<uint8_t>(release));
             }
 
-            channel->Release(engine);
-            if constexpr (requires { engine.OnRelease(player, index_, *channel); })
-            {
-                engine.OnRelease(player, index_, *channel);
-            }
+            ReleaseChannel(player, engine, *channel);
         }
     }
 }
@@ -221,17 +217,34 @@ void SequenceTrack<Policy>::StopAllChannel(Player& player, Engine& engine)
     for (Channel* channel = First(engine); channel;)
     {
         Channel* next = Next(engine, *channel);
-        channel->Stop(engine);
-        if constexpr (requires { engine.OnStop(player, index_, *channel); })
-        {
-            engine.OnStop(player, index_, *channel);
-        }
-        channel->CallChannelCallback(engine, Channel::CallbackStatus::kStopped);
-        engine.Channels().Free(*channel);
+        StopChannel(player, engine, *channel);
         channel = next;
     }
 
     channel_list_ = kNoChannel;
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::StopChannel(Player& player, Engine& engine, Channel& channel)
+{
+    // The callback takes the channel out of the track's list (OnChannelEvent) before the channel is freed.
+    channel.Stop(engine);
+    if constexpr (requires { engine.OnStop(player, index_, channel); })
+    {
+        engine.OnStop(player, index_, channel);
+    }
+    channel.CallChannelCallback(engine, Channel::CallbackStatus::kStopped);
+    engine.Channels().Free(channel);
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::ReleaseChannel(Player& player, Engine& engine, Channel& channel)
+{
+    channel.Release(engine);
+    if constexpr (requires { engine.OnRelease(player, index_, channel); })
+    {
+        engine.OnRelease(player, index_, channel);
+    }
 }
 
 template <typename Policy>
@@ -311,7 +324,7 @@ void SequenceTrack<Policy>::UpdateChannelLength(Player& player, Engine& engine)
 }
 
 template <typename Policy>
-int SequenceTrack<Policy>::ParseNextTick(Player& player, Engine& engine, bool do_note_on)
+int SequenceTrack<Policy>::ParseNextTick(Player& player, Engine& engine)
 {
     if (!open_)
     {
@@ -343,11 +356,11 @@ int SequenceTrack<Policy>::ParseNextTick(Player& player, Engine& engine, bool do
         }
     }
 
-    return ParseCommands(player, engine, do_note_on);
+    return ParseCommands(player, engine);
 }
 
 template <typename Policy>
-int SequenceTrack<Policy>::ParseCommands(Player& player, Engine& engine, bool do_note_on)
+int SequenceTrack<Policy>::ParseCommands(Player& player, Engine& engine)
 {
     if (!has_data_)
     {
@@ -387,7 +400,7 @@ int SequenceTrack<Policy>::ParseCommands(Player& player, Engine& engine, bool do
             }
         }
 
-        if (RunCommand(player, engine, do_note_on) == 1)
+        if (RunCommand(player, engine) == 1)
         {
             return -1;
         }
@@ -489,13 +502,7 @@ int32_t SequenceTrack<Policy>::ReadArg(Player& player, Engine& engine, int type)
         {
             const int32_t low = static_cast<int16_t>(Read16());
             const int32_t high = static_cast<int16_t>(Read16());
-            const uint32_t random = engine.Rng().Next();
-            drew_at_ = player.commands_run_;
-            if constexpr (requires { engine.OnRandomDraw(player, index_); })
-            {
-                engine.OnRandomDraw(player, index_);
-            }
-
+            const uint32_t random = DrawRandom(player, engine);
             const int32_t product = static_cast<int32_t>(static_cast<uint32_t>((high - low) + 1) * random);
             return low + (product >> 16);
         }
@@ -573,11 +580,11 @@ typename SequenceTrack<Policy>::SoundState SequenceTrack<Policy>::State(const Pl
 }
 
 template <typename Policy>
-int SequenceTrack<Policy>::RunCommand(Player& player, Engine& engine, bool do_note_on)
+int SequenceTrack<Policy>::RunCommand(Player& player, Engine& engine)
 {
     if (!FollowsLoops(engine))
     {
-        return Parse(player, engine, do_note_on);
+        return Parse(player, engine);
     }
 
     const uint64_t now = ++player.commands_run_;
@@ -585,7 +592,7 @@ int SequenceTrack<Policy>::RunCommand(Player& player, Engine& engine, bool do_no
     run_[std::min<std::size_t>(current_, data_.size())] = now;
 
     const SoundState before = State(player);
-    const int result = Parse(player, engine, do_note_on);
+    const int result = Parse(player, engine);
     if (State(player) != before)
     {
         MarkChange(player);
@@ -595,7 +602,7 @@ int SequenceTrack<Policy>::RunCommand(Player& player, Engine& engine, bool do_no
 }
 
 template <typename Policy>
-int SequenceTrack<Policy>::Parse(Player& player, Engine& engine, bool do_note_on)
+int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
 {
     // Returns 1 at the bytecode's end (FF).
     int arg_type = kArgNone;
@@ -612,21 +619,12 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine, bool do_note_on
         condition = cmp_flag_;
     }
 
-    // A time prefix, in a build of the library that has them. Without them, 0xA3 to 0xA5 are commands that do nothing.
-    const bool has_prefix = Policy::HasCommand(player.build_, command);
-    if (has_prefix && command == 0xA3) // time
+    // A time prefix (0xA3 a 16-bit time, 0xA4 a random one, 0xA5 a variable), in a build of the library that has them.
+    // Without them, 0xA3 to 0xA5 are commands that do nothing.
+    constexpr int kTimeTypes[] = {kArgS16, kArgRandom, kArgVariable};
+    if (command >= 0xA3 && command <= 0xA5 && Policy::HasCommand(player.build_, command))
     {
-        time_type = kArgS16;
-        command = ReadByte();
-    }
-    else if (has_prefix && command == 0xA4) // time random
-    {
-        time_type = kArgRandom;
-        command = ReadByte();
-    }
-    else if (has_prefix && command == 0xA5) // time variable
-    {
-        time_type = kArgVariable;
+        time_type = kTimeTypes[command - 0xA3];
         command = ReadByte();
     }
 
@@ -672,7 +670,7 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine, bool do_note_on
             engine.OnNoteCommand(player, index_, key, int{velocity}, length);
         }
 
-        if (!mute_ && do_note_on && NoteOn(player, engine, key, velocity, length > 0 ? length : -1, tie_))
+        if (!mute_ && NoteOn(player, engine, key, velocity, length > 0 ? length : -1, tie_))
         {
             MarkChange(player);
         }
@@ -789,55 +787,8 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine, bool do_note_on
     case 0xF0:
         if (command == 0xF0)
         {
-            const uint32_t sub = ReadByte();
-            switch (sub & 0xF0)
-            {
-            case 0x80:
-            case 0x90:
-                {
-                    const uint32_t variable = ReadByte();
-                    const int32_t value = static_cast<int16_t>(read_arg(kArgS16));
-                    if (condition)
-                    {
-                        CommandProc(player, engine, 0xF000 + sub, static_cast<int32_t>(variable), value);
-                    }
-
-                    return 0;
-                }
-
-            case 0xA0:
-            case 0xB0:
-                {
-                    // The extra LFOs' settings: a plain byte. No prefix changes it. A console without them reads no
-                    // byte.
-                    if (!Policy::HasCommand(player.build_, 0xF000 + sub))
-                    {
-                        return 0;
-                    }
-
-                    const uint32_t value = ReadByte();
-                    if (condition)
-                    {
-                        CommandProc(player, engine, 0xF000 + sub, static_cast<int32_t>(value), 0);
-                    }
-
-                    return 0;
-                }
-
-            case 0xE0:
-                {
-                    const int32_t value = static_cast<uint16_t>(read_arg(kArgS16));
-                    if (condition)
-                    {
-                        CommandProc(player, engine, 0xF000 + sub, value, 0);
-                    }
-
-                    return 0;
-                }
-
-            default:
-                return 0;
-            }
+            ParseExtendedCommand(player, engine, condition, arg_type);
+            return 0;
         }
 
         if (command == 0xFE) // the tracks to allocate: the sound's setup reads them
@@ -865,6 +816,67 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine, bool do_note_on
 }
 
 template <typename Policy>
+void SequenceTrack<Policy>::ParseExtendedCommand(Player& player, Engine& engine, bool condition, int arg_type)
+{
+    // A random or variable prefix gives the argument's type, as in Parse. Without one, the commands that take an
+    // argument read a 16-bit one.
+    const auto read_arg = [&]
+    {
+        return ReadArg(player, engine, arg_type != kArgNone ? arg_type : kArgS16);
+    };
+
+    const uint32_t sub = ReadByte();
+    const uint32_t command = 0xF000 + sub;
+    switch (sub & 0xF0)
+    {
+    case 0x80:
+    case 0x90:
+        {
+            const uint32_t variable = ReadByte();
+            const int32_t value = static_cast<int16_t>(read_arg());
+            if (condition)
+            {
+                CommandProc(player, engine, command, static_cast<int32_t>(variable), value);
+            }
+
+            return;
+        }
+
+    case 0xA0:
+    case 0xB0:
+        {
+            // The extra LFOs' settings: a plain byte. No prefix changes it. A console without them reads no byte.
+            if (!Policy::HasCommand(player.build_, command))
+            {
+                return;
+            }
+
+            const uint32_t value = ReadByte();
+            if (condition)
+            {
+                CommandProc(player, engine, command, static_cast<int32_t>(value), 0);
+            }
+
+            return;
+        }
+
+    case 0xE0:
+        {
+            const int32_t value = static_cast<uint16_t>(read_arg());
+            if (condition)
+            {
+                CommandProc(player, engine, command, value, 0);
+            }
+
+            return;
+        }
+
+    default:
+        return;
+    }
+}
+
+template <typename Policy>
 void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t command, int32_t arg1, int32_t arg2)
 {
     command_end_ = current_;
@@ -877,244 +889,7 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
 
     if (command > 0xFF)
     {
-        const uint32_t op = command & 0xFF;
-        int16_t* variable = nullptr;
-        if ((op & 0xF0) == 0x80 || (op & 0xF0) == 0x90)
-        {
-            variable = Variable(player, engine, arg1);
-            if (!variable)
-            {
-                return;
-            }
-        }
-
-        const int32_t value = arg2;
-        const int32_t current = variable ? *variable : 0;
-        if ((op & 0xF0) == 0x90)
-        {
-            MarkRead(player, arg1);
-        }
-
-        const auto set = [variable](int32_t result)
-        {
-            *variable = static_cast<int16_t>(result);
-        };
-
-        const auto lfo_byte = [](int32_t arg)
-        {
-            return static_cast<uint32_t>(arg) & 0xFF;
-        };
-
-        const auto lfo_period = [](int32_t arg)
-        {
-            const int16_t period = static_cast<int16_t>(arg);
-            return period == 0 ? 0.0f : 100.0f / static_cast<float>(period);
-        };
-
-        switch (op)
-        {
-        case 0x80: // set
-            set(value);
-            break;
-
-        case 0x81: // add
-            set(current + value);
-            break;
-
-        case 0x82: // subtract
-            set(current - value);
-            break;
-
-        case 0x83: // multiply
-            set(static_cast<int32_t>(static_cast<uint32_t>(current) * static_cast<uint32_t>(value)));
-            break;
-
-        case 0x84: // divide
-            if (value != 0)
-            {
-                set(current / static_cast<int16_t>(value));
-            }
-            break;
-
-        case 0x85: // shift (see the policy's Shift)
-            set(Policy::Shift(current, value));
-            break;
-
-        case 0x86: // random
-            {
-                int32_t range = value;
-                const bool negative = range < 0;
-                if (negative)
-                {
-                    range = static_cast<int16_t>(-range);
-                }
-
-                const uint32_t random = engine.Rng().Next();
-                drew_at_ = player.commands_run_;
-                int32_t result = static_cast<int32_t>(random * static_cast<uint32_t>(range + 1)) >> 16;
-                if (negative)
-                {
-                    result = -result;
-                }
-
-                set(result);
-                break;
-            }
-
-        case 0x87: // and
-            set(current & value);
-            break;
-
-        case 0x88: // or
-            set(current | value);
-            break;
-
-        case 0x89: // exclusive or
-            set(current ^ value);
-            break;
-
-        case 0x8A: // not
-            set(~value);
-            break;
-
-        case 0x8B: // modulo
-            if (value != 0)
-            {
-                set(current - (current / value) * value);
-            }
-            break;
-
-        case 0x90:
-            cmp_flag_ = current == value;
-            break;
-
-        case 0x91:
-            cmp_flag_ = current >= value;
-            break;
-
-        case 0x92:
-            cmp_flag_ = current > value;
-            break;
-
-        case 0x93:
-            cmp_flag_ = current <= value;
-            break;
-
-        case 0x94:
-            cmp_flag_ = current < value;
-            break;
-
-        case 0x95:
-            cmp_flag_ = current != value;
-            break;
-
-        // LFOs 1 to 3: curve, phase, depth, speed, type and range, then the delay and the period.
-        case 0xA0:
-            lfo_params_[1].curve = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xA1:
-            lfo_params_[1].phase = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xA2:
-            lfo_params_[1].depth = static_cast<float>(lfo_byte(arg1)) * 0.0078125f;
-            break;
-
-        case 0xA3:
-            lfo_params_[1].speed = static_cast<float>(lfo_byte(arg1)) * 0.390625f;
-            break;
-
-        case 0xA4:
-            lfo_types_[1] = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xA5:
-            lfo_params_[1].range = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xA6:
-            lfo_params_[2].curve = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xA7:
-            lfo_params_[2].phase = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xA8:
-            lfo_params_[2].depth = static_cast<float>(lfo_byte(arg1)) * 0.0078125f;
-            break;
-
-        case 0xA9:
-            lfo_params_[2].speed = static_cast<float>(lfo_byte(arg1)) * 0.390625f;
-            break;
-
-        case 0xAA:
-            lfo_types_[2] = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xAB:
-            lfo_params_[2].range = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xAC:
-            lfo_params_[3].curve = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xAD:
-            lfo_params_[3].phase = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xAE:
-            lfo_params_[3].depth = static_cast<float>(lfo_byte(arg1)) * 0.0078125f;
-            break;
-
-        case 0xAF:
-            lfo_params_[3].speed = static_cast<float>(lfo_byte(arg1)) * 0.390625f;
-            break;
-
-        case 0xB0:
-            lfo_types_[3] = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xB1:
-            lfo_params_[3].range = static_cast<uint8_t>(arg1);
-            break;
-
-        case 0xE1:
-            lfo_params_[1].delay = static_cast<uint32_t>(arg1 * 5);
-            break;
-
-        case 0xE2:
-            lfo_params_[1].speed = lfo_period(arg1);
-            break;
-
-        case 0xE3:
-            lfo_params_[2].delay = static_cast<uint32_t>(arg1 * 5);
-            break;
-
-        case 0xE4:
-            lfo_params_[2].speed = lfo_period(arg1);
-            break;
-
-        case 0xE5:
-            lfo_params_[3].delay = static_cast<uint32_t>(arg1 * 5);
-            break;
-
-        case 0xE6:
-            lfo_params_[3].speed = lfo_period(arg1);
-            break;
-
-        case 0xE0: // the game's procedure: archive mode has none
-        default:
-            break;
-        }
-
-        if constexpr (requires { engine.OnExtendedCommand(player, index_, command, arg1, arg2); })
-        {
-            engine.OnExtendedCommand(player, index_, command, arg1, arg2);
-        }
-
+        ExtendedCommandProc(player, engine, command, arg1, arg2);
         return;
     }
 
@@ -1129,59 +904,15 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0x88: // open a track
-        {
-            SequenceTrack* track = player.GetTrack(arg1);
-            if (!track || track == this)
-            {
-                break;
-            }
-
-            track->Close(player, engine);
-            track->SetSeqData(data_, static_cast<uint32_t>(arg2));
-            track->Open();
-            MarkChange(player); // the new track's sound is this pass's change
-            break;
-        }
+        OpenTrack(player, engine, arg1, static_cast<uint32_t>(arg2));
+        break;
 
     case 0x89: // jump
-        {
-            // A jump back to a command that the track has run is a loop, outside a subroutine. Inside a subroutine,
-            // such as one that draws a random value again until it differs from the last, the jump isn't a loop. An
-            // unconditional jump inside a subroutine is still a loop when the track holds a note that sounds until the
-            // game stops it. A subroutine that bends a held note's pitch for ever is an example. Under the policy's
-            // length rules (jump_loops_without_condition), it's a loop too when the track has run no conditional
-            // command since the jump's target. Nothing can then leave the loop. A melody that steps through its notes
-            // this way and leaves through a conditional command isn't a loop.
-            const auto target = static_cast<uint32_t>(arg1);
-            if (target < current_ && target < run_.size() && run_[target] != 0)
-            {
-                const auto call = [](const CallStackEntry& entry)
-                {
-                    return !entry.is_loop;
-                };
-                const bool in_call = std::any_of(call_stack_.begin(), call_stack_.begin() + call_depth_, call);
-                const bool unconditioned =
-                    Policy::kLengthRules.jump_loops_without_condition && conditional_at_ < run_[target];
-                if (!in_call || (!conditional_ && (HoldsSustainedNote(engine) || unconditioned)))
-                {
-                    CountLoop(player, engine, target);
-                }
-            }
-
-            current_ = target;
-            break;
-        }
+        Jump(player, engine, static_cast<uint32_t>(arg1));
+        break;
 
     case 0x8A: // call
-        if (call_depth_ >= kCallStackDepth)
-        {
-            break;
-        }
-
-        call_stack_[call_depth_].address = current_;
-        call_stack_[call_depth_].is_loop = false;
-        ++call_depth_;
-        current_ = static_cast<uint32_t>(arg1);
+        Call(static_cast<uint32_t>(arg1));
         break;
 
     case 0xB0:
@@ -1218,11 +949,11 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0xBD:
-        lfo_params_[0].phase = byte;
+        SetLfo(0, LfoSetting::kPhase, arg1);
         break;
 
     case 0xBE:
-        lfo_params_[0].curve = byte;
+        SetLfo(0, LfoSetting::kCurve, arg1);
         break;
 
     case 0xBF: // front bypass
@@ -1254,7 +985,7 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0xC4:
-        if constexpr (Policy::kBendRamps)
+        if (Policy::BendRamps(player.build_))
         {
             bend_.SetTarget(static_cast<int8_t>(arg1), static_cast<int16_t>(arg2));
         }
@@ -1288,19 +1019,19 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0xCA:
-        lfo_params_[0].depth = static_cast<float>(static_cast<uint32_t>(byte)) * 0.0078125f;
+        SetLfo(0, LfoSetting::kDepth, arg1);
         break;
 
     case 0xCB:
-        lfo_params_[0].speed = static_cast<float>(static_cast<uint32_t>(byte)) * 0.390625f;
+        SetLfo(0, LfoSetting::kSpeed, arg1);
         break;
 
     case 0xCC:
-        lfo_types_[0] = byte;
+        SetLfo(0, LfoSetting::kType, arg1);
         break;
 
     case 0xCD:
-        lfo_params_[0].range = byte;
+        SetLfo(0, LfoSetting::kRange, arg1);
         break;
 
     case 0xCE:
@@ -1328,13 +1059,7 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0xD4: // loop start
-        if (call_depth_ < kCallStackDepth)
-        {
-            call_stack_[call_depth_].address = current_;
-            call_stack_[call_depth_].is_loop = true;
-            call_stack_[call_depth_].loop_count = byte;
-            ++call_depth_;
-        }
+        LoopStart(byte);
         break;
 
     case 0xD5:
@@ -1388,7 +1113,7 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0xE0:
-        lfo_params_[0].delay = static_cast<uint32_t>(arg1 * 5);
+        SetLfo(0, LfoSetting::kDelay, arg1);
         break;
 
     case 0xE1:
@@ -1399,12 +1124,9 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         sweep_pitch_ = Policy::SweepPitchOf(player.build_, arg1);
         break;
 
-    case 0xE4: // LFO 0's period, in 10 ms
-        {
-            const int16_t period = static_cast<int16_t>(arg1);
-            lfo_params_[0].speed = period == 0 ? 0.0f : 100.0f / static_cast<float>(period);
-            break;
-        }
+    case 0xE4:
+        SetLfo(0, LfoSetting::kPeriod, arg1);
+        break;
 
     case 0xFB: // the bank's envelope again
         attack_ = decay_ = sustain_ = release_ = 0xFF;
@@ -1412,60 +1134,11 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
         break;
 
     case 0xFC: // loop end
-        {
-            if (call_depth_ == 0)
-            {
-                break;
-            }
-
-            // A call's entry keeps the last loop count at its level. On a console whose loop end takes it, that's the
-            // count.
-            CallStackEntry& entry = call_stack_[call_depth_ - 1];
-            if (Policy::kLoopEndIgnoresCalls && !entry.is_loop)
-            {
-                break;
-            }
-
-            uint8_t count = entry.loop_count;
-            if (count != 0 && !LoopsForEver(player, engine, entry.address))
-            {
-                --count;
-                if (count == 0)
-                {
-                    --call_depth_;
-                    break;
-                }
-            }
-            else
-            {
-                // A count of 0 loops for ever. On the main track, that's a loop of the sequence. So is a counted loop
-                // that the engine takes as endless.
-                CountLoop(player, engine, entry.address);
-            }
-
-            entry.loop_count = count;
-            current_ = entry.address;
-            break;
-        }
+        LoopEnd(player, engine);
+        break;
 
     case 0xFD: // return
-        if constexpr (Policy::kReturnSkipsLoops)
-        {
-            while (call_depth_ != 0)
-            {
-                --call_depth_;
-                if (!call_stack_[call_depth_].is_loop)
-                {
-                    current_ = call_stack_[call_depth_].address;
-                    break;
-                }
-            }
-        }
-        else if (call_depth_ != 0)
-        {
-            --call_depth_;
-            current_ = call_stack_[call_depth_].address;
-        }
+        Return();
         break;
 
     default:
@@ -1475,6 +1148,332 @@ void SequenceTrack<Policy>::CommandProc(Player& player, Engine& engine, uint32_t
     if constexpr (requires { engine.OnCommand(player, index_, command, arg1, arg2); })
     {
         engine.OnCommand(player, index_, command, arg1, arg2);
+    }
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::OpenTrack(Player& player, Engine& engine, int32_t index, uint32_t offset)
+{
+    SequenceTrack* track = player.GetTrack(index);
+    if (!track || track == this)
+    {
+        return;
+    }
+
+    track->Close(player, engine);
+    track->SetSeqData(data_, offset);
+    track->Open();
+    MarkChange(player); // the new track's sound is this pass's change
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::Jump(Player& player, Engine& engine, uint32_t target)
+{
+    // A jump back to a command that the track has run is a loop, outside a subroutine. Inside a subroutine, such as one
+    // that draws a random value again until it differs from the last, the jump isn't a loop. An unconditional jump
+    // inside a subroutine is still a loop when the track holds a note that sounds until the game stops it. A
+    // subroutine that bends a held note's pitch for ever is an example. Under the policy's length rules
+    // (jump_loops_without_condition), it's a loop too when the track has run no conditional command since the jump's
+    // target. Nothing can then leave the loop. A melody that steps through its notes this way and leaves through a
+    // conditional command isn't a loop.
+    if (target < current_ && target < run_.size() && run_[target] != 0)
+    {
+        const auto call = [](const CallStackEntry& entry)
+        {
+            return !entry.is_loop;
+        };
+        const bool in_call = std::any_of(call_stack_.begin(), call_stack_.begin() + call_depth_, call);
+        const bool unconditioned = Policy::kLengthRules.jump_loops_without_condition && conditional_at_ < run_[target];
+        if (!in_call || (!conditional_ && (HoldsSustainedNote(engine) || unconditioned)))
+        {
+            CountLoop(player, engine, target);
+        }
+    }
+
+    current_ = target;
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::Call(uint32_t target)
+{
+    if (call_depth_ >= kCallStackDepth)
+    {
+        return;
+    }
+
+    // The entry keeps the count of the last loop at its level (see LoopEnd).
+    call_stack_[call_depth_].address = current_;
+    call_stack_[call_depth_].is_loop = false;
+    ++call_depth_;
+    current_ = target;
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::LoopStart(uint8_t count)
+{
+    if (call_depth_ >= kCallStackDepth)
+    {
+        return;
+    }
+
+    call_stack_[call_depth_].address = current_;
+    call_stack_[call_depth_].is_loop = true;
+    call_stack_[call_depth_].loop_count = count;
+    ++call_depth_;
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::LoopEnd(Player& player, Engine& engine)
+{
+    if (call_depth_ == 0)
+    {
+        return;
+    }
+
+    // A call's entry keeps the last loop count at its level. On a console whose loop end takes it, that's the count.
+    CallStackEntry& entry = call_stack_[call_depth_ - 1];
+    if (Policy::kLoopEndIgnoresCalls && !entry.is_loop)
+    {
+        return;
+    }
+
+    uint8_t count = entry.loop_count;
+    if (count != 0 && !LoopsForEver(player, engine, entry.address))
+    {
+        --count;
+        if (count == 0)
+        {
+            --call_depth_;
+            return;
+        }
+    }
+    else
+    {
+        // A count of 0 loops for ever. On the main track, that's a loop of the sequence. So is a counted loop that the
+        // engine takes as endless.
+        CountLoop(player, engine, entry.address);
+    }
+
+    entry.loop_count = count;
+    current_ = entry.address;
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::Return()
+{
+    if constexpr (Policy::kReturnSkipsLoops)
+    {
+        // The return leaves the loops above the call too.
+        while (call_depth_ != 0)
+        {
+            --call_depth_;
+            if (!call_stack_[call_depth_].is_loop)
+            {
+                current_ = call_stack_[call_depth_].address;
+                return;
+            }
+        }
+    }
+    else if (call_depth_ != 0)
+    {
+        --call_depth_;
+        current_ = call_stack_[call_depth_].address;
+    }
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::ExtendedCommandProc(Player& player, Engine& engine, uint32_t command, int32_t arg1,
+                                                int32_t arg2)
+{
+    const uint32_t op = command & 0xFF;
+    if (op >= 0xA0 && op <= 0xB1)
+    {
+        // LFOs 1 to 3 have six commands each: the curve, phase, depth, speed, type and range.
+        constexpr std::array kSettings = {LfoSetting::kCurve, LfoSetting::kPhase, LfoSetting::kDepth,
+                                          LfoSetting::kSpeed, LfoSetting::kType,  LfoSetting::kRange};
+        SetLfo(static_cast<int>(1 + (op - 0xA0) / 6), kSettings[(op - 0xA0) % 6], arg1);
+    }
+    else if (op >= 0xE1 && op <= 0xE6)
+    {
+        // Their delays and periods have two commands each. 0xE0 calls the game's procedure. Archive mode has none.
+        const LfoSetting setting = (op - 0xE1) % 2 == 0 ? LfoSetting::kDelay : LfoSetting::kPeriod;
+        SetLfo(static_cast<int>(1 + (op - 0xE1) / 2), setting, arg1);
+    }
+    else if ((op & 0xF0) == 0x80 || (op & 0xF0) == 0x90)
+    {
+        // A command on variable arg1, or a comparison with it. Where the variable doesn't exist, the command does
+        // nothing. The engine's OnExtendedCommand isn't called then either.
+        int16_t* variable = Variable(player, engine, arg1);
+        if (!variable)
+        {
+            return;
+        }
+
+        if ((op & 0xF0) == 0x90)
+        {
+            MarkRead(player, arg1);
+        }
+        VariableCommand(player, engine, op, *variable, arg2);
+    }
+
+    if constexpr (requires { engine.OnExtendedCommand(player, index_, command, arg1, arg2); })
+    {
+        engine.OnExtendedCommand(player, index_, command, arg1, arg2);
+    }
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::VariableCommand(Player& player, Engine& engine, uint32_t op, int16_t& variable,
+                                            int32_t value)
+{
+    const int32_t current = variable;
+    const auto set = [&variable](int32_t result)
+    {
+        variable = static_cast<int16_t>(result);
+    };
+
+    switch (op)
+    {
+    case 0x80: // set
+        set(value);
+        break;
+
+    case 0x81: // add
+        set(current + value);
+        break;
+
+    case 0x82: // subtract
+        set(current - value);
+        break;
+
+    case 0x83: // multiply
+        set(static_cast<int32_t>(static_cast<uint32_t>(current) * static_cast<uint32_t>(value)));
+        break;
+
+    case 0x84: // divide
+        if (value != 0)
+        {
+            set(current / static_cast<int16_t>(value));
+        }
+        break;
+
+    case 0x85: // shift (see the policy's Shift)
+        set(Policy::Shift(current, value));
+        break;
+
+    case 0x86: // random
+        {
+            int32_t range = value;
+            const bool negative = range < 0;
+            if (negative)
+            {
+                range = static_cast<int16_t>(-range);
+            }
+
+            const uint32_t random = DrawRandom(player, engine);
+            int32_t result = static_cast<int32_t>(random * static_cast<uint32_t>(range + 1)) >> 16;
+            if (negative)
+            {
+                result = -result;
+            }
+
+            set(result);
+            break;
+        }
+
+    case 0x87: // and
+        set(current & value);
+        break;
+
+    case 0x88: // or
+        set(current | value);
+        break;
+
+    case 0x89: // exclusive or
+        set(current ^ value);
+        break;
+
+    case 0x8A: // not
+        set(~value);
+        break;
+
+    case 0x8B: // modulo
+        if (value != 0)
+        {
+            set(current - (current / value) * value);
+        }
+        break;
+
+    case 0x90:
+        cmp_flag_ = current == value;
+        break;
+
+    case 0x91:
+        cmp_flag_ = current >= value;
+        break;
+
+    case 0x92:
+        cmp_flag_ = current > value;
+        break;
+
+    case 0x93:
+        cmp_flag_ = current <= value;
+        break;
+
+    case 0x94:
+        cmp_flag_ = current < value;
+        break;
+
+    case 0x95:
+        cmp_flag_ = current != value;
+        break;
+
+    default:
+        break;
+    }
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::SetLfo(int lfo, LfoSetting setting, int32_t arg)
+{
+    CurveLfoParam& param = lfo_params_[static_cast<std::size_t>(lfo)];
+    const auto byte = static_cast<uint8_t>(arg);
+    switch (setting)
+    {
+    case LfoSetting::kCurve:
+        param.curve = byte;
+        break;
+
+    case LfoSetting::kPhase:
+        param.phase = byte;
+        break;
+
+    case LfoSetting::kDepth:
+        param.depth = static_cast<float>(byte) * 0.0078125f;
+        break;
+
+    case LfoSetting::kSpeed:
+        param.speed = static_cast<float>(byte) * 0.390625f;
+        break;
+
+    case LfoSetting::kType:
+        lfo_types_[static_cast<std::size_t>(lfo)] = byte;
+        break;
+
+    case LfoSetting::kRange:
+        param.range = byte;
+        break;
+
+    case LfoSetting::kDelay: // in steps of 5 ms
+        param.delay = static_cast<uint32_t>(arg * 5);
+        break;
+
+    case LfoSetting::kPeriod: // the speed, from a period in 10 ms
+        {
+            const auto period = static_cast<int16_t>(arg);
+            param.speed = period == 0 ? 0.0f : 100.0f / static_cast<float>(period);
+            break;
+        }
     }
 }
 
@@ -1541,6 +1540,19 @@ void SequenceTrack<Policy>::MarkChange(Player& player)
 {
     changed_at_ = player.commands_run_;
     player.changed_at_ = changed_at_;
+}
+
+template <typename Policy>
+uint32_t SequenceTrack<Policy>::DrawRandom(Player& player, Engine& engine)
+{
+    const uint32_t random = engine.Rng().Next();
+    drew_at_ = player.commands_run_;
+    if constexpr (requires { engine.OnRandomDraw(player, index_); })
+    {
+        engine.OnRandomDraw(player, index_);
+    }
+
+    return random;
 }
 
 template <typename Policy>
@@ -1679,13 +1691,7 @@ bool SequenceTrack<Policy>::NoteOn(Player& player, Engine& engine, int key, int 
         {
             if (channel->envelope.GetStatus() == AdshrStatus::kRelease)
             {
-                channel->Stop(engine);
-                if constexpr (requires { engine.OnStop(player, index_, *channel); })
-                {
-                    engine.OnStop(player, index_, *channel);
-                }
-                channel->CallChannelCallback(engine, Channel::CallbackStatus::kStopped);
-                engine.Channels().Free(*channel);
+                StopChannel(player, engine, *channel);
                 channel = nullptr;
             }
             else
@@ -1728,11 +1734,7 @@ bool SequenceTrack<Policy>::NoteOn(Player& player, Engine& engine, int key, int 
                         other->envelope.SetRelease(0x7E);
                     }
 
-                    other->Release(engine);
-                    if constexpr (requires { engine.OnRelease(player, index_, *other); })
-                    {
-                        engine.OnRelease(player, index_, *other);
-                    }
+                    ReleaseChannel(player, engine, *other);
                 }
             }
         }
@@ -1926,7 +1928,7 @@ int16_t* SequenceSoundPlayer<Policy>::Variable(Engine& engine, int index)
 template <typename Policy>
 void SequenceSoundPlayer<Policy>::Start()
 {
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < kTrackCount; ++i)
     {
         if (allocate_track_flags_ & (1u << i))
         {
@@ -1955,7 +1957,7 @@ void SequenceSoundPlayer<Policy>::Update(Engine& engine, int frames)
     {
         for (int frame = 0; frame < frames && !finished_; ++frame)
         {
-            UpdateFrameTicks(engine);
+            UpdateTick(engine, 1);
         }
     }
     else
@@ -1978,7 +1980,7 @@ void SequenceSoundPlayer<Policy>::BeginTick()
 }
 
 template <typename Policy>
-bool SequenceSoundPlayer<Policy>::RunTrackTick(Engine& engine, int index, bool do_note_on)
+bool SequenceSoundPlayer<Policy>::RunTrackTick(Engine& engine, int index)
 {
     TrackType* track = GetTrack(index);
     if (!track)
@@ -1987,7 +1989,7 @@ bool SequenceSoundPlayer<Policy>::RunTrackTick(Engine& engine, int index, bool d
     }
 
     track->UpdateChannelLength(*this, engine);
-    if (track->ParseNextTick(*this, engine, do_note_on) < 0)
+    if (track->ParseNextTick(*this, engine) < 0)
     {
         CloseTrack(engine, index);
         return false; // the track was freed, and reads as closed
@@ -1997,7 +1999,7 @@ bool SequenceSoundPlayer<Policy>::RunTrackTick(Engine& engine, int index, bool d
 }
 
 template <typename Policy>
-bool SequenceSoundPlayer<Policy>::ContinueTrackTick(Engine& engine, int index, bool do_note_on)
+bool SequenceSoundPlayer<Policy>::ContinueTrackTick(Engine& engine, int index)
 {
     TrackType* track = GetTrack(index);
     if (!track || !track->IsOpen())
@@ -2005,7 +2007,7 @@ bool SequenceSoundPlayer<Policy>::ContinueTrackTick(Engine& engine, int index, b
         return false;
     }
 
-    if (track->ParseCommands(*this, engine, do_note_on) < 0)
+    if (track->ParseCommands(*this, engine) < 0)
     {
         CloseTrack(engine, index);
         return false;
@@ -2036,7 +2038,7 @@ bool SequenceSoundPlayer<Policy>::EndTick(Engine& engine, bool any_open)
 template <typename Policy>
 void SequenceSoundPlayer<Policy>::UpdateTrackParams(Engine& engine)
 {
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < kTrackCount; ++i)
     {
         if (TrackType* track = GetTrack(i))
         {
@@ -2097,7 +2099,7 @@ bool SequenceSoundPlayer<Policy>::IsMainTrack(const Engine& engine, int index) c
 template <typename Policy>
 bool SequenceSoundPlayer<Policy>::OthersRest(const Engine& engine, int index) const
 {
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < kTrackCount; ++i)
     {
         const TrackType* track = Track(i);
         if (i != index && track && track->IsOpen() && !track->IsIdle() && !track->WaitsForEver(engine))
@@ -2135,7 +2137,7 @@ bool SequenceSoundPlayer<Policy>::RunTick(Engine& engine)
     BeginTick();
 
     bool any_open = false;
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < kTrackCount; ++i)
     {
         if (RunTrackTick(engine, i))
         {
@@ -2184,7 +2186,6 @@ std::optional<uint64_t> SequenceSoundPlayer<Policy>::NextTickTime()
 
 template <typename Policy>
 void SequenceSoundPlayer<Policy>::UpdateTick(Engine& engine, int frames)
-    requires(!Policy::kFloatClock)
 {
     StartClock(frames);
 
@@ -2267,31 +2268,11 @@ std::optional<uint64_t> SequenceSoundPlayer<Policy>::NextTickTime()
 }
 
 template <typename Policy>
-void SequenceSoundPlayer<Policy>::UpdateFrameTicks(Engine& engine)
-    requires Policy::kFloatClock
-{
-    StartClock(1);
-
-    while (const std::optional<uint64_t> left = NextTickTime())
-    {
-        if constexpr (requires { engine.OnTickStart(*this, *left); })
-        {
-            engine.OnTickStart(*this, *left);
-        }
-
-        if (RunTick(engine))
-        {
-            return;
-        }
-    }
-}
-
-template <typename Policy>
 void SequenceSoundPlayer<Policy>::FinishPlayer(Engine& engine)
 {
     started_ = false;
 
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < kTrackCount; ++i)
     {
         CloseTrack(engine, i);
     }

@@ -14,6 +14,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/ascii.h"
@@ -171,6 +172,56 @@ int NoSoundMatches(const std::string& only_text, bool bgm)
     }
 
     return 1;
+}
+
+std::vector<Job> SkipIncomplete(const sar::SoundArchive& archive, std::vector<Job> jobs, const sar::Options& options,
+                                Skipped& skipped)
+{
+    std::vector<Job> complete;
+    for (Job& job : jobs)
+    {
+        const std::vector<std::string> missing = MissingData(archive, job.index, options);
+        if (!missing.empty())
+        {
+            skipped.missing_data++;
+            std::string what;
+            for (std::size_t i = 0; i < missing.size(); i++)
+            {
+                what += (i ? ", " : "") + missing[i];
+            }
+            std::fprintf(stderr, "skipped %s: missing %s\n", job.label.c_str(), what.c_str());
+        }
+        else if (archive.Sounds()[job.index].volume == 0)
+        {
+            skipped.silent++;
+            std::fprintf(stderr, "skipped %s: it makes no sound (volume 0)\n", job.label.c_str());
+        }
+        else
+        {
+            complete.push_back(std::move(job));
+        }
+    }
+
+    return complete;
+}
+
+std::vector<Job> SkipSilent(std::vector<Job> jobs, Skipped& skipped)
+{
+    std::vector<Job> sounding;
+    for (Job& job : jobs)
+    {
+        if (job.timing && job.timing->silent)
+        {
+            skipped.silent++;
+            std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
+        }
+        else
+        {
+            sounding.push_back(std::move(job));
+        }
+    }
+
+    return sounding;
 }
 
 } // namespace ntdlib::rip

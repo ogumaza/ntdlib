@@ -32,6 +32,7 @@ inline constexpr AudioInterfaceOptions kWiiAudioInterface{729'000'000.0, 1.0, 32
 class AudioInterface
 {
 public:
+    // The interface stores a pointer to `options`. They have to outlive the interface.
     explicit AudioInterface(const AudioInterfaceOptions& options) : options_(&options)
     {
     }

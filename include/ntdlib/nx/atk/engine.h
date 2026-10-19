@@ -10,7 +10,6 @@
 
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -18,6 +17,8 @@
 #include <vector>
 
 #include "ntdlib/nwsnd/archive_files.h"
+#include "ntdlib/nwsnd/length_hooks.h"
+#include "ntdlib/nwsnd/sequence_players.h"
 #include "ntdlib/nx/atk/channel.h"
 #include "ntdlib/nx/atk/effect.h"
 #include "ntdlib/nx/atk/hardware.h"
@@ -44,7 +45,7 @@ struct EngineOptions
     std::array<std::optional<audio::I3dl2ReverbParameterSet>, 3> aux_reverbs;
 };
 
-class Engine
+class Engine : public ntdlib::nwsnd::LengthHooks
 {
 public:
     // A copy of the engine's state between frames, for a snapshot of the model (see ArchiveModel::Snapshot).
@@ -151,23 +152,6 @@ public:
     // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
     void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
 
-    // The length analysis's hook for the sequence's loops. While it's set, the players report their loops to it (see
-    // ntdlib's SequenceSoundPlayer).
-    void SetLoopHook(std::function<void(int track, uint32_t target)> hook)
-    {
-        on_loop_ = std::move(hook);
-    }
-
-    bool FollowsLoops() const
-    {
-        return static_cast<bool>(on_loop_);
-    }
-
-    void OnLoop(const SequenceSoundPlayer&, int track, uint32_t target)
-    {
-        on_loop_(track, target);
-    }
-
     // The counted loops that the length analysis takes as endless, each a track and its loop's body (see ntdlib's
     // LoopsForEver).
     void SetEndlessLoops(std::set<std::pair<int, uint32_t>> loops)
@@ -181,13 +165,7 @@ public:
     }
 
 private:
-    // A start that waits holds its player's place, not a pointer. A restore can put another player object in that
-    // place.
-    struct PendingStart
-    {
-        int player; // the player's place in players_: its Id()
-        int frames; // sound frames before it starts
-    };
+    using Players = ntdlib::nwsnd::SequencePlayers<SequenceSoundPlayer>;
 
     // An effect on a bus, with the renderer's aux and the buffer it processes the samples in.
     struct AttachedEffect
@@ -222,10 +200,9 @@ private:
     Random random_;
     std::array<int16_t, 16> global_vars_;
 
-    // Declared after the channels. The players are then destroyed first, and their tracks' hold on channels goes with
-    // them.
-    std::vector<std::unique_ptr<SequenceSoundPlayer>> players_;
-    std::vector<PendingStart> pending_;
+    // The players and the starts that wait. Declared after the channels. The players are then destroyed first, and
+    // their tracks' hold on channels goes with them.
+    Players players_;
     std::array<std::vector<AttachedEffect>, 4> effects_; // by bus, the main bus first
 
     // The banks, wave archives and waves that notes play. Each wave reads as WaveFileReader::ReadWaveInfo (0xc0b410)
@@ -233,7 +210,6 @@ private:
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
     Files files_;
 
-    std::function<void(int track, uint32_t target)> on_loop_;
     std::set<std::pair<int, uint32_t>> endless_loops_;
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track
     int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
@@ -250,8 +226,7 @@ struct Engine::Snapshot
     ChannelManager channels;
     Random random;
     std::array<int16_t, 16> global_vars{};
-    std::vector<SequenceSoundPlayer> players;
-    std::vector<PendingStart> pending;
+    Players::Snapshot players;
     std::array<std::vector<std::shared_ptr<const EffectAux>>, 4> effects; // by bus, as the engine holds them
 };
 

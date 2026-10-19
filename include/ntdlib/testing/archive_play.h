@@ -16,7 +16,7 @@
 //   Options                       the model's options, with voice_count
 //   Model                         the model of one archive: Model(archive, options). Its engine plays the archive.
 //   Frames(seconds)               the number of the model's frames in `seconds`
-//   Output(model)                 the stereo samples of the frame that the model played last
+//   Output(model)                 the stereo samples of the frame that the model played last, at 48 kHz
 //   kSends                        whether the log gives each channel's sends
 //   kUsage                        the console's options for the usage line, each after a space, or ""
 //   Outputs(channel, state)       sets the pan and span of a channel's state, and its sends with kSends

@@ -7,7 +7,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <vector>
 
 #include "ntdlib/sequence_export/passes.h"
@@ -189,13 +188,5 @@ int main()
     TestFitPartsKeepsAChannelForALayer();
     TestFitPartsGivesPartsTheChannelsThatLayersLeave();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::printf("%d checks failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("All checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("sequence_export_performance");
 }

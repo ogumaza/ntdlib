@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -34,6 +35,9 @@ constexpr uint16_t kInterrupt = 1u << 1;
 constexpr uint16_t kHalt = 1u << 2;
 constexpr uint16_t kInitBusy = 1u << 10;
 constexpr uint16_t kInit = 1u << 11;
+
+// All of the DSP-side bits. The system around the DSP keeps the others.
+constexpr uint16_t kDspSide = kReset | kInterrupt | kHalt | kInitBusy | kInit;
 
 } // namespace control
 
@@ -190,7 +194,17 @@ public:
     Registers regs_;
 
 private:
-    enum class Rom : uint8_t;
+    // The boot ROM model's state between steps.
+    enum class Rom : uint8_t
+    {
+        kNone,          // in no routine: a step in the ROM starts the routine at the PC
+        kCommandStart,  // the command loop clears the accumulators for the next mail
+        kWaitCommand,   // the command loop waits for a mail
+        kWaitArgument,  // the command loop waits for a command's argument
+        kWaitMailTaken, // the command loop waits for the CPU to read its reply
+        kLoading,       // the loader has loaded the microcode and runs out its steps before it jumps to it
+        kMixing,        // a mixing routine has mixed and runs out its steps before it returns
+    };
 
     // A register write that an extension defers until the main instruction has run.
     struct PendingWrite
@@ -215,8 +229,7 @@ private:
 
     // An instruction's handler (instructions.cpp). A table maps each instruction word to its handler. Most words go to
     // Execute. The words that AX's microcodes run most have dedicated handlers. In those handlers the compiler folds
-    // away the switch on the instruction's kind. The cases that distinguish related instructions still decode the word
-    // at run time.
+    // away every test of the instruction's kind.
     using Handler = void (*)(Dsp& dsp, uint16_t op);
 
     static const Handler* Handlers();
@@ -230,11 +243,11 @@ private:
     void Execute(uint16_t op);
     inline void ExecuteOp(uint16_t op, uint8_t kind);
     inline void Extension(uint8_t field, HeldWrites& held);
-    static void Hold(HeldWrites& held, uint8_t reg, uint16_t value);
+    static void Hold(HeldWrites& held, uint8_t reg, uint16_t value,
+                     typename PendingWrite::Kind kind = PendingWrite::kRegister);
     uint16_t FetchSecondWord();
     int SizeOf(uint16_t op) const;
     void SkipNextInstruction();
-    void BuildDecodeTable();
     void BuildLoopMap();
 
     // Registers (dsp.cpp).
@@ -263,6 +276,19 @@ private:
     uint16_t Decrement(uint16_t address, uint16_t wrap) const;
     uint16_t AddIndex(uint16_t address, uint16_t index, uint16_t wrap) const;
     uint16_t SubtractIndex(uint16_t address, uint16_t index, uint16_t wrap) const;
+
+    // The steps of an address register after an access, by the two bits that encode them: none, a decrement, an
+    // increment, or an add of its index register. SteppedAddress gives $arI after its step.
+    enum AddressStep : int
+    {
+        kNoStep,
+        kDecrementStep,
+        kIncrementStep,
+        kAddIndexStep,
+    };
+
+    uint16_t SteppedAddress(int i, int step) const;
+
     void RaiseException(int number);
     void CheckExceptions();
     void RaiseCpuInterrupt();
@@ -280,8 +306,9 @@ private:
     uint16_t ReadHardware(uint8_t reg);
     void WriteHardware(uint8_t reg, uint16_t value);
     void Dma();
-    bool MainMemoryRange(uint32_t address, uint32_t size, uint8_t*& host);
-    uint16_t AcceleratorRead(bool raw);
+    uint8_t* MainMemoryRange(uint32_t address, uint32_t size);
+    uint16_t AcceleratorReadRaw();
+    uint16_t AcceleratorReadSample();
     void AcceleratorWrite(uint16_t value);
     uint8_t AcceleratorByte(uint32_t address) const;
     static uint16_t MailboxReadHigh(uint32_t mailbox);
@@ -291,8 +318,14 @@ private:
     void Reset();
     void InitPath();
 
-    // The boot ROM (boot_rom.cpp).
+    // The boot ROM (boot_rom.cpp). RomStep runs one step of the routine that rom_state_ gives, or starts the routine at
+    // the PC. RomWaitMail is the routine at 0x8078 that waits for a mail. It returns CMBH, or nothing while the mailbox
+    // is empty.
     void RomStep();
+    void RomStartRoutine();
+    std::optional<uint16_t> RomWaitMail();
+    void RomTakeCommand();
+    void RomTakeArgument();
     void RomEntry();
     void RomLoader();
     void RomMix(uint16_t routine);
@@ -312,13 +345,14 @@ private:
     int taken_exception_ = -1;
     uint64_t steps_ = 0;
 
-    // The static analysis of IRAM. It records the loop ends that the loops in IRAM name, and the starts of mail-polling
-    // loops. A loop end can be anywhere in the 64K of IMEM addresses.
+    // The static analysis of IRAM. It records the loop ends that the loops in IRAM name, and the starts of the loops
+    // that poll a mailbox or DRAM word 0x0352. A loop end can be anywhere in the 64K of IMEM addresses.
     std::vector<uint8_t> loop_end_;
     std::vector<uint8_t> idle_;
 
-    // The position in the boot ROM routines between steps: the current routine and the number of steps it has left.
-    Rom rom_state_;
+    // The boot ROM model's place between steps: its state, the command whose argument it waits for, and the steps the
+    // current routine has left.
+    Rom rom_state_ = Rom::kNone;
     uint16_t rom_command_ = 0;
     uint32_t rom_delay_ = 0;
 };

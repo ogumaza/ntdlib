@@ -238,6 +238,31 @@ void AddZoneLowPass(sf2::Zone& zone, const ResamplingFilter* filter, const std::
     }
 }
 
+void AddRegionZones(std::vector<sf2::Zone>& zones, uint32_t index, const PresetKey& key,
+                    const std::vector<std::pair<int, int>>& keys, const std::vector<std::pair<int, int>>& velocities,
+                    std::size_t channels, const ResamplingRegion& region, std::pair<uint32_t, uint32_t> wave_key,
+                    const wave::Pcm& wave, ZoneLowPass& low_pass, const Settings& settings,
+                    const ChannelZoneFunction& zone)
+{
+    for (const std::pair<int, int>& range : keys)
+    {
+        for (const ResamplingSpan& span : ZoneSpans(range, region, key, settings))
+        {
+            const std::optional<FittedCutoff> fitted =
+                low_pass.Fit(index, key, span.keys, region.original_key, region.tune, wave_key, wave);
+            for (const std::pair<int, int>& v : velocities)
+            {
+                for (std::size_t c = 0; c < channels; c++)
+                {
+                    sf2::Zone channel_zone = zone(c, span.keys, v);
+                    AddZoneLowPass(channel_zone, span.filter, fitted, region, key, settings);
+                    zones.push_back(std::move(channel_zone));
+                }
+            }
+        }
+    }
+}
+
 std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys, bool bank_slots)
 {
     std::vector<std::pair<uint32_t, uint32_t>> banks_and_programs;

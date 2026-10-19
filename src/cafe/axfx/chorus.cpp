@@ -88,12 +88,6 @@ int32_t MultiplyShift24(int32_t a, int32_t b)
     return static_cast<int32_t>((static_cast<int64_t>(a) * b) >> 24);
 }
 
-// Whether a gain is below 0 or above 1. A NaN gain passes the library's tests.
-bool OutOfRange(float value)
-{
-    return value < 0.0f || value > 1.0f;
-}
-
 } // namespace
 
 uint32_t ChorusExp::GetMemSize(uint32_t rate)
@@ -194,11 +188,7 @@ void ChorusExp::Process(const Buffers& frame, uint32_t samples, const Buffers& b
             }
 
             hist_index_ = (hist_index_ + 1) & 3;
-            read++;
-            if (read >= size_)
-            {
-                read = 0;
-            }
+            Step(read, size_);
         }
 
         last_pos_ = position & 0xffff0000;
@@ -246,12 +236,12 @@ bool ChorusExp::ResetLines(uint32_t rate)
 
     for (std::vector<float>& line : line_)
     {
-        std::fill(line.begin(), line.end(), 0.0f);
+        Clear(line);
     }
 
     // The output starts the delay behind the input, in 16.16 fixed point.
     in_pos_ = 0;
-    const uint32_t delay = ToUnsigned(params_.delay_time * ToFloat(SamplesPerMs(rate)));
+    const uint32_t delay = ntdlib::CafeToUint32(params_.delay_time * ToFloat(SamplesPerMs(rate)));
     out_pos_ = (size_ - delay) << 16;
     last_pos_ = out_pos_;
     size_fp_ = size_ << 16;

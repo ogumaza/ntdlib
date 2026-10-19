@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// The Wii's fitted filter tables. tools/sequence_export/filter_tables.py writes them from the game's code.
+// The Wii's fitted filter tables, for the builds of NW4R SND before November 2008. Later builds take the Wii U's
+// low-pass (RevolutionFilters). tools/sequence_export/filter_tables.py writes the tables from the game's code.
 
 #include "ntdlib/sequence_export/filter.h"
 

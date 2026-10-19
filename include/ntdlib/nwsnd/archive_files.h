@@ -208,4 +208,26 @@ private:
     std::map<std::pair<uint32_t, uint32_t>, std::optional<WaveInfo>> waves_;
 };
 
+// Sets `channel` up for the note of `info` on velocity region `region`, as Bank::NoteOn does before it starts the
+// channel (0x022C4A0C on the Wii U, 0xc0b140 on the Switch). The channel takes the key, the velocity's volume by the
+// policy, and the region's volume, tuning, envelope, pan, key group, note-off type and interpolation.
+template <typename Policy, typename Channel, typename NoteOnInfo>
+void SetUpNoteChannel(Channel& channel, const sar::VelocityRegion& region, const NoteOnInfo& info)
+{
+    channel.key = static_cast<uint8_t>(info.key);
+    channel.original_key = region.original_key;
+    channel.velocity_volume = Policy::VelocityVolume(info.velocity);
+    channel.init_volume = static_cast<float>(region.volume) * (1.0f / 127.0f);
+    channel.tune = region.pitch;
+    channel.envelope.SetAttack(region.adshr.attack);
+    channel.envelope.SetHold(region.adshr.hold);
+    channel.envelope.SetDecay(region.adshr.decay);
+    channel.envelope.SetSustain(region.adshr.sustain);
+    channel.envelope.SetRelease(region.adshr.release);
+    channel.init_pan = static_cast<float>(info.init_pan + static_cast<int>(region.pan) - 0x40) / 63.0f;
+    channel.key_group = region.key_group;
+    channel.ignore_note_off = region.ignore_note_off;
+    channel.interpolation_type = region.interpolation;
+}
+
 } // namespace ntdlib::nwsnd

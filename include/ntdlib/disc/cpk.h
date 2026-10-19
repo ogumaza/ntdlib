@@ -3,12 +3,12 @@
 // CRI Middleware's CPK archives, and CRILAYLA, the compression that their files may use. A CPK is made of chunks. Each
 // chunk starts with a 16-byte header: 4 bytes of magic, 4 bytes that ListCpk skips, and the size of the chunk's table
 // in 64 bits, little-endian. The table follows the header in CRI's @UTF format. The archive starts with the chunk
-// "CPK ". That chunk's table has one row. The row gives
-// the offset of the chunk "TOC " (TocOffset) and the offset of the files' data (ContentOffset). The TOC's table has a
-// row for each file: the file's folder (DirName), its name (FileName), the bytes that the archive stores (FileSize),
-// the size once decompressed (ExtractSize) and the offset (FileOffset). A file's offset in the archive is FileOffset
-// plus the lower of TocOffset and ContentOffset. A file stored with CRILAYLA starts with the magic "CRILAYLA". An
-// archive may list its files by ID only, in a chunk "ITOC" without a TOC. ListCpk lists no files for such an archive.
+// "CPK ". That chunk's table has one row. The row gives the offset of the chunk "TOC " (TocOffset) and the offset of
+// the files' data (ContentOffset). The TOC's table has a row for each file: the file's folder (DirName), its name
+// (FileName), the bytes that the archive stores (FileSize), the size once decompressed (ExtractSize) and the offset
+// (FileOffset). A file's offset in the archive is FileOffset plus the lower of TocOffset and ContentOffset. A file
+// stored with CRILAYLA starts with the magic "CRILAYLA". An archive may list its files by ID only, in a chunk "ITOC"
+// without a TOC. ListCpk lists no files for such an archive.
 
 #pragma once
 
@@ -18,6 +18,8 @@
 #include <span>
 #include <string>
 #include <vector>
+
+#include "ntdlib/disc/error.h"
 
 namespace ntdlib::disc
 {

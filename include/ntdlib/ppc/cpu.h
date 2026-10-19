@@ -250,6 +250,10 @@ private:
     void RebuildMap(bool instruction);
     bool Translate(uint32_t address, bool instruction, PAddr& physical) const;
 
+    // The host memory of the byte of RAM that a data access at `address` reaches, or nullptr where no BAT or RAM covers
+    // the address.
+    uint8_t* RamByte(uint32_t address);
+
     uint8_t* DataPage(uint32_t address) const
     {
         return (state_.msr & msr::kDr) ? data_map_[address >> 12] : nullptr;
@@ -282,12 +286,13 @@ private:
         return (state_.cr >> (31 - bit) & 1) != 0;
     }
 
-    // Floating point.
-    bool FpEnabled();
+    // Floating point. CheckFpAvailable returns true when MSR[FP] is set. Otherwise it takes the FP-unavailable
+    // exception and returns false. RecordFpscr sets CR1 for an instruction `op` in its record form.
+    bool CheckFpAvailable();
     void SetFprf(double value);
+    void RecordFpscr(uint32_t op);
     void FpCompare(int field, double a, double b);
     void UpdateRounding();
-    double RoundToSingle(double value) const;
 
     Bus& bus_;
     std::vector<uint8_t*> data_map_;

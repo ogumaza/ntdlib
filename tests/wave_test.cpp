@@ -5,7 +5,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <functional>
 #include <initializer_list>
 #include <span>
@@ -367,13 +366,5 @@ int main()
     TestGoldenBlocks();
     TestGoldenSteps();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("wave tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("wave");
 }

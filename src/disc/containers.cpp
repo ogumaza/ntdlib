@@ -18,15 +18,15 @@
 #include <utility>
 #include <vector>
 
-#include "disc/image_parts.h"
-#include "ntdlib/disc/compression.h"
-#include "ntdlib/disc/junk.h"
 #include "xsflib/bytes.h"
 #include "xsflib/sha1.h"
 
+#include "disc/image_parts.h"
+#include "ntdlib/disc/compression.h"
+#include "ntdlib/disc/junk.h"
+
 namespace ntdlib::disc
 {
-
 namespace
 {
 
@@ -172,7 +172,7 @@ public:
     {
         uint32_t first_sector;
         uint32_t sectors;
-        uint32_t group;
+        uint32_t first_group;
         uint32_t groups;
     };
 
@@ -204,7 +204,7 @@ private:
     {
         uint64_t offset;
         uint64_t size;
-        uint32_t group;
+        uint32_t first_group;
         uint32_t groups;
     };
 
@@ -219,8 +219,18 @@ private:
     // The newest version of the formats that this reader supports: 1.00 for both (encoded as 0xAABBCCDD for A.BB.CC).
     static constexpr uint32_t kVersion = 0x01000000;
 
+    // These read the tables that `disc`, the wia_disc_t, points to: the Wii partitions into partitions_, `raw_count`
+    // raw data entries into raw_ and `group_count` group entries into groups_.
+    void ReadPartitions(std::span<const uint8_t> disc);
+    void ReadRawEntries(std::span<const uint8_t> disc, uint32_t raw_count);
+    void ReadGroupEntries(std::span<const uint8_t> disc, uint32_t group_count);
+
     // Reads one of the tables. Tables are compressed like the groups. `size` is the size after decompression.
     std::vector<uint8_t> Table(uint64_t offset, uint32_t stored_size, size_t size);
+
+    // Decodes the data of `group` into `out` (see Group). `out` holds zeros on entry. A group that stores nothing
+    // leaves `out` unchanged.
+    void DecodeGroup(const GroupEntry& group, size_t exception_lists, uint64_t junk_offset, std::span<uint8_t> out);
 
     // Decodes WIA's PURGE method. The data holds `exception_lists` lists and padding to 4 bytes, then segments of data
     // over zeros, then a SHA-1. Each segment gives an offset, a size and the bytes.
@@ -320,47 +330,58 @@ WiaImage::WiaImage(std::unique_ptr<Source> source, bool wii) : source_(std::move
     // A Wii disc's partitions. A GameCube disc has none.
     if (wii)
     {
-        const uint32_t partition_count = xsflib::LoadBe32(disc.data() + 0x90);
-        const uint32_t partition_size = xsflib::LoadBe32(disc.data() + 0x94);
-        if (partition_count > 64 || partition_size > 0x1000)
-        {
-            throw Error("the " + name + " partition table is invalid");
-        }
-
-        const std::vector<uint8_t> partitions =
-            source_->Read(xsflib::LoadBe64(disc.data() + 0x98), size_t{partition_count} * partition_size);
-        if (!MatchesHash(partitions, disc.data() + 0xA0))
-        {
-            throw Error("the " + name + " partition table doesn't match its hash");
-        }
-
-        for (uint32_t i = 0; i < partition_count; ++i)
-        {
-            std::vector<uint8_t> entry(partitions.begin() + i * partition_size,
-                                       partitions.begin() + (i + 1) * partition_size);
-            entry.resize(std::max<size_t>(entry.size(), 0x30));
-            std::array<Segment, 2> segments;
-            for (int s = 0; s < 2; ++s)
-            {
-                const uint8_t* p = entry.data() + 0x10 + s * 16;
-                segments[s] = {xsflib::LoadBe32(p), xsflib::LoadBe32(p + 4), xsflib::LoadBe32(p + 8),
-                               xsflib::LoadBe32(p + 12)};
-            }
-
-            partitions_.push_back(segments);
-        }
+        ReadPartitions(disc);
     }
 
-    // The raw data and group tables. The first raw data entry starts at 0x80, after the header stored in wia_disc_t,
-    // but the entry's data starts at 0. Each entry is therefore rounded down to a sector.
+    // The raw data and group tables. Both counts are checked before either table is read.
     const uint32_t raw_count = xsflib::LoadBe32(disc.data() + 0xB4);
     const uint32_t group_count = xsflib::LoadBe32(disc.data() + 0xC4);
-    const size_t group_entry = rvz_ ? 12 : 8;
     if (raw_count > (1u << 20) || group_count > (1u << 24))
     {
         throw Error("the " + name + " tables are invalid");
     }
 
+    ReadRawEntries(disc, raw_count);
+    ReadGroupEntries(disc, group_count);
+}
+
+void WiaImage::ReadPartitions(std::span<const uint8_t> disc)
+{
+    const uint32_t partition_count = xsflib::LoadBe32(disc.data() + 0x90);
+    const uint32_t partition_size = xsflib::LoadBe32(disc.data() + 0x94);
+    if (partition_count > 64 || partition_size > 0x1000)
+    {
+        throw Error("the " + Format() + " partition table is invalid");
+    }
+
+    const std::vector<uint8_t> partitions =
+        source_->Read(xsflib::LoadBe64(disc.data() + 0x98), size_t{partition_count} * partition_size);
+    if (!MatchesHash(partitions, disc.data() + 0xA0))
+    {
+        throw Error("the " + Format() + " partition table doesn't match its hash");
+    }
+
+    for (uint32_t i = 0; i < partition_count; ++i)
+    {
+        std::vector<uint8_t> entry(partitions.begin() + i * partition_size,
+                                   partitions.begin() + (i + 1) * partition_size);
+        entry.resize(std::max<size_t>(entry.size(), 0x30));
+        std::array<Segment, 2> segments;
+        for (int s = 0; s < 2; ++s)
+        {
+            const uint8_t* p = entry.data() + 0x10 + s * 16;
+            segments[s] = {xsflib::LoadBe32(p), xsflib::LoadBe32(p + 4), xsflib::LoadBe32(p + 8),
+                           xsflib::LoadBe32(p + 12)};
+        }
+
+        partitions_.push_back(segments);
+    }
+}
+
+void WiaImage::ReadRawEntries(std::span<const uint8_t> disc, uint32_t raw_count)
+{
+    // The first raw data entry starts at 0x80, after the header stored in wia_disc_t, but the entry's data starts at 0.
+    // Each entry is therefore rounded down to a sector.
     const std::vector<uint8_t> raw =
         Table(xsflib::LoadBe64(disc.data() + 0xB8), xsflib::LoadBe32(disc.data() + 0xC0), size_t{raw_count} * 24);
     for (uint32_t i = 0; i < raw_count; ++i)
@@ -371,7 +392,11 @@ WiaImage::WiaImage(std::unique_ptr<Source> source, bool wii) : source_(std::move
         raw_.push_back(
             {aligned, xsflib::LoadBe64(p + 8) + offset - aligned, xsflib::LoadBe32(p + 16), xsflib::LoadBe32(p + 20)});
     }
+}
 
+void WiaImage::ReadGroupEntries(std::span<const uint8_t> disc, uint32_t group_count)
+{
+    const size_t group_entry = rvz_ ? 12 : 8;
     const std::vector<uint8_t> groups =
         Table(xsflib::LoadBe64(disc.data() + 0xC8), xsflib::LoadBe32(disc.data() + 0xD0), group_count * group_entry);
     for (uint32_t i = 0; i < group_count; ++i)
@@ -493,6 +518,47 @@ void WiaImage::Unpack(std::span<const uint8_t> packed, std::span<uint8_t> out, u
     }
 }
 
+void WiaImage::DecodeGroup(const GroupEntry& group, size_t exception_lists, uint64_t junk_offset,
+                           std::span<uint8_t> out)
+{
+    if (!group.stored_size)
+    {
+        return;
+    }
+
+    std::vector<uint8_t> stored = source_->Read(group.offset, group.stored_size);
+    if (method_ == Method::kPurge)
+    {
+        Purge(stored, exception_lists, out);
+
+        return;
+    }
+
+    // A list holds at most 3328 exceptions. That's enough for every hash and padding byte of 2 MiB.
+    const size_t limit = std::max<size_t>(out.size(), group.packed_size) + exception_lists * (2 + 3328 * 22);
+    const std::vector<uint8_t> body = group.compressed ? Decompress(method_, props_, stored, limit) : std::move(stored);
+    size_t position = SkipExceptionLists(body, exception_lists);
+    if (!group.compressed && exception_lists)
+    {
+        position = (position + 3) & ~size_t{3};
+    }
+
+    const std::span<const uint8_t> data = std::span(body).subspan(std::min(position, body.size()));
+    if (group.packed_size)
+    {
+        Unpack(data, out, junk_offset);
+
+        return;
+    }
+
+    if (data.size() < out.size())
+    {
+        throw Error("a group in the " + Format() + " file holds too little data");
+    }
+
+    std::copy_n(data.begin(), out.size(), out.begin());
+}
+
 const std::vector<uint8_t>& WiaImage::Group(uint32_t index, size_t size, size_t exception_lists, uint64_t junk_offset)
 {
     if (index == cached_group_ && cached_.size() == size)
@@ -506,42 +572,7 @@ const std::vector<uint8_t>& WiaImage::Group(uint32_t index, size_t size, size_t 
 
     cached_group_ = std::numeric_limits<uint32_t>::max();
     cached_.assign(size, 0);
-    const GroupEntry& group = groups_[index];
-    if (group.stored_size)
-    {
-        std::vector<uint8_t> stored = source_->Read(group.offset, group.stored_size);
-        if (method_ == Method::kPurge)
-        {
-            Purge(stored, exception_lists, cached_);
-        }
-        else
-        {
-            // A list holds at most 3328 exceptions. That's enough for every hash and padding byte of 2 MiB.
-            const size_t limit = std::max<size_t>(size, group.packed_size) + exception_lists * (2 + 3328 * 22);
-            const std::vector<uint8_t> body =
-                group.compressed ? Decompress(method_, props_, stored, limit) : std::move(stored);
-            size_t position = SkipExceptionLists(body, exception_lists);
-            if (!group.compressed && exception_lists)
-            {
-                position = (position + 3) & ~size_t{3};
-            }
-
-            const std::span<const uint8_t> data = std::span(body).subspan(std::min(position, body.size()));
-            if (group.packed_size)
-            {
-                Unpack(data, cached_, junk_offset);
-            }
-            else if (data.size() < size)
-            {
-                throw Error("a group in the " + Format() + " file holds too little data");
-            }
-            else
-            {
-                std::copy_n(data.begin(), size, cached_.begin());
-            }
-        }
-    }
-
+    DecodeGroup(groups_[index], exception_lists, junk_offset, cached_);
     cached_group_ = index;
 
     return cached_;
@@ -558,32 +589,30 @@ void WiaImage::Read(uint64_t offset, uint8_t* out, size_t size)
 
     for (const Raw& raw : raw_)
     {
-        if (offset + size <= raw.offset || offset >= raw.offset + raw.size)
+        // The part of the read that the entry holds, after the disc's head.
+        const uint64_t start = std::max({offset, raw.offset, uint64_t{disc_head_.size()}});
+        const uint64_t end = std::min(offset + size, raw.offset + raw.size);
+        if (start >= end)
         {
             continue;
         }
 
-        // Each group holds one chunk of the entry's data. The last group may hold less.
-        const uint64_t first = (std::max(offset, raw.offset) - raw.offset) / chunk_size_;
-        for (uint64_t g = first; g < raw.groups; ++g)
+        // Each group holds one chunk of the entry's data. The last group may hold less. The entry's data past its
+        // last group reads as 0.
+        const auto read = [&](uint64_t g, size_t within, uint8_t* piece, size_t n)
         {
-            const uint64_t group_start = raw.offset + g * chunk_size_;
-            if (group_start >= std::min(raw.offset + raw.size, offset + size))
+            if (g >= raw.groups)
             {
-                break;
+                return;
             }
 
+            const uint64_t group_start = raw.offset + g * chunk_size_;
             const uint64_t group_size = std::min(chunk_size_, raw.offset + raw.size - group_start);
-            const uint64_t start = std::max({offset, group_start, uint64_t{disc_head_.size()}});
-            const uint64_t end = std::min(offset + size, group_start + group_size);
-            if (start < end)
-            {
-                const std::vector<uint8_t>& data =
-                    Group(static_cast<uint32_t>(raw.group + g), static_cast<size_t>(group_size), 0, group_start);
-                std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(start - group_start), end - start,
-                            out + (start - offset));
-            }
-        }
+            const std::vector<uint8_t>& data =
+                Group(static_cast<uint32_t>(raw.first_group + g), static_cast<size_t>(group_size), 0, group_start);
+            std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(within), n, piece);
+        };
+        ReadByBlocks(start - raw.offset, out + (start - offset), static_cast<size_t>(end - start), chunk_size_, read);
     }
 }
 
@@ -592,54 +621,54 @@ class WiaPartitionData : public PartitionData
 {
 public:
     WiaPartitionData(WiaImage& image, const std::array<WiaImage::Segment, 2>& segments)
-        : image_(image), segments_(segments)
+        : image_(image),
+          segments_(segments),
+          sectors_per_group_(std::max<uint64_t>(1, image.ChunkSize() / kSector)),
+          exception_lists_(static_cast<size_t>(std::max<uint64_t>(1, image.ChunkSize() / 0x200000)))
     {
     }
 
     void Read(uint64_t offset, uint8_t* out, size_t size) override
     {
-        const uint64_t data_sector = segments_[0].first_sector;
-        const uint64_t sectors_per_group = std::max<uint64_t>(1, image_.ChunkSize() / kSector);
-        const size_t exception_lists = static_cast<size_t>(std::max<uint64_t>(1, image_.ChunkSize() / 0x200000));
-        while (size)
-        {
-            const uint64_t sector = data_sector + offset / kSectorData;
-            const size_t within = static_cast<size_t>(offset % kSectorData);
-            const size_t n = static_cast<size_t>(std::min<uint64_t>(size, kSectorData - within));
-            const auto contains = [sector](const WiaImage::Segment& s)
-            {
-                return s.first_sector <= sector && sector < uint64_t{s.first_sector} + s.sectors;
-            };
-
-            const auto segment = std::find_if(segments_.begin(), segments_.end(), contains);
-            if (segment == segments_.end())
-            {
-                throw Error("the image has no data for a read of the game partition");
-            }
-
-            const uint64_t group = (sector - segment->first_sector) / sectors_per_group;
-            if (group >= segment->groups)
-            {
-                throw Error("the image is missing data of the game partition");
-            }
-
-            const uint64_t group_sectors = std::min(sectors_per_group, segment->sectors - group * sectors_per_group);
-            const uint64_t junk_offset =
-                (segment->first_sector - data_sector + group * sectors_per_group) * kSectorData;
-            const std::vector<uint8_t>& data =
-                image_.Group(static_cast<uint32_t>(segment->group + group),
-                             static_cast<size_t>(group_sectors * kSectorData), exception_lists, junk_offset);
-            const uint64_t start = (sector - segment->first_sector) % sectors_per_group * kSectorData + within;
-            std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(start), n, out);
-            out += n;
-            offset += n;
-            size -= n;
-        }
+        ReadByBlocks(offset, out, size, kSectorData, [this](uint64_t index, size_t within, uint8_t* piece, size_t n)
+                     { ReadSector(segments_[0].first_sector + index, within, piece, n); });
     }
 
 private:
+    // Reads `n` bytes at `within` in the data of the partition's sector `sector`, counted from the disc's start.
+    void ReadSector(uint64_t sector, size_t within, uint8_t* out, size_t n)
+    {
+        const auto contains = [sector](const WiaImage::Segment& s)
+        {
+            return s.first_sector <= sector && sector < uint64_t{s.first_sector} + s.sectors;
+        };
+
+        const auto segment = std::find_if(segments_.begin(), segments_.end(), contains);
+        if (segment == segments_.end())
+        {
+            throw Error("the image has no data for a read of the game partition");
+        }
+
+        const uint64_t group = (sector - segment->first_sector) / sectors_per_group_;
+        if (group >= segment->groups)
+        {
+            throw Error("the image is missing data of the game partition");
+        }
+
+        const uint64_t data_sector = segments_[0].first_sector;
+        const uint64_t group_sectors = std::min(sectors_per_group_, segment->sectors - group * sectors_per_group_);
+        const uint64_t junk_offset = (segment->first_sector - data_sector + group * sectors_per_group_) * kSectorData;
+        const std::vector<uint8_t>& data =
+            image_.Group(static_cast<uint32_t>(segment->first_group + group),
+                         static_cast<size_t>(group_sectors * kSectorData), exception_lists_, junk_offset);
+        const uint64_t start = (sector - segment->first_sector) % sectors_per_group_ * kSectorData + within;
+        std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(start), n, out);
+    }
+
     WiaImage& image_;
     std::array<WiaImage::Segment, 2> segments_;
+    uint64_t sectors_per_group_;
+    size_t exception_lists_;
 };
 
 std::unique_ptr<PartitionData> WiaImage::OpenPartitionData(uint64_t data_offset)

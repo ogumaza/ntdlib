@@ -8,7 +8,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <deque>
 #include <functional>
 #include <optional>
@@ -1119,6 +1118,21 @@ void TestWiiParser()
     Check(Play<CafePolicy>(kExtended).keys == std::vector<int>{100}, "the Wii U: a byte after F0 with 0xA0 to 0xBF");
 }
 
+// The Wii's pitch bend after a time prefix of 16 ticks. Builds from September 2009 move the bend to its value over the
+// prefix's ticks. Older builds set it at once, and the prefix only takes its bytes.
+void TestWiiBendRamps()
+{
+    using ntdlib::nwsnd::RevolutionPolicy;
+    using xsflib::testing::Check;
+    const std::vector<uint8_t> kTimedBend = {0xFE, 0x00, 0x01, 0xA3, 0xC4, 0x40, 0x00, 0x10, 0x80, 0x7F, 0xFF};
+
+    const Played later = Play<RevolutionPolicy>(kTimedBend, {.date = 20090924});
+    const Played earlier = Play<RevolutionPolicy>(kTimedBend, {.date = 20081120});
+
+    Check(later.moving && later.keys.empty(), "the Wii's builds from September 2009: a time prefix moves the bend");
+    Check(!earlier.moving && earlier.keys.empty(), "the Wii's builds before September 2009: the bend jumps");
+}
+
 // The Wii's call stack against the Wii U's call stack, on sequences in big-endian order.
 void TestWiiCallStack()
 {
@@ -1512,19 +1526,19 @@ void TestWiiEnvelopeRange()
                                         0xD3, 0x7F, 0xB1, 0x40, 0x3C, 0x64, 0x60, 0xFF};
 
     const Policy::SoundInfo kInfo;
-    for (const bool since_2008 : {false, true})
+    for (const bool since_march_2008 : {false, true})
     {
         Policy::Engine engine;
         Player player(0, kInfo, kData);
         ntdlib::SndBuild build;
-        build.date = since_2008 ? 20080308 : 20070608;
+        build.date = since_march_2008 ? 20080308 : 20070608;
         player.SetBuild(build);
         engine.player = &player;
 
         player.Start();
         player.Update(engine);
 
-        const std::string with = since_2008 ? "the Wii's build of 2008" : "the Wii's build of 2007";
+        const std::string with = since_march_2008 ? "the Wii's build of 2008" : "the Wii's build of 2007";
         const auto& channels = engine.pool.channels;
         xsflib::testing::Check(channels.size() == 1, with + ": one note");
         if (channels.size() != 1)
@@ -1533,9 +1547,9 @@ void TestWiiEnvelopeRange()
         }
 
         const auto& envelope = channels[0].envelope;
-        xsflib::testing::Check(envelope.attack == (since_2008 ? -1 : 0x80) && envelope.decay == 0x10 &&
-                                   envelope.sustain == (since_2008 ? -1 : 0xFE) && envelope.release == 0x7F &&
-                                   envelope.hold == (since_2008 ? 0x40 : -1),
+        xsflib::testing::Check(envelope.attack == (since_march_2008 ? -1 : 0x80) && envelope.decay == 0x10 &&
+                                   envelope.sustain == (since_march_2008 ? -1 : 0xFE) && envelope.release == 0x7F &&
+                                   envelope.hold == (since_march_2008 ? 0x40 : -1),
                                with + ": the track's envelope values that apply");
     }
 }
@@ -1601,6 +1615,7 @@ int main()
     TestTrackLoops<ntdlib::nwsnd::NxPolicy>("the Switch");
     TestTrackLoops<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
     TestWiiParser();
+    TestWiiBendRamps();
     TestWiiCallStack();
     TestWiiLengthRules();
     TestWiiPansAndSweep();
@@ -1615,13 +1630,5 @@ int main()
     TestHold<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
     TestWiiEnvelopeRange();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d checks failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("nwsnd_sequence_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("nwsnd_sequence");
 }

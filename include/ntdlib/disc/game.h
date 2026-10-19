@@ -32,20 +32,22 @@ struct GameOptions
     // image.open_container to disc_containers' OpenContainer.
     ImageOptions image{};
 
-    // Messages for a program that words them otherwise. An empty one keeps the default, given here.
+    // Messages for a program that words them otherwise. An empty one keeps the default, given here. Only an image's
+    // checks use not_this_console and damaged_file_system. An extracted disc has fixed messages for its sys/boot.bin,
+    // and LoadGame doesn't parse its sys/fst.bin.
     std::string not_this_console{};    // a disc of neither console: "it isn't a GameCube disc image"
     std::string other_console{};       // a disc of the other console: "it's a Wii disc, and xyz is for GameCube discs"
     std::string damaged_file_system{}; // "the disc's file system is damaged"
 
-    // Checks of a plain image's size, for a program that reads only plain images. Without them, reads past the image's
-    // end return zeros. `short_header` is the message for an image that ends before the disc header's 0x440 bytes.
-    // `file_past_end` returns the message for a file that ends past the image's end. With it, a file system that does
-    // that is damaged.
+    // Checks of a plain GameCube image's size, for a program that reads only plain images. Without them, reads past the
+    // image's end return zeros. `short_header` is the message for an image that ends before the disc header's 0x440
+    // bytes. `file_past_end` returns the message for a file that ends past the image's end. With it, a file system that
+    // does that is damaged.
     std::string short_header{};
     std::function<std::string(const std::string& path)> file_past_end{};
 
-    // Whether LoadGame reads the system files besides the disc header and the file system: bi2.bin, the apploader and
-    // main.dol.
+    // Whether LoadGame reads an image's system files besides the disc header and the file system: bi2.bin, the
+    // apploader and main.dol. LoadGame reads an extracted disc's system files whatever the setting.
     bool system_files = true;
 
     // Whether LoadGame loads a title for the Wii's NAND from a folder that holds the title's TMD and decrypted
@@ -114,7 +116,8 @@ struct GameFiles
     // GameOptions::cpk_sound_archives, the sound archives inside CPKs are listed too.
     std::vector<GameFile> files;
 
-    // Reads a file by its path in `files`. The read shares the image's caches. Only one thread may call it at a time.
+    // Reads a file by its path in `files`. Returns false when the file can't be found. Throws Error if the image's data
+    // is damaged. The read shares the image's caches. Only one thread may call it at a time.
     std::function<bool(const std::string& path, std::vector<uint8_t>& data)> read_file;
 
     // A title's game ID and title. GameId and Title return them. Both are empty for a disc.

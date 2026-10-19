@@ -69,8 +69,8 @@ GameRules RulesOf(const std::string& archive_sha1)
         // 0x3fff. The filter's output feeds back into the line and goes to one side of the mix at 0x6000. A sound
         // therefore repeats every 64 sub-frames: the first time at 0.375 times its send, then at half the level each
         // time. A voice at a volume of 1 gets a mixer volume of 12000: JASDriver::getChannelLevel_dsp (0x8002c328)
-        // returns the halfword at 0x80539bd0. Renders of the game's output show its mix at twice the samples times the
-        // mixer volume in 32768ths.
+        // returns the halfword at 0x80539bd0. The game mixes each voice at twice its samples times the mixer volume in
+        // 32768ths.
         rules.echo = EchoLine{64, 0x3fff / 32768.0f, 0x6000 / 32768.0f, 2.0f * 12000.0f / 32768.0f};
     }
 

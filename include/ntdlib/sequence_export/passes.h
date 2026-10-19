@@ -2,9 +2,10 @@
 
 // The rules for the passes of a sequence's main loop. A performer records the passes as MIDI events. The functions here
 // find the settings that a pass starts with, and test whether a MIDI player that loops on a pass plays the repeats as
-// the game plays the next pass. ChooseSteadyPass chooses the pass to mark. RestoreAtLoopStart sends again, at the
-// loop's start, the settings that the game gives back there. FitParts fits a performance's parts into MIDI's 16
-// channels, and LevelScale fits the levels into CC11.
+// the game plays the next pass. ChooseSteadyPass chooses the pass to mark. MainLoopPasses holds the passes that a
+// performer counts, and the marked pass. RestoreAtLoopStart sends again, at the loop's start, the settings that the
+// game gives back there. FitParts fits a performance's parts into MIDI's 16 channels, and LevelScale fits the levels
+// into CC11. SetLevelCut records the cut that LevelScale makes.
 
 #pragma once
 
@@ -17,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/sequence_export/performance_base.h"
 #include "seqlib/midi/performance.h"
 
 namespace ntdlib::sequence_export
@@ -132,8 +134,78 @@ LoopChoice ChooseSteadyPass(const std::vector<std::pair<uint32_t, uint32_t>>& ow
     return {true, std::nullopt, false};
 }
 
+// The passes of a performance's main loop that a performer has counted, and the marked pass. Each counted pass is a
+// loop of the performance (CountPass). Only the passes of one loop, the owner, can be marked. The performer's rules
+// choose the owner (Restart). MarkSteadyPass marks the pass that ChooseSteadyPass selects. A later run of the sequence
+// makes the first run's choices again (Choices).
+class MainLoopPasses
+{
+public:
+    // MarkSteadyPass makes the choices in `replay`, from an earlier run (Choices), before it selects others.
+    explicit MainLoopPasses(std::vector<LoopChoice> replay);
+
+    // The owner, if any: a track and the start of its loop.
+    const std::optional<std::pair<int, uint32_t>>& Owner() const
+    {
+        return owner_;
+    }
+
+    // The choices that MarkSteadyPass made, for a later run to make again.
+    const std::vector<LoopChoice>& Choices() const
+    {
+        return choices_;
+    }
+
+    // Drops `out`'s main loop and the counted passes. The passes of `owner`, if any, can be marked from now on.
+    void Restart(PerformanceBase& out, const std::optional<std::pair<int, uint32_t>>& owner);
+
+    // Counts the pass of `loop` from tick `start` to tick `end` as a loop of `out`. A pass of the owner can be marked
+    // later. Without a loop, `out` takes the pass as its loop.
+    void CountPass(PerformanceBase& out, const std::pair<int, uint32_t>& loop, uint32_t start, uint32_t end);
+
+    // Marks in `out` the owner's pass that ChooseSteadyPass selects, or makes the earlier run's next choice.
+    // `last_draw`, `loops` and `play_on` are as ChooseSteadyPass takes them. Returns true if the performance can stop,
+    // false if it requires another pass first.
+    template <typename PlayOn>
+    bool MarkSteadyPass(PerformanceBase& out, const std::optional<uint32_t>& last_draw, int loops, PlayOn play_on);
+
+private:
+    std::optional<std::pair<int, uint32_t>> owner_;
+    std::vector<std::pair<uint32_t, uint32_t>> passes_; // the owner's counted passes, start and end ticks
+    std::size_t marked_ = 0;                            // the marked one of them
+    bool extended_ = false;                             // one more pass has played to mark one (LoopChoice::extend)
+    std::vector<LoopChoice> replay_;                    // an earlier run's choices to make again
+    std::size_t replayed_ = 0;                          // how many of them have been made
+    std::vector<LoopChoice> choices_;                   // the choices made
+};
+
+template <typename PlayOn>
+bool MainLoopPasses::MarkSteadyPass(PerformanceBase& out, const std::optional<uint32_t>& last_draw, int loops,
+                                    PlayOn play_on)
+{
+    const LoopChoice choice = replayed_ < replay_.size()
+                                  ? replay_[replayed_++]
+                                  : ChooseSteadyPass(passes_, marked_, last_draw, extended_, loops, play_on);
+    choices_.push_back(choice);
+    if (choice.marked && *choice.marked < passes_.size())
+    {
+        marked_ = *choice.marked;
+        const auto [start, end] = passes_[marked_];
+        out.loop = seqlib::midi::Performance::Loop{start, end};
+        out.loops = static_cast<int>(passes_.size() - marked_);
+    }
+    extended_ = extended_ || choice.extend;
+
+    return choice.stop;
+}
+
 // Scale factor that keeps rounded CC11 values within 127 for a maximum unscaled value of `peak` (Perform).
 double LevelScale(double peak);
+
+// Records in `performance` the cut that LevelScale makes for a peak of `applied`, the peak that its last pass scaled
+// for: the MIDI file's levels in dB (PerformanceBase::level_cut_db), and the approximation. The SFZ files restore the
+// gain. A peak that LevelScale leaves makes no cut.
+void SetLevelCut(PerformanceBase& performance, double applied);
 
 // What FitParts does with the channels that the tracks' first parts leave. A part plays a note of a key that one of its
 // notes still plays on another layer: a further channel of the part. The MIDI writer gives a part's layers the channels

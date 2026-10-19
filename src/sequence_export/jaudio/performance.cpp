@@ -2,10 +2,11 @@
 
 // Sequence execution (see performance.h). The performer follows JAudio2's sequence player as Four Swords Adventures'
 // main.dol links it. The parser's command table (built at 0x80491e54) is Twilight Princess's without 0xe7. The
-// performer reads 0xe7's arguments as Twilight Princess's table gives them. The player's classes are Twilight
-// Princess's: JASSeqParser, JASSeqCtrl, JASSeqReader, JASTrack, JASRegisterParam, JASTrackPort, JASChannel,
-// JASOscillator, JASLfo and JASDSPChannel. Each sub-frame of 80 samples, the channels update first
-// (JASDSPChannel::updateAll), then the sequence runs its ticks (JASTrack::seqMain).
+// performer reads 0xe7's arguments as Twilight Princess's table gives them. Like Twilight Princess's player, the
+// performer sets an oscillator's scale with them. The player's classes are Twilight Princess's: JASSeqParser,
+// JASSeqCtrl, JASSeqReader, JASTrack, JASRegisterParam, JASTrackPort, JASChannel, JASOscillator, JASLfo and
+// JASDSPChannel. Each sub-frame of 80 samples, the channels update first (JASDSPChannel::updateAll), then the sequence
+// runs its ticks (JASTrack::seqMain).
 
 #include "ntdlib/sequence_export/jaudio/performance.h"
 
@@ -22,13 +23,14 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/midi/recorder.h"
-#include "xsflib/binary.h"
-
 #include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/instruments.h"
 #include "ntdlib/sequence_export/jaudio/wave.h"
 #include "ntdlib/sequence_export/passes.h"
+#include "seqlib/midi/recorder.h"
+#include "xsflib/binary.h"
+
+#include "sequence_export/lengths.h"
 
 namespace ntdlib::sequence_export::jaudio
 {
@@ -38,23 +40,6 @@ namespace
 // Commands a track may run in one tick. JAudio2 parses until a command waits. A track that loops without waiting hangs
 // the game. The performer stops such a track instead.
 constexpr int kParseLimit = 100000;
-
-// Repeat short loops, such as sustained sound effects, until the performance reaches this duration. Keep loop markers
-// around the first pass.
-constexpr double kMinLoopSeconds = 10.0;
-
-// Longest performance, in seconds of music.
-constexpr double kMaxSeconds = 900.0;
-
-// Maximum duration after a held sound stops changing. This covers tracks waiting on endless looping notes.
-constexpr double kHoldSeconds = 10.0;
-
-// Shortest wait that counts as waiting for ever: 200 beats at the default timebase, minutes at a typical tempo. Games
-// wait that long for sounds that they stop themselves.
-constexpr int32_t kHeldTicks = 9600;
-
-// Longest release tail kept after the end.
-constexpr double kMaxTailSeconds = 10.0;
 
 // The DSP program's channels, each a voice (JASDSPChannel).
 constexpr int kDspChannels = 64;
@@ -472,6 +457,38 @@ uint32_t GateFlags(uint8_t flags, uint32_t length)
     return ((flags & 0x80) ? 1u : 0u) | ((flags & 0x40) ? 2u : 0u) | (length == 0 ? 4u : 0u);
 }
 
+// A byte value spread over 16 bits: below 0x80, its low bits repeat. A wider value from a register keeps the bits that
+// the shifts leave in 16 bits.
+int16_t SpreadByte(uint32_t byte)
+{
+    auto value = static_cast<int16_t>(byte << 8);
+    if (!(byte & 0x80))
+    {
+        value = static_cast<int16_t>(value | static_cast<int16_t>(byte << 1));
+    }
+
+    return value;
+}
+
+// The argument types that a register prefix gives a command, in the command table's form. The top bits of `mask`, one
+// for each of the first `count` arguments, mark those that come from registers (type 3).
+uint16_t RegisterTypes(uint8_t mask, int count)
+{
+    uint16_t types = 0;
+    uint16_t bits = 3;
+    for (int i = 0; i < count; i++)
+    {
+        if (mask & 0x80)
+        {
+            types = static_cast<uint16_t>(types | bits);
+        }
+        mask = static_cast<uint8_t>(mask << 1);
+        bits = static_cast<uint16_t>(bits << 2);
+    }
+
+    return types;
+}
+
 // A JASTrack with its sequence control (JASSeqCtrl) and reader (JASSeqReader).
 struct Track
 {
@@ -507,6 +524,7 @@ struct Track
     // Settings.
     std::array<MoveParam, 6> move{};
     std::array<std::optional<Oscillator>, 2> osc{};
+    std::array<float, 2> osc_scale{1.0f, 1.0f}; // the oscillators' scales (JASTrack's mOscParam[i].mScale)
     uint16_t bank = 0;
     uint16_t program = 0xf0;
     int8_t transpose = 0;
@@ -550,6 +568,23 @@ struct Track
     std::map<uint32_t, std::pair<uint32_t, uint64_t>> visited; // each command's last tick, and the commands run then
 };
 
+// A track of `parent` as it opens: no children and no notes, at full volume and the pan's middle, with nothing moving.
+Track FreshTrack(int parent)
+{
+    Track tr;
+    tr.parent = parent;
+    tr.children.fill(-1);
+    tr.slots.fill(-1);
+    tr.move[0].value = 1.0f; // volume
+    tr.move[3].value = 0.5f; // pan
+    for (MoveParam& m : tr.move)
+    {
+        m.target = m.value;
+    }
+
+    return tr;
+}
+
 // A command run's outcome.
 enum class Outcome
 {
@@ -560,6 +595,7 @@ enum class Outcome
 
 using ntdlib::sequence_export::FitParts;
 using ntdlib::sequence_export::LevelScale;
+using ntdlib::sequence_export::MainLoopPasses;
 using ntdlib::sequence_export::SpareChannels;
 
 // The rules of the main loop's passes (ntdlib/sequence_export/passes.h). A setting that RestoreAtLoopStart sends again
@@ -591,7 +627,7 @@ public:
           program_(program),
           rng_(options.seed),
           recorder_(kRecorderOptions),
-          replay_(loop_choices),
+          main_loop_(loop_choices),
           tie_velocities_in_(tie_velocities)
     {
         recorder_.SetLevelScale(level_scale);
@@ -615,7 +651,7 @@ public:
     // The choices MarkSteadyPass made for the main loop, for a later run to make again.
     const std::vector<LoopChoice>& LoopChoices() const
     {
-        return choices_;
+        return main_loop_.Choices();
     }
 
     // The highest velocity that ties gave each MIDI note above its velocity, by MIDI note ID, for a later run to start
@@ -639,14 +675,39 @@ private:
     };
 
     // --- Tracks ---
+    // Track `t`, by its index in tracks_.
+    Track& TrackAt(int t)
+    {
+        return tracks_[static_cast<std::size_t>(t)];
+    }
+
+    const Track& TrackAt(int t) const
+    {
+        return tracks_[static_cast<std::size_t>(t)];
+    }
+
     int NewTrack(int parent, int number);
     void CloseTrack(int t);
-    int OpenChild(int t, uint32_t number);
+    int OpenChild(int t, uint32_t number, uint32_t start);
     void CloseChild(int t, uint32_t number);
     int TickProc(int t);
     int SeqTick(int t);
+
+    // Make track `t` wait for the `length` of the gate note that it has started, or for the note's end with a length of
+    // 0.
+    Outcome WaitForGateNote(int t, uint32_t length);
+
+    // True while track `t` waits for its gate note to end. The wait ends with the note.
+    bool WaitsForGateNote(int t);
+
+    // Run track `t`'s commands up to its next wait. Return -1 when the track finishes, or when it runs kParseLimit
+    // commands without a wait: that would hang the game.
+    int ParseToWait(int t);
+
     Outcome Parse(int t);
     Outcome Command(int t, uint8_t cmd, uint16_t types);
+    std::array<uint32_t, 8> ReadArguments(int t, const CommandInfo& info, uint16_t override_types,
+                                          uint32_t (Performer::*read_reg)(int, uint32_t));
     uint8_t ReadByte(int t);
     uint16_t Read16(int t);
     uint32_t Read24(int t);
@@ -658,12 +719,28 @@ private:
     void Jump(int t, uint32_t target);
     bool Call(int t, uint32_t target);
     bool Return(int t);
+
+    // Start a loop of `count` passes on track `t`. The loop's end returns to the command after this one.
+    void LoopStart(int t, uint32_t count);
+
+    // End a pass of track `t`'s innermost loop. Go back to its start while passes are left.
+    void LoopEnd(int t);
+
     bool Condition(int t, uint32_t condition);
     uint32_t ReadReg(int t, uint32_t reg);
     void WriteReg(int t, uint32_t reg, uint32_t value);
     void WriteRegister(int t, uint32_t reg, uint32_t value);
     uint32_t ReadRegister(int t, uint32_t reg);
     void Interrupt(int t, int type);
+
+    // The track whose port a command of track `t` reaches: its parent, or with `child` its child that the high four
+    // bits of `port` give. The low four bits give the port. -1 for none.
+    int PortTrack(int t, bool child, uint32_t port) const;
+
+    // Write `value` to port `port` of track `other`, from track `t`. For ports 0 and 1, the write raises the other
+    // track's port interrupt.
+    void WritePortOf(int t, int other, uint32_t port, uint32_t value);
+
     void CheckInterrupt(int t);
     void TimerProcess(int t);
     void SetParam(int t, uint32_t target, float value, uint32_t count);
@@ -754,10 +831,8 @@ private:
     // notes of the next pass: the same notes at the same ticks, with the same settings and tempo.
     bool RepeatsAsTheGame(uint32_t start, uint32_t end) const;
 
-    // Select the first of the loop owner's passes that plays as the pass after it does.
-    LoopChoice ChooseSteadyPass() const;
-
-    // Mark the pass that ChooseSteadyPass selects. Return true if the performance can stop.
+    // Mark the first of the loop owner's passes that plays as the pass after it does. Return true if the performance
+    // can stop.
     bool MarkSteadyPass();
 
     // --- Recording ---
@@ -820,15 +895,9 @@ private:
     bool silent_end_ = false; // the main loop's pass was idle and silent: the sequence has ended
     std::optional<PendingLoop> pending_loop_;
     std::optional<uint32_t> stop_tick_;                       // the end of the pass that stopped the performance
-    std::optional<std::pair<int, uint32_t>> loop_owner_;      // the track and loop start of the marked loop
-    std::vector<std::pair<uint32_t, uint32_t>> owner_passes_; // the owner's counted passes, start and end ticks
-    std::size_t marked_ = 0;                                  // the marked one of them
-    bool extended_ = false;                                   // the performance plays one more pass to mark it
+    MainLoopPasses main_loop_;                                // the main loop's counted passes and marked pass
     std::optional<double> held_sound_end_;                    // set when the main loop holds a sound (HeldSoundEnd)
     std::optional<uint32_t> last_draw_;                       // the last tick a track drew a random number in
-    std::vector<LoopChoice> replay_;                          // the choices of an earlier run to make again
-    std::size_t replayed_ = 0;                                // how many of them have been made
-    std::vector<LoopChoice> choices_;                         // the choices made
     std::array<int, 16> slot_tracks_{};                       // the track recorded in each MIDI track, or -1
     std::map<uint32_t, uint8_t> tie_velocities_in_;           // an earlier run's TieVelocities
     std::map<uint32_t, uint8_t> tie_velocities_;
@@ -842,33 +911,22 @@ int Performer::NewTrack(int parent, int number)
         throw FormatError("sequence opens too many tracks");
     }
 
-    Track tr;
-    tr.parent = parent;
-    tr.children.fill(-1);
-    tr.slots.fill(-1);
-    tr.move[0].value = 1.0f; // volume
-    tr.move[3].value = 0.5f; // pan
-    for (MoveParam& m : tr.move)
-    {
-        m.target = m.value;
-    }
-    tr.name = parent < 0 ? "Root"
-                         : (tracks_[static_cast<std::size_t>(parent)].parent < 0
-                                ? "Track "
-                                : tracks_[static_cast<std::size_t>(parent)].name + ".") +
-                               std::to_string(number);
+    Track tr = FreshTrack(parent);
+    tr.name = parent < 0
+                  ? "Root"
+                  : (TrackAt(parent).parent < 0 ? "Track " : TrackAt(parent).name + ".") + std::to_string(number);
     tracks_.push_back(std::move(tr));
 
     return static_cast<int>(tracks_.size() - 1);
 }
 
-int Performer::OpenChild(int t, uint32_t number)
+int Performer::OpenChild(int t, uint32_t number, uint32_t start)
 {
     // JASTrack::openChild: a running child is closed and starts again; the new child inherits its parent's bank,
-    // program, priorities, skip, filters and bus connections.
-    Track& parent = tracks_[static_cast<std::size_t>(t)];
+    // program, priorities, skip, filters and bus connections. It reads on from `start`.
+    Track& parent = TrackAt(t);
     int child = parent.children[number];
-    if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open)
+    if (child >= 0 && TrackAt(child).open)
     {
         UpdateSeq(0, false, 1.0f);
         CloseTrack(child);
@@ -876,22 +934,14 @@ int Performer::OpenChild(int t, uint32_t number)
     if (child < 0)
     {
         child = NewTrack(t, static_cast<int>(number));
-        tracks_[static_cast<std::size_t>(t)].children[number] = child;
+        TrackAt(t).children[number] = child;
     }
     else
     {
         // Start afresh. Keep the MIDI track it records into.
-        Track& c = tracks_[static_cast<std::size_t>(child)];
-        Track fresh;
-        fresh.parent = t;
+        Track& c = TrackAt(child);
+        Track fresh = FreshTrack(t);
         fresh.children = c.children;
-        fresh.slots.fill(-1);
-        fresh.move[0].value = 1.0f;
-        fresh.move[3].value = 0.5f;
-        for (MoveParam& m : fresh.move)
-        {
-            m.target = m.value;
-        }
         fresh.slot = c.slot;
         fresh.name = c.name;
         fresh.output = c.output;
@@ -899,8 +949,8 @@ int Performer::OpenChild(int t, uint32_t number)
         c = std::move(fresh);
     }
 
-    Track& c = tracks_[static_cast<std::size_t>(child)];
-    const Track& p = tracks_[static_cast<std::size_t>(t)];
+    Track& c = TrackAt(child);
+    const Track& p = TrackAt(t);
     c.bank = p.bank;
     c.program = p.program;
     c.note_on_prio = p.note_on_prio;
@@ -908,6 +958,9 @@ int Performer::OpenChild(int t, uint32_t number)
     c.skip_samples = p.skip_samples;
     c.iir = p.iir;
     c.opened = tick_;
+    c.pc = start;
+    c.open = true;
+    c.dirty = true;
 
     return child;
 }
@@ -915,16 +968,16 @@ int Performer::OpenChild(int t, uint32_t number)
 void Performer::CloseTrack(int t)
 {
     // JASTrack::close: close the children, and release the track's channels.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     for (int child : tr.children)
     {
-        if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open)
+        if (child >= 0 && TrackAt(child).open)
         {
             CloseTrack(child);
         }
     }
 
-    for (int& slot : tracks_[static_cast<std::size_t>(t)].slots)
+    for (int& slot : TrackAt(t).slots)
     {
         if (slot >= 0)
         {
@@ -934,13 +987,13 @@ void Performer::CloseTrack(int t)
         }
     }
 
-    tracks_[static_cast<std::size_t>(t)].open = false;
+    TrackAt(t).open = false;
 }
 
 void Performer::CloseChild(int t, uint32_t number)
 {
-    const int child = tracks_[static_cast<std::size_t>(t)].children[number];
-    if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open)
+    const int child = TrackAt(t).children[number];
+    if (child >= 0 && TrackAt(child).open)
     {
         UpdateSeq(0, false, 1.0f);
         CloseTrack(child);
@@ -952,7 +1005,7 @@ int Performer::TickProc(int t)
     // JASTrack::tickProc: run the track's tick, move its timed parameters, then its children's ticks.
     const int ret = SeqTick(t);
     UpdateTimedParams(t);
-    tracks_[static_cast<std::size_t>(t)].dirty = true;
+    TrackAt(t).dirty = true;
     if (ret < 0)
     {
         return -1;
@@ -960,8 +1013,8 @@ int Performer::TickProc(int t)
 
     for (int i = 0; i < kChildren && !stop_; i++)
     {
-        const int child = tracks_[static_cast<std::size_t>(t)].children[static_cast<std::size_t>(i)];
-        if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open && TickProc(child) < 0)
+        const int child = TrackAt(t).children[static_cast<std::size_t>(i)];
+        if (child >= 0 && TrackAt(child).open && TickProc(child) < 0)
         {
             UpdateSeq(0, false, 1.0f);
             CloseTrack(child);
@@ -981,44 +1034,80 @@ int Performer::SeqTick(int t)
 
     Interrupt(t, kIntrTick);
     TimerProcess(t);
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
-    if (tr.wait_note_finish)
+    if (WaitsForGateNote(t))
     {
-        if (tr.slots[0] >= 0)
-        {
-            return 0;
-        }
-        tr.wait_note_finish = false;
+        return 0;
     }
+
+    Track& tr = TrackAt(t);
     if (tr.wait > 0)
     {
         tr.wait--;
     }
     CheckInterrupt(t);
 
+    return ParseToWait(t);
+}
+
+Outcome Performer::WaitForGateNote(int t, uint32_t length)
+{
+    Track& tr = TrackAt(t);
+    if (length != 0)
+    {
+        tr.wait = static_cast<int32_t>(length);
+    }
+    else
+    {
+        tr.wait_note_finish = true;
+    }
+
+    return Outcome::kWait;
+}
+
+bool Performer::WaitsForGateNote(int t)
+{
+    // The wait lasts while the note holds slot 0.
+    Track& tr = TrackAt(t);
+    if (tr.wait_note_finish && tr.slots[0] >= 0)
+    {
+        return true;
+    }
+
+    tr.wait_note_finish = false;
+
+    return false;
+}
+
+int Performer::ParseToWait(int t)
+{
+    // JAudio2 reads on through a wait while an interrupt runs. JAudio1 puts the wait aside while one runs
+    // (CheckInterrupt1).
+    const auto reads_on = [this, t]
+    {
+        const Track& tr = TrackAt(t);
+        return (tr.wait == 0 || (!sound_.jaudio1 && tr.intr_return)) && !tr.wait_note_finish && !stop_;
+    };
     int commands = 0;
-    while ((tracks_[static_cast<std::size_t>(t)].wait == 0 || tracks_[static_cast<std::size_t>(t)].intr_return) &&
-           !tracks_[static_cast<std::size_t>(t)].wait_note_finish && !stop_)
+    while (reads_on())
     {
         if (++commands > kParseLimit)
         {
-            out_.warnings.push_back(tracks_[static_cast<std::size_t>(t)].name +
-                                    " runs without waiting. It would hang the game. " + program_ + " stopped it");
+            out_.warnings.push_back(TrackAt(t).name + " runs without waiting. It would hang the game. " + program_ +
+                                    " stopped it");
             return -1;
         }
 
-        const Outcome outcome = Parse(t);
-        if (outcome == Outcome::kFinish)
+        if (Parse(t) == Outcome::kFinish)
         {
             return -1;
         }
     }
 
     // A wait for a note to end is a wait too, as far as loops go.
-    const Track& after = tracks_[static_cast<std::size_t>(t)];
+    const Track& after = TrackAt(t);
     if (after.wait > 0 || after.wait_note_finish)
     {
-        tracks_[static_cast<std::size_t>(t)].last_wait = tick_;
+        TrackAt(t).last_wait = tick_;
     }
 
     return 0;
@@ -1047,7 +1136,7 @@ uint32_t Performer::Data32(uint32_t offset) const
 uint8_t Performer::ReadByte(int t)
 {
     // Past the end of the data, read 0xff: finish.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     const auto b = static_cast<uint8_t>(Data8(tr.pc));
     tr.pc++;
 
@@ -1094,17 +1183,18 @@ uint32_t Performer::ReadMidiValue(int t)
 
 void Performer::Jump(int t, uint32_t target)
 {
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
-    if (target <= tr.pc)
+    // The track's position is the next command. A jump there goes nowhere and isn't a jump back.
+    Track& tr = TrackAt(t);
+    if (target < tr.pc)
     {
         OnJumpBack(t, target);
     }
-    tracks_[static_cast<std::size_t>(t)].pc = target;
+    TrackAt(t).pc = target;
 }
 
 bool Performer::Call(int t, uint32_t target)
 {
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.depth >= kStackSize)
     {
         return false;
@@ -1118,7 +1208,7 @@ bool Performer::Call(int t, uint32_t target)
 
 bool Performer::Return(int t)
 {
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.depth == 0)
     {
         return false;
@@ -1127,6 +1217,40 @@ bool Performer::Return(int t)
     tr.pc = tr.return_to[static_cast<std::size_t>(--tr.depth)];
 
     return true;
+}
+
+void Performer::LoopStart(int t, uint32_t count)
+{
+    // JASSeqReader::loopStart, and JAudio1's TSeqCtrl::loopStart: the count goes on the call stack with the return
+    // address.
+    Track& tr = TrackAt(t);
+    if (tr.depth < kStackSize)
+    {
+        tr.return_to[static_cast<std::size_t>(tr.depth)] = tr.pc;
+        tr.loop_count[static_cast<std::size_t>(tr.depth)] = static_cast<uint16_t>(count);
+        tr.depth++;
+    }
+}
+
+void Performer::LoopEnd(int t)
+{
+    // JASSeqReader::loopEnd, and JAudio1's TSeqCtrl::loopEnd: a count of 0 or 1 plays the loop once.
+    Track& tr = TrackAt(t);
+    if (tr.depth == 0)
+    {
+        return;
+    }
+
+    uint16_t& count = tr.loop_count[static_cast<std::size_t>(tr.depth - 1)];
+    const uint16_t left = count != 0 ? static_cast<uint16_t>(count - 1) : 0;
+    if (left == 0)
+    {
+        tr.depth--;
+        return;
+    }
+
+    count = left;
+    tr.pc = tr.return_to[static_cast<std::size_t>(tr.depth - 1)];
 }
 
 bool Performer::Condition(int t, uint32_t condition)
@@ -1155,7 +1279,7 @@ bool Performer::Condition(int t, uint32_t condition)
 uint32_t Performer::ReadRegister(int t, uint32_t reg)
 {
     // JASRegisterParam::read: 14 registers, and pairs of them read together.
-    const std::array<uint16_t, 14>& r = tracks_[static_cast<std::size_t>(t)].regs;
+    const std::array<uint16_t, 14>& r = TrackAt(t).regs;
     if (reg < 14)
     {
         return r[reg];
@@ -1189,7 +1313,7 @@ uint32_t Performer::ReadRegister(int t, uint32_t reg)
 
 void Performer::WriteRegister(int t, uint32_t reg, uint32_t value)
 {
-    std::array<uint16_t, 14>& r = tracks_[static_cast<std::size_t>(t)].regs;
+    std::array<uint16_t, 14>& r = TrackAt(t).regs;
     if (reg < 14)
     {
         r[reg] = static_cast<uint16_t>(reg <= 2 ? (value & 0xff) : (value & 0xffff));
@@ -1252,7 +1376,7 @@ void Performer::WriteRegister(int t, uint32_t reg, uint32_t value)
 uint32_t Performer::ReadReg(int t, uint32_t reg)
 {
     // JASSeqParser::readReg: the registers, the ports from 0x40, and the track's settings from 0x60.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (reg < 0x40)
     {
         return ReadRegister(t, reg);
@@ -1270,7 +1394,7 @@ uint32_t Performer::ReadReg(int t, uint32_t reg)
             for (int i = 0; i < kChildren; i++)
             {
                 const int child = tr.children[static_cast<std::size_t>(i)];
-                if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open)
+                if (child >= 0 && TrackAt(child).open)
                 {
                     running |= 1u << i;
                 }
@@ -1347,7 +1471,7 @@ void Performer::WriteReg(int t, uint32_t reg, uint32_t value)
 {
     // JASSeqParser::writeReg: every write also sets register 3, the flag the conditions test.
     WriteRegister(t, 3, value);
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (reg < 0x40)
     {
         WriteRegister(t, reg, value);
@@ -1451,7 +1575,7 @@ void Performer::WriteReg(int t, uint32_t reg, uint32_t value)
 
 void Performer::Interrupt(int t, int type)
 {
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.intr_mask & (1u << type))
     {
         tr.intr_pending = static_cast<uint16_t>(tr.intr_pending | (1u << type));
@@ -1461,7 +1585,7 @@ void Performer::Interrupt(int t, int type)
 void Performer::CheckInterrupt(int t)
 {
     // JASSeqCtrl::checkIntr: take the lowest pending interrupt that the mask enables. Do nothing while one is running.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.intr_return)
     {
         return;
@@ -1480,11 +1604,33 @@ void Performer::CheckInterrupt(int t)
     }
 }
 
+int Performer::PortTrack(int t, bool child, uint32_t port) const
+{
+    const Track& tr = TrackAt(t);
+    return child ? tr.children[(port >> 4) & 15] : tr.parent;
+}
+
+void Performer::WritePortOf(int t, int other, uint32_t port, uint32_t value)
+{
+    TrackAt(t).last_signal = commands_run_;
+    Track& o = TrackAt(other);
+    o.imported = static_cast<uint16_t>(o.imported | (1u << port));
+    o.ports[port] = static_cast<uint16_t>(value);
+    if (port == 0)
+    {
+        Interrupt(other, sound_.jaudio1 ? kIntr1Port0 : kIntrPort0);
+    }
+    else if (port == 1)
+    {
+        Interrupt(other, sound_.jaudio1 ? kIntr1Port1 : kIntrPort1);
+    }
+}
+
 void Performer::TimerProcess(int t)
 {
     // JASSeqCtrl::timerProcess: the timer raises its interrupt when it runs out, and starts again for as many repeats
     // as it has left, or for ever with none.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.timer == 0 || --tr.timer != 0)
     {
         return;
@@ -1513,7 +1659,7 @@ void Performer::SetParam(int t, uint32_t target, float value, uint32_t count)
         return;
     }
 
-    MoveParam& m = tracks_[static_cast<std::size_t>(t)].move[target];
+    MoveParam& m = TrackAt(t).move[target];
     if (m.target != value || m.value != value)
     {
         Changed(t);
@@ -1528,7 +1674,7 @@ void Performer::SetParam(int t, uint32_t target, float value, uint32_t count)
 
 void Performer::UpdateTimedParams(int t)
 {
-    for (MoveParam& m : tracks_[static_cast<std::size_t>(t)].move)
+    for (MoveParam& m : TrackAt(t).move)
     {
         if (m.count != 0)
         {
@@ -1541,7 +1687,7 @@ void Performer::UpdateTimedParams(int t)
 void Performer::UpdateSeq(int t, bool force, float pan_scale)
 {
     // JASTrack::updateSeq: recompute the settings of the tracks that changed, and of all their descendants.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (!force)
     {
         force = tr.dirty;
@@ -1552,11 +1698,11 @@ void Performer::UpdateSeq(int t, bool force, float pan_scale)
         UpdateTrack(t, pan_scale);
     }
 
-    const float child_scale = pan_scale * tracks_[static_cast<std::size_t>(t)].pan_power;
+    const float child_scale = pan_scale * TrackAt(t).pan_power;
     for (int i = 0; i < kChildren; i++)
     {
-        const int child = tracks_[static_cast<std::size_t>(t)].children[static_cast<std::size_t>(i)];
-        if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open)
+        const int child = TrackAt(t).children[static_cast<std::size_t>(i)];
+        if (child >= 0 && TrackAt(child).open)
         {
             UpdateSeq(child, force, child_scale);
         }
@@ -1573,7 +1719,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
         return;
     }
 
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     const float volume = tr.move[0].value * tr.move[0].value;
     const float bend = tr.move[1].value * static_cast<float>(tr.bend_sense) * (1.0f / 3.0f);
     const float pan = (tr.move[3].value - 0.5f) * tr.pan_power * pan_scale;
@@ -1588,7 +1734,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
     }
     else
     {
-        const ChannelParams& up = tracks_[static_cast<std::size_t>(tr.parent)].params;
+        const ChannelParams& up = TrackAt(tr.parent).params;
         p.volume = up.volume * volume;
         p.pitch = up.pitch;
         p.pan = (up.pan - 0.5f) + pan;
@@ -1600,7 +1746,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
 
     // updateTempo (0x80037804): the first track works out its tick rate. A child copies its parent's. setTempo and
     // setTimebase only store their values.
-    tr.tick_rate = tr.parent < 0 ? TicksPerSubFrame() : tracks_[static_cast<std::size_t>(tr.parent)].tick_rate;
+    tr.tick_rate = tr.parent < 0 ? TicksPerSubFrame() : TrackAt(tr.parent).tick_rate;
 }
 
 float Performer::TicksPerSubFrame() const
@@ -1611,9 +1757,9 @@ float Performer::TicksPerSubFrame() const
 int Performer::TransposeTotal(int t) const
 {
     int total = 0;
-    for (; t >= 0; t = tracks_[static_cast<std::size_t>(t)].parent)
+    for (; t >= 0; t = TrackAt(t).parent)
     {
-        total += tracks_[static_cast<std::size_t>(t)].transpose;
+        total += TrackAt(t).transpose;
     }
 
     return total;
@@ -1627,7 +1773,7 @@ Outcome Performer::Parse(int t)
         return Parse1(t);
     }
 
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     tr.visited[tr.pc] = {tick_, commands_run_++};
     const uint8_t b = ReadByte(t);
     if (!(b & 0x80))
@@ -1639,14 +1785,7 @@ Outcome Performer::Parse(int t)
         {
             const uint32_t length = ReadMidiValue(t);
             GateOn(t, b, velocity, static_cast<float>(length), GateFlags(flags, length));
-            Track& again = tracks_[static_cast<std::size_t>(t)];
-            if (length != 0)
-            {
-                again.wait = static_cast<int32_t>(length);
-                return Outcome::kWait;
-            }
-            again.wait_note_finish = true;
-            return Outcome::kWait;
+            return WaitForGateNote(t, length);
         }
 
         NoteOn(t, flags & 7, b, velocity);
@@ -1665,19 +1804,7 @@ Outcome Performer::Parse(int t)
     case 0x90:
         {
             // A register prefix: the next command reads the flagged arguments from registers.
-            const int count = (b & 7) + 1;
-            uint8_t mask = ReadByte(t);
-            uint16_t types = 0;
-            uint16_t bits = 3;
-            for (int i = 0; i < count; i++)
-            {
-                if (mask & 0x80)
-                {
-                    types = static_cast<uint16_t>(types | bits);
-                }
-                mask = static_cast<uint8_t>(mask << 1);
-                bits = static_cast<uint16_t>(bits << 2);
-            }
+            const uint16_t types = RegisterTypes(ReadByte(t), (b & 7) + 1);
             const uint8_t cmd = ReadByte(t);
             return Command(t, cmd, types);
         }
@@ -1687,20 +1814,12 @@ Outcome Performer::Parse(int t)
     }
 }
 
-Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
+// Read the arguments of a command whose table entry is `info`. `override_types` marks the arguments that a register
+// prefix reads from registers. A register's argument is its number as a byte. `read_reg` reads the register: ReadReg,
+// or ReadReg1 for JAudio1.
+std::array<uint32_t, 8> Performer::ReadArguments(int t, const CommandInfo& info, uint16_t override_types,
+                                                 uint32_t (Performer::*read_reg)(int, uint32_t))
 {
-    // JASSeqParser::parseCommand: read the arguments the command table gives, then run the command.
-    if (cmd == 0xb0)
-    {
-        ReadByte(t); // an extended command: only a debugging dump
-        return Outcome::kContinue;
-    }
-    if (cmd < 0xa0)
-    {
-        return Outcome::kContinue;
-    }
-
-    const CommandInfo& info = kCommands[cmd - 0xa0u];
     uint16_t types = info.types | override_types;
     std::array<uint32_t, 8> a{};
     for (int i = 0; i < info.count; i++, types = static_cast<uint16_t>(types >> 2))
@@ -1717,12 +1836,30 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
             a[static_cast<std::size_t>(i)] = Read24(t);
             break;
         default:
-            a[static_cast<std::size_t>(i)] = ReadReg(t, ReadByte(t));
+            a[static_cast<std::size_t>(i)] = (this->*read_reg)(t, ReadByte(t));
             break;
         }
     }
 
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    return a;
+}
+
+Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
+{
+    // JASSeqParser::parseCommand: read the arguments the command table gives, then run the command.
+    if (cmd == 0xb0)
+    {
+        ReadByte(t); // an extended command: only a debugging dump
+        return Outcome::kContinue;
+    }
+    if (cmd < 0xa0)
+    {
+        return Outcome::kContinue;
+    }
+
+    const std::array<uint32_t, 8> a = ReadArguments(t, kCommands[cmd - 0xa0u], override_types, &Performer::ReadReg);
+
+    Track& tr = TrackAt(t);
     switch (cmd)
     {
     case 0xb1:
@@ -1736,15 +1873,7 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
     case 0xb3:
         GateOn(t, static_cast<int>(a[1]), static_cast<int>(a[2]), static_cast<float>(a[3]),
                GateFlags(static_cast<uint8_t>(a[0]), a[3]));
-        if (a[3] != 0)
-        {
-            tracks_[static_cast<std::size_t>(t)].wait = static_cast<int32_t>(a[3]);
-        }
-        else
-        {
-            tracks_[static_cast<std::size_t>(t)].wait_note_finish = true;
-        }
-        return Outcome::kWait;
+        return WaitForGateNote(t, a[3]);
 
     case 0xb4:
         if (a[0] < 256)
@@ -1755,17 +1884,8 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xb8:
     case 0xba:
-        {
-            // A byte value spread over 16 bits: below 0x80, its low bits repeat.
-            const auto byte = static_cast<int32_t>(a[1]);
-            auto value = static_cast<int16_t>(byte << 8);
-            if (!(byte & 0x80))
-            {
-                value = static_cast<int16_t>(value | static_cast<int16_t>(byte << 1));
-            }
-            SetParam(t, a[0], static_cast<float>(value) / 32767.0f, cmd == 0xba ? a[2] : 0);
-            break;
-        }
+        SetParam(t, a[0], static_cast<float>(SpreadByte(a[1])) / 32767.0f, cmd == 0xba ? a[2] : 0);
+        break;
 
     case 0xb9:
     case 0xbb:
@@ -1773,18 +1893,11 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xc1:
+        if (a[0] < kChildren)
         {
-            if (a[0] >= kChildren)
-            {
-                break;
-            }
-            const int child = OpenChild(t, a[0]);
-            Track& c = tracks_[static_cast<std::size_t>(child)];
-            c.pc = a[1];
-            c.open = true;
-            c.dirty = true;
-            break;
+            OpenChild(t, a[0], a[1]);
         }
+        break;
 
     case 0xc2:
         if (a[0] < kChildren)
@@ -1835,33 +1948,12 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xcb:
-        // JASSeqReader::loopStart: the count goes on the call stack with the return address.
-        if (tr.depth < kStackSize)
-        {
-            tr.return_to[static_cast<std::size_t>(tr.depth)] = tr.pc;
-            tr.loop_count[static_cast<std::size_t>(tr.depth)] = static_cast<uint16_t>(a[0]);
-            tr.depth++;
-        }
+        LoopStart(t, a[0]);
         break;
 
     case 0xcc:
-        {
-            // JASSeqReader::loopEnd: a count of 0 or 1 plays the loop once.
-            if (tr.depth == 0)
-            {
-                break;
-            }
-            uint16_t& count = tr.loop_count[static_cast<std::size_t>(tr.depth - 1)];
-            const uint16_t left = count != 0 ? static_cast<uint16_t>(count - 1) : 0;
-            if (left == 0)
-            {
-                tr.depth--;
-                break;
-            }
-            count = left;
-            tr.pc = tr.return_to[static_cast<std::size_t>(tr.depth - 1)];
-            break;
-        }
+        LoopEnd(t);
+        break;
 
     case 0xd0:
         tr.imported = static_cast<uint16_t>(tr.imported & ~(1u << (a[0] & 15)));
@@ -1883,55 +1975,24 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xd4:
     case 0xd5:
+        // A write to the parent's port, or to a child's.
+        if (const int other = PortTrack(t, cmd == 0xd5, a[0]); other >= 0)
         {
-            // A write to another track's port. For ports 0 and 1, it raises that track's port interrupt.
-            int other = -1;
-            uint32_t port = a[0] & 15;
-            if (cmd == 0xd4)
-            {
-                other = tr.parent;
-            }
-            else
-            {
-                other = tr.children[(a[0] >> 4) & 15];
-            }
-            if (other < 0)
-            {
-                break;
-            }
-            tracks_[static_cast<std::size_t>(t)].last_signal = commands_run_;
-            Track& o = tracks_[static_cast<std::size_t>(other)];
-            o.imported = static_cast<uint16_t>(o.imported | (1u << port));
-            o.ports[port] = static_cast<uint16_t>(a[1]);
-            if (port <= 1)
-            {
-                Interrupt(other, port == 0 ? kIntrPort0 : kIntrPort1);
-            }
-            break;
+            WritePortOf(t, other, a[0] & 15, a[1]);
         }
+        break;
 
     case 0xd6:
     case 0xd7:
+        // A read of the parent's port, or of a child's.
+        if (const int other = PortTrack(t, cmd == 0xd7, a[0]); other >= 0)
         {
-            int other = -1;
-            uint32_t port = a[0] & 15;
-            if (cmd == 0xd6)
-            {
-                other = tr.parent;
-            }
-            else
-            {
-                other = tr.children[(a[0] >> 4) & 15];
-            }
-            if (other < 0)
-            {
-                break;
-            }
-            Track& o = tracks_[static_cast<std::size_t>(other)];
+            const uint32_t port = a[0] & 15;
+            Track& o = TrackAt(other);
             o.exported = static_cast<uint16_t>(o.exported & ~(1u << port));
             WriteReg(t, a[1], o.ports[port]);
-            break;
         }
+        break;
 
     case 0xd8:
         WriteReg(t, a[0], a[1]);
@@ -2056,17 +2117,33 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xe7:
-        break; // JASTrack::setOscScale: not applied
+        {
+            // JASTrack::setOscScale: the scale of the track's oscillator 0 (volume) or 1 (pitch), in 16383ths. The
+            // scale multiplies the oscillator's output. A note plays the track's oscillator only once the track has set
+            // its table (JASTrack::overwriteOsc). The note reads the scale as it plays. A new scale reaches it at once.
+            if (a[0] >= 2)
+            {
+                break;
+            }
+            tr.osc_scale[a[0]] = static_cast<float>(a[1]) / 16383.0f;
+            if (tr.osc[a[0]])
+            {
+                tr.osc[a[0]]->scale = tr.osc_scale[a[0]];
+            }
+            break;
+        }
 
     case 0xe8:
         {
-            // JASTrack::setOscTable: the track's table for oscillator 0 (volume) or 1 (pitch), from the sequence.
+            // JASTrack::setOscTable: the track's table for oscillator 0 (volume) or 1 (pitch), from the sequence. The
+            // oscillator keeps its scale.
             if (a[0] >= 2)
             {
                 break;
             }
             Oscillator osc;
             osc.target = static_cast<uint8_t>(a[0]);
+            osc.scale = tr.osc_scale[a[0]];
             for (uint32_t at = a[1], n = 0; n < 0x10000; at += 6, n++)
             {
                 const OscPoint p{static_cast<int16_t>(Data16(at)), static_cast<int16_t>(Data16(at + 2)),
@@ -2088,7 +2165,8 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
     case 0xe9:
         {
             // JASTrack::setOscAdsr: oscillator 0 becomes the track's four-point table (sAdsTable) with these times and
-            // sustain, and the direct release.
+            // sustain, and the direct release. Oscillator 0 starts from sEnvOsc's settings, with a scale of 1.
+            tr.osc_scale[0] = 1.0f;
             Oscillator osc;
             osc.target = 0;
             osc.attack = {{0, static_cast<int16_t>(a[0]), 0x7fff},
@@ -2176,7 +2254,7 @@ void Performer::OnJumpBack(int t, uint32_t target)
 {
     // A backward jump to commands the track hasn't run is not a loop; shared code may precede its callers. Also ignore
     // passes without waits, such as polling.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     const auto run = tr.visited.find(target);
     if (run == tr.visited.end() || !tr.last_wait || *tr.last_wait < run->second.first)
     {
@@ -2223,25 +2301,12 @@ void Performer::OnJumpBack(int t, uint32_t target)
 
     // A pass that changed something, of another loop than the marked one, moves the markers to it.
     const std::pair<int, uint32_t> owner{t, target};
-    if (!loop_owner_ || (!tr.idle && *loop_owner_ != owner))
+    if (!main_loop_.Owner() || (!tr.idle && *main_loop_.Owner() != owner))
     {
-        out_.loop.reset();
-        out_.loops = 0;
-        loop_owner_ = owner;
-        owner_passes_.clear();
-        marked_ = 0;
-        extended_ = false;
-    }
-    if (owner == *loop_owner_)
-    {
-        owner_passes_.emplace_back(start, tick_);
+        main_loop_.Restart(out_, owner);
     }
 
-    out_.loops++;
-    if (!out_.loop)
-    {
-        out_.loop = Performance::Loop{start, tick_};
-    }
+    main_loop_.CountPass(out_, owner, start, tick_);
     if (out_.loops >= options_.loops && TickSeconds(tick_) >= kMinLoopSeconds)
     {
         pending_loop_ = PendingLoop{t, start, tick_};
@@ -2252,7 +2317,7 @@ void Performer::OnJumpBack(int t, uint32_t target)
 void Performer::InitTrack1(int t)
 {
     // JASystem::TRegisterParam::init: bank 0, program 0xf0, a bend sense of 12, the pan powers and a priority of 0x40.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     tr.regs = {};
     tr.regs[6] = 0x00f0;
     tr.regs[7] = 12;
@@ -2274,13 +2339,10 @@ int Performer::OpenChild1(int t, uint32_t mode_and_number, uint32_t start)
     // the child also takes the parent's bank, program, bend sense, pan powers, priority and how its pan combines.
     const uint32_t number = mode_and_number & 15;
     const auto mode = static_cast<uint8_t>((mode_and_number & 0x20) ? 4 : (mode_and_number >> 6) & 3);
-    const int child = OpenChild(t, number);
+    const int child = OpenChild(t, number, start);
     InitTrack1(child);
-    Track& c = tracks_[static_cast<std::size_t>(child)];
-    const Track& p = tracks_[static_cast<std::size_t>(t)];
-    c.pc = start;
-    c.open = true;
-    c.dirty = true;
+    Track& c = TrackAt(child);
+    const Track& p = TrackAt(t);
     c.open_mode = mode;
     c.volume_mode = p.volume_mode;
     if (!(mode & 2))
@@ -2310,15 +2372,12 @@ int Performer::SeqTick1(int t)
     Interrupt(t, kIntr1Tick);
     TimerProcess(t);
     CheckInterrupt1(t);
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
-    if (tr.wait_note_finish)
+    if (WaitsForGateNote(t))
     {
-        if (tr.slots[0] >= 0)
-        {
-            return 0;
-        }
-        tr.wait_note_finish = false;
+        return 0;
     }
+
+    Track& tr = TrackAt(t);
     if (tr.wait > 0)
     {
         if (--tr.wait > 0)
@@ -2335,30 +2394,7 @@ int Performer::SeqTick1(int t)
         }
     }
 
-    int commands = 0;
-    while (tracks_[static_cast<std::size_t>(t)].wait == 0 && !tracks_[static_cast<std::size_t>(t)].wait_note_finish &&
-           !stop_)
-    {
-        if (++commands > kParseLimit)
-        {
-            out_.warnings.push_back(tracks_[static_cast<std::size_t>(t)].name +
-                                    " runs without waiting. It would hang the game. " + program_ + " stopped it");
-            return -1;
-        }
-
-        if (Parse1(t) == Outcome::kFinish)
-        {
-            return -1;
-        }
-    }
-
-    const Track& after = tracks_[static_cast<std::size_t>(t)];
-    if (after.wait > 0 || after.wait_note_finish)
-    {
-        tracks_[static_cast<std::size_t>(t)].last_wait = tick_;
-    }
-
-    return 0;
+    return ParseToWait(t);
 }
 
 Outcome Performer::Parse1(int t)
@@ -2366,7 +2402,7 @@ Outcome Performer::Parse1(int t)
     // JASystem::TSeqParser::parseSeq: below 0x80 a note, 0x80 and 0x88 a wait, the other commands of 0x8x and 0xf9 a
     // note's end, 0x9x a parameter, 0xax register arithmetic, 0xbx a command with arguments from registers, and the
     // command table from 0xc0.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     tr.visited[tr.pc] = {tick_, commands_run_++};
     const uint8_t b = ReadByte(t);
     if (!(b & 0x80))
@@ -2378,7 +2414,7 @@ Outcome Performer::Parse1(int t)
     {
         // A wait of a byte (0x80) or of 16 bits (0x88).
         const uint32_t ticks = b == 0x80 ? ReadByte(t) : Read16(t);
-        tracks_[static_cast<std::size_t>(t)].wait = static_cast<int32_t>(ticks);
+        TrackAt(t).wait = static_cast<int32_t>(ticks);
         return ticks != 0 ? Outcome::kWait : Outcome::kContinue;
     }
 
@@ -2425,12 +2461,8 @@ Outcome Performer::Parse1(int t)
                 data = ReadByte(t);
                 break;
             case 8:
-                {
-                    // A byte spread over 16 bits: below 0x80, its low bits repeat.
-                    const uint8_t v = ReadByte(t);
-                    data = static_cast<int16_t>((v & 0x80) ? v << 8 : (v << 8 | v << 1));
-                    break;
-                }
+                data = SpreadByte(ReadByte(t));
+                break;
             default:
                 data = static_cast<int16_t>(Read16(t));
                 break;
@@ -2455,7 +2487,7 @@ Outcome Performer::Parse1(int t)
             // Targets 0 to 5 are JAudio2's. The IIR filter's coefficients are 12 to 15.
             if (target >= 12 && target <= 15)
             {
-                tracks_[static_cast<std::size_t>(t)].iir = true;
+                TrackAt(t).iir = true;
             }
             SetParam(t, target, static_cast<float>(data) / 32767.0f, time > 0 ? static_cast<uint32_t>(time) : 0);
             return Outcome::kContinue;
@@ -2479,17 +2511,7 @@ Outcome Performer::Parse1(int t)
             uint16_t types = 0;
             if (!from_register || count > 1)
             {
-                uint8_t mask = ReadByte(t);
-                uint16_t bits = 3;
-                for (int i = 0; i < count; i++)
-                {
-                    if (mask & 0x80)
-                    {
-                        types = static_cast<uint16_t>(types | bits);
-                    }
-                    mask = static_cast<uint8_t>(mask << 1);
-                    bits = static_cast<uint16_t>(bits << 2);
-                }
+                types = RegisterTypes(ReadByte(t), count);
             }
             return Command1(t, cmd, types);
         }
@@ -2518,7 +2540,7 @@ Outcome Performer::Note1(int t, uint8_t key)
     const int target = k;
     if (connect & 2)
     {
-        k = tracks_[static_cast<std::size_t>(t)].latest_key;
+        k = TrackAt(t).latest_key;
     }
 
     uint32_t velocity = ReadByte(t);
@@ -2548,7 +2570,7 @@ Outcome Performer::Note1(int t, uint8_t key)
 
         // seqTimeToDspTime takes the share of the length. GateOn divides it by the tick rate. Flag 1 of GateOn sweeps,
         // flag 2 ties, and flag 4 waits for the note's end.
-        Track& tr = tracks_[static_cast<std::size_t>(t)];
+        Track& tr = TrackAt(t);
         if (!tr.time_relate)
         {
             Approximate("note lengths that don't follow the tempo follow it");
@@ -2556,18 +2578,8 @@ Outcome Performer::Note1(int t, uint8_t key)
         const uint32_t gate_flags = ((connect & 2) ? 1u : 0u) | ((connect & 1) ? 2u : 0u) | (length == 0 ? 4u : 0u);
         const float time = static_cast<float>(length) * static_cast<float>(share) / 100.0f;
         GateOn(t, target - TransposeTotal(t), static_cast<int>(velocity), time, gate_flags);
-
-        Track& again = tracks_[static_cast<std::size_t>(t)];
-        again.gate_ends = length != 0 && connect == 0;
-        if (length != 0)
-        {
-            again.wait = static_cast<int32_t>(length);
-        }
-        else
-        {
-            again.wait_note_finish = true;
-        }
-        return Outcome::kWait;
+        TrackAt(t).gate_ends = length != 0 && connect == 0;
+        return WaitForGateNote(t, length);
     }
 
     if ((flags >> 3) & 3)
@@ -2585,10 +2597,10 @@ Outcome Performer::Note1(int t, uint8_t key)
         Approximate("sweeps of notes with an id omitted");
     }
 
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     tr.skip_samples = skip;
     NoteOn(t, note_id, k - TransposeTotal(t), static_cast<int>(velocity));
-    Track& again = tracks_[static_cast<std::size_t>(t)];
+    Track& again = TrackAt(t);
     again.skip_samples = 0;
     again.tied = false;
     again.latest_key = static_cast<uint8_t>(std::clamp(target, 0, 127));
@@ -2648,29 +2660,9 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         return Outcome::kContinue;
     }
 
-    const CommandInfo& info = kCommands1[cmd - 0xc0u];
-    uint16_t types = info.types | override_types;
-    std::array<uint32_t, 8> a{};
-    for (int i = 0; i < info.count; i++, types = static_cast<uint16_t>(types >> 2))
-    {
-        switch (types & 3)
-        {
-        case 0:
-            a[static_cast<std::size_t>(i)] = ReadByte(t);
-            break;
-        case 1:
-            a[static_cast<std::size_t>(i)] = Read16(t);
-            break;
-        case 2:
-            a[static_cast<std::size_t>(i)] = Read24(t);
-            break;
-        default:
-            a[static_cast<std::size_t>(i)] = ReadReg1(t, ReadByte(t));
-            break;
-        }
-    }
+    const std::array<uint32_t, 8> a = ReadArguments(t, kCommands1[cmd - 0xc0u], override_types, &Performer::ReadReg1);
 
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     switch (cmd)
     {
     case 0xc1:
@@ -2693,33 +2685,12 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xc9:
-        // TSeqCtrl::loopStart: the count goes on the call stack with the return address.
-        if (tr.depth < kStackSize)
-        {
-            tr.return_to[static_cast<std::size_t>(tr.depth)] = tr.pc;
-            tr.loop_count[static_cast<std::size_t>(tr.depth)] = static_cast<uint16_t>(a[0]);
-            tr.depth++;
-        }
+        LoopStart(t, a[0]);
         break;
 
     case 0xca:
-        {
-            // TSeqCtrl::loopEnd: a count of 0 or 1 plays the loop once.
-            if (tr.depth == 0)
-            {
-                break;
-            }
-            uint16_t& count = tr.loop_count[static_cast<std::size_t>(tr.depth - 1)];
-            const uint16_t left = count != 0 ? static_cast<uint16_t>(count - 1) : 0;
-            if (left == 0)
-            {
-                tr.depth--;
-                break;
-            }
-            count = left;
-            tr.pc = tr.return_to[static_cast<std::size_t>(tr.depth - 1)];
-            break;
-        }
+        LoopEnd(t);
+        break;
 
     case 0xcb:
         // cmdReadPort: the port's value goes to the register, and its import flag clears.
@@ -2747,25 +2718,12 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xd1:
     case 0xd2:
+        // writePortAppDirect: a write to the parent's port, or to a child's.
+        if (const int other = PortTrack(t, cmd == 0xd2, a[0]); other >= 0)
         {
-            // writePortAppDirect: a write to another track's port. For ports 0 and 1, it raises that track's port
-            // interrupt.
-            const int other = cmd == 0xd1 ? tr.parent : tr.children[(a[0] >> 4) & 15];
-            const uint32_t port = a[0] & 15;
-            if (other < 0)
-            {
-                break;
-            }
-            tracks_[static_cast<std::size_t>(t)].last_signal = commands_run_;
-            Track& o = tracks_[static_cast<std::size_t>(other)];
-            o.imported = static_cast<uint16_t>(o.imported | (1u << port));
-            o.ports[port] = static_cast<uint16_t>(a[1]);
-            if (port <= 1)
-            {
-                Interrupt(other, port == 0 ? kIntr1Port0 : kIntr1Port1);
-            }
-            break;
+            WritePortOf(t, other, a[0] & 15, a[1]);
         }
+        break;
 
     case 0xd4:
         tr.latest_key = static_cast<uint8_t>(std::clamp(static_cast<int>(a[0]) + TransposeTotal(t), 0, 127));
@@ -3005,11 +2963,8 @@ void Performer::RegisterCommand1(int t, uint8_t low)
         value = static_cast<int16_t>(Read16(t));
         break;
     case 8:
-        {
-            const uint8_t v = ReadByte(t);
-            value = static_cast<int16_t>((v & 0x80) ? v << 8 : (v << 8 | v << 1));
-            break;
-        }
+        value = SpreadByte(ReadByte(t));
+        break;
     default:
         value = -1;
         break;
@@ -3099,7 +3054,7 @@ void Performer::RegisterCommand1(int t, uint8_t low)
         return;
     }
 
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     auto v = static_cast<uint16_t>(value);
     uint16_t flag = v;
     switch (reg)
@@ -3154,14 +3109,14 @@ uint32_t Performer::ReadReg1(int t, uint32_t reg)
         return ReadReg32(t, reg);
     }
 
-    return reg - 0x40 < 16 ? tracks_[static_cast<std::size_t>(t)].ports[reg - 0x40] : 0;
+    return reg - 0x40 < 16 ? TrackAt(t).ports[reg - 0x40] : 0;
 }
 
 uint16_t Performer::ReadReg16(int t, uint32_t reg)
 {
     // JASystem::TTrack::readReg16: the bank and the program, registers 0 and 1 together, the running children, the
     // note ids that hold no note, and the loop's count.
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
+    const Track& tr = TrackAt(t);
     switch (reg)
     {
     case 0x20:
@@ -3176,7 +3131,7 @@ uint16_t Performer::ReadReg16(int t, uint32_t reg)
             for (int i = 0; i < kChildren; i++)
             {
                 const int child = tr.children[static_cast<std::size_t>(i)];
-                if (child >= 0 && tracks_[static_cast<std::size_t>(child)].open)
+                if (child >= 0 && TrackAt(child).open)
                 {
                     running = static_cast<uint16_t>(running | (1u << i));
                 }
@@ -3211,7 +3166,7 @@ uint32_t Performer::ReadReg32(int t, uint32_t reg)
     case 0x29:
     case 0x2a:
     case 0x2b:
-        return tracks_[static_cast<std::size_t>(t)].addresses[reg - 0x28];
+        return TrackAt(t).addresses[reg - 0x28];
     case 0x23:
         return static_cast<uint32_t>(ReadReg16(t, 4)) << 16 | ReadReg16(t, 5);
     default:
@@ -3247,7 +3202,7 @@ void Performer::StoreRegister1(int t, uint32_t reg, uint16_t value, uint16_t fla
 {
     // The write, then the flag. A new bank and program select what the track's notes play, and the bend sense moves its
     // pitch. Register 13 holds the notes' priority.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (reg < tr.regs.size())
     {
         tr.regs[reg] = value;
@@ -3275,7 +3230,7 @@ void Performer::CheckInterrupt1(int t)
 {
     // JASystem::TTrack::tryInterrupt: while interrupts are enabled and none runs, the lowest pending interrupt that is
     // set runs its routine. TSeqCtrl::callIntr puts the track's wait aside until the routine returns.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.intr_return || !tr.intr_enabled)
     {
         return;
@@ -3303,7 +3258,7 @@ void Performer::UpdateTrack1(int t)
     // (Player::pitchToCent's table follows equal temperament within a cent). A track's pan and effect send take its
     // parent's by the track's calc type, with the track's pan power as the weight. By default a track keeps its values.
     // A track opened in a mode with bit 0 set takes nothing from its parent.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     float volume = tr.move[0].value;
     if (tr.volume_mode == 0)
     {
@@ -3321,7 +3276,7 @@ void Performer::UpdateTrack1(int t)
     }
     else if (!(tr.open_mode & 1))
     {
-        const ChannelParams& up = tracks_[static_cast<std::size_t>(tr.parent)].params;
+        const ChannelParams& up = TrackAt(tr.parent).params;
         const float weight = static_cast<float>(tr.regs[12]) / 32767.0f;
         p.volume *= up.volume;
         p.pitch = up.pitch;
@@ -3330,7 +3285,7 @@ void Performer::UpdateTrack1(int t)
         p.fx_mix = PanCalc(p.fx_mix, up.fx_mix, weight, tr.parent_calc[1]);
     }
     tr.params = p;
-    tr.tick_rate = tr.parent < 0 ? TicksPerSubFrame() : tracks_[static_cast<std::size_t>(tr.parent)].tick_rate;
+    tr.tick_rate = tr.parent < 0 ? TicksPerSubFrame() : TrackAt(tr.parent).tick_rate;
 }
 
 void Performer::SkipPrint(int t)
@@ -3415,7 +3370,7 @@ std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity,
                                                    uint32_t sweep_subframes, bool bends)
 {
     // JASTrack::channelStart and JASBank::noteOn: find what the program plays, and start a channel on a voice.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.program >= 0xf0)
     {
         Approximate("notes on the DSP's oscillators omitted");
@@ -3539,7 +3494,7 @@ void Performer::NoteOn(int t, uint32_t note_id, int key, int velocity)
     Changed(t);
     NoteOff(t, note_id, 0);
     const std::optional<std::size_t> c = StartChannel(t, key, velocity, 0);
-    tracks_[static_cast<std::size_t>(t)].slots[note_id] = c ? static_cast<int>(*c) : -1;
+    TrackAt(t).slots[note_id] = c ? static_cast<int>(*c) : -1;
     if (c)
     {
         channels_[*c].note_id = static_cast<int>(note_id);
@@ -3551,7 +3506,7 @@ void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
     // JASTrack::gateOn (0x80037214): a note on slot 0 with a length. Flag 1 sweeps from the latest key to the key over
     // the length, flag 2 ties the next note to this one, and flag 4 waits for the note to end.
     Changed(t);
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     key += TransposeTotal(t);
     if (tr.gate_rate != 100)
     {
@@ -3571,7 +3526,7 @@ void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
         NoteOff(t, 0, 0);
         const std::optional<std::size_t> c = StartChannel(t, from, velocity, timer, sweeps ? sweep : 0.0f,
                                                           sweeps ? subframes : 0, sweeps || (flags & 2) != 0);
-        tracks_[static_cast<std::size_t>(t)].slots[0] = c ? static_cast<int>(*c) : -1;
+        TrackAt(t).slots[0] = c ? static_cast<int>(*c) : -1;
         if (c)
         {
             channels_[*c].note_id = 0;
@@ -3601,7 +3556,7 @@ void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
         }
     }
 
-    Track& again = tracks_[static_cast<std::size_t>(t)];
+    Track& again = TrackAt(t);
     again.tied = (flags & 2) != 0;
     again.latest_key = static_cast<uint8_t>(std::clamp(key, 0, 127));
 }
@@ -3614,7 +3569,7 @@ void Performer::NoteOff(int t, uint32_t note_id, uint16_t release)
         return;
     }
 
-    int& slot = tracks_[static_cast<std::size_t>(t)].slots[note_id];
+    int& slot = TrackAt(t).slots[note_id];
     if (slot < 0)
     {
         return;
@@ -3676,7 +3631,7 @@ void Performer::EndChannel(std::size_t c)
     }
     if (ch.track >= 0)
     {
-        for (int& slot : tracks_[static_cast<std::size_t>(ch.track)].slots)
+        for (int& slot : TrackAt(ch.track).slots)
         {
             if (slot == static_cast<int>(c))
             {
@@ -3698,12 +3653,11 @@ float Performer::ChannelVolume(const Channel& ch, float osc_volume) const
 
 float Performer::ChannelRatio(const Channel& ch, float osc_pitch) const
 {
-    // The pitch the channel gives the DSP, as a ratio of samples per output sample. The DSP takes a whole number of
-    // 4096ths. The game truncates the pitch (0x8002b688). JASDsp::TChannel::setPitch (0x8002d3a0) keeps it below
-    // 0x7fff.
+    // The pitch the channel gives the DSP, as a ratio of samples per output sample. The game truncates the pitch to a
+    // whole number of 4096ths (0x8002b688). The DSP's limit applies after that.
     const float octaves = ch.params.bend + (ch.key_offset + ch.key_sweep) / 12.0f + ch.vibrato.Value();
-    const float pitch = ch.init_pitch * osc_pitch * std::exp2(octaves) * ch.params.pitch * 4096.0f;
-    return std::min(std::trunc(std::max(pitch, 0.0f)), 32767.0f) / 4096.0f;
+    const float pitch = DspPitch(ch.init_pitch, osc_pitch, octaves, ch.params.pitch);
+    return std::min(std::trunc(std::max(pitch, 0.0f)), kPitchLimit) / 4096.0f;
 }
 
 void Performer::UpdateChannel(Channel& ch)
@@ -3711,7 +3665,7 @@ void Performer::UpdateChannel(Channel& ch)
     // JASChannel::updateDSPChannel, or initialUpdateDSPChannel in its first sub-frame.
     if (ch.track >= 0)
     {
-        const Track& tr = tracks_[static_cast<std::size_t>(ch.track)];
+        const Track& tr = TrackAt(ch.track);
         ch.params = tr.params;
         ch.vibrato.Set(tr.vib_depth, tr.vib_pitch);
         ch.tremolo.Set(tr.trem_depth, tr.trem_pitch);
@@ -3730,7 +3684,7 @@ void Performer::UpdateChannel(Channel& ch)
         if (ch.update_timer != 0 && --ch.update_timer == 0 && ch.track >= 0)
         {
             // A gate note's time is up: its track releases and detaches it (channelUpdateCallback's timer case).
-            Track& tr = tracks_[static_cast<std::size_t>(ch.track)];
+            Track& tr = TrackAt(ch.track);
             const auto c = static_cast<std::size_t>(&ch - channels_.data());
             if (tr.slots[0] == static_cast<int>(c))
             {
@@ -3881,7 +3835,7 @@ int Performer::SlotOf(int t)
 {
     // The first 16 tracks that record something get MIDI tracks: the first track's children by number, others in the
     // order they first record. Tracks beyond that share the last one.
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (tr.slot >= 0)
     {
         return tr.slot;
@@ -3929,8 +3883,8 @@ int Performer::SlotOf(int t)
         slot_tracks_[static_cast<std::size_t>(wanted)] = t;
         out_.track_names[static_cast<std::size_t>(wanted)] = tr.name;
     }
-    tracks_[static_cast<std::size_t>(t)].slot = wanted;
-    tracks_[static_cast<std::size_t>(t)].output.midi_track = static_cast<uint8_t>(wanted);
+    TrackAt(t).slot = wanted;
+    TrackAt(t).output.midi_track = static_cast<uint8_t>(wanted);
 
     return wanted;
 }
@@ -3940,7 +3894,7 @@ seqlib::midi::TrackOutput& Performer::Output(int t)
     // The track's output, with the MIDI track it records into (SlotOf).
     SlotOf(t);
 
-    return tracks_[static_cast<std::size_t>(t)].output;
+    return TrackAt(t).output;
 }
 
 void Performer::EmitTempo()
@@ -3992,7 +3946,7 @@ void Performer::SwitchPart(int t)
     // on its part would reach them. The track therefore moves to a part where none of its tails sound, and sends that
     // part every setting first.
     const int slot = SlotOf(t);
-    if (!TailsOnPart(slot, tracks_[static_cast<std::size_t>(t)].output.part))
+    if (!TailsOnPart(slot, TrackAt(t).output.part))
     {
         return;
     }
@@ -4014,7 +3968,7 @@ void Performer::SwitchPart(int t)
 void Performer::SendSetting(int t, EventKind kind, int value)
 {
     // A setting that changes the part's last value moves the track off a part where its tails sound (SwitchPart).
-    const seqlib::midi::TrackOutput& output = tracks_[static_cast<std::size_t>(t)].output;
+    const seqlib::midi::TrackOutput& output = TrackAt(t).output;
     const auto it = output.sent.find({output.part, kind});
     if (it != output.sent.end() && it->second != value)
     {
@@ -4029,7 +3983,7 @@ void Performer::SendSetting(int t, EventKind kind, int value)
 void Performer::SendPitch(int t, float semitones)
 {
     // Any pitch that goes out moves the track off a part where its tails sound (SwitchPart).
-    const seqlib::midi::TrackOutput& output = tracks_[static_cast<std::size_t>(t)].output;
+    const seqlib::midi::TrackOutput& output = TrackAt(t).output;
     const auto it = output.pitch.find(output.part);
     if ((it == output.pitch.end() && semitones == 0.0f) || (it != output.pitch.end() && it->second == semitones))
     {
@@ -4051,13 +4005,13 @@ float Performer::GatePitch(int t) const
         return 0.0f;
     }
 
-    const Channel& ch = channels_[static_cast<std::size_t>(tracks_[static_cast<std::size_t>(t)].slots[0])];
+    const Channel& ch = channels_[static_cast<std::size_t>(TrackAt(t).slots[0])];
     return ch.key_offset - ch.midi_key_offset + ch.key_sweep;
 }
 
 bool Performer::GateBends(int t) const
 {
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
+    const Track& tr = TrackAt(t);
     if (tr.slots[0] < 0)
     {
         return false;
@@ -4070,7 +4024,7 @@ bool Performer::GateBends(int t) const
 bool Performer::HoldsOnPart(int t) const
 {
     // A note of the track that it hasn't released, on the track's part.
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
+    const Track& tr = TrackAt(t);
     for (const int c : tr.slots)
     {
         if (c >= 0 && channels_[static_cast<std::size_t>(c)].midi_on &&
@@ -4125,8 +4079,8 @@ void Performer::SweepBetweenTicks()
 double Performer::TrackLevel(int t) const
 {
     // CC11 holds the square root of the parents' volumes and the sound's volume. CC11 acts squared.
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
-    const float above = tr.parent < 0 ? sound_.volume : tracks_[static_cast<std::size_t>(tr.parent)].params.volume;
+    const Track& tr = TrackAt(t);
+    const float above = tr.parent < 0 ? sound_.volume : TrackAt(tr.parent).params.volume;
     return 127.0 * std::sqrt(std::max(static_cast<double>(above), 0.0));
 }
 
@@ -4134,7 +4088,7 @@ void Performer::RecordOutputs(int t)
 {
     // The MIDI controllers for a track's settings: CC7 its volume, CC11 the rest of the volume, CC10 the pan, the bend,
     // CC1 the vibrato's depth and CC91 the effect send.
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
+    const Track& tr = TrackAt(t);
     if (!tr.open || tr.slot < 0)
     {
         return;
@@ -4182,7 +4136,7 @@ void Performer::MidiNoteOn(std::size_t c)
 {
     Channel& ch = channels_[c];
     const int t = ch.track;
-    Track& tr = tracks_[static_cast<std::size_t>(t)];
+    Track& tr = TrackAt(t);
     if (ch.velocity == 0)
     {
         return; // the game plays it silently
@@ -4204,7 +4158,8 @@ void Performer::MidiNoteOn(std::size_t c)
             for (std::size_t k = 0; k < out_.oscillators.size(); k++)
             {
                 const Oscillator& o = out_.oscillators[k];
-                if (o.target == tr.osc[i]->target && o.attack.size() == tr.osc[i]->attack.size() &&
+                if (o.target == tr.osc[i]->target && o.scale == tr.osc[i]->scale &&
+                    o.attack.size() == tr.osc[i]->attack.size() &&
                     std::equal(o.attack.begin(), o.attack.end(), tr.osc[i]->attack.begin(), same_point))
                 {
                     index = static_cast<int>(k);
@@ -4222,6 +4177,13 @@ void Performer::MidiNoteOn(std::size_t c)
     key.vibrato_rate = tr.vib_pitch;
     key.vibrato_delay = tr.vib_delay;
     const uint32_t preset = seqlib::midi::PresetIndex(out_.presets, key);
+
+    // A note whose key starts it past the DSP's pitch limit plays at the limit. The preset then plays that key and the
+    // keys above it at the limit (PresetZones).
+    if (PastPitchLimit(DspPitch(ch.init_pitch, 1.0f, ch.key_offset / 12.0f, 1.0f)))
+    {
+        out_.pitch_limited_presets.insert(preset);
+    }
 
     // A note that bends goes on a part where no tail of its track sounds. The tails keep their pitch there.
     if (ch.bends)
@@ -4253,7 +4215,7 @@ void Performer::MidiNoteOn(std::size_t c)
             ch.midi_velocity = planned->second;
         }
     }
-    ch.part = tracks_[static_cast<std::size_t>(t)].output.part;
+    ch.part = TrackAt(t).output.part;
     recorder_.NoteOn(out_, Output(t), tick_, ch.key, ch.midi_velocity);
     Changed(t);
 }
@@ -4335,7 +4297,7 @@ bool Performer::WaitsForever(int t) const
 {
     // A track waiting for a note that never ends, or waiting kHeldTicks or more: minutes at a typical tempo. Games wait
     // that long for sounds they stop themselves.
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
+    const Track& tr = TrackAt(t);
     if (!tr.open)
     {
         return false;
@@ -4356,7 +4318,7 @@ bool Performer::WaitsForever(int t) const
 
 bool Performer::Quiet(int t) const
 {
-    const Track& tr = tracks_[static_cast<std::size_t>(t)];
+    const Track& tr = TrackAt(t);
     if (TrackSounds(t))
     {
         return false;
@@ -4393,18 +4355,7 @@ std::optional<double> Performer::HeldSoundEnd(uint32_t start) const
     }
 
     // The last change: the last MIDI event or tempo change.
-    uint32_t last = 0;
-    for (const std::vector<TrackEvent>& events : out_.tracks)
-    {
-        if (!events.empty())
-        {
-            last = std::max(last, events.back().tick);
-        }
-    }
-    if (!out_.tempo.empty())
-    {
-        last = std::max(last, out_.tempo.back().tick);
-    }
+    const uint32_t last = out_.LastEventTick();
     if (now - TickSeconds(last) <= kHoldSeconds)
     {
         return std::nullopt;
@@ -4436,7 +4387,7 @@ std::optional<double> Performer::HeldSoundEnd(uint32_t start) const
 
 void Performer::Changed(int t)
 {
-    tracks_[static_cast<std::size_t>(t)].last_change = tick_;
+    TrackAt(t).last_change = tick_;
 }
 
 double Performer::TickSeconds(uint32_t tick) const
@@ -4481,8 +4432,9 @@ bool Performer::RepeatsAsTheGame(uint32_t start, uint32_t end) const
     return ntdlib::sequence_export::RepeatsAsTheGame(out_, recorder_.PartSwitches(), start, end, kLoopRules);
 }
 
-Performer::LoopChoice Performer::ChooseSteadyPass() const
+bool Performer::MarkSteadyPass()
 {
+    // A copy of this performer plays on. Its passes are compared.
     auto play_on = [this](uint32_t until)
     {
         return [probe = PlayOn(until)](uint32_t start, uint32_t end)
@@ -4490,24 +4442,7 @@ Performer::LoopChoice Performer::ChooseSteadyPass() const
             return probe.RepeatsAsTheGame(start, end);
         };
     };
-    return ntdlib::sequence_export::ChooseSteadyPass(owner_passes_, marked_, last_draw_, extended_, options_.loops,
-                                                     play_on);
-}
-
-bool Performer::MarkSteadyPass()
-{
-    const LoopChoice choice = replayed_ < replay_.size() ? replay_[replayed_++] : ChooseSteadyPass();
-    choices_.push_back(choice);
-    if (choice.marked && *choice.marked < owner_passes_.size())
-    {
-        marked_ = *choice.marked;
-        const auto [start, end] = owner_passes_[marked_];
-        out_.loop = Performance::Loop{start, end};
-        out_.loops = static_cast<int>(owner_passes_.size() - marked_);
-    }
-    extended_ = extended_ || choice.extend;
-
-    return choice.stop;
+    return main_loop_.MarkSteadyPass(out_, last_draw_, options_.loops, play_on);
 }
 
 void Performer::DecideLoop()
@@ -4540,8 +4475,7 @@ void Performer::EndPerformance(bool finished)
     if (held_sound_end_)
     {
         out_.holds = true;
-        out_.loop.reset();
-        out_.loops = 0;
+        out_.DropLoop();
     }
 
     // A performance that stops at the end of a pass leaves out what the next pass started in its last tick.
@@ -4685,7 +4619,7 @@ Performance Performer::Run()
     {
         InitTrack1(root);
     }
-    Track& tr = tracks_[static_cast<std::size_t>(root)];
+    Track& tr = TrackAt(root);
     tr.pc = sound_.start;
     tr.open = true;
     for (const auto& [port, value] : options_.ports)
@@ -4717,8 +4651,7 @@ Performance Performer::Run()
         if (silent_end_ || Stuck())
         {
             finished = true;
-            out_.loop.reset();
-            out_.loops = 0;
+            out_.DropLoop();
             break;
         }
 
@@ -4758,8 +4691,7 @@ Performance Performer::Run()
     EndPerformance(finished);
     if (finished)
     {
-        out_.loop.reset();
-        out_.loops = 0;
+        out_.DropLoop();
     }
     if (out_.loop)
     {
@@ -4830,16 +4762,7 @@ Performance Perform(const SequenceSound& sound, BankSet& banks, const PerformOpt
         peak = performer.LevelPeak();
     }
 
-    if (LevelScale(applied) < 1.0)
-    {
-        // CC11 acts squared. Scaling it by 127 / peak makes every note 40 log10(peak / 127) dB quieter.
-        performance.level_cut_db = 40.0 * std::log10(applied / 127.0);
-        char what[160];
-        std::snprintf(what, sizeof(what),
-                      "volume exceeds MIDI range (SoundFont playback attenuated by %.1f dB; SFZ restores the gain)",
-                      performance.level_cut_db);
-        performance.approximations[what] = NoteCount(performance);
-    }
+    ntdlib::sequence_export::SetLevelCut(performance, applied);
 
     return performance;
 }

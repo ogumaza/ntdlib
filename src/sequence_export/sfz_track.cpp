@@ -233,6 +233,32 @@ std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const Resamplin
            "_keycenter=" + std::to_string(region.original_key);
 }
 
+std::string RegionLines(const std::vector<std::pair<int, int>>& keys,
+                        const std::vector<std::pair<int, int>>& velocities, std::size_t channels,
+                        const ResamplingRegion& region, int resampling_slot, const Settings& settings,
+                        const RegionLineFunction& line)
+{
+    std::string s;
+    for (const std::pair<int, int>& range : keys)
+    {
+        const std::vector<ResamplingSpan> spans = resampling_slot != 0 ? ResamplingSpans(range, region, settings)
+                                                                       : std::vector<ResamplingSpan>{{range, nullptr}};
+        for (const ResamplingSpan& span : spans)
+        {
+            const std::string low_pass = span.filter ? SfzResamplingOpcodes(*span.filter, region, resampling_slot) : "";
+            for (const std::pair<int, int>& v : velocities)
+            {
+                for (std::size_t c = 0; c < channels; c++)
+                {
+                    s += line(c, span.keys, v) + low_pass + "\n";
+                }
+            }
+        }
+    }
+
+    return s;
+}
+
 std::string SfzPitchOpcodes(uint8_t original_key, float tune)
 {
     std::string s = " pitch_keycenter=" + std::to_string(original_key);

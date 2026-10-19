@@ -9,7 +9,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <span>
 #include <stdexcept>
@@ -568,12 +567,6 @@ int main()
     TestRendererMeters();
     TestI3dl2NegativeDelay();
     TestI3dl2Presets();
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
 
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("nx_audio");
 }

@@ -19,10 +19,8 @@ Dsp<Memory>::Dsp(Memory& memory)
       iram_(Memory::kIramSize, 0x0021),
       dram_(Memory::kDramSize, 0),
       loop_end_(0x10000, 0),
-      idle_(Memory::kIramSize, 0),
-      rom_state_()
+      idle_(Memory::kIramSize, 0)
 {
-    BuildDecodeTable();
     BuildLoopMap();
 }
 
@@ -38,7 +36,7 @@ void Dsp<Memory>::Step()
 
     // The boot ROM isn't present. Its routines run in boot_rom.cpp instead. Without them, a program that leaves IRAM
     // halts the DSP.
-    if (Memory::kBootRom && regs_.pc >= 0x8000 && regs_.pc < 0x9000)
+    if (Memory::kBootRom && regs_.pc >= kRomEntry && regs_.pc < kRomEnd)
     {
         RomStep();
     }
@@ -376,6 +374,22 @@ uint16_t Dsp<Memory>::AddIndex(uint16_t address, uint16_t index, uint16_t wrap) 
 }
 
 template <typename Memory>
+uint16_t Dsp<Memory>::SteppedAddress(int i, int step) const
+{
+    switch (step)
+    {
+    case kDecrementStep:
+        return Decrement(regs_.ar[i], regs_.wr[i]);
+    case kIncrementStep:
+        return Increment(regs_.ar[i], regs_.wr[i]);
+    case kAddIndexStep:
+        return AddIndex(regs_.ar[i], regs_.ix[i], regs_.wr[i]);
+    default:
+        return regs_.ar[i];
+    }
+}
+
+template <typename Memory>
 uint16_t Dsp<Memory>::SubtractIndex(uint16_t address, uint16_t index, uint16_t wrap) const
 {
     const int n = std::bit_width(uint32_t{wrap} | 1u);
@@ -439,11 +453,6 @@ void Dsp<Memory>::CheckLoop()
 {
     // The loop check applies only to the innermost loop. It runs only at the loop ends that the static analysis found.
     const uint16_t last = static_cast<uint16_t>(regs_.pc - 1);
-    if (!loop_end_[last])
-    {
-        return;
-    }
-
     Registers& r = regs_;
     if (r.stacks[2].top == 0 || r.stacks[3].top == 0 || last != r.stacks[2].top)
     {

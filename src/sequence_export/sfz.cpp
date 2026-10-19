@@ -38,8 +38,7 @@ std::string RegionOpcodes(const PresetKey& key, const sar::VelocityRegion& r, co
 {
     std::string s = SfzPitchOpcodes(r.original_key, r.pitch);
     s += SfzVolumeOpcode(r.volume, gain_db, false);
-    s += SfzEnvelopeOpcodes(key, {r.adshr.attack, r.adshr.decay, r.adshr.sustain, r.adshr.hold, r.adshr.release},
-                            r.ignore_note_off, wave, settings);
+    s += SfzEnvelopeOpcodes(key, RegionEnvelope(r), r.ignore_note_off, wave, settings);
 
     if (r.key_group != 0)
     {
@@ -90,30 +89,18 @@ std::string PresetRegions(const PresetKey& key, BankSet& banks, SfzSampleSet& sa
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
         const std::string opcodes = RegionOpcodes(key, r, wave, gain_db, settings);
         const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation};
-        for (const std::pair<int, int>& keys : played.keys)
+        const auto line = [&](std::size_t c, std::pair<int, int> keys, std::pair<int, int> velocities)
         {
-            const std::vector<ResamplingSpan> spans = resampling_slot != 0
-                                                          ? ResamplingSpans(keys, resampling, settings)
-                                                          : std::vector<ResamplingSpan>{{keys, nullptr}};
-            for (const ResamplingSpan& span : spans)
+            double p = pan;
+            if (wave.names.size() == 2)
             {
-                const std::string low_pass =
-                    span.filter ? SfzResamplingOpcodes(*span.filter, resampling, resampling_slot) : "";
-                for (const std::pair<int, int>& velocities : played.velocities)
-                {
-                    for (std::size_t c = 0; c < wave.names.size(); c++)
-                    {
-                        double p = pan;
-                        if (wave.names.size() == 2)
-                        {
-                            p += c == 0 ? -1.0 : 1.0;
-                        }
-
-                        s += SfzRegionStart(wave.names[c], span.keys, velocities, p) + opcodes + low_pass + "\n";
-                    }
-                }
+                p += c == 0 ? -1.0 : 1.0;
             }
-        }
+
+            return SfzRegionStart(wave.names[c], keys, velocities, p) + opcodes;
+        };
+        s +=
+            RegionLines(played.keys, played.velocities, wave.names.size(), resampling, resampling_slot, settings, line);
     }
 
     return s;

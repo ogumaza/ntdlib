@@ -303,6 +303,9 @@ private:
     // `priority` and below 255. Returns whether any was dropped.
     bool DropLowestPriorityVoices(Engine& engine, int channels, uint32_t priority);
 
+    // Stops and frees `voice`, then calls back its owner with kDropVoice.
+    void DropVoice(Engine& engine, MultiVoice<Policy>& voice);
+
     void AppendVoiceList(VoiceId place);     // 0x022AA4F8
     void RemoveVoiceList(VoiceId place);     // 0x02298E30
     void ChangeVoicePriority(VoiceId place); // 0x022AA584

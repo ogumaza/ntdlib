@@ -14,7 +14,6 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <numbers>
 #include <optional>
@@ -275,13 +274,5 @@ int main()
     TestPlayedKeysFollowEachPartsPreset();
     TestZonesTakeTheLowerLowPassAtTheOriginalKey();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::printf("%d checks failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("All checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("sequence_export_zone_low_pass");
 }

@@ -13,10 +13,11 @@
 #include <utility>
 #include <vector>
 
-#include "disc/encodings.h"
-#include "ntdlib/disc/source.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
+
+#include "disc/encodings.h"
+#include "ntdlib/disc/error.h"
 
 namespace ntdlib::disc::detail
 {

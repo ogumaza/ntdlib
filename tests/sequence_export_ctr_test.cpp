@@ -390,5 +390,5 @@ int main()
 {
     RunOn(Ctr(), kTests);
 
-    return Report();
+    return xsflib::testing::Summary("sequence_export_ctr");
 }

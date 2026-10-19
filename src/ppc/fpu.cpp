@@ -8,7 +8,8 @@
 // Not modelled:
 // - FPSCR's exception and status bits other than FPRF (Rc forms copy what FPSCR holds into CR1)
 // - the 750's handling of single-precision operations on operands that aren't single-precision values
-// - the exact estimates of fres, frsqrte, ps_res and ps_rsqrte (they return the correctly rounded result instead)
+// - the exact estimates of fres, frsqrte, ps_res and ps_rsqrte (they compute 1 / b and 1 / sqrt(b) in double precision
+//   instead)
 
 #include <bit>
 #include <cfenv>
@@ -129,6 +130,12 @@ double Abs(double value)
     return std::bit_cast<double>(std::bit_cast<uint64_t>(value) & 0x7fffffffffffffff);
 }
 
+// A double rounded to single precision, in the host's rounding mode.
+double RoundToSingle(double value)
+{
+    return static_cast<double>(static_cast<float>(value));
+}
+
 // A paired-single quantised value: the type and scale of a GQR's load or store half.
 struct Quantization
 {
@@ -162,7 +169,7 @@ double Dequantize(uint32_t raw, const Quantization& q)
         return SingleToDouble(raw);
     }
 
-    return static_cast<double>(static_cast<float>(std::ldexp(value, -q.scale)));
+    return RoundToSingle(std::ldexp(value, -q.scale));
 }
 
 uint32_t Quantize(double value, const Quantization& q)
@@ -172,7 +179,7 @@ uint32_t Quantize(double value, const Quantization& q)
         return DoubleToSingle(value);
     }
 
-    const double scaled = std::trunc(std::ldexp(static_cast<double>(static_cast<float>(value)), q.scale));
+    const double scaled = std::trunc(std::ldexp(RoundToSingle(value), q.scale));
     const auto clamp = [scaled](double low, double high)
     {
         return std::isnan(scaled) ? 0.0 : scaled < low ? low : scaled > high ? high : scaled;
@@ -207,7 +214,7 @@ Quantization StoreQuantization(uint32_t gqr)
 
 } // namespace
 
-bool Cpu::FpEnabled()
+bool Cpu::CheckFpAvailable()
 {
     if (state_.msr & msr::kFp)
     {
@@ -245,6 +252,15 @@ void Cpu::SetFprf(double value)
     state_.fpscr = (state_.fpscr & ~0x1f000u) | flags << 12;
 }
 
+void Cpu::RecordFpscr(uint32_t op)
+{
+    // The record forms (Rc set) copy FPSCR's first field, its exception summary bits, into CR1.
+    if (op & 1)
+    {
+        SetCrField(1, state_.fpscr >> 28);
+    }
+}
+
 void Cpu::FpCompare(int field, double a, double b)
 {
     const uint32_t result = std::isnan(a) || std::isnan(b) ? 1 : a < b ? 8 : a > b ? 4 : 2;
@@ -258,14 +274,9 @@ void Cpu::UpdateRounding()
     std::fesetround(kModes[state_.fpscr & 3]);
 }
 
-double Cpu::RoundToSingle(double value) const
-{
-    return static_cast<double>(static_cast<float>(value));
-}
-
 bool Cpu::LoadStoreFloat(uint32_t op)
 {
-    if (!FpEnabled())
+    if (!CheckFpAvailable())
     {
         return true;
     }
@@ -357,7 +368,7 @@ bool Cpu::PairedLoadStore(uint32_t op)
     {
         return Illegal(op);
     }
-    if (!FpEnabled())
+    if (!CheckFpAvailable())
     {
         return true;
     }
@@ -458,7 +469,7 @@ bool Cpu::PairedLoadStore(uint32_t op)
 
 bool Cpu::Op59(uint32_t op)
 {
-    if (!FpEnabled())
+    if (!CheckFpAvailable())
     {
         return true;
     }
@@ -506,17 +517,14 @@ bool Cpu::Op59(uint32_t op)
     s.fpr[Fd(op)].ps0 = result;
     s.fpr[Fd(op)].ps1 = result;
     SetFprf(result);
-    if (op & 1)
-    {
-        SetCrField(1, s.fpscr >> 28);
-    }
+    RecordFpscr(op);
 
     return true;
 }
 
 bool Cpu::Op63(uint32_t op)
 {
-    if (!FpEnabled())
+    if (!CheckFpAvailable())
     {
         return true;
     }
@@ -532,10 +540,7 @@ bool Cpu::Op63(uint32_t op)
     {
         rd.ps0 = result;
         SetFprf(result);
-        if (op & 1)
-        {
-            SetCrField(1, s.fpscr >> 28);
-        }
+        RecordFpscr(op);
 
         return true;
     };
@@ -543,10 +548,7 @@ bool Cpu::Op63(uint32_t op)
     const auto move = [&](double result)
     {
         rd.ps0 = result;
-        if (op & 1)
-        {
-            SetCrField(1, s.fpscr >> 28);
-        }
+        RecordFpscr(op);
 
         return true;
     };
@@ -595,10 +597,7 @@ bool Cpu::Op63(uint32_t op)
     case 14: // fctiw
     case 15: // fctiwz
         rd.ps0 = std::bit_cast<double>(0xfff8000000000000 | ConvertToInt(b, (op >> 1 & 0x3ff) == 15));
-        if (op & 1)
-        {
-            SetCrField(1, s.fpscr >> 28);
-        }
+        RecordFpscr(op);
 
         return true;
 
@@ -620,10 +619,7 @@ bool Cpu::Op63(uint32_t op)
             const uint32_t bit = 1u << (31 - d);
             s.fpscr = (op >> 1 & 0x3ff) == 38 ? s.fpscr | bit : s.fpscr & ~bit;
             UpdateRounding();
-            if (op & 1)
-            {
-                SetCrField(1, s.fpscr >> 28);
-            }
+            RecordFpscr(op);
 
             return true;
         }
@@ -641,20 +637,14 @@ bool Cpu::Op63(uint32_t op)
             const int shift = 28 - (d >> 2) * 4;
             s.fpscr = (s.fpscr & ~(0xfu << shift)) | ((op >> 12 & 0xf) << shift);
             UpdateRounding();
-            if (op & 1)
-            {
-                SetCrField(1, s.fpscr >> 28);
-            }
+            RecordFpscr(op);
 
             return true;
         }
 
     case 583: // mffs
         rd.ps0 = std::bit_cast<double>(0xfff8000000000000 | s.fpscr);
-        if (op & 1)
-        {
-            SetCrField(1, s.fpscr >> 28);
-        }
+        RecordFpscr(op);
 
         return true;
 
@@ -672,10 +662,7 @@ bool Cpu::Op63(uint32_t op)
 
             s.fpscr = (s.fpscr & ~mask) | (static_cast<uint32_t>(std::bit_cast<uint64_t>(b)) & mask);
             UpdateRounding();
-            if (op & 1)
-            {
-                SetCrField(1, s.fpscr >> 28);
-            }
+            RecordFpscr(op);
 
             return true;
         }
@@ -705,7 +692,7 @@ bool Cpu::Op4(uint32_t op)
         break;
     }
 
-    if (!FpEnabled())
+    if (!CheckFpAvailable())
     {
         return true;
     }
@@ -720,10 +707,7 @@ bool Cpu::Op4(uint32_t op)
         s.fpr[d].ps0 = RoundToSingle(ps0);
         s.fpr[d].ps1 = RoundToSingle(ps1);
         SetFprf(s.fpr[d].ps0);
-        if (op & 1)
-        {
-            SetCrField(1, s.fpscr >> 28);
-        }
+        RecordFpscr(op);
 
         return true;
     };
@@ -732,10 +716,7 @@ bool Cpu::Op4(uint32_t op)
     {
         s.fpr[d].ps0 = ps0;
         s.fpr[d].ps1 = ps1;
-        if (op & 1)
-        {
-            SetCrField(1, s.fpscr >> 28);
-        }
+        RecordFpscr(op);
 
         return true;
     };

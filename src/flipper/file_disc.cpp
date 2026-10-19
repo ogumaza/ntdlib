@@ -21,6 +21,9 @@ namespace
 
 constexpr uint64_t kFstOffset = 0x2440; // where the apploader would be
 
+// The files of a disc: each file's path and data.
+using Files = std::vector<std::pair<std::string, std::span<const uint8_t>>>;
+
 // A directory of the file system, with its subdirectories and files by name.
 struct Directory
 {
@@ -34,8 +37,8 @@ struct Directory
 class FstWriter
 {
 public:
-    FstWriter(const std::vector<uint64_t>& offsets, const std::vector<std::size_t>& sizes, uint32_t offset_unit)
-        : offsets_(offsets), sizes_(sizes), offset_unit_(offset_unit)
+    FstWriter(const Files& files, const std::vector<uint64_t>& offsets, uint32_t offset_unit)
+        : files_(files), offsets_(offsets), offset_unit_(offset_unit)
     {
     }
 
@@ -46,7 +49,7 @@ public:
         for (const auto& [file_name, file] : directory.files)
         {
             Entry(false, file_name, static_cast<uint32_t>(offsets_[file] / offset_unit_),
-                  static_cast<uint32_t>(sizes_[file]));
+                  static_cast<uint32_t>(files_[file].second.size()));
         }
 
         for (const auto& [directory_name, child] : directory.directories)
@@ -78,8 +81,8 @@ private:
         names_.push_back(0);
     }
 
+    const Files& files_;
     const std::vector<uint64_t>& offsets_;
-    const std::vector<std::size_t>& sizes_;
     uint32_t offset_unit_;
     std::vector<uint8_t> entries_;
     std::vector<uint8_t> names_;
@@ -87,9 +90,7 @@ private:
 
 } // namespace
 
-FileDisc::FileDisc(std::vector<uint8_t> header,
-                   const std::vector<std::pair<std::string, std::span<const uint8_t>>>& files, uint32_t offset_unit)
-    : header_(std::move(header))
+FileDisc::FileDisc(std::vector<uint8_t> header, const Files& files, uint32_t offset_unit) : header_(std::move(header))
 {
     header_.resize(disc::kHeaderSize);
 
@@ -107,16 +108,11 @@ FileDisc::FileDisc(std::vector<uint8_t> header,
         directory->files[path.substr(start)] = i;
     }
 
-    // The table's size doesn't depend on where the files go. A first pass with no offsets measures it. The files then
-    // follow the table, 32-byte aligned.
+    // The table's size doesn't depend on where the files go. A first pass with no offsets measures it. The first file
+    // then starts at the next 32 KiB boundary after the table. Each other file starts at the next 32-byte boundary
+    // after the file before it.
     std::vector<uint64_t> offsets(files.size(), 0);
-    std::vector<std::size_t> sizes;
-    for (const auto& file : files)
-    {
-        sizes.push_back(file.second.size());
-    }
-
-    FstWriter measure(offsets, sizes, offset_unit);
+    FstWriter measure(files, offsets, offset_unit);
     measure.Write(root, "", 0);
     uint64_t at = (kFstOffset + measure.Table().size() + 0x7fff) & ~uint64_t{0x7fff};
     for (std::size_t i = 0; i < files.size(); i++)
@@ -126,15 +122,13 @@ FileDisc::FileDisc(std::vector<uint8_t> header,
         at = (at + files[i].second.size() + 0x1f) & ~uint64_t{0x1f};
     }
 
-    FstWriter writer(offsets, sizes, offset_unit);
+    FstWriter writer(files, offsets, offset_unit);
     writer.Write(root, "", 0);
     fst_ = writer.Table();
-    fst_offset_ = kFstOffset;
-    xsflib::StoreBe32(&header_[disc::kHeaderFstOffset], static_cast<uint32_t>(fst_offset_ / offset_unit));
-    xsflib::StoreBe32(&header_[disc::kHeaderFstSize],
-                      static_cast<uint32_t>((fst_.size() + offset_unit - 1) / offset_unit));
-    xsflib::StoreBe32(&header_[disc::kHeaderFstMaxSize],
-                      static_cast<uint32_t>((fst_.size() + offset_unit - 1) / offset_unit));
+    const auto fst_size = static_cast<uint32_t>((fst_.size() + offset_unit - 1) / offset_unit);
+    xsflib::StoreBe32(&header_[disc::kHeaderFstOffset], static_cast<uint32_t>(kFstOffset / offset_unit));
+    xsflib::StoreBe32(&header_[disc::kHeaderFstSize], fst_size);
+    xsflib::StoreBe32(&header_[disc::kHeaderFstMaxSize], fst_size);
 }
 
 bool FileDisc::Read(uint64_t offset, void* out, std::size_t size)
@@ -142,9 +136,9 @@ bool FileDisc::Read(uint64_t offset, void* out, std::size_t size)
     // The header, the table and the files, with zeros between them. The data ends with the last file's last 32-byte
     // block. A disc without files ends with the table.
     auto* bytes = static_cast<uint8_t*>(out);
-    const uint64_t end = files_.empty() ? fst_offset_ + fst_.size()
+    const uint64_t end = files_.empty() ? kFstOffset + fst_.size()
                                         : (files_.back().offset + files_.back().data.size() + 0x1f) & ~uint64_t{0x1f};
-    if (offset + size > std::max<uint64_t>(end, disc::kHeaderSize))
+    if (offset + size > end)
     {
         return false;
     }
@@ -162,7 +156,7 @@ bool FileDisc::Read(uint64_t offset, void* out, std::size_t size)
     };
 
     copy(0, header_);
-    copy(fst_offset_, fst_);
+    copy(kFstOffset, fst_);
     for (const Placed& file : files_)
     {
         if (file.offset >= offset + size)

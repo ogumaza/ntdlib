@@ -3,36 +3,20 @@
 #include "ntdlib/nx/audio/dsp.h"
 
 #include <bit>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 
+#include "ntdlib/fused.h"
 #include "ntdlib/wave/adpcm.h"
-
+#include "nx/audio/arithmetic.h"
 #include "nx/audio/tables.h"
 
 namespace ntdlib::nx::audio
 {
 namespace
 {
-
-// AArch64's 32-bit integer instructions wrap.
-int32_t WrapAdd(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) + static_cast<uint32_t>(b));
-}
-
-int32_t WrapSub(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) - static_cast<uint32_t>(b));
-}
-
-int32_t WrapMul(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
-}
 
 // The low 32 bits of a 64-bit value.
 int32_t Low32(int64_t x)
@@ -169,9 +153,7 @@ int32_t DecodePcmFloat(int16_t* out, const DecodeArg& arg)
         {
             bits |= static_cast<uint32_t>(ByteAt(arg.buffer, index * 4 + b)) << (8 * b);
         }
-        const float scaled = std::bit_cast<float>(bits) * 32767.0f;
-        int32_t value = 0;
-        ConvertToInt(&value, &scaled, 1);
+        const int32_t value = ToInt(std::bit_cast<float>(bits) * 32767.0f);
         out[i] = static_cast<int16_t>(static_cast<uint16_t>(static_cast<uint32_t>(value)));
     }
 
@@ -222,7 +204,7 @@ int32_t DecodeAdpcm(int16_t* out, const DecodeArg& arg)
         const uint8_t pair = ByteAt(arg.buffer, byte);
         const int32_t value = (nibble & 1) == 0 ? pair >> 4 : pair & 0xF;
         const int32_t sample =
-            ntdlib::wave::DspAdpcmSample(value >= 8 ? value - 16 : value, scale, coefs[2 * predictor],
+            ntdlib::wave::DspAdpcmSample(ntdlib::wave::SignedNibble(value), scale, coefs[2 * predictor],
                                          coefs[2 * predictor + 1], yn1, yn2, ntdlib::wave::DspAdpcmSum::kWrap);
         out[done++] = static_cast<int16_t>(sample);
         yn2 = yn1;
@@ -423,23 +405,7 @@ void ConvertToInt(int32_t* out, const float* in, int count)
 {
     for (int i = 0; i < count; ++i)
     {
-        const float x = in[i];
-        if (std::isnan(x))
-        {
-            out[i] = 0;
-        }
-        else if (x >= 2147483648.0f)
-        {
-            out[i] = std::numeric_limits<int32_t>::max();
-        }
-        else if (x < -2147483648.0f)
-        {
-            out[i] = std::numeric_limits<int32_t>::min();
-        }
-        else
-        {
-            out[i] = static_cast<int32_t>(x);
-        }
+        out[i] = ArmToInt32(in[i]);
     }
 }
 

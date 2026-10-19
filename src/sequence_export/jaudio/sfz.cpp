@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <map>
 #include <utility>
 
 #include "seqlib/sfz/opcodes.h"
@@ -30,70 +29,17 @@ namespace
 using seqlib::WavFile;
 using seqlib::sfz::Number;
 
-// Shared samples: one WAV file per wave, generated on first use.
-class SampleSet
-{
-public:
-    // A sample's name and loop bounds. An empty name stands for an unreadable wave.
-    struct Wave
-    {
-        std::string name;
-        bool loop = false;
-        uint32_t loop_start = 0, loop_end = 0; // inclusive: SFZ requires that
-    };
-
-    explicit SampleSet(BankSet& banks) : banks_(banks)
-    {
-    }
-
-    // Get a wave. Generate its sample on first use.
-    const Wave& Get(uint32_t wave_system, uint16_t wave_id);
-
-    // Take ownership of the generated samples. The collection is left empty.
-    std::vector<SfzSample> Take()
-    {
-        return std::move(samples_);
-    }
-
-private:
-    BankSet& banks_;
-    std::map<std::pair<uint32_t, uint16_t>, Wave> waves_;
-    std::vector<SfzSample> samples_;
-};
-
-const SampleSet::Wave& SampleSet::Get(uint32_t wave_system, uint16_t wave_id)
-{
-    const auto key = std::make_pair(wave_system, wave_id);
-    if (auto it = waves_.find(key); it != waves_.end())
-    {
-        return it->second;
-    }
-
-    Wave wave;
-    if (const Pcm* pcm = banks_.GetWave(wave_system, wave_id))
-    {
-        const auto crossfade = static_cast<uint32_t>((pcm->sample_rate * 4.0f + 999.0f) / 1000.0f); // 4 ms
-        const PreparedWave w = PrepareForSfz(*pcm, crossfade);
-        wave.name = "w" + std::to_string(wave_system) + "_" + std::to_string(wave_id) + ".wav";
-        samples_.push_back({wave.name, WavFile(w.channels[0], static_cast<uint32_t>(std::lround(pcm->sample_rate)))});
-        wave.loop = w.loop;
-        if (w.loop)
-        {
-            wave.loop_start = w.loop_start;
-            wave.loop_end = w.loop_end - 1;
-        }
-    }
-
-    return waves_.emplace(key, std::move(wave)).first->second;
-}
-
 // Write a region's opcodes: its sample, keys and velocities, tuning, level, pan, envelope and loop. Add `gain_db` to
-// its volume.
-std::string RegionLine(const PresetZone& z, const SampleSet::Wave& wave, double gain_db)
+// its volume. A region at the DSP's pitch limit plays every key at its tuning.
+std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double gain_db)
 {
     std::string s = "<region> sample=" + wave.name + " lokey=" + std::to_string(z.low_key) +
                     " hikey=" + std::to_string(z.high_key) + " lovel=" + std::to_string(z.low_velocity) +
                     " hivel=" + std::to_string(z.high_velocity) + " pitch_keycenter=" + std::to_string(z.root_key);
+    if (z.fixed_pitch)
+    {
+        s += " pitch_keytrack=0";
+    }
     s += seqlib::sfz::TuneOpcodes(static_cast<int>(std::lround(std::clamp(z.cents, -12000.0, 12000.0))));
 
     const SfzEnvelope e = ConvertEnvelopeForSfz(z.envelope);
@@ -143,6 +89,31 @@ std::string VibratoOpcodes(const PresetKey& key)
 
 } // namespace
 
+const SfzSamples::Wave& SfzSamples::Get(const std::string& name, const std::function<const Pcm*()>& pcm)
+{
+    if (const auto it = waves_.find(name); it != waves_.end())
+    {
+        return it->second;
+    }
+
+    Wave wave;
+    if (const Pcm* decoded = pcm())
+    {
+        const auto crossfade = static_cast<uint32_t>((decoded->sample_rate * 4.0f + 999.0f) / 1000.0f); // 4 ms
+        const PreparedWave w = PrepareForSfz(*decoded, crossfade);
+        wave.name = name + ".wav";
+        files_.push_back({wave.name, WavFile(w.channels[0], static_cast<uint32_t>(std::lround(decoded->sample_rate)))});
+        wave.loop = w.loop;
+        if (w.loop)
+        {
+            wave.loop_start = w.loop_start;
+            wave.loop_end = w.loop_end - 1;
+        }
+    }
+
+    return waves_.emplace(name, std::move(wave)).first->second;
+}
+
 SfzInstruments BuildSfz(const Performance& perf, const MidiReport& midi, BankSet& banks, const std::string& title,
                         const std::vector<std::string>& preset_names, const std::string& program)
 {
@@ -156,7 +127,7 @@ SfzInstruments BuildSfz(const Performance& perf, const MidiReport& midi, BankSet
     options.track_names = true;
 
     // Each preset adds its vibrato and a group of its zones.
-    SampleSet samples(banks);
+    SfzSamples samples;
     SfzInstruments out;
     auto text = [&](int)
     {
@@ -165,9 +136,10 @@ SfzInstruments BuildSfz(const Performance& perf, const MidiReport& midi, BankSet
         {
             const PresetKey& key = perf.presets[p];
             std::string s = VibratoOpcodes(key) + "<group>\n";
-            for (const PresetZone& z : ZonesOf(key, perf, banks))
+            for (const PresetZone& z : ZonesOf(p, perf, banks))
             {
-                const SampleSet::Wave& wave = samples.Get(z.wave_system, z.wave_id);
+                const SfzSamples::Wave& wave = samples.Get(WaveName(z.wave_system, z.wave_id),
+                                                           [&] { return banks.GetWave(z.wave_system, z.wave_id); });
                 if (!wave.name.empty())
                 {
                     s += RegionLine(z, wave, perf.level_cut_db);

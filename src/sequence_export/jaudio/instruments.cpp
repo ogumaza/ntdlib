@@ -208,9 +208,19 @@ std::vector<PlayedRegion> ProgramRegions(const Bank& bank, uint32_t program)
     return regions;
 }
 
+float DspPitch(float init_pitch, float osc_pitch, float octaves, float track_pitch)
+{
+    return init_pitch * osc_pitch * std::exp2(octaves) * track_pitch * 4096.0f;
+}
+
+bool PastPitchLimit(float pitch)
+{
+    return std::trunc(pitch) > kPitchLimit;
+}
+
 std::vector<PresetZone> PresetZones(const Bank& bank, const WaveSystem* waves, uint32_t program,
                                     const Oscillator* volume_override, const Oscillator* pitch_override,
-                                    uint16_t direct_release, uint16_t default_release)
+                                    uint16_t direct_release, uint16_t default_release, bool limit_pitch)
 {
     std::vector<PresetZone> zones;
     const auto found = bank.programs.find(program);
@@ -294,6 +304,38 @@ std::vector<PresetZone> PresetZones(const Bank& bank, const WaveSystem* waves, u
                 it->second = TraceEnvelope(volume, release, default_release);
             }
             z.envelope = it->second;
+
+            // The first key whose notes start past the DSP's pitch limit. The keys above it pass the limit too. A
+            // separate zone plays them all at the limit.
+            int limited = high + 1;
+            if (limit_pitch && wave != nullptr)
+            {
+                const float init_pitch = sound->pitch * (wave->sample_rate / kDacRate);
+                for (int k = low; k <= high; k++)
+                {
+                    if (PastPitchLimit(DspPitch(init_pitch, 1.0f, static_cast<float>(k - z.root_key) / 12.0f, 1.0f)))
+                    {
+                        limited = k;
+                        break;
+                    }
+                }
+            }
+            if (limited <= high)
+            {
+                PresetZone fixed = z;
+                fixed.low_key = limited;
+                fixed.fixed_pitch = true;
+                fixed.cents =
+                    1200.0 * std::log2(static_cast<double>(kPitchLimit) / 4096.0 * static_cast<double>(kDacRate) /
+                                       static_cast<double>(wave->sample_rate));
+                if (limited > low)
+                {
+                    z.high_key = limited - 1;
+                    zones.push_back(std::move(z));
+                }
+                zones.push_back(std::move(fixed));
+                continue;
+            }
             zones.push_back(std::move(z));
         }
     }
@@ -328,13 +370,21 @@ const Pcm* BankSet::GetWave(uint32_t wave_system, uint16_t wave_id)
         return nullptr;
     }
 
+    // An archive that can't be read, such as one on a truncated disc image, stays unread. Its notes play nothing.
     auto [aw, added] = aws_.try_emplace(info->archive);
     if (added)
     {
-        aw->second = read_aw_(info->archive);
-        if (!aw->second)
+        try
         {
-            errors_.push_back("wave archive " + info->archive + " is missing");
+            aw->second = read_aw_(info->archive);
+            if (!aw->second)
+            {
+                errors_.push_back("wave archive " + info->archive + " is missing");
+            }
+        }
+        catch (const FormatError& e)
+        {
+            errors_.push_back("wave archive " + info->archive + ": " + e.what());
         }
     }
     if (!aw->second)

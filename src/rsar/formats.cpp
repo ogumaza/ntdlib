@@ -22,6 +22,13 @@ namespace
 // The longest name read from the string table.
 constexpr std::size_t kMaxName = 1024;
 
+// A place where the archive keeps a file: a group, and an item of the group.
+struct FilePosition
+{
+    uint32_t group;
+    uint32_t index;
+};
+
 // DSP-ADPCM frames: 8 bytes, a header byte and 14 samples, addressed in nibbles.
 constexpr uint32_t kAdpcmFrameNibbles = 16;
 constexpr uint32_t kAdpcmFrameSamples = 14;
@@ -543,39 +550,28 @@ SoundArchive SoundArchive::Load(std::vector<uint8_t> bytes, const ReadOptions& o
     a.bytes_ = std::move(bytes);
     a.options_ = options;
     const xsflib::Reader r = MakeReader(a.bytes_, options);
-    if (!Short(options))
-    {
-        if (IsMagic(r, 0, "CSAR", options) || IsMagic(r, 0, "FSAR", options))
-        {
-            throw xsflib::FormatError(IsMagic(r, 0, "CSAR", options)
-                                          ? "a 3DS sound archive (CSAR), not a Wii one (RSAR)"
-                                          : "a Wii U or Switch sound archive (FSAR), not a Wii one (RSAR)");
-        }
+    const bool short_texts = Short(options);
 
-        a.version_ = CheckHeader(r, "RSAR", options);
-        a.truncated_ = r.U32(8) > r.Size();
-        a.ReadTables(r);
-
-        return a;
-    }
-
+    // Other consoles' archives. Only the short texts check for the DS's.
     if (r.Size() >= 4 && r.Magic(0, "CSAR"))
     {
-        throw xsflib::FormatError("unsupported CSAR archive (3DS); expected RSAR (Wii)");
+        throw xsflib::FormatError(short_texts ? "unsupported CSAR archive (3DS); expected RSAR (Wii)"
+                                              : "a 3DS sound archive (CSAR), not a Wii one (RSAR)");
     }
     if (r.Size() >= 4 && r.Magic(0, "FSAR"))
     {
-        throw xsflib::FormatError("unsupported FSAR archive (Wii U/Switch); expected RSAR (Wii)");
+        throw xsflib::FormatError(short_texts ? "unsupported FSAR archive (Wii U/Switch); expected RSAR (Wii)"
+                                              : "a Wii U or Switch sound archive (FSAR), not a Wii one (RSAR)");
     }
-    if (r.Size() >= 4 && r.Magic(0, "SDAT"))
+    if (short_texts && r.Size() >= 4 && r.Magic(0, "SDAT"))
     {
         throw xsflib::FormatError("unsupported SDAT archive (DS); expected RSAR (Wii)");
     }
 
     a.version_ = CheckHeader(r, "RSAR", options);
 
-    // Read as much of a truncated archive as possible. Use the size in its header to detect truncation, and include
-    // that in the error if its tables cannot be read.
+    // Read as much of a truncated archive as possible. Use the size in its header to detect truncation. With the short
+    // texts, include that in the error if its tables cannot be read.
     const uint32_t declared_size = r.U32(0x08);
     a.truncated_ = declared_size > a.bytes_.size();
     try
@@ -584,7 +580,7 @@ SoundArchive SoundArchive::Load(std::vector<uint8_t> bytes, const ReadOptions& o
     }
     catch (const xsflib::FormatError& e)
     {
-        if (!a.truncated_)
+        if (!short_texts || !a.truncated_)
         {
             throw;
         }
@@ -763,9 +759,10 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
     }
 
     // Each file lists the places in groups where the archive keeps it: a group and an item of the group.
+    std::vector<std::vector<FilePosition>> positions; // by file id
     auto read_file = [&](uint32_t, std::size_t p, const Reference&)
     {
-        std::vector<FilePosition>& places = positions_.emplace_back();
+        std::vector<FilePosition>& places = positions.emplace_back();
         auto read_position = [&](uint32_t, std::size_t q, const Reference&)
         {
             places.push_back({r.U32(q), r.U32(q + 4)});
@@ -773,7 +770,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
         for_each_entry(p + 0x14, "file position", read_position);
     };
     for_each_entry(base + 0x18, "file", read_file);
-    files_.resize(positions_.size());
+    files_.resize(positions.size());
 
     // A group holds its files, and after them their wave data. A group with an external file path is kept outside the
     // archive (SoundArchiveFileReader::ReadGroupInfo, main.dol 0x80042ac4, and ReadGroupItemInfo, 0x80042bd4).
@@ -832,7 +829,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
     for (std::size_t id = 0; id < files_.size(); id++)
     {
         FileEntry& f = files_[id];
-        for (const auto& [group, item] : positions_[id])
+        for (const auto& [group, item] : positions[id])
         {
             if (group >= groups.size() || !groups[group].internal || item >= groups[group].items.size())
             {
@@ -900,41 +897,14 @@ std::span<const uint8_t> SoundArchive::WaveData(uint32_t file_id) const
 
 std::optional<FileData> SoundArchive::File(uint32_t file_id) const
 {
-    if (file_id >= positions_.size())
+    // ReadTables found the first group that holds the file and its wave data inside the archive. Like the groups, a
+    // file with its wave data is for playback alone (playback_fields).
+    if (!options_.playback_fields || file_id >= files_.size() || !files_[file_id].wave_data_found)
     {
         return std::nullopt;
     }
 
-    const auto inside = [this](uint64_t offset, uint64_t size)
-    {
-        return offset <= bytes_.size() && size <= bytes_.size() - offset;
-    };
-
-    for (const FilePosition& position : positions_[file_id])
-    {
-        if (position.group >= groups_.size())
-        {
-            continue;
-        }
-
-        const Group& group = groups_[position.group];
-        if (!group.internal || position.index >= group.items.size())
-        {
-            continue;
-        }
-
-        const Group::Item& item = group.items[position.index];
-        const uint64_t file = uint64_t{group.offset} + item.offset;
-        const uint64_t wave_data = uint64_t{group.wave_data_offset} + item.wave_data_offset;
-        if (inside(file, item.size) && inside(wave_data, item.wave_data_size))
-        {
-            const std::span<const uint8_t> all(bytes_);
-            return rsar::FileData{all.subspan(static_cast<std::size_t>(file), item.size),
-                                  all.subspan(static_cast<std::size_t>(wave_data), item.wave_data_size)};
-        }
-    }
-
-    return std::nullopt;
+    return rsar::FileData{FileData(file_id), WaveData(file_id)};
 }
 
 } // namespace ntdlib::rsar

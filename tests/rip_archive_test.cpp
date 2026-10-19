@@ -5,7 +5,6 @@
 // and the data a sound requires.
 
 #include <cstdint>
-#include <cstdio>
 #include <map>
 #include <optional>
 #include <regex>
@@ -237,12 +236,5 @@ int main()
     TestArchive();
     TestGroupsInSarcs();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("rip_archive");
 }

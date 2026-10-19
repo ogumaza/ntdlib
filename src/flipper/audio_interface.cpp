@@ -15,6 +15,8 @@ namespace
 // written with 1. SCRESET (5) resets the counter and reads back 0. AIDFR (6) selects the DMA's rate (32 kHz when set).
 constexpr uint32_t kPlay = 1u << 0;
 constexpr uint32_t kRate48k = 1u << 1;
+constexpr uint32_t kInterrupt = 1u << 3;
+constexpr uint32_t kResetCounter = 1u << 5;
 constexpr uint32_t kDmaRate32k = 1u << 6;
 
 } // namespace
@@ -49,8 +51,8 @@ std::optional<bool> AudioInterface::Write(uint32_t offset, uint32_t value, uint6
         {
             AdvanceSampleCounter(now);
             const uint32_t old = control_;
-            control_ = (control_ & 0x08 & ~value) | (value & ~0x28u);
-            if (value & 0x20)
+            control_ = (control_ & kInterrupt & ~value) | (value & ~(kInterrupt | kResetCounter));
+            if (value & kResetCounter)
             {
                 samples_ = 0;
             }

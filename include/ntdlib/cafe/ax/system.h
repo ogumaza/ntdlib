@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/ax/lpf.h"
 #include "ntdlib/ax/voices.h"
 #include "ntdlib/cafe/ax/cemu_departures.h"
 #include "ntdlib/cafe/ax/memory.h"
@@ -154,7 +155,7 @@ public:
     void SetVoiceBiquadCoefs(Voice& voice, int16_t b0, int16_t b1, int16_t b2, int16_t a1, int16_t a2);
 
     // AXComputeLpfCoefs: a0 and b0 for a cutoff of `frequency` Hz.
-    std::pair<uint16_t, uint16_t> ComputeLpfCoefs(uint32_t frequency) const;
+    ntdlib::ax::LpfCoefs ComputeLpfCoefs(uint32_t frequency) const;
 
     // AXIsVoiceRunning: the state that the game's copy shows. That copy is a frame behind the renderer.
     bool IsVoiceRunning(const Voice& voice) const
@@ -351,6 +352,10 @@ private:
     void Touch(Voice& voice);
     void Sync(Voice& voice);
     AuxBus* FindAuxBus(Device device, uint32_t index, int bus);
+
+    // The mixer of the TV or the GamePads, or nullptr for any other device.
+    Mixer* MixerOf(Device device);
+
     void ReturnAux(int frame);
     void RunAuxCallbacks(int frame);
     void FinalMixStage();

@@ -22,14 +22,15 @@
 
 #include "xsflib/ascii.h"
 #include "xsflib/bytes.h"
+#include "xsflib/files.h"
 #include "xsflib/sha1.h"
 
 #include "disc/cpk_files.h"
 #include "disc/encodings.h"
 #include "disc/file_table.h"
 #include "ntdlib/disc/cx.h"
+#include "ntdlib/disc/error.h"
 #include "ntdlib/disc/game.h"
-#include "ntdlib/disc/source.h"
 #include "ntdlib/dol.h"
 
 namespace ntdlib::disc::detail
@@ -119,9 +120,7 @@ std::string ContentFile(const ContentRecord& record, Naming naming)
 
 std::string NameOf(const fs::path& path)
 {
-    const std::u8string name = path.filename().u8string();
-
-    return std::string(name.begin(), name.end());
+    return xsflib::Utf8(path.filename());
 }
 
 // The folder's files whose names end in `extension`, by their names in lower case. AppleDouble files are left out.
@@ -560,8 +559,7 @@ void RejectTitleFile(const std::filesystem::path& path, const GameOptions& optio
     file.read(reinterpret_cast<char*>(head), sizeof(head));
     const uint32_t header_size = xsflib::LoadBe32(head);
     const std::string type(reinterpret_cast<const char*>(head + 4), 2);
-    const std::u8string extension_text = path.extension().u8string();
-    const std::string extension = xsflib::AsciiLower(std::string(extension_text.begin(), extension_text.end()));
+    const std::string extension = xsflib::AsciiLower(xsflib::Utf8(path.extension()));
     if ((header_size == 0x20 && (type == "Is" || type == "ib")) || (header_size == 0x70 && type == "Bk") ||
         extension == ".wad")
     {

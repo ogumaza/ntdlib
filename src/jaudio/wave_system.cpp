@@ -46,13 +46,14 @@ WaveSystem ReadWaveSystem(std::span<const uint8_t> file, uint32_t number)
         for (uint32_t w = 0; w < waves; w++)
         {
             const uint32_t at = r.U32(archive + 0x74 + 4 * w);
-            WaveInfo info;
-            info.format = static_cast<WaveFormat>(r.U8(at + 1));
-            if (r.U8(at + 1) > 3)
+            const uint8_t format = r.U8(at + 1);
+            if (format > static_cast<uint8_t>(WaveFormat::kPcm16))
             {
                 throw xsflib::FormatError("wave system has a wave of unknown format");
             }
 
+            WaveInfo info;
+            info.format = static_cast<WaveFormat>(format);
             info.base_key = r.U8(at + 2);
             info.sample_rate = r.F32(at + 4);
             info.offset = r.U32(at + 8);

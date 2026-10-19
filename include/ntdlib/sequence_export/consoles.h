@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/resampling.h"
@@ -76,7 +77,7 @@ inline Settings CtrSettings()
     settings.env_time_scale = settings.frame_ms / settings.env_step_ms;
     settings.voices = 24;
     settings.voice_limit = 24;
-    settings.random_steps_before_start = 17;
+    settings.random_steps_before_start = nwsnd::CtrPolicy::kRandomStepsBeforeStart;
     settings.sends = Sends::kNone;
     settings.keep_first_region_volume = false;
     settings.early_ticks_ms = 0.0;
@@ -84,8 +85,9 @@ inline Settings CtrSettings()
     return settings;
 }
 
-// The Wii, with NW4R SND and AX, for the build of NW4R SND that plays an archive. The builds of October 2006 start at
-// most 64 voices a tick. The Wii's archives are read with ntdlib's rsar. `archive` therefore keeps its defaults.
+// The Wii, with NW4R SND and AX, for the build of NW4R SND that plays an archive. The build of October 2006 starts at
+// most 64 voices a tick. Builds from November 2008 take the low-pass's cutoffs from a table (RevolutionFilters). The
+// Wii's archives are read with ntdlib's rsar. `archive` therefore keeps its defaults.
 inline Settings RevolutionSettings(const SndBuild& build)
 {
     Settings settings;
@@ -94,14 +96,12 @@ inline Settings RevolutionSettings(const SndBuild& build)
     settings.sends = Sends::kReverbChorus;
     settings.surround_pan = true;
     settings.keep_first_region_volume = false;
-    settings.filters = &kRevolutionFilters;
+    settings.filters = &RevolutionFilters(build);
     settings.resampling = &kRevolutionResampling;
     settings.zone_low_pass = ax::LpfSettings{.double_precision = true};
     settings.wii_build = build;
     settings.early_ticks_ms = 0.0;
-    settings.subroutine_loop_rule = false;
-    settings.stop_runaway_tracks = false;
-    settings.drop_loop_when_finished = false;
+    settings.random_steps_before_start = nwsnd::RevolutionPolicy::kRandomStepsBeforeStart;
 
     return settings;
 }

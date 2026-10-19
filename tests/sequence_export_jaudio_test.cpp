@@ -7,7 +7,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -15,6 +14,7 @@
 #include <numbers>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -27,6 +27,8 @@
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/sequence_export/archive_converter.h"
+#include "ntdlib/sequence_export/conversion.h"
+#include "ntdlib/sequence_export/jaudio/archive_games.h"
 #include "ntdlib/sequence_export/jaudio/convert.h"
 #include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/game.h"
@@ -44,7 +46,6 @@ namespace
 using namespace ntdlib::sequence_export::jaudio;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
-using xsflib::testing::failures;
 
 // The name that the conversions' messages and files give the program.
 constexpr char kProgram[] = "xyz2midi";
@@ -191,6 +192,30 @@ public:
         return *this;
     }
 
+    // Oscillator `osc`'s table, at `offset`.
+    Sequence& OscillatorTable(uint32_t osc, uint32_t offset)
+    {
+        b_.U8(0xe8).U8(osc).U24(offset);
+
+        return *this;
+    }
+
+    // A point of an oscillator's table.
+    Sequence& Point(uint32_t mode, uint32_t time, uint32_t value)
+    {
+        b_.U16(mode).U16(time).U16(value);
+
+        return *this;
+    }
+
+    // Oscillator 0's four-point table: an attack, a hold, a decay to `sustain`, and the track's direct release.
+    Sequence& SimpleAdsr(uint32_t attack, uint32_t hold, uint32_t decay, uint32_t sustain, uint32_t release)
+    {
+        b_.U8(0xe9).U16(attack).U16(hold).U16(decay).U16(sustain).U16(release);
+
+        return *this;
+    }
+
     Sequence& Jump(uint32_t offset)
     {
         b_.U8(0xc7).U24(offset);
@@ -201,6 +226,17 @@ public:
     Sequence& Finish()
     {
         b_.U8(0xff);
+
+        return *this;
+    }
+
+    // Fill up to `offset` with JAudio2's empty command.
+    Sequence& PadTo(uint32_t offset)
+    {
+        while (Here() < offset)
+        {
+            b_.U8(0xfe);
+        }
 
         return *this;
     }
@@ -365,11 +401,7 @@ void TestPerformance()
 {
     // The first track opens track 0. Track 0 plays two notes and finishes.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(48).NoteOff(1).NoteOn(64, 1, 80).Wait(48).NoteOff(1).Finish();
     TestGame game(files::BankV0File(0, 60), {s.Data()});
 
@@ -393,11 +425,7 @@ void TestOscillatorScaleArguments()
     // Track 0 scales its pitch envelope by 1.1 with 0xe7, then plays one note. Twilight Princess's command table gives
     // 0xe7 a byte and a 16-bit value. A parser that reads no arguments for 0xe7 plays the bytes 01 46 66 as key 1.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).OscillatorScale(1, 0x4666).NoteOn(60, 1, 100).Wait(48).NoteOff(1).Finish();
     TestGame game(files::BankV0File(0, 60), {s.Data()});
 
@@ -411,16 +439,63 @@ void TestOscillatorScaleArguments()
     Check(notes == 1, "0xe7 takes a byte and a 16-bit value");
 }
 
+// Track 0 runs `commands`, then plays key 60. Its volume table, at kTable, holds at full level. Return the performance
+// and the zones of its first preset.
+constexpr uint32_t kTable = kChild + 0x40;
+
+std::pair<Performance, std::vector<PresetZone>> PerformWithTable(void (*commands)(Sequence&))
+{
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.Bank(0).Program(0);
+    commands(s);
+    s.NoteOn(60, 1, 127).Wait(48).NoteOff(1).Finish().PadTo(kTable);
+    s.Point(0, 0, 0x7fff).Point(14, 0, 0);
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+
+    Performance perf = Perform(game.Sound(0), game.banks, {}, kProgram);
+    std::vector<PresetZone> zones = perf.presets.empty() ? std::vector<PresetZone>{} : ZonesOf(0, perf, game.banks);
+
+    return {std::move(perf), std::move(zones)};
+}
+
+void TestOscillatorScale()
+{
+    // 0xe7 scales one of a track's oscillators, here the volume by 2. The scale applies once the track has set the
+    // oscillator's table, whichever comes first. A simple ADSR sets oscillator 0 back to a scale of 1, and a table set
+    // after it keeps that. Without a table, the note plays the instrument's oscillator, and the scale has no effect.
+    const auto [after, after_zones] =
+        PerformWithTable([](Sequence& s) { s.OscillatorTable(0, kTable).OscillatorScale(0, 32766); });
+    const auto [before, before_zones] =
+        PerformWithTable([](Sequence& s) { s.OscillatorScale(0, 32766).OscillatorTable(0, kTable); });
+    const auto [adsr, adsr_zones] = PerformWithTable(
+        [](Sequence& s) { s.OscillatorScale(0, 32766).SimpleAdsr(0, 0, 0, 0x7fff, 0).OscillatorTable(0, kTable); });
+    const auto [bare, bare_zones] = PerformWithTable([](Sequence& s) { s.OscillatorScale(0, 32766); });
+
+    // The level that the zone's envelope peaks at, in dB.
+    const auto peak = [](const std::vector<PresetZone>& zones)
+    {
+        return zones.size() == 1 ? ConvertEnvelope(zones[0].envelope).peak_db : -1000.0;
+    };
+    const auto scale = [](const Performance& perf)
+    {
+        const int osc = perf.presets.size() == 1 ? perf.presets[0].volume_oscillator : -1;
+        return osc >= 0 ? perf.oscillators[static_cast<std::size_t>(osc)].scale : -1.0f;
+    };
+    Check(scale(after) == 2.0f && std::abs(peak(after_zones) - 6.02) < 0.01,
+          "a scale of 2 doubles the level of the track's oscillator");
+    Check(scale(before) == 2.0f && std::abs(peak(before_zones) - 6.02) < 0.01, "a table keeps the scale set before it");
+    Check(scale(adsr) == 1.0f && std::abs(peak(adsr_zones)) < 0.01, "a simple ADSR sets the scale back to 1");
+    Check(bare.presets.size() == 1 && bare.presets[0].volume_oscillator == -1 && std::abs(peak(bare_zones)) < 0.01,
+          "without a table, the scale leaves the instrument's oscillator alone");
+}
+
 void TestSweepAndTie()
 {
     // Track 0 sweeps up an octave from the latest key over a beat, and ties the next note to it. That note sweeps on
     // from where the first ended, at half the velocity.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).LatestKey(60).Gate(72, 0xc0, 100, 48).Gate(72, 0x80, 50, 48).Finish();
     TestGame game(files::BankV0File(0, 60), {s.Data()});
 
@@ -459,11 +534,7 @@ void TestSweepAndTie()
 
     // A tie that doubles the velocity starts the MIDI note at the higher velocity, with CC11 at half until the tie.
     Sequence rising;
-    rising.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (rising.Here() < kChild)
-    {
-        rising.Byte(0xfe);
-    }
+    rising.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     rising.Bank(0).Program(0).Gate(60, 0x40, 50, 24).Gate(60, 0x00, 100, 24).Finish();
     TestGame rising_game(files::BankV0File(0, 60), {rising.Data()});
 
@@ -492,11 +563,7 @@ void TestTieBelowHearing()
     auto perform = [](int16_t attack, uint32_t ticks)
     {
         Sequence s;
-        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-        while (s.Here() < kChild)
-        {
-            s.Byte(0xfe);
-        }
+        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
         s.Bank(0).Program(0).Gate(60, 0x40, 50, ticks).Gate(60, 0x00, 127, 24).Finish();
         TestGame game(files::BankV1File(0, attack, 600), {s.Data()});
 
@@ -524,11 +591,7 @@ void TestGateTickRate()
     // length goes by the default tick rate: 24 ticks last as long as 12 at the new rate. The second note starts in a
     // later tick, at the new rate.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(24).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(24).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).Gate(60, 0x00, 100, 24).Gate(62, 0x00, 100, 24).Finish();
     TestGame game(files::BankV0File(0, 60), {s.Data()});
 
@@ -552,11 +615,7 @@ void TestLoop()
     // Track 0 loops two notes for ever.
     Sequence s;
     s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Wait(200);
-    s.Jump(s.Here() - 4);
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.Jump(s.Here() - 4).PadTo(kChild);
     s.Bank(0).Program(0);
     const uint32_t loop = s.Here();
     s.NoteOn(60, 1, 100).Wait(48).NoteOff(1).NoteOn(62, 1, 100).Wait(48).NoteOff(1).Jump(loop);
@@ -569,16 +628,32 @@ void TestLoop()
     Check(perf.seconds >= 10.0, "a short loop plays for at least ten seconds");
 }
 
+void TestJumpToTheNextCommand()
+{
+    // Track 0 loops two notes of 25 ticks for ever. Between them, it jumps to the next command. That jump goes nowhere.
+    // It ends no pass of a loop. The loop's passes start where the loop does.
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Wait(200);
+    s.Jump(s.Here() - 4).PadTo(kChild);
+    s.Bank(0).Program(0);
+    const uint32_t loop = s.Here();
+    s.NoteOn(60, 1, 100).Wait(25).NoteOff(1);
+    s.Jump(s.Here() + 4);
+    s.NoteOn(62, 1, 100).Wait(25).NoteOff(1).Jump(loop);
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+
+    const Performance perf = Perform(game.Sound(0), game.banks, {}, kProgram);
+
+    Check(perf.loop && perf.loop->end - perf.loop->start == 50 && perf.loop->start % 50 == 0,
+          "a jump to the next command ends no pass: the loop starts at its first note");
+}
+
 void TestPortsAndRegisters()
 {
     // Track 0 reads its parent's port 0, which the game writes, into register 0; if it's 0 it plays key 60, otherwise
     // key 72.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).Byte(0xd6).Byte(0).Byte(0); // read the first track's port 0 into register 0
     const uint32_t jump = s.Here();
     s.Byte(0xc8).Byte(2).Byte(0).Byte(0).Byte(0); // jump if register 3 isn't 0 (target set below)
@@ -618,17 +693,13 @@ void TestDrumAndVolume()
 {
     // Track 0 plays the drum set at volume 0x40.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0xe4).Volume(0x40).NoteOn(36, 1, 127).Wait(10).NoteOff(1).Finish();
     TestGame game(files::BankV0File(0, 60), {s.Data()});
 
     const Performance perf = Perform(game.Sound(0), game.banks, {}, kProgram);
     const std::vector<PresetZone> zones =
-        perf.presets.empty() ? std::vector<PresetZone>{} : ZonesOf(perf.presets[0], perf, game.banks);
+        perf.presets.empty() ? std::vector<PresetZone>{} : ZonesOf(0, perf, game.banks);
 
     int volume = -1;
     for (const TrackEvent& e : perf.tracks[0])
@@ -649,11 +720,7 @@ void TestTailsKeepTheirSettings()
 {
     // Track 0 releases a note, lowers its volume 12 ticks later while the release still sounds, then plays a note.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(48).NoteOff(1).Wait(12).Volume(0x20).NoteOn(64, 1, 100);
     s.Wait(48).NoteOff(1).Finish();
     TestGame game(files::BankV0File(0, 600), {s.Data()});
@@ -678,11 +745,7 @@ void TestHeldNoteKeepsItsPart()
 {
     // Track 0 plays two notes, releases one, and lowers its volume 12 ticks later while it still holds the other.
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).NoteOn(60, 1, 100).NoteOn(64, 2, 100).Wait(48).NoteOff(1).Wait(12).Volume(0x20);
     s.Wait(48).NoteOff(2).Finish();
     TestGame game(files::BankV0File(0, 600), {s.Data()});
@@ -728,11 +791,7 @@ void TestDefaultKeepsEveryNote()
     {
         s.NoteOff(id);
     }
-    s.Finish();
-    while (s.Here() < kNotes)
-    {
-        s.Byte(0xfe);
-    }
+    s.Finish().PadTo(kNotes);
     s.Bank(0).Program(0);
     for (uint32_t id = 1; id <= 7; id++)
     {
@@ -774,11 +833,7 @@ void TestDefaultKeepsEveryNote()
 void TestConversion()
 {
     Sequence s;
-    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < kChild)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(48).NoteOff(1).Finish();
     TestGame game(files::BankV0File(0, 60), {s.Data()});
 
@@ -798,6 +853,83 @@ void TestConversion()
     Check(sf2_problems.empty(), "an independent reader accepts the SoundFont: " + sf2_problems);
     const std::string sfz_problem = ntdlib::testing::SfzProblem(c.sfz, seqlib::midi::TrackNames(m));
     Check(sfz_problem.empty(), "the SFZ files match the MIDI file: " + sfz_problem);
+}
+
+// The instrument plays its wave, at 32000 Hz, at the wave's rate on key 60. On key 96, three octaves up, the DSP plays
+// it just under its limit, a rate of 32767/4096 of the output's. On key 97, the DSP plays it at that limit. The zones
+// of a preset that plays such a key stop below it. A zone for the keys from there up plays every key at the limit.
+void TestPitchLimit()
+{
+    auto convert = [](uint32_t key)
+    {
+        Sequence s;
+        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+        s.Bank(0).Program(0).NoteOn(key, 1, 100).Wait(48).NoteOff(1).Finish();
+        TestGame game(files::BankV0File(0, 60), {s.Data()});
+
+        Conversion c = ConvertSequence(game.Sound(0), game.banks, {}, kProgram);
+        std::vector<PresetZone> zones =
+            c.performance.presets.empty() ? std::vector<PresetZone>{} : ZonesOf(0, c.performance, game.banks);
+        return std::make_pair(std::move(c), std::move(zones));
+    };
+    const auto [below, below_zones] = convert(96);
+    const auto [above, above_zones] = convert(97);
+
+    // The SoundFont's zone for keys 97 to 127 plays every key at its tuning: a scaleTuning (generator 56) of 0.
+    bool fixed_sf2 = false;
+    const std::string sf2_problems = Joined(seqlib::sf2::Check(above.sf2));
+    if (sf2_problems.empty())
+    {
+        const seqlib::sf2::Records sf = seqlib::sf2::Read(above.sf2);
+        for (std::size_t z = 0; z + 1 < sf.Count("ibag", 4); z++)
+        {
+            const std::map<uint16_t, uint16_t> gens = sf.ZoneGens(z);
+            const auto keys = gens.find(43);
+            const auto scale = gens.find(56);
+            fixed_sf2 = fixed_sf2 || (keys != gens.end() && keys->second == (97 | 127 << 8) && scale != gens.end() &&
+                                      scale->second == 0);
+        }
+    }
+    const std::string sfz = above.sfz.files.size() == 1 ? above.sfz.files[0].text : "";
+
+    const double limit = 1200.0 * std::log2(32767.0 / 4096.0 * static_cast<double>(kDacRate) / 32000.0);
+    Check(below.performance.pitch_limited_presets.empty() && below_zones.size() == 1 && !below_zones[0].fixed_pitch,
+          "below the limit, one zone plays every key");
+    Check(above.performance.pitch_limited_presets == std::set<uint32_t>{0} && above_zones.size() == 2 &&
+              above_zones[0].low_key == 0 && above_zones[0].high_key == 96 && !above_zones[0].fixed_pitch,
+          "a preset that plays a key at the limit stops its zone below that key");
+    Check(above_zones.size() == 2 && above_zones[1].low_key == 97 && above_zones[1].high_key == 127 &&
+              above_zones[1].fixed_pitch && std::abs(above_zones[1].cents - limit) < 0.01,
+          "the keys above play the wave at the limit");
+    Check(fixed_sf2, "the SoundFont's zone plays every key at the limit: " + sf2_problems);
+    Check(sfz.find("lokey=97 hikey=127") != std::string::npos && sfz.find(" pitch_keytrack=0") != std::string::npos,
+          "the SFZ region plays every key at the limit");
+}
+
+// The read of a wave archive fails, as on a truncated disc image. The sequence converts without the archive's waves,
+// and the failure is reported. The archive isn't read again. A later note that requires it plays nothing either.
+void TestWaveArchiveThatCannotBeRead()
+{
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(48).NoteOff(1).Finish();
+    const SoundArchive archive = SoundArchive::Parse(files::StartUpArchive(files::BankV0File(0, 60), {s.Data()}));
+    int reads = 0;
+    const auto truncated = [&reads](const std::string&) -> std::optional<std::vector<uint8_t>>
+    {
+        reads++;
+        throw FormatError("read out of bounds at offset 4096");
+    };
+    BankSet banks(archive, truncated);
+    const SequenceSound sound{"S0", archive.Collection(), *archive.CollectionSequence(0, 0), 1.0f};
+
+    const std::string error = ErrorOf([&] { ConvertSequence(sound, banks, {}, kProgram); });
+    const Pcm* later = banks.GetWave(0, 1);
+
+    Check(error.empty(), "a wave archive that can't be read doesn't stop the sequence: " + error);
+    Check(banks.Errors() == std::vector<std::string>{"wave archive test.aw: read out of bounds at offset 4096"},
+          "the failed read is reported once: " + Joined(banks.Errors()));
+    Check(later == nullptr && reads == 1, "the archive isn't read again");
 }
 
 // macOS writes an AppleDouble file, named "._" and the file's name, beside each file that it copies to a FAT or exFAT
@@ -857,11 +989,7 @@ void TestEchoLengthensTheEnd()
     const auto note = [](uint32_t send, uint32_t ticks)
     {
         Sequence s;
-        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish();
-        while (s.Here() < kChild)
-        {
-            s.Byte(0xfe);
-        }
+        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
         s.Bank(0).Program(0).FxMix(send).NoteOn(60, 1, 127).Wait(ticks).NoteOff(1).Finish();
 
         return s.Data();
@@ -1144,6 +1272,24 @@ void TestJAudio1Folder()
     fs::remove_all(folder, ignored);
 }
 
+// A SoundFont whose loudest zone plays above full level takes one attenuation in every zone, and the conversion records
+// it. Zones at full level take none.
+void TestCutAboveFullLevel()
+{
+    Conversion loud;
+    Conversion full;
+
+    const double quieter = ntdlib::sequence_export::CutAboveFullLevel(loud, 2.0);
+    const double none = ntdlib::sequence_export::CutAboveFullLevel(full, 1.0);
+
+    Check(std::fabs(quieter - 200.0 * std::log10(2.0)) < 1e-9, "twice full level takes 6 dB");
+    Check(loud.performance.approximations.size() == 1 &&
+              loud.performance.approximations.begin()->first ==
+                  "instrument volume above full level (SoundFont attenuated by 6.0 dB; SFZ keeps the level)",
+          "and the conversion records it");
+    Check(none == 0.0 && full.performance.approximations.empty(), "full level takes none");
+}
+
 // The frame's converter of JAudio games opens a start-up archive with its game's files, lists the sequences and
 // converts them. IsStartUpArchive identifies a BAA and an AAF by their first bytes. A converter of another library's
 // archives converts the game where it takes JAudio games, with its options.
@@ -1154,11 +1300,7 @@ void TestGameConverter()
         fs::temp_directory_path() / ("sequence_export_jaudio_converter_test_" + std::to_string(std::random_device{}()));
     files::WriteGameFiles(folder);
     Sequence s(0);
-    s.OpenTrack(0, 0x20).Timebase(48).Tempo(120).Wait(200).Finish();
-    while (s.Here() < 0x20)
-    {
-        s.Byte(0xfe);
-    }
+    s.OpenTrack(0, 0x20).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(0x20);
     s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(48).NoteOff(1).Finish();
     const std::optional<std::vector<uint8_t>> baa = ntdlib::sequence_export::ReadFile(folder / "test.baa");
 
@@ -1194,8 +1336,7 @@ void TestGameConverter()
     std::string path = (folder / "test.baa").string();
     char* argv[] = {program.data(), quiet.data(), path.data(), nullptr};
     const int refused = frame::RunArchiveConverter(3, argv, archives);
-    archives.jaudio_games = true;
-    const int converted = frame::RunArchiveConverter(3, argv, archives);
+    const int converted = RunArchiveConverterWithGames(3, argv, archives);
 
     Check(refused == 1 && converted == 0 && fs::exists(folder / "test_xyz2midi" / "BGM_FIELD.mid"),
           "a converter of archives converts a JAudio game where it takes them");
@@ -1216,16 +1357,21 @@ int main()
     TestReleaseAfterDecayToSilence();
     TestPerformance();
     TestOscillatorScaleArguments();
+    TestOscillatorScale();
     TestSweepAndTie();
     TestTieBelowHearing();
     TestGateTickRate();
     TestLoop();
+    TestJumpToTheNextCommand();
     TestPortsAndRegisters();
     TestDrumAndVolume();
     TestTailsKeepTheirSettings();
     TestHeldNoteKeepsItsPart();
     TestDefaultKeepsEveryNote();
     TestConversion();
+    TestCutAboveFullLevel();
+    TestPitchLimit();
+    TestWaveArchiveThatCannotBeRead();
     TestFolderWithAppleDoubleFiles();
     TestGameRules();
     TestEchoLengthensTheEnd();
@@ -1233,10 +1379,6 @@ int main()
     TestJAudio1Registers();
     TestJAudio1Folder();
     TestGameConverter();
-    if (failures == 0)
-    {
-        std::puts("all tests passed");
-    }
 
-    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    return xsflib::testing::Summary("sequence_export_jaudio");
 }

@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <span>
 #include <string>
 #include <variant>
@@ -238,8 +237,7 @@ void TestBanks()
           "a random pitch effect");
 }
 
-// A bank whose size ends inside its LIST chunk. Two of Twilight Princess's banks are like that. The game reads each
-// chunk whole.
+// A bank whose size ends inside its LIST chunk. The game reads each chunk whole.
 void TestBankChunkPastItsSize()
 {
     std::vector<uint8_t> bank = files::BankV1File(129, 0, 600);
@@ -296,6 +294,23 @@ void TestSoundTable()
           "the collection's sequences");
 }
 
+// `data` compressed with Yaz0, every byte as a literal: groups of eight chunks after a flag byte of 0xff.
+std::vector<uint8_t> LiteralYaz0(std::span<const uint8_t> data)
+{
+    files::Bytes yaz0;
+    yaz0.Tag("Yaz0").U32(static_cast<uint32_t>(data.size())).U32(0).U32(0);
+    for (std::size_t i = 0; i < data.size(); i++)
+    {
+        if (i % 8 == 0)
+        {
+            yaz0.U8(0xff);
+        }
+        yaz0.U8(data[i]);
+    }
+
+    return yaz0.Data();
+}
+
 void TestRarc()
 {
     const std::vector<uint8_t> rarc = files::RarcFile({{3, "a.bms", {1, 2, 3}}, {9, "long_name.bms", {4, 5, 6, 7, 8}}});
@@ -310,21 +325,20 @@ void TestRarc()
               read[1].data[0] == 4,
           "the second file");
 
-    // The same archive compressed with Yaz0, every byte as a literal: groups of eight chunks after a flag byte of 0xff.
-    files::Bytes yaz0;
-    yaz0.Tag("Yaz0").U32(static_cast<uint32_t>(rarc.size())).U32(0).U32(0);
-    for (std::size_t i = 0; i < rarc.size(); i++)
-    {
-        if (i % 8 == 0)
-        {
-            yaz0.U8(0xff);
-        }
-        yaz0.U8(rarc[i]);
-    }
-
-    Check(jaudio::IsYaz0(yaz0.Data()) && !jaudio::IsYaz0(rarc), "IsYaz0 checks the magic");
-    const std::vector<uint8_t> decoded = jaudio::DecodeYaz0(yaz0.Data());
+    // The same archive compressed with Yaz0.
+    const std::vector<uint8_t> yaz0 = LiteralYaz0(rarc);
+    Check(jaudio::IsYaz0(yaz0) && !jaudio::IsYaz0(rarc), "IsYaz0 checks the magic");
+    const std::vector<uint8_t> decoded = jaudio::DecodeYaz0(yaz0);
     Check(decoded == rarc && jaudio::ReadRarc(decoded).size() == 2, "a Yaz0 archive decodes to the archive");
+
+    // DecodeIfYaz0 gives the archive itself, or decodes the compressed archive into its vector.
+    std::vector<uint8_t> into;
+    const std::span<const uint8_t> plain = jaudio::DecodeIfYaz0(rarc, into);
+    Check(plain.data() == rarc.data() && plain.size() == rarc.size() && into.empty(),
+          "DecodeIfYaz0 gives data that isn't Yaz0 as it is");
+    const std::span<const uint8_t> unpacked = jaudio::DecodeIfYaz0(yaz0, into);
+    Check(into == rarc && unpacked.data() == into.data() && unpacked.size() == into.size(),
+          "DecodeIfYaz0 decodes Yaz0 data into its vector");
 }
 
 // A sequence table: the count, zeros up to 0x20, then each sequence's offset and size, then the sequences.
@@ -377,18 +391,7 @@ void TestRepackSequenceTable()
           "the header's sizes");
 
     // A Yaz0 archive, every byte as a literal, gives the same result.
-    files::Bytes yaz0;
-    yaz0.Tag("Yaz0").U32(static_cast<uint32_t>(rarc.size())).U32(0).U32(0);
-    for (std::size_t i = 0; i < rarc.size(); i++)
-    {
-        if (i % 8 == 0)
-        {
-            yaz0.U8(0xff);
-        }
-        yaz0.U8(rarc[i]);
-    }
-
-    Check(jaudio::RepackSequenceTable(yaz0.Data(), table) == out, "a Yaz0 archive is decoded first");
+    Check(jaudio::RepackSequenceTable(LiteralYaz0(rarc), table) == out, "a Yaz0 archive is decoded first");
 
     // A file whose id is past the table's end, and a table cut short, are rejected.
     Check(ErrorOf([&] { jaudio::RepackSequenceTable(rarc, SequenceTable({kField, "boss"})); }) ==
@@ -431,17 +434,13 @@ void TestYaz0()
 
         return b.Data();
     };
-    const auto text = [](const std::vector<uint8_t>& bytes)
-    {
-        return std::string(bytes.begin(), bytes.end());
-    };
 
     // Four literals, a repeat of 12 bytes from 4 back, then three literals.
-    Check(text(jaudio::DecodeYaz0(yaz0(19, {0xf7, 'A', 'B', 'C', 'D', 0xa0, 0x03, 'X', 'Y', 'Z'}))) ==
+    Check(Text(jaudio::DecodeYaz0(yaz0(19, {0xf7, 'A', 'B', 'C', 'D', 0xa0, 0x03, 'X', 'Y', 'Z'}))) ==
               "ABCDABCDABCDABCDXYZ",
           "a short repeat");
     // A literal, then a repeat of 0x12 + 0x10 bytes from 1 back.
-    Check(text(jaudio::DecodeYaz0(yaz0(35, {0x80, 'Q', 0x00, 0x00, 0x10}))) == std::string(35, 'Q'),
+    Check(Text(jaudio::DecodeYaz0(yaz0(35, {0x80, 'Q', 0x00, 0x00, 0x10}))) == std::string(35, 'Q'),
           "a repeat whose length takes a third byte");
 
     Check(
@@ -468,12 +467,8 @@ void TestMessages()
     std::vector<uint8_t> no_sc = good;
     // The bsc command: its tag at 4 + 16 + 12, its start and end after it.
     const std::size_t kBsc = 4 + 16 + 12;
-    backwards[kBsc + 8] = 0;
-    backwards[kBsc + 9] = 0;
-    backwards[kBsc + 10] = 0;
-    backwards[kBsc + 11] = 0;
-    const std::size_t sc_start = static_cast<std::size_t>(no_sc[kBsc + 4]) << 24 | no_sc[kBsc + 5] << 16 |
-                                 no_sc[kBsc + 6] << 8 | no_sc[kBsc + 7];
+    xsflib::StoreBe32(backwards.data() + kBsc + 8, 0);
+    const std::size_t sc_start = xsflib::LoadBe32(no_sc.data() + kBsc + 4);
     no_sc[sc_start] = 'X';
 
     XSFLIB_CHECK(parse({'A', 'A'}) == "not a JAudio2 start-up archive (BAA)");
@@ -516,19 +511,6 @@ jaudio::BaaOptions Strict()
     o.section_names = true;
 
     return o;
-}
-
-uint32_t Load32(const std::vector<uint8_t>& data, std::size_t at)
-{
-    return uint32_t{data[at]} << 24 | uint32_t{data[at + 1]} << 16 | uint32_t{data[at + 2]} << 8 | data[at + 3];
-}
-
-void Store32(std::vector<uint8_t>& data, std::size_t at, uint32_t value)
-{
-    for (int i = 0; i < 4; i++)
-    {
-        data[at + static_cast<std::size_t>(i)] = static_cast<uint8_t>(value >> (24 - 8 * i));
-    }
 }
 
 // The command list of TableArchive: two wave systems, the sound table, and its names when it has them.
@@ -612,7 +594,7 @@ void TestStrictRules()
 
     // A section at offset 0 is skipped, and the others keep their numbers. The root's slots start at 0x14.
     files::SoundTableBlocks holes = ThreeSounds();
-    Store32(holes.table, 0x14, 0);
+    xsflib::StoreBe32(holes.table.data() + 0x14, 0);
     const std::vector<jaudio::SoundEntry> skipped = jaudio::ReadSounds(TableArchive(holes), strict);
     Check(skipped.size() == 1 && skipped[0].Id() == 0x01000000 && skipped[0].name == "BGM_FIELD",
           "a section at offset 0 is skipped");
@@ -650,24 +632,24 @@ void TestStrictRules()
 
     // The tables reach to the end of the archive: a table block of 4 bytes, and one that ends before it starts.
     const std::vector<uint8_t> baa = TableArchive(ThreeSounds());
-    const uint32_t table_at = Load32(baa, kTableCommand + 4);
+    const uint32_t table_at = xsflib::LoadBe32(baa.data() + kTableCommand + 4);
     std::vector<uint8_t> cut = baa;
-    Store32(cut, kTableCommand + 8, table_at + 4);
+    xsflib::StoreBe32(cut.data() + kTableCommand + 8, table_at + 4);
     Check(jaudio::ReadSounds(cut, strict).size() == 3, "the strict rules read past the table block's end");
     Check(ErrorOf([&] { jaudio::ReadSounds(cut); }) == "read out of bounds at offset 12",
           "by default, the table is read inside its block");
     std::vector<uint8_t> backwards = baa;
-    Store32(backwards, kTableCommand + 8, 0);
+    xsflib::StoreBe32(backwards.data() + kTableCommand + 8, 0);
     Check(jaudio::ReadSounds(backwards, strict).size() == 3, "the strict rules don't check a block's end");
     Check(ErrorOf([&] { jaudio::ReadSounds(backwards); }) == "archive has a chunk that ends before it starts",
           "by default, a block that ends before it starts is an error");
 
     // A name whose offset is the end of the data. The first sound's name is the first group's first slot.
     std::vector<uint8_t> at_end = baa;
-    const uint32_t names_at = Load32(baa, kNamesCommand + 4);
-    const uint32_t section = Load32(baa, names_at + 0x14);
-    const uint32_t group = Load32(baa, names_at + section + 8);
-    Store32(at_end, names_at + group + 8, static_cast<uint32_t>(baa.size() - names_at));
+    const uint32_t names_at = xsflib::LoadBe32(baa.data() + kNamesCommand + 4);
+    const uint32_t section = xsflib::LoadBe32(baa.data() + names_at + 0x14);
+    const uint32_t group = xsflib::LoadBe32(baa.data() + names_at + section + 8);
+    xsflib::StoreBe32(at_end.data() + names_at + group + 8, static_cast<uint32_t>(baa.size() - names_at));
     Check(ErrorOf([&] { jaudio::ReadSounds(at_end, strict); }) == "the BAA archive is damaged",
           "the strict rules reject a name at the end of the data");
     const std::vector<jaudio::SoundEntry> empty_name = jaudio::ReadSounds(at_end);
@@ -709,7 +691,7 @@ void TestStrictMessages()
           "a table without sounds");
 
     // The wave system at the start of the blocks gives its WINF block at +0x20.
-    const uint32_t ws_at = Load32(baa, 4 + 8);
+    const uint32_t ws_at = xsflib::LoadBe32(baa.data() + 4 + 8);
     std::vector<uint8_t> bad_wsys = baa;
     bad_wsys[ws_at] = 'X';
     std::vector<uint8_t> bad_winf = baa;
@@ -740,13 +722,5 @@ int main()
     TestStrictRules();
     TestStrictMessages();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("jaudio tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("jaudio");
 }

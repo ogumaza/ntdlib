@@ -56,19 +56,11 @@ inline ImageManifest ReadImageManifest(const std::filesystem::path& path)
     return manifest;
 }
 
-// Checks the game that LoadGame reads from `input` with `options` against the manifest: the system files, a Wii
-// partition's TMD, and every file that the manifest lists under files/. Prints a line for the input.
-inline void CheckGameAgainstManifest(const std::string& name, const std::filesystem::path& input,
-                                     const ImageManifest& manifest, const disc::GameOptions& options)
+// Checks a game's files against the manifest: the system files, a Wii partition's TMD, and every file that the manifest
+// lists under files/. Prints a line for the game. The messages and the line call the game `name`.
+inline void CheckFilesAgainstManifest(const std::string& name, const disc::GameFiles& game,
+                                      const ImageManifest& manifest)
 {
-    disc::GameFiles game;
-    const auto error = disc::LoadGame(input, game, options);
-    xsflib::testing::Check(!error, name + ": " + error.value_or(""));
-    if (error)
-    {
-        return;
-    }
-
     const auto hash = [](const std::vector<uint8_t>& data)
     {
         return xsflib::Sha1::Hex(xsflib::Sha1::Of(data));
@@ -96,6 +88,22 @@ inline void CheckGameAgainstManifest(const std::string& name, const std::filesys
 
     std::printf("%s: %s, the system files and %d file%s match the manifest\n", name.c_str(), game.source.c_str(), files,
                 files == 1 ? "" : "s");
+}
+
+// Checks the game that LoadGame reads from `input` with `options` against the manifest (see CheckFilesAgainstManifest).
+// A game that doesn't load fails one check.
+inline void CheckGameAgainstManifest(const std::string& name, const std::filesystem::path& input,
+                                     const ImageManifest& manifest, const disc::GameOptions& options)
+{
+    disc::GameFiles game;
+    const auto error = disc::LoadGame(input, game, options);
+    xsflib::testing::Check(!error, name + ": " + error.value_or(""));
+    if (error)
+    {
+        return;
+    }
+
+    CheckFilesAgainstManifest(name, game, manifest);
 }
 
 // An image test's main, with the arguments <game folder> <roms folder>: checks the folder, then the image in the roms

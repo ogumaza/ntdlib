@@ -61,8 +61,8 @@ struct DspInterfaceOptions
     bool aram_mirror;
 };
 
-// The options for each console. The GameCube's audio interface runs at 108 MHz / 3,372 (32,028.5 Hz) or
-// 108 MHz / 2,248.
+// The options for each console. A block lasts 8 periods of the sample counter that the console's
+// AudioInterfaceOptions give.
 inline constexpr DspInterfaceOptions kGameCubeDspInterface{121'392, 80'928, 0x03ff, false};
 inline constexpr DspInterfaceOptions kWiiDspInterface{182'250, 121'500, 0x1fff, true};
 
@@ -76,7 +76,8 @@ public:
 
     DspInterface(dsp::Dsp<Memory>& dsp, Memory& memory, ppc::Cpu& cpu, const DspInterfaceOptions& options);
 
-    // A 16-bit register at `offset` from 0x0C005000.
+    // A 16-bit register at `offset` from 0x0C005000. A write can schedule an event, such as the end of an ARAM DMA. The
+    // machine then ends the CPU's current run by NextEvent() at the latest. MachineBase::FinishWrite does that.
     uint16_t Read(uint32_t offset);
     void Write(uint32_t offset, uint16_t value);
 
@@ -114,6 +115,9 @@ private:
 
     // The mailbox polls' share of the DSP's time.
     void RunForPoll();
+
+    // Passes the AI DMA's next block to on_audio, or silence while the DMA is off. A DMA that's on moves its pass on.
+    void SendAiBlock();
 
     void AramDma();
     void SetControl(uint16_t value);

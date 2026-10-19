@@ -5,7 +5,6 @@
 // come from the sequence player's use of each value (SequenceTrack::CommandProc and the policies in console.h).
 
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 
 #include "xsflib/testing/check.h"
@@ -17,12 +16,9 @@
 #include "ntdlib/nwsnd/units.h"
 #include "ntdlib/sound_build.h"
 
-using xsflib::testing::failures;
-
 namespace
 {
 
-using ntdlib::commands::Fixed;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Unit;
@@ -118,13 +114,5 @@ int main()
     TestRoundTrips();
     TestNearest();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Unit tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Unit");
 }

@@ -27,7 +27,7 @@
 
 #include "disc/encodings.h"
 #include "disc/file_table.h"
-#include "ntdlib/disc/source.h"
+#include "ntdlib/disc/error.h"
 
 namespace ntdlib::disc
 {

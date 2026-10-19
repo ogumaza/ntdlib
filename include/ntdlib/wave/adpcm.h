@@ -34,6 +34,12 @@ enum class DspAdpcmSum
     kAccelerator,
 };
 
+// The value of a 4-bit two's complement nibble (0 to 15): -8 to 7.
+inline int32_t SignedNibble(int32_t nibble)
+{
+    return nibble >= 8 ? nibble - 16 : nibble;
+}
+
 // One DSP-ADPCM sample from a signed nibble (-8 to 7), the frame's scale as a shift (0 to 15), the predictor's
 // coefficients and the two samples before it. The function is inline: a renderer's decoder calls it for every sample.
 inline int16_t DspAdpcmSample(int32_t nibble, int32_t shift, int32_t c1, int32_t c2, int32_t hist1, int32_t hist2,

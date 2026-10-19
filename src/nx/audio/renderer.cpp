@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "nx/audio/arithmetic.h"
+
 namespace ntdlib::nx::audio
 {
 namespace
@@ -22,26 +24,6 @@ constexpr int kGainBits = 23;
 // The depop's decay a sample, in Q15, for a mix at 48 kHz and at any other rate.
 constexpr int32_t kDepopDecay48k = 31529;
 constexpr int32_t kDepopDecay = 30923;
-
-// A float in fixed point with `bits` fraction bits, towards zero and held to 32 bits (fcvtzs).
-int32_t ToFixed(float x, int bits)
-{
-    const float scaled = x * static_cast<float>(1 << bits);
-    int32_t value = 0;
-    ConvertToInt(&value, &scaled, 1);
-
-    return value;
-}
-
-int32_t WrapSub(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) - static_cast<uint32_t>(b));
-}
-
-int32_t WrapAdd(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) + static_cast<uint32_t>(b));
-}
 
 // The step of a ramp across a frame: the difference of the gains, which wraps, over the sample count.
 int32_t RampStep(int32_t from, int32_t to, int count)
@@ -102,6 +84,21 @@ void Renderer::Insert(int voice)
 void Renderer::Remove(int voice)
 {
     order_.erase(std::remove(order_.begin(), order_.end(), voice), order_.end());
+}
+
+Renderer::ChannelResource& Renderer::Resource(const Voice& voice, int channel)
+{
+    return resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(channel)])];
+}
+
+const Renderer::Mix* Renderer::MixInUse(int id) const
+{
+    if (id < 0 || id >= static_cast<int>(mixes_.size()) || !mixes_[static_cast<std::size_t>(id)].in_use)
+    {
+        return nullptr;
+    }
+
+    return &mixes_[static_cast<std::size_t>(id)];
 }
 
 int Renderer::AcquireVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
@@ -166,7 +163,7 @@ void Renderer::ReleaseVoiceSlot(int voice)
     Voice& v = At(voice);
     for (int c = 0; c < v.channel_count; ++c)
     {
-        ChannelResource& resource = resources_[static_cast<std::size_t>(v.resources[static_cast<std::size_t>(c)])];
+        ChannelResource& resource = Resource(v, c);
         resource.in_use = false;
         resource.client_mix = {};
     }
@@ -755,8 +752,7 @@ void Renderer::Update()
 
         for (int c = 0; c < voice.channel_count; ++c)
         {
-            ChannelResource& resource =
-                resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])];
+            ChannelResource& resource = Resource(voice, c);
             resource.mix = resource.client_mix;
         }
 
@@ -766,8 +762,7 @@ void Renderer::Update()
             server.previous_muted = server.muted;
             for (int c = 0; server.muted && c < voice.channel_count; ++c)
             {
-                resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])]
-                    .dsp.last_samples = {};
+                Resource(voice, c).dsp.last_samples = {};
             }
         }
 
@@ -779,7 +774,7 @@ void Renderer::Update()
         }
         else
         {
-            const VoiceState& reported = resources_[static_cast<std::size_t>(voice.resources[0])].reported;
+            const VoiceState& reported = Resource(voice, 0).reported;
             voice.played = reported.played;
             voice.consumed = reported.consumed;
         }
@@ -813,8 +808,7 @@ void Renderer::LayOutMixes()
     {
         int at = id;
         int steps = 0;
-        while (at != kFinalMix && steps <= count && at >= 0 && at < count &&
-               mixes_[static_cast<std::size_t>(at)].in_use)
+        while (at != kFinalMix && steps <= count && MixInUse(at) != nullptr)
         {
             at = mixes_[static_cast<std::size_t>(at)].destination;
             ++steps;
@@ -924,14 +918,13 @@ void Renderer::RenderVoice(Voice& voice)
     const int channels = server.channel_count;
     const auto state = [&](int c) -> VoiceState&
     {
-        return resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])].dsp;
+        return Resource(voice, c).dsp;
     };
     const auto report = [&]()
     {
         for (int c = 0; c < channels; ++c)
         {
-            ChannelResource& resource =
-                resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])];
+            ChannelResource& resource = Resource(voice, c);
             resource.reported = resource.dsp;
         }
     };
@@ -948,8 +941,7 @@ void Renderer::RenderVoice(Voice& voice)
     {
         for (int c = 0; c < channels; ++c)
         {
-            ChannelResource& resource =
-                resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])];
+            ChannelResource& resource = Resource(voice, c);
             resource.dsp = VoiceState{};
             resource.previous_mix = resource.mix;
         }
@@ -1018,14 +1010,12 @@ void Renderer::RenderVoice(Voice& voice)
         return;
     }
 
-    const bool connected = server.mix >= 0 && server.mix < static_cast<int>(mixes_.size()) &&
-                           mixes_[static_cast<std::size_t>(server.mix)].in_use;
-    const Mix* destination = connected ? &mixes_[static_cast<std::size_t>(server.mix)] : nullptr;
+    const Mix* destination = MixInUse(server.mix);
     const int count = parameter_.sample_count;
     for (int c = 0; c < channels; ++c)
     {
         VoiceState& s = state(c);
-        ChannelResource& resource = resources_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])];
+        ChannelResource& resource = Resource(voice, c);
         int32_t* work = Buffer(parameter_.mix_buffer_count + c);
 
         // The depop preparation: a voice that stops leaves its last samples to fade out.
@@ -1219,21 +1209,20 @@ void Renderer::RenderSubMix(const Mix& mix)
     Depop(mix);
     RenderEffects(mix);
 
-    const int target = mix.destination;
-    if (target < 0 || target >= static_cast<int>(mixes_.size()) || !mixes_[static_cast<std::size_t>(target)].in_use)
+    const Mix* destination = MixInUse(mix.destination);
+    if (destination == nullptr)
     {
         return;
     }
 
-    const Mix& destination = mixes_[static_cast<std::size_t>(target)];
     for (int i = 0; i < mix.buffer_count; ++i)
     {
-        for (int j = 0; j < destination.buffer_count; ++j)
+        for (int j = 0; j < destination->buffer_count; ++j)
         {
             const float gain = mix.volume * mix.mix_volumes[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
             if (gain != 0.0f)
             {
-                ApplyMix(Buffer(destination.offset + j), Buffer(mix.offset + i), ToFixed(gain, kGainBits),
+                ApplyMix(Buffer(destination->offset + j), Buffer(mix.offset + i), ToFixed(gain, kGainBits),
                          parameter_.sample_count, kGainBits);
             }
         }

@@ -221,6 +221,29 @@ void TestSilent()
     XSFLIB_CHECK(timing && timing->silent && timing->length_ms == 500);
 }
 
+// One pass of TestLoop's loop, in blocks 1 to 6: a note, a wait, and the jump back to the note.
+void Pass(FakeMachine& m, uint64_t block)
+{
+    const uint64_t pass_block = (block - 1) % 3;
+    if (block == 0 || block > 6)
+    {
+        return;
+    }
+
+    if (pass_block == 0)
+    {
+        m.Command(0x10, kNote);
+    }
+    else if (pass_block == 1)
+    {
+        m.Command(0x12, kWait);
+    }
+    else
+    {
+        m.Jump(0x18, 0x10);
+    }
+}
+
 void TestLoop()
 {
     // A note and a wait, then the jump back to the note, twice. The second jump back is the loop's point.
@@ -231,27 +254,8 @@ void TestLoop()
         if (block == 0)
         {
             m.StartSound();
-            return;
         }
-
-        const uint64_t pass_block = (block - 1) % 3;
-        if (block > 6)
-        {
-            return;
-        }
-
-        if (pass_block == 0)
-        {
-            m.Command(0x10, kNote);
-        }
-        else if (pass_block == 1)
-        {
-            m.Command(0x12, kWait);
-        }
-        else
-        {
-            m.Jump(0x18, 0x10);
-        }
+        Pass(m, block);
     };
 
     const auto timing = jaudio::AnalyzeGameSound(machine, kHandleAddress, Watch(), kRules);
@@ -316,27 +320,8 @@ void TestVtableOffset()
             m.StartSound();
             m.words[kHandle] = kHandleAddress;
             m.words[kHandle + 0x94] = kSequenceVtable;
-            return;
         }
-
-        const uint64_t pass_block = (block - 1) % 3;
-        if (block > 6)
-        {
-            return;
-        }
-
-        if (pass_block == 0)
-        {
-            m.Command(0x10, kNote);
-        }
-        else if (pass_block == 1)
-        {
-            m.Command(0x12, kWait);
-        }
-        else
-        {
-            m.Jump(0x18, 0x10);
-        }
+        Pass(m, block);
     };
 
     jaudio::GameWatch watch = Watch();

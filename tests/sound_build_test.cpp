@@ -6,7 +6,6 @@
 #include "ntdlib/sound_build.h"
 
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -17,7 +16,6 @@
 
 using ntdlib::testing::MicrocodeDol;
 using xsflib::testing::Check;
-using xsflib::testing::failures;
 
 namespace
 {
@@ -95,9 +93,22 @@ void TestBuildsFollowTheirDates()
     const ntdlib::SndBuild june = ntdlib::FindSndBuild(wii_music);
     const ntdlib::SndBuild march = ntdlib::FindSndBuild(mario_kart);
 
-    Check(june.date == 20080620 && june.SinceJune2008() && june.Since2008() && !june.October2006(),
+    Check(june.date == 20080620 && june.SinceJune2008() && june.SinceMarch2008() && !june.October2006(),
           "Wii Music's build");
-    Check(march.Since2008() && !march.SinceJune2008(), "Mario Kart Wii's build");
+    Check(march.SinceMarch2008() && !march.SinceJune2008(), "Mario Kart Wii's build");
+
+    // Builds from November 20 2008 take the low-pass's cutoff from a table. Builds from September 24 2009 also move
+    // the pitch bend over a time prefix and let the gains pass full level. A build from between the known builds
+    // counts as the older kind.
+    const ntdlib::SndBuild september_2008{.date = 20080919};
+    const ntdlib::SndBuild november_2008{.date = 20081120};
+    const ntdlib::SndBuild gap_2009{.date = 20090923};
+    const ntdlib::SndBuild september_2009{.date = 20090924};
+
+    Check(september_2008.SinceJune2008() && !september_2008.SinceNovember2008(), "the build of September 2008");
+    Check(november_2008.SinceNovember2008() && !november_2008.SinceSeptember2009(), "the build of November 2008");
+    Check(gap_2009.SinceNovember2008() && !gap_2009.SinceSeptember2009(), "a build from before September 24 2009");
+    Check(september_2009.SinceNovember2008() && september_2009.SinceSeptember2009(), "the build of September 2009");
 }
 
 void TestDamagedDayIsCheckedOnRequest()
@@ -127,11 +138,5 @@ int main()
     TestBuildsFollowTheirDates();
     TestDamagedDayIsCheckedOnRequest();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("sound_build");
 }

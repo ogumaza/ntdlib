@@ -105,35 +105,22 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
         // The engine's pan: (region pan + track initial pan - 64) / 63. Stereo channels get an additional -1 or +1.
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
         const wave::Pcm& wave = *banks_.GetWave(key.bank_slot, r.wave_id_index);
-        RegionGenerators g =
-            ConvertRegion(key, {r.adshr.attack, r.adshr.decay, r.adshr.sustain, r.adshr.hold, r.adshr.release},
-                          r.ignore_note_off, r.pitch, r.volume, r.original_key, wave.loop, quieter_, settings_);
+        RegionGenerators g = ConvertRegion(key, RegionEnvelope(r), r.ignore_note_off, r.pitch, r.volume, r.original_key,
+                                           wave.loop, quieter_, settings_);
         g.exclusive_class = r.key_group;
         const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation};
-        const std::pair<uint32_t, uint32_t> wave_key = *banks_.WaveKey(key.bank_slot, r.wave_id_index);
-        for (const std::pair<int, int>& keys : played.keys)
+        const auto zone = [&](std::size_t c, std::pair<int, int> keys, std::pair<int, int> velocities)
         {
-            for (const ResamplingSpan& span : ZoneSpans(keys, resampling, key, settings_))
+            double p = pan;
+            if (ids.size() == 2)
             {
-                const std::optional<FittedCutoff> fitted =
-                    low_pass_.Fit(index, key, span.keys, r.original_key, r.pitch, wave_key, wave);
-                for (const std::pair<int, int>& velocities : played.velocities)
-                {
-                    for (std::size_t c = 0; c < ids.size(); c++)
-                    {
-                        double p = pan;
-                        if (ids.size() == 2)
-                        {
-                            p += c == 0 ? -1.0 : 1.0;
-                        }
-
-                        sf2::Zone zone = RegionZone(g, span.keys, velocities, p, 0.0, ids[c]);
-                        AddZoneLowPass(zone, span.filter, fitted, resampling, key, settings_);
-                        inst.zones.push_back(std::move(zone));
-                    }
-                }
+                p += c == 0 ? -1.0 : 1.0;
             }
-        }
+
+            return RegionZone(g, keys, velocities, p, 0.0, ids[c]);
+        };
+        AddRegionZones(inst.zones, index, key, played.keys, played.velocities, ids.size(), resampling,
+                       *banks_.WaveKey(key.bank_slot, r.wave_id_index), wave, low_pass_, settings_, zone);
     }
 
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));

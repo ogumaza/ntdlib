@@ -50,16 +50,16 @@ std::size_t DataSize(const SampleInfo& info)
     return info.length;
 }
 
-// Decodes DSP-ADPCM from sample `start` to sample `end` of `data` after a jump to `start`. The DSP then takes `scale`
-// as the predictor and scale of the frame that holds `start`, and `hist1` and `hist2` as the samples before it. Later
-// frames take theirs from their first byte.
+// Decodes DSP-ADPCM from sample `start` to sample `end` of `data` after a jump to `start`. The DSP then takes
+// `pred_scale` as the predictor and scale of the frame that holds `start`, and `hist1` and `hist2` as the samples
+// before it. Later frames take theirs from their first byte.
 std::vector<int16_t> DecodeFrom(std::span<const uint8_t> data, uint32_t start, uint32_t end,
-                                const std::array<int16_t, 16>& coefficients, uint8_t scale, int16_t hist1,
+                                const std::array<int16_t, 16>& coefficients, uint8_t pred_scale, int16_t hist1,
                                 int16_t hist2)
 {
     std::vector<int16_t> out;
     int32_t h1 = hist1, h2 = hist2;
-    uint8_t ps = scale;
+    uint8_t ps = pred_scale;
     for (uint32_t s = start; s < end; s++)
     {
         const std::size_t frame = std::size_t{s / kFrameSamples} * kFrameBytes;
@@ -72,9 +72,8 @@ std::vector<int16_t> DecodeFrom(std::span<const uint8_t> data, uint32_t start, u
         const uint8_t byte = data[frame + 1 + within / 2];
         const int32_t nibble = (within & 1) != 0 ? (byte & 0x0f) : (byte >> 4);
         const std::size_t predictor = (ps >> 4) & 7;
-        const int16_t sample =
-            wave::DspAdpcmSample(nibble >= 8 ? nibble - 16 : nibble, ps & 0x0f, coefficients[predictor * 2],
-                                 coefficients[predictor * 2 + 1], h1, h2, kSum);
+        const int16_t sample = wave::DspAdpcmSample(wave::SignedNibble(nibble), ps & 0x0f, coefficients[predictor * 2],
+                                                    coefficients[predictor * 2 + 1], h1, h2, kSum);
         h2 = h1;
         h1 = sample;
         out.push_back(sample);
@@ -114,12 +113,13 @@ std::vector<SampleInfo> ReadSampleDirectory(std::span<const uint8_t> file)
             continue;
         }
 
-        // The settings start with the coefficients' count, then the scales, the loop's history and the coefficients.
+        // The settings start with the coefficients' count, then the first frame's and the loop's predictor and scale,
+        // the loop's history and the coefficients.
         const uint32_t settings = r.U32(at + 28);
         r.Sub(settings, kAdpcmInfoSize);
         AdpcmInfo& adpcm = info.adpcm.emplace();
-        adpcm.initial_scale = r.U8(settings + 2);
-        adpcm.loop_scale = r.U8(settings + 3);
+        adpcm.pred_scale = r.U8(settings + 2);
+        adpcm.loop_pred_scale = r.U8(settings + 3);
         adpcm.loop_hist2 = r.S16(settings + 4);
         adpcm.loop_hist1 = r.S16(settings + 6);
         for (std::size_t c = 0; c < adpcm.coefficients.size(); c++)
@@ -176,7 +176,7 @@ DecodedSample DecodeSample(const SampleInfo& info, std::span<const uint8_t> samp
     // the first pass and loop on a repeat.
     const AdpcmInfo& adpcm = *info.adpcm;
     const std::vector<int16_t> repeat = DecodeFrom(data, out.loop_start, out.loop_end, adpcm.coefficients,
-                                                   adpcm.loop_scale, adpcm.loop_hist1, adpcm.loop_hist2);
+                                                   adpcm.loop_pred_scale, adpcm.loop_hist1, adpcm.loop_hist2);
     if (std::equal(repeat.begin(), repeat.end(), out.pcm.begin() + out.loop_start))
     {
         return out;

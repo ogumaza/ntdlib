@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
 #include <map>
 #include <optional>
 #include <span>
@@ -105,13 +104,5 @@ int main()
     TestLoad(true);
     TestLoad(false);
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("sar_set_archive_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("sar_set_archive");
 }

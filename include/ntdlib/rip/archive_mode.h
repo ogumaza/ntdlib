@@ -78,8 +78,8 @@ struct ArchiveRipTool
     };
 };
 
-// Rips one sound archive into `out_dir`, and adds the number of sounds --only picked to `matched`. `names` is the
-// registry of file names for `out_dir`. Returns the number of minis written, or -1 on an error.
+// Rips one sound archive into `out_dir`, and adds the number of sounds that --only and --bgm picked to `matched`.
+// `names` is the registry of file names for `out_dir`. Returns the number of minis written, or -1 on an error.
 template <typename Format, typename Rip>
 int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::path& out_dir,
                xsflib::rip::FileNames& names, const std::string& lib_base, const Rip& to_rip,
@@ -118,60 +118,21 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
         return 0;
     }
 
-    // Sequences whose data isn't all there would play with missing instruments. A sound whose volume in the archive is
-    // 0 makes no sound. The game's sound library multiplies everything the sound plays by that volume.
-    std::vector<Job> complete;
-    std::size_t missing_data = 0;
-    std::size_t silent = 0;
-    for (Job& job : jobs)
-    {
-        const auto missing = MissingData(*archive, job.index, tool.sar_options);
-        if (!missing.empty())
-        {
-            missing_data++;
-            std::string what;
-            for (std::size_t i = 0; i < missing.size(); i++)
-            {
-                what += (i ? ", " : "") + missing[i];
-            }
-            std::fprintf(stderr, "skipped %s: missing %s\n", job.label.c_str(), what.c_str());
-        }
-        else if (archive->Sounds()[job.index].volume == 0)
-        {
-            silent++;
-            std::fprintf(stderr, "skipped %s: it makes no sound (volume 0)\n", job.label.c_str());
-        }
-        else
-        {
-            complete.push_back(std::move(job));
-        }
-    }
-
-    // The length analysis finds the other sequences that never sound. Some play no notes, and some play their notes at
-    // a volume of 0.
+    // The sounds to rip: those that have all their data and make a sound. The length analysis finds the silent
+    // sequences whose volume isn't 0.
+    Skipped skipped;
+    std::vector<Job> complete = SkipIncomplete(*archive, std::move(jobs), tool.sar_options, skipped);
     if (o.lengths && !complete.empty())
     {
         tool.analyze_lengths(complete, std::move(*archive), to_rip.settings, o.jobs);
-        std::vector<Job> sounding;
-        for (Job& job : complete)
-        {
-            if (job.timing && job.timing->silent)
-            {
-                silent++;
-                std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
-            }
-            else
-            {
-                sounding.push_back(std::move(job));
-            }
-        }
-        complete = std::move(sounding);
+        complete = SkipSilent(std::move(complete), skipped);
     }
 
+    const std::string skipped_text =
+        xsflib::cli::SkippedText(skipped.missing_data, "data not there", skipped.silent, "sequence");
     if (complete.empty())
     {
-        std::fprintf(stderr, "%s: nothing to rip%s\n", path.c_str(),
-                     xsflib::cli::SkippedText(missing_data, "data not there", silent, "sequence").c_str());
+        std::fprintf(stderr, "%s: nothing to rip%s\n", path.c_str(), skipped_text.c_str());
         return 0;
     }
 
@@ -193,8 +154,7 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
     const int count = xsflib::cli::WriteMinis(out_dir, names, complete, common, tool.format + "_sound", build_mini);
     if (count >= 0)
     {
-        std::fprintf(stderr, "%s: %d %s files%s\n", path.c_str(), count, tool.mini_word.c_str(),
-                     xsflib::cli::SkippedText(missing_data, "data not there", silent, "sequence").c_str());
+        std::fprintf(stderr, "%s: %d %s files%s\n", path.c_str(), count, tool.mini_word.c_str(), skipped_text.c_str());
     }
 
     return count;
@@ -226,6 +186,22 @@ inline std::string DescribeArchive(std::vector<uint8_t> bytes, const sar::Option
     catch (const std::exception& e)
     {
         return std::string("can't be read: ") + e.what();
+    }
+}
+
+// Prints the lines of --list for a game's sound archives `archives`, a line each: the archive's path and size, and
+// what it holds (`describe`, such as DescribeArchive), or that `read_file` can't read it.
+template <typename ReadFile>
+void ListArchives(const std::vector<std::string>& archives, const ReadFile& read_file,
+                  const std::function<std::string(std::vector<uint8_t>)>& describe)
+{
+    for (const std::string& path : archives)
+    {
+        std::vector<uint8_t> bytes;
+        const bool read = read_file(path, bytes);
+        const std::size_t size = bytes.size();
+        const std::string held = read ? describe(std::move(bytes)) : "can't be read";
+        std::printf("  %s: %zu bytes, %s\n", path.c_str(), size, held.c_str());
     }
 }
 
@@ -271,16 +247,13 @@ int RipArchives(const ArchiveRipTool<Format, Rip>& tool, const std::string& inpu
                 continue;
             }
 
+            // The game's SARCs are among its files.
             const auto list_sarcs = [&find_sarcs, &path]
             {
                 return find_sarcs ? find_sarcs(path) : std::vector<std::string>();
             };
-            const auto read_sarc = [&read_file](const std::string& sarc, std::vector<uint8_t>& bytes)
-            {
-                return read_file(sarc, bytes);
-            };
             to_rip.groups = FindGroups<typename Format::FileChunk>(to_rip.archive.data, find_group, tool.sar_options,
-                                                                   list_sarcs, read_sarc);
+                                                                   list_sarcs, read_file);
 
             // Each archive's set goes in a folder of its own.
             const std::filesystem::path archive_dir = out_dir / folders[a];
@@ -405,6 +378,13 @@ int RipLooseArchive(const ArchiveRipTool<Format, Rip>& tool, const std::string& 
     if (matched == 0 && (!o.only_text.empty() || o.bgm))
     {
         return NoSoundMatches(o.only_text, o.bgm);
+    }
+
+    // An archive without sequences, such as one that holds only streams and wave sounds, rips nothing. The line says
+    // why no file came out.
+    if (matched == 0)
+    {
+        std::fprintf(stderr, "%s: no sequences to rip\n", file_name.c_str());
     }
     if (count > 0)
     {

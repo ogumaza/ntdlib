@@ -48,10 +48,10 @@ bool IsDigit(char c)
 
 } // namespace
 
-std::optional<Microcode> FindMicrocode(std::span<const uint8_t> file, const MicrocodeOptions& options)
+std::optional<Microcode> FindMicrocode(std::span<const uint8_t> dol, const MicrocodeOptions& options)
 {
-    const std::optional<Dol> dol = Dol::Parse(file, options.skip_damaged_sections);
-    if (!dol)
+    const std::optional<Dol> parsed = Dol::Parse(dol, options.skip_damaged_sections);
+    if (!parsed)
     {
         return std::nullopt;
     }
@@ -59,7 +59,7 @@ std::optional<Microcode> FindMicrocode(std::span<const uint8_t> file, const Micr
     // The microcode is stored as data in one of the DOL's sections. The search checks only 8-byte boundaries for the
     // microcode's start.
     constexpr std::size_t kBytes = kMicrocodeWords * 2;
-    for (const Dol::Section& section : dol->Sections())
+    for (const Dol::Section& section : parsed->Sections())
     {
         for (std::size_t at = 0; at + kBytes <= section.data.size(); at += 8)
         {
@@ -115,12 +115,6 @@ SndBuild FindSndBuild(std::span<const uint8_t> dol, const BannerOptions& options
     static constexpr std::string_view kMonths = "JanFebMarAprMayJunJulAugSepOctNovDec";
     const std::string_view date = text.substr(build + 7, 11);
     const std::size_t month = kMonths.find(date.substr(0, 3));
-
-    const auto digit = [&date](std::size_t i)
-    {
-        return date[i] == ' ' ? 0u : static_cast<uint32_t>(date[i] - '0');
-    };
-
     if (month == std::string_view::npos || month % 3 != 0 || !std::all_of(date.begin() + 7, date.end(), IsDigit))
     {
         return {};
@@ -133,6 +127,11 @@ SndBuild FindSndBuild(std::span<const uint8_t> dol, const BannerOptions& options
         return {};
     }
 
+    // The value of the date's character `i`. The day's space counts as 0.
+    const auto digit = [&date](std::size_t i)
+    {
+        return date[i] == ' ' ? 0u : static_cast<uint32_t>(date[i] - '0');
+    };
     const uint32_t year = digit(7) * 1000 + digit(8) * 100 + digit(9) * 10 + digit(10);
 
     return {year * 10000 + static_cast<uint32_t>(month / 3 + 1) * 100 + digit(4) * 10 + digit(5)};

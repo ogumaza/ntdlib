@@ -18,18 +18,16 @@
 #include <utility>
 #include <vector>
 
-#include "disc/image_parts.h"
 #include "xsflib/ascii.h"
 #include "xsflib/bytes.h"
 
+#include "disc/image_parts.h"
+
 namespace ntdlib::disc
 {
-
 namespace detail
 {
 
-// The files of a possibly split image: the first piece, then any continuation files. Only the Wii's WBFS files continue
-// in .wbf1 to .wbf9.
 std::vector<fs::path> Pieces(const fs::path& path, Console console)
 {
     std::vector<fs::path> pieces = {path};

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.7.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.8.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -59,24 +59,26 @@ target_compile_features(ntdlib_testing INTERFACE cxx_std_20)
 set_target_properties(ntdlib_testing PROPERTIES EXPORT_NAME testing)
 set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_testing)
 
-# The common files: the GameCube's and the Wii's addresses, the PowerPC's fused operations and float-to-integer
-# conversion, AArch64's minimum and maximum, DOL executables, and the builds of the Wii's sound code that a main.dol
+# The common files: the consoles' addresses, the PowerPC's fused operations, the consoles' conversions of a float to
+# an integer, AArch64's minimum and maximum, DOL executables, and the builds of the Wii's sound code that a main.dol
 # links.
 xsflib_add_project_library(ntdlib common src/common/dol.cpp src/common/sound_build.cpp)
 target_link_libraries(ntdlib_common PUBLIC xsflib::common)
 xsflib_add_project_test(ntdlib sound_build ntdlib::common)
 xsflib_add_project_test(ntdlib aarch64 ntdlib::common)
 xsflib_add_project_test(ntdlib fused ntdlib::common)
+xsflib_add_project_test(ntdlib dol ntdlib::common)
 
-# The decoders of raw sample data (DSP-ADPCM, IMA-ADPCM, AFC, PCM8 and PCM16), and the decoding of a sound archive's
-# wave to PCM.
-xsflib_add_project_library(ntdlib wave src/wave/adpcm.cpp src/wave/decode.cpp src/wave/pcm.cpp)
+# The decoders of raw sample data (DSP-ADPCM, IMA-ADPCM, AFC, PCM8 and PCM16), the decoding of a sound archive's wave
+# to PCM, and the encoder of DSP-ADPCM.
+xsflib_add_project_library(ntdlib wave src/wave/adpcm.cpp src/wave/decode.cpp src/wave/encode.cpp src/wave/pcm.cpp)
 target_link_libraries(ntdlib_wave PRIVATE xsflib::common)
 xsflib_add_project_test(ntdlib wave ntdlib::wave)
+xsflib_add_project_test(ntdlib wave_encode ntdlib::wave)
 
 # The readers of JAudio2's sound data: the start-up archive (BAA) with its sound table, sequence collection, wave
-# systems and banks, and RARC archives. And the length analysis of a sound in game mode (LoopFinder and
-# game_lengths.h).
+# systems and banks, and RARC archives. The readers of JAudio1's start-up archive (AAF). And the length analysis of a
+# sound in game mode (LoopFinder and game_lengths.h).
 xsflib_add_project_library(ntdlib jaudio src/jaudio/aaf.cpp src/jaudio/archive.cpp src/jaudio/bank.cpp
                            src/jaudio/loop_finder.cpp src/jaudio/rarc.cpp src/jaudio/wave_system.cpp)
 target_link_libraries(ntdlib_jaudio PUBLIC xsflib::common)
@@ -116,10 +118,12 @@ xsflib_add_project_library(ntdlib musyx src/musyx/pool.cpp src/musyx/project.cpp
 target_link_libraries(ntdlib_musyx PUBLIC xsflib::common PRIVATE ntdlib::wave)
 xsflib_add_project_test(ntdlib musyx ntdlib::musyx)
 
-# The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files: NintendoWare's sound archives,
-# and JAudio's sound data (src/sequence_export/jaudio).
+# The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files: NintendoWare's sound archives
+# (sequence_export), and JAudio's sound data (sequence_export_jaudio, in src/sequence_export/jaudio). A program that
+# converts only NintendoWare's archives links neither JAudio's readers nor the disc images.
 if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_library(ntdlib sequence_export
+        src/sequence_export/archive_converter.cpp
         src/sequence_export/convert.cpp
         src/sequence_export/convert_rsar.cpp
         src/sequence_export/envelope.cpp
@@ -130,14 +134,6 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/filter_tables_switch.cpp
         src/sequence_export/frame.cpp
         src/sequence_export/instruments.cpp
-        src/sequence_export/jaudio/convert.cpp
-        src/sequence_export/jaudio/envelope.cpp
-        src/sequence_export/jaudio/game.cpp
-        src/sequence_export/jaudio/game_input.cpp
-        src/sequence_export/jaudio/instruments.cpp
-        src/sequence_export/jaudio/performance.cpp
-        src/sequence_export/jaudio/sfz.cpp
-        src/sequence_export/jaudio/wave.cpp
         src/sequence_export/passes.cpp
         src/sequence_export/performance.cpp
         src/sequence_export/performer.cpp
@@ -148,29 +144,33 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/sfz_rsar.cpp
         src/sequence_export/sfz_track.cpp
         src/sequence_export/zone_low_pass.cpp)
-    target_link_libraries(ntdlib_sequence_export PUBLIC seqlib::seqlib ntdlib::ax ntdlib::common ntdlib::disc
-                                                        ntdlib::jaudio ntdlib::nwsnd ntdlib::sar ntdlib::rsar
-                                                        ntdlib::wave xsflib::console)
+    target_link_libraries(ntdlib_sequence_export PUBLIC seqlib::seqlib ntdlib::ax ntdlib::common ntdlib::nwsnd
+                                                        ntdlib::sar ntdlib::rsar ntdlib::wave xsflib::console)
+    xsflib_add_project_library(ntdlib sequence_export_jaudio
+        src/sequence_export/jaudio/convert.cpp
+        src/sequence_export/jaudio/envelope.cpp
+        src/sequence_export/jaudio/game.cpp
+        src/sequence_export/jaudio/game_input.cpp
+        src/sequence_export/jaudio/instruments.cpp
+        src/sequence_export/jaudio/performance.cpp
+        src/sequence_export/jaudio/sfz.cpp
+        src/sequence_export/jaudio/wave.cpp)
+    target_link_libraries(ntdlib_sequence_export_jaudio PUBLIC ntdlib::sequence_export ntdlib::disc ntdlib::jaudio)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_frame ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_revolution ntdlib::sequence_export)
-    xsflib_add_project_test(ntdlib sequence_export_jaudio ntdlib::sequence_export)
-    if (NTDLIB_TESTS)
-        # The Wii's tests read wii_pan.h, a private header of sequence_export.
-        target_include_directories(ntdlib_sequence_export_revolution_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    endif()
+    xsflib_add_project_test(ntdlib sequence_export_jaudio ntdlib::sequence_export_jaudio)
     xsflib_add_project_test(ntdlib sequence_export_switch ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_ctr ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_resampling ntdlib::sequence_export)
-    if (NTDLIB_TESTS)
-        # The tests of the zones' low-passes read sf2_build.h, a private header of sequence_export.
-        target_include_directories(ntdlib_sequence_export_resampling_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    endif()
     xsflib_add_project_test(ntdlib sequence_export_zone_low_pass ntdlib::sequence_export)
     if (NTDLIB_TESTS)
-        # The tests of the zones' low-pass read zone_low_pass.h and sf2_build.h, private headers of sequence_export.
-        target_include_directories(ntdlib_sequence_export_zone_low_pass_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+        # These tests read private headers of sequence_export: the Wii's wii_pan.h, and the zones' low-passes in
+        # sf2_build.h and zone_low_pass.h.
+        foreach (test IN ITEMS revolution resampling zone_low_pass)
+            target_include_directories(ntdlib_sequence_export_${test}_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+        endforeach()
     endif()
 endif()
 
@@ -209,7 +209,8 @@ xsflib_add_project_test(ntdlib disc_options ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_title ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_text ntdlib::disc)
 
-# The compressed containers of disc images: GCZ, CISO, WIA and RVZ. They require zlib, Zstandard, liblzma and bzip2.
+# The containers that store a disc image compressed or in sparse blocks: GCZ, CISO, WIA and RVZ. They require zlib,
+# Zstandard, liblzma and bzip2.
 if (NTDLIB_DISC)
     xsflib_add_project_library(ntdlib disc_containers src/disc/compression.cpp src/disc/containers.cpp
                                src/disc/junk.cpp)
@@ -228,7 +229,7 @@ endif()
 # start-up's parameters (drivers/jaudio/z2.h).
 xsflib_add_project_library(ntdlib flipper src/flipper/audio_interface.cpp src/flipper/dsp_interface.cpp
                            src/flipper/exi.cpp src/flipper/file_disc.cpp src/flipper/game_source.cpp
-                           src/flipper/z2_params.cpp)
+                           src/flipper/wave_list.cpp src/flipper/z2_params.cpp)
 target_link_libraries(ntdlib_flipper PUBLIC ntdlib::dsp ntdlib::ppc)
 xsflib_add_project_test(ntdlib flipper ntdlib::flipper)
 xsflib_add_project_test(ntdlib z2_params ntdlib::flipper)
@@ -255,7 +256,7 @@ xsflib_add_project_test(ntdlib nwsnd_ctr ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_revolution ntdlib::nwsnd)
 
 # The decoder and the encoder of the bytecode of NintendoWare's sequences, in the form of ntdlib::commands, and the
-# units of each console's values. It's a separate target: the players and the converters use ntdlib::nwsnd without it.
+# units of each console's values. It's a separate target. A program can use ntdlib::nwsnd without it.
 xsflib_add_project_library(ntdlib nwsnd_commands src/nwsnd/commands.cpp src/nwsnd/units.cpp)
 target_link_libraries(ntdlib_nwsnd_commands PUBLIC ntdlib::commands ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_commands ntdlib::nwsnd_commands)
@@ -275,12 +276,18 @@ set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_nwsnd_archiv
 xsflib_add_project_test(ntdlib nwsnd_archive_files ntdlib::nwsnd_archive)
 
 # A sound archive of the 3DS, the Wii U or the Switch cut into pieces for an editor, and joined again: its sequence
-# files, decoded into commands, and the runs of bytes between them. Also the reader and the writer of the sequence files
-# (CSEQ and FSEQ).
-xsflib_add_project_library(ntdlib sar_layout src/sar/layout.cpp src/sar/sequence_file.cpp)
+# files, decoded into commands, and the runs of bytes between them. Also the readers and the writers of the sequence
+# files (CSEQ and FSEQ), the wave files (CWAV and FWAV), the wave archives (CWAR and FWAR) and the archives' STRG and
+# INFO blocks. WithTables puts new STRG and INFO blocks in an archive.
+xsflib_add_project_library(ntdlib sar_layout src/sar/info_block.cpp src/sar/layout.cpp src/sar/sequence_file.cpp
+                           src/sar/string_block.cpp src/sar/tables.cpp src/sar/wave_file.cpp)
 target_link_libraries(ntdlib_sar_layout PUBLIC ntdlib::nwsnd_commands ntdlib::sar)
+xsflib_add_project_test(ntdlib sar_info_block ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_layout ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_sequence_file ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib sar_string_block ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib sar_tables ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib sar_wave_file ntdlib::sar_layout)
 
 # The Switch's audio renderer (nn::audio) with its I3DL2 reverb, and archive mode's model of nn::atk on it: an engine
 # that plays a sound archive's sequences as the Switch does, without the game's code.
@@ -308,6 +315,11 @@ xsflib_add_project_test(ntdlib cafe_snd ntdlib::cafe xsflib::rip)
 # The archive play test's main, for a test that plays a sound archive's sounds on a model of the sound library
 # (ntdlib/testing/archive_play.h).
 xsflib_add_project_test(ntdlib archive_play ntdlib::nwsnd)
+
+# The tests that take files supplied on the machine, from a local_tests.cmake in a folder of the source tree, if any.
+if (NTDLIB_TESTS)
+    xsflib_include_local_tests()
+endif()
 
 if (NTDLIB_INSTALL)
     list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)

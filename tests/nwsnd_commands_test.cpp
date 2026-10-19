@@ -5,7 +5,6 @@
 // are those that the sequence player's parser (SequenceTrack::Parse) reads from them.
 
 #include <cstdint>
-#include <cstdio>
 #include <stdexcept>
 #include <vector>
 
@@ -16,8 +15,6 @@
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sound_build.h"
-
-using xsflib::testing::failures;
 
 namespace
 {
@@ -408,13 +405,5 @@ int main()
     TestEncode();
     TestRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Sequence command tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Sequence command");
 }

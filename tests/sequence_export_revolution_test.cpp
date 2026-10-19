@@ -12,21 +12,32 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <exception>
 #include <iterator>
 #include <map>
 #include <numbers>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
+#include "seqlib/file_name.h"
+#include "seqlib/loop.h"
+#include "seqlib/midi/performance_writer.h"
+#include "seqlib/midi/reader.h"
+#include "seqlib/sf2/reader.h"
+#include "seqlib/sf2/soundfont.h"
+#include "seqlib/sf2/units.h"
+#include "seqlib/wav.h"
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/rsar/decode.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/decode.h"
@@ -43,19 +54,8 @@
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/sound_build.h"
 #include "ntdlib/testing/sequence_export_check.h"
-#include "seqlib/file_name.h"
-#include "seqlib/loop.h"
-#include "seqlib/midi/performance_writer.h"
-#include "seqlib/midi/reader.h"
-#include "seqlib/sf2/reader.h"
-#include "seqlib/sf2/soundfont.h"
-#include "seqlib/sf2/units.h"
-#include "seqlib/sf2/writer.h"
-#include "seqlib/wav.h"
 #include "sequence_export/wii_pan.h"
 #include "sequence_export_test.h"
-#include "xsflib/binary.h"
-#include "xsflib/testing/check.h"
 
 namespace sf2 = seqlib::sf2;
 
@@ -66,17 +66,10 @@ using ntdlib::SndBuild;
 using ntdlib::nwsnd::DecibelSquare;
 using ntdlib::nwsnd::HoldMs;
 using ntdlib::rsar::Bank;
-using ntdlib::rsar::BankInfo;
-using ntdlib::rsar::DspAdpcmInfo;
 using ntdlib::rsar::Region;
-using ntdlib::rsar::Sequence;
 using ntdlib::rsar::SoundArchive;
 using ntdlib::rsar::SoundInfo;
-using ntdlib::rsar::SoundType;
 using ntdlib::rsar::Wave;
-using ntdlib::rsar::WaveArchive;
-using ntdlib::rsar::WaveChannel;
-using ntdlib::rsar::WaveEncoding;
 using ntdlib::sequence_export::AttackMs;
 using ntdlib::sequence_export::ChannelPan;
 using ntdlib::sequence_export::Conversion;
@@ -85,18 +78,12 @@ using ntdlib::sequence_export::EventKind;
 using ntdlib::sequence_export::FilterControllerValue;
 using ntdlib::sequence_export::GameFilters;
 using ntdlib::sequence_export::kFadedAttenuation;
-using ntdlib::sequence_export::kFilterController;
-using ntdlib::sequence_export::kFilterEvent;
 using ntdlib::sequence_export::kFilterOpen;
 using ntdlib::sequence_export::kInaudibleSustain;
-using ntdlib::sequence_export::kSfzBiquadController;
 using ntdlib::sequence_export::kSfzBiquadEvent;
-using ntdlib::sequence_export::kSfzLowPassController;
 using ntdlib::sequence_export::kSfzLowPassEvent;
-using ntdlib::sequence_export::kSfzSamplesFolder;
 using ntdlib::sequence_export::LowPassHz;
 using ntdlib::sequence_export::LowPassIndex;
-using ntdlib::sequence_export::OverrideEnvelope;
 using ntdlib::sequence_export::Performance;
 using ntdlib::sequence_export::PresetKey;
 using ntdlib::sequence_export::RegionEnvelope;
@@ -104,37 +91,38 @@ using ntdlib::sequence_export::RegionRanges;
 using ntdlib::sequence_export::RsarBankSet;
 using ntdlib::sequence_export::RsarPlayedRanges;
 using ntdlib::sequence_export::Settings;
-using ntdlib::sequence_export::Sf2Envelope;
-using ntdlib::sequence_export::SfzBiquad;
-using ntdlib::sequence_export::SfzEnvelope;
 using ntdlib::sequence_export::SfzFile;
 using ntdlib::sequence_export::SfzInstruments;
 using ntdlib::sequence_export::SfzLowPassValue;
-using ntdlib::sequence_export::SfzSample;
 using ntdlib::sequence_export::SoundFontFilter;
 using ntdlib::sequence_export::TrackEvent;
 using ntdlib::sequence_export::TrackFilters;
 using ntdlib::sequence_export::WaveChannelPan;
+using ntdlib::sequence_export::tests::DecayRate;
+using ntdlib::sequence_export::tests::FirstNotePreset;
+using ntdlib::sequence_export::tests::FramesToLevel;
+using ntdlib::sequence_export::tests::GlidesEveryFrame;
+using ntdlib::sequence_export::tests::HeldLevel;
+using ntdlib::sequence_export::tests::NoteOnsAndRestarts;
+using ntdlib::sequence_export::tests::NoteParts;
+using ntdlib::sequence_export::tests::PartControls;
+using ntdlib::sequence_export::tests::PitchPlaces;
 using ntdlib::sequence_export::tests::RegionLowPass;
-using ntdlib::sequence_export::tests::Report;
+using ntdlib::sequence_export::tests::ReleaseFrames;
 using ntdlib::sequence_export::tests::RunOn;
+using ntdlib::sequence_export::tests::Sf2AttackMs;
 using ntdlib::sequence_export::tests::Sf2Problem;
+using ntdlib::sequence_export::tests::SfzBiquadValue;
+using ntdlib::sequence_export::tests::SfzLowPassCutoff;
 using ntdlib::sequence_export::tests::Test;
 using ntdlib::sequence_export::tests::Wii;
 using ntdlib::sequence_export::tests::ZoneCutoff;
 using ntdlib::sequence_export::tests::ZoneCutoffs;
-using xsflib::FormatError;
-using xsflib::testing::failures;
 using PlayedRanges = ntdlib::sequence_export::RsarPlayedRanges;
 using seqlib::PreparedWave;
 using seqlib::PrepareForSfz;
-using seqlib::PrepareForSoundFont;
-using seqlib::SafeFileName;
-using seqlib::WavFile;
 using seqlib::midi::MidiReport;
 using seqlib::midi::NoteCount;
-using seqlib::midi::WriteMidi;
-using seqlib::sf2::SoundFontPan;
 using seqlib::sf2::ToTimecents;
 
 // A tick at the default tempo and timebase, 120 beats a minute of 48 ticks, in milliseconds.
@@ -145,9 +133,6 @@ const Settings kSettings = Wii().settings;
 
 // The Wii's sound frame, in milliseconds.
 constexpr double kFrameMs = 3.0;
-
-// The Wii's MIDI timing: NW4R SND runs a tick at its frame's start.
-constexpr seqlib::midi::MidiOptions kMidiOptions{seqlib::midi::FrameTiming::kFrameStart};
 
 // The options for the Wii: sequence_export's PerformOptions, with the build that plays the sequence. Without a build,
 // the archive's version gives it.
@@ -216,31 +201,6 @@ SfzInstruments BuildSfz(const Performance& perf, const MidiReport& midi, BankSet
     return ntdlib::sequence_export::BuildSfz(perf, midi, banks, title, preset_names, balance, kSettings, Wii().program);
 }
 
-float DecayRate(int value)
-{
-    return ntdlib::sequence_export::DecayRate(value, kSettings.engine);
-}
-
-float HeldLevel(const EnvelopeValues& v, int64_t frames)
-{
-    return ntdlib::sequence_export::HeldLevel(v, frames, kSettings);
-}
-
-int64_t ReleaseFrames(float level, float rate)
-{
-    return ntdlib::sequence_export::ReleaseFrames(level, rate, kSettings);
-}
-
-int64_t FramesToLevel(const EnvelopeValues& v, float level)
-{
-    return ntdlib::sequence_export::FramesToLevel(v, level, kSettings);
-}
-
-double Sf2AttackMs(const EnvelopeValues& v)
-{
-    return ntdlib::sequence_export::Sf2AttackMs(v, kSettings);
-}
-
 SoundFontFilter ToSoundFont(int low_pass, int biquad_type, int biquad_value)
 {
     return ntdlib::sequence_export::ToSoundFont(TrackFilters(low_pass, biquad_type, biquad_value, kSettings),
@@ -252,21 +212,6 @@ int BiquadStep(int biquad_type, int biquad_value)
 {
     const GameFilters f = TrackFilters(0x40, biquad_type, biquad_value, kSettings);
     return f.biquad_type != 0 ? f.biquad_step : -1;
-}
-
-uint8_t SfzBiquadValue(int biquad_type, int biquad_value)
-{
-    return ntdlib::sequence_export::SfzBiquadValue(biquad_type, biquad_value, kSettings);
-}
-
-int SfzLowPassCutoff(int index)
-{
-    return ntdlib::sequence_export::SfzLowPassCutoff(index, kSettings);
-}
-
-uint16_t Le16(const std::vector<uint8_t>& d, std::size_t o)
-{
-    return static_cast<uint16_t>(d[o] | (d[o + 1] << 8));
 }
 
 // Converts a string to bytes.
@@ -822,6 +767,16 @@ Performance PerformCommands(const std::vector<uint8_t>& commands, const TestSoun
     return PerformSound(SequenceArchive({commands}, options), 0, options.build);
 }
 
+// Performs `commands` as the one sound of a SequenceArchive with `sounds`, under `options`.
+Performance PerformCommandsWith(const std::vector<uint8_t>& commands, const PerformOptions& options,
+                                const TestSounds& sounds = {})
+{
+    const SoundArchive archive = SequenceArchive({commands}, sounds);
+    BankSet banks(archive, archive.Sounds()[0]);
+
+    return Perform(archive, 0, banks, options);
+}
+
 // The ticks and kinds of track `t`'s note events.
 std::vector<std::pair<uint32_t, EventKind>> NoteEvents(const Performance& p, int t = 0)
 {
@@ -865,36 +820,6 @@ std::vector<std::pair<uint32_t, int>> Controls(const Performance& p, EventKind k
     }
 
     return values;
-}
-
-// The ticks and values of track `t`'s events of `kind` on `part`.
-std::vector<std::pair<uint32_t, int>> PartControls(const Performance& p, EventKind kind, uint8_t part, int t = 0)
-{
-    std::vector<std::pair<uint32_t, int>> values;
-    for (const TrackEvent& e : p.tracks[t])
-    {
-        if (e.kind == kind && e.part == part)
-        {
-            values.emplace_back(e.tick, e.value);
-        }
-    }
-
-    return values;
-}
-
-// The parts of track `t`'s note-ons.
-std::vector<int> NoteParts(const Performance& p, int t = 0)
-{
-    std::vector<int> parts;
-    for (const TrackEvent& e : p.tracks[t])
-    {
-        if (e.kind == EventKind::kNoteOn)
-        {
-            parts.push_back(e.part);
-        }
-    }
-
-    return parts;
 }
 
 // The ticks and semitones of track `t`'s pitch events.
@@ -1011,12 +936,8 @@ void TestDamagedNameTableLeavesSoundsNumbered()
         {Rseq({0x3c, 0x64, 0x18, 0xff})},
         {Rbnk({TestInstrument{}}), Rwar({Rwav(64, std::vector<int16_t>(64, 1000), 1, true)})}};
     std::vector<uint8_t> bytes = Rsar(files, {.sequences = {{.file_id = 0}}, .banks = {1}, .names = {"SEQ_A"}});
-    auto u32 = [&](std::size_t at)
-    {
-        return static_cast<std::size_t>(bytes[at] << 24 | bytes[at + 1] << 16 | bytes[at + 2] << 8 | bytes[at + 3]);
-    };
-    const std::size_t symb_base = u32(0x10) + 8;
-    const std::size_t name_offset = symb_base + u32(symb_base) + 4;
+    const std::size_t symb_base = xsflib::LoadBe32(&bytes[0x10]) + 8;
+    const std::size_t name_offset = symb_base + xsflib::LoadBe32(&bytes[symb_base]) + 4;
     std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(name_offset), 4, uint8_t{0xff});
 
     const SoundArchive archive = SoundArchive::Load(bytes);
@@ -1064,7 +985,7 @@ void TestTruncatedArchiveWhoseTablesCantBeReadIsReported()
     std::vector<ArchiveFile> files(1);
     files[0].data = Bytes("data");
     const std::vector<uint8_t> bytes = Rsar(files);
-    const std::size_t info = (bytes[0x18] << 24) | (bytes[0x19] << 16) | (bytes[0x1a] << 8) | bytes[0x1b];
+    const std::size_t info = xsflib::LoadBe32(&bytes[0x18]);
     const std::size_t cut = info + 0x20;
 
     std::string message;
@@ -1232,6 +1153,55 @@ void TestFullLevelStopsTheTrackVolumes()
     const std::vector<std::pair<uint32_t, int>> kExpression = {{0, 127}};
     XSFLIB_CHECK(Controls(p, EventKind::kVolume) == kVolume && Controls(p, EventKind::kExpression) == kExpression);
     XSFLIB_CHECK(p.level_cut_db == 0.0);
+}
+
+void TestTrackThatTheGameSilencesKeepsItsNotes()
+{
+    // Track 0 opens track 1, and each plays a note at full level. A game's code can set a track's volume to 0 through
+    // the sound's handle (PerformOptions::tracks). The silenced track's note stays in the file, and CC11 holds it at 0.
+    // Track 1 plays on at full level.
+    const std::vector<uint8_t> commands = {0x88, 0x01, 0x00, 0x00, 0x09, 0x3c, 0x7f,
+                                           0x18, 0xff, 0x40, 0x7f, 0x18, 0xff};
+    PerformOptions silenced;
+    silenced.tracks = 0xfffe;
+
+    const Performance all = PerformCommandsWith(commands, {}, {.track_flags = 3});
+    const Performance some = PerformCommandsWith(commands, silenced, {.track_flags = 3});
+
+    const std::vector<std::tuple<uint32_t, int, int>> kFirst = {{0, 60, 127}};
+    const std::vector<std::tuple<uint32_t, int, int>> kSecond = {{0, 64, 127}};
+    const std::vector<std::pair<uint32_t, int>> kFullLevel = {{0, 127}};
+    const std::vector<std::pair<uint32_t, int>> kSilent = {{0, 0}};
+    XSFLIB_CHECK(NoteOns(all, 0) == kFirst && NoteOns(all, 1) == kSecond &&
+                 Controls(all, EventKind::kExpression, 0) == kFullLevel &&
+                 Controls(all, EventKind::kExpression, 1) == kFullLevel);
+    XSFLIB_CHECK(NoteOns(some, 0) == kFirst && NoteOns(some, 1) == kSecond &&
+                 Controls(some, EventKind::kExpression, 0) == kSilent &&
+                 Controls(some, EventKind::kExpression, 1) == kFullLevel);
+    XSFLIB_CHECK(some.end_tick == all.end_tick && some.level_cut_db == 0.0);
+}
+
+void TestSoundsSendsAddToTheTracks()
+{
+    // A game's code can give a sound effect sends through its handle (PerformOptions::fx_sends). The voice adds each to
+    // the track's send on its bus, and holds the sum at 1 at most. The track's send A of 100 and the sound's 0.5 reach
+    // the full send: CC91 127. Its send B of 16 and the sound's 0.25 make 16 + 31.75: CC93 48. Without the sound's
+    // sends, CC91 and CC93 take the track's sends as they are.
+    const std::vector<uint8_t> commands = {0xd9, 0x64, 0xda, 0x10, 0x3c, 0x7f, 0x18, 0xff};
+    PerformOptions sends;
+    sends.fx_sends = {0.5f, 0.25f, 0.0f};
+
+    const Performance plain = PerformCommandsWith(commands, {});
+    const Performance sent = PerformCommandsWith(commands, sends);
+
+    const std::vector<std::pair<uint32_t, int>> kPlainA = {{0, 100}};
+    const std::vector<std::pair<uint32_t, int>> kPlainB = {{0, 16}};
+    const std::vector<std::pair<uint32_t, int>> kSentA = {{0, 127}};
+    const std::vector<std::pair<uint32_t, int>> kSentB = {{0, 48}};
+    XSFLIB_CHECK(Controls(plain, EventKind::kReverb) == kPlainA && Controls(plain, EventKind::kChorus) == kPlainB);
+    XSFLIB_CHECK(Controls(sent, EventKind::kReverb) == kSentA && Controls(sent, EventKind::kChorus) == kSentB);
+    XSFLIB_CHECK(NoteOns(sent) == NoteOns(plain) &&
+                 Controls(sent, EventKind::kExpression) == Controls(plain, EventKind::kExpression));
 }
 
 void TestTrackAboveFullLevelLiftsTheZones()
@@ -1416,15 +1386,6 @@ void TestPartLeftTakesTheBendInItsTick()
     const std::vector<std::pair<uint32_t, float>> kFirstPart = {{5, 1.0f}};
     const std::vector<int> kParts = {0, 1};
     XSFLIB_CHECK(NoteParts(p) == kParts && first_part == kFirstPart && second_part_start == 5.0f);
-}
-
-// The note-ons of `p`'s track 0, and whether a legato was played as a new note.
-std::pair<std::ptrdiff_t, bool> NoteOnsAndRestarts(const Performance& p)
-{
-    const auto note_ons =
-        std::ranges::count_if(p.tracks[0], [](const TrackEvent& e) { return e.kind == EventKind::kNoteOn; });
-
-    return {note_ons, p.approximations.contains("legato (tie or mono) played as a new note")};
 }
 
 void TestLegatoAfterAnEnvelopeResetCarriesOn()
@@ -2086,44 +2047,6 @@ void TestTimedSweepGlidesOnWhenTheSequenceStops()
     XSFLIB_CHECK(ended.holds && !after_end.empty() && after_end.back().second == 0.0f && after_end.back().first <= 2);
 }
 
-// The places, in ticks, and the semitones of track `t`'s pitch events. An event at a tick has its place at the start of
-// the tick's frame. Events between or after ticks have their places where their frames start.
-std::vector<std::pair<double, float>> PitchPlaces(const Performance& p, int t = 0)
-{
-    std::vector<std::pair<double, float>> pitches;
-    for (const TrackEvent& e : p.tracks[t])
-    {
-        if (e.kind == EventKind::kPitch)
-        {
-            pitches.emplace_back(e.after > 0 ? e.tick + e.after : p.frame_ticks.at(e.tick), e.semitones);
-        }
-    }
-
-    return pitches;
-}
-
-// True if `pitches` glide up 12 semitones in 120 ms with a pitch for each 3 ms sound frame. Each pitch sits where its
-// frame starts at tempo 120: 0.096 ticks a millisecond.
-bool GlidesEveryFrame(const std::vector<std::pair<double, float>>& pitches)
-{
-    if (pitches.size() != 41)
-    {
-        return false;
-    }
-
-    for (std::size_t f = 0; f < pitches.size(); f++)
-    {
-        const float semitones = -12.0f * static_cast<float>(120 - 3 * static_cast<int>(f)) / 120.0f;
-        const double place = pitches[0].first + static_cast<double>(f) * 3.0 * 0.096;
-        if (std::fabs(pitches[f].first - place) > 1e-4 || pitches[f].second != semitones)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 void TestTimedSweepMovesEveryFrame()
 {
     // With note wait off, hold key 60 with 120 ms of portamento from key 48 (time 8). A tick at tempo 120 takes 10.4
@@ -2513,7 +2436,7 @@ void TestTempoAndSweepFollowTheBuild()
     const Performance early = PerformCommands(kCommands, {.version = 0x0103});
 
     const std::vector<std::pair<uint32_t, float>> late_sweep = Pitches(late), early_sweep = Pitches(early);
-    XSFLIB_CHECK(late.since_2008 && !early.since_2008);
+    XSFLIB_CHECK(late.since_march_2008 && !early.since_march_2008);
     XSFLIB_CHECK(late.tempo.back().bpm == 1023.0 && early.tempo.back().bpm == 2047.0);
     XSFLIB_CHECK(!late_sweep.empty() && late_sweep.front().second == 1.0f);
     XSFLIB_CHECK(!early_sweep.empty() && early_sweep.front().second == 2.0f);
@@ -2721,25 +2644,6 @@ void TestBuildsFrom2008PlayTheBiquad()
     XSFLIB_CHECK(early.presets[0].filter == SoundFontFilter{} && early.biquad_types[0] == 0);
 }
 
-// The preset event in front of the first note-on of `p`'s track 0.
-const PresetKey* FirstNotePreset(const Performance& p)
-{
-    const PresetKey* preset = nullptr;
-    for (const TrackEvent& e : p.tracks[0])
-    {
-        if (e.kind == EventKind::kPreset)
-        {
-            preset = &p.presets[e.preset];
-        }
-        else if (e.kind == EventKind::kNoteOn)
-        {
-            return preset;
-        }
-    }
-
-    return nullptr;
-}
-
 void TestLfoSetAfterANoteInItsTickReachesItsPreset()
 {
     // With note wait off and LFO depth 40, play key 60, then set the LFO speed to 10 in the same tick. The game gives
@@ -2861,6 +2765,22 @@ void TestVolumeLfoAboveFullLevelIsReported()
     XSFLIB_CHECK(below.approximations.empty() && vibrato.approximations.empty());
 }
 
+void TestLaterBuildsLetTheVolumeLfoPassFullLevel()
+{
+    // As in TestVolumeLfoAboveFullLevelIsReported, a volume LFO lifts a note at full level by up to 5.95 dB. Builds
+    // from September 2009 hold the gain only at 0. The game then plays the LFO above full level, as the SoundFont and
+    // the SFZ do. Nothing is reported, and the note keeps the LFO's full swing at its level.
+    const SoundArchive archive = SequenceArchive({{0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}});
+    PerformOptions options;
+    options.build = SndBuild{.date = 20090924};
+
+    const Conversion c = ConvertSequence(archive, 0, options);
+
+    const std::vector<PresetKey>& presets = c.performance.presets;
+    XSFLIB_CHECK(c.performance.approximations.empty());
+    XSFLIB_CHECK(presets.size() == 1 && presets[0].lfo_swing == 16 && presets[0].lfo_cut == 0);
+}
+
 void TestVolumeLfoAboveFullLevelIsFitted()
 {
     // As in TestVolumeLfoAboveFullLevelIsReported, a volume LFO at depth 127 and range 1 swings 5.95 dB on a note at
@@ -2883,17 +2803,13 @@ void TestVolumeLfoAboveFullLevelIsFitted()
 
     // The SoundFont: the CC1 modulator's amount, and the attenuation of the zone, whose region is at full volume.
     const sf2::Records v = sf2::Read(lifted.sf2);
-    const auto word = [](const uint8_t* r)
-    {
-        return static_cast<uint16_t>(r[0] | r[1] << 8);
-    };
     int lfo_amount = -1;
     for (std::size_t m = 0; m < v.Count("imod", 10); m++)
     {
         const uint8_t* r = v.Record("imod", 10, m);
-        if (word(r) == sf2::kSrcModWheel && word(r + 2) == sf2::kModLfoToVolume)
+        if (xsflib::LoadLe16(r) == sf2::kSrcModWheel && xsflib::LoadLe16(r + 2) == sf2::kModLfoToVolume)
         {
-            lfo_amount = static_cast<int16_t>(word(r + 4));
+            lfo_amount = static_cast<int16_t>(xsflib::LoadLe16(r + 4));
         }
     }
     int attenuation = -1;
@@ -2952,9 +2868,9 @@ void TestTrackLowPassFitsEachZone()
         for (std::size_t m = 0; m < v.Count("imod", 10); m++)
         {
             const uint8_t* r = v.Record("imod", 10, m);
-            if ((r[0] | r[1] << 8) == sf2::kNoteOnKeyNumber && (r[2] | r[3] << 8) == sf2::kInitialFilterFc)
+            if (xsflib::LoadLe16(r) == sf2::kNoteOnKeyNumber && xsflib::LoadLe16(r + 2) == sf2::kInitialFilterFc)
             {
-                found.push_back(static_cast<int16_t>(r[4] | r[5] << 8));
+                found.push_back(static_cast<int16_t>(xsflib::LoadLe16(r + 4)));
             }
         }
 
@@ -3066,10 +2982,46 @@ void TestTrackFilterFollowsTheGame()
     int off_formula = 0;
     for (int i = 0; i <= 57; i++)
     {
-        off_formula += LowPassHz(i) != static_cast<int>(32000.0 * std::exp2(10.0 * (i - 64) / 64.0));
+        off_formula += LowPassHz(i, SndBuild{}) != static_cast<int>(32000.0 * std::exp2(10.0 * (i - 64) / 64.0));
     }
 
-    XSFLIB_CHECK(off_formula == 0 && LowPassHz(30) == 805);
+    XSFLIB_CHECK(off_formula == 0 && LowPassHz(30, SndBuild{}) == 805);
+}
+
+void TestLaterBuildsTakeTheLowPassFromTheTable()
+{
+    // Builds from November 2008 take the low-pass's cutoff from kLpfFreq, as the Wii U does. Argument 30 gives the
+    // value (30 - 64) / 64 + 1 = 0.46875, the Wii U's step 9. The SoundFont and the SFZ take the Wii U's fits for that
+    // step. Older builds work the cutoff out: 805 Hz. Arguments 0 to 57 leave the low-pass on in every build.
+    const SndBuild old_build{.date = 20080919};
+    const SndBuild new_build{.date = 20081120};
+    const Settings new_settings = Wii(new_build).settings;
+    const ntdlib::sequence_export::FilterTables& cafe = ntdlib::sequence_export::kCafeFilters;
+
+    const GameFilters filters = TrackFilters(30, 0, 0, new_settings);
+    const SoundFontFilter sf = ntdlib::sequence_export::ToSoundFont(filters, new_settings);
+    XSFLIB_CHECK(filters.low_pass == 30 && sf.cutoff == cafe.low_pass_cutoff[9] &&
+                 sf.low_pass_hz == ntdlib::nwsnd::tables::kLpfFreq[9]);
+    XSFLIB_CHECK(ntdlib::sequence_export::SfzLowPassCutoff(30, new_settings) == cafe.sfz_low_pass_cutoff[9]);
+    XSFLIB_CHECK(LowPassHz(30, old_build) == 805 && LowPassHz(30, new_build) == ntdlib::nwsnd::tables::kLpfFreq[9]);
+    XSFLIB_CHECK(LowPassHz(0, new_build) == 80 && TrackFilters(57, 0, 0, new_settings).low_pass == 57 &&
+                 TrackFilters(58, 0, 0, new_settings).low_pass == -1);
+    XSFLIB_CHECK(&ntdlib::sequence_export::RevolutionFilters(old_build) ==
+                 &ntdlib::sequence_export::kRevolutionFilters);
+}
+
+void TestLaterBuildsMoveTheBendOverATimePrefix()
+{
+    // A time prefix of 4 ticks before a bend of 64: a semitone up at the default range of 2. Builds from September 2009
+    // move the bend there over the 4 ticks, a quarter of the way each tick. Older builds set it at once.
+    const std::vector<uint8_t> commands = {0xa3, 0xc4, 0x40, 0x00, 0x04, 0x3c, 0x7f, 0x18, 0xff};
+
+    const Performance moving = PerformCommands(commands, {.build = SndBuild{.date = 20090924}});
+    const Performance jumping = PerformCommands(commands, {.build = SndBuild{.date = 20081120}});
+
+    const std::vector<std::pair<uint32_t, float>> kMoving = {{1, 0.25f}, {2, 0.5f}, {3, 0.75f}, {4, 1.0f}};
+    const std::vector<std::pair<uint32_t, float>> kJumping = {{0, 1.0f}};
+    XSFLIB_CHECK(Pitches(moving) == kMoving && Pitches(jumping) == kJumping);
 }
 
 void TestSoundFontFilterStandsInForTheGames()
@@ -3205,78 +3157,6 @@ void TestSfzLoopUnrollingKeepsTheStream()
     XSFLIB_CHECK(different == 0);
 }
 
-void TestSoundFontWriterOutputIsValid()
-{
-    sf2::SoundFont sf;
-    sf.info.push_back({"INAM", "test"});
-    sf.info.push_back({"ISFT", "xyz2midi"});
-    for (int c = 0; c < 3; c++)
-    {
-        sf2::Sample s;
-        s.name = "s" + std::to_string(c);
-        s.sample_rate = 32000;
-        s.data.assign(100, static_cast<int16_t>(c * 1000));
-        s.loop_start = 10;
-        s.loop_end = 90;
-        sf.samples.push_back(s);
-    }
-
-    sf.samples[1].type = sf2::kLeft;
-    sf.samples[1].link = 2;
-    sf.samples[2].type = sf2::kRight;
-    sf.samples[2].link = 1;
-
-    sf2::Instrument inst;
-    inst.name = "i";
-    sf2::Zone global;
-    global.modulators.push_back({0x0081, sf2::kVibLfoToPitch, 100, 0});
-    inst.zones.push_back(global);
-    for (uint16_t id = 0; id < 3; id++)
-    {
-        sf2::Zone z;
-        z.generators.push_back(sf2::Generator::Value(sf2::kSampleId, id)); // written last whatever the order
-        z.generators.push_back(sf2::Generator::Value(sf2::kSampleModes, 1));
-        z.generators.push_back(sf2::Generator::Range(sf2::kVelRange, 0, 127));
-        z.generators.push_back(sf2::Generator::Range(sf2::kKeyRange, 0, 127));
-        inst.zones.push_back(z);
-    }
-    sf.instruments.push_back(inst);
-
-    sf2::Preset p;
-    p.name = "p";
-    sf2::Zone pz;
-    pz.generators.push_back(sf2::Generator::Value(sf2::kInstrument, 0));
-    p.zones.push_back(pz);
-    sf.presets.push_back(p);
-
-    const auto bytes = sf2::Write(sf);
-
-    const std::vector<std::string> problems = seqlib::sf2::Check(bytes);
-    XSFLIB_CHECK(problems.empty());
-    for (const std::string& problem : problems)
-    {
-        std::fprintf(stderr, "  SoundFont writer: %s\n", problem.c_str());
-    }
-
-    const seqlib::sf2::Records v = seqlib::sf2::Read(bytes);
-    XSFLIB_CHECK(v.chunks.at("phdr").size() == 38 * 2 && v.chunks.at("inst").size() == 22 * 2);
-    XSFLIB_CHECK(v.chunks.at("smpl").size() == 2 * 3 * (100 + 46));
-    XSFLIB_CHECK(v.chunks.at("imod").size() == 10 * 2);
-}
-
-void TestSoundFontWithoutSamplesHasSampleData()
-{
-    // A silent sequence still gets sample padding: FluidSynth rejects empty sample data.
-    sf2::SoundFont sf;
-    sf.info.push_back({"INAM", ""});
-    sf.info.push_back({"ISFT", "xyz2midi"});
-    const auto bytes = sf2::Write(sf);
-
-    const seqlib::sf2::Records v = seqlib::sf2::Read(bytes);
-
-    XSFLIB_CHECK(seqlib::sf2::Check(bytes).empty() && v.chunks.at("smpl").size() == 2 * 46);
-}
-
 void TestBalanceModeKeepsStereoWavesAt3DbDown()
 {
     // In balance mode, a stereo wave at a pan of 0 plays each channel 3 dB down. The SoundFont's samples are 3 dB down
@@ -3294,332 +3174,9 @@ void TestBalanceModeKeepsStereoWavesAt3DbDown()
     auto first_sample = [](const std::vector<uint8_t>& sf2)
     {
         const seqlib::sf2::Records v = seqlib::sf2::Read(sf2);
-        return static_cast<int16_t>(Le16(v.chunks.at("smpl"), 0));
+        return static_cast<int16_t>(xsflib::LoadLe16(v.chunks.at("smpl").data()));
     };
     XSFLIB_CHECK(first_sample(balance.sf2) == 707 && first_sample(dual.sf2) == 1000);
-}
-
-void TestMidiWriterLayersMarkersAndBendRange()
-{
-    Performance p;
-    p.timebase = 48;
-    p.tempo = {{0, 120.0}};
-    p.loop = Performance::Loop{48, 96};
-    p.end_tick = 96;
-    p.presets.push_back({});
-
-    auto add = [&](int t, uint32_t tick, EventKind k, uint8_t key, uint8_t value, uint32_t note)
-    {
-        TrackEvent e;
-        e.tick = tick;
-        e.kind = k;
-        e.key = key;
-        e.value = value;
-        e.note = note;
-        p.tracks[t].push_back(e);
-    };
-
-    add(0, 0, EventKind::kPreset, 0, 0, 0);
-    add(0, 0, EventKind::kVolume, 0, 100, 0);
-    add(0, 0, EventKind::kNoteOn, 60, 100, 1);
-    add(0, 10, EventKind::kNoteOn, 60, 90, 2); // the same key again: another channel
-    add(0, 20, EventKind::kNoteOff, 60, 0, 1);
-    add(0, 30, EventKind::kNoteOff, 60, 0, 2);
-    add(3, 5, EventKind::kNoteOn, 64, 80, 3);
-    add(3, 50, EventKind::kNoteOff, 64, 0, 3);
-    TrackEvent bend;
-    bend.tick = 5;
-    bend.kind = EventKind::kPitch;
-    bend.semitones = -7.5f;
-    p.tracks[3].insert(p.tracks[3].begin(), bend);
-
-    MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep, kMidiOptions);
-
-    // Timebase 48 gives 160 MIDI ticks for each of the performance's ticks.
-    XSFLIB_CHECK(seqlib::midi::Problems(bytes).empty());
-    const seqlib::midi::File v = seqlib::midi::Read(bytes);
-    const std::vector<std::string> names = seqlib::midi::TrackNames(v);
-    const std::vector<seqlib::midi::Note> notes = seqlib::midi::Notes(v);
-    const std::vector<seqlib::midi::Text> markers = seqlib::midi::Markers(v);
-    XSFLIB_CHECK(v.division == 7680);
-    XSFLIB_CHECK(rep.channels == 3 && rep.cut_notes == 0);
-    XSFLIB_CHECK(names.size() == 4 && names[0] == "test" && names[2] == "Track 0 (layer 2)");
-    XSFLIB_CHECK(notes.size() == 3);
-
-    // Track 0 gets channel 0, and channel 2 for its layer (track 3 has channel 1).
-    int channels_for_key60 = 0;
-    for (const seqlib::midi::Note& n : notes)
-    {
-        if (n.key == 60)
-        {
-            channels_for_key60 |= 1 << n.channel;
-        }
-    }
-
-    XSFLIB_CHECK(channels_for_key60 == 0b101);
-
-    XSFLIB_CHECK(markers.size() == 2 && markers[0].tick == 7680 && markers[1].text == "loopEnd");
-
-    // Pitch bend range 8 (RPN 0) for a 7.5 semitone bend on track 3's channel (1).
-    const std::vector<uint8_t> kRpn = {0xb1, 6, 8};
-    XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), kRpn.begin(), kRpn.end()) != bytes.end());
-}
-
-void TestMidiWriterGivesPartsChannelsOfTheirOwn()
-{
-    // Track 0 plays key 60 on its first part and key 62 on its second part. Only the second part sets volume 50.
-    Performance p;
-    p.timebase = 48;
-    p.tempo = {{0, 120.0}};
-    p.end_tick = 48;
-    p.presets.push_back({});
-
-    auto add = [&](uint32_t tick, EventKind k, uint8_t key, uint8_t value, uint32_t note, uint8_t part)
-    {
-        TrackEvent e;
-        e.tick = tick;
-        e.kind = k;
-        e.key = key;
-        e.value = value;
-        e.note = note;
-        e.part = part;
-        p.tracks[0].push_back(e);
-    };
-    add(0, EventKind::kPreset, 0, 0, 0, 0);
-    add(0, EventKind::kNoteOn, 60, 100, 1, 0);
-    add(10, EventKind::kPreset, 0, 0, 0, 1);
-    add(10, EventKind::kVolume, 0, 50, 0, 1);
-    add(10, EventKind::kNoteOn, 62, 100, 2, 1);
-    add(20, EventKind::kNoteOff, 60, 0, 1, 0);
-    add(30, EventKind::kNoteOff, 62, 0, 2, 1);
-
-    MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep, kMidiOptions);
-
-    const seqlib::midi::File v = seqlib::midi::Read(bytes);
-    const std::vector<std::string> names = seqlib::midi::TrackNames(v);
-    const std::vector<seqlib::midi::Note> notes = seqlib::midi::Notes(v);
-    const std::vector<uint8_t> kSecondVolume = {0xb1, 7, 50}, kFirstVolume = {0xb0, 7, 50};
-    XSFLIB_CHECK(seqlib::midi::Problems(bytes).empty() && rep.channels == 2 && names.size() == 3 &&
-                 names[2] == "Track 0 (layer 2)");
-    XSFLIB_CHECK(notes.size() == 2 && notes[0].channel != notes[1].channel);
-    XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), kSecondVolume.begin(), kSecondVolume.end()) != bytes.end() &&
-                 std::search(bytes.begin(), bytes.end(), kFirstVolume.begin(), kFirstVolume.end()) == bytes.end());
-}
-
-void TestMidiWriterHasAtLeast7680TicksPerQuarterNote()
-{
-    // At least 7680 MIDI ticks per quarter note, a whole number of them to each of the performance's ticks. Without
-    // frame times, notes stay where they are.
-    const std::pair<uint32_t, uint16_t> kCases[] = {{48, 7680}, {96, 7680}, {100, 7700}, {255, 7905}, {1, 7680}};
-    for (const auto& [timebase, division] : kCases)
-    {
-        Performance p;
-        p.timebase = timebase;
-        p.tempo = {{0, 120.0}};
-        p.end_tick = 8;
-        p.presets.push_back({});
-        TrackEvent on;
-        on.tick = 3;
-        on.key = 60;
-        on.value = 100;
-        on.note = 1;
-        TrackEvent off = on;
-        off.tick = 7;
-        off.kind = EventKind::kNoteOff;
-        p.tracks[0] = {on, off};
-
-        MidiReport rep;
-        const std::vector<uint8_t> midi = WriteMidi(p, "test", rep, kMidiOptions);
-        const seqlib::midi::File v = seqlib::midi::Read(midi);
-        const std::vector<seqlib::midi::Note> notes = seqlib::midi::Notes(v);
-        const uint32_t scale = division / timebase;
-        XSFLIB_CHECK(seqlib::midi::Problems(midi).empty() && v.division == division);
-        XSFLIB_CHECK(notes.size() == 1 && notes[0].on == 3 * scale && notes[0].off == 7 * scale);
-    }
-}
-
-void TestMidiEventsGoOnSoundFrames()
-{
-    // At timebase 48, 160 MIDI ticks to a tick. Events go at the starts of their frames, given as fractions of ticks,
-    // without crossing the loop start at tick 2. Keys 60, 62 and 64 play over ticks 1-2, 2-3 and 3-4, and a sweep bends
-    // key 64 up a semitone in a frame between ticks 3 and 4, half a tick after tick 3.
-    Performance p;
-    p.tempo = {{0, 120.0}};
-    p.end_tick = 8;
-    p.presets.push_back({});
-    p.frame_ticks = {0.0, 0.5, 1.75, 2.75, 4.0};
-    p.loop = Performance::Loop{2, 6};
-    const std::pair<uint8_t, uint32_t> kNotes[] = {{60, 1}, {62, 2}, {64, 3}}; // key, tick
-    uint32_t id = 1;
-    for (const auto& [key, tick] : kNotes)
-    {
-        TrackEvent on;
-        on.tick = tick;
-        on.key = key;
-        on.value = 100;
-        on.note = id++;
-        TrackEvent off = on;
-        off.tick = tick + 1;
-        off.kind = EventKind::kNoteOff;
-        p.tracks[0].push_back(on);
-        p.tracks[0].push_back(off);
-    }
-
-    TrackEvent bend;
-    bend.tick = 3;
-    bend.kind = EventKind::kPitch;
-    bend.semitones = 1.0f;
-    bend.after = 0.5;
-    p.tracks[0].insert(p.tracks[0].end() - 1, bend);
-
-    MidiReport rep;
-    const std::vector<uint8_t> midi = WriteMidi(p, "test", rep, kMidiOptions);
-
-    const seqlib::midi::File m = seqlib::midi::Read(midi);
-    const std::vector<seqlib::midi::Note> notes = seqlib::midi::Notes(m);
-    const std::vector<seqlib::midi::Bend> bends = seqlib::midi::Bends(m);
-    const std::vector<seqlib::midi::Text> markers = seqlib::midi::Markers(m);
-    XSFLIB_CHECK(seqlib::midi::Problems(midi).empty() && notes.size() == 3);
-    XSFLIB_CHECK(bends.size() == 1 && bends[0].tick == 560 && bends[0].value == 12288);
-    if (notes.size() == 3)
-    {
-        XSFLIB_CHECK(notes[0].key == 60 && notes[0].on == 80 && notes[0].off == 320);
-        XSFLIB_CHECK(notes[1].key == 62 && notes[1].on == 320 && notes[1].off == 440);
-        XSFLIB_CHECK(notes[2].key == 64 && notes[2].on == 440 && notes[2].off == 640);
-    }
-    XSFLIB_CHECK(markers.size() == 2 && markers[0].tick == 320 && markers[0].text == "loopStart" &&
-                 markers[1].tick == 960 && markers[1].text == "loopEnd");
-}
-
-void TestMidiWriterSplitsLongDeltaTimes()
-{
-    // At timebase 1, each tick is 7680 MIDI ticks. A note of 600000 ticks goes past both 32-bit MIDI positions and the
-    // 28-bit limit of a delta time.
-    Performance p;
-    p.timebase = 1;
-    p.tempo = {{0, 120.0}};
-    p.end_tick = 600000;
-    p.presets.push_back({});
-    TrackEvent on;
-    on.key = 60;
-    on.value = 100;
-    on.note = 1;
-    TrackEvent off = on;
-    off.tick = 600000;
-    off.kind = EventKind::kNoteOff;
-    p.tracks[0] = {on, off};
-
-    MidiReport rep;
-    const std::vector<uint8_t> midi = WriteMidi(p, "test", rep, kMidiOptions);
-
-    const seqlib::midi::File v = seqlib::midi::Read(midi);
-    const auto at_end = [](const seqlib::midi::Track& track)
-    {
-        return track.end_tick == uint64_t{600000} * 7680;
-    };
-    XSFLIB_CHECK(seqlib::midi::Problems(midi).empty() && v.tracks.size() == 2 && std::ranges::all_of(v.tracks, at_end));
-}
-
-void TestMidiBendUpByAWholeRangeIsExact()
-{
-    // A bend of +7 semitones requires range 8. The pitch wheel stops at +8191, a step short of the whole range. With
-    // range 8, +7 is 7168 steps: wheel value 15360 (0x3c00, bytes 0 and 0x78).
-    Performance p;
-    p.tempo = {{0, 120.0}};
-    p.end_tick = 48;
-    p.presets.push_back({});
-    TrackEvent bend;
-    bend.kind = EventKind::kPitch;
-    bend.semitones = 7.0f;
-    p.tracks[0].push_back(bend);
-    TrackEvent on;
-    on.key = 60;
-    on.value = 100;
-    on.note = 1;
-    p.tracks[0].push_back(on);
-    TrackEvent off = on;
-    off.tick = 24;
-    off.kind = EventKind::kNoteOff;
-    p.tracks[0].push_back(off);
-
-    MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep, kMidiOptions);
-
-    const std::vector<uint8_t> kRange = {0xb0, 6, 8};
-    const std::vector<uint8_t> kBend = {0xe0, 0x00, 0x78};
-    XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), kRange.begin(), kRange.end()) != bytes.end());
-    XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), kBend.begin(), kBend.end()) != bytes.end());
-}
-
-void TestMidiWriterSendsTheFilterToEveryLayer()
-{
-    // Overlapping strikes of one key require a second channel, and both get the filter's controller.
-    Performance p;
-    p.tempo = {{0, 120.0}};
-    p.end_tick = 48;
-    p.presets.push_back({});
-    TrackEvent filter;
-    filter.kind = kFilterEvent;
-    filter.value = 40;
-    TrackEvent on;
-    on.key = 60;
-    on.value = 100;
-    on.note = 1;
-    TrackEvent again = on;
-    again.tick = 12;
-    again.note = 2;
-    TrackEvent off = on;
-    off.tick = 24;
-    off.kind = EventKind::kNoteOff;
-    TrackEvent off_again = again;
-    off_again.tick = 36;
-    off_again.kind = EventKind::kNoteOff;
-    p.tracks[0] = {filter, on, again, off, off_again};
-
-    MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep, kMidiOptions);
-
-    XSFLIB_CHECK(rep.channels == 2);
-    for (const int channel : {0, 1})
-    {
-        const std::vector<uint8_t> kFilter = {static_cast<uint8_t>(0xb0 | channel), kFilterController, 40};
-        XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), kFilter.begin(), kFilter.end()) != bytes.end());
-    }
-}
-
-void TestMidiWriterListsChannel10Presets()
-{
-    // Track t uses preset t. With 16 tracks the last gets channel 10 (index 9). That channel's preset has to be copied
-    // to bank 128. With 15, channel 10 isn't used.
-    for (int tracks : {15, 16})
-    {
-        Performance p;
-        p.tempo = {{0, 120.0}};
-        p.end_tick = 48;
-        for (int t = 0; t < tracks; t++)
-        {
-            TrackEvent preset;
-            preset.kind = EventKind::kPreset;
-            preset.preset = static_cast<uint32_t>(t);
-            TrackEvent on;
-            on.key = 60;
-            on.value = 100;
-            on.note = static_cast<uint32_t>(t + 1);
-            TrackEvent off = on;
-            off.tick = 24;
-            off.kind = EventKind::kNoteOff;
-            p.presets.push_back({});
-            p.tracks[t] = {preset, on, off};
-        }
-
-        MidiReport rep;
-        WriteMidi(p, "test", rep, kMidiOptions);
-
-        XSFLIB_CHECK(rep.channels == tracks);
-        XSFLIB_CHECK(rep.channel_10_presets == (tracks == 16 ? std::set<uint32_t>{15} : std::set<uint32_t>{}));
-    }
 }
 
 void TestSfzFileHasTheTracksPresetsAndFilter()
@@ -3728,6 +3285,8 @@ const Test kTests[] = {
     TestRegionsHoldComesWith2008,
     TestEnvelopeSimulationSustainsAndReleases,
     TestTrackFilterFollowsTheGame,
+    TestLaterBuildsTakeTheLowPassFromTheTable,
+    TestLaterBuildsMoveTheBendOverATimePrefix,
     TestSoundFontFilterStandsInForTheGames,
     TestSfzFilterFollowsTheGame,
     TestStereoWavesKeepTheirSidesInBalanceMode,
@@ -3735,6 +3294,8 @@ const Test kTests[] = {
     TestMainLoopWaitsForAFade,
     TestLevelTooLoudForMidiIsCut,
     TestFullLevelStopsTheTrackVolumes,
+    TestTrackThatTheGameSilencesKeepsItsNotes,
+    TestSoundsSendsAddToTheTracks,
     TestTrackAboveFullLevelLiftsTheZones,
     TestTheWavesRateAlonePicksTheLowPass,
     TestLegatoLeavesOutTheRegionsVolume,
@@ -3810,22 +3371,13 @@ const Test kTests[] = {
     TestDeepTremoloIsKeptTo6dB,
     TestVolumeLfoAboveFullLevelIsReported,
     TestVolumeLfoAboveFullLevelIsFitted,
+    TestLaterBuildsLetTheVolumeLfoPassFullLevel,
     TestTrackLowPassFitsEachZone,
     TestNoteReleasedInItsAttackKeepsTheGamesLevel,
     TestTrackWaitingForeverEnds,
     TestHeldNoteHoldsUntilStopped,
     TestSfzLoopUnrollingKeepsTheStream,
-    TestSoundFontWriterOutputIsValid,
-    TestSoundFontWithoutSamplesHasSampleData,
     TestBalanceModeKeepsStereoWavesAt3DbDown,
-    TestMidiWriterLayersMarkersAndBendRange,
-    TestMidiWriterGivesPartsChannelsOfTheirOwn,
-    TestMidiWriterHasAtLeast7680TicksPerQuarterNote,
-    TestMidiEventsGoOnSoundFrames,
-    TestMidiWriterSplitsLongDeltaTimes,
-    TestMidiBendUpByAWholeRangeIsExact,
-    TestMidiWriterSendsTheFilterToEveryLayer,
-    TestMidiWriterListsChannel10Presets,
     TestSfzFileHasTheTracksPresetsAndFilter,
     TestSfzCommentKeepsTheNameOnItsLine,
 };
@@ -3836,5 +3388,5 @@ int main()
 {
     RunOn(Wii(), kTests);
 
-    return Report();
+    return xsflib::testing::Summary("sequence_export_revolution");
 }

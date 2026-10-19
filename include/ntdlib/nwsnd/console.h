@@ -24,6 +24,7 @@
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/tables.h"
+#include "ntdlib/nwsnd/util.h"
 #include "ntdlib/sound_build.h"
 
 namespace ntdlib::nwsnd
@@ -130,7 +131,11 @@ struct CafePolicy
     // The volume2 command (0xD5), the main volume (0xC2) and the pitch bend (0xC4) ramp over a time prefix.
     static constexpr bool kVolume2Ramps = true;
     static constexpr bool kMainVolumeRamps = true;
-    static constexpr bool kBendRamps = true;
+
+    static constexpr bool BendRamps(const auto&)
+    {
+        return true;
+    }
 
     // The library has one build and every command.
     struct Build
@@ -170,7 +175,7 @@ struct CafePolicy
         return value <= 127;
     }
 
-    // The sound's volume, the biquad filter's value (0xB5) and a tie's velocity, from 0 to 127 as 0 to 1.
+    // The sound's volume, the biquad filter's value (0xB5) and a note's velocity, from 0 to 127 as 0 to 1.
     static float PlayerVolume(uint32_t volume)
     {
         return AtLeastZero(static_cast<float>(volume) / 127.0f);
@@ -289,23 +294,19 @@ struct CafePolicy
     // entry for the top 8 bits, plus its step to the next entry for the low 24 bits, in one fused step.
     static float Sine(float turn)
     {
-        const float steps = turn * 4294967296.0f;
-        const uint32_t step = steps < 2147483648.0f
-                                  ? static_cast<uint32_t>(ToInt32(steps))
-                                  : static_cast<uint32_t>(ToInt32(steps - 2147483648.0f)) + 0x80000000u;
+        const uint32_t step = CafeToUint32(turn * 4294967296.0f);
         const float* entry = tables::kSin[step >> 24];
 
         return std::fma(entry[1] * static_cast<float>(step & 0xFFFFFF), 0x1p-24f, entry[0]);
     }
 
-    // Four straight lines through 0, 1, 0, -1 and 0 (CurveTriangle, 0x022BB50C).
+    // Four straight lines through 0, 1, 0, -1 and 0 (CurveTriangle, 0x022BB50C). The line is the turn's quarters,
+    // converted to an unsigned integer and held to 0..4 as a signed one.
     static float Triangle(float turn)
     {
         constexpr std::array<float, 5> kSlopes = {4.0f, -4.0f, -4.0f, 4.0f, 4.0f};
         constexpr std::array<float, 5> kOffsets = {0.0f, 2.0f, 2.0f, -4.0f, 0.0f};
-        const float quarters = turn * 4.0f;
-        const int32_t line =
-            quarters < 2147483648.0f ? ToInt32(quarters) : ToInt32(quarters - 2147483648.0f) + INT32_MIN;
+        const auto line = static_cast<int32_t>(CafeToUint32(turn * 4.0f));
         const auto i = static_cast<std::size_t>(std::clamp(line, 0, 4));
 
         return std::fma(kSlopes[i], turn, kOffsets[i]);
@@ -406,10 +407,10 @@ struct NxPolicy
     // The clock counts in those units. NW4R SND's clock counts in float milliseconds (RevolutionPolicy).
     static constexpr bool kFloatClock = false;
 
-    // The sequence's ticks in a millisecond, from its timebase, tempo and tempo ratio (UpdateTick).
+    // The sequence's ticks in a millisecond, from its timebase, tempo and tempo ratio (UpdateTick), as on the Wii U.
     static float TicksPerMs(int timebase, int tempo, float tempo_ratio)
     {
-        return (static_cast<float>(static_cast<int32_t>(timebase * tempo)) * tempo_ratio) / 60000.0f;
+        return CafePolicy::TicksPerMs(timebase, tempo, tempo_ratio);
     }
 
     // The library's sizes: a call stack 10 deep, four LFOs and three effect sends.
@@ -417,8 +418,8 @@ struct NxPolicy
     static constexpr int kLfoCount = 4;
     static constexpr int kFxSendCount = 3;
 
-    // A tick runs no more than this many commands of a track (ParseNextTick, 0x022B6F14). The tick then ends, and the
-    // track reads on in the next tick.
+    // A tick runs no more than this many commands of a track (ParseNextTick, 0x022B6F14 on the Wii U). The tick then
+    // ends, and the track reads on in the next tick.
     static constexpr int kParseLimit = 10000;
     static constexpr bool kParseLimitEndsTrack = false;
 
@@ -455,34 +456,36 @@ struct NxPolicy
     // The volume2 command (0xD5), the main volume (0xC2) and the pitch bend (0xC4) ramp over a time prefix.
     static constexpr bool kVolume2Ramps = true;
     static constexpr bool kMainVolumeRamps = true;
-    static constexpr bool kBendRamps = true;
 
-    // The library has one build and every command.
-    struct Build
-    {
-    };
-
-    static bool HasCommand(const Build&, uint32_t)
+    static constexpr bool BendRamps(const auto&)
     {
         return true;
     }
 
-    // The argument of a pan, initial pan or surround pan command (0xC0, 0xDC and 0xD7), as read.
-    static int32_t PanArgument(const Build&, int32_t value)
+    // The library has one build and every command, as on the Wii U. The commands' values are the Wii U's too.
+    using Build = CafePolicy::Build;
+
+    static bool HasCommand(const Build& build, uint32_t command)
     {
-        return value;
+        return CafePolicy::HasCommand(build, command);
+    }
+
+    // The argument of a pan, initial pan or surround pan command (0xC0, 0xDC and 0xD7), as read.
+    static int32_t PanArgument(const Build& build, int32_t value)
+    {
+        return CafePolicy::PanArgument(build, value);
     }
 
     // The tempo command's value (0xE1), held to 0-1023.
-    static uint16_t TempoOf(const Build&, int32_t value)
+    static uint16_t TempoOf(const Build& build, int32_t value)
     {
-        return static_cast<uint16_t>(std::clamp(value, 0, 0x3FF));
+        return CafePolicy::TempoOf(build, value);
     }
 
     // The sweep command's pitch (0xE3), in 64ths of a semitone.
-    static float SweepPitchOf(const Build&, int32_t value)
+    static float SweepPitchOf(const Build& build, int32_t value)
     {
-        return static_cast<float>(value) * 0.015625f;
+        return CafePolicy::SweepPitchOf(build, value);
     }
 
     // A note in a key group releases the track's other notes in the group at the release rate 0x7E.
@@ -490,12 +493,12 @@ struct NxPolicy
 
     // Whether a track's envelope value (0xD0 to 0xD3) or hold (0xB1) replaces the bank's value at a note's start.
     // Values from 0 to 127 do.
-    static bool ReplacesEnvelope(const Build&, int value)
+    static bool ReplacesEnvelope(const Build& build, int value)
     {
-        return value <= 127;
+        return CafePolicy::ReplacesEnvelope(build, value);
     }
 
-    // The sound's volume, the biquad filter's value (0xB5) and a tie's velocity, from 0 to 127 as 0 to 1.
+    // The sound's volume, the biquad filter's value (0xB5) and a note's velocity, from 0 to 127 as 0 to 1.
     static float PlayerVolume(uint32_t volume)
     {
         return AtLeastZero(static_cast<float>(volume) / 127.0f);
@@ -503,12 +506,12 @@ struct NxPolicy
 
     static float BiquadValueOf(int32_t value)
     {
-        return static_cast<float>(value) / 127.0f;
+        return CafePolicy::BiquadValueOf(value);
     }
 
     static float VelocityVolume(int velocity)
     {
-        return static_cast<float>(static_cast<uint8_t>(velocity)) * (1.0f / 127.0f);
+        return CafePolicy::VelocityVolume(velocity);
     }
 
     // The channel's track volume (UpdateChannelParam): the product of the track's volume, volume2 and the player's main
@@ -516,12 +519,7 @@ struct NxPolicy
     static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float track_volume,
                              float player_volume)
     {
-        const uint32_t level = volume * volume2 * main_volume;
-        float value = static_cast<float>(static_cast<int32_t>(level)) / 2048383.0f;
-        value = value * value;
-        value = value * track_volume;
-
-        return value * player_volume;
+        return CafePolicy::TrackVolume(volume, volume2, main_volume, track_volume, player_volume);
     }
 
     // The track's pan and surround pan, from -63 to 63 and from 0 to 126, as -1 to 1 and 0 to 2.
@@ -540,7 +538,7 @@ struct NxPolicy
     // A send from 0 to 127 as 0 to 1. The main send is that less 1.
     static float SendOfValue(uint32_t send)
     {
-        return static_cast<float>(send) / 127.0f;
+        return CafePolicy::SendOfValue(send);
     }
 
     // A sequence's 16- and 24-bit arguments are little-endian.
@@ -568,24 +566,10 @@ struct NxPolicy
     // then follows the envelope's step (Channel::NoteOff, 0xc23a70, and Channel::Update).
     static constexpr bool kDeferredNoteOff = true;
 
-    // AArch64's conversion of a float to a 32-bit integer (fcvtzs): toward zero, held to the integer's range, and 0 for
-    // NaN.
+    // AArch64's conversion of a float to a 32-bit integer (fcvtzs).
     static int32_t ToInt32(float x)
     {
-        if (std::isnan(x))
-        {
-            return 0;
-        }
-        if (x <= -2147483648.0f)
-        {
-            return INT32_MIN;
-        }
-        if (x >= 2147483648.0f)
-        {
-            return INT32_MAX;
-        }
-
-        return static_cast<int32_t>(x);
+        return ArmToInt32(x);
     }
 
     // AArch64's fmax, fminnm and fmin (see ntdlib/aarch64.h).
@@ -638,7 +622,7 @@ struct NxPolicy
     // waits for the next update.
     static bool ReachesSustain(float value, float sustain)
     {
-        return value < sustain;
+        return CafePolicy::ReachesSustain(value, sustain);
     }
 
     // AArch64's fcvtzu to a 32-bit integer with `fbits` fraction bits: toward zero, held to the integer's range, 0 for
@@ -716,12 +700,12 @@ struct NxPolicy
     // The envelope's release rate and its level in decibels (CurveAdshr::CalcRelease and GetValue).
     static float ReleaseRate(float rate)
     {
-        return rate / 5.0f;
+        return CafePolicy::ReleaseRate(rate);
     }
 
     static float EnvelopeLevel(float value)
     {
-        return value / 10.0f;
+        return CafePolicy::EnvelopeLevel(value);
     }
 
     // Util::CalcLpfFreq, 0xc1a2a0. The steps are those of the Wii U.
@@ -827,7 +811,11 @@ struct CtrPolicy
     // bytes. The pitch bend (0xC4) ramps.
     static constexpr bool kVolume2Ramps = false;
     static constexpr bool kMainVolumeRamps = false;
-    static constexpr bool kBendRamps = true;
+
+    static constexpr bool BendRamps(const auto&)
+    {
+        return true;
+    }
 
     // The random generator steps 17 times before a sound's sequence first runs. The LFO draws no numbers.
     static constexpr int kRandomStepsBeforeStart = 17;
@@ -879,24 +867,10 @@ struct CtrPolicy
         return value <= 127;
     }
 
-    // The VFP's conversion of a float to a 32-bit integer (ftosizs): toward zero, held to the integer's range, and 0
-    // for NaN.
+    // The VFP's conversion of a float to a 32-bit integer (ftosizs).
     static int32_t ToInt32(float x)
     {
-        if (std::isnan(x))
-        {
-            return 0;
-        }
-        if (x <= -2147483648.0f)
-        {
-            return INT32_MIN;
-        }
-        if (x >= 2147483648.0f)
-        {
-            return INT32_MAX;
-        }
-
-        return static_cast<int32_t>(x);
+        return ArmToInt32(x);
     }
 
     // The larger of two floats for the level of a volume (Util::CalcVolumeRatio, 0x17f8a8): `b` when `a` is below it,
@@ -1089,8 +1063,9 @@ struct CtrPolicy
 // NW4R SND on the Wii's Broadway, after Wii Sports' main.dol. NW4R SND is older than nw::snd: one LFO, no extended
 // commands, a call stack 3 deep and three effect sends. The library lacks a channel's silence, the outputs, the pan
 // range, the user's pitch, and the player's filters that override the track's filters. NW4R SND's code divides where
-// the 3DS's code multiplies by reciprocals. Four builds of it differ in their commands, and WarioWare: Smooth Moves'
-// build of October 2006 in its clock too. A sound's build comes from its main.dol or its AX, and the player holds it.
+// the 3DS's code multiplies by reciprocals. NW4R SND's builds fall into six kinds that differ in their commands
+// (SndBuild). WarioWare: Smooth Moves' build of October 2006 also differs in its clock. A sound's build comes from its
+// main.dol or its AX, and the player holds it.
 struct RevolutionPolicy
 {
     // The console's policy. A user's policy that derives from it gives this one to the library's builds of the envelope
@@ -1153,11 +1128,16 @@ struct RevolutionPolicy
     template <typename Channel, typename Engine>
     static void UpdateChannel(Channel& channel, Engine& engine, bool periodic);
 
-    // The volume2 command (0xD5), the main volume (0xC2) and the pitch bend (0xC4) set their value at once. A time
-    // prefix only takes its bytes (MmlParser::CommandProc, 0x8003bee8).
+    // The volume2 command (0xD5) and the main volume (0xC2) set their value at once. A time prefix only takes its
+    // bytes (MmlParser::CommandProc, 0x8003bee8). Builds before September 2009 set the pitch bend (0xC4) at once too.
+    // Later builds move it over the prefix's ticks (SndBuild::SinceSeptember2009).
     static constexpr bool kVolume2Ramps = false;
     static constexpr bool kMainVolumeRamps = false;
-    static constexpr bool kBendRamps = false;
+
+    static bool BendRamps(const SndBuild& build)
+    {
+        return build.SinceSeptember2009();
+    }
 
     // The random generator doesn't step before a sound starts. The LFO draws no numbers.
     static constexpr int kRandomStepsBeforeStart = 0;
@@ -1186,7 +1166,7 @@ struct RevolutionPolicy
         case 0xA5:
         case 0xB1:
         case 0xB2:
-            return build.Since2008();
+            return build.SinceMarch2008();
         case 0xB3:
         case 0xB4:
         case 0xB5:
@@ -1415,13 +1395,13 @@ struct RevolutionPolicy
     // keep 16 bits. A variable's default of -1 then gives 65535.
     static uint16_t TempoOf(const Build& build, int32_t value)
     {
-        return static_cast<uint16_t>(build.Since2008() ? std::clamp(value, 0, 1023) : value);
+        return static_cast<uint16_t>(build.SinceMarch2008() ? std::clamp(value, 0, 1023) : value);
     }
 
     // The sweep command's pitch (0xE3): in 32nds of a semitone, and from 2008 in 64ths (Mario Kart Wii, 0x80096b58).
     static float SweepPitchOf(const Build& build, int32_t value)
     {
-        return static_cast<float>(value) / (build.Since2008() ? 64.0f : 32.0f);
+        return static_cast<float>(value) / (build.SinceMarch2008() ? 64.0f : 32.0f);
     }
 
     // A note in a key group releases the track's other notes in the group, each at its release rate (Mario Kart Wii,
@@ -1433,7 +1413,7 @@ struct RevolutionPolicy
     // 2008 take 0 to 127 (0x8009c02c in Mario Kart Wii's main.dol). The hold comes in 2008.
     static bool ReplacesEnvelope(const Build& build, int value)
     {
-        return build.Since2008() ? value <= 127 : value != 0xFF;
+        return build.SinceMarch2008() ? value <= 127 : value != 0xFF;
     }
 
     // The clock (SeqPlayer::Update, 0x80045d50): a sound frame of 3 ms. UpdateTick (0x8003eec4) counts the frame's time
@@ -1482,11 +1462,17 @@ struct RevolutionPolicy
         return CafePolicy::LpfValue(lpf);
     }
 
-    // The low-pass's cutoff in Hz for a value from 0 to 1: 32000 * 2^(10 (value - 1)), from 31 Hz to 32000 Hz. The Wii
-    // has no table of cutoffs (see CalcLpfFreq). The game works the power out with its C library's pow, in double
-    // precision.
-    static uint16_t LpfFreq(float value)
+    // The low-pass's cutoff in Hz for a value from 0 to 1 in `build` (see CalcLpfFreq). Builds before November 2008
+    // work it out: 32000 * 2^(10 (value - 1)), from 31 Hz to 32000 Hz. The game works the power out with its C
+    // library's pow, in double precision. Later builds take the cutoff from kLpfFreq, as the Wii U does: 80 Hz below
+    // 0.13561438, 16000 Hz from 0.9, and steps a thirtieth apart between them (SndBuild::SinceNovember2008).
+    static uint16_t LpfFreq(const SndBuild& build, float value)
     {
+        if (build.SinceNovember2008())
+        {
+            return tables::kLpfFreq[LpfFreqIndex<CafePolicy>(value)];
+        }
+
         return static_cast<uint16_t>(32000.0 * std::pow(2.0, 10.0 * (static_cast<double>(value) - 1.0)));
     }
 
@@ -1619,21 +1605,23 @@ void RevolutionPolicy::UpdateChannel(Channel& channel, Engine& engine, bool peri
         return;
     }
 
-    // The voice limits both gains to full level (Voice::SetVeVolume, 0x8004c874). Only a volume LFO lifts them above
-    // full level. An engine with the hook follows each frame in which one does.
+    // In builds before September 2009, the voice limits both gains to full level (Voice::SetVeVolume, 0x8004c874).
+    // Only a volume LFO lifts them above full level. An engine with the hook follows each frame in which one does.
+    // Later builds hold the gains only at 0 (SndBuild::SinceSeptember2009). They call neither hook.
+    const bool holds_gains = !engine.Build().SinceSeptember2009();
     if constexpr (requires { engine.OnGainAboveFull(channel); })
     {
-        if (lfo_target == 1 && (ve_init_volume > 1.0f || ve_target_volume > 1.0f))
+        if (holds_gains && lfo_target == 1 && (ve_init_volume > 1.0f || ve_target_volume > 1.0f))
         {
             engine.OnGainAboveFull(channel);
         }
     }
 
-    // An engine with this hook follows every frame of a volume LFO: the envelope's level and the LFO's, in decibels,
-    // where the voice's ramp ends.
+    // An engine with this hook follows every frame of a volume LFO in those builds: the envelope's level and the
+    // LFO's, in decibels, where the voice's ramp ends.
     if constexpr (requires { engine.OnVolumeLfo(channel, 0.0f, 0.0f); })
     {
-        if (lfo_target == 1)
+        if (holds_gains && lfo_target == 1)
         {
             engine.OnVolumeLfo(channel, channel.envelope.GetValue(), 6.0f * next_lfo_value);
         }

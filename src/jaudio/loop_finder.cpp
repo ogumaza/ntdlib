@@ -8,13 +8,6 @@
 
 namespace ntdlib::jaudio
 {
-namespace
-{
-
-// The sequence command that ends a track.
-constexpr uint8_t kFinishCommand = 0xff;
-
-} // namespace
 
 long long FramesToMs(uint64_t frames, uint32_t sample_rate)
 {
@@ -61,7 +54,7 @@ LoopFinder::Verdict LoopFinder::Take(const TrackEvent& event, const Sounded& sou
         Command(track, event);
         break;
     case TrackEvent::Kind::kJump:
-        return Jump(event.track, track, event, sounded);
+        return Jump(track, event, sounded);
     }
 
     return Verdict::kNone;
@@ -151,7 +144,7 @@ uint64_t LoopFinder::LastMove(const Track& track)
 // and its commands in the loop weren't moves. A jump back judges only the moves inside its loop. The others wait for
 // the jump back of a loop around them. Any other pass counts towards a loop unless it comes before the first sound or a
 // track before this one holds it back.
-LoopFinder::Verdict LoopFinder::Jump(uint32_t id, Track& track, const TrackEvent& event, const Sounded& sounded)
+LoopFinder::Verdict LoopFinder::Jump(Track& track, const TrackEvent& event, const Sounded& sounded)
 {
     if (event.to >= event.at)
     {
@@ -192,7 +185,7 @@ LoopFinder::Verdict LoopFinder::Jump(uint32_t id, Track& track, const TrackEvent
 
     // A pass that doesn't count starts the count again. Such a pass keeps the count when its loop lies inside the loop
     // being counted.
-    if (idles || !sounded.any || HeldBack(id, track, event.frame))
+    if (idles || !sounded.any || HeldBack(event.track, track, event.frame))
     {
         const bool inside = track.counted && event.to > track.counted->start && event.at <= track.counted->end;
         if (!inside)

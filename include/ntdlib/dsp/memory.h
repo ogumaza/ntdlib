@@ -5,7 +5,8 @@
 // - At(address, size): main memory at the addresses that the CPU and the DSP's DMA use, or nullptr unless the whole
 //   range lies in one region of it;
 // - Aram(address, size): the memory behind the DSP's accelerator and the ARAM DMA, or nullptr outside it;
-// - kAcceleratorReadsMem1: whether an accelerator address with bit 28 clear reads MEM1 rather than ARAM;
+// - on the GameCube and the Wii, kAcceleratorReadsMem1: whether an accelerator address with bit 28 clear reads MEM1
+//   rather than ARAM;
 // - the DSP's layout on that console, as in DspLayout.
 
 #pragma once
@@ -264,9 +265,6 @@ public:
     static constexpr uint16_t kCoefficientRomEnd = 0x3800;
     static constexpr bool kAddressExtensions = true;
     static constexpr bool kBootRom = false;
-
-    // The accelerator reads main memory, through its address extension.
-    static constexpr bool kAcceleratorReadsMem1 = true;
 
     // Starts zeroed.
     explicit WiiUMemory(std::size_t size) : bytes_(detail::Allocate(size)), size_(size)

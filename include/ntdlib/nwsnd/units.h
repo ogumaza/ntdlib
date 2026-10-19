@@ -24,8 +24,8 @@ struct Scale
     commands::Fixed offset = 0;
 };
 
-// The scale of the value of a command of `kind` (commands::UnitOf) on the grammar's console. A note's velocity and a
-// time take kTicksScale and kLevelScale below.
+// The scale of the value of a command of `kind` (commands::UnitOf) on the grammar's console. A note's velocity takes
+// kLevelScale below, and a time kTicksScale.
 Scale ScaleOf(commands::Kind kind, const Grammar& grammar);
 
 // The scales of a note's velocity and of a time: unchanged.

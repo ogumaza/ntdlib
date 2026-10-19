@@ -12,8 +12,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <map>
 #include <utility>
 #include <vector>
 
@@ -58,7 +56,8 @@ sf2::Zone GlobalZone(const PresetKey& key)
     return global;
 }
 
-// Build a zone for `z` with `sample`. Add `quieter` centibels of attenuation.
+// Build a zone for `z` with `sample`. Add `quieter` centibels of attenuation. A zone at the DSP's pitch limit plays
+// every key at its tuning (a scaleTuning of 0).
 sf2::Zone RegionZone(const PresetZone& z, double quieter, uint16_t sample, bool loop)
 {
     const Sf2Envelope e = ConvertEnvelope(z.envelope);
@@ -87,7 +86,13 @@ sf2::Zone RegionZone(const PresetZone& z, double quieter, uint16_t sample, bool 
     values.loop = loop;
     values.sample = sample;
 
-    return sf2::RegionZone(values);
+    sf2::Zone zone = sf2::RegionZone(values);
+    if (z.fixed_pitch)
+    {
+        zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(sf2::kScaleTuning, 0));
+    }
+
+    return zone;
 }
 
 // Build a SoundFont instrument and preset for each performance preset. Add each wave's samples only once.
@@ -117,38 +122,13 @@ public:
     }
 
 private:
-    // Add a wave's sample on first use. Return nothing if the wave cannot be read.
-    std::optional<std::pair<uint16_t, bool>> Sample(uint32_t wave_system, uint16_t wave_id);
-
     BankSet& banks_;
     const Performance& perf_;
     double quieter_;
     std::vector<std::string> warnings_;
     sf2::SoundFont sf_;
-    std::map<std::pair<uint32_t, uint16_t>, std::optional<std::pair<uint16_t, bool>>> samples_;
+    SoundFontSamples samples_{sf_};
 };
-
-std::optional<std::pair<uint16_t, bool>> SoundFontBuilder::Sample(uint32_t wave_system, uint16_t wave_id)
-{
-    const auto key = std::make_pair(wave_system, wave_id);
-    if (auto it = samples_.find(key); it != samples_.end())
-    {
-        return it->second;
-    }
-
-    std::optional<std::pair<uint16_t, bool>> id;
-    if (const Pcm* pcm = banks_.GetWave(wave_system, wave_id))
-    {
-        PreparedWave w = PrepareForSoundFont(*pcm);
-        const bool loop = w.loop;
-        const std::vector<uint16_t> ids =
-            sf2::AddSamples(sf_, std::move(w), "w" + std::to_string(wave_system) + "_" + std::to_string(wave_id),
-                            static_cast<uint32_t>(std::lround(pcm->sample_rate)), 60);
-        id = std::make_pair(ids.at(0), loop);
-    }
-
-    return samples_.emplace(key, id).first->second;
-}
 
 void SoundFontBuilder::Add(uint32_t index, const std::string& name)
 {
@@ -161,9 +141,10 @@ void SoundFontBuilder::Add(uint32_t index, const std::string& name)
         warnings_.push_back(name + ": there is no bank " + std::to_string(key.bank));
     }
 
-    for (const PresetZone& z : ZonesOf(key, perf_, banks_))
+    for (const PresetZone& z : ZonesOf(index, perf_, banks_))
     {
-        const std::optional<std::pair<uint16_t, bool>> sample = Sample(z.wave_system, z.wave_id);
+        const std::optional<SoundFontSamples::Sample> sample = samples_.Get(
+            WaveName(z.wave_system, z.wave_id), 60, [&] { return banks_.GetWave(z.wave_system, z.wave_id); });
         if (!sample)
         {
             warnings_.push_back(name + ": no wave for keys " + std::to_string(z.low_key) + "-" +
@@ -171,7 +152,7 @@ void SoundFontBuilder::Add(uint32_t index, const std::string& name)
             continue;
         }
 
-        inst.zones.push_back(RegionZone(z, quieter_, sample->first, sample->second));
+        inst.zones.push_back(RegionZone(z, quieter_, sample->id, sample->loop));
     }
 
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));
@@ -186,9 +167,9 @@ void SoundFontBuilder::AddChannel10Copy(uint32_t index)
 double LoudestZone(const Performance& perf, BankSet& banks)
 {
     double loudest = 0.0;
-    for (const PresetKey& key : perf.presets)
+    for (std::size_t p = 0; p < perf.presets.size(); p++)
     {
-        for (const PresetZone& z : ZonesOf(key, perf, banks))
+        for (const PresetZone& z : ZonesOf(p, perf, banks))
         {
             const Sf2Envelope e = ConvertEnvelope(z.envelope);
             loudest = std::max(loudest, z.volume * std::pow(10.0, e.peak_db / 20.0));
@@ -211,8 +192,35 @@ std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys)
     return sf2::PresetNames(banks_and_programs, true);
 }
 
-std::vector<PresetZone> ZonesOf(const PresetKey& key, const Performance& perf, BankSet& banks)
+std::string WaveName(uint32_t wave_system, uint16_t wave_id)
 {
+    return "w" + std::to_string(wave_system) + "_" + std::to_string(wave_id);
+}
+
+std::optional<SoundFontSamples::Sample> SoundFontSamples::Get(const std::string& name, uint8_t root_key,
+                                                              const std::function<const Pcm*()>& pcm)
+{
+    if (const auto it = samples_.find(name); it != samples_.end())
+    {
+        return it->second;
+    }
+
+    std::optional<Sample> sample;
+    if (const Pcm* decoded = pcm())
+    {
+        PreparedWave w = PrepareForSoundFont(*decoded);
+        const bool loop = w.loop;
+        const std::vector<uint16_t> ids = sf2::AddSamples(
+            sf_, std::move(w), name, static_cast<uint32_t>(std::lround(decoded->sample_rate)), root_key);
+        sample = Sample{ids.at(0), loop};
+    }
+
+    return samples_.emplace(name, sample).first->second;
+}
+
+std::vector<PresetZone> ZonesOf(std::size_t preset, const Performance& perf, BankSet& banks)
+{
+    const PresetKey& key = perf.presets[preset];
     const Bank* bank = banks.Archive().FindBank(key.bank);
     if (bank == nullptr)
     {
@@ -224,7 +232,8 @@ std::vector<PresetZone> ZonesOf(const PresetKey& key, const Performance& perf, B
     const Oscillator* pitch =
         key.pitch_oscillator >= 0 ? &perf.oscillators[static_cast<std::size_t>(key.pitch_oscillator)] : nullptr;
     return PresetZones(*bank, banks.Archive().FindWaveSystem(bank->wave_system), key.program, volume, pitch,
-                       key.direct_release, perf.default_release);
+                       key.direct_release, perf.default_release,
+                       perf.pitch_limited_presets.contains(static_cast<uint32_t>(preset)));
 }
 
 Conversion ConvertSequence(const SequenceSound& sound, BankSet& banks, const PerformOptions& options,
@@ -235,18 +244,9 @@ Conversion ConvertSequence(const SequenceSound& sound, BankSet& banks, const Per
 
     const MidiReport midi = ntdlib::sequence_export::WriteMidiFile(c, sound.name);
 
-    // SoundFont zones can't amplify their samples. If a zone plays above full level, attenuate every zone equally to
-    // keep their balance. SFZ keeps the levels.
-    const double loudest = LoudestZone(c.performance, banks);
-    const double quieter = loudest > 1.0 ? 200.0 * std::log10(loudest) : 0.0;
-    if (loudest > 1.0)
-    {
-        char what[160];
-        std::snprintf(what, sizeof(what),
-                      "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",
-                      quieter / 10.0);
-        c.performance.approximations[what] = NoteCount(c.performance);
-    }
+    // SoundFont zones can't amplify their samples. A zone above full level makes every zone quieter. SFZ keeps the
+    // levels.
+    const double quieter = ntdlib::sequence_export::CutAboveFullLevel(c, LoudestZone(c.performance, banks));
 
     SoundFontBuilder builder(banks, c.performance, quieter);
     const std::vector<std::string> names = PresetNames(c.performance.presets);

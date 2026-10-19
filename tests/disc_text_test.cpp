@@ -7,19 +7,18 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
+#include "disc_files.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
 #include "temp_folder.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
 
 namespace fs = std::filesystem;
 namespace disc = ntdlib::disc;
@@ -30,6 +29,7 @@ namespace
 {
 
 using Bytes = std::vector<uint8_t>;
+using disc_files::WriteFile;
 
 // How the tests load games: as a program named xyz that reads plain images of each console.
 const disc::GameOptions kGameCube{disc::Console::kGameCube, "xyz"};
@@ -91,13 +91,6 @@ const std::vector<std::string> kPaths = {
     // U+FF7B U+FF73 U+FF9D U+FF84 U+FF9E.
     "\xEF\xBD\xBB\xEF\xBD\xB3\xEF\xBE\x9D\xEF\xBE\x84\xEF\xBE\x9E.bin",
 };
-
-void WriteFile(const fs::path& path, const Bytes& data)
-{
-    fs::create_directories(path.parent_path());
-    std::ofstream(path, std::ios::binary)
-        .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-}
 
 // The file system table of kEntries. A Wii disc's table gives the files' offsets divided by 4 (`shift` 2).
 Bytes FileTable(int shift)
@@ -351,13 +344,5 @@ int main()
     TestExtractedDiscs();
     TestNames();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("disc text tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("disc text");
 }

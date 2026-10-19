@@ -10,6 +10,8 @@
 #include <span>
 #include <utility>
 
+#include "ntdlib/fused.h"
+
 namespace ntdlib::cafe::snd
 {
 namespace
@@ -293,10 +295,7 @@ void AxVoice::UpdateSrc(bool setup)
 
     // At the start: the ratio in 16.16, capped at 8, and the filter. The 4-tap filter is 8 kHz above a ratio of 4/3,
     // 12 kHz above 1 and 16 kHz otherwise. The choice holds whatever the pitch does later.
-    const float fixed = 65536.0f * ratio;
-    const uint32_t bits = fixed < 2147483648.0f
-                              ? static_cast<uint32_t>(util::ToInt32(fixed))
-                              : static_cast<uint32_t>(util::ToInt32(fixed - 2147483648.0f)) + 0x80000000u;
+    const uint32_t bits = CafeToUint32(65536.0f * ratio);
     ax::Src src;
     src.ratio = bits >> 16 < 8 ? bits : 0x80000;
     uint32_t type = 0;

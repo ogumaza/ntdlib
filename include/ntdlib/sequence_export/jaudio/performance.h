@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -63,6 +64,9 @@ struct Performance : ntdlib::sequence_export::PerformanceBase
     std::vector<PresetKey> presets;
     std::vector<Oscillator> oscillators; // the tracks' oscillators that presets name
     uint16_t default_release = 0;        // the sound's SequenceSound::default_release
+
+    // The indexes in `presets` of the presets that play a key past the DSP's pitch limit (PresetZones's limit_pitch).
+    std::set<uint32_t> pitch_limited_presets;
 };
 
 // Options for playing a sequence.

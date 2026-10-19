@@ -432,14 +432,7 @@ void MultiVoice<Policy>::UpdateVoiceStatus(Engine& engine)
         return;
     }
 
-    for (int i = 0; i < channel_count_; ++i)
-    {
-        FreeVoice(engine, voices_[static_cast<std::size_t>(i)]);
-    }
-
-    channel_count_ = 0;
-    active_ = false;
-    engine.Voices().RemoveVoiceList(place_);
+    Free(engine);
     CallOwner(engine, VoiceCallbackStatus::kDropDsp, owner_);
     started_ = false;
     sdk_started_ = false;
@@ -618,11 +611,8 @@ int MultiVoiceManager<Policy>::DropLowestPriorityVoice(Engine& engine, uint32_t 
         return 0;
     }
 
-    const ChannelId owner = voice.owner_;
     const int channels = voice.channel_count_;
-    voice.Stop(engine);
-    voice.Free(engine);
-    voice.CallOwner(engine, VoiceCallbackStatus::kDropVoice, owner);
+    DropVoice(engine, voice);
 
     return channels;
 }
@@ -659,13 +649,19 @@ bool MultiVoiceManager<Policy>::DropLowestPriorityVoices(Engine& engine, int cha
     {
         MultiVoice<Policy>& voice = At(active_.front());
         dropped += voice.channel_count_;
-        const ChannelId owner = voice.owner_;
-        voice.Stop(engine);
-        voice.Free(engine);
-        voice.CallOwner(engine, VoiceCallbackStatus::kDropVoice, owner);
+        DropVoice(engine, voice);
     }
 
     return dropped != 0;
+}
+
+template <typename Policy>
+void MultiVoiceManager<Policy>::DropVoice(Engine& engine, MultiVoice<Policy>& voice)
+{
+    const ChannelId owner = voice.owner_;
+    voice.Stop(engine);
+    voice.Free(engine);
+    voice.CallOwner(engine, VoiceCallbackStatus::kDropVoice, owner);
 }
 
 template <typename Policy>

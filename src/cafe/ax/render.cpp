@@ -16,9 +16,10 @@ namespace ntdlib::cafe::ax
 namespace
 {
 
-// The microcode's results wrap to the 40 bits of the DSP's accumulators (Wrap40). In 40-bit mode, the microcode reads
-// an accumulator's middle word saturated to 16 bits (MiddleWord).
+// The microcode's results wrap to the 40 bits of the DSP's accumulators (Wrap40), and round as the DSP rounds them
+// (Round). In 40-bit mode, the microcode reads an accumulator's middle word saturated to 16 bits (MiddleWord).
 using ntdlib::dsp::MiddleWord;
+using ntdlib::dsp::Round;
 using ntdlib::dsp::Wrap40;
 
 // An accumulator stored as a 32-bit sample: the middle word as MiddleWord reads it, then the low word.
@@ -40,11 +41,11 @@ public:
         : pb_(pb), memory_(memory), loop_keeps_history_(loop_keeps_history)
     {
         accelerator_.format = static_cast<uint16_t>(pb.format);
-        accelerator_.start = pb.loop_address & 0x3FFFFFFF;
-        accelerator_.end = pb.end_address & 0x3FFFFFFF;
-        accelerator_.current = pb.current_address & 0xBFFFFFFF;
+        accelerator_.start = pb.loop_address & ntdlib::dsp::kAcceleratorAddressMask;
+        accelerator_.end = pb.end_address & ntdlib::dsp::kAcceleratorAddressMask;
+        accelerator_.current = pb.current_address & ntdlib::dsp::kAcceleratorCurrentMask;
         accelerator_.gain = pb.adpcm.gain;
-        accelerator_.pred_scale = pb.adpcm.predictor_scale & 0x7F;
+        accelerator_.pred_scale = pb.adpcm.predictor_scale & ntdlib::dsp::kAcceleratorPredScaleMask;
         accelerator_.yn1 = static_cast<uint16_t>(pb.adpcm.yn1);
         accelerator_.yn2 = static_cast<uint16_t>(pb.adpcm.yn2);
     }
@@ -85,7 +86,7 @@ private:
         }
         else
         {
-            accelerator_.pred_scale = pb_.adpcm_loop.predictor_scale & 0x7F;
+            accelerator_.pred_scale = pb_.adpcm_loop.predictor_scale & ntdlib::dsp::kAcceleratorPredScaleMask;
             if (pb_.type != VoiceType::kStream && !loop_keeps_history_)
             {
                 accelerator_.yn1 = static_cast<uint16_t>(pb_.adpcm_loop.yn1);
@@ -198,8 +199,7 @@ void ApplyBiquad(Biquad& biquad, std::span<int16_t> samples)
         const int64_t sum = int64_t{biquad.b0} * x + int64_t{biquad.b1} * biquad.xn1 + int64_t{biquad.b2} * biquad.xn2 +
                             int64_t{biquad.a1} * biquad.yn1 + int64_t{biquad.a2} * biquad.yn2;
         const int64_t shifted = Wrap40(sum * 4);
-        const int64_t rounded = Wrap40(((shifted & 0x10000) ? shifted + 0x8000 : shifted + 0x7FFF) & ~int64_t{0xFFFF});
-        const int16_t y = MiddleWord(rounded);
+        const int16_t y = MiddleWord(Wrap40(Round(shifted)));
 
         biquad.xn2 = biquad.xn1;
         biquad.xn1 = x;

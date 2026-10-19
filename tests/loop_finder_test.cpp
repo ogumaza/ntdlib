@@ -6,7 +6,6 @@
 #include "ntdlib/jaudio/loop_finder.h"
 
 #include <cstdint>
-#include <cstdio>
 #include <vector>
 
 #include "xsflib/testing/check.h"
@@ -317,13 +316,5 @@ int main()
     TestIdleInCall();
     TestJAudio1Commands();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("loop finder tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("loop finder");
 }

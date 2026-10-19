@@ -23,6 +23,7 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/nwsnd/archive_files.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/sequence.h"
@@ -38,28 +39,16 @@ namespace ntdlib::sequence_export
 
 // How nw::snd sets a channel up for a note (Bank::NoteOn), and the outputs that a track gives its channels
 // (SequenceTrack::UpdateChannelParam). On the Wii U and the Switch, a channel keeps the velocity and the region's
-// volume apart. Each is multiplied by 1/127. A channel's outputs add the bytecode's values to the outputs of the player
-// and of the track. A console whose library differs specializes ChannelRules on its policy. The specialization takes
-// what it shares from here.
+// volume apart. Each is multiplied by 1/127. SetNote sets the channel up as the models of those consoles' engines do
+// (nwsnd::SetUpNoteChannel). A channel's outputs add the bytecode's values to the outputs of the player and of the
+// track. A console whose library differs specializes ChannelRules on its policy. The specialization takes what it
+// shares from here.
 struct NwSndChannelRules
 {
     template <typename Engine, typename Channel, typename NoteOnInfo>
     static void SetNote(Engine&, Channel& channel, const NoteOnInfo& info, const sar::VelocityRegion& region)
     {
-        channel.key = static_cast<uint8_t>(info.key);
-        channel.original_key = region.original_key;
-        channel.velocity_volume = static_cast<float>(static_cast<uint8_t>(info.velocity)) * (1.0f / 127.0f);
-        channel.init_volume = static_cast<float>(region.volume) * (1.0f / 127.0f);
-        channel.tune = region.pitch;
-        channel.envelope.SetAttack(region.adshr.attack);
-        channel.envelope.SetHold(region.adshr.hold);
-        channel.envelope.SetDecay(region.adshr.decay);
-        channel.envelope.SetSustain(region.adshr.sustain);
-        channel.envelope.SetRelease(region.adshr.release);
-        channel.init_pan = static_cast<float>(info.init_pan + static_cast<int>(region.pan) - 0x40) / 63.0f;
-        channel.key_group = region.key_group;
-        channel.ignore_note_off = region.ignore_note_off;
-        channel.interpolation_type = region.interpolation;
+        nwsnd::SetUpNoteChannel<typename Engine::Policy>(channel, region, info);
     }
 
     template <typename Outputs>
@@ -152,7 +141,7 @@ struct ChannelRules<nwsnd::RevolutionPolicy> : NwSndChannelRules
         channel.envelope.SetDecay(region.adshr.decay);
         channel.envelope.SetSustain(region.adshr.sustain);
         channel.envelope.SetRelease(region.adshr.release);
-        if (engine.Build().Since2008())
+        if (engine.Build().SinceMarch2008())
         {
             channel.envelope.SetHold(region.adshr.hold);
             channel.ignore_note_off = region.ignore_note_off;

@@ -6,16 +6,11 @@
 
 namespace ntdlib::sequence_export
 {
-namespace
-{
 
-// The engines whose LFOs keep the bytecode's units: the speed, and the delay in 5 ms steps.
 bool LfoInBytecodeUnits(Engine engine)
 {
     return engine == Engine::kCtr || engine == Engine::kRevolution;
 }
-
-} // namespace
 
 EnvelopeValues OverrideEnvelope(EnvelopeValues env, const PresetKey& key)
 {

@@ -7,7 +7,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <vector>
 
 #include "ntdlib/nwsnd/channel.h"
@@ -209,13 +208,5 @@ int main()
 {
     TestFrame();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d checks failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("nwsnd_channel_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("nwsnd_channel");
 }

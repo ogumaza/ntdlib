@@ -61,6 +61,11 @@ constexpr size_t kBi2Region = 0x18;
 constexpr uint64_t kWiiRegion = 0x4E000;
 constexpr uint32_t kJapan = 0;
 
+// NKit keeps its header at 0x200-0x21F, in the unused end of the disc header's title. The header starts with
+// "NKIT v01". The original disc has zeros there.
+constexpr uint64_t kNkitHeader = 0x200;
+constexpr uint64_t kNkitHeaderEnd = 0x220;
+
 // The message for a folder that holds neither an extracted disc nor a title.
 constexpr char kNoGame[] =
     "the folder holds no game. An extracted disc holds sys/main.dol and files/, directly or in a DATA folder. A "
@@ -86,6 +91,32 @@ std::string OtherConsoleMessage(const GameOptions& options)
                                             : "it's a Wii disc, and " + options.program + " is for GameCube discs";
 }
 
+// Checks that `header` starts a disc header of the console that `options` names. Throws Error with
+// OtherConsoleMessage for a header of the other console, and with `neither` for any other data.
+void CheckConsole(const uint8_t* header, const GameOptions& options, const std::string& neither)
+{
+    const bool gamecube = xsflib::LoadBe32(header + kGameCubeMagicOffset) == kGameCubeMagic;
+    const bool wii = xsflib::LoadBe32(header + kWiiMagicOffset) == kWiiMagic;
+    if (options.console == Console::kWii ? wii : gamecube)
+    {
+        return;
+    }
+
+    const bool other_console = options.console == Console::kWii ? gamecube : wii;
+    throw Error(other_console ? OtherConsoleMessage(options) : neither);
+}
+
+// The message for an image of neither console.
+std::string NotThisConsoleMessage(const GameOptions& options)
+{
+    if (!options.not_this_console.empty())
+    {
+        return options.not_this_console;
+    }
+
+    return options.console == Console::kWii ? "it isn't a Wii disc image" : "it isn't a GameCube disc image";
+}
+
 // The message for a damaged file system.
 std::string DamagedMessage(const GameOptions& options)
 {
@@ -98,10 +129,16 @@ std::string DamagedMessage(const GameOptions& options)
                                             : "the disc's file system is damaged";
 }
 
-// Parses a file system table (fst.bin) into its files (see ParseFileTable). A Wii disc gives the offsets divided by 4.
-std::map<std::string, FileEntry> ParseFst(const std::vector<uint8_t>& fst, const GameOptions& options)
+// True if `header`, the first 0x208 bytes of a disc at least, holds NKit's header.
+bool IsNkit(const uint8_t* header)
 {
-    return detail::ParseFileTable(fst, options.console == Console::kWii ? 2 : 0, DamagedMessage(options));
+    return std::equal(header + kNkitHeader, header + kNkitHeader + 8, "NKIT v01");
+}
+
+// The source of a game's data for messages: the image's format, after "NKit " for an NKit image.
+std::string ImageSource(const Image& image, bool nkit)
+{
+    return (nkit ? "NKit " : "") + image.Format();
 }
 
 // A game's data in the form that the game reads it.
@@ -131,15 +168,7 @@ public:
     {
         uint8_t header[0x208];
         image_->Read(0, header, sizeof(header));
-        if (xsflib::LoadBe32(header + kGameCubeMagicOffset) != kGameCubeMagic)
-        {
-            if (xsflib::LoadBe32(header + kWiiMagicOffset) == kWiiMagic)
-            {
-                throw Error(OtherConsoleMessage(options));
-            }
-
-            throw Error(options.not_this_console.empty() ? "it isn't a GameCube disc image" : options.not_this_console);
-        }
+        CheckConsole(header, options, NotThisConsoleMessage(options));
 
         // A program that reads plain images may reject one that ends before the disc header's 0x440 bytes.
         const std::optional<uint64_t> stored = image_->StoredSize();
@@ -148,12 +177,12 @@ public:
             throw Error(options.short_header);
         }
 
-        nkit_ = std::equal(header + 0x200, header + 0x208, "NKIT v01");
+        nkit_ = IsNkit(header);
     }
 
     std::string Source() const override
     {
-        return (nkit_ ? "NKit " : "") + image_->Format();
+        return ImageSource(*image_, nkit_);
     }
 
     std::optional<uint64_t> StoredSize() const override
@@ -171,8 +200,7 @@ public:
         std::vector<uint8_t> data(static_cast<size_t>(size));
         image_->Read(offset, data.data(), data.size());
 
-        // NKit keeps its header at 0x200-0x21F, in the unused end of the disc header's title. The original disc has
-        // zeros there.
+        // The original disc has zeros in place of NKit's header.
         if (nkit_ && offset < kNkitHeaderEnd && offset + size > kNkitHeader)
         {
             const uint64_t from = std::max(offset, kNkitHeader);
@@ -185,9 +213,6 @@ public:
     }
 
 private:
-    static constexpr uint64_t kNkitHeader = 0x200;
-    static constexpr uint64_t kNkitHeaderEnd = 0x220;
-
     std::unique_ptr<Image> image_;
     bool nkit_ = false;
 };
@@ -200,17 +225,9 @@ public:
     {
         uint8_t header[0x400];
         image_->Read(0, header, sizeof(header));
-        if (xsflib::LoadBe32(header + kWiiMagicOffset) != kWiiMagic)
-        {
-            if (xsflib::LoadBe32(header + kGameCubeMagicOffset) == kGameCubeMagic)
-            {
-                throw Error(OtherConsoleMessage(options));
-            }
+        CheckConsole(header, options, NotThisConsoleMessage(options));
 
-            throw Error(options.not_this_console.empty() ? "it isn't a Wii disc image" : options.not_this_console);
-        }
-
-        nkit_ = std::equal(header + 0x200, header + 0x208, "NKIT v01");
+        nkit_ = IsNkit(header);
         const uint64_t partition = FindGamePartition();
         uint8_t partition_header[0x2C0];
         image_->Read(partition, partition_header, sizeof(partition_header));
@@ -251,7 +268,7 @@ public:
 
     std::string Source() const override
     {
-        return (nkit_ ? "NKit " : "") + image_->Format();
+        return ImageSource(*image_, nkit_);
     }
 
     const std::vector<uint8_t>& Tmd() const
@@ -283,16 +300,8 @@ public:
             return;
         }
 
-        while (size)
-        {
-            const uint64_t sector = offset / kSectorData;
-            const size_t within = static_cast<size_t>(offset % kSectorData);
-            const size_t n = static_cast<size_t>(std::min<uint64_t>(size, kSectorData - within));
-            image_->Read(data_offset_ + sector * kSector + kHashes + within, out, n);
-            out += n;
-            offset += n;
-            size -= n;
-        }
+        ReadByBlocks(offset, out, size, kSectorData, [this](uint64_t sector, size_t within, uint8_t* piece, size_t n)
+                     { image_->Read(data_offset_ + sector * kSector + kHashes + within, piece, n); });
     }
 
     std::vector<uint8_t> Read(uint64_t offset, uint64_t size) override
@@ -364,7 +373,8 @@ void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
 
     // The system files: the header, bi2, the apploader, main.dol and the file system table. The apploader starts with a
     // 0x20-byte header that gives its size and the size of its trailer. The disc header gives the offsets of main.dol
-    // and the file system table, and the table's size. A Wii disc gives all three divided by 4.
+    // and the file system table, and the table's size. A Wii disc gives all three divided by 4. Its file system table
+    // gives the files' offsets divided by 4 too.
     const int shift = options.console == Console::kWii ? 2 : 0;
     out.boot = game->Read(0, kHeaderSize);
     if (options.system_files)
@@ -388,7 +398,8 @@ void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
     }
     out.fst = game->Read(fst_offset, fst_size);
 
-    auto files = std::make_shared<std::map<std::string, FileEntry>>(ParseFst(out.fst, options));
+    auto files = std::make_shared<std::map<std::string, FileEntry>>(
+        detail::ParseFileTable(out.fst, shift, DamagedMessage(options)));
     out.files.clear();
     for (const auto& [name, entry] : *files)
     {
@@ -433,22 +444,18 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     {
         throw Error("the extracted disc must contain sys/boot.bin, sys/main.dol and sys/fst.bin");
     }
-    if (options.console == Console::kWii && xsflib::LoadBe32(out.boot.data() + kWiiMagicOffset) != kWiiMagic)
+    CheckConsole(out.boot.data(), options,
+                 options.console == Console::kWii ? "sys/boot.bin isn't a Wii disc's header"
+                                                  : "sys/boot.bin isn't a GameCube disc's header");
+
+    // A folder may leave these files out. A Wii folder keeps its tmd.bin beside sys/. An extracted GameCube disc gives
+    // its region in bi2.bin. A Wii partition's bi2.bin doesn't.
+    ReadHostFile(sys / "bi2.bin", out.bi2);
+    if (out.bi2.size() >= kBi2Region + 4 && DiscConsole(out.boot) == Console::kGameCube)
     {
-        throw Error(xsflib::LoadBe32(out.boot.data() + kGameCubeMagicOffset) == kGameCubeMagic
-                        ? OtherConsoleMessage(options)
-                        : "sys/boot.bin isn't a Wii disc's header");
-    }
-    if (options.console == Console::kGameCube &&
-        xsflib::LoadBe32(out.boot.data() + kGameCubeMagicOffset) != kGameCubeMagic)
-    {
-        throw Error(xsflib::LoadBe32(out.boot.data() + kWiiMagicOffset) == kWiiMagic
-                        ? OtherConsoleMessage(options)
-                        : "sys/boot.bin isn't a GameCube disc's header");
+        out.region = xsflib::LoadBe32(out.bi2.data() + kBi2Region);
     }
 
-    // A folder may leave these files out. A Wii folder keeps its tmd.bin beside sys/.
-    ReadHostFile(sys / "bi2.bin", out.bi2);
     ReadHostFile(sys / "apploader.img", out.apploader);
     if (options.console == Console::kWii)
     {
@@ -596,12 +603,13 @@ std::optional<std::string> LoadGame(const std::filesystem::path& path, GameFiles
         std::error_code error;
         if (fs::is_directory(path, error))
         {
+            // Without GameOptions::titles, a folder without sys/main.dol has to hold the disc in DATA.
             const fs::path data = path / "DATA";
-            if (!options.titles || fs::is_regular_file(path / "sys" / "main.dol", error))
+            if (fs::is_regular_file(path / "sys" / "main.dol", error))
             {
-                LoadFolder(fs::is_regular_file(path / "sys" / "main.dol", error) ? path : data, out, options);
+                LoadFolder(path, out, options);
             }
-            else if (fs::is_regular_file(data / "sys" / "main.dol", error))
+            else if (!options.titles || fs::is_regular_file(data / "sys" / "main.dol", error))
             {
                 LoadFolder(data, out, options);
             }
@@ -622,12 +630,6 @@ std::optional<std::string> LoadGame(const std::filesystem::path& path, GameFiles
             }
 
             LoadImage(path, out, options);
-        }
-
-        // An extracted GameCube disc gives its region in bi2.bin. A Wii partition's bi2.bin doesn't.
-        if (!out.region && out.bi2.size() >= kBi2Region + 4 && DiscConsole(out.boot) == Console::kGameCube)
-        {
-            out.region = xsflib::LoadBe32(out.bi2.data() + kBi2Region);
         }
     }
     catch (const std::exception& e)

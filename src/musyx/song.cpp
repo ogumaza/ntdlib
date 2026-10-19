@@ -48,18 +48,20 @@ constexpr uint8_t kCommandBit = 0x80;
 constexpr uint8_t kEndOfStream0 = 0x80;
 constexpr uint8_t kEndOfStream1 = 0x00;
 
-// The first values of the pitch-wheel and mod-wheel streams.
-constexpr int32_t kPitchWheelCentre = 0x2000;
+// The values that the pitch-wheel and mod-wheel streams start at: the pitch wheel's centre, and 0.
+constexpr int32_t kPitchWheelStart = 0x2000;
+constexpr int32_t kModWheelStart = 0;
 
 // MusyX's extended controller that a velocity byte of 1 sets.
 constexpr uint8_t kController130 = 0x82;
 
-// Bounds that only damaged songs reach: the entries of a track and the events of a pattern.
+// Bounds that only damaged songs reach: the entries of a track or of the tempo table, and the events of a pattern or
+// the points of a stream.
 constexpr std::size_t kMostEntries = 0x10000;
 constexpr std::size_t kMostEvents = 0x100000;
 
-// Reads a stream's value: one byte, or two if the first has bit 7 set. A signed value has 7 or 15 bits.
-uint32_t StreamNumber(const xsflib::Reader& r, std::size_t& at)
+// Reads a stream's delta time: 7 bits in one byte, or 15 bits in two if the first byte has bit 7 set.
+uint32_t DeltaTime(const xsflib::Reader& r, std::size_t& at)
 {
     const uint8_t first = r.U8(at++);
     if ((first & 0x80) == 0)
@@ -70,9 +72,24 @@ uint32_t StreamNumber(const xsflib::Reader& r, std::size_t& at)
     return static_cast<uint32_t>(first & 0x7f) << 8 | r.U8(at++);
 }
 
+// Reads a stream's delta of the value: a signed number of 7 bits in one byte, or of 15 bits in two if the first byte
+// has bit 7 set.
+int32_t DeltaValue(const xsflib::Reader& r, std::size_t& at)
+{
+    const uint8_t first = r.U8(at++);
+    if ((first & 0x80) == 0)
+    {
+        return (first & 0x40) != 0 ? first - 0x80 : first;
+    }
+
+    const int32_t delta = (first & 0x7f) << 8 | r.U8(at++);
+
+    return (delta & 0x4000) != 0 ? delta - 0x8000 : delta;
+}
+
 // Reads the stream at `offset`: pairs of a delta time and a delta of the value, up to the bytes 0x80 0x00. The value
-// starts at `first`. An offset of 0 means no stream.
-std::vector<StreamPoint> ReadStream(const xsflib::Reader& r, uint32_t offset, int32_t first)
+// starts at `start`. An offset of 0 means no stream.
+std::vector<StreamPoint> ReadStream(const xsflib::Reader& r, uint32_t offset, int32_t start)
 {
     std::vector<StreamPoint> points;
     if (offset == 0)
@@ -81,17 +98,11 @@ std::vector<StreamPoint> ReadStream(const xsflib::Reader& r, uint32_t offset, in
     }
 
     uint32_t tick = 0;
-    int32_t value = first;
+    int32_t value = start;
     for (std::size_t at = offset; !(r.U8(at) == kEndOfStream0 && r.U8(at + 1) == kEndOfStream1);)
     {
-        tick += StreamNumber(r, at);
-        const uint8_t first_byte = r.U8(at);
-        const uint32_t raw = StreamNumber(r, at);
-        const bool wide = (first_byte & 0x80) != 0;
-        const int32_t sign_bit = wide ? 0x4000 : 0x40;
-        const int32_t delta = (static_cast<int32_t>(raw) & sign_bit) != 0 ? static_cast<int32_t>(raw) - 2 * sign_bit
-                                                                          : static_cast<int32_t>(raw);
-        value += delta;
+        tick += DeltaTime(r, at);
+        value += DeltaValue(r, at);
         points.push_back({tick, value});
         if (points.size() > kMostEvents)
         {
@@ -107,8 +118,8 @@ Pattern ReadPattern(const xsflib::Reader& r, uint32_t offset)
 {
     Pattern p;
     r.Sub(offset, kPatternHeader);
-    p.pitch_wheel = ReadStream(r, r.U32(offset + 4), kPitchWheelCentre);
-    p.mod_wheel = ReadStream(r, r.U32(offset + 8), 0);
+    p.pitch_wheel = ReadStream(r, r.U32(offset + 4), kPitchWheelStart);
+    p.mod_wheel = ReadStream(r, r.U32(offset + 8), kModWheelStart);
 
     // An event's delta time counts from the event before, a rest included. A key byte with bit 7 set makes a command:
     // a velocity byte of 0 changes the program, 1 sets controller 130, and one with bit 7 set sets the controller in

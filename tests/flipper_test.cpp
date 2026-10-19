@@ -5,7 +5,9 @@
 // GameCube's offsets in bytes and the Wii's offsets in units of 4 bytes. The register file, the processor interface,
 // and the audio interface's sample counter at each console's rates. MachineBase with a machine that runs no code: main
 // memory's pages, the report of unknown registers, the DMA rate that the audio interface passes on, and the blocks of
-// the hardware page that both consoles share.
+// the hardware page that both consoles share. The boot: low memory, the file system table, the OS globals, the CPU's
+// start and the boot's errors. The game-mode source: a disc made of FILE chunks, MEM chunks, the audio's samples, the
+// driver's status word and the stop messages.
 
 #include <algorithm>
 #include <array>
@@ -14,7 +16,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,7 +37,7 @@ namespace
 {
 
 using xsflib::testing::Check;
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 // Reads `size` bytes of `disc` at `offset`, or nothing if the read fails.
 std::vector<uint8_t> ReadDisc(ntdlib::flipper::FileDisc& disc, uint64_t offset, std::size_t size)
@@ -417,7 +418,7 @@ void CheckBoot(uint32_t unit)
     const uint32_t fst_address = (0x81800000 - fst_size) & ~0x1fu;
     std::vector<uint8_t> fst(fst_size);
     disc.Read(uint64_t{xsflib::LoadBe32(read + ntdlib::disc::kHeaderFstOffset)} * unit, fst.data(), fst.size());
-    Check(std::equal(fst.begin(), fst.end(), machine.Memory().At(fst_address & 0x01ffffff, fst_size)),
+    Check(std::equal(fst.begin(), fst.end(), machine.Memory().At(ntdlib::dsp::ToPhysical(fst_address), fst_size)),
           name + ": the file system table at the top of MEM1");
     Check(machine.Word(0x80000020) == 0x0d15ea5e && machine.Word(0x80000024) == 1 &&
               machine.Word(0x80000028) == 0x01800000 && machine.Word(0x8000002c) == 3 &&
@@ -437,24 +438,14 @@ void CheckBoot(uint32_t unit)
               s.spr[ntdlib::ppc::spr::kIbat0u + 10] == 0xc0001fff && s.spr[ntdlib::ppc::spr::kIbat0u + 11] == 0x2a,
           name + ": the BATs of MEM1, cached and uncached");
 
-    const auto error = [](BootMachine& m, const ntdlib::flipper::BootInfo& i)
-    {
-        try
-        {
-            m.LoadBootInfo(i);
-        }
-        catch (const std::runtime_error& e)
-        {
-            return std::string(e.what());
-        }
-        return std::string();
-    };
     BootMachine high(disc);
-    Check(error(high, {unit, 0x817f0000, 3, 0, 0}) == "the disc's file system table is too large",
+    const std::string too_large = ErrorOf([&] { high.LoadBootInfo({unit, 0x817f0000, 3, 0, 0}); });
+    Check(too_large == "the disc's file system table is too large",
           name + ": a table that doesn't fit above the arena");
     NoDisc none;
     BootMachine unreadable(none);
-    Check(error(unreadable, info) == "the disc's header can't be read", name + ": a disc without a header");
+    const std::string no_header = ErrorOf([&] { unreadable.LoadBootInfo(info); });
+    Check(no_header == "the disc's header can't be read", name + ": a disc without a header");
 }
 
 // The game-mode source: a disc made of FILE chunks, MEM chunks in memory, the audio's samples, the driver's status and
@@ -525,5 +516,5 @@ int main()
     CheckBoot(4);
     CheckGameSource();
 
-    return failures ? 1 : 0;
+    return xsflib::testing::Summary("flipper");
 }

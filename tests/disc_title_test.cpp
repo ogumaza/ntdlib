@@ -14,50 +14,41 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <functional>
-#include <ios>
 #include <map>
 #include <optional>
 #include <queue>
-#include <random>
 #include <span>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
-#include "ntdlib/disc/cx.h"
-#include "ntdlib/disc/game.h"
-#include "ntdlib/disc/image.h"
 #include "xsflib/bytes.h"
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
 
+#include "disc_files.h"
+#include "ntdlib/disc/cx.h"
+#include "ntdlib/disc/game.h"
+#include "ntdlib/disc/image.h"
+#include "temp_folder.h"
+
 using xsflib::testing::Check;
-using xsflib::testing::failures;
 
 namespace
 {
 
 namespace fs = std::filesystem;
 using Bytes = std::vector<uint8_t>;
+using disc_files::AppleDouble;
+using disc_files::CheckFiles;
+using disc_files::CheckRefused;
+using disc_files::Fill;
+using disc_files::Text;
+using disc_files::WriteFile;
 
 // The made-up title's ID: the high half of a WiiWare game's title ID, and the game ID WWST.
 constexpr uint64_t kTitleId = uint64_t{0x00010001} << 32 | 0x57575354;
-
-// Fills data with a pseudorandom pattern (xorshift) so that it doesn't compress to nothing.
-void Fill(Bytes& data, size_t offset, size_t size, uint32_t seed)
-{
-    uint32_t x = seed * 2654435761u + 1;
-    for (size_t i = 0; i < size; ++i)
-    {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        data[offset + i] = static_cast<uint8_t>(x);
-    }
-}
 
 // Data that compresses: random bytes, copies of them from 1 to 4,096 bytes back, a run of 300 bytes and a run of
 // 70,000. LZ77 of type 0x11 takes each form of copy for them.
@@ -304,13 +295,6 @@ std::string Hex8(uint32_t value)
     std::snprintf(text, sizeof(text), "%08x", static_cast<unsigned>(value));
 
     return text;
-}
-
-void WriteFile(const fs::path& path, const Bytes& data)
-{
-    fs::create_directories(path.parent_path());
-    std::ofstream file(path, std::ios::binary);
-    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 }
 
 // A U8 archive that holds `files`, by path. With `dot`, the files are in a folder named "." in the root, as in some of
@@ -572,24 +556,7 @@ void CheckTitle(const std::string& what, const fs::path& folder, const TestTitle
     Check(game.dol == title.dol, what + ": the main program");
     Check(game.tmd == BuildTmd(title), what + ": the TMD");
     Check(game.boot.empty() && game.fst.empty(), what + ": no disc header or file system table");
-    Check(game.files.size() == files.size(), what + ": the number of files");
-    for (const ntdlib::disc::GameFile& file : game.files)
-    {
-        const auto expected = files.find(file.path);
-        Bytes data;
-        Check(expected != files.end() && file.size == expected->second.size(), what + ": listing " + file.path);
-        Check(game.read_file(file.path, data) && expected != files.end() && data == expected->second,
-              what + ": reading " + file.path);
-    }
-}
-
-// Checks that LoadGame rejects `path` with a message that contains `words`.
-void CheckRefused(const std::string& what, const fs::path& path, const std::string& words)
-{
-    ntdlib::disc::GameFiles game;
-    const auto error = ntdlib::disc::LoadGame(path, game, TitleOptions());
-    Check(error && error->find(words) != std::string::npos,
-          what + ": rejected with \"" + words + "\", got \"" + error.value_or("success") + "\"");
+    CheckFiles(what, game, files);
 }
 
 // Decompresses `data`, or returns nothing if the decompressor throws.
@@ -603,11 +570,6 @@ std::optional<Bytes> Decompress(const Bytes& data, size_t max_size = 1 << 20)
     {
         return std::nullopt;
     }
-}
-
-Bytes Text(const std::string& text)
-{
-    return Bytes(text.begin(), text.end());
 }
 
 void TestLz()
@@ -667,17 +629,6 @@ void TestHuffman()
                  !ntdlib::disc::IsCx(Bytes{0x40, 0x04, 0x00, 0x00}));
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{0x10, 0x04, 0x00}));
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{'L', 'Z', '7', '7', 0x28, 0x04, 0x00, 0x00}));
-}
-
-// An AppleDouble file with no entries: the magic 0x00051607, version 2, 16 bytes of filler and an entry count of 0
-// (RFC 1740).
-Bytes AppleDouble()
-{
-    Bytes file(26, 0);
-    xsflib::StoreBe32(&file[0], 0x00051607);
-    xsflib::StoreBe32(&file[4], 0x00020000);
-
-    return file;
 }
 
 // The title read from its folder: with its contents named by index, by ID (with a TMD named title.tmd and padding after
@@ -740,6 +691,7 @@ void TestOtherTitles(const fs::path& dir)
 // TMDs, a folder that holds no game, a WAD, and a title's files given on their own.
 void TestRefusals(const fs::path& dir)
 {
+    const ntdlib::disc::GameOptions options = TitleOptions();
     const TestTitle title = BuildTitle();
     WriteTitle(dir / "encrypted", title, Naming::kIndex, "title.tmd");
     Bytes scrambled = title.contents[2].data;
@@ -749,22 +701,22 @@ void TestRefusals(const fs::path& dir)
     }
 
     WriteFile(dir / "encrypted" / FileOf(title.contents[2], Naming::kIndex), scrambled);
-    CheckRefused("an encrypted content", dir / "encrypted", "encrypted or damaged");
+    CheckRefused("an encrypted content", dir / "encrypted", "encrypted or damaged", options);
 
     WriteTitle(dir / "no_program", title, Naming::kIndex, "title.tmd");
     fs::remove(dir / "no_program" / FileOf(title.contents[1], Naming::kIndex));
-    CheckRefused("no main program", dir / "no_program", "main program");
+    CheckRefused("no main program", dir / "no_program", "main program", options);
 
     WriteTitle(dir / "no_tmd", title, Naming::kIndex, "title.tmd");
     fs::remove(dir / "no_tmd" / "title.tmd");
-    CheckRefused("no TMD", dir / "no_tmd", "but not its TMD");
+    CheckRefused("no TMD", dir / "no_tmd", "but not its TMD", options);
 
     WriteTitle(dir / "two_tmds", title, Naming::kIndex, "title.tmd");
     WriteFile(dir / "two_tmds" / "copy.tmd", BuildTmd(title));
-    CheckRefused("two TMDs", dir / "two_tmds", "more than one TMD");
+    CheckRefused("two TMDs", dir / "two_tmds", "more than one TMD", options);
 
     fs::create_directories(dir / "empty");
-    CheckRefused("an empty folder", dir / "empty", "holds no game");
+    CheckRefused("an empty folder", dir / "empty", "holds no game", options);
 
     // An installable WAD's header: its size, its type, and the sizes of its parts. Then a WAD by its name alone, and a
     // title's TMD and content given on their own.
@@ -775,21 +727,25 @@ void TestRefusals(const fs::path& dir)
     xsflib::StoreBe32(&wad[0x14], 0x1E4);
     WriteFile(dir / "title.bin", wad);
     WriteFile(dir / "empty.wad", {});
-    CheckRefused("a WAD", dir / "title.bin", "decrypted contents (.app)");
-    CheckRefused("a file named as a WAD", dir / "empty.wad", "it's a WAD");
-    CheckRefused("a TMD", dir / "encrypted" / "title.tmd", "one of a title's files");
-    CheckRefused("a content", dir / "encrypted" / FileOf(title.contents[0], Naming::kIndex), "one of a title's files");
+    CheckRefused("a WAD", dir / "title.bin", "decrypted contents (.app)", options);
+    CheckRefused("a file named as a WAD", dir / "empty.wad", "it's a WAD", options);
+    CheckRefused("a TMD", dir / "encrypted" / "title.tmd", "one of a title's files", options);
+    CheckRefused("a content", dir / "encrypted" / FileOf(title.contents[0], Naming::kIndex), "one of a title's files",
+                 options);
 }
 
 } // namespace
 
-// usage: title_test [folder]. With a folder, the titles are written there and kept.
+// usage: ntdlib_disc_title_test [folder]. With a folder, the titles are written there and kept.
 int main(int argc, char** argv)
 {
-    const bool keep = argc > 1;
-    const fs::path dir =
-        keep ? fs::path(argv[1])
-             : fs::temp_directory_path() / ("ntdlib_title_test_" + std::to_string(std::random_device{}()));
+    std::optional<ntdlib::testing::TempFolder> temp;
+    if (argc <= 1)
+    {
+        temp.emplace("disc_title_test");
+    }
+
+    const fs::path dir = temp ? temp->Path() : fs::path(argv[1]);
     try
     {
         fs::create_directories(dir);
@@ -804,18 +760,5 @@ int main(int argc, char** argv)
         Check(false, std::string("unexpected error: ") + e.what());
     }
 
-    if (!keep)
-    {
-        std::error_code error;
-        fs::remove_all(dir, error);
-    }
-
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("disc title");
 }

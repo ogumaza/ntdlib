@@ -6,21 +6,12 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "nx/audio/arithmetic.h"
+
 namespace ntdlib::nx::audio
 {
 namespace
 {
-
-// AArch64's 32-bit integer instructions wrap.
-int32_t WrapAdd(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) + static_cast<uint32_t>(b));
-}
-
-int32_t WrapMul(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
-}
 
 // The scratch buffer holds the converter's history and a batch's input: 0x3F00 samples at most.
 constexpr int kScratchSamples = 0x3F00 + 8;
@@ -65,8 +56,7 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
     // requires more input than the scratch buffer holds.
     const float rates = static_cast<float>(args.source_rate) / static_cast<float>(args.target_rate);
     const float step = rates * static_cast<float>(args.pitch);
-    int32_t ratio = 0;
-    ConvertToInt(&ratio, &step, 1);
+    const int32_t ratio = ToInt(step);
     const int history = args.quality == SrcQuality::kHigh ? 8 : 4;
     const int32_t frame_end = WrapAdd(WrapMul(args.count, ratio), state.fraction);
     if (frame_end < 0 || history + (frame_end >> 15) > 0x3F00)

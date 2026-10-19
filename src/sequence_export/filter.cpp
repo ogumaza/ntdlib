@@ -3,6 +3,10 @@
 #include "ntdlib/sequence_export/filter.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 #include <type_traits>
 
 #include "ntdlib/nwsnd/console.h"
@@ -68,7 +72,57 @@ GameFilters FiltersOf(int low_pass, int biquad_type, int biquad_value)
     return f;
 }
 
+// The 0xd8 arguments that leave the Wii's low-pass on: 0 to 57 in every build (see LowPassIndex).
+constexpr std::size_t kWiiLowPassArguments = 58;
+
+// The low-pass of the Wii's builds from November 2008, for each 0xd8 argument that leaves it on. The track gives
+// (argument - 64) / 64, and the channel adds 1. The voice takes the Wii U's step for that value from kLpfFreq. Fitted
+// at each of kLpfFreq's cutoffs, the Wii's one-pole (AXGetLpfCoefs) gives the Wii U's SoundFont and SFZ cutoffs. These
+// builds therefore take the Wii U's fits.
+struct TableLowPass
+{
+    std::array<uint16_t, kWiiLowPassArguments> cutoff{};    // SoundFont cutoff, in absolute cents
+    std::array<int16_t, kWiiLowPassArguments> sfz_cutoff{}; // SFZ cutoff (see SfzLowPassCutoff)
+    std::array<uint16_t, kWiiLowPassArguments> hz{};        // the game's cutoff
+};
+
+TableLowPass MakeTableLowPass()
+{
+    TableLowPass low_pass;
+    for (std::size_t argument = 0; argument < kWiiLowPassArguments; ++argument)
+    {
+        const float value = static_cast<float>(static_cast<int>(argument) - 0x40) * 0.015625f + 1.0f;
+        const auto step = static_cast<std::size_t>(nwsnd::LpfFreqIndex<nwsnd::CafePolicy>(value));
+        low_pass.cutoff[argument] = kCafeFilters.low_pass_cutoff[step];
+        low_pass.sfz_cutoff[argument] = kCafeFilters.sfz_low_pass_cutoff[step];
+        low_pass.hz[argument] = nwsnd::tables::kLpfFreq[step];
+    }
+
+    return low_pass;
+}
+
 } // namespace
+
+const FilterTables& RevolutionFilters(const SndBuild& build)
+{
+    if (!build.SinceNovember2008())
+    {
+        return kRevolutionFilters;
+    }
+
+    static const TableLowPass kLowPass = MakeTableLowPass();
+    static const FilterTables kTables = []
+    {
+        FilterTables tables = kRevolutionFilters;
+        tables.low_pass_cutoff = kLowPass.cutoff;
+        tables.sfz_low_pass_cutoff = kLowPass.sfz_cutoff;
+        tables.low_pass_hz = kLowPass.hz;
+
+        return tables;
+    }();
+
+    return kTables;
+}
 
 uint8_t SfzLowPassValue(int low_pass)
 {
@@ -94,10 +148,11 @@ int LowPassIndex(int low_pass)
     return index <= last ? index : -1;
 }
 
-int LowPassHz(int index)
+int LowPassHz(int index, const SndBuild& build)
 {
-    const int last = static_cast<int>(kRevolutionFilters.low_pass_hz.size()) - 1;
-    return kRevolutionFilters.low_pass_hz[static_cast<std::size_t>(std::clamp(index, 0, last))];
+    const std::span<const uint16_t> hz = RevolutionFilters(build).low_pass_hz;
+    const int last = static_cast<int>(hz.size()) - 1;
+    return hz[static_cast<std::size_t>(std::clamp(index, 0, last))];
 }
 
 GameFilters TrackFilters(int low_pass, int biquad_type, int biquad_value, const Settings& settings)

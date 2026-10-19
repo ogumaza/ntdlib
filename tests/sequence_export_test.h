@@ -4,8 +4,8 @@
 // current console's settings, the builders of synthetic archives in its byte order, a performance of bytecode on a
 // bank, the events of a performance that the tests compare, and a view of the MIDI files.
 //
-// A test reads the current console through `console`. RunOn sets it for each list of tests. A test that holds on
-// several consoles is listed for each of them, and a console's engine-only tests are listed for that console alone.
+// A test reads the current console through `console`. RunOn sets it while it runs a console's tests.
+// sequence_export_test.cpp lists each test once, with the consoles that it holds on.
 
 #pragma once
 
@@ -24,6 +24,18 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/file_name.h"
+#include "seqlib/loop.h"
+#include "seqlib/midi/performance_writer.h"
+#include "seqlib/midi/reader.h"
+#include "seqlib/read_error.h"
+#include "seqlib/sf2/reader.h"
+#include "seqlib/sf2/soundfont.h"
+#include "seqlib/sf2/units.h"
+#include "seqlib/wav.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/consoles.h"
@@ -36,61 +48,50 @@
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/testing/sar_files.h"
-#include "seqlib/file_name.h"
-#include "seqlib/loop.h"
-#include "seqlib/midi/performance_writer.h"
-#include "seqlib/midi/reader.h"
-#include "seqlib/read_error.h"
-#include "seqlib/sf2/reader.h"
-#include "seqlib/sf2/soundfont.h"
-#include "seqlib/sf2/units.h"
-#include "seqlib/wav.h"
-#include "xsflib/testing/check.h"
 
 namespace ntdlib::sequence_export::tests
 {
 
 using sar::SoundArchive;
-using seqlib::PreparedWave;
-using seqlib::PrepareForSoundFont;
 using seqlib::SafeFileName;
 using seqlib::WavFile;
 using seqlib::midi::MidiReport;
 using seqlib::midi::WriteMidi;
-using seqlib::sf2::SoundFontPan;
 using seqlib::sf2::ToTimecents;
 
-// A console that the tests run on: its name in the failure reports, its settings, and the program name for the
-// conversions to record.
+// A console that the tests run on: its name in the failure reports, its settings, the program name for the
+// conversions to record, and the options of its MIDI files.
 struct Console
 {
     std::string name;
     Settings settings;
     std::string program;
+    seqlib::midi::MidiOptions midi;
 };
 
 // The Wii U, with its settings (consoles.h).
 inline Console WiiU()
 {
-    return {"Wii U", CafeSettings(), "xyz2midi"};
+    return {"Wii U", CafeSettings(), "xyz2midi", {}};
 }
 
 // The Switch, with its settings.
 inline Console Switch()
 {
-    return {"Switch", SwitchSettings(), "xyz2midi"};
+    return {"Switch", SwitchSettings(), "xyz2midi", {}};
 }
 
 // The 3DS, with its settings.
 inline Console Ctr()
 {
-    return {"3DS", CtrSettings(), "xyz2midi"};
+    return {"3DS", CtrSettings(), "xyz2midi", {}};
 }
 
-// The Wii, with its settings for the build of NW4R SND in `build`, by default one of 2007.
+// The Wii, with its settings for the build of NW4R SND in `build`, by default one of 2007. Its MIDI files take the
+// Wii's timing: NW4R SND runs a tick at its frame's start.
 inline Console Wii(const SndBuild& build = {})
 {
-    return {"Wii", RevolutionSettings(build), "xyz2midi"};
+    return {"Wii", RevolutionSettings(build), "xyz2midi", {seqlib::midi::FrameTiming::kFrameStart}};
 }
 
 // The console that the tests run on now. RunOn sets it.
@@ -134,20 +135,6 @@ inline void RunOn(const Console& on, std::span<const Test> tests)
     {
         std::fprintf(stderr, "%d check(s) failed on the %s\n", xsflib::testing::failures - before, on.name.c_str());
     }
-}
-
-// Reports the run's result. Returns main()'s exit status: 0 if every check passed.
-inline int Report()
-{
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::puts("all checks passed");
-
-    return 0;
 }
 
 // PCM as sar decodes it.
@@ -270,11 +257,6 @@ struct ZoneCutoff
 // The ZoneCutoff of each instrument zone of the SoundFont `d` that plays a sample, in order.
 inline std::vector<ZoneCutoff> ZoneCutoffs(const std::vector<uint8_t>& d)
 {
-    const auto u16 = [](const uint8_t* p)
-    {
-        return static_cast<uint16_t>(p[0] | p[1] << 8);
-    };
-
     const seqlib::sf2::Records v = seqlib::sf2::Read(d);
     std::vector<ZoneCutoff> zones;
     for (std::size_t z = 0; z + 1 < v.Count("ibag", 4); z++)
@@ -295,14 +277,14 @@ inline std::vector<ZoneCutoff> ZoneCutoffs(const std::vector<uint8_t>& d)
         }
 
         // The zone's modulators run from its bag's modulator index to the next bag's.
-        const uint16_t end = u16(v.Record("ibag", 4, z + 1) + 2);
-        for (uint16_t m = u16(v.Record("ibag", 4, z) + 2); m < end; m++)
+        const uint16_t end = xsflib::LoadLe16(v.Record("ibag", 4, z + 1) + 2);
+        for (uint16_t m = xsflib::LoadLe16(v.Record("ibag", 4, z) + 2); m < end; m++)
         {
             const uint8_t* mod = v.Record("imod", 10, m);
-            if (u16(mod + 2) == seqlib::sf2::kInitialFilterFc)
+            if (xsflib::LoadLe16(mod + 2) == seqlib::sf2::kInitialFilterFc)
             {
-                zone.source = u16(mod);
-                zone.amount = static_cast<int16_t>(u16(mod + 4));
+                zone.source = xsflib::LoadLe16(mod);
+                zone.amount = static_cast<int16_t>(xsflib::LoadLe16(mod + 4));
             }
         }
         zones.push_back(zone);

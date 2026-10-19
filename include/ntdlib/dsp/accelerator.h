@@ -29,6 +29,13 @@ struct Accelerator
     bool reads_stopped = false;
 };
 
+// The bits that the accelerator's registers keep. The start and end addresses are 30 bits. The current address keeps
+// bit 31 too. That bit enables raw writes. A write of the predictor and scale keeps 7 bits. A frame's header loads all
+// 8.
+inline constexpr uint32_t kAcceleratorAddressMask = 0x3fffffff;
+inline constexpr uint32_t kAcceleratorCurrentMask = 0xbfffffff;
+inline constexpr uint16_t kAcceleratorPredScaleMask = 0x7f;
+
 // The raw value at the address `current` for an access size: 0 a nibble (a byte's high nibble first), 1 a byte, 2 a
 // 16-bit word with its high byte first. Size 3 reads 0. `byte(address)` reads a byte of the sample data.
 template <typename ReadByte>
@@ -61,13 +68,8 @@ uint16_t AcceleratorDecode(Accelerator& a, const Coefs& coefs, uint16_t raw)
     int32_t sample = 0;
     if ((a.format >> 2 & 3) == 0)
     {
-        int32_t x = raw & 0xf;
-        if (x >= 8)
-        {
-            x -= 16;
-        }
-
-        sample = wave::DspAdpcmSample(x, a.pred_scale & 0xf, c1, c2, yn1, yn2, wave::DspAdpcmSum::kAccelerator);
+        sample = wave::DspAdpcmSample(wave::SignedNibble(raw & 0xf), a.pred_scale & 0xf, c1, c2, yn1, yn2,
+                                      wave::DspAdpcmSum::kAccelerator);
     }
     else
     {
@@ -130,7 +132,7 @@ uint16_t AcceleratorNext(Accelerator& a, const Coefs& coefs, const ReadByte& byt
         at_end();
     }
 
-    a.current &= 0xbfffffff;
+    a.current &= kAcceleratorCurrentMask;
 
     return sample;
 }

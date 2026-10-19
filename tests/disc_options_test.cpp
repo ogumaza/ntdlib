@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -16,26 +15,23 @@
 #include <system_error>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
+#include "disc_files.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/disc/source.h"
 #include "temp_folder.h"
-#include "xsflib/testing/check.h"
 
 namespace fs = std::filesystem;
 namespace disc = ntdlib::disc;
+using disc_files::AppleDouble;
+using disc_files::StoreBe32;
 using ntdlib::testing::TempFolder;
 using xsflib::testing::Check;
 
 namespace
 {
-
-void StoreBe32(std::vector<uint8_t>& d, size_t at, uint32_t v)
-{
-    d[at] = static_cast<uint8_t>(v >> 24);
-    d[at + 1] = static_cast<uint8_t>(v >> 16);
-    d[at + 2] = static_cast<uint8_t>(v >> 8);
-    d[at + 3] = static_cast<uint8_t>(v);
-}
 
 // A file system table's entry: a folder's flag and name offset, then its two words.
 void Entry(std::vector<uint8_t>& fst, size_t index, bool folder, uint32_t name, uint32_t a, uint32_t b)
@@ -153,6 +149,7 @@ void TestMessages()
     {
         noise[i] = static_cast<uint8_t>(i * 7);
     }
+
     const disc::GameOptions options = PlainOnly();
 
     Check(Outcome(folder.Write("past_end.iso", GameCubeImage(3, 0x10000)), options) ==
@@ -210,17 +207,6 @@ void TestDefaults()
 
     Check(Outcome(folder.Write("rvz_again.bin", rvz), null_opener) == "it isn't a GameCube disc image",
           "an opener that returns null leaves the image to read as a plain image");
-}
-
-// An AppleDouble file with no entries: the magic 0x00051607, version 2, 16 bytes of filler and an entry count of 0
-// (RFC 1740).
-std::vector<uint8_t> AppleDouble()
-{
-    std::vector<uint8_t> file(26, 0);
-    StoreBe32(file, 0, 0x00051607);
-    StoreBe32(file, 4, 0x00020000);
-
-    return file;
 }
 
 // An extracted disc's files are those in its files/ folder, sorted by path. The walk passes over an entry whose type
@@ -347,13 +333,5 @@ int main()
     TestReadByBlocks();
     TestFormats();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("disc options tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("disc options");
 }

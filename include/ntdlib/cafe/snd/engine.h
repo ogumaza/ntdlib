@@ -10,7 +10,6 @@
 
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <set>
 #include <utility>
@@ -27,6 +26,8 @@
 #include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/cafe/snd/voice.h"
 #include "ntdlib/nwsnd/archive_files.h"
+#include "ntdlib/nwsnd/length_hooks.h"
+#include "ntdlib/nwsnd/sequence_players.h"
 #include "ntdlib/sar/formats.h"
 
 namespace ntdlib::cafe::snd
@@ -52,7 +53,7 @@ struct EngineOptions
     std::vector<EffectSetup> effects;
 };
 
-class Engine
+class Engine : public ntdlib::nwsnd::LengthHooks
 {
 public:
     // A copy of the engine's state between frames, for a snapshot of the model (see ArchiveModel::Snapshot).
@@ -159,41 +160,9 @@ public:
     // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
     void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
 
-    // ntdlib's SequenceSoundPlayer calls these for the length analysis. OnLoop passes each loop to on_loop, and
-    // OnTrackLoop each track's pass to on_track_loop, if it's set.
-    bool FollowsLoops() const
-    {
-        return static_cast<bool>(on_loop);
-    }
-
-    void OnLoop(const SequenceSoundPlayer&, int track, uint32_t target)
-    {
-        on_loop(track, target);
-    }
-
-    void OnTrackLoop(const SequenceSoundPlayer&, int track, uint32_t target)
-    {
-        if (on_track_loop)
-        {
-            on_track_loop(track, target);
-        }
-    }
-
-    // The length analysis: the loops of the sequence that the engine plays, while it sets on_loop (see ntdlib's
-    // SequenceSoundPlayer). The model follows the loops only then. on_track_loop gets every track's passes.
-    std::function<void(int track, uint32_t target)> on_loop;
-    std::function<void(int track, uint32_t target)> on_track_loop;
-
 private:
-    // A start that waits holds its player's place, not a pointer. A restore can put another player object in that
-    // place.
-    struct PendingStart
-    {
-        int player; // the player's place in players_: its Id()
-        int frames; // sound frames before it starts
-    };
-
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
+    using Players = ntdlib::nwsnd::SequencePlayers<SequenceSoundPlayer>;
 
     // A second of frames, for EffectsRinging.
     static constexpr int kRingingFrames = 334;
@@ -219,10 +188,9 @@ private:
     Random random_;
     std::array<int16_t, 16> global_vars_;
 
-    // Declared after the channels. The players are then destroyed first, and their tracks' hold on channels goes with
-    // them.
-    std::vector<std::unique_ptr<SequenceSoundPlayer>> players_;
-    std::vector<PendingStart> pending_;
+    // The players and the starts that wait. Declared after the channels. The players are then destroyed first, and
+    // their tracks' hold on channels goes with them.
+    Players players_;
 
     // The banks, wave archives and waves that notes play. Each wave reads as WaveFileReader::ReadWaveInfo (0x022B85B0)
     // reads it.
@@ -248,8 +216,7 @@ struct Engine::Snapshot
     ChannelManager channels;
     Random random;
     std::array<int16_t, 16> global_vars{};
-    std::vector<SequenceSoundPlayer> players;
-    std::vector<PendingStart> pending;
+    Players::Snapshot players;
     Effects::Snapshot effects;
     int ringing_frames = 0;
 };

@@ -27,9 +27,8 @@ Each fit minimizes the RMS error in dB over the top two octaves of the console's
 an eighth of the mixing rate to half of it, and no higher than 20 kHz. A low-pass after the synth's interpolation can
 match the game only below the console's Nyquist frequency. The error is averaged over 12 log-spaced rates at which the
 console plays through the filter: from 1 to 4/3 for the 12 kHz set and kernel 1, and from 4/3 to 3 for the 8 kHz set and
-kernel 0. Half of the second range lies above 2. Rates there count 0.4 times as much. In a set of test archives from the
-3DS, 13.4% of the notes start at rates from 4/3 to 2, and 5.4% above 2. Both responses are floored at -30 dB. The 16 kHz
-set and kernel 2 lose about as much as the spline, and take no low-pass.
+kernel 0. Half of the second range lies above 2. Rates there count 0.4 times as much. Both responses are floored at
+-30 dB. The 16 kHz set and kernel 2 lose about as much as the spline, and take no low-pass.
 
 The filters:
 - SoundFont: FluidSynth's cookbook low-pass at a resonance of 0 (Q = 10^(-3.01 / 20)), with the cutoff held to 0.45 of

@@ -86,21 +86,21 @@ constexpr uint32_t kCpuClock = 0x800000fc;
 // The console's values for the boot's low memory (see MachineBase::LoadBootInfo).
 struct BootInfo
 {
-    uint32_t fst_unit = 1;     // the header gives the file system table's offset and size in units of this many bytes
+    uint32_t offset_unit = 1;  // the header gives the file system table's offset and size in units of this many bytes
     uint32_t arena_top = 0;    // the top of the OS's arena. The file system table lies at least 64 KiB above it
     uint32_t console_type = 0; // what the SDK's OSGetConsoleType returns
     uint32_t bus_clock = 0;
     uint32_t cpu_clock = 0;
 };
 
-// A machine `Machine` derives from MachineBase<Machine> and declares it a friend. The machine provides Cpu() and
-// Memory(), NextEvent() and Advance() for its devices' events, and InterruptCauses() for the processor interface. It
-// also has the members pi_ (a ProcessorInterface), ai_ (an AudioInterface) and dsp_interface_. WriteAi passes AIDFR's
-// DMA rate to dsp_interface_.SetDmaRate32k. A machine that calls ReadShared and WriteShared also has the blocks they
-// reach: cp_, pe_, vi_ and mi_ (each a RegisterFile<0x100>), si_ (a RegisterFile<0x400>), exi_, and the DSP interface's
-// 16-bit Read and Write. SharedRegisters holds the registers among them. A machine that calls SaveDevices and
-// RestoreDevices has memory_, cpu_, dsp_, dsp_interface_ and exi_. A machine that calls LoadBootInfo has disc_, whose
-// Read(offset, out, size) reads the disc.
+// A machine `Machine` derives from MachineBase<Machine> and declares it a friend. MachineBase uses the machine's
+// members cpu_ (a ppc::Cpu), memory_ (main memory), pi_ (a ProcessorInterface), ai_ (an AudioInterface) and
+// dsp_interface_. The machine provides NextEvent() and Advance() for its devices' events, and InterruptCauses() for the
+// processor interface. WriteAi passes AIDFR's DMA rate to dsp_interface_.SetDmaRate32k. A machine that calls ReadShared
+// and WriteShared also has the blocks they reach: cp_, pe_, vi_ and mi_ (each a RegisterFile<0x100>), si_ (a
+// RegisterFile<0x400>), exi_, and the DSP interface's 16-bit Read and Write. SharedRegisters holds pi_, ai_ and the
+// registers of those blocks. A machine that calls SaveDevices and RestoreDevices also has dsp_ and exi_. A machine that
+// calls LoadBootInfo has disc_, whose Read(offset, out, size) reads the disc.
 template <typename Machine>
 class MachineBase : public ppc::Bus
 {
@@ -112,7 +112,7 @@ public:
     // and the interrupt line is updated.
     ppc::StopReason Run(uint64_t cycles)
     {
-        ppc::Cpu& cpu = Self().Cpu();
+        ppc::Cpu& cpu = Self().cpu_;
         const uint64_t end = cpu.Cycles() + cycles;
         while (cpu.Cycles() < end)
         {
@@ -130,12 +130,12 @@ public:
 
     uint8_t* RamPage(PAddr page) override
     {
-        return Self().Memory().At(page, kRamPageSize);
+        return Self().memory_.At(page, kRamPageSize);
     }
 
 protected:
     // The offsets of the blocks in the hardware page (physical 0x0C000000) that the GameCube and the Wii share. The
-    // command processor's block starts at 0.
+    // command processor's block starts at 0. The audio interface's block is the last. It ends at kAudioInterfaceEnd.
     static constexpr uint32_t kPixelEngine = 0x1000;
     static constexpr uint32_t kVideoInterface = 0x2000;
     static constexpr uint32_t kProcessorInterface = 0x3000;
@@ -145,39 +145,12 @@ protected:
     static constexpr uint32_t kSerialInterface = 0x6400;
     static constexpr uint32_t kExternalInterface = 0x6800;
     static constexpr uint32_t kAudioInterface = 0x6c00;
-
-    // The processor interface's 32-bit register at `offset`.
-    uint32_t ReadPi(uint32_t offset)
-    {
-        return Self().pi_.Read(offset, Self().InterruptCauses());
-    }
-
-    void WritePi(uint32_t offset, uint32_t value)
-    {
-        if (Self().pi_.Write(offset, value))
-        {
-            ReportUnknown(kProcessorInterfaceAddress + offset, 4, true, value);
-        }
-    }
+    static constexpr uint32_t kAudioInterfaceEnd = 0x7000;
 
     // Raises or lowers the CPU's external interrupt for the pending causes.
     void UpdateInterrupt()
     {
-        Self().Cpu().SetExternalInterrupt(Self().pi_.Asserts(Self().InterruptCauses()));
-    }
-
-    // The audio interface's 32-bit register at `offset`.
-    uint32_t ReadAi(uint32_t offset)
-    {
-        return Self().ai_.Read(offset, Self().Cpu().Cycles());
-    }
-
-    void WriteAi(uint32_t offset, uint32_t value)
-    {
-        if (const auto dma_rate_32k = Self().ai_.Write(offset, value, Self().Cpu().Cycles()))
-        {
-            Self().dsp_interface_.SetDmaRate32k(*dma_rate_32k);
-        }
+        Self().cpu_.SetExternalInterrupt(Self().pi_.Asserts(Self().InterruptCauses()));
     }
 
     // The register at `offset` in the hardware page (physical 0x0C000000), in the blocks that the GameCube and the Wii
@@ -238,7 +211,7 @@ protected:
             value = m.exi_.Read(offset & 0x3f);
             return true;
         }
-        if (offset < kAudioInterface + 0x400)
+        if (offset < kAudioInterfaceEnd)
         {
             value = ReadAi(offset & 0x1f);
             return true;
@@ -306,7 +279,7 @@ protected:
             m.exi_.Write(offset & 0x3f, value);
             return true;
         }
-        if (offset < kAudioInterface + 0x400)
+        if (offset < kAudioInterfaceEnd)
         {
             WriteAi(offset & 0x1f, value);
             return true;
@@ -320,7 +293,7 @@ protected:
     template <typename Memory>
     DeviceSnapshot<Memory> SaveDevices(const DeviceSnapshot<Memory>* previous) const
     {
-        const Machine& m = static_cast<const Machine&>(*this);
+        const Machine& m = Self();
         return {m.memory_.Save(previous ? &previous->memory : nullptr), m.cpu_.Save(), m.dsp_, m.dsp_interface_.Save(),
                 m.exi_.Save()};
     }
@@ -344,7 +317,7 @@ protected:
         Machine& m = Self();
         const auto put32 = [&m](uint32_t address, uint32_t value)
         {
-            xsflib::StoreBe32(m.Memory().At(dsp::ToPhysical(address), 4), value);
+            xsflib::StoreBe32(m.memory_.At(dsp::ToPhysical(address), 4), value);
         };
 
         std::array<uint8_t, disc::kHeaderSize> header{};
@@ -353,11 +326,11 @@ protected:
             throw std::runtime_error("the disc's header can't be read");
         }
 
-        std::copy(header.begin(), header.begin() + 0x20, m.Memory().At(0, 0x20));
+        std::copy(header.begin(), header.begin() + 0x20, m.memory_.At(0, 0x20));
 
         // The file system table, at the top of MEM1. The DVD library looks files up there.
-        const uint32_t fst_offset = xsflib::LoadBe32(&header[disc::kHeaderFstOffset]) * info.fst_unit;
-        const uint32_t fst_size = xsflib::LoadBe32(&header[disc::kHeaderFstSize]) * info.fst_unit;
+        const uint32_t fst_offset = xsflib::LoadBe32(&header[disc::kHeaderFstOffset]) * info.offset_unit;
+        const uint32_t fst_size = xsflib::LoadBe32(&header[disc::kHeaderFstSize]) * info.offset_unit;
         const uint32_t fst_address = (dsp::ToCached(dsp::kMem1Size) - fst_size) & ~0x1fu;
         std::vector<uint8_t> fst(fst_size);
         if (fst_size > 0x100000 || !m.disc_.Read(fst_offset, fst.data(), fst.size()))
@@ -370,7 +343,7 @@ protected:
             throw std::runtime_error("the disc's file system table is too large");
         }
 
-        std::copy(fst.begin(), fst.end(), m.Memory().At(dsp::ToPhysical(fst_address), fst.size()));
+        std::copy(fst.begin(), fst.end(), m.memory_.At(dsp::ToPhysical(fst_address), fst.size()));
 
         put32(low::kBootMagic, 0x0d15ea5e);
         put32(low::kBootVersion, 1);
@@ -392,12 +365,12 @@ protected:
     // MEM2's BATs with SetBat first.
     void StartCpu(uint32_t entry)
     {
-        ppc::State& s = Self().Cpu().state_;
+        ppc::State& s = Self().cpu_.state_;
         s.msr = ppc::msr::kIr | ppc::msr::kDr | ppc::msr::kRi | ppc::msr::kFp;
         SetBat(s, ppc::spr::kIbat0u, 0x80001fff, 0x00000002);
         SetBat(s, ppc::spr::kIbat0u + 8, 0x80001fff, 0x00000002);
         SetBat(s, ppc::spr::kIbat0u + 10, 0xc0001fff, 0x0000002a);
-        Self().Cpu().InvalidateTranslation();
+        Self().cpu_.InvalidateTranslation();
         s.pc = entry;
     }
 
@@ -417,7 +390,7 @@ protected:
             ReportUnknown(address, size, true, value);
         }
 
-        Self().Cpu().LimitRun(Self().NextEvent());
+        Self().cpu_.LimitRun(Self().NextEvent());
         UpdateInterrupt();
     }
 
@@ -430,7 +403,7 @@ protected:
         }
 
         char line[80];
-        const uint32_t pc = Self().Cpu().stop_pc_;
+        const uint32_t pc = Self().cpu_.stop_pc_;
         if (write)
         {
             std::snprintf(line, sizeof(line), "write%d %08x = %08x at pc %08x", size * 8, address, value, pc);
@@ -443,13 +416,46 @@ protected:
     }
 
 private:
-    // The size of the pages through which the CPU reaches main memory, and the processor interface's address.
+    // The size of the pages through which the CPU reaches main memory, and the hardware page's physical address.
     static constexpr uint32_t kRamPageSize = 0x1000;
-    static constexpr PAddr kProcessorInterfaceAddress = 0x0c003000;
+    static constexpr PAddr kHardwarePage = 0x0c000000;
+
+    // The processor interface's 32-bit register at `offset`.
+    uint32_t ReadPi(uint32_t offset)
+    {
+        return Self().pi_.Read(offset, Self().InterruptCauses());
+    }
+
+    void WritePi(uint32_t offset, uint32_t value)
+    {
+        if (Self().pi_.Write(offset, value))
+        {
+            ReportUnknown(kHardwarePage + kProcessorInterface + offset, 4, true, value);
+        }
+    }
+
+    // The audio interface's 32-bit register at `offset`.
+    uint32_t ReadAi(uint32_t offset)
+    {
+        return Self().ai_.Read(offset, Self().cpu_.Cycles());
+    }
+
+    void WriteAi(uint32_t offset, uint32_t value)
+    {
+        if (const auto dma_rate_32k = Self().ai_.Write(offset, value, Self().cpu_.Cycles()))
+        {
+            Self().dsp_interface_.SetDmaRate32k(*dma_rate_32k);
+        }
+    }
 
     Machine& Self()
     {
         return static_cast<Machine&>(*this);
+    }
+
+    const Machine& Self() const
+    {
+        return static_cast<const Machine&>(*this);
     }
 
     std::set<PAddr> reported_;

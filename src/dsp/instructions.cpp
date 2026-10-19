@@ -202,35 +202,8 @@ constexpr Pattern kPatterns[] = {
     {0xfe00, 0xfc00, Op::kClrl},    {0xfe00, 0xfe00, Op::kMovpz},
 };
 
-const std::array<Op, 0x10000>& DecodeTable()
-{
-    static const std::array<Op, 0x10000> kTable = []
-    {
-        std::array<Op, 0x10000> built{};
-        for (uint32_t op = 0; op < 0x10000; op++)
-        {
-            for (const Pattern& pattern : kPatterns)
-            {
-                if ((op & pattern.mask) == pattern.value)
-                {
-                    built[op] = pattern.op;
-                    break;
-                }
-            }
-        }
-
-        return built;
-    }();
-
-    return kTable;
-}
-
-Op Decode(uint16_t op)
-{
-    return DecodeTable()[op];
-}
-
-// The decoding as a constant expression, for the dedicated handlers of single instruction words.
+// Returns the instruction of word `op`: that of the first pattern that matches, or Op::kUnknown. The function is a
+// constant expression. The dedicated handlers of single instruction words decode their words with it at compile time.
 constexpr Op DecodeConstant(uint16_t op)
 {
     for (const Pattern& pattern : kPatterns)
@@ -242,6 +215,28 @@ constexpr Op DecodeConstant(uint16_t op)
     }
 
     return Op::kUnknown;
+}
+
+// The instruction of every word, decoded once for Decode.
+const std::array<Op, 0x10000>& DecodeTable()
+{
+    static const std::array<Op, 0x10000> kTable = []
+    {
+        std::array<Op, 0x10000> built{};
+        for (uint32_t op = 0; op < 0x10000; op++)
+        {
+            built[op] = DecodeConstant(static_cast<uint16_t>(op));
+        }
+
+        return built;
+    }();
+
+    return kTable;
+}
+
+Op Decode(uint16_t op)
+{
+    return DecodeTable()[op];
 }
 
 // The instruction words that AX's microcodes run most while mixing. Each of these gets a dedicated handler. Any other
@@ -284,14 +279,6 @@ bool TwoWords(Op op)
     }
 }
 
-// round(v): to the nearest multiple of 0x10000, ties to even.
-int64_t Round(int64_t value)
-{
-    const int64_t biased = (value & 0x10000) ? value + 0x8000 : value + 0x7fff;
-
-    return static_cast<int64_t>(static_cast<uint64_t>(biased) & ~uint64_t{0xffff});
-}
-
 // A shift of a 40-bit value: left by a positive amount, right by a negative one, logically (as unsigned) or
 // arithmetically.
 int64_t Shift(int64_t value, int amount, bool arithmetic)
@@ -322,13 +309,26 @@ int ShiftAmount(uint16_t value)
     return (value & 0x40) ? k - 64 : k;
 }
 
-} // namespace
-
-template <typename Memory>
-void Dsp<Memory>::BuildDecodeTable()
+// The polling loops that the static analysis marks as idle. They're the ones that Dolphin's analysis finds. Each entry
+// holds a loop's words up to its jump's target. Seven wait on a mailbox's full flag, and one waits on DRAM word 0x0352.
+struct PollingLoop
 {
-    DecodeTable();
-}
+    std::array<uint16_t, 5> words;
+    uint32_t size;
+};
+
+constexpr PollingLoop kPollingLoops[] = {
+    {{0x26fc, 0x02c0, 0x8000, 0x029d}, 4},         // lrs $ac0.m, @DMBH; andcf $ac0.m, #0x8000; jlz
+    {{0x27fc, 0x03c0, 0x8000, 0x029d}, 4},         // the same with $ac1.m
+    {{0x26fe, 0x02c0, 0x8000, 0x029c}, 4},         // lrs $ac0.m, @CMBH; andcf $ac0.m, #0x8000; jlnz
+    {{0x27fe, 0x03c0, 0x8000, 0x029c}, 4},         // the same with $ac1.m
+    {{0x26fc, 0x02a0, 0x8000, 0x029c}, 4},         // lrs $ac0.m, @DMBH; andf $ac0.m, #0x8000; jlnz
+    {{0x27fc, 0x03a0, 0x8000, 0x029c}, 4},         // the same with $ac1.m
+    {{0x00de, 0xfffe, 0x02c0, 0x8000, 0x029c}, 5}, // lr $ac0.m, @CMBH; andcf $ac0.m, #0x8000; jlnz
+    {{0x00da, 0x0352, 0x8600, 0x0295}, 4},         // lr $ax0.h, @0x0352; tstaxh $ax0.h; jz
+};
+
+} // namespace
 
 template <typename Memory>
 int Dsp<Memory>::SizeOf(uint16_t op) const
@@ -378,17 +378,21 @@ void Dsp<Memory>::BuildLoopMap()
             loop_end_[word(address + 1)] = 1;
         }
 
-        const uint16_t w1 = word(address + 1);
-        const uint16_t w2 = word(address + 2);
-        const uint16_t w3 = word(address + 3);
-        const bool lrs_poll = (op == 0x26fc || op == 0x27fc || op == 0x26fe || op == 0x27fe) && w2 == 0x8000 &&
-                              ((op & 0xff) == 0xfc ? (w1 == (op == 0x26fc ? 0x02c0 : 0x03c0) && w3 == 0x029d) ||
-                                                         (w1 == (op == 0x26fc ? 0x02a0 : 0x03a0) && w3 == 0x029c)
-                                                   : w1 == (op == 0x26fe ? 0x02c0 : 0x03c0) && w3 == 0x029c);
-        const bool lr_poll =
-            op == 0x00de && w1 == 0xfffe && w2 == 0x02c0 && w3 == 0x8000 && word(address + 4) == 0x029c;
-        const bool dram_poll = op == 0x00da && w1 == 0x0352 && w2 == 0x8600 && w3 == 0x0295;
-        if (lrs_poll || lr_poll || dram_poll)
+        // `word` gives 0 past IRAM. No polling loop holds a 0.
+        const auto starts_at = [&](const PollingLoop& loop)
+        {
+            for (uint32_t i = 0; i < loop.size; i++)
+            {
+                if (word(address + i) != loop.words[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+
+        if (std::any_of(std::begin(kPollingLoops), std::end(kPollingLoops), starts_at))
         {
             idle_[address] = 1;
         }
@@ -398,9 +402,9 @@ void Dsp<Memory>::BuildLoopMap()
 }
 
 template <typename Memory>
-void Dsp<Memory>::Hold(HeldWrites& held, uint8_t reg, uint16_t value)
+void Dsp<Memory>::Hold(HeldWrites& held, uint8_t reg, uint16_t value, typename PendingWrite::Kind kind)
 {
-    held.writes[held.count++] = {PendingWrite::kRegister, reg, value};
+    held.writes[held.count++] = {kind, reg, value};
 }
 
 template <typename Memory>
@@ -498,7 +502,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         const bool a_signed = !su || s == 1;
         const bool b_signed = !su || t == 1;
 
-        return mul(a, b, su && s == 0 && t == 0 ? false : a_signed, su && s == 0 && t == 0 ? false : b_signed);
+        return mul(a, b, a_signed, b_signed);
     };
 
     const auto add = [this](int d, int64_t b)
@@ -536,7 +540,8 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     };
 
     const int bit8 = op >> 8 & 1;
-    switch (static_cast<Op>(kind))
+    const auto decoded = static_cast<Op>(kind);
+    switch (decoded)
     {
     case Op::kUnknown:
     case Op::kNop:
@@ -567,7 +572,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     case Op::kLoop:
     case Op::kLoopi:
         {
-            const uint16_t count = Decode(op) == Op::kLoop ? ReadReg(op & 0x1f) : static_cast<uint16_t>(op & 0xff);
+            const uint16_t count = decoded == Op::kLoop ? ReadReg(op & 0x1f) : static_cast<uint16_t>(op & 0xff);
             if (count == 0)
             {
                 SkipNextInstruction();
@@ -584,7 +589,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     case Op::kBloopi:
         {
             const uint16_t end = FetchSecondWord();
-            const uint16_t count = Decode(op) == Op::kBloop ? ReadReg(op & 0x1f) : static_cast<uint16_t>(op & 0xff);
+            const uint16_t count = decoded == Op::kBloop ? ReadReg(op & 0x1f) : static_cast<uint16_t>(op & 0xff);
             if (count == 0)
             {
                 r.pc = end;
@@ -624,20 +629,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         {
             const int s = op & 3;
             WriteRegLoad(0x1e + bit8, ReadImem(r.ar[s]));
-            switch (Decode(op))
-            {
-            case Op::kIlrrd:
-                r.ar[s] = Decrement(r.ar[s], r.wr[s]);
-                break;
-            case Op::kIlrri:
-                r.ar[s] = Increment(r.ar[s], r.wr[s]);
-                break;
-            case Op::kIlrrn:
-                r.ar[s] = AddIndex(r.ar[s], r.ix[s], r.wr[s]);
-                break;
-            default:
-                break;
-            }
+            r.ar[s] = SteppedAddress(s, op >> 2 & 3);
             break;
         }
 
@@ -702,7 +694,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     case Op::kLsrn:
     case Op::kAsrn:
         // A positive amount from $ac1.m shifts $ac0 right.
-        set_acc(0, Shift(r.ac[0], -ShiftAmount(AcM(1)), Decode(op) == Op::kAsrn));
+        set_acc(0, Shift(r.ac[0], -ShiftAmount(AcM(1)), decoded == Op::kAsrn));
         break;
 
     case Op::kRet:
@@ -753,7 +745,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
             // The amount is encoded as a negative 6-bit number.
             const int i = op & 0x3f;
             const int k = i == 0 ? 0 : 64 - i;
-            set_acc(bit8, Shift(r.ac[bit8], -k, Decode(op) == Op::kAsr));
+            set_acc(bit8, Shift(r.ac[bit8], -k, decoded == Op::kAsr));
             break;
         }
 
@@ -788,20 +780,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
             // The load is written first. The address register then moves, based on the registers at that point.
             const int s = op >> 5 & 3;
             WriteRegLoad(op & 0x1f, ReadDmem(r.ar[s]));
-            switch (Decode(op))
-            {
-            case Op::kLrrd:
-                r.ar[s] = Decrement(r.ar[s], r.wr[s]);
-                break;
-            case Op::kLrri:
-                r.ar[s] = Increment(r.ar[s], r.wr[s]);
-                break;
-            case Op::kLrrn:
-                r.ar[s] = AddIndex(r.ar[s], r.ix[s], r.wr[s]);
-                break;
-            default:
-                break;
-            }
+            r.ar[s] = SteppedAddress(s, op >> 7 & 3);
             break;
         }
 
@@ -813,20 +792,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
             const int d = op >> 5 & 3;
             const uint16_t value = ReadReg(op & 0x1f);
             WriteDmem(r.ar[d], value);
-            switch (Decode(op))
-            {
-            case Op::kSrrd:
-                r.ar[d] = Decrement(r.ar[d], r.wr[d]);
-                break;
-            case Op::kSrri:
-                r.ar[d] = Increment(r.ar[d], r.wr[d]);
-                break;
-            case Op::kSrrn:
-                r.ar[d] = AddIndex(r.ar[d], r.ix[d], r.wr[d]);
-                break;
-            default:
-                break;
-            }
+            r.ar[d] = SteppedAddress(d, op >> 7 & 3);
             break;
         }
 
@@ -880,12 +846,12 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     case Op::kLsrnrx:
     case Op::kAsrnrx:
         // A positive amount shifts left.
-        set_acc(bit8, Shift(r.ac[bit8], ShiftAmount(r.ax_h[op >> 9 & 1]), Decode(op) == Op::kAsrnrx));
+        set_acc(bit8, Shift(r.ac[bit8], ShiftAmount(r.ax_h[op >> 9 & 1]), decoded == Op::kAsrnrx));
         break;
 
     case Op::kLsrnr:
     case Op::kAsrnr:
-        set_acc(bit8, Shift(r.ac[bit8], ShiftAmount(AcM(1 - bit8)), Decode(op) == Op::kAsrnr));
+        set_acc(bit8, Shift(r.ac[bit8], ShiftAmount(AcM(1 - bit8)), decoded == Op::kAsrnr));
         break;
 
     case Op::kAddr:
@@ -938,7 +904,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         {
             // The flags come from the exact value before it's wrapped to 40 bits.
             const int64_t p = Product();
-            const int64_t value = Decode(op) == Op::kMovp ? p : Decode(op) == Op::kMovnp ? -p : Round(p);
+            const int64_t value = decoded == Op::kMovp ? p : decoded == Op::kMovnp ? -p : Round(p);
             SetAc(bit8, value);
             SetFlags40(value, false, false);
             break;
@@ -1048,7 +1014,6 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
             // The accumulator takes the old product (rounded, added or moved). Then the new product is computed.
             const int dest = bit8;
             const int64_t old_product = Product();
-            const Op decoded = Decode(op);
             int64_t product = 0;
             if (decoded == Op::kMulmvz || decoded == Op::kMulac || decoded == Op::kMulmv)
             {
@@ -1112,7 +1077,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
             const uint16_t a = (op >> 9 & 1) ? r.ax_h[0] : r.ax_l[0];
             const uint16_t b = (op >> 8 & 1) ? r.ax_h[1] : r.ax_l[1];
             const int64_t product = mul(a, b, true, true);
-            SetProduct(Decode(op) == Op::kMaddx ? Product() + product : Product() - product);
+            SetProduct(decoded == Op::kMaddx ? Product() + product : Product() - product);
             break;
         }
 
@@ -1120,7 +1085,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     case Op::kMsubc:
         {
             const int64_t product = mul(AcM(op >> 9 & 1), r.ax_h[op >> 8 & 1], true, true);
-            SetProduct(Decode(op) == Op::kMaddc ? Product() + product : Product() - product);
+            SetProduct(decoded == Op::kMaddc ? Product() + product : Product() - product);
             break;
         }
 
@@ -1128,7 +1093,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     case Op::kMsub:
         {
             const int64_t product = mul(r.ax_l[bit8], r.ax_h[bit8], true, true);
-            SetProduct(Decode(op) == Op::kMadd ? Product() + product : Product() - product);
+            SetProduct(decoded == Op::kMadd ? Product() + product : Product() - product);
             break;
         }
 
@@ -1183,14 +1148,10 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
     // registers as they were before the step.
     Registers& r = regs_;
 
-    const auto increment = [this, &held](int i)
+    // The step of $arI after an access: an increment, or an add of $ixI.
+    const auto step = [this, &held](int i, bool add_index)
     {
-        Hold(held, static_cast<uint8_t>(i), Increment(regs_.ar[i], regs_.wr[i]));
-    };
-
-    const auto add_index = [this, &held](int i)
-    {
-        Hold(held, static_cast<uint8_t>(i), AddIndex(regs_.ar[i], regs_.ix[i], regs_.wr[i]));
+        Hold(held, static_cast<uint8_t>(i), SteppedAddress(i, add_index ? kAddIndexStep : kIncrementStep));
     };
 
     if (field < 0x04)
@@ -1199,20 +1160,9 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
     }
     if (field < 0x10)
     {
+        // 'DR, 'IR and 'NR
         const int i = field & 3;
-        switch (field >> 2 & 3)
-        {
-        case 1: // 'DR
-            Hold(held, static_cast<uint8_t>(i), Decrement(r.ar[i], r.wr[i]));
-            break;
-        case 2: // 'IR
-            increment(i);
-            break;
-        default: // 'NR
-            add_index(i);
-            break;
-        }
-
+        Hold(held, static_cast<uint8_t>(i), SteppedAddress(i, field >> 2 & 3));
         return;
     }
     if (field < 0x20)
@@ -1226,15 +1176,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
         // 'S and 'SN
         const int d = field & 3;
         WriteDmem(r.ar[d], ReadReg(0x1c + (field >> 3 & 3)));
-        if (field & 4)
-        {
-            add_index(d);
-        }
-        else
-        {
-            increment(d);
-        }
-
+        step(d, (field & 4) != 0);
         return;
     }
     if (field < 0x80)
@@ -1243,24 +1185,9 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
         const int s = field & 3;
         const auto dest = static_cast<uint8_t>(0x18 + (field >> 3 & 7));
         const uint16_t value = ReadDmem(r.ar[s]);
-        if ((dest == 0x1e || dest == 0x1f) && (r.sr & kSrSxm))
-        {
-            held.writes[held.count++] = {PendingWrite::kLoadExtended, dest, value};
-        }
-        else
-        {
-            Hold(held, dest, value);
-        }
-
-        if (field & 4)
-        {
-            add_index(s);
-        }
-        else
-        {
-            increment(s);
-        }
-
+        const bool extended = (dest == 0x1e || dest == 0x1f) && (r.sr & kSrSxm);
+        Hold(held, dest, value, extended ? PendingWrite::kLoadExtended : PendingWrite::kRegister);
+        step(s, (field & 4) != 0);
         return;
     }
     if (field < 0xc0)
@@ -1268,9 +1195,9 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
         // 'LS, 'SL and their N and M forms: one store and one load through $ar0 and $ar3.
         const auto dest = static_cast<uint8_t>(0x18 + (field >> 4 & 3));
         const uint16_t stored = ReadReg(0x1e + (field & 1));
-        const bool load_first_is_store_at_ar3 = (field & 2) == 0; // 'LS: store at $ar3, load from $ar0
+        const bool store_at_ar3 = (field & 2) == 0; // 'LS stores at $ar3 and loads from $ar0. 'SL does the reverse.
         uint16_t value = 0;
-        if (load_first_is_store_at_ar3)
+        if (store_at_ar3)
         {
             WriteDmem(r.ar[3], stored);
             value = ReadDmem(r.ar[0]);
@@ -1283,24 +1210,8 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
 
         Hold(held, dest, value);
         const int variant = field >> 2 & 3; // 0 plain, 1 N, 2 M, 3 NM
-        if (variant & 1)
-        {
-            add_index(0);
-        }
-        else
-        {
-            increment(0);
-        }
-
-        if (variant & 2)
-        {
-            add_index(3);
-        }
-        else
-        {
-            increment(3);
-        }
-
+        step(0, (variant & 1) != 0);
+        step(3, (variant & 2) != 0);
         return;
     }
 
@@ -1323,23 +1234,8 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& h
     }
 
     const int variant = field >> 2 & 3; // 0 plain, 1 N (on $arS), 2 M (on $ar3), 3 both
-    if (variant & 1)
-    {
-        add_index(s);
-    }
-    else
-    {
-        increment(s);
-    }
-
-    if (variant & 2)
-    {
-        add_index(3);
-    }
-    else
-    {
-        increment(3);
-    }
+    step(s, (variant & 1) != 0);
+    step(3, (variant & 2) != 0);
 }
 
 } // namespace ntdlib::dsp

@@ -45,7 +45,12 @@ constexpr std::size_t kMostIds = 0x10000;
 std::vector<uint16_t> ReadIds(const xsflib::Reader& r, uint32_t offset, uint16_t kind_bit)
 {
     std::vector<uint16_t> ids;
-    for (std::size_t at = offset; at != 0 && r.U16(at) != kEndOfIds; at += 2)
+    if (offset == 0)
+    {
+        return ids;
+    }
+
+    for (std::size_t at = offset; r.U16(at) != kEndOfIds; at += 2)
     {
         const uint16_t entry = r.U16(at);
         if ((entry & kRange) == 0)
@@ -73,7 +78,12 @@ std::vector<uint16_t> ReadIds(const xsflib::Reader& r, uint32_t offset, uint16_t
 std::vector<Page> ReadPages(const xsflib::Reader& r, uint32_t offset)
 {
     std::vector<Page> pages;
-    for (std::size_t at = offset; at != 0 && r.U8(at + 4) != kEndOfPages; at += kPageSize)
+    if (offset == 0)
+    {
+        return pages;
+    }
+
+    for (std::size_t at = offset; r.U8(at + 4) != kEndOfPages; at += kPageSize)
     {
         pages.push_back({r.U16(at), r.U8(at + 2), r.U8(at + 3), r.U8(at + 4)});
     }
@@ -86,8 +96,12 @@ std::vector<Page> ReadPages(const xsflib::Reader& r, uint32_t offset)
 std::vector<MidiSetup> ReadMidiSetups(const xsflib::Reader& r, uint32_t offset, uint32_t end)
 {
     std::vector<MidiSetup> setups;
-    for (std::size_t at = offset; at != 0 && at + kMidiSetupSize <= end && r.U16(at) != kEndOfSetups;
-         at += kMidiSetupSize)
+    if (offset == 0)
+    {
+        return setups;
+    }
+
+    for (std::size_t at = offset; at + kMidiSetupSize <= end && r.U16(at) != kEndOfSetups; at += kMidiSetupSize)
     {
         MidiSetup& setup = setups.emplace_back();
         setup.song = r.U16(at);
@@ -106,7 +120,12 @@ std::vector<MidiSetup> ReadMidiSetups(const xsflib::Reader& r, uint32_t offset, 
 std::vector<Effect> ReadEffects(const xsflib::Reader& r, uint32_t offset)
 {
     std::vector<Effect> effects;
-    const uint16_t count = offset != 0 ? r.U16(offset) : 0;
+    if (offset == 0)
+    {
+        return effects;
+    }
+
+    const uint16_t count = r.U16(offset);
     for (std::size_t i = 0; i < count; i++)
     {
         const std::size_t at = offset + 4 + i * kEffectSize;
@@ -138,7 +157,8 @@ std::vector<Group> ReadProject(std::span<const uint8_t> file)
     const xsflib::Reader r(file, true);
     std::vector<Group> groups;
     std::set<uint32_t> seen;
-    for (uint32_t at = 0; r.U32(at) != kEndOfGroups; at = r.U32(at))
+    uint32_t at = 0;
+    while (r.U32(at) != kEndOfGroups)
     {
         // A group's header gives the offset of the next group, its ID and type, and the offsets of its lists, all from
         // the file's start.
@@ -176,6 +196,8 @@ std::vector<Group> ReadProject(std::span<const uint8_t> file)
         {
             g.effects = ReadEffects(r, r.U32(at + 0x1c));
         }
+
+        at = next;
     }
 
     return groups;

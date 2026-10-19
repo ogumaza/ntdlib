@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/axfx/axfx.h"
+#include "ntdlib/cafe/axfx/reverb_lines.h"
 
 namespace ntdlib::cafe::axfx
 {
@@ -88,26 +89,8 @@ private:
     uint32_t early_length_ = 0;
     float early_coef_ = 0.0f;
 
-    // The pre-delay. A length of 0 leaves the input undelayed.
-    std::array<std::vector<float>, kChannelCount> pre_delay_line_;
-    uint32_t pre_delay_pos_ = 0;
-    uint32_t pre_delay_length_ = 0;
-
-    // The combs, by channel and comb.
-    std::array<std::array<std::vector<float>, kCombs>, kChannelCount> comb_line_;
-    std::array<uint32_t, kCombs> comb_pos_{};
-    std::array<uint32_t, kCombs> comb_length_{};
-    std::array<float, kCombs> comb_coef_{};
-
-    // The allpasses, by channel and allpass.
-    std::array<std::array<std::vector<float>, kAllpasses>, kChannelCount> allpass_line_;
-    std::array<uint32_t, kAllpasses> allpass_pos_{};
-    std::array<uint32_t, kAllpasses> allpass_length_{};
-    float allpass_coef_ = 0.0f;
-
-    // The low-pass between the allpasses: its last output and the weight of it.
-    std::array<float, kChannelCount> last_lpf_out_{};
-    float lpf_coef_ = 0.0f;
+    // The pre-delay, the combs, the allpasses and the low-pass between them.
+    detail::ReverbLines<kCombs, kAllpasses> lines_;
 };
 
 } // namespace ntdlib::cafe::axfx

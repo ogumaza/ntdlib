@@ -13,18 +13,17 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "ntdlib/disc/cpk.h"
-#include "ntdlib/disc/game.h"
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
 
+#include "disc_files.h"
+#include "ntdlib/disc/cpk.h"
+#include "ntdlib/disc/game.h"
 #include "temp_folder.h"
 
 namespace
@@ -33,6 +32,11 @@ namespace
 namespace fs = std::filesystem;
 namespace disc = ntdlib::disc;
 using Bytes = std::vector<uint8_t>;
+using disc_files::Fill;
+using disc_files::StoreBe32;
+using disc_files::StoreBe64;
+using disc_files::Text;
+using disc_files::WriteFile;
 using ntdlib::testing::TempFolder;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
@@ -69,22 +73,6 @@ void AppendLe(Bytes& out, uint64_t value, size_t size)
     }
 }
 
-void StoreBe32(Bytes& out, size_t at, uint32_t value)
-{
-    for (size_t i = 0; i < 4; ++i)
-    {
-        out[at + i] = static_cast<uint8_t>(value >> (24 - 8 * i));
-    }
-}
-
-void StoreBe64(Bytes& out, size_t at, uint64_t value)
-{
-    for (size_t i = 0; i < 8; ++i)
-    {
-        out[at + i] = static_cast<uint8_t>(value >> (56 - 8 * i));
-    }
-}
-
 void Place(Bytes& out, size_t at, const Bytes& data)
 {
     if (out.size() < at + data.size())
@@ -95,33 +83,13 @@ void Place(Bytes& out, size_t at, const Bytes& data)
     std::copy(data.begin(), data.end(), out.begin() + static_cast<std::ptrdiff_t>(at));
 }
 
-// `size` bytes of a pseudorandom pattern (xorshift).
+// `size` bytes of a pseudorandom pattern (see Fill).
 Bytes Pattern(size_t size, uint32_t seed)
 {
     Bytes data(size);
-    uint32_t x = seed * 2654435761u + 1;
-    for (uint8_t& byte : data)
-    {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        byte = static_cast<uint8_t>(x);
-    }
+    Fill(data, 0, size, seed);
 
     return data;
-}
-
-Bytes Text(const std::string& text)
-{
-    return Bytes(text.begin(), text.end());
-}
-
-// Writes `data` to the file at `path`, and makes the file's folder first.
-void WriteFile(const fs::path& path, const Bytes& data)
-{
-    fs::create_directories(path.parent_path());
-    std::ofstream(path, std::ios::binary)
-        .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 }
 
 // A field of a CRILAYLA stream: `count` bits of `value`, most significant first, in the order that the decompressor
@@ -512,6 +480,12 @@ struct TestFile
     Bytes data;
 };
 
+// The path of `file` in the CPK: the folder, then the name.
+std::string PathInCpk(const TestFile& file)
+{
+    return file.entry.folder.empty() ? file.entry.name : file.entry.folder + "/" + file.entry.name;
+}
+
 // The files of the made-up CPKs: a sound archive stored as it is, one compressed with literals only in the root folder,
 // one compressed with each form of a copy's length in a nested folder, a file that isn't a sound archive, and a sound
 // archive whose ExtractSize is 0.
@@ -852,8 +826,7 @@ void CheckGame(const std::string& what, const fs::path& path, disc::GameOptions 
     std::vector<std::string> expected_with = expected;
     for (const TestFile& file : files)
     {
-        const std::string inner =
-            file.entry.folder.empty() ? file.entry.name : file.entry.folder + "/" + file.entry.name;
+        const std::string inner = PathInCpk(file);
         if (inner.ends_with(".brsar") || inner.ends_with(".BRSAR"))
         {
             expected_with.push_back(cpk_path + "/" + inner);
@@ -886,9 +859,7 @@ void CheckGame(const std::string& what, const fs::path& path, disc::GameOptions 
 
         for (const TestFile& test : files)
         {
-            const std::string inner =
-                test.entry.folder.empty() ? test.entry.name : test.entry.folder + "/" + test.entry.name;
-            if (file.path == cpk_path + "/" + inner)
+            if (file.path == cpk_path + "/" + PathInCpk(test))
             {
                 Check(read && data == test.data && file.size == test.data.size(), what + ": " + file.path + " reads");
                 Check(file.index == cpk_index, what + ": " + file.path + " takes the CPK's index");
@@ -976,13 +947,5 @@ int main()
     Run("TestGames", TestGames);
     Run("TestDamagedGames", TestDamagedGames);
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("disc CPK tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("disc CPK");
 }

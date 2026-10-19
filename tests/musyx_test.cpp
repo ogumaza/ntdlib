@@ -7,87 +7,27 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
+
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
 
 #include "ntdlib/musyx/pool.h"
 #include "ntdlib/musyx/project.h"
 #include "ntdlib/musyx/samples.h"
 #include "ntdlib/musyx/song.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
+#include "ntdlib/testing/big_endian_bytes.h"
 
 namespace musyx = ntdlib::musyx;
+using Bytes = ntdlib::testing::BigEndianBytes;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
 
 namespace
 {
-
-// Big-endian data under construction.
-class Bytes
-{
-public:
-    std::size_t Size() const
-    {
-        return data_.size();
-    }
-
-    Bytes& U8(uint32_t v)
-    {
-        data_.push_back(static_cast<uint8_t>(v));
-
-        return *this;
-    }
-
-    Bytes& U16(uint32_t v)
-    {
-        return U8(v >> 8).U8(v);
-    }
-
-    Bytes& U32(uint32_t v)
-    {
-        return U16(v >> 16).U16(v);
-    }
-
-    // Little-endian values, for the pool's envelope tables.
-    Bytes& Le16(uint32_t v)
-    {
-        return U8(v).U8(v >> 8);
-    }
-
-    Bytes& Le32(uint32_t v)
-    {
-        return Le16(v).Le16(v >> 16);
-    }
-
-    Bytes& PadTo(std::size_t size)
-    {
-        data_.resize(std::max(data_.size(), size));
-
-        return *this;
-    }
-
-    void Put16(std::size_t at, uint32_t v)
-    {
-        xsflib::StoreBe16(data_.data() + at, static_cast<uint16_t>(v));
-    }
-
-    void Put32(std::size_t at, uint32_t v)
-    {
-        xsflib::StoreBe32(data_.data() + at, v);
-    }
-
-    std::vector<uint8_t>& Data()
-    {
-        return data_;
-    }
-
-private:
-    std::vector<uint8_t> data_;
-};
 
 // A project with a song group (ID 7) and an effects group (ID 9).
 std::vector<uint8_t> MakeProject()
@@ -375,8 +315,8 @@ SampleFiles MakeSamples(int16_t loop_hist1)
     d.U16(0xffff);
     d.PadTo((d.Size() + 3) / 4 * 4);
 
-    // The DSP-ADPCM settings: the coefficients' count, the first frame's scale, the loop's scale, the loop's history
-    // (the sample two before the loop's start, then the one just before) and the coefficients.
+    // The DSP-ADPCM settings: the coefficients' count, the predictor and scale of the first frame and of the loop, the
+    // loop's history (the sample two before the loop's start, then the one just before) and the coefficients.
     d.Put32(settings_field, static_cast<uint32_t>(d.Size()));
     d.U16(8).U8(0x01).U8(0x10).U16(7).U16(static_cast<uint16_t>(loop_hist1));
     for (int16_t c : Coefficients())
@@ -401,7 +341,7 @@ void TestSamples()
               adpcm.format == musyx::SampleFormat::kAdpcm && adpcm.length == 28 && adpcm.loop_start == 20 &&
               adpcm.loop_length == 8,
           "the DSP-ADPCM sample's entry");
-    Check(adpcm.adpcm && adpcm.adpcm->initial_scale == 0x01 && adpcm.adpcm->loop_scale == 0x10 &&
+    Check(adpcm.adpcm && adpcm.adpcm->pred_scale == 0x01 && adpcm.adpcm->loop_pred_scale == 0x10 &&
               adpcm.adpcm->loop_hist2 == 7 && adpcm.adpcm->loop_hist1 == 8 &&
               adpcm.adpcm->coefficients == Coefficients(),
           "the DSP-ADPCM settings");
@@ -471,14 +411,14 @@ std::vector<uint8_t> MakeSong(bool sections)
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
     const std::size_t channels = b.Size();
     b.PadTo(channels + 64);
-    b.Data()[channels + 0] = 3;
-    b.Data()[channels + 5] = 9;
+    b.Put8(channels + 0, 3);
+    b.Put8(channels + 5, 9);
     if (sections)
     {
         b.Put32(0x54, static_cast<uint32_t>(b.Size()));
         const std::size_t section_map = b.Size();
         b.PadTo(section_map + 64);
-        b.Data()[section_map + 5] = 2;
+        b.Put8(section_map + 5, 2);
     }
 
     // The tempo table.
@@ -624,13 +564,5 @@ int main()
     TestSamples();
     TestSong();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("musyx tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("musyx");
 }

@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "dsp/internal.h"
@@ -19,8 +20,7 @@ namespace ntdlib::dsp
 namespace
 {
 
-// The ROM's routines.
-constexpr uint16_t kEntry = 0x8000;
+// The ROM's routines, after the entry at kRomEntry.
 constexpr uint16_t kCommandLoop = 0x8040; // where the model keeps the PC while the command loop runs
 constexpr uint16_t kLoader = 0x80b5;
 constexpr uint16_t kMixTwoConstant = 0x80e7;
@@ -28,19 +28,24 @@ constexpr uint16_t kMixOneConstant = 0x81f9;
 constexpr uint16_t kMixTwoRamped = 0x8282;
 constexpr uint16_t kMixOneRamped = 0x845d;
 
-} // namespace
+// The ROM's mails to the CPU: the ready mail that the entry sends, and the high halves of its replies to a mail that
+// isn't a command and to an unknown command.
+constexpr uint32_t kReadyMail = 0x8071feed;
+constexpr uint16_t kNotCommandReply = 0xfeee;
+constexpr uint16_t kUnknownCommandReply = 0xfaaa;
 
-// The state of the ROM code between steps.
-template <typename Memory>
-enum class Dsp<Memory>::Rom : uint8_t
-{
-    kNone,
-    kCommandStart,  // clearing the accumulators for the next mail
-    kWaitCommand,   // waiting for a mail
-    kWaitArgument,  // waiting for a command's argument mail
-    kWaitMailTaken, // waiting for the CPU to read the ROM's reply
-    kDelay,         // the routine's work is done; it runs out its remaining steps and returns
-};
+// The CPU's commands: mails with kCommandMark in their high halves. Six of them take the next mail as the address, the
+// length or the destination of the microcode's IRAM or DRAM image. kStart takes the entry point and starts the loader.
+constexpr uint16_t kCommandMark = 0x80f3;
+constexpr uint16_t kIramAddress = 0xa001;
+constexpr uint16_t kIramLength = 0xa002;
+constexpr uint16_t kIramDestination = 0xc002;
+constexpr uint16_t kDramAddress = 0xb001;
+constexpr uint16_t kDramLength = 0xb002;
+constexpr uint16_t kDramDestination = 0xc001;
+constexpr uint16_t kStart = 0xd001;
+
+} // namespace
 
 template <typename Memory>
 void Dsp<Memory>::StartMicrocode(std::span<const uint16_t> microcode, uint32_t address, uint16_t entry)
@@ -70,7 +75,7 @@ void Dsp<Memory>::StartMicrocode(std::span<const uint16_t> microcode, uint32_t a
 
     control_ = control::kInit;
     mailbox_to_dsp_ = entry;
-    mailbox_to_cpu_ = 0x0071feed;
+    mailbox_to_cpu_ = kReadyMail & ~kMailboxFull; // the ready mail, taken by the CPU
     pending_exceptions_ = 0;
     interrupt_request_ = false;
     rom_state_ = Rom::kNone;
@@ -92,54 +97,12 @@ bool Dsp<Memory>::AtIdleLoop() const
 template <typename Memory>
 void Dsp<Memory>::RomStep()
 {
-    // The routine's remaining steps do nothing. The last step returns.
-    if (rom_state_ == Rom::kDelay)
-    {
-        if (--rom_delay_ == 0)
-        {
-            rom_state_ = Rom::kNone;
-            if (rom_command_ == kLoader)
-            {
-                regs_.pc = regs_.ar[0];
-            }
-            else
-            {
-                regs_.pc = Pop(0);
-            }
-        }
-
-        return;
-    }
-
-    if (rom_state_ == Rom::kNone)
-    {
-        switch (regs_.pc)
-        {
-        case kEntry:
-            RomEntry();
-            return;
-
-        case kLoader:
-            RomLoader();
-            return;
-
-        case kMixTwoConstant:
-        case kMixOneConstant:
-        case kMixTwoRamped:
-        case kMixOneRamped:
-            RomMix(regs_.pc);
-            return;
-
-        default:
-            // An address outside the modelled routines. Without the ROM's code, the DSP stops.
-            control_ |= control::kHalt;
-            return;
-        }
-    }
-
-    // The command loop.
     switch (rom_state_)
     {
+    case Rom::kNone:
+        RomStartRoutine();
+        return;
+
     case Rom::kCommandStart:
         SetAc(0, 0);
         SetAc(1, 0);
@@ -148,99 +111,12 @@ void Dsp<Memory>::RomStep()
         return;
 
     case Rom::kWaitCommand:
+        RomTakeCommand();
+        return;
+
     case Rom::kWaitArgument:
-        {
-            if (!(mailbox_to_dsp_ & kMailboxFull))
-            {
-                return;
-            }
-
-            // The wait returns with CMBH and its full flag in $ac0.m and with LZ set.
-            const uint16_t high = ReadHardware(kCmbh);
-            SetAcM(0, high);
-            regs_.sr |= kSrLogicZero;
-            if (rom_state_ == Rom::kWaitArgument)
-            {
-                const uint16_t low = ReadHardware(kCmbl);
-                switch (rom_command_)
-                {
-                case 0xa001:
-                    SetAcM(1, low);
-                    regs_.ix[0] = high;
-                    regs_.ix[1] = low;
-                    break;
-
-                case 0xa002:
-                    SetAcM(1, low);
-                    regs_.ix[3] = low;
-                    break;
-
-                case 0xc002:
-                    SetAcM(1, low);
-                    regs_.ix[2] = low;
-                    break;
-
-                case 0xb001:
-                    SetAcM(1, low);
-                    regs_.ax_h[0] = high;
-                    regs_.ax_l[0] = low;
-                    break;
-
-                case 0xb002:
-                    SetAcM(1, low);
-                    regs_.ax_l[1] = low;
-                    break;
-
-                case 0xc001:
-                    SetAcM(1, low);
-                    regs_.ax_h[1] = low;
-                    break;
-
-                default: // 0xd001: the entry point, then the loader
-                    SetAc(0, 0);
-                    SetAcM(0, low);
-                    regs_.ar[0] = low;
-                    rom_state_ = Rom::kNone;
-                    regs_.pc = kLoader;
-                    return;
-                }
-
-                rom_state_ = Rom::kCommandStart;
-                return;
-            }
-
-            if (high != 0x80f3)
-            {
-                // Not a command. The ROM reads it and replies 0xFEEE0000 | CMBH.
-                SetAcM(1, ReadHardware(kCmbl));
-                WriteHardware(kDmbh, 0xfeee);
-                WriteHardware(kDmbl, high);
-                rom_state_ = Rom::kWaitMailTaken;
-                return;
-            }
-
-            const uint16_t command = ReadHardware(kCmbl);
-            SetAcM(0, command);
-            constexpr std::array<uint16_t, 7> kCommands = {0xa001, 0xa002, 0xc002, 0xb001, 0xb002, 0xc001, 0xd001};
-            for (const uint16_t known : kCommands)
-            {
-                SetAcM(1, known);
-                const int64_t difference = Wrap40(regs_.ac[0] - regs_.ac[1]);
-                SetFlagsSub(regs_.ac[0], regs_.ac[1], difference);
-                if (command == known)
-                {
-                    rom_command_ = command;
-                    rom_state_ = Rom::kWaitArgument;
-                    return;
-                }
-            }
-
-            // An unknown command. The ROM replies 0xFAAA0000 | command.
-            WriteHardware(kDmbh, 0xfaaa);
-            WriteHardware(kDmbl, command);
-            rom_state_ = Rom::kWaitMailTaken;
-            return;
-        }
+        RomTakeArgument();
+        return;
 
     case Rom::kWaitMailTaken:
         if (!(mailbox_to_cpu_ & kMailboxFull))
@@ -251,22 +127,173 @@ void Dsp<Memory>::RomStep()
 
         return;
 
-    default:
+    case Rom::kLoading:
+    case Rom::kMixing:
+        // The routine's remaining steps do nothing. The last one jumps to the microcode or returns.
+        if (--rom_delay_ == 0)
+        {
+            regs_.pc = rom_state_ == Rom::kLoading ? regs_.ar[0] : Pop(0);
+            rom_state_ = Rom::kNone;
+        }
+
         return;
     }
 }
 
 template <typename Memory>
+void Dsp<Memory>::RomStartRoutine()
+{
+    switch (regs_.pc)
+    {
+    case kRomEntry:
+        RomEntry();
+        return;
+
+    case kLoader:
+        RomLoader();
+        return;
+
+    case kMixTwoConstant:
+    case kMixOneConstant:
+    case kMixTwoRamped:
+    case kMixOneRamped:
+        RomMix(regs_.pc);
+        return;
+
+    default:
+        // An address outside the modelled routines. Without the ROM's code, the DSP stops.
+        control_ |= control::kHalt;
+        return;
+    }
+}
+
+template <typename Memory>
+std::optional<uint16_t> Dsp<Memory>::RomWaitMail()
+{
+    // The wait at 0x8078 polls CMBH until the mailbox is full. It returns with CMBH, full flag included, in $ac0.m and
+    // with LZ set.
+    if (!(mailbox_to_dsp_ & kMailboxFull))
+    {
+        return std::nullopt;
+    }
+
+    const uint16_t high = ReadHardware(kCmbh);
+    SetAcM(0, high);
+    regs_.sr |= kSrLogicZero;
+
+    return high;
+}
+
+template <typename Memory>
+void Dsp<Memory>::RomTakeCommand()
+{
+    const std::optional<uint16_t> high = RomWaitMail();
+    if (!high)
+    {
+        return;
+    }
+
+    if (*high != kCommandMark)
+    {
+        // Not a command. The ROM reads it and replies with CMBH.
+        SetAcM(1, ReadHardware(kCmbl));
+        WriteHardware(kDmbh, kNotCommandReply);
+        WriteHardware(kDmbl, *high);
+        rom_state_ = Rom::kWaitMailTaken;
+        return;
+    }
+
+    // The ROM compares the command with each of these in turn. The last comparison leaves the flags.
+    const uint16_t command = ReadHardware(kCmbl);
+    SetAcM(0, command);
+    constexpr std::array<uint16_t, 7> kCommands = {
+        kIramAddress, kIramLength, kIramDestination, kDramAddress, kDramLength, kDramDestination, kStart};
+    for (const uint16_t known : kCommands)
+    {
+        SetAcM(1, known);
+        const int64_t difference = Wrap40(regs_.ac[0] - regs_.ac[1]);
+        SetFlagsSub(regs_.ac[0], regs_.ac[1], difference);
+        if (command == known)
+        {
+            rom_command_ = command;
+            rom_state_ = Rom::kWaitArgument;
+            return;
+        }
+    }
+
+    // An unknown command. The ROM replies with the command.
+    WriteHardware(kDmbh, kUnknownCommandReply);
+    WriteHardware(kDmbl, command);
+    rom_state_ = Rom::kWaitMailTaken;
+}
+
+template <typename Memory>
+void Dsp<Memory>::RomTakeArgument()
+{
+    const std::optional<uint16_t> high = RomWaitMail();
+    if (!high)
+    {
+        return;
+    }
+
+    const uint16_t low = ReadHardware(kCmbl);
+    if (rom_command_ == kStart)
+    {
+        // The entry point goes to $ac0.m and $ar0. Then the loader starts the microcode.
+        SetAc(0, 0);
+        SetAcM(0, low);
+        regs_.ar[0] = low;
+        regs_.pc = kLoader;
+        rom_state_ = Rom::kNone;
+        return;
+    }
+
+    // Each of the other commands reads CMBL into $ac1.m and moves it.
+    SetAcM(1, low);
+    switch (rom_command_)
+    {
+    case kIramAddress:
+        regs_.ix[0] = *high;
+        regs_.ix[1] = low;
+        break;
+
+    case kIramLength:
+        regs_.ix[3] = low;
+        break;
+
+    case kIramDestination:
+        regs_.ix[2] = low;
+        break;
+
+    case kDramAddress:
+        regs_.ax_h[0] = *high;
+        regs_.ax_l[0] = low;
+        break;
+
+    case kDramLength:
+        regs_.ax_l[1] = low;
+        break;
+
+    case kDramDestination:
+        regs_.ax_h[1] = low;
+        break;
+    }
+
+    rom_state_ = Rom::kCommandStart;
+}
+
+template <typename Memory>
 void Dsp<Memory>::RomEntry()
 {
-    // Set $cr, the $sr bits and the modes. Then send the ready mail and enter the command loop.
+    // Set $cr, clear $sr's bits 8 to 12 (IE and EIE among them) and set the modes. Then send the ready mail and enter
+    // the command loop.
     regs_.cr = 0xff;
-    regs_.sr &= static_cast<uint16_t>(~((1u << 12) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11)));
+    regs_.sr &= static_cast<uint16_t>(~((1u << 8) | kSrInterruptEnable | (1u << 10) | kSrExternalEnable | (1u << 12)));
     regs_.sr &= ~kSrSxm;
     regs_.sr &= ~kSrSu;
     regs_.sr |= kSrAm;
-    WriteHardware(kDmbh, 0x8071);
-    WriteHardware(kDmbl, 0xfeed);
+    WriteHardware(kDmbh, static_cast<uint16_t>(kReadyMail >> 16));
+    WriteHardware(kDmbl, static_cast<uint16_t>(kReadyMail));
     regs_.pc = kCommandLoop;
     rom_state_ = Rom::kCommandStart;
 }
@@ -309,10 +336,9 @@ void Dsp<Memory>::RomLoader()
         steps += 9;
     }
 
-    rom_command_ = kLoader;
-    rom_delay_ = steps;
-    rom_state_ = Rom::kDelay;
-    RomStep();
+    // This step is the first of the routine's steps.
+    rom_delay_ = steps - 1;
+    rom_state_ = Rom::kLoading;
 }
 
 template <typename Memory>
@@ -322,14 +348,11 @@ void Dsp<Memory>::RomMix(uint16_t routine)
     Registers& r = regs_;
     const bool sxm = (r.sr & kSrSxm) != 0;
 
-    const auto advance = [this](uint16_t address, int count)
+    // The address `count` words on. The routines step their addresses by the DSP's increment. AX keeps every $wr at
+    // 0xFFFF, and with that wrap each step is a plain +1. The model ignores $wr.
+    const auto advance = [](uint16_t address, int count)
     {
-        for (int i = 0; i < count; i++)
-        {
-            address = Increment(address, 0xffff);
-        }
-
-        return address;
+        return static_cast<uint16_t>(address + count);
     };
 
     // mul(x, v): the MULX product of $ax0.h = x (signed) and $ax1.l = v (unsigned when SU is set). The product is
@@ -342,14 +365,10 @@ void Dsp<Memory>::RomMix(uint16_t routine)
         return (r.sr & kSrAm) ? a * b : a * b * 2;
     };
 
-    const auto sat = [sxm](int64_t product) -> uint16_t
+    // The middle word of a product, saturated in 40-bit mode. The routines store it.
+    const auto sat = [sxm](int64_t product)
     {
-        if (sxm && (product < -(int64_t{1} << 31) || product > (int64_t{1} << 31) - 1))
-        {
-            return product > 0 ? 0x7fff : 0x8000;
-        }
-
-        return static_cast<uint16_t>(product >> 16);
+        return static_cast<uint16_t>(sxm ? MiddleWord(product) : product >> 16);
     };
 
     const auto ramp = [sxm](uint16_t volume, uint16_t delta, int j) -> uint16_t
@@ -364,7 +383,7 @@ void Dsp<Memory>::RomMix(uint16_t routine)
     };
 
     // One mix: x (33 samples) with volumes v into the accumulation buffer at `accumulation`. The results are written as
-    // pairs at `output`. Returns R_31.
+    // pairs at `output`. Returns the last sample's result.
     const auto mix = [&](uint16_t input, uint16_t accumulation, uint16_t output,
                          const std::array<uint16_t, 32>& volumes, std::array<uint16_t, 33>& x)
     {
@@ -471,7 +490,7 @@ void Dsp<Memory>::RomMix(uint16_t routine)
             break;
         }
 
-    default: // kMixTwoRamped
+    case kMixTwoRamped:
         {
             const uint16_t scratch = r.ar[3];
             const uint16_t v1 = ReadDmem(r.ar[1]);
@@ -513,11 +532,11 @@ void Dsp<Memory>::RomMix(uint16_t routine)
 
     // Every routine ends with a CLR $ac0.
     SetAc(0, 0);
-    r.sr = static_cast<uint16_t>((r.sr & ~0x3f) | kSrZero | kSrTopBits);
-    rom_command_ = routine;
-    rom_delay_ = steps;
-    rom_state_ = Rom::kDelay;
-    RomStep();
+    SetFlags40(0, false, false);
+
+    // This step is the first of the routine's steps.
+    rom_delay_ = steps - 1;
+    rom_state_ = Rom::kMixing;
 }
 
 } // namespace ntdlib::dsp

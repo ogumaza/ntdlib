@@ -13,17 +13,32 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <ios>
 #include <map>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include "seqlib/file_name.h"
+#include "seqlib/loop.h"
+#include "seqlib/midi/encoder.h"
+#include "seqlib/midi/performance_writer.h"
+#include "seqlib/midi/reader.h"
+#include "seqlib/read_error.h"
+#include "seqlib/sf2/reader.h"
+#include "seqlib/sf2/units.h"
+#include "seqlib/sf2/writer.h"
+#include "seqlib/wav.h"
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
 
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/sar/decode.h"
@@ -40,18 +55,6 @@
 #include "ntdlib/testing/length_cases.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sequence_export_check.h"
-#include "seqlib/file_name.h"
-#include "seqlib/loop.h"
-#include "seqlib/midi/encoder.h"
-#include "seqlib/midi/performance_writer.h"
-#include "seqlib/midi/reader.h"
-#include "seqlib/read_error.h"
-#include "seqlib/sf2/reader.h"
-#include "seqlib/sf2/units.h"
-#include "seqlib/sf2/writer.h"
-#include "seqlib/wav.h"
-#include "xsflib/binary.h"
-#include "xsflib/testing/check.h"
 
 using namespace ntdlib::sequence_export;
 using namespace ntdlib::sequence_export::tests;
@@ -59,13 +62,7 @@ using ntdlib::nwsnd::DecibelSquare;
 using ntdlib::nwsnd::HoldMs;
 using ntdlib::sar::Bank;
 using ntdlib::sar::Instrument;
-using ntdlib::sar::KeyRegion;
-using ntdlib::sar::Sequence;
 using ntdlib::sar::SoundInfo;
-using ntdlib::sar::SoundType;
-using ntdlib::sar::VelocityRegion;
-using ntdlib::sar::WaveArchive;
-using xsflib::FormatError;
 
 namespace sf2 = seqlib::sf2;
 
@@ -133,16 +130,7 @@ void TestCallsNestTenDeep()
     }
     commands.insert(commands.end(), {71, 0x64, 0x01, 0xfd});
     commands[7] = 0xff; // level 0 finishes instead of returning
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(commands);
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank(commands, OneRegionFbnk({{0x05000000, 0}}));
 
     const std::vector<int> kKeys = {70, 69, 68, 67, 66, 65, 64, 63, 62, 61, 60};
     XSFLIB_CHECK(NoteKeys(p) == kKeys);
@@ -262,18 +250,10 @@ void TestVariableShiftsAreThePowerPcs()
 {
     // Set track variable 0 to 1 and shift it left by 64. PowerPC's slw takes that shift as 0. Then play key 60 if the
     // variable is still 1. Shift it by 40. That leaves nothing. Play key 62 if the variable is 0.
-    std::vector<ArchiveFile> files(3);
-    files[0].data =
-        Fseq({0xf0, 0x80, 0x20, 0x00, 0x01, 0xf0, 0x85, 0x20, 0x00, 0x40, 0xf0, 0x90, 0x20, 0x00, 0x01, 0xa2, 0x3c,
-              0x64, 0x01, 0xf0, 0x85, 0x20, 0x00, 0x28, 0xf0, 0x90, 0x20, 0x00, 0x00, 0xa2, 0x3e, 0x64, 0x01, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank(
+        {0xf0, 0x80, 0x20, 0x00, 0x01, 0xf0, 0x85, 0x20, 0x00, 0x40, 0xf0, 0x90, 0x20, 0x00, 0x01, 0xa2, 0x3c,
+         0x64, 0x01, 0xf0, 0x85, 0x20, 0x00, 0x28, 0xf0, 0x90, 0x20, 0x00, 0x00, 0xa2, 0x3e, 0x64, 0x01, 0xff},
+        OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(NoteKeys(p) == (std::vector<int>{60, 62}));
 }
@@ -352,19 +332,11 @@ void TestMainLoopWaitsForAFadeTooLoudForMidi()
     // every 48 ticks. Track 2 plays at tick 1500 with volume and volume2 both 255. That sets the peak above MIDI's
     // limit. Perform must scale CC11 on a second pass and wait for track 0's fade before marking the main loop on both
     // passes, even when CC11 clips on the first.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(
+    const Performance p = PerformOnBank(
         Code({0xfe, U16(0x0007), 0x88,        0x01, U24(0x000018), 0x88, 0x02, U24(0x00001e), 0xc1, 0xff, 0xa3,
               0xc1, 0x80,        U16(0x07d0), 0x3c, 0x7f,          0x00, 0xff, 0x80,          0x30, 0x89, U24(0x000018),
-              0x80, 0x8b,        0x5c,        0xc1, 0xff,          0xd5, 0xff, 0x3c,          0x7f, 0x30, 0xff}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+              0x80, 0x8b,        0x5c,        0xc1, 0xff,          0xd5, 0xff, 0x3c,          0x7f, 0x30, 0xff}),
+        OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(p.loop && p.loop->start > 2000 && p.loop->end - p.loop->start == 48);
     XSFLIB_CHECK(std::fabs(p.level_cut_db - 40.0 * std::log10(512.0 / 127.0)) < 0.001);
@@ -376,18 +348,11 @@ void TestMainLoopWaitsForALegatosFade()
     // it fades to 250 over 1220 ticks, plays key 60 legato at velocity 100, then waits forever. The MIDI note can start
     // no higher than 63. CC11 rises by 100 / 63 for the legato. That gives the legato finer steps than the underlying
     // level. Track 1 loops a 12-tick key 72 and 12-tick wait. Its main loop must start after track 0's fade.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x00001a), 0xc8, 0x01,         0xd5, 0x20, 0xc1, 0x80,
-                               0x3c, 0x28,        0x01, 0xa3, 0xc1,          0xfa, U16(0x04c4),  0x3c, 0x64, 0x00, 0xff,
-                               0x48, 0x64,        0x0c, 0x80, 0x0c,          0x89, U24(0x00001a)}));
-    files[1].data = VelocitySplitFbnk({{0x05000000, 0}}, {63, 127}, {64, 64});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p =
+        PerformOnBank(Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x00001a), 0xc8, 0x01, 0xd5,        0x20,         0xc1,
+                            0x80, 0x3c,        0x28, 0x01, 0xa3,          0xc1, 0xfa, U16(0x04c4), 0x3c,         0x64,
+                            0x00, 0xff,        0x48, 0x64, 0x0c,          0x80, 0x0c, 0x89,        U24(0x00001a)}),
+                      VelocitySplitFbnk({{0x05000000, 0}}, {63, 127}, {64, 64}));
 
     XSFLIB_CHECK(p.loop && p.loop->start == 1224 && p.loop->end == 1248);
 }
@@ -797,17 +762,9 @@ void TestTiedNoteTakesPartInTheMainLoop()
     // Track 0 opens track 1, ties key 72 for 30 ticks, then indefinitely, and waits for it. Track 1 loops a 26-tick key
     // 60. The tie at tick 30 emits no MIDI change but still contributes to track 1's pass starting at tick 26. Mark the
     // following pass as the main loop.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x000010), 0xc8, 0x01, 0x48, 0x78, 0x1e, 0x48, 0x78,
-                               0x00, 0x3c, 0x64, 0x1a, 0x89, U24(0x000010)}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank(Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x000010), 0xc8, 0x01, 0x48, 0x78,
+                                              0x1e, 0x48, 0x78, 0x00, 0x3c, 0x64, 0x1a, 0x89, U24(0x000010)}),
+                                        OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(p.loop && p.loop->start == 52 && p.loop->end == 78);
 }
@@ -817,17 +774,9 @@ void TestSilentLegatoCarriesItsNoteOn()
     // With mono enabled and notewait off, play key 60 for 30 ticks. Change release at tick 10. That makes a different
     // preset. Then play velocity 0 at tick 20 and finish at tick 50. Keep the MIDI note alive but silent through CC11;
     // note-off would leave a release tail. Do not create the unused preset.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0xb2, 0x01, 0xc7, 0x00, 0x3c, 0x64, 0x1e, 0x80, 0x0a, 0xd3, 0x40, 0x80, 0x0a, 0x3c, 0x00,
-                          0x3c, 0x80, 0x1e, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank({0xb2, 0x01, 0xc7, 0x00, 0x3c, 0x64, 0x1e, 0x80, 0x0a, 0xd3, 0x40, 0x80, 0x0a,
+                                         0x3c, 0x00, 0x3c, 0x80, 0x1e, 0xff},
+                                        OneRegionFbnk({{0x05000000, 0}}));
 
     std::vector<std::tuple<uint32_t, EventKind, int>> events; // tick, kind and CC11 value
     for (const TrackEvent& e : p.tracks[0])
@@ -852,19 +801,11 @@ void TestLegatosChangeOfKeyIsNoChangeOfTheTracks()
     // filter controller and a 2-semitone bend on the existing note. Track 1 loops every 6 ticks. Sweep completion
     // counts as a track-0 change on both passes, even though only the first MIDI bend returns to 0. Both passes must
     // select the same main loop.
-    std::vector<ArchiveFile> files(3);
-    files[0].data =
-        Fseq(Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x000020), 0xe1, U16(0x03ff), 0xc8, 0x01, 0xce,         0x01,
-                   0xcf, 0x64,        0xc7, 0x00, 0x3c,          0x64, 0x00,        0x80, 0x01, 0xd8,         0x10,
-                   0xc7, 0x01,        0x3e, 0x64, 0x00,          0xff, 0x80,        0x06, 0x89, U24(0x000020)}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank(
+        Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x000020), 0xe1, U16(0x03ff), 0xc8, 0x01, 0xce,         0x01,
+              0xcf, 0x64,        0xc7, 0x00, 0x3c,          0x64, 0x00,        0x80, 0x01, 0xd8,         0x10,
+              0xc7, 0x01,        0x3e, 0x64, 0x00,          0xff, 0x80,        0x06, 0x89, U24(0x000020)}),
+        OneRegionFbnk({{0x05000000, 0}}));
 
     // The passes select the loop from tick 2562 to 2568, or from 2502 to 2508 on the 3DS.
     const uint32_t start = console->settings.engine == Engine::kCtr ? 2502 : 2562;
@@ -875,16 +816,8 @@ void TestMonoLegatoTakesItsLengthWithTieOn()
 {
     // With mono and tie enabled, play key 60 for 48 ticks, then key 62 for 24 ticks and wait. Mono updates the
     // channel's length even with tie enabled. The note therefore ends at tick 72.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0xb2, 0x01, 0xc8, 0x01, 0x3c, 0x64, 0x30, 0x3e, 0x64, 0x18, 0x80, 0x60, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank({0xb2, 0x01, 0xc8, 0x01, 0x3c, 0x64, 0x30, 0x3e, 0x64, 0x18, 0x80, 0x60, 0xff},
+                                        OneRegionFbnk({{0x05000000, 0}}));
 
     std::vector<std::pair<uint32_t, EventKind>> notes;
     for (const TrackEvent& e : p.tracks[0])
@@ -1134,16 +1067,8 @@ void TestClosingTickReachesTheReleaseTail()
     // Release 100 and key 60 for one tick, then volume 0 and FIN in the next. Like the end of a tick, closing the track
     // gives the releasing note the track's settings. The tail is therefore silent in the game and requires CC7 0 in
     // MIDI.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0xd3, 0x64, 0x3c, 0x64, 0x01, 0xc1, 0x00, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}}, .banks = {1}, .wave_archives = {2}}), console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p =
+        PerformOnBank({0xd3, 0x64, 0x3c, 0x64, 0x01, 0xc1, 0x00, 0xff}, OneRegionFbnk({{0x05000000, 0}}));
 
     const auto silenced = [](const TrackEvent& e)
     {
@@ -1157,16 +1082,8 @@ void TestSilenceAtTheTimeLimitEndsWithTheLastSound()
     // Key 60 plays for 48 ticks (0.5 s), then the track waits 100,000 ticks (17 minutes), past the 15-minute limit. The
     // track has been silent since the note. The performance therefore treats the sequence as finished and ends with the
     // note.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0x3c, 0x64, 0x30, 0x80, 0x86, 0x8d, 0x20, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}}, .banks = {1}, .wave_archives = {2}}), console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p =
+        PerformOnBank({0x3c, 0x64, 0x30, 0x80, 0x86, 0x8d, 0x20, 0xff}, OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(!p.truncated && !p.holds && p.seconds < 1.0);
 }
@@ -1503,18 +1420,10 @@ void TestTrackWaitingForAVariableGoesOn()
 {
     // Track 0 opens track 1, waits 96 ticks and sets player variable 0 to 1. Track 1 polls without waits, then plays
     // key 60. The 10,000-command limit must yield each tick so the note can start at tick 96.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(
+    const Performance p = PerformOnBank(
         Code({0xfe, U16(0x0003), 0x88, 0x01, U24(0x000010), 0x80, 0x60, 0xf0, 0x80, 0x00, U16(0x0001), 0xff, 0xf0, 0x95,
-              0x00, U16(0x0001), 0xa2, 0x89, U24(0x000010), 0x3c, 0x64, 0x30, 0xff}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+              0x00, U16(0x0001), 0xa2, 0x89, U24(0x000010), 0x3c, 0x64, 0x30, 0xff}),
+        OneRegionFbnk({{0x05000000, 0}}));
 
     std::vector<uint32_t> note_ons;
     for (const TrackEvent& e : p.tracks[1])
@@ -1650,20 +1559,14 @@ void TestVariableOptionSetsAVariableBeforeTheStart()
 {
     // Wait a tick and check again while player variable 0 isn't 1, then play key 60 and end. Variables start at -1. The
     // sequence therefore plays nothing until the game sets the variable. PerformOptions::variables sets it first.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(
-        Code({0xf0, 0x95, 0x00, U16(0x0001), 0xa2, 0x80, 0x01, 0xa2, 0x89, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0xff}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const std::vector<uint8_t> code =
+        Code({0xf0, 0x95, 0x00, U16(0x0001), 0xa2, 0x80, 0x01, 0xa2, 0x89, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0xff});
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
     PerformOptions options;
     options.variables[0] = 1;
 
-    const Performance unset = Perform(archive, 0, banks, {});
-    const Performance set = Perform(archive, 0, banks, options);
+    const Performance unset = PerformOnBank(code, bank);
+    const Performance set = PerformOnBank(code, bank, 1, options);
 
     auto note_ons = [](const Performance& p)
     {
@@ -1720,18 +1623,11 @@ void TestWaitingForAVariableIsNoLoop()
     // The 10,000-command limit stops partway through a pass. Later ticks then jump back to commands visited on the
     // previous tick. These are polling passes, not the main loop. After the variable is set, track 0 loops a 48-tick
     // key 60; that is the main loop.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(Code({0xfe,          U16(0x0003), 0x88, 0x01, U24(0x00001b), 0xc1, 0x7f,        0xf0, 0x95,
-                               0x00,          U16(0x0001), 0xa2, 0x89, U24(0x000008), 0x3c, 0x64,        0x30, 0x89,
-                               U24(0x000014), 0x80,        0x60, 0xf0, 0x80,          0x00, U16(0x0001), 0xff}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p =
+        PerformOnBank(Code({0xfe,          U16(0x0003), 0x88, 0x01, U24(0x00001b), 0xc1, 0x7f,        0xf0, 0x95,
+                            0x00,          U16(0x0001), 0xa2, 0x89, U24(0x000008), 0x3c, 0x64,        0x30, 0x89,
+                            U24(0x000014), 0x80,        0x60, 0xf0, 0x80,          0x00, U16(0x0001), 0xff}),
+                      OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(p.loop && p.loop->start == 97 && p.loop->end == 145 && p.warnings.empty());
 }
@@ -2122,7 +2018,8 @@ void TestTrackStartsNoMoreNotesATickThanTheGameHasVoices()
     // they yield as many voices as the game has. On the Wii U, the four find no free channel and play nothing, as in
     // the game. On the 3DS, the game gives the four newest notes the voices of the four oldest. The performer omits the
     // four newest as an approximation. The Switch has no --voices. Without --voices, the cap is kMaxVoiceLimit: of 1030
-    // notes at once, kMaxVoiceLimit play, and the performer omits six as an approximation. With tie enabled, two notes
+    // notes at once, kMaxVoiceLimit play, and the performer omits six as an approximation. The report says that the
+    // game keeps the first notes on the Wii U, and the newest on the other consoles. With tie enabled, two notes
     // more than the voices, ending on key 72, use one channel; the final legato requires no approximation. As many
     // notes as the voices on missing program 5 allocate nothing. A following held note on program 0 must therefore
     // play. Finally, one tied note more than the voices at velocity 1 is followed by one at 127 with a new release.
@@ -2171,7 +2068,10 @@ void TestTrackStartsNoMoreNotesATickThanTheGameHasVoices()
     const std::string kLegatosPastCap = "more than " + std::to_string(voices) +
                                         " legatos in a tick (keeping the MIDI preset and limiting gain to the starting "
                                         "level)";
-    const std::string kPastCap = " new channels on a track in one tick (excess omitted; the game keeps the newest)";
+    const std::string kPastCap =
+        console->settings.engine == Engine::kCafe
+            ? " new channels on a track in one tick (excess omitted; the game keeps the first)"
+            : " new channels on a track in one tick (excess omitted; the game keeps the newest)";
     auto past_cap = [&kPastCap](const Performance& p)
     {
         return std::ranges::count_if(p.approximations,
@@ -2214,20 +2114,12 @@ void TestTrackPlayingANoteEachTimeAVariableIsSetGoesOn()
     // from track 0. The main loop's pass that ends at tick 1000, the first past 10 s, ends the performance. That's
     // before track 1 has run without waits for 10 s. Track 0 changes no sound. The variable it sets is one that track 1
     // reads, though. Track 0's 50-tick passes are therefore passes of the main loop.
-    std::vector<ArchiveFile> files(3);
-    files[0].data =
-        Fseq(Code({0xfe,        U16(0x0003), 0x88,          0x01,          U24(0x000013), 0x80, 0x32, 0xf0, 0x80, 0x00,
-                   U16(0x0001), 0x89,        U24(0x000008), 0x80,          0x2d,          0xc7, 0x00, 0xf0, 0x95, 0x00,
-                   U16(0x0001), 0xa2,        0x89,          U24(0x000017), 0xf0,          0x80, 0x00, 0x00, 0x00, 0x3c,
-                   0x64,        0x18,        0x89,          U24(0x000017)}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformOnBank(
+        Code({0xfe, U16(0x0003), 0x88,        0x01,          U24(0x000013), 0x80,          0x32,         0xf0, 0x80,
+              0x00, U16(0x0001), 0x89,        U24(0x000008), 0x80,          0x2d,          0xc7,         0x00, 0xf0,
+              0x95, 0x00,        U16(0x0001), 0xa2,          0x89,          U24(0x000017), 0xf0,         0x80, 0x00,
+              0x00, 0x00,        0x3c,        0x64,          0x18,          0x89,          U24(0x000017)}),
+        OneRegionFbnk({{0x05000000, 0}}));
 
     std::vector<uint32_t> note_ons;
     for (const TrackEvent& e : p.tracks[1])
@@ -2267,16 +2159,9 @@ void TestTrackPlayingNotesWithoutWaitingIsStopped()
     // then has notes. The Switch has no --voices. Without --voices, a track keeps kMaxVoiceLimit notes a tick, and 10 s
     // of them take a minute and a half to perform. The test therefore runs on the Wii U and the 3DS only.
     // TestTrackStartsNoMoreNotesATickThanTheGameHasVoices checks the cap without --voices.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(Code({0xc7, 0x00, 0x3c, 0x64, 0x01, 0x89, U24(0x000002)}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {.voice_limit = console->settings.voice_limit});
+    const Performance p =
+        PerformOnBank(Code({0xc7, 0x00, 0x3c, 0x64, 0x01, 0x89, U24(0x000002)}), OneRegionFbnk({{0x05000000, 0}}), 1,
+                      {.voice_limit = console->settings.voice_limit});
 
     std::map<uint32_t, int> note_ons; // by tick
     for (const TrackEvent& e : p.tracks[0])
@@ -2303,20 +2188,14 @@ void TestNoteWithoutAFreeChannelIsDropped()
     // With notewait off, keys 60, 62 and 64 start a tick apart and hold for 96 ticks. With two voices, the third note
     // finds no free channel and plays nothing, as in the game. --voices off keeps it. So does the default. The
     // console's count has room for all three.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(Code(
-        {0xc7, 0x00, 0x3c, 0x64, 0x60, 0x80, 0x01, 0x3e, 0x64, 0x60, 0x80, 0x01, 0x40, 0x64, 0x60, 0x80, 0x60, 0xff}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const std::vector<uint8_t> code = Code(
+        {0xc7, 0x00, 0x3c, 0x64, 0x60, 0x80, 0x01, 0x3e, 0x64, 0x60, 0x80, 0x01, 0x40, 0x64, 0x60, 0x80, 0x60, 0xff});
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
 
-    const Performance two = Perform(archive, 0, banks, {.voice_limit = 2});
-    const Performance off = Perform(archive, 0, banks, {.voice_limit = 0});
-    const Performance usual = Perform(archive, 0, banks, {});
-    const Performance game = Perform(archive, 0, banks, {.voice_limit = console->settings.voice_limit});
+    const Performance two = PerformOnBank(code, bank, 1, {.voice_limit = 2});
+    const Performance off = PerformOnBank(code, bank, 1, {.voice_limit = 0});
+    const Performance usual = PerformOnBank(code, bank);
+    const Performance game = PerformOnBank(code, bank, 1, {.voice_limit = console->settings.voice_limit});
 
     auto keys = [](const Performance& p)
     {
@@ -2705,7 +2584,7 @@ void TestMidiWriterLayersMarkersAndBendRange()
     p.tracks[3].insert(p.tracks[3].begin(), bend);
 
     MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep);
+    const auto bytes = WriteMidi(p, "test", rep, console->midi);
 
     // Timebase 48 gives 160 MIDI ticks for each of the performance's ticks.
     const MidiView v = ParseMidi(bytes);
@@ -2763,7 +2642,7 @@ void TestMidiWriterGivesPartsChannelsOfTheirOwn()
     add(30, EventKind::kNoteOff, 62, 0, 2, 1);
 
     MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep);
+    const auto bytes = WriteMidi(p, "test", rep, console->midi);
 
     const MidiView v = ParseMidi(bytes);
     const std::vector<uint8_t> kSecondVolume = {0xb1, 7, 50}, kFirstVolume = {0xb0, 7, 50};
@@ -2796,7 +2675,7 @@ void TestMidiWriterHasAtLeast7680TicksPerQuarterNote()
         p.tracks[0] = {on, off};
 
         MidiReport rep;
-        const MidiView v = ParseMidi(WriteMidi(p, "test", rep));
+        const MidiView v = ParseMidi(WriteMidi(p, "test", rep, console->midi));
         const uint32_t scale = division / timebase;
         XSFLIB_CHECK(v.ok && v.division == division);
         XSFLIB_CHECK(v.notes.size() == 1 && v.notes[0].on == 3 * scale && v.notes[0].off == 7 * scale);
@@ -2838,7 +2717,7 @@ void TestMidiEventsGoOnSoundFrames()
     p.tracks[0].insert(p.tracks[0].end() - 1, bend);
 
     MidiReport rep;
-    const MidiView m = ParseMidi(WriteMidi(p, "test", rep));
+    const MidiView m = ParseMidi(WriteMidi(p, "test", rep, console->midi));
 
     XSFLIB_CHECK(m.ok && m.notes.size() == 3);
     XSFLIB_CHECK(m.bends == (std::vector<std::pair<uint32_t, int>>{{560, 12288}}));
@@ -2870,7 +2749,7 @@ void TestMidiWriterSplitsLongDeltaTimes()
     p.tracks[0] = {on, off};
 
     MidiReport rep;
-    const MidiView v = ParseMidi(WriteMidi(p, "test", rep));
+    const MidiView v = ParseMidi(WriteMidi(p, "test", rep, console->midi));
 
     XSFLIB_CHECK(v.ok && v.track_ends == std::vector<uint64_t>(2, uint64_t{600000} * 7680));
 }
@@ -2898,7 +2777,7 @@ void TestMidiBendUpByAWholeRangeIsExact()
     p.tracks[0].push_back(off);
 
     MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep);
+    const auto bytes = WriteMidi(p, "test", rep, console->midi);
 
     const std::vector<uint8_t> kRange = {0xb0, 6, 8};
     const std::vector<uint8_t> kBend = {0xe0, 0x00, 0x78};
@@ -2932,7 +2811,7 @@ void TestMidiWriterSendsTheFilterToEveryLayer()
     p.tracks[0] = {filter, on, again, off, off_again};
 
     MidiReport rep;
-    const auto bytes = WriteMidi(p, "test", rep);
+    const auto bytes = WriteMidi(p, "test", rep, console->midi);
 
     XSFLIB_CHECK(rep.channels == 2);
     for (const int channel : {0, 1})
@@ -2968,7 +2847,7 @@ void TestMidiWriterListsChannel10Presets()
         }
 
         MidiReport rep;
-        WriteMidi(p, "test", rep);
+        WriteMidi(p, "test", rep, console->midi);
 
         XSFLIB_CHECK(rep.channels == tracks);
         XSFLIB_CHECK(rep.channel_10_presets == (tracks == 16 ? std::set<uint32_t>{15} : std::set<uint32_t>{}));
@@ -3069,10 +2948,6 @@ SoundArchive BankTestArchive(uint8_t volume = 100)
 void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
 {
     const SoundArchive archive = BankTestArchive();
-    const auto u16 = [](const uint8_t* p)
-    {
-        return p[0] | p[1] << 8;
-    };
 
     const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
     const Conversion sequence = ConvertSequence(archive, 0);
@@ -3088,9 +2963,11 @@ void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
     XSFLIB_CHECK(Sf2Problem(sound_font.sf2).empty() && bank.warnings.empty() && sound_font.samples == 3);
     XSFLIB_CHECK(sound_font.first == 0 && sound_font.last == 2 && v.Count("phdr", 38) == 3);
     XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 0))) == "Program 0");
-    XSFLIB_CHECK(u16(v.Record("phdr", 38, 0) + 20) == 0 && u16(v.Record("phdr", 38, 0) + 22) == 0);
+    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 0) + 20) == 0 &&
+                 xsflib::LoadLe16(v.Record("phdr", 38, 0) + 22) == 0);
     XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 1))) == "Program 2");
-    XSFLIB_CHECK(u16(v.Record("phdr", 38, 1) + 20) == 2 && u16(v.Record("phdr", 38, 1) + 22) == 0);
+    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 1) + 20) == 2 &&
+                 xsflib::LoadLe16(v.Record("phdr", 38, 1) + 22) == 0);
     for (const char* chunk : {"ibag", "igen", "imod", "shdr", "smpl"})
     {
         XSFLIB_CHECK(v.chunks.at(chunk) == w.chunks.at(chunk));
@@ -3162,17 +3039,14 @@ void TestBankProgramsAbove127TakeTheNextBank()
     archive_files[1].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const SoundArchive archive =
         SoundArchive::Load(Fsar(archive_files, {.banks = {0}, .wave_archives = {1}}), console->settings.archive);
-    const auto u16 = [](const uint8_t* p)
-    {
-        return p[0] | p[1] << 8;
-    };
 
     const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
 
     const std::vector<uint8_t>& sf2 = bank.sound_fonts.at(0).sf2;
     const seqlib::sf2::Records v = seqlib::sf2::Read(sf2);
     XSFLIB_CHECK(bank.sound_fonts.size() == 1 && Sf2Problem(sf2).empty() && v.Count("phdr", 38) == 3);
-    XSFLIB_CHECK(u16(v.Record("phdr", 38, 1) + 20) == 2 && u16(v.Record("phdr", 38, 1) + 22) == 1);
+    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 1) + 20) == 2 &&
+                 xsflib::LoadLe16(v.Record("phdr", 38, 1) + 22) == 1);
     XSFLIB_CHECK(bank.sfz.files.size() == 2 && bank.sfz.files.front().name == "BANK_0_000.sfz" &&
                  bank.sfz.files.back().name == "BANK_0_130.sfz");
 }
@@ -3232,10 +3106,6 @@ SoundArchive LargeBankArchive(uint32_t first = 0, uint32_t last = 99)
 void TestLargeBankSplitsItsSoundFont()
 {
     const SoundArchive archive = LargeBankArchive();
-    const auto u16 = [](const uint8_t* p)
-    {
-        return p[0] | p[1] << 8;
-    };
 
     const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
 
@@ -3252,7 +3122,7 @@ void TestLargeBankSplitsItsSoundFont()
         XSFLIB_CHECK(v.Count("phdr", 38) == sound_font.last - sound_font.first + 2);
         for (uint32_t p = sound_font.first; p <= sound_font.last && p - sound_font.first + 1 < v.Count("phdr", 38); p++)
         {
-            XSFLIB_CHECK(u16(v.Record("phdr", 38, p - sound_font.first) + 20) == static_cast<int>(p));
+            XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, p - sound_font.first) + 20) == static_cast<int>(p));
         }
         const std::string name =
             "BANK_0, programs " + std::to_string(sound_font.first) + " to " + std::to_string(sound_font.last);
@@ -3340,34 +3210,42 @@ void TestSfzCommentKeepsTheNameOnItsLine()
     }
 }
 
-// The tests that run on the Wii U: those of its engine, and those that hold on several consoles.
-const Test kWiiUTests[] = {
-    TestEnvelopeValuesMatchTheGame,
+// The tests that hold on every console, the Wii included: those that build no archive.
+// sequence_export_revolution_test.cpp builds the Wii's RSAR archives for its tests.
+const Test kEveryConsoleTests[] = {
     TestInstantEnvelopeIsAnOrgan,
     TestDecayTakesTheGamesTime,
     TestSlowDecaySplitsItsError,
     TestSfzDecayTakesTheGamesTime,
-    TestEnvelopeSimulationSustainsAndReleases,
     TestNoteIsQuietOnlyAfterItsAttack,
+    TestSoundFontWriterOutputIsValid,
+    TestSoundFontWithoutSamplesHasSampleData,
+    TestMidiWriterLayersMarkersAndBendRange,
+    TestMidiWriterGivesPartsChannelsOfTheirOwn,
+    TestMidiWriterHasAtLeast7680TicksPerQuarterNote,
+    TestMidiWriterSplitsLongDeltaTimes,
+    TestMidiBendUpByAWholeRangeIsExact,
+    TestMidiEventsGoOnSoundFrames,
+    TestMidiWriterSendsTheFilterToEveryLayer,
+    TestMidiWriterListsChannel10Presets,
+};
+
+// The tests that hold on the Wii U, the Switch and the 3DS.
+const Test kWiiUSwitchAndCtrTests[] = {
+    TestEnvelopeValuesMatchTheGame,
+    TestEnvelopeSimulationSustainsAndReleases,
     TestTrackFiltersFollowTheGame,
     TestSoundFontFilterStandsInForTheGames,
     TestSfzFilterFollowsTheGame,
     TestMissingBlockIsReported,
     TestShortFileIsReported,
     TestBrokenBankAndWaveReferencesAreReported,
-    TestLittleEndianFilesAreRead,
-    TestCallsNestTenDeep,
     TestNotesKeepTheirCommands,
-    TestMixChangesAreRecorded,
-    TestWiiUCommandsAreRead,
-    TestVariableShiftsAreThePowerPcs,
     TestSequenceStartingPastItsEndPlaysNothing,
     TestBankSlotPastTheFourthHasNoBank,
     TestOnlyAJumpBackToPlayedCommandsIsALoop,
     TestMainLoopWaitsForAFadeTooLoudForMidi,
     TestMainLoopWaitsForALegatosFade,
-    TestLegatoKeepsTheRegionsVolume,
-    TestLegatoOnAnotherRegionKeepsTheFirstsVolume,
     TestRisingLegatoCarriesItsNoteOn,
     TestRisingLegatoBesideATailTakesAnotherPart,
     TestDetachedTailKeepsItsSettings,
@@ -3379,7 +3257,6 @@ const Test kWiiUTests[] = {
     TestMidiNoteOfAnEndlessNoteEndsBelowHearing,
     TestSilentLegatoIsNotReported,
     TestSilentNoteLeavesTheTailItsPitch,
-    TestSweepBelowHearingLeavesTheNewerNoteItsPitch,
     TestTieGivesTheTailTheTicksVolume,
     TestNoteAboveVelocity127TakesItsLevel,
     TestMuteStopLeavesDetachedTails,
@@ -3391,7 +3268,6 @@ const Test kWiiUTests[] = {
     TestMonoLegatoTakesItsLengthWithTieOn,
     TestNoteReleasedBeforeItsFirstFrameIsSilent,
     TestWhatMidiCantSeparateIsReported,
-    TestOneShotWaveEndsAsAxPlaysIt,
     TestTicksFallInTheGamesSoundFrames,
     TestOddArgumentsAreReadAsTheGameReadsThem,
     TestSequenceThatStopsAdvancingPlaysOut,
@@ -3404,12 +3280,9 @@ const Test kWiiUTests[] = {
     TestTimedSweepMovesEveryFrame,
     TestTimedSweepGoesOnAfterItsTrackCloses,
     TestHeldNoteHoldsUntilStopped,
-    TestNegativeWaitBlocksTheTrackForEver,
-    TestHoldStartsOnceTheVolumesStopMoving,
     TestLfoSetAfterANoteInItsTickReachesItsPreset,
     TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
     TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,
-    TestRandomLfoCurveInPitchBendsIsReportedOnce,
     TestDeepTremoloIsKeptTo6dB,
     TestNoteReleasedInItsAttackKeepsTheGamesLevel,
     TestTrackWaitingForAVariableGoesOn,
@@ -3435,283 +3308,63 @@ const Test kWiiUTests[] = {
     TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays,
     TestTrackPlayingANoteEachTimeAVariableIsSetGoesOn,
     TestVariableSetAfterAJumpBackBelongsToTheNewPass,
+    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
+    TestCountdownInsideALoopIsAnInnerLoop,
+    TestTrackThatLeavesItsLoopForAnIdleLoopEnds,
+    TestLoopOfAnEndedTrackIsNoLoop,
+    TestTrackCountingDownInASubroutinePlaysOn,
+    TestJumpBackIntoAFinishedCallEndsNoPass,
+    TestInnerLoopCountsAgainOnceTheOuterLoopTakesLong,
+    TestSoundsOwnPanCurveIsReported,
+    TestSfzFileHasTheTracksPresetsAndFilters,
+    TestDirectVelocityTableTakesVelocitiesAbove127,
+    TestSfzCommentKeepsTheNameOnItsLine,
+    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
+    TestBankSfzFilesPlayEachInstrumentByItself,
+    TestBankProgramsAbove127TakeTheNextBank,
+    TestLoudBankIsAttenuatedAndAMissingBankThrows,
+    TestLargeBankSplitsItsSoundFont,
+};
+
+// The tests that hold on the Wii U and the Switch.
+const Test kWiiUAndSwitchTests[] = {
+    TestCallsNestTenDeep,
+    TestMixChangesAreRecorded,
+    TestWiiUCommandsAreRead,
+    TestLegatoKeepsTheRegionsVolume,
+    TestLegatoOnAnotherRegionKeepsTheFirstsVolume,
+    TestSweepBelowHearingLeavesTheNewerNoteItsPitch,
+    TestNegativeWaitBlocksTheTrackForEver,
+    TestHoldStartsOnceTheVolumesStopMoving,
+    TestRandomLfoCurveInPitchBendsIsReportedOnce,
     TestCheckArchivePassesAValidArchive,
     TestRunArchiveCheckGivesMainsExitCode,
     TestSfzProblemFindsABrokenWav,
     TestCheckConversionFindsAFrameAfterItsTick,
-    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
-    TestCountdownInsideALoopIsAnInnerLoop,
-    TestTrackThatLeavesItsLoopForAnIdleLoopEnds,
-    TestLoopOfAnEndedTrackIsNoLoop,
-    TestTrackCountingDownInASubroutinePlaysOn,
-    TestJumpBackIntoAFinishedCallEndsNoPass,
-    TestInnerLoopCountsAgainOnceTheOuterLoopTakesLong,
+};
+
+// The tests that hold on the Wii U and the 3DS.
+const Test kWiiUAndCtrTests[] = {
     TestTrackPlayingNotesWithoutWaitingIsStopped,
-    TestNoteWithoutAFreeChannelIsDropped,
-    TestSoundsOwnPanCurveIsReported,
-    TestSoundFontWriterOutputIsValid,
-    TestSoundFontWithoutSamplesHasSampleData,
-    TestMidiWriterLayersMarkersAndBendRange,
-    TestMidiWriterGivesPartsChannelsOfTheirOwn,
-    TestMidiWriterHasAtLeast7680TicksPerQuarterNote,
-    TestMidiWriterSplitsLongDeltaTimes,
-    TestMidiBendUpByAWholeRangeIsExact,
-    TestMidiEventsGoOnSoundFrames,
-    TestMidiWriterSendsTheFilterToEveryLayer,
-    TestMidiWriterListsChannel10Presets,
-    TestSfzFileHasTheTracksPresetsAndFilters,
-    TestDirectVelocityTableTakesVelocitiesAbove127,
-    TestSfzRegionFollowsLinearInterpolation,
-    TestSfzCommentKeepsTheNameOnItsLine,
-    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
-    TestBankSfzFilesPlayEachInstrumentByItself,
-    TestBankProgramsAbove127TakeTheNextBank,
-    TestLoudBankIsAttenuatedAndAMissingBankThrows,
-    TestLargeBankSplitsItsSoundFont,
 };
 
-// The tests that run on the Switch.
-const Test kSwitchTests[] = {
-    TestEnvelopeValuesMatchTheGame,
-    TestInstantEnvelopeIsAnOrgan,
-    TestDecayTakesTheGamesTime,
-    TestSlowDecaySplitsItsError,
-    TestSfzDecayTakesTheGamesTime,
-    TestEnvelopeSimulationSustainsAndReleases,
-    TestNoteIsQuietOnlyAfterItsAttack,
-    TestTrackFiltersFollowTheGame,
-    TestSoundFontFilterStandsInForTheGames,
-    TestSfzFilterFollowsTheGame,
-    TestMissingBlockIsReported,
-    TestShortFileIsReported,
-    TestBrokenBankAndWaveReferencesAreReported,
-    TestCallsNestTenDeep,
-    TestNotesKeepTheirCommands,
-    TestMixChangesAreRecorded,
-    TestWiiUCommandsAreRead,
-    TestSequenceStartingPastItsEndPlaysNothing,
-    TestBankSlotPastTheFourthHasNoBank,
-    TestOnlyAJumpBackToPlayedCommandsIsALoop,
-    TestMainLoopWaitsForAFadeTooLoudForMidi,
-    TestMainLoopWaitsForALegatosFade,
-    TestLegatoKeepsTheRegionsVolume,
-    TestLegatoOnAnotherRegionKeepsTheFirstsVolume,
-    TestRisingLegatoCarriesItsNoteOn,
-    TestRisingLegatoBesideATailTakesAnotherPart,
-    TestDetachedTailKeepsItsSettings,
-    TestSweepLeavesTheOlderNoteItsPitch,
-    TestPartLeftTakesTheBendInItsTick,
-    TestBiquadSwitchedLaterInTheFrameReachesItsNotes,
-    TestLegatoAfterAnEnvelopeResetCarriesOn,
-    TestLegatoOnADecayedNoteStaysSilent,
-    TestMidiNoteOfAnEndlessNoteEndsBelowHearing,
-    TestSilentLegatoIsNotReported,
-    TestSilentNoteLeavesTheTailItsPitch,
-    TestSweepBelowHearingLeavesTheNewerNoteItsPitch,
-    TestTieGivesTheTailTheTicksVolume,
-    TestNoteAboveVelocity127TakesItsLevel,
-    TestMuteStopLeavesDetachedTails,
-    TestRisingLegatoKeepsToItsRegion,
-    TestLevelCutFitsTheRunThatsKept,
-    TestTiedNoteTakesPartInTheMainLoop,
-    TestSilentLegatoCarriesItsNoteOn,
-    TestLegatosChangeOfKeyIsNoChangeOfTheTracks,
-    TestMonoLegatoTakesItsLengthWithTieOn,
-    TestNoteReleasedBeforeItsFirstFrameIsSilent,
-    TestWhatMidiCantSeparateIsReported,
-    TestTicksFallInTheGamesSoundFrames,
-    TestOddArgumentsAreReadAsTheGameReadsThem,
-    TestSequenceThatStopsAdvancingPlaysOut,
-    TestTieLoopThatHoldsEndsAsAHeldSound,
-    TestTieLoopOverAOneShotWaveStaysALoop,
-    TestClosingTickReachesTheReleaseTail,
-    TestSilenceAtTheTimeLimitEndsWithTheLastSound,
-    TestOneShotWavePlaysOutAtItsPitch,
-    TestTimedSweepGlidesOnWhenTheSequenceStops,
-    TestTimedSweepMovesEveryFrame,
-    TestTimedSweepGoesOnAfterItsTrackCloses,
-    TestHeldNoteHoldsUntilStopped,
-    TestNegativeWaitBlocksTheTrackForEver,
-    TestHoldStartsOnceTheVolumesStopMoving,
-    TestLfoSetAfterANoteInItsTickReachesItsPreset,
-    TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
-    TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,
-    TestRandomLfoCurveInPitchBendsIsReportedOnce,
-    TestDeepTremoloIsKeptTo6dB,
-    TestNoteReleasedInItsAttackKeepsTheGamesLevel,
-    TestTrackWaitingForAVariableGoesOn,
-    TestLoopStartSendsTheVolumeTheGameRestores,
-    TestLoopMarksAPassThatPlaysAsTheNext,
-    TestLoopDoesNotStrikeATiedNoteAgain,
-    TestLoopThatNoPassRepeatsKeepsItsFirstPass,
-    TestPassOnAnotherPartPlaysAsTheNext,
-    TestSequenceThatFinishesHasNoLoop,
-    TestVariableOptionSetsAVariableBeforeTheStart,
-    TestVariableChangeComesBeforeTheTicksOfItsFrame,
-    TestMainLoopStartsAfterTheLastVariableChange,
-    TestWaitingForAVariableIsNoLoop,
-    TestPollingInASubroutineAfterAOneShotIsNoLoop,
-    TestLoopLeftBeforeASilentTimeLimitIsDropped,
-    TestCountedLoopPastTheTimeLimitPlaysAsAnEndlessLoop,
-    TestTiedMelodyBelowHearingIsNoLoop,
-    TestLegatoBelowHearingKeepsItsMidiNote,
-    TestPollAfterTheSoundIsNoLoop,
-    TestSilentPassesThatChangeSettingsEndWithTheSound,
-    TestSequenceWithoutNotesEndsAtItsStart,
-    TestTrackStartsNoMoreNotesATickThanTheGameHasVoices,
-    TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays,
-    TestTrackPlayingANoteEachTimeAVariableIsSetGoesOn,
-    TestVariableSetAfterAJumpBackBelongsToTheNewPass,
-    TestCheckArchivePassesAValidArchive,
-    TestRunArchiveCheckGivesMainsExitCode,
-    TestSfzProblemFindsABrokenWav,
-    TestCheckConversionFindsAFrameAfterItsTick,
-    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
-    TestCountdownInsideALoopIsAnInnerLoop,
-    TestTrackThatLeavesItsLoopForAnIdleLoopEnds,
-    TestLoopOfAnEndedTrackIsNoLoop,
-    TestTrackCountingDownInASubroutinePlaysOn,
-    TestJumpBackIntoAFinishedCallEndsNoPass,
-    TestInnerLoopCountsAgainOnceTheOuterLoopTakesLong,
-    TestSoundsOwnPanCurveIsReported,
-    TestSoundFontWriterOutputIsValid,
-    TestSoundFontWithoutSamplesHasSampleData,
-    TestMidiWriterLayersMarkersAndBendRange,
-    TestMidiWriterGivesPartsChannelsOfTheirOwn,
-    TestMidiWriterHasAtLeast7680TicksPerQuarterNote,
-    TestMidiWriterSplitsLongDeltaTimes,
-    TestMidiBendUpByAWholeRangeIsExact,
-    TestMidiEventsGoOnSoundFrames,
-    TestMidiWriterSendsTheFilterToEveryLayer,
-    TestMidiWriterListsChannel10Presets,
-    TestSfzFileHasTheTracksPresetsAndFilters,
-    TestDirectVelocityTableTakesVelocitiesAbove127,
-    TestSfzCommentKeepsTheNameOnItsLine,
-    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
-    TestBankSfzFilesPlayEachInstrumentByItself,
-    TestBankProgramsAbove127TakeTheNextBank,
-    TestLoudBankIsAttenuatedAndAMissingBankThrows,
-    TestLargeBankSplitsItsSoundFont,
+// The tests of the Wii U alone.
+const Test kWiiUOnlyTests[] = {
+    TestLittleEndianFilesAreRead,         TestVariableShiftsAreThePowerPcs,        TestOneShotWaveEndsAsAxPlaysIt,
+    TestNoteWithoutAFreeChannelIsDropped, TestSfzRegionFollowsLinearInterpolation,
 };
 
-// The tests that run on the 3DS.
-const Test kCtrTests[] = {
-    TestEnvelopeValuesMatchTheGame,
-    TestNotesKeepTheirCommands,
-    TestInstantEnvelopeIsAnOrgan,
-    TestTrackFiltersFollowTheGame,
-    TestSoundFontFilterStandsInForTheGames,
-    TestRisingLegatoCarriesItsNoteOn,
-    TestRisingLegatoBesideATailTakesAnotherPart,
-    TestDetachedTailKeepsItsSettings,
-    TestSweepLeavesTheOlderNoteItsPitch,
-    TestPartLeftTakesTheBendInItsTick,
-    TestBiquadSwitchedLaterInTheFrameReachesItsNotes,
-    TestLegatoAfterAnEnvelopeResetCarriesOn,
-    TestLegatoOnADecayedNoteStaysSilent,
-    TestMidiNoteOfAnEndlessNoteEndsBelowHearing,
-    TestSilentLegatoIsNotReported,
-    TestSilentNoteLeavesTheTailItsPitch,
-    TestTieGivesTheTailTheTicksVolume,
-    TestNoteAboveVelocity127TakesItsLevel,
-    TestMuteStopLeavesDetachedTails,
-    TestRisingLegatoKeepsToItsRegion,
-    TestTimedSweepMovesEveryFrame,
-    TestHeldNoteHoldsUntilStopped,
-    TestDeepTremoloIsKeptTo6dB,
-    TestLoopStartSendsTheVolumeTheGameRestores,
-    TestLoopDoesNotStrikeATiedNoteAgain,
-    TestLoopThatNoPassRepeatsKeepsItsFirstPass,
-    TestPassOnAnotherPartPlaysAsTheNext,
-    TestSequenceThatFinishesHasNoLoop,
-    TestPollingInASubroutineAfterAOneShotIsNoLoop,
-    TestLoopLeftBeforeASilentTimeLimitIsDropped,
-    TestCountedLoopPastTheTimeLimitPlaysAsAnEndlessLoop,
-    TestTiedMelodyBelowHearingIsNoLoop,
-    TestPollAfterTheSoundIsNoLoop,
-    TestSilentPassesThatChangeSettingsEndWithTheSound,
-    TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays,
-    TestVariableSetAfterAJumpBackBelongsToTheNewPass,
-    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
-    TestCountdownInsideALoopIsAnInnerLoop,
-    TestTrackThatLeavesItsLoopForAnIdleLoopEnds,
-    TestLoopOfAnEndedTrackIsNoLoop,
-    TestTrackCountingDownInASubroutinePlaysOn,
-    TestJumpBackIntoAFinishedCallEndsNoPass,
-    TestInnerLoopCountsAgainOnceTheOuterLoopTakesLong,
-    TestMidiBendUpByAWholeRangeIsExact,
-    TestMidiWriterSendsTheFilterToEveryLayer,
-    TestMidiWriterListsChannel10Presets,
-    TestDirectVelocityTableTakesVelocitiesAbove127,
-    TestBrokenBankAndWaveReferencesAreReported,
-    TestSequenceStartingPastItsEndPlaysNothing,
-    TestBankSlotPastTheFourthHasNoBank,
-    TestOnlyAJumpBackToPlayedCommandsIsALoop,
-    TestMainLoopWaitsForAFadeTooLoudForMidi,
-    TestMainLoopWaitsForALegatosFade,
-    TestLegatoBelowHearingKeepsItsMidiNote,
-    TestLevelCutFitsTheRunThatsKept,
-    TestTiedNoteTakesPartInTheMainLoop,
-    TestSilentLegatoCarriesItsNoteOn,
-    TestLegatosChangeOfKeyIsNoChangeOfTheTracks,
-    TestMonoLegatoTakesItsLengthWithTieOn,
-    TestNoteReleasedBeforeItsFirstFrameIsSilent,
-    TestWhatMidiCantSeparateIsReported,
-    TestTicksFallInTheGamesSoundFrames,
-    TestOddArgumentsAreReadAsTheGameReadsThem,
-    TestSequenceThatStopsAdvancingPlaysOut,
-    TestTieLoopThatHoldsEndsAsAHeldSound,
-    TestTieLoopOverAOneShotWaveStaysALoop,
-    TestClosingTickReachesTheReleaseTail,
-    TestSilenceAtTheTimeLimitEndsWithTheLastSound,
-    TestOneShotWavePlaysOutAtItsPitch,
-    TestTimedSweepGlidesOnWhenTheSequenceStops,
-    TestTimedSweepGoesOnAfterItsTrackCloses,
-    TestLfoSetAfterANoteInItsTickReachesItsPreset,
-    TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
-    TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,
-    TestNoteReleasedInItsAttackKeepsTheGamesLevel,
-    TestTrackWaitingForAVariableGoesOn,
-    TestLoopMarksAPassThatPlaysAsTheNext,
-    TestVariableOptionSetsAVariableBeforeTheStart,
-    TestVariableChangeComesBeforeTheTicksOfItsFrame,
-    TestMainLoopStartsAfterTheLastVariableChange,
-    TestWaitingForAVariableIsNoLoop,
-    TestSequenceWithoutNotesEndsAtItsStart,
-    TestTrackStartsNoMoreNotesATickThanTheGameHasVoices,
-    TestTrackPlayingANoteEachTimeAVariableIsSetGoesOn,
-    TestTrackPlayingNotesWithoutWaitingIsStopped,
-    TestSoundsOwnPanCurveIsReported,
-    TestDecayTakesTheGamesTime,
-    TestSlowDecaySplitsItsError,
-    TestSfzDecayTakesTheGamesTime,
-    TestEnvelopeSimulationSustainsAndReleases,
-    TestNoteIsQuietOnlyAfterItsAttack,
-    TestSfzFilterFollowsTheGame,
-    TestMissingBlockIsReported,
-    TestShortFileIsReported,
-    TestSoundFontWriterOutputIsValid,
-    TestSoundFontWithoutSamplesHasSampleData,
-    TestMidiWriterLayersMarkersAndBendRange,
-    TestMidiWriterGivesPartsChannelsOfTheirOwn,
-    TestMidiWriterHasAtLeast7680TicksPerQuarterNote,
-    TestMidiEventsGoOnSoundFrames,
-    TestMidiWriterSplitsLongDeltaTimes,
-    TestSfzFileHasTheTracksPresetsAndFilters,
-    TestSfzCommentKeepsTheNameOnItsLine,
-    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
-    TestBankSfzFilesPlayEachInstrumentByItself,
-    TestBankProgramsAbove127TakeTheNextBank,
-    TestLoudBankIsAttenuatedAndAMissingBankThrows,
-    TestLargeBankSplitsItsSoundFont,
-};
+// The tests of `lists`, in order.
+std::vector<Test> Join(std::initializer_list<std::span<const Test>> lists)
+{
+    std::vector<Test> tests;
+    for (const std::span<const Test> list : lists)
+    {
+        tests.insert(tests.end(), list.begin(), list.end());
+    }
 
-// The tests that run on the Wii as well: those that build no archive. sequence_export_revolution_test.cpp builds the
-// Wii's RSAR archives for its tests.
-const Test kWiiTests[] = {
-    TestInstantEnvelopeIsAnOrgan,  TestDecayTakesTheGamesTime,        TestSlowDecaySplitsItsError,
-    TestSfzDecayTakesTheGamesTime, TestNoteIsQuietOnlyAfterItsAttack,
-};
+    return tests;
+}
 
 // length_cases.h's Code writes a sequence's variable-length numbers in MIDI's format. seqlib's AppendVlq writes the
 // same format. length_cases.h also serves tests that don't link seqlib. The two writers therefore stay apart. A fix to
@@ -3738,11 +3391,12 @@ void TestLengthCasesWriteVariableLengthNumbersAsSeqlib()
 
 int main()
 {
-    RunOn(WiiU(), kWiiUTests);
-    RunOn(Switch(), kSwitchTests);
-    RunOn(Ctr(), kCtrTests);
-    RunOn(Wii(), kWiiTests);
+    RunOn(WiiU(),
+          Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests, kWiiUAndCtrTests, kWiiUOnlyTests}));
+    RunOn(Switch(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
+    RunOn(Ctr(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndCtrTests}));
+    RunOn(Wii(), kEveryConsoleTests);
     TestLengthCasesWriteVariableLengthNumbersAsSeqlib();
 
-    return Report();
+    return xsflib::testing::Summary("sequence_export");
 }

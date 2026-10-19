@@ -54,8 +54,16 @@ constexpr uint32_t kMaxIndexEntries = 0x10000;
 constexpr uint32_t kSceneLoad = 2;
 
 // Every read past the end of the archive gives one message.
-constexpr xsflib::ReaderOptions kReaderOptions{.bounds_message = xsflib::BoundsMessage::kFixed,
-                                               .fixed_message = "the AAF archive is damaged"};
+constexpr xsflib::ReaderOptions kAafReaderOptions{.bounds_message = xsflib::BoundsMessage::kFixed,
+                                                  .fixed_message = "the AAF archive is damaged"};
+
+// A block of the bank list or the wave system list: its offset, and its value. A bank's value is the wave system that
+// it plays. A wave system's value is its load type.
+struct ListedBlock
+{
+    std::size_t offset = 0;
+    uint32_t value = 0;
+};
 
 // The archive's blocks that the readers take.
 struct Blocks
@@ -63,9 +71,8 @@ struct Blocks
     std::size_t table = 0;
     std::size_t table_size = 0;
     std::optional<std::size_t> sequence_index;
-    std::vector<std::pair<std::size_t, uint32_t>> banks; // each bank's offset and its wave system
-    std::vector<std::size_t> wave_systems;
-    std::vector<uint32_t> load_types; // the load type of each wave system
+    std::vector<ListedBlock> banks;
+    std::vector<ListedBlock> wave_systems;
 };
 
 Blocks FindBlocks(const xsflib::Reader& r)
@@ -83,17 +90,10 @@ Blocks FindBlocks(const xsflib::Reader& r)
         if (type == kBankList || type == kWaveSystemList)
         {
             // Blocks of offset, size and value, up to a 0 word.
+            std::vector<ListedBlock>& list = type == kBankList ? blocks.banks : blocks.wave_systems;
             for (; r.U32(at) != 0; at += 12)
             {
-                if (type == kWaveSystemList)
-                {
-                    blocks.wave_systems.push_back(r.U32(at));
-                    blocks.load_types.push_back(r.U32(at + 8));
-                }
-                else
-                {
-                    blocks.banks.emplace_back(r.U32(at), r.U32(at + 8));
-                }
+                list.push_back({r.U32(at), r.U32(at + 8)});
             }
 
             at += 4;
@@ -137,15 +137,33 @@ std::size_t SoundTable(const xsflib::Reader& r, const Blocks& blocks)
     return blocks.table;
 }
 
+// A category's count of sounds in the sound table at `table`.
+uint16_t CategoryCount(const xsflib::Reader& r, std::size_t table, uint32_t category)
+{
+    return r.U16(table + 6 + 4 * std::size_t{category});
+}
+
+// The index of a category's first entry in the sound table at `table`.
+uint16_t CategoryFirst(const xsflib::Reader& r, std::size_t table, uint32_t category)
+{
+    return r.U16(table + 8 + 4 * std::size_t{category});
+}
+
+// The place of entry `index` of the sound table at `table`.
+std::size_t TableEntry(std::size_t table, std::size_t index)
+{
+    return table + kTableHeader + index * kEntrySize;
+}
+
 // The archives of the AAF's wave systems, or of those that load at start-up.
 std::vector<std::string> ArchiveNames(std::span<const uint8_t> aaf, bool staying_only)
 {
-    const Blocks blocks = FindBlocks(xsflib::Reader(aaf, true, kReaderOptions));
+    const Blocks blocks = FindBlocks(xsflib::Reader(aaf, true, kAafReaderOptions));
     const std::vector<WaveSystem> systems = ReadAafWaveSystems(aaf);
     std::vector<std::string> names;
     for (std::size_t s = 0; s < systems.size(); s++)
     {
-        if (staying_only && blocks.load_types[s] == kSceneLoad)
+        if (staying_only && blocks.wave_systems[s].value == kSceneLoad)
         {
             continue;
         }
@@ -177,18 +195,18 @@ bool IsAaf(std::span<const uint8_t> data)
 
 std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
 {
-    const xsflib::Reader r(aaf, true, kReaderOptions);
+    const xsflib::Reader r(aaf, true, kAafReaderOptions);
     const std::size_t table = SoundTable(r, FindBlocks(r));
     const bool gives_offset_number = (r.U8(table + kSequenceFormat) & kGivesOffsetNumber) != 0;
     std::vector<SoundEntry> sounds;
     for (uint32_t category = 0; category <= kSequenceCategory; category++)
     {
         // The sound library plays the first sequence itself: it's the effects sequence.
-        const uint32_t count = r.U16(table + 6 + 4 * std::size_t{category});
-        const uint32_t first = r.U16(table + 8 + 4 * std::size_t{category});
+        const uint32_t count = CategoryCount(r, table, category);
+        const uint32_t first = CategoryFirst(r, table, category);
         for (uint32_t index = category == kSequenceCategory ? 1 : 0; index < count && index < kMaxPerCategory; index++)
         {
-            const std::size_t entry = table + kTableHeader + (std::size_t{first} + index) * kEntrySize;
+            const std::size_t entry = TableEntry(table, std::size_t{first} + index);
             r.Sub(entry, kEntrySize);
 
             const uint32_t id =
@@ -220,9 +238,9 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
 
 uint16_t AafEffectsSequenceFile(std::span<const uint8_t> aaf)
 {
-    const xsflib::Reader r(aaf, true, kReaderOptions);
+    const xsflib::Reader r(aaf, true, kAafReaderOptions);
     const std::size_t table = SoundTable(r, FindBlocks(r));
-    if (r.U16(table + 6 + 4 * std::size_t{kSequenceCategory}) == 0)
+    if (CategoryCount(r, table, kSequenceCategory) == 0)
     {
         throw xsflib::FormatError("the AAF archive's sound table lists no sequences");
     }
@@ -233,14 +251,13 @@ uint16_t AafEffectsSequenceFile(std::span<const uint8_t> aaf)
         return 0;
     }
 
-    const uint32_t first = r.U16(table + 8 + 4 * std::size_t{kSequenceCategory});
-    return r.U16(table + kTableHeader + std::size_t{first} * kEntrySize + *kAafItemLayout.file);
+    return r.U16(TableEntry(table, CategoryFirst(r, table, kSequenceCategory)) + *kAafItemLayout.file);
 }
 
 std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uint8_t> aaf,
                                                              std::span<const uint8_t> archive)
 {
-    const xsflib::Reader r(aaf, true, kReaderOptions);
+    const xsflib::Reader r(aaf, true, kAafReaderOptions);
     const std::optional<std::size_t> block = FindBlocks(r).sequence_index;
     if (!block)
     {
@@ -275,12 +292,12 @@ std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uin
 
 std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf)
 {
-    const xsflib::Reader r(aaf, true, kReaderOptions);
+    const xsflib::Reader r(aaf, true, kAafReaderOptions);
     std::vector<WaveSystem> systems;
-    for (const std::size_t offset : FindBlocks(r).wave_systems)
+    for (const ListedBlock& block : FindBlocks(r).wave_systems)
     {
-        r.Sub(offset, 1);
-        systems.push_back(ReadWaveSystem(aaf.subspan(offset), static_cast<uint32_t>(systems.size())));
+        r.Sub(block.offset, 1);
+        systems.push_back(ReadWaveSystem(aaf.subspan(block.offset), static_cast<uint32_t>(systems.size())));
     }
 
     return systems;
@@ -288,7 +305,7 @@ std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf)
 
 std::vector<Bank> ReadAafBanks(std::span<const uint8_t> aaf, std::vector<std::string>& warnings)
 {
-    const xsflib::Reader r(aaf, true, kReaderOptions);
+    const xsflib::Reader r(aaf, true, kAafReaderOptions);
     std::vector<Bank> banks;
     for (const auto& [offset, wave_system] : FindBlocks(r).banks)
     {

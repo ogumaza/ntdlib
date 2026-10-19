@@ -7,7 +7,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <span>
 #include <string>
@@ -28,7 +27,6 @@ using namespace ntdlib;
 using namespace ntdlib::sar;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
-using xsflib::testing::failures;
 
 namespace
 {
@@ -1523,13 +1521,5 @@ int main()
     TestStrictRulesReportMissingBlocksTheirWay();
     TestStrictRulesReadTheirFields();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("sar tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("sar");
 }

@@ -140,7 +140,8 @@ std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const Ba
 // Reads nothing else of the archive. Throws FormatError.
 std::vector<WaveSystem> ReadWaveSystems(std::span<const uint8_t> baa, const BaaOptions& options = {});
 
-// The start-up archive (BAA): the sound table and its names, the sequence collection, the wave systems and the banks.
+// A start-up archive, JAudio2's BAA or JAudio1's AAF: the sound table and its names, the sequence collection, the wave
+// systems and the banks.
 class SoundArchive
 {
 public:

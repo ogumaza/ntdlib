@@ -214,9 +214,9 @@ const Pcm* RsarBankSet::GetWave(uint32_t wave_index)
     return waves_.emplace(wave_index, std::move(pcm)).first->second.get();
 }
 
-EnvelopeValues RegionEnvelope(const Region& region, bool since_2008)
+EnvelopeValues RegionEnvelope(const Region& region, bool since_march_2008)
 {
-    return {region.attack, region.decay, region.sustain, since_2008 ? region.hold : 0, region.release};
+    return {region.attack, region.decay, region.sustain, since_march_2008 ? region.hold : 0, region.release};
 }
 
 } // namespace ntdlib::sequence_export

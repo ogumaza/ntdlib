@@ -24,14 +24,15 @@ enum class SampleFormat : uint8_t
     kPcm8 = 3,
 };
 
-// The DSP-ADPCM decoder's settings for a sample. The decoder starts from silence with the first frame's scale. At each
-// repeat of the loop, it takes up the loop's scale and the two samples before the loop start.
+// The DSP-ADPCM decoder's settings for a sample. The decoder starts from silence with the first frame's predictor and
+// scale. At each repeat of the loop, it takes up the loop's predictor and scale and the two samples before the loop
+// start. A predictor-and-scale byte holds the predictor in bits 4 to 6 and the scale in bits 0 to 3.
 struct AdpcmInfo
 {
-    uint8_t initial_scale = 0;
-    uint8_t loop_scale = 0;
-    int16_t loop_hist1 = 0; // the sample just before the loop start
-    int16_t loop_hist2 = 0; // the one before that
+    uint8_t pred_scale = 0;      // the first frame's
+    uint8_t loop_pred_scale = 0; // the loop's
+    int16_t loop_hist1 = 0;      // the sample just before the loop start
+    int16_t loop_hist2 = 0;      // the one before that
     std::array<int16_t, 16> coefficients{};
 };
 

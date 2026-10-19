@@ -487,13 +487,5 @@ int main()
     TestRunMain();
     TestUsage();
 
-    if (xsflib::testing::failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("frame tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("frame");
 }

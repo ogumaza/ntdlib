@@ -593,7 +593,7 @@ uint64_t Scenario<Memory>::Finish()
     }
 
     // The DSP's side of DSPCR (its reset, interrupt, halt and init bits), the mailboxes and the hardware registers.
-    Line("control dsp " + Hex(dsp_->Control(0) & 0x0c07, 4));
+    Line("control dsp " + Hex(dsp_->Control(0) & dsp::control::kDspSide, 4));
     Line("mailbox cpu_to_dsp " + Hex(dsp_->MailboxToDsp(), 8));
     Line("mailbox dsp_to_cpu " + Hex(dsp_->MailboxToCpu(), 8));
     Line("exceptions pending " + Hex(dsp_->PendingExceptions(), 2));
@@ -902,5 +902,5 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    return xsflib::testing::failures == 0 ? 0 : 1;
+    return xsflib::testing::Summary("dsp");
 }

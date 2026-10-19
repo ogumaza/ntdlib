@@ -30,6 +30,10 @@ bool IsYaz0(std::span<const uint8_t> data);
 // Decodes data compressed with Yaz0. Throws FormatError if it's damaged, or if it decodes to more than 64 MiB.
 std::vector<uint8_t> DecodeYaz0(std::span<const uint8_t> data);
 
+// `data` as a game reads it: `data` itself, or `data` decoded into `decoded` if it's compressed with Yaz0. The result
+// points into one of the two. Throws FormatError as DecodeYaz0 does.
+std::span<const uint8_t> DecodeIfYaz0(std::span<const uint8_t> data, std::vector<uint8_t>& decoded);
+
 // A sequence archive with the sequences of another release's sequence table. The table is a 32-bit count, zeros up to
 // 0x20, and then a 32-bit offset and size for each sequence. The result is `rarc` with each file's data replaced by the
 // table's entry whose index is the file's id. Each file keeps its entry: its id, its name and its flags. Each file's

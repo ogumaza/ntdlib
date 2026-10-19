@@ -10,19 +10,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "ntdlib/disc/error.h"
+
 namespace ntdlib::disc
 {
-
-// A damaged or unsupported file, or a read that failed.
-class Error : public std::runtime_error
-{
-public:
-    using std::runtime_error::runtime_error;
-};
 
 // Random access to a file, or to the parts of a split file, read as one.
 class Source

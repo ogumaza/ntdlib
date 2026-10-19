@@ -7,9 +7,12 @@
 
 #pragma once
 
+#include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
+#include "seqlib/midi/performance.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/writer.h"
@@ -47,6 +50,27 @@ void WriteSoundFont(Conversion& c, seqlib::sf2::SoundFont& sf, const std::string
     sf.info.push_back({"ISFT", program});
     c.samples = sf.samples.size();
     c.sf2 = seqlib::sf2::Write(sf);
+}
+
+// The attenuation in centibels that every zone of a sequence's SoundFont takes when its loudest zone plays at
+// `loudest`, an amplitude where 1 is full level. SoundFont zones can't amplify their samples. The same attenuation in
+// every zone keeps their balance. Where the zones take one, `c.performance` records the approximation. The SFZ files
+// keep the levels. A zone at full level or below takes none.
+template <typename Conversion>
+double CutAboveFullLevel(Conversion& c, double loudest)
+{
+    double quieter = 0.0;
+    if (loudest > 1.0)
+    {
+        quieter = 200.0 * std::log10(loudest);
+        char what[160];
+        std::snprintf(what, sizeof(what),
+                      "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",
+                      quieter / 10.0);
+        c.performance.approximations[what] = seqlib::midi::NoteCount(c.performance);
+    }
+
+    return quieter;
 }
 
 // Collects the conversion's warnings in the order that PrintConversion prints them: those of the MIDI writer, the

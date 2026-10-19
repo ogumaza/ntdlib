@@ -27,6 +27,9 @@ public:
     // into `file`. The caller must keep `file` alive while it uses the result.
     static std::optional<Dol> Parse(std::span<const uint8_t> file, bool skip_damaged_sections = false);
 
+    // Reads a game's main.dol as Parse does. Throws FormatError ("main.dol isn't a DOL") if `file` isn't a DOL.
+    static Dol ParseMain(std::span<const uint8_t> file);
+
     // The size of the DOL whose header is `header`, the file's first 0x100 bytes: the end of the section that ends
     // last, and at least the header. The header gives it before the rest of the file is read. An empty section's offset
     // counts too.
@@ -36,6 +39,10 @@ public:
     {
         return sections_;
     }
+
+    // The bytes from the load address `address` to the end of the section that holds it. Empty if no section holds the
+    // address.
+    std::span<const uint8_t> At(uint32_t address) const;
 
     uint32_t Entry() const
     {

@@ -156,6 +156,9 @@ private:
     // Gives a buffer to the renderer. The buffer ends a stream.
     bool AppendToRenderer(WaveBuffer& buffer);
 
+    // Gives the renderer's voice back, if the voice has acquired one since its last stop.
+    void ReleaseSlot();
+
     LowLevelVoiceAllocator* owner_ = nullptr;
     AdpcmCoefficients coefficients_{};           // +0x0
     int slot_ = -1;                              // +0x20: the renderer's voice

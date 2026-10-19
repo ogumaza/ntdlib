@@ -286,4 +286,11 @@ void BankSet::ReportBrokenWaveId(int slot, uint32_t wave_id_index)
     }
 }
 
+EnvelopeValues RegionEnvelope(const VelocityRegion& region)
+{
+    const sar::Adshr& adshr = region.adshr;
+
+    return {adshr.attack, adshr.decay, adshr.sustain, adshr.hold, adshr.release};
+}
+
 } // namespace ntdlib::sequence_export

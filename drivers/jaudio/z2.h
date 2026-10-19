@@ -209,6 +209,12 @@ static void z2_load_waves(volatile struct Z2Params* p)
     }
 }
 
+/* The function that erases a group of wave bank `bank`, or 0 for a bank that keeps its groups. */
+static u32 z2_erase_fn(volatile struct Z2Params* p, u32 bank)
+{
+    return bank == 1 ? p->erase_bgm_wave : bank == 0 ? p->erase_se_wave : 0;
+}
+
 /* Erases each of the `count` wave groups at `waves` that has loaded. A bank whose function is 0 keeps its groups. */
 static void z2_erase_loaded(volatile struct Z2Params* p, volatile u32* waves, u32 count)
 {
@@ -216,7 +222,7 @@ static void z2_erase_loaded(volatile struct Z2Params* p, volatile u32* waves, u3
     {
         const u32 bank = waves[i] >> 16;
         const u32 group = waves[i] & 0xffff;
-        const u32 erase = bank == 1 ? p->erase_bgm_wave : bank == 0 ? p->erase_se_wave : 0;
+        const u32 erase = z2_erase_fn(p, bank);
         if (erase && (s32)((z2_fn3)p->wave_status)(0, group, bank) == Z2_WAVE_LOADED)
         {
             ((z2_fn2)erase)(0, group);
@@ -286,8 +292,7 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
        doesn't use. A bank whose function is 0 keeps its groups. */
     for (u32 i = 0; i < p->first_scene_wave_count && i < Z2_MAX_FIRST_SCENE_WAVES; i++)
     {
-        const u32 bank = p->first_scene_waves[i] >> 16;
-        const u32 erase = bank == 1 ? p->erase_bgm_wave : bank == 0 ? p->erase_se_wave : 0;
+        const u32 erase = z2_erase_fn(p, p->first_scene_waves[i] >> 16);
         if (erase && !z2_lists_wave(p, p->first_scene_waves[i]))
         {
             ((z2_fn2)erase)(0, p->first_scene_waves[i] & 0xffff);

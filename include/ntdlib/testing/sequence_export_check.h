@@ -198,8 +198,8 @@ inline int CheckArchive(const rsar::SoundArchive& archive, const sequence_export
     return sequence_export_check_detail::CheckEverySequence(archive, settings, program);
 }
 
-// Reads the archive at `path` with settings.archive, and checks it (see CheckArchive). An archive that can't be read is
-// one failure.
+// Reads the CSAR or FSAR archive at `path` with settings.archive, and checks it (see CheckArchive). An archive that
+// can't be read is one failure.
 inline int CheckArchiveFile(const std::string& path, const sequence_export::Settings& settings,
                             const std::string& program)
 {
@@ -221,9 +221,9 @@ inline int CheckArchiveFile(const std::string& path, const sequence_export::Sett
     }
 }
 
-// The main of a converter's archive check, <program>_test <archive><extension>. Checks the archive that the one
-// argument names, as `program` with `settings` (CheckArchiveFile). Returns main's exit code: 0 when every check passes,
-// 1 when one fails, and 2 without the one argument.
+// The main of a converter's archive check, <program>_test <archive><extension>. Checks the CSAR or FSAR archive that
+// the one argument names, as `program` with `settings` (CheckArchiveFile). Returns main's exit code: 0 when every check
+// passes, 1 when one fails, and 2 without the one argument.
 inline int RunArchiveCheck(int argc, char** argv, const sequence_export::Settings& settings, const std::string& program,
                            const std::string& extension)
 {

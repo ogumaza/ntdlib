@@ -43,7 +43,6 @@ private:
 
     std::vector<uint8_t> header_;
     std::vector<uint8_t> fst_;
-    uint64_t fst_offset_ = 0;
     std::vector<Placed> files_; // in order of their offsets
 };
 

@@ -2,12 +2,15 @@
 
 #include "ntdlib/cafe/axfx/reverb_hi.h"
 
-#include <algorithm>
-#include <cmath>
+#include <cstdint>
+#include <optional>
+#include <vector>
 
+#include "ntdlib/fused.h"
+
+#include "cafe/axfx/reverb_lines.h"
 #include "cafe/axfx/reverb_tables.h"
 #include "cafe/axfx/util.h"
-#include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::axfx
 {
@@ -19,17 +22,6 @@ using reverb::kFusedModes;
 using reverb::kHiEarlyCoefs;
 using reverb::kHiEarlySizes;
 using reverb::kHiFilterSizes;
-
-// Whether a gain is below 0 or above 1. A NaN gain passes the library's tests.
-bool OutOfRange(float value)
-{
-    return value < 0.0f || value > 1.0f;
-}
-
-void Clear(std::vector<float>& line)
-{
-    std::fill(line.begin(), line.end(), 0.0f);
-}
 
 } // namespace
 
@@ -58,39 +50,24 @@ bool ReverbHiExp::Init(const Params& params, uint32_t rate)
 {
     params_ = params;
     active_ = kOff;
-    if (params.pre_delay_time_max < 0.0f)
-    {
-        Off();
-        return false;
-    }
-
-    const uint32_t pre_delay_max_length = ToUnsigned(params.pre_delay_time_max * ToFloat(rate));
-    if (pre_delay_max_length > reverb::kMaxPreDelayLength)
+    const std::optional<uint32_t> pre_delay_max_length = reverb::PreDelayMaxLength(params.pre_delay_time_max, rate);
+    if (!pre_delay_max_length)
     {
         Off();
         return false;
     }
 
     // The library allocates each line with the longest length that the tables give (0x02014834), or no pre-delay line
-    // for a longest pre-delay of 0 samples. ClearLines then clears them.
+    // for a longest pre-delay of 0 samples. The library then clears the lines (0x02014998). Each assign does both
+    // steps.
     const uint32_t* longest = kHiFilterSizes[kFusedModes];
     for (int channel = 0; channel < kChannelCount; channel++)
     {
         early_line_[channel].assign(kHiEarlySizes[kEarlyModes - 1][kTaps - 1], 0.0f);
-        pre_delay_line_[channel].assign(pre_delay_max_length, 0.0f);
-        for (int comb = 0; comb < kCombs; comb++)
-        {
-            comb_line_[channel][comb].assign(longest[comb], 0.0f);
-        }
-
-        for (int allpass = 0; allpass < kAllpasses; allpass++)
-        {
-            allpass_line_[channel][allpass].assign(longest[kCombs + allpass], 0.0f);
-        }
-
         last_allpass_line_[channel].assign(longest[kCombs + kAllpasses + channel], 0.0f);
     }
 
+    reverb::Allocate(lines_, *pre_delay_max_length, longest);
     if (!InitParams(rate))
     {
         Off();
@@ -155,7 +132,7 @@ void ReverbHiExp::Process(const Buffers& frame, uint32_t samples, const Buffers&
 
     // The gains that the callback computes once a frame.
     const float fused_gain = params_.fused_gain * 0.6f;
-    const float lowpass_gain = 1.0f - lpf_coef_;
+    const float lowpass_gain = 1.0f - lines_.lpf_coef;
     const float crosstalk = params_.crosstalk * 0.5f;
     for (uint32_t i = 0; i < samples; i++)
     {
@@ -198,20 +175,7 @@ void ReverbHiExp::Process(const Buffers& frame, uint32_t samples, const Buffers&
             Step(position, early_length_);
         }
 
-        if (pre_delay_length_ != 0)
-        {
-            Step(pre_delay_pos_, pre_delay_length_);
-        }
-
-        for (int comb = 0; comb < kCombs; comb++)
-        {
-            Step(comb_pos_[comb], comb_length_[comb]);
-        }
-
-        for (int allpass = 0; allpass < kAllpasses; allpass++)
-        {
-            Step(allpass_pos_[allpass], allpass_length_[allpass]);
-        }
+        reverb::StepLines(lines_);
     }
 }
 
@@ -225,43 +189,24 @@ float ReverbHiExp::ProcessChannel(int channel, float input, float fused_gain, fl
     early_line[early_pos_[2]] = input;
     const float early = Fmadds(tap2, early_coef_[2], taps01);
 
-    // The pre-delay.
-    float delayed = input;
-    if (pre_delay_length_ != 0)
-    {
-        float& sample = pre_delay_line_[channel][pre_delay_pos_];
-        delayed = sample;
-        sample = input;
-    }
-
-    // Three combs in parallel.
+    // The pre-delay, three combs in parallel and two allpasses.
+    const float delayed = reverb::PreDelay(lines_, channel, input);
     float combs = 0.0f;
     for (int comb = 0; comb < kCombs; comb++)
     {
-        float& sample = comb_line_[channel][comb][comb_pos_[comb]];
-        const float output = sample;
-        sample = Fmadds(output, comb_coef_[comb], delayed);
-        combs = combs + output;
+        combs = combs + reverb::Comb(lines_, channel, comb, delayed);
     }
 
-    // Two allpasses.
     float passed = combs;
     for (int allpass = 0; allpass < kAllpasses; allpass++)
     {
-        float& sample = allpass_line_[channel][allpass][allpass_pos_[allpass]];
-        const float delayed_sample = sample;
-        sample = Fmadds(delayed_sample, allpass_coef_, passed);
-        passed = NegatedFms(sample, allpass_coef_, delayed_sample);
+        passed = reverb::Allpass(lines_, channel, allpass, passed);
     }
 
     // The low-pass and the channel's last allpass. The last allpass's position moves on here, a channel at a time.
-    const float lowpass = Fmadds(lowpass_gain, passed, lpf_coef_ * last_lpf_out_[channel]);
-    last_lpf_out_[channel] = lowpass;
+    const float lowpass = reverb::Lowpass(lines_, channel, passed, lowpass_gain);
     uint32_t& position = last_allpass_pos_[channel];
-    float& sample = last_allpass_line_[channel][position];
-    const float delayed_sample = sample;
-    sample = Fmadds(delayed_sample, allpass_coef_, lowpass);
-    const float output = NegatedFms(sample, allpass_coef_, delayed_sample);
+    const float output = reverb::AllpassStep(last_allpass_line_[channel][position], lines_.allpass_coef, lowpass);
     Step(position, last_allpass_length_[channel]);
 
     return Fmadds(output, fused_gain, early);
@@ -270,10 +215,7 @@ float ReverbHiExp::ProcessChannel(int channel, float input, float fused_gain, fl
 bool ReverbHiExp::InitParams(uint32_t rate)
 {
     const Params& p = params_;
-    if (p.early_mode >= kEarlyModes || p.pre_delay_time < 0.0f || p.pre_delay_time > p.pre_delay_time_max ||
-        p.fused_mode >= kFusedModes || p.fused_time < 0.0f || OutOfRange(p.coloration) || OutOfRange(p.damping) ||
-        OutOfRange(p.crosstalk) || OutOfRange(p.early_gain) || OutOfRange(p.fused_gain) || OutOfRange(p.out_gain) ||
-        OutOfRange(p.send_gain))
+    if (reverb::AnyOutOfRange(p) || OutOfRange(p.crosstalk))
     {
         return false;
     }
@@ -287,28 +229,10 @@ bool ReverbHiExp::InitParams(uint32_t rate)
         early_coef_[tap] = (kHiEarlyCoefs[p.early_mode][tap] * p.early_gain) * 0.6f;
     }
 
-    // The library's pre-delay can be longer than its line in two cases: a NaN longest pre-delay, and a longer
-    // pre_delay_time_max given to SettingsUpdate. The library would then write past the line. The model fails instead.
-    const float rate_float = ToFloat(rate);
-    pre_delay_pos_ = 0;
-    pre_delay_length_ = ToUnsigned(p.pre_delay_time * rate_float);
-    if (pre_delay_length_ > pre_delay_line_[0].size())
+    const uint32_t* sizes = kHiFilterSizes[p.fused_mode];
+    if (!reverb::SetUp(lines_, p, sizes, ToFloat(rate)))
     {
         return false;
-    }
-
-    const uint32_t* sizes = kHiFilterSizes[p.fused_mode];
-    for (int comb = 0; comb < kCombs; comb++)
-    {
-        comb_pos_[comb] = 0;
-        comb_length_[comb] = sizes[comb];
-        comb_coef_[comb] = reverb::CombCoef(sizes[comb], p.fused_time, rate_float);
-    }
-
-    for (int allpass = 0; allpass < kAllpasses; allpass++)
-    {
-        allpass_pos_[allpass] = 0;
-        allpass_length_[allpass] = sizes[kCombs + allpass];
     }
 
     for (int channel = 0; channel < kChannelCount; channel++)
@@ -316,16 +240,6 @@ bool ReverbHiExp::InitParams(uint32_t rate)
         last_allpass_pos_[channel] = 0;
         last_allpass_length_[channel] = sizes[kCombs + kAllpasses + channel];
     }
-
-    // The coloration is the allpasses' gain. The low-pass weighs its last output by 1 - damping, at most 0.95.
-    allpass_coef_ = p.coloration;
-    lpf_coef_ = 1.0f - p.damping;
-    if (lpf_coef_ > 0.95f)
-    {
-        lpf_coef_ = 0.95f;
-    }
-
-    last_lpf_out_.fill(0.0f);
 
     return true;
 }
@@ -335,19 +249,10 @@ void ReverbHiExp::ClearLines()
     for (int channel = 0; channel < kChannelCount; channel++)
     {
         Clear(early_line_[channel]);
-        Clear(pre_delay_line_[channel]);
-        for (std::vector<float>& line : comb_line_[channel])
-        {
-            Clear(line);
-        }
-
-        for (std::vector<float>& line : allpass_line_[channel])
-        {
-            Clear(line);
-        }
-
         Clear(last_allpass_line_[channel]);
     }
+
+    reverb::ClearLines(lines_);
 }
 
 void ReverbHiExp::Off()
@@ -356,11 +261,10 @@ void ReverbHiExp::Off()
     for (int channel = 0; channel < kChannelCount; channel++)
     {
         early_line_[channel] = {};
-        pre_delay_line_[channel] = {};
-        comb_line_[channel] = {};
-        allpass_line_[channel] = {};
         last_allpass_line_[channel] = {};
     }
+
+    reverb::FreeLines(lines_);
 }
 
 } // namespace ntdlib::cafe::axfx

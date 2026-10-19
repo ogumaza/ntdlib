@@ -12,15 +12,17 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
-#include "xsflib/binary.h"
-#include "xsflib/testing/check.h"
 
 namespace jaudio = ntdlib::jaudio;
 namespace files = ntdlib::testing::jaudio_files;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -60,16 +62,7 @@ void TestSounds()
 // The message with which ReadAafSounds rejects the archive, or an empty one.
 std::string Refusal(std::span<const uint8_t> aaf)
 {
-    try
-    {
-        jaudio::ReadAafSounds(aaf);
-    }
-    catch (const xsflib::FormatError& error)
-    {
-        return error.what();
-    }
-
-    return {};
+    return ErrorOf([&] { jaudio::ReadAafSounds(aaf); });
 }
 
 void TestDamaged()
@@ -118,16 +111,7 @@ const std::vector<files::AafSequenceSpec> kIndex = {
 // The message with which ReadAafSequenceFiles rejects the archive, or an empty one.
 std::string IndexRefusal(std::span<const uint8_t> aaf, std::span<const uint8_t> archive)
 {
-    try
-    {
-        jaudio::ReadAafSequenceFiles(aaf, archive);
-    }
-    catch (const xsflib::FormatError& error)
-    {
-        return error.what();
-    }
-
-    return {};
+    return ErrorOf([&] { jaudio::ReadAafSequenceFiles(aaf, archive); });
 }
 
 void TestSequenceIndex()
@@ -247,16 +231,8 @@ void TestAsnSounds()
     }
 
     // A file too short for its count is rejected.
-    std::string refusal;
-    try
-    {
-        jaudio::ReadAsnSounds(std::span(asn).first(asn.size() - 1));
-    }
-    catch (const xsflib::FormatError& error)
-    {
-        refusal = error.what();
-    }
-    XSFLIB_CHECK(refusal == "the name file is too short for its sounds");
+    XSFLIB_CHECK(ErrorOf([&] { jaudio::ReadAsnSounds(std::span(asn).first(asn.size() - 1)); }) ==
+                 "the name file is too short for its sounds");
 }
 
 } // namespace

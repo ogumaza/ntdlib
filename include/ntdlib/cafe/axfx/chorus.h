@@ -4,8 +4,8 @@
 // line of 100 ms behind the input, by a time that a sine LFO varies, through a 4-tap interpolator. The line takes the
 // input plus the output at the feedback's gain. NintendoWare's FxChorus runs this chorus.
 //
-// The lines' length and the delay follow the renderer's rate. The LFO's step and depth are computed for 32 kHz at any
-// rate. At 48 kHz the LFO then runs 1.5 times as fast as its rate parameter gives.
+// The lines' length, the delay and the LFO's depth follow the renderer's rate. The LFO's step is computed for 32 kHz
+// at any rate. At 48 kHz the LFO then runs 1.5 times as fast as its rate parameter gives.
 
 #pragma once
 

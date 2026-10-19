@@ -10,8 +10,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -20,84 +20,13 @@
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 
+#include "ntdlib/testing/big_endian_bytes.h"
+
 namespace ntdlib::testing::jaudio_files
 {
 
-// Big-endian data under construction.
-class Bytes
-{
-public:
-    std::size_t Size() const
-    {
-        return data_.size();
-    }
-
-    Bytes& U8(uint32_t v)
-    {
-        data_.push_back(static_cast<uint8_t>(v));
-
-        return *this;
-    }
-
-    Bytes& U16(uint32_t v)
-    {
-        return U8(v >> 8).U8(v);
-    }
-
-    Bytes& U24(uint32_t v)
-    {
-        return U8(v >> 16).U16(v);
-    }
-
-    Bytes& U32(uint32_t v)
-    {
-        return U16(v >> 16).U16(v);
-    }
-
-    Bytes& F32(float v)
-    {
-        uint32_t bits = 0;
-        std::memcpy(&bits, &v, 4);
-        return U32(bits);
-    }
-
-    Bytes& Tag(const char* tag)
-    {
-        for (int i = 0; i < 4; i++)
-        {
-            U8(static_cast<uint8_t>(tag[i]));
-        }
-
-        return *this;
-    }
-
-    Bytes& Append(const std::vector<uint8_t>& more)
-    {
-        data_.insert(data_.end(), more.begin(), more.end());
-
-        return *this;
-    }
-
-    Bytes& PadTo(std::size_t size)
-    {
-        data_.resize(std::max(data_.size(), size));
-
-        return *this;
-    }
-
-    void Put32(std::size_t at, uint32_t v)
-    {
-        xsflib::StoreBe32(data_.data() + at, v);
-    }
-
-    const std::vector<uint8_t>& Data() const
-    {
-        return data_;
-    }
-
-private:
-    std::vector<uint8_t> data_;
-};
+// The builder of the files below.
+using Bytes = BigEndianBytes;
 
 // A wave system with one wave archive, `archive_name`, of `waves` PCM16 waves of 64 samples each at 32000 Hz, key 60.
 // The first loops over its last 32 samples. The archive's name has at most 111 characters.
@@ -192,18 +121,13 @@ inline std::vector<uint8_t> BankV0File(uint32_t number, int16_t release)
     const std::size_t perc = b.Size();
     b.Tag("PER2").PadTo(perc + 0x88 + 4 * 128 + 128 + 256);
     b.Put32(perc + 0x88 + 4 * 36, static_cast<uint32_t>(pmap));
+    b.Put8(perc + 0x288 + 36, 127);      // pan
+    b.Put16(perc + 0x308 + 2 * 36, 200); // release: 200 units
 
-    std::vector<uint8_t> d = b.Data();
-    d[perc + 0x288 + 36] = 127;   // pan
-    d[perc + 0x308 + 2 * 36] = 0; // release: 200 units
-    d[perc + 0x308 + 2 * 36 + 1] = 200;
+    b.Put32(0x3b4, static_cast<uint32_t>(perc));
+    b.Put32(4, static_cast<uint32_t>(b.Size()));
 
-    Bytes out;
-    out.Append(d);
-    out.Put32(0x3b4, static_cast<uint32_t>(perc));
-    out.Put32(4, static_cast<uint32_t>(out.Size()));
-
-    return out.Data();
+    return b.Data();
 }
 
 // A version 1 bank whose program 0 plays wave 0 with a random pitch effect, whose key region ends at key 64, and whose
@@ -227,23 +151,18 @@ inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t 
 
     const std::size_t inst = b.Size() + 8;
     b.Tag("INST").U32(0); // size set below
-    const std::size_t inst_start = b.Size();
     b.Tag("Inst").U32(1).U32(0).U32(1).U32(static_cast<uint32_t>(rand)).U32(1);
     b.U8(64).U8(0).U16(0).U32(2);
     b.U8(63).U8(0).U16(0).U32(0).F32(1.0f).F32(1.0f);
     b.U8(127).U8(0).U16(0).U32(1).F32(1.0f).F32(1.0f);
     b.F32(1.0f).F32(1.0f);
+    b.Put32(inst - 4, static_cast<uint32_t>(b.Size() - inst));
 
-    std::vector<uint8_t> d = b.Data();
-    const auto inst_size = static_cast<uint32_t>(d.size() - inst_start);
-    Bytes out;
-    out.Append(d);
-    out.Put32(inst - 4, inst_size);
-    out.PadTo((out.Size() + 3) & ~std::size_t{3});
-    out.Tag("LIST").U32(8).U32(1).U32(static_cast<uint32_t>(inst));
-    out.Put32(4, static_cast<uint32_t>(out.Size()));
+    b.PadTo((b.Size() + 3) & ~std::size_t{3});
+    b.Tag("LIST").U32(8).U32(1).U32(static_cast<uint32_t>(inst));
+    b.Put32(4, static_cast<uint32_t>(b.Size()));
 
-    return out.Data();
+    return b.Data();
 }
 
 // A sound of a sound table: its type byte, its volume in 127ths, the file of the sequence archive that type 0x11 (or

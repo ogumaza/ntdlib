@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// The sound library's envelope (CurveAdshr) and LFO (CurveLfo), for a console policy (see console.h). Each function's
-// comment gives the address of the routine it follows in Animal Crossing: amiibo Festival's executable.
+// The sound library's envelope (CurveAdshr) and LFOs, for a console policy (see console.h): the Wii U's and the
+// Switch's LFO (CurveLfo), and the 3DS's and the Wii's (TableLfo). A function's comment gives the address of the
+// routine it follows in Animal Crossing: amiibo Festival's executable, and for TableLfo in Pokemon X's code.bin.
 
 #pragma once
 

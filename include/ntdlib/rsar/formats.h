@@ -39,9 +39,9 @@ enum class Wording : uint8_t
 struct ReadOptions
 {
     // The texts of FormatError (see Wording). The short texts come with checks of their own: a file's size before its
-    // header, the count of each instrument and wave table, an INFO table that isn't there, and the rejections of CSAR,
-    // FSAR and SDAT archives. They also say how much of a truncated archive there is when its tables can't be read.
-    // With the sentences, a missing INFO table reads as empty.
+    // header, the count of each instrument and wave table, an INFO table that isn't there, and the rejection of SDAT
+    // archives. They also say how much of a truncated archive there is when its tables can't be read. With the
+    // sentences, a missing INFO table reads as empty. Both wordings reject CSAR and FSAR archives.
     Wording wording = Wording::kShort;
 
     // Make names printable: control characters, line breaks and invalid UTF-8 bytes become '?'. An item whose name is
@@ -56,8 +56,8 @@ struct ReadOptions
     // truncated when one of its groups ends past it.
     bool playback_fields = false;
 
-    // Before version 1.1, take a sound's type from its detail reference's data type. Otherwise take it from the
-    // reference to the sound in the sound table.
+    // Before version 1.1, take a sound's type from its detail reference's data type, not from the reference to the
+    // sound in the sound table. From version 1.1, a field of the sound's info gives the type.
     bool type_from_detail = true;
 };
 
@@ -131,7 +131,7 @@ struct Region
     uint8_t hold = 0;               // builds from 2008 only
     uint8_t wave_data_location = 0; // 0: an index into the bank's waves (playback_fields)
     uint8_t note_off_type = 0;      // 1: ignores the note-off at the end of a note's length (builds from 2008 only)
-    uint8_t key_group = 0; // the alternate assign: a new note of the group releases the others (2008 builds only)
+    uint8_t key_group = 0; // the alternate assign: a new note of the group releases the others (builds from 2008 only)
     uint8_t original_key = 60;
     uint8_t volume = 127;
     uint8_t pan = 64;
@@ -143,11 +143,11 @@ struct Region
 class Bank
 {
 public:
-    // Reads a bank's instruments. For a version 1.1 bank, also reads where its WAVE block describes its waves. `file`
-    // has to outlive the bank.
+    // Reads a bank's instruments. For a bank with a WAVE block, such as a version 1.1 bank, also reads where the block
+    // describes the waves. `file` has to outlive the bank.
     static Bank Parse(std::span<const uint8_t> file, const ReadOptions& options = {});
 
-    // Reads a bank and all its waves from `wave_data`: the raw samples for a version 1.1 bank, an RWAR for a later one.
+    // Reads a bank and all its waves from `wave_data`: the raw samples for a bank with a WAVE block, or else an RWAR.
     // `file` and `wave_data` have to outlive the bank.
     static Bank Parse(std::span<const uint8_t> file, std::span<const uint8_t> wave_data,
                       const ReadOptions& options = {});
@@ -170,14 +170,15 @@ public:
     // region. Any other type of reference, a key outside a table and a negative wave index play nothing.
     const Region* Find(uint32_t program, int key, int velocity) const;
 
-    // True for a version 1.1 bank. Such a bank's WAVE block describes its waves.
+    // True for a bank whose second block is a WAVE block. Version 1.1 banks have one. The WAVE block describes the
+    // bank's waves.
     bool HasWaveBlock() const
     {
         return wave_block_;
     }
 
-    // Reads wave `index` of a version 1.1 bank. The bank's samples are in `wave_data`. Throws FormatError if the wave
-    // can't be read.
+    // Reads wave `index` of a bank with a WAVE block. The bank's samples are in `wave_data`. Throws FormatError if the
+    // wave can't be read.
     Wave ReadWave(std::size_t index, std::span<const uint8_t> wave_data) const;
 
     // The waves that Parse read with the bank's wave data.
@@ -255,11 +256,11 @@ struct SoundInfo
 {
     std::string name;
     uint32_t file_id = 0;
-    uint32_t player_id = 0; // playback_fields, like the rest of the fields that playback alone uses
+    uint32_t player_id = 0; // playback_fields
     uint8_t volume = 127;
-    uint8_t player_priority = 64;
-    uint8_t remote_filter = 0;
-    uint32_t user_params[2] = {};
+    uint8_t player_priority = 64; // playback_fields
+    uint8_t remote_filter = 0;    // playback_fields
+    uint32_t user_params[2] = {}; // playback_fields
     uint8_t pan_mode = 1;  // 0 dual (pan stereo channels from their sides), 1 balance (the only mode before RSAR 1.2)
     uint8_t pan_curve = 0; // 0 is the default square-root law
     SoundType type = SoundType::kUnknown;
@@ -423,13 +424,6 @@ private:
         bool wave_data_missing = false; // a group holds its wave data past the end of the archive
     };
 
-    // A place where the archive keeps a file: a group, and an item of the group.
-    struct FilePosition
-    {
-        uint32_t group;
-        uint32_t index;
-    };
-
     // Reads tables through `r`, and locates the files that groups hold. Throws FormatError if the tables cannot be
     // read.
     void ReadTables(const xsflib::Reader& r);
@@ -441,7 +435,6 @@ private:
     std::vector<BankInfo> banks_;
     std::vector<PlayerInfo> players_;
     std::vector<FileEntry> files_;
-    std::vector<std::vector<FilePosition>> positions_; // where each file is, by file id
     std::vector<Group> groups_;
     uint32_t info_size_ = 0;
     bool truncated_ = false;

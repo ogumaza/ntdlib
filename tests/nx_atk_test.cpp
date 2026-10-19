@@ -6,7 +6,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <string>
 
 #include "ntdlib/nx/atk/envelope.h"
@@ -174,12 +173,6 @@ int main()
     TestRandom();
     TestEnvelope();
     TestLfo();
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
 
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("nx_atk");
 }

@@ -8,7 +8,6 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <limits>
 
 #include "ntdlib/nwsnd/channel.h"
@@ -17,9 +16,6 @@
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/util.h"
 #include "xsflib/testing/check.h"
-
-using xsflib::testing::Check;
-using xsflib::testing::failures;
 
 namespace
 {
@@ -415,13 +411,5 @@ int main()
     TestChannelFormulas();
     TestChannelUpdate();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("3DS policy tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("3DS policy");
 }

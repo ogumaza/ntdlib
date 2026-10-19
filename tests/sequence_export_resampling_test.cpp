@@ -318,5 +318,5 @@ int main()
     RunOn(Switch(), kConversionTests);
     RunOn(Ctr(), kConversionTests);
 
-    return Report();
+    return xsflib::testing::Summary("sequence_export_resampling");
 }

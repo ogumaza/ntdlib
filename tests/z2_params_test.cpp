@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of the host's side of the Z2 start-up's parameters (flipper/z2_params.h): the offsets, the profile's words and
-// the wave list.
+// the wave list that the parameters hold (flipper/wave_list.h).
 
 #include "ntdlib/flipper/z2_params.h"
 
@@ -11,6 +11,7 @@
 #include "xsflib/testing/check.h"
 
 namespace z2 = ntdlib::flipper::z2;
+using ntdlib::flipper::WaveList;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
 
@@ -45,11 +46,10 @@ int main()
 
     // The wave list: the count, then each group, big-endian.
     const std::vector<uint32_t> kWaves = {0x00010003, 0x00000007};
-    Check(z2::WaveList(kWaves) == std::vector<uint8_t>{0, 0, 0, 2, 0, 1, 0, 3, 0, 0, 0, 7},
-          "a wave list of two groups");
-    Check(z2::WaveList({}) == std::vector<uint8_t>{0, 0, 0, 0}, "an empty wave list");
+    Check(WaveList(kWaves) == std::vector<uint8_t>{0, 0, 0, 2, 0, 1, 0, 3, 0, 0, 0, 7}, "a wave list of two groups");
+    Check(WaveList({}) == std::vector<uint8_t>{0, 0, 0, 0}, "an empty wave list");
     const std::vector<uint32_t> kTooMany(65, 0);
-    Check(ErrorOf([&] { z2::WaveList(kTooMany); }) == "a sound names 65 waves, more than 64", "too many waves");
+    Check(ErrorOf([&] { WaveList(kTooMany); }) == "a sound names 65 waves, more than 64", "too many waves");
 
     return xsflib::testing::Summary("z2 params");
 }

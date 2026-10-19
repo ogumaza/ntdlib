@@ -70,6 +70,10 @@ struct PresetKey
 // Applies the track envelope overrides in `key` to `env`.
 EnvelopeValues OverrideEnvelope(EnvelopeValues env, const PresetKey& key);
 
+// Whether the preset keys of `engine` hold the LFO in the bytecode's units: the speed, and the delay in 5 ms steps. The
+// 3DS's and the Wii's keys do (PresetKey).
+bool LfoInBytecodeUnits(Engine engine);
+
 // Returns the frequency of `key`'s LFO in Hz, in SoundFont and SFZ time. On the 3DS, that time runs env_time_scale
 // times slower than the game's envelope time.
 double LfoHz(const PresetKey& key, const Settings& settings);
@@ -143,11 +147,12 @@ struct Performance : PerformanceBase
     // Biquad type per track, or 0 for none. SFZ uses the first type each track enables.
     std::array<uint8_t, 16> biquad_types{};
 
-    // On the Wii: played as a build of NW4R SND from 2008 on (SndBuild::Since2008). The regions of those builds have a
-    // hold and may ignore note-offs.
-    bool since_2008 = false;
+    // On the Wii: played as a build of NW4R SND from March 2008 on (SndBuild::SinceMarch2008). The regions of those
+    // builds have a hold and may ignore note-offs.
+    bool since_march_2008 = false;
 
-    // On the Wii: stereo waves play in balance mode (SoundInfo::pan_mode). The builds of 2006 have only dual mode.
+    // On the Wii: stereo waves play in balance mode (SoundInfo::pan_mode). The build of October 2006 has only dual
+    // mode.
     bool balance = false;
 
     // For an editor: each track's stretches of commands, in the order that they ran, and the note command of each MIDI
@@ -196,6 +201,18 @@ struct PerformOptions
     // The voices for the notes that the game drops when no voice is free, from --voices: a count, or 0 to keep every
     // note. Without --voices, every note is kept.
     int voice_limit = 0;
+
+    // The tracks that play, bit 0 for track 0. A game's code can silence a track through the sound's handle: the
+    // player's SetTrackVolume, with volume 0. Once the sound has started, the performance gives the other tracks
+    // volume 0 that way. Their notes stay in the file, at CC11 0. The search for loops and for the end still counts
+    // those notes.
+    uint16_t tracks = 0xffff;
+
+    // The sound's effect sends on buses A, B and C, from 0 to 1. A game's code sets them through the sound's handle
+    // (BasicSound::SetFxSend). Each adds to every track's send on its bus. A voice holds the sum between 0 and 1. CC91
+    // takes the sum on bus A, and on the Wii, CC93 takes the sum on bus B. On the Switch, the sends on buses B and C
+    // add to the dry level (Sends::kReverbDry). The 3DS's conversion leaves the sends out (Sends::kNone).
+    std::array<float, 3> fx_sends = {};
 };
 
 } // namespace ntdlib::sequence_export

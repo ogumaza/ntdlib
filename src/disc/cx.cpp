@@ -9,8 +9,9 @@
 #include <span>
 #include <vector>
 
-#include "ntdlib/disc/source.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/disc/error.h"
 
 namespace ntdlib::disc
 {

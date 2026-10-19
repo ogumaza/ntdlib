@@ -55,7 +55,8 @@ bool LoadMemChunks(Memory& memory, const std::vector<xsflib::psf::MemChunk>& chu
 void AppendAudioBlock(std::vector<int16_t>& out, std::span<const uint8_t, 32> block);
 
 // The status word of the set's driver at the CPU address `address`: 0 while it boots, 1 while the sound plays and 2
-// once it has finished. A set without a status word (`address` 0), or with one outside memory, plays: 1.
+// once it has finished. After an error, bit 31 is set and the low byte holds the step that failed. A set without a
+// status word (`address` 0), or with one outside memory, plays: 1.
 template <typename Memory>
 uint32_t DriverStatus(Memory& memory, uint32_t address)
 {
@@ -65,7 +66,6 @@ uint32_t DriverStatus(Memory& memory, uint32_t address)
     }
 
     const uint8_t* word = memory.At(dsp::ToPhysical(address), 4);
-
     return word != nullptr ? xsflib::LoadBe32(word) : 1;
 }
 

@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,8 +15,6 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/sequence_file.h"
 #include "ntdlib/testing/sar_files.h"
-
-using xsflib::testing::failures;
 
 namespace
 {
@@ -98,13 +95,5 @@ int main()
     TestFlavor(Flavor::kNx);
     TestRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Sequence file tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Sequence file");
 }

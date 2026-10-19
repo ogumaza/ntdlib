@@ -2,7 +2,7 @@
 
 #include "ntdlib/cafe/axfx/delay.h"
 
-#include <algorithm>
+#include <vector>
 
 #include "cafe/axfx/util.h"
 #include "ntdlib/fused.h"
@@ -20,7 +20,7 @@ constexpr uint32_t kMaxLength = 1u << 24;
 // single precision and converts the product to an unsigned integer. A result of 0 becomes 1.
 uint32_t Samples(float ms, uint32_t rate)
 {
-    const uint32_t samples = ToUnsigned(ms * ToFloat(static_cast<int32_t>(SamplesPerMs(rate))));
+    const uint32_t samples = ntdlib::CafeToUint32(ms * ToFloat(static_cast<int32_t>(SamplesPerMs(rate))));
 
     return samples == 0 ? 1 : samples;
 }
@@ -152,15 +152,15 @@ void DelayExp::Process(const Buffers& frame, uint32_t samples, const Buffers& bu
 bool DelayExp::InitParams(uint32_t rate)
 {
     const Params& p = params_;
-    if (p.delay > p.max_delay || p.feedback < 0.0f || !(p.feedback < 1.0f) || p.lpf < 0.0f || p.lpf > 1.0f ||
-        p.out_gain < 0.0f || p.out_gain > 1.0f || p.send_gain < 0.0f || p.send_gain > 1.0f || line_[0].empty())
+    if (p.delay > p.max_delay || p.feedback < 0.0f || !(p.feedback < 1.0f) || OutOfRange(p.lpf) ||
+        OutOfRange(p.out_gain) || OutOfRange(p.send_gain) || line_[0].empty())
     {
         return false;
     }
 
     for (std::vector<int32_t>& line : line_)
     {
-        std::fill(line.begin(), line.end(), 0);
+        Clear(line);
     }
 
     // The library doesn't test the delay against 0. A negative delay gives a length beyond the lines, and the library's

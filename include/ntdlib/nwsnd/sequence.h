@@ -11,7 +11,9 @@
 // The engine goes into each call that requires it. The player and its tracks then hold no pointers, and a copy of them
 // plays on apart from the original. An engine can report the sequence's loops to a rip tool's length analysis. Such an
 // engine gives FollowsLoops(), whether the analysis follows the loops now, and OnLoop(player, track, target) (see
-// SequenceSoundPlayer's comment on loops). The model keeps the analysis's records only while FollowsLoops() is true.
+// SequenceSoundPlayer's comment on loops). The model keeps the analysis's records of the commands only while
+// FollowsLoops() is true. Each pass of a loop updates a track's IsIdle, IsStill and IsQuiet from those records either
+// way.
 // The engine may also give LoopsForEver(player, track, address). While that returns true, the counted loop whose body
 // starts at `address` loops for ever like a loop of count 0. The loop's passes count as loops. The game's counted loops
 // end. An analysis can take one as endless when the game plays it for longer than a rip lasts.
@@ -32,7 +34,7 @@
 //                                         the track has run a command (CommandProc), not the extended ones
 //     OnExtendedCommand(player, track, command, arg1, arg2)
 //                                         the track has run an extended command (0xF000 plus its second byte)
-//     OnRandomDraw(player, track)         an argument has drawn a random number
+//     OnRandomDraw(player, track)         an argument or the random command (0x86) has drawn a random number
 //     OnVariableRead(player, track, index)
 //                                         an argument has read variable `index`
 //     OnNoteCommand(player, track, key, velocity, length)
@@ -78,6 +80,9 @@ namespace ntdlib::nwsnd
 
 template <typename Policy>
 class SequenceSoundPlayer;
+
+// A player's tracks: 0 to 15.
+inline constexpr int kTrackCount = 16;
 
 // MoveValue<T, s16>: a linear ramp to a target over a number of sequence ticks.
 template <typename T>
@@ -287,6 +292,12 @@ public:
         return fx_send_;
     }
 
+    // The volume that the game sets through the sound's handle (the player's SetTrackVolume). It starts at 1.
+    float HandleVolume() const
+    {
+        return volume_;
+    }
+
     float Lpf() const
     {
         return lpf_;
@@ -404,7 +415,7 @@ public:
     // on.
     bool HasEndingNote(const Engine& engine) const;
 
-    // Whether the track's volume, pan or pitch bend is moving to a new value.
+    // Whether the track's volume, volume2, pan, surround pan or pitch bend is moving to a new value.
     bool IsMoving() const
     {
         return vol_.Moving() || volume2_.Moving() || pan_.Moving() || span_.Moving() || bend_.Moving();
@@ -412,11 +423,11 @@ public:
 
     // A tick: the ramps advance and the commands up to the next wait run. Returns -1 when the track reaches its end, 1
     // otherwise, or 0 if it's closed (0x022B6F14).
-    int ParseNextTick(Player& player, Engine& engine, bool do_note_on);
+    int ParseNextTick(Player& player, Engine& engine);
 
     // The second half of a tick: the commands up to the next wait. Returns as ParseNextTick does, apart from a closed
     // track.
-    int ParseCommands(Player& player, Engine& engine, bool do_note_on);
+    int ParseCommands(Player& player, Engine& engine);
 
     void UpdateChannelLength(Player& player, Engine& engine); // 0x022B6E88
     void UpdateChannelParam(Player& player, Engine& engine);  // 0x022B55B4
@@ -432,6 +443,19 @@ private:
         kArgVmidi = 3,
         kArgRandom = 4,
         kArgVariable = 5,
+    };
+
+    // The settings of an LFO that commands change (see SetLfo).
+    enum class LfoSetting
+    {
+        kCurve,
+        kPhase,
+        kDepth,
+        kSpeed,
+        kType,
+        kRange,
+        kDelay,
+        kPeriod,
     };
 
     // What a command can change in the track's sound, for a rip tool's length analysis: the track's settings, its
@@ -470,19 +494,47 @@ private:
 
     // Calls Parse. While the engine follows loops, also records what a rip tool's length analysis follows: each
     // command's place in the order the player's tracks run them, and whether the command changes the track's sound.
-    int RunCommand(Player& player, Engine& engine, bool do_note_on);
+    int RunCommand(Player& player, Engine& engine);
 
     void InitParam();                                           // 0x022CABAC
-    int Parse(Player& player, Engine& engine, bool do_note_on); // MmlParser::Parse, 0x022CB7C8
+    int Parse(Player& player, Engine& engine);                  // MmlParser::Parse, 0x022CB7C8
+
+    // Parse's extended commands, after the byte 0xF0 and the prefixes. `condition` is false after an if (0xA2) whose
+    // comparison failed. `arg_type` is the type that a random or variable prefix gives the argument, or kArgNone.
+    void ParseExtendedCommand(Player& player, Engine& engine, bool condition, int arg_type);
     int32_t ReadArg(Player& player, Engine& engine, int type);  // MmlParser::ReadArg, 0x022CB67C
     void CommandProc(Player& player, Engine& engine, uint32_t command, int32_t arg1,
-                     int32_t arg2);                                      // MmlParser::CommandProc, 0x022CBF1C
+                     int32_t arg2); // MmlParser::CommandProc, 0x022CBF1C
+
+    // CommandProc's extended commands (0xF000 plus the second byte). VariableCommand runs those on a variable: the
+    // arithmetic and the comparisons.
+    void ExtendedCommandProc(Player& player, Engine& engine, uint32_t command, int32_t arg1, int32_t arg2);
+    void VariableCommand(Player& player, Engine& engine, uint32_t op, int16_t& variable, int32_t value);
+
+    // CommandProc's commands that move through the data and the call stack: 0x88 opens track `index` at `offset`, 0x89
+    // jumps to `target`, 0x8A calls the subroutine at `target`, 0xD4 starts a loop of `count` passes (0 for ever), 0xFC
+    // ends a pass of the loop on top of the call stack, and 0xFD returns from a call. A full call stack ignores a call
+    // and a loop's start.
+    void OpenTrack(Player& player, Engine& engine, int32_t index, uint32_t offset);
+    void Jump(Player& player, Engine& engine, uint32_t target);
+    void Call(uint32_t target);
+    void LoopStart(uint8_t count);
+    void LoopEnd(Player& player, Engine& engine);
+    void Return();
+
+    // A setting of LFO `lfo` from a command's argument. LFO 0 has main commands. LFOs 1 to 3 have extended ones.
+    void SetLfo(int lfo, LfoSetting setting, int32_t arg);
+
     void ReleaseAllChannel(Player& player, Engine& engine, int release); // 0x022B608C
     void FreeAllChannel(Player& player, Engine& engine);                 // 0x022B6114
     void StopAllChannel(Player& player, Engine& engine);                 // 0x022CAAA4
     void SetMute(Player& player, Engine& engine, int mode);              // 0x022CB34C
     void OnChannelEvent(Engine& engine, Channel& channel);               // ChannelCallbackFunc, 0x022CB06C
     uint8_t ReadByte();
+
+    // A channel of the track stopped at once and freed, or released. Each calls the engine's hook, OnStop or OnRelease.
+    void StopChannel(Player& player, Engine& engine, Channel& channel);
+    void ReleaseChannel(Player& player, Engine& engine, Channel& channel);
 
     // A 16-bit argument, and a 24-bit offset, in the console's byte order.
     uint32_t Read16();
@@ -513,6 +565,10 @@ private:
 
     // The command being run changed the track's sound.
     void MarkChange(Player& player);
+
+    // A number from the engine's random generator, for a random argument or the random command (0x86). The track
+    // records the draw. Then the engine's OnRandomDraw, if it has one, is called.
+    uint32_t DrawRandom(Player& player, Engine& engine);
 
     // The track read variable `index` in a command's argument or in a comparison. Whether a track has read variable
     // `index` so far: any track for the player's and the global variables, this one for the track's variables.
@@ -656,14 +712,14 @@ public:
     // runs the same steps (0x022B70AC). UpdateTrackParams gives each track's parameters to its channels. Update does
     // that after a frame's ticks. Call the steps on a player that has started and hasn't finished.
     void BeginTick();
-    bool RunTrackTick(Engine& engine, int index, bool do_note_on = true);
+    bool RunTrackTick(Engine& engine, int index);
     bool EndTick(Engine& engine, bool any_open);
     void UpdateTrackParams(Engine& engine);
 
     // The rest of track `index`'s tick on a copy of the player, made in a hook while the track ran its commands: the
     // commands up to the next wait, and the track's close if it ends. Returns whether the track is open after them. An
     // engine that tests how the sequence plays on from a jump runs the copy on this way.
-    bool ContinueTrackTick(Engine& engine, int index, bool do_note_on = true);
+    bool ContinueTrackTick(Engine& engine, int index);
 
     // The clock in steps, for an engine that runs the ticks itself, on a console whose clock counts units of time (not
     // Policy::kFloatClock). StartClock begins `frames` frames of the clock. NextTickTime then moves the clock to the
@@ -743,7 +799,7 @@ public:
     // 0x8003e8b0 in Wii Sports' main.dol). The 3DS's policy leaves it out.
     void SetTrackVolume(uint32_t track_flags, float volume)
     {
-        for (int i = 0; i < 16; ++i)
+        for (int i = 0; i < kTrackCount; ++i)
         {
             if ((track_flags & (1u << i)) != 0 && tracks_[i])
             {
@@ -788,7 +844,7 @@ public:
     // Track `index`, 0 to 15, or nullptr if it isn't allocated.
     const TrackType* Track(int index) const
     {
-        return index >= 0 && index < 16 && tracks_[index] ? &*tracks_[index] : nullptr;
+        return index >= 0 && index < kTrackCount && tracks_[index] ? &*tracks_[index] : nullptr;
     }
 
     // Whether the sequence has started and hasn't ended.
@@ -824,7 +880,7 @@ private:
     // 0x022B5588.
     TrackType* GetTrack(int index)
     {
-        return index >= 0 && index < 16 && tracks_[index] ? &*tracks_[index] : nullptr;
+        return index >= 0 && index < kTrackCount && tracks_[index] ? &*tracks_[index] : nullptr;
     }
 
     int16_t* Variable(Engine& engine, int index); // 0x022C8A58
@@ -846,27 +902,22 @@ private:
     // A tick of every track, in the steps above. Returns whether the player finished.
     bool RunTick(Engine& engine);
 
-    // 0x022B7368.
-    void UpdateTick(Engine& engine, int frames)
-        requires(!Policy::kFloatClock);
+    // The ticks in `frames` frames of the clock, in the clock's steps (0x022B7368). On a console whose clock counts in
+    // float milliseconds (Policy::kFloatClock), `frames` must be 1.
+    void UpdateTick(Engine& engine, int frames);
 
     void FinishPlayer(Engine& engine);          // 0x022B620C
     void CloseTrack(Engine& engine, int index); // 0x022B6198
-
-    // A frame's ticks on a console whose clock counts in float milliseconds (Policy::kFloatClock), in the clock's
-    // steps.
-    void UpdateFrameTicks(Engine& engine)
-        requires Policy::kFloatClock;
 
     int id_;
     std::span<const uint8_t> data_;
     uint32_t allocate_track_flags_;
     uint32_t start_offset_;
-    std::vector<uint32_t> bank_items_;                // the bank in each slot, by item ID
-    std::array<std::optional<TrackType>, 16> tracks_; // +0x1C8
-    std::array<int16_t, 16> local_vars_;              // +0x208
-    bool started_ = false;                            // +0x25
-    bool finished_ = false;                           // +0x27
+    std::vector<uint32_t> bank_items_;                         // the bank in each slot, by item ID
+    std::array<std::optional<TrackType>, kTrackCount> tracks_; // +0x1C8
+    std::array<int16_t, 16> local_vars_;                       // +0x208
+    bool started_ = false;                                     // +0x25
+    bool finished_ = false;                                    // +0x27
 
     // What BasicSound gives the player from the sound's info and what the game sets (BasicSoundPlayer's parameters).
     float volume_ = 1.0f;              // +0x2C

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// The parts of the image readers that ntdlib::disc and ntdlib::disc_containers share: an image file's pieces, the magic
-// words of WBFS and WDF, and the base of the formats that store a disc in blocks.
+// The parts that the image readers of ntdlib::disc and ntdlib::disc_containers share: an image file's pieces, the sizes
+// of a Wii disc's sectors, the largest block that a format may use, the magic words of WBFS and WDF, and the base of
+// the formats that store a disc in blocks.
 
 #pragma once
 

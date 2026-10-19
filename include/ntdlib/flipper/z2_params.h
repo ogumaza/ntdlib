@@ -8,18 +8,19 @@
 
 #include <array>
 #include <cstdint>
-#include <span>
 #include <vector>
+
+#include "ntdlib/flipper/wave_list.h"
 
 namespace ntdlib::flipper::z2
 {
 
 // Where Z2Params hold the sound's JAudio ID, its JAISoundHandle, the number of wave groups, the groups and the profile.
+// The wave list (wave_list.h) starts at kWaveCountOffset.
 inline constexpr uint32_t kSoundOffset = 0x00;
 inline constexpr uint32_t kHandleOffset = 0x04;
 inline constexpr uint32_t kWaveCountOffset = 0x08;
 inline constexpr uint32_t kWavesOffset = 0x0c;
-inline constexpr uint32_t kMaxWaves = 64;
 inline constexpr uint32_t kProfileOffset = kWavesOffset + 4 * kMaxWaves;
 
 // The most first-scene groups that a profile lists.
@@ -86,10 +87,5 @@ struct Profile
     // The words in Z2Params' order, for kProfileOffset on.
     std::vector<uint32_t> Words() const;
 };
-
-// The words that a mini file or a length analysis writes at kWaveCountOffset: the number of wave groups, then each
-// group as its wave bank in the high half and its number in the low half, big-endian. Throws std::invalid_argument for
-// more than kMaxWaves groups.
-std::vector<uint8_t> WaveList(std::span<const uint32_t> waves);
 
 } // namespace ntdlib::flipper::z2

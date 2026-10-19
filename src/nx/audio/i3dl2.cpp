@@ -10,6 +10,7 @@
 #include "ntdlib/aarch64.h"
 #include "ntdlib/nx/audio/dsp.h"
 
+#include "nx/audio/arithmetic.h"
 #include "nx/audio/tables.h"
 
 namespace ntdlib::nx::audio
@@ -29,16 +30,6 @@ constexpr int64_t kPowerScale = -791378;
 // A quarter turn in the sine table's Q14 angles. The sine of an angle a quarter turn on is the angle's cosine.
 constexpr int32_t kQuarterTurn = 64 << 14;
 
-int32_t WrapAdd(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) + static_cast<uint32_t>(b));
-}
-
-int32_t WrapMul(int32_t a, int32_t b)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
-}
-
 // AArch64's fmin and fmax.
 using ntdlib::aarch64::Fmax;
 using ntdlib::aarch64::Fmin;
@@ -46,11 +37,7 @@ using ntdlib::aarch64::Fmin;
 // A float in Q14, towards zero and held to 32 bits (fcvtzs with 14 fraction bits).
 int32_t ToQ14(float x)
 {
-    const float scaled = x * 16384.0f;
-    int32_t value = 0;
-    ConvertToInt(&value, &scaled, 1);
-
-    return value;
+    return ToFixed(x, 14);
 }
 
 // The sample rate in whole kHz, in Q14. The code works the rate out with a multiply by 2^38 / 1000.
@@ -323,11 +310,7 @@ int32_t SquareRoot(int32_t v)
 // An output sample: the float times 65536, held to 24 bits, towards zero (a NaN gives 0).
 int32_t ToSample(float x)
 {
-    const float held = Fmin(Fmax(x * 65536.0f, -8388608.0f), 8388607.0f);
-    int32_t value = 0;
-    ConvertToInt(&value, &held, 1);
-
-    return value;
+    return ToInt(Fmin(Fmax(x * 65536.0f, -8388608.0f), 8388607.0f));
 }
 
 } // namespace

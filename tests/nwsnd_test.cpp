@@ -5,7 +5,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <limits>
 #include <string>
 
@@ -13,6 +12,7 @@
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/sound_build.h"
 #include "xsflib/testing/check.h"
 
 namespace
@@ -120,14 +120,27 @@ void TestUtil()
     XSFLIB_CHECK(nwsnd::CalcLpfFreq<CtrPolicy>(0.5f) == tables::kLpfFreq[10] &&
                  nwsnd::CalcLpfFreq<CtrPolicy>(kNan) == 80);
 
-    // The Wii works its cutoff out as 32000 * 2^(10 (value - 1)) Hz, truncated, from 31 Hz to 32000 Hz. A NaN gives the
-    // lowest cutoff. So does a value of 0.
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f) == 31 &&
-                 nwsnd::CalcLpfFreq<RevolutionPolicy>(0.5f) == 1000);
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f) == 14993);
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(1.0f) == 32000 &&
-                 nwsnd::CalcLpfFreq<RevolutionPolicy>(2.0f) == 32000);
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(-1.0f) == 31 && nwsnd::CalcLpfFreq<RevolutionPolicy>(kNan) == 31);
+    // The Wii's builds before November 2008 work the cutoff out as 32000 * 2^(10 (value - 1)) Hz, truncated, from 31 Hz
+    // to 32000 Hz. A NaN gives the lowest cutoff. So does a value of 0.
+    const ntdlib::SndBuild old_wii{.date = 20080919};
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f, old_wii) == 31 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(0.5f, old_wii) == 1000);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f, old_wii) == 14993);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(1.0f, old_wii) == 32000 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(2.0f, old_wii) == 32000);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(-1.0f, old_wii) == 31 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(kNan, old_wii) == 31);
+
+    // Later builds take the cutoff from kLpfFreq, as the Wii U does. The other consoles' cutoffs don't depend on the
+    // build.
+    const ntdlib::SndBuild new_wii{.date = 20081120};
+    for (const float value : {0.0f, 0.13f, 0.5f, 57.0f / 64.0f, 0.95f, 1.0f, 2.0f, -1.0f, kNan})
+    {
+        XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(value, new_wii) == nwsnd::CalcLpfFreq<CafePolicy>(value));
+    }
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f, new_wii) == 80 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f, new_wii) == tables::kLpfFreq[22]);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<CafePolicy>(0.5f, CafePolicy::Build{}) == tables::kLpfFreq[10]);
 
     // A centred pan, and surround output: the Wii U takes the surround curves, and the Switch only if the sound's
     // settings select them.
@@ -436,13 +449,5 @@ int main()
     TestCafeEnvelope();
     TestCafeLfo();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d checks failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("nwsnd_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("nwsnd");
 }

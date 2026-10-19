@@ -47,6 +47,7 @@ public:
         const std::filesystem::path path = path_ / name;
         std::ofstream(path, std::ios::binary)
             .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+
         return path;
     }
 

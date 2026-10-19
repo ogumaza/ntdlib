@@ -5,7 +5,7 @@
 // formats are the 3DS's C formats with new names, laid out the same way. Each file is in the byte order that its byte
 // order mark gives: little-endian on the 3DS and the Switch, big-endian on the Wii U. The readers support CSAR 2.3 on
 // the 3DS, FSAR 2.0.0 to 2.3.0 on the Wii U, and FSAR 2.2.0 and 2.5.0 on the Switch. The layouts follow nw::snd's
-// readers on the 3DS. A wave sound file's layout comes from the files of games instead (see WaveSoundFile).
+// readers on the 3DS, except the wave sound file's.
 
 #pragma once
 
@@ -25,8 +25,9 @@
 namespace ntdlib::sar
 {
 
-// An item ID's type, in its top byte: a sound, a bank, a player, a wave archive and a group.
+// An item ID's type, in its top byte: a sound, a sound group, a bank, a player, a wave archive and a group.
 constexpr uint32_t kSoundItem = 0x01;
+constexpr uint32_t kSoundGroupItem = 0x02;
 constexpr uint32_t kBankItem = 0x03;
 constexpr uint32_t kPlayerItem = 0x04;
 constexpr uint32_t kWaveArchiveItem = 0x05;
@@ -243,10 +244,9 @@ struct Bank
 
 // A wave sound file (CWSD or FWSD): the waves that its wave sounds play, and the wave sounds. A wave sound plays its
 // tracks. Each note event of a track plays one of the sound's notes. A note holds its wave and its settings as a bank's
-// velocity region holds them. The layout comes from the wave sound files of games for all three consoles, not from
-// nw::snd's reader. The INFO block (0x6800) holds a reference to a table of the waves (0x0100) and one to a table of
-// references to the wave sounds (0x0101). A wave sound (0x4900) holds references to its settings (0x4901), to its
-// tracks (0x4903) and to its notes (0x4902). A track holds a reference to its note events (0x4904).
+// velocity region holds them. The INFO block (0x6800) holds a reference to a table of the waves (0x0100) and one to a
+// table of references to the wave sounds (0x0101). A wave sound (0x4900) holds references to its settings (0x4901), to
+// its tracks (0x4903) and to its notes (0x4902). A track holds a reference to its note events (0x4904).
 struct WaveSoundFile
 {
     // A note event: its position, its length and the note that it plays, an index into WaveSound::notes. The reader

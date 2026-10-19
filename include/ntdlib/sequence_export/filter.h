@@ -4,7 +4,8 @@
 //
 // A track has a low-pass filter (0xd8) and a biquad filter (0xb4 type, 0xb5 value). The engine updates both on sounding
 // voices every frame, and the renderer runs them on each voice. The low-pass has one pole: 23 cutoffs from 80 to
-// 12800 Hz on the 3DS, the Wii U and the Switch, and 58 from 31 to 14993 Hz on the Wii. The biquad selects coefficients
+// 12800 Hz on the 3DS, the Wii U and the Switch. The Wii's builds of NW4R SND before November 2008 have 58 from 31 to
+// 14993 Hz. Later builds take the Wii U's cutoffs (RevolutionFilters). The biquad selects coefficients
 // from preset tables: one low-pass, one high-pass and three band-passes, all Robert Bristow-Johnson cookbook filters.
 // The Switch has ten: types 1 to 5 are the Wii U's tables for its 32 kHz renderer, and types 6 to 10 are the same
 // filters made for 48 kHz. NW4R SND has the biquad from its builds of June 2008.
@@ -25,6 +26,7 @@
 #include <span>
 
 #include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sound_build.h"
 #include "seqlib/midi/performance.h"
 
 namespace ntdlib::sequence_export
@@ -81,11 +83,16 @@ struct FilterTables
     std::span<const SfzBiquad> sfz_biquads[10];           // SFZ form of each biquad type's steps, or empty
 };
 
-// The tables of each console.
+// The tables of each console. kRevolutionFilters are the tables of the Wii's builds before November 2008.
 extern const FilterTables kCtrFilters;
 extern const FilterTables kRevolutionFilters;
 extern const FilterTables kCafeFilters;
 extern const FilterTables kSwitchFilters;
+
+// The Wii's tables for `build` of NW4R SND. Builds before November 2008 take kRevolutionFilters. Later builds take the
+// low-pass's cutoffs from kLpfFreq, as the Wii U does (SndBuild::SinceNovember2008). Their tables give each 0xd8
+// argument that leaves the low-pass on the Wii U's cutoffs for the argument.
+const FilterTables& RevolutionFilters(const SndBuild& build);
 
 // Returns the value of kSfzLowPassController for the 0xd8 argument `low_pass`.
 uint8_t SfzLowPassValue(int low_pass);
@@ -101,8 +108,8 @@ int BiquadShape(int biquad_type, const Settings& settings);
 // off.
 int LowPassIndex(int low_pass);
 
-// AX's cutoff in Hz on the Wii for low-pass setting `index` (0-57).
-int LowPassHz(int index);
+// AX's cutoff in Hz on the Wii for low-pass setting `index` (0-57), in `build` of NW4R SND.
+int LowPassHz(int index, const SndBuild& build);
 
 // Active filters derived from a track's settings.
 struct GameFilters

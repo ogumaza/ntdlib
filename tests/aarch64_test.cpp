@@ -5,7 +5,6 @@
 #include "ntdlib/aarch64.h"
 
 #include <cmath>
-#include <cstdio>
 #include <limits>
 
 #include "xsflib/testing/check.h"
@@ -52,13 +51,5 @@ int main()
     TestNans();
     TestZeros();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("aarch64_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("aarch64");
 }

@@ -124,7 +124,8 @@ public:
         U32(at + 8, static_cast<uint32_t>(size));
     }
 
-    // Appends option parameters: a bit field and, for each bit that's set, its value in the order of the bits.
+    // Appends option parameters: a bit field with each value's bit set, then the values in the order given. Callers
+    // give them in the order of their bits.
     size_t Options(const std::vector<std::pair<int, uint32_t>>& values)
     {
         const size_t at = Add(4 + 4 * values.size());
@@ -183,9 +184,9 @@ inline std::vector<uint8_t> File(bool big_endian, const char* magic, uint32_t ve
     return file.data;
 }
 
-// A wave. Each DSP-ADPCM channel gets coefficients of 1 to 16 and a frame header of its first byte, and loop context
-// values of 100 onwards. Each IMA-ADPCM channel (encoding 3) starts from sample 100 and step index 10, and its loop
-// context holds sample 200 and step index 20.
+// A wave. Each DSP-ADPCM channel gets coefficients of 1 to 16, a frame header of its first byte, the values 100 and 101
+// for its sample history (yn1 and yn2), and 102 to 104 for its loop context. Each IMA-ADPCM channel (encoding 3) starts
+// from sample 100 and step index 10, and its loop context holds sample 200 and step index 20.
 struct WaveSpec
 {
     uint8_t encoding = 2;
@@ -316,6 +317,17 @@ struct BankSpec
 namespace detail
 {
 
+// Appends an envelope's five bytes behind a reference, and stores the reference's offset from `base` in the option
+// value at `slot`. A region's offset counts from the region's start, and a wave sound's from its settings.
+inline void PutEnvelope(Bytes& b, size_t slot, size_t base, const std::array<uint8_t, 5>& adshr)
+{
+    const size_t ref = b.Add(8);
+    const size_t envelope = b.Add(8);
+    b.U32(slot, static_cast<uint32_t>(ref - base));
+    b.Ref(ref, 0x0000, envelope, ref);
+    std::memcpy(b.data.data() + envelope, adshr.data(), 5);
+}
+
 inline size_t PutRegion(Bytes& b, const Region& region)
 {
     const size_t at = b.Add(4);
@@ -347,15 +359,9 @@ inline size_t PutRegion(Bytes& b, const Region& region)
         values.push_back({9, 0});
     }
     const size_t options = b.Options(values);
-
-    // The envelope: a reference from the region, to the five bytes.
     if (region.adshr)
     {
-        const size_t ref = b.Add(8);
-        const size_t envelope = b.Add(8);
-        b.U32(options + 4 * values.size(), static_cast<uint32_t>(ref - at));
-        b.Ref(ref, 0x0000, envelope, ref);
-        std::memcpy(b.data.data() + envelope, region.adshr->data(), 5);
+        PutEnvelope(b, options + 4 * values.size(), at, *region.adshr);
     }
 
     return at;
@@ -415,21 +421,28 @@ inline size_t PutVelocityTable(Bytes& b, const VelocityTable& table)
     return at;
 }
 
+// Starts the INFO block of a bank or a wave sound file: references to two tables, then the first table, of the waves
+// by wave archive item ID and index. The caller writes the second table and its reference, at 8.
+inline void PutWaves(Bytes& info, const std::vector<std::pair<uint32_t, uint32_t>>& waves)
+{
+    info.Add(16);
+    const size_t table = info.Add(4 + 8 * waves.size());
+    info.Ref(0, 0x0100, table, 0);
+    info.U32(table, static_cast<uint32_t>(waves.size()));
+    for (size_t i = 0; i < waves.size(); ++i)
+    {
+        info.U32(table + 4 + 8 * i, waves[i].first);
+        info.U32(table + 8 + 8 * i, waves[i].second);
+    }
+}
+
 } // namespace detail
 
 inline std::vector<uint8_t> Bank(sar::Flavor flavor, const BankSpec& spec)
 {
     const bool big_endian = detail::BigEndian(flavor);
     Bytes info(big_endian);
-    info.Add(16);
-    const size_t waves = info.Add(4 + 8 * spec.waves.size());
-    info.Ref(0, 0x0100, waves, 0);
-    info.U32(waves, static_cast<uint32_t>(spec.waves.size()));
-    for (size_t i = 0; i < spec.waves.size(); ++i)
-    {
-        info.U32(waves + 4 + 8 * i, spec.waves[i].first);
-        info.U32(waves + 8 + 8 * i, spec.waves[i].second);
-    }
+    detail::PutWaves(info, spec.waves);
 
     const size_t instruments = info.Add(4 + 8 * spec.instruments.size());
     info.Ref(8, 0x0101, instruments, 0);
@@ -488,15 +501,7 @@ inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFil
 {
     const bool big_endian = detail::BigEndian(flavor);
     Bytes info(big_endian);
-    info.Add(16);
-    const size_t waves = info.Add(4 + 8 * spec.waves.size());
-    info.Ref(0, 0x0100, waves, 0);
-    info.U32(waves, static_cast<uint32_t>(spec.waves.size()));
-    for (size_t i = 0; i < spec.waves.size(); ++i)
-    {
-        info.U32(waves + 4 + 8 * i, spec.waves[i].first);
-        info.U32(waves + 8 + 8 * i, spec.waves[i].second);
-    }
+    detail::PutWaves(info, spec.waves);
 
     const size_t sounds = info.Add(4 + 8 * spec.sounds.size());
     info.Ref(8, 0x0101, sounds, 0);
@@ -525,11 +530,7 @@ inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFil
         info.Ref(data, 0x4901, settings, data);
         if (sound.adshr)
         {
-            const size_t ref = info.Add(8);
-            const size_t envelope = info.Add(8);
-            info.U32(settings + 4 * values.size(), static_cast<uint32_t>(ref - settings));
-            info.Ref(ref, 0x0000, envelope, ref);
-            std::memcpy(info.data.data() + envelope, sound.adshr->data(), 5);
+            detail::PutEnvelope(info, settings + 4 * values.size(), settings, *sound.adshr);
         }
 
         // The tracks, each with its table of note events.

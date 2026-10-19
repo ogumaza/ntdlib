@@ -17,6 +17,7 @@
 
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/settings.h"
 
 namespace ntdlib::sequence_export
@@ -91,5 +92,8 @@ private:
     std::set<std::pair<int, uint32_t>> broken_wave_ids_; // bank slot and wave table index
     std::vector<std::string> errors_;
 };
+
+// The envelope of a region: its ADSHR.
+EnvelopeValues RegionEnvelope(const sar::VelocityRegion& region);
 
 } // namespace ntdlib::sequence_export

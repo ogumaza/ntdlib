@@ -94,7 +94,7 @@ uint16_t Dsp<Memory>::ReadHardware(uint8_t reg)
     case kFormat:
         return a.format;
     case kAcdraw:
-        return AcceleratorRead(true);
+        return AcceleratorReadRaw();
     case kAcsah:
         return static_cast<uint16_t>(a.start >> 16);
     case kAcsal:
@@ -114,7 +114,7 @@ uint16_t Dsp<Memory>::ReadHardware(uint8_t reg)
     case kYn2:
         return a.yn2;
     case kAcdsamp:
-        return AcceleratorRead(false);
+        return AcceleratorReadSample();
     case kGain:
         return a.gain;
     case kAcin:
@@ -165,31 +165,31 @@ void Dsp<Memory>::WriteHardware(uint8_t reg, uint16_t value)
         break;
 
     case kAcsah:
-        a.start = high(a.start, 0x3fffffff);
+        a.start = high(a.start, kAcceleratorAddressMask);
         break;
 
     case kAcsal:
-        a.start = low(a.start, 0x3fffffff);
+        a.start = low(a.start, kAcceleratorAddressMask);
         break;
 
     case kAceah:
-        a.end = high(a.end, 0x3fffffff);
+        a.end = high(a.end, kAcceleratorAddressMask);
         break;
 
     case kAceal:
-        a.end = low(a.end, 0x3fffffff);
+        a.end = low(a.end, kAcceleratorAddressMask);
         break;
 
     case kAccah:
-        a.current = high(a.current, 0xbfffffff);
+        a.current = high(a.current, kAcceleratorCurrentMask);
         break;
 
     case kAccal:
-        a.current = low(a.current, 0xbfffffff);
+        a.current = low(a.current, kAcceleratorCurrentMask);
         break;
 
     case kPredScale:
-        a.pred_scale = value & 0x7f;
+        a.pred_scale = value & kAcceleratorPredScaleMask;
         break;
 
     case kYn1:
@@ -252,9 +252,8 @@ void Dsp<Memory>::Dma()
         const bool iram = (control_bits & 2) != 0;
         const bool to_main = (control_bits & 1) != 0;
         std::vector<uint16_t>& memory = iram ? iram_ : dram_;
-        const uint32_t start = static_cast<uint16_t>(hardware_[kDspa] * 2) / 2u;
-        uint8_t* host = nullptr;
-        if (MainMemoryRange(address, words * 2, host))
+        const uint32_t start = hardware_[kDspa] & 0x7fffu;
+        if (uint8_t* host = MainMemoryRange(address, words * 2))
         {
             if (!to_main)
             {
@@ -283,21 +282,19 @@ void Dsp<Memory>::Dma()
 }
 
 template <typename Memory>
-bool Dsp<Memory>::MainMemoryRange(uint32_t address, uint32_t size, uint8_t*& host)
+uint8_t* Dsp<Memory>::MainMemoryRange(uint32_t address, uint32_t size)
 {
     // The address is masked to 30 bits. On the Wii U, a register gives its top three bits instead. The whole range must
-    // lie in main memory: in MEM1, or in MEM2 on the Wii.
+    // lie in main memory: in MEM1, or in MEM2 on the Wii. Otherwise the result is nullptr.
     if constexpr (Memory::kAddressExtensions)
     {
-        host = memory_->At((uint32_t{hardware_[kDmaExtension]} & 7) << 29 | (address & 0x1fffffff),
+        return memory_->At((uint32_t{hardware_[kDmaExtension]} & 7) << 29 | (address & 0x1fffffff),
                            std::max<uint32_t>(size, 1));
     }
     else
     {
-        host = memory_->At(address & 0x3fffffff, std::max<uint32_t>(size, 1));
+        return memory_->At(address & 0x3fffffff, std::max<uint32_t>(size, 1));
     }
-
-    return host != nullptr;
 }
 
 template <typename Memory>
@@ -321,34 +318,40 @@ uint8_t Dsp<Memory>::AcceleratorByte(uint32_t address) const
 }
 
 template <typename Memory>
-uint16_t Dsp<Memory>::AcceleratorRead(bool raw)
+uint16_t Dsp<Memory>::AcceleratorReadRaw()
 {
+    // ACDRAW returns the raw value, then advances the address. A read at the end wraps to the start and raises
+    // exception 3.
     Accelerator& a = accelerator_;
     const int size = a.format & 3;
     const auto byte = [this](uint32_t address)
     {
         return AcceleratorByte(address);
     };
+    const uint16_t value = AcceleratorRaw(a.current, size, byte);
 
-    if (raw)
+    a.current = size == 3 ? (a.current & ~3u) | ((a.current + 1) & 3) : a.current + 1;
+    if (a.current - 1 == a.end)
     {
-        // Returns the raw value, then advances the address. A read at the end wraps to the start and raises exception
-        // 3.
-        const uint16_t value = AcceleratorRaw(a.current, size, byte);
-        a.current = size == 3 ? (a.current & ~3u) | ((a.current + 1) & 3) : a.current + 1;
-        if (a.current - 1 == a.end)
-        {
-            a.current = a.start;
-            RaiseException(3);
-        }
-
-        a.current &= 0xbfffffff;
-
-        return value;
+        a.current = a.start;
+        RaiseException(3);
     }
 
-    // Returns a decoded sample and advances the address past frame headers. Reaching the end stops the reads and raises
-    // exception 5.
+    a.current &= kAcceleratorCurrentMask;
+
+    return value;
+}
+
+template <typename Memory>
+uint16_t Dsp<Memory>::AcceleratorReadSample()
+{
+    // ACDSAMP returns a decoded sample and advances the address past frame headers. Reaching the end stops the reads
+    // and raises exception 5.
+    Accelerator& a = accelerator_;
+    const auto byte = [this](uint32_t address)
+    {
+        return AcceleratorByte(address);
+    };
     const std::span<const uint16_t, 16> coefs(hardware_.data() + 0xa0, 16);
     const auto at_end = [this, &a]
     {
@@ -431,13 +434,13 @@ void Dsp<Memory>::CpuWriteMailboxLow(uint16_t value)
 template <typename Memory>
 uint16_t Dsp<Memory>::Control(uint64_t time_base)
 {
-    // Only these bits are kept on the DSP side.
+    // The init path's busy bit clears itself once its time has come.
     if ((control_ & control::kInitBusy) && time_base >= init_busy_until_)
     {
         control_ &= ~control::kInitBusy;
     }
 
-    return control_ & (control::kReset | control::kInterrupt | control::kHalt | control::kInitBusy | control::kInit);
+    return control_ & control::kDspSide;
 }
 
 template <typename Memory>
@@ -469,7 +472,7 @@ template <typename Memory>
 void Dsp<Memory>::Reset()
 {
     // Only the PC and the wrap registers change.
-    regs_.pc = 0x8000;
+    regs_.pc = kRomEntry;
     regs_.wr = {0xffff, 0xffff, 0xffff, 0xffff};
     BuildLoopMap();
 }

@@ -65,10 +65,10 @@ struct Settings
     int env_step_ms = 3;
     double env_time_scale = 1.0;
 
-    // The new notes or legatos that a track can start in one tick in the game: 96 (W, S, R), 24 (3), 64 (R's builds
-    // of 2006). A game can set another count. WarioWare: Get It Together! sets 72. With --voices, the performer omits
-    // a track's new notes past this count in one tick. Without it, the cap is kMaxVoiceLimit. Legatos past this count
-    // in one tick continue their MIDI note either way. The messages give the count in force.
+    // The new notes or legatos that a track can start in one tick in the game: 96 (W, S, R), 24 (3), 64 (R's build
+    // of October 2006). A game can set another count. WarioWare: Get It Together! sets 72. With --voices, the performer
+    // omits a track's new notes past this count in one tick. Without it, the cap is kMaxVoiceLimit. Legatos past this
+    // count in one tick continue their MIDI note either way. The messages give the count in force.
     int voices = 96;
 
     // The voices that the game has, for the notes that the game drops when no voice is free. A console sets its count
@@ -78,7 +78,8 @@ struct Settings
     // The help gives this count as the game's default. 0: no --voices option.
     int voice_limit = 0;
 
-    // Steps of the random generator before the sound starts: 0 (W, R), 1 (S), 17 (3).
+    // Steps of the random generator before the sound starts: 0 (W, R), 1 (S), 17 (3). The 3DS and the Wii take theirs
+    // from their policies (kRandomStepsBeforeStart).
     int random_steps_before_start = 0;
 
     // The bytecode's 16- and 24-bit arguments and the FE track mask follow the sequence file's byte order (S). The
@@ -99,7 +100,8 @@ struct Settings
 
     // The console's SoundFont and SFZ forms of the track filters (filter.h). The script
     // tools/sequence_export/filter_tables.py fits them to the renderer's coefficients: 32 kHz with 23 low-pass steps
-    // (W), 32 kHz with 58 steps (R), 32728 Hz (3), or 48 kHz with biquad types 6 to 10 (S).
+    // (W), 32 kHz with 58 steps (R), 32728 Hz (3), or 48 kHz with biquad types 6 to 10 (S). R's builds from November
+    // 2008 give the 58 steps W's fits (RevolutionFilters).
     const FilterTables* filters = nullptr;
 
     // The low-passes that stand in for the console's resampling filters in the SoundFonts and the SFZ files
@@ -118,17 +120,17 @@ struct Settings
     // 0.0 (3, R).
     double early_ticks_ms = 1.0;
 
-    // The loop and end rules. The Wii's settings turn all three off.
+    // The loop and end rules. Every console's settings turn all three on.
     //
     // A jump back inside a call, after a conditional command that can leave it, isn't the sequence's loop
-    // (Performer::Leavable; W, S, 3).
+    // (Performer::Leavable).
     bool subroutine_loop_rule = true;
 
     // A track that runs the core's limit of commands in a tick without a wait (the policy's kParseLimit) resumes in the
-    // next tick. It stops once it has run that way for 10 s (W, S, 3).
+    // next tick. It stops once it has run that way for 10 s. On the Wii, the parse limit ends such a track at once.
     bool stop_runaway_tracks = true;
 
-    // A sequence that finishes drops its loop (W, S, 3).
+    // A sequence that finishes drops its loop.
     bool drop_loop_when_finished = true;
 };
 

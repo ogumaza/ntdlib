@@ -108,10 +108,37 @@ std::span<const uint8_t> Block(const xsflib::Reader& r, std::size_t at)
     return r.Sub(start, end - start);
 }
 
-// The archive from `start` to its end. A start past the end gives no data, and the first read of it fails.
-std::span<const uint8_t> ToEnd(std::span<const uint8_t> baa, uint32_t start)
+// The archive that `r` reads, from `start` to its end. A start past the end gives no data, and the first read of it
+// fails.
+std::span<const uint8_t> ToEnd(const xsflib::Reader& r, uint32_t start)
 {
-    return start <= baa.size() ? baa.subspan(start) : std::span<const uint8_t>();
+    return start <= r.Size() ? r.Sub(start, r.Size() - start) : std::span<const uint8_t>();
+}
+
+// The data of the wave system at `offset` in the archive that `r` reads. With tables_reach_end, it runs to the end of
+// the archive. Otherwise the wave system's 8-byte header gives its size. The header has to lie inside the archive.
+std::span<const uint8_t> WaveSystemData(const xsflib::Reader& r, uint32_t offset, const BaaOptions& options)
+{
+    if (options.tables_reach_end)
+    {
+        return ToEnd(r, offset);
+    }
+
+    r.Sub(offset, 8);
+    return r.Sub(offset, r.U32(std::size_t{offset} + 4));
+}
+
+// With cap_counts, the readers read no more than these numbers of a sound table's sections, a section's groups, a
+// group's sounds and a wave system's wave groups.
+constexpr uint32_t kMaxSections = 0x100;
+constexpr uint32_t kMaxGroups = 0x100;
+constexpr uint32_t kMaxSounds = 0x10000;
+constexpr uint32_t kMaxWaveGroups = 0x100;
+
+// How many of a list's `count` items the readers read: all of them, or with cap_counts at most `cap`.
+uint32_t Capped(uint32_t count, uint32_t cap, const BaaOptions& options)
+{
+    return options.cap_counts ? std::min(count, cap) : count;
 }
 
 // The sounds of the sound table that `table` starts with, and their names from the name table that `names` starts with.
@@ -129,6 +156,18 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
         }
 
         return names->CString(offset, 0x100);
+    };
+
+    // Slot `i` of the name table's list at `list`. The list starts with its count. Its slots start at `list + first`.
+    // There's no slot without the list. With check_name_counts, there's none past the count either.
+    const auto name_slot = [&](std::optional<uint32_t> list, uint32_t first, uint32_t i) -> std::optional<uint32_t>
+    {
+        if (!list || (options.check_name_counts && i >= names->U32(*list)))
+        {
+            return std::nullopt;
+        }
+
+        return names->U32(*list + first + 4 * i);
     };
 
     if (options.check_magic && !table.Magic(0, "BST "))
@@ -149,8 +188,8 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
     }
 
     std::vector<SoundEntry> sounds;
-    const uint32_t sections = table.U32(root);
-    for (uint32_t s = 0; s < sections && !(options.cap_counts && s >= 0x100); s++)
+    const uint32_t sections = Capped(table.U32(root), kMaxSections, options);
+    for (uint32_t s = 0; s < sections; s++)
     {
         const uint32_t section = table.U32(root + 4 + 4 * s);
         if (options.skip_empty && section == 0)
@@ -158,16 +197,11 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
             continue;
         }
 
-        std::optional<uint32_t> names_section;
-        if (names && (!options.check_name_counts || s < names->U32(*names_root)))
-        {
-            names_section = names->U32(*names_root + 4 + 4 * s);
-        }
-
+        const std::optional<uint32_t> names_section = name_slot(names_root, 4, s);
         const std::string section_name =
             options.section_names && names_section ? name(names->U32(*names_section + 4)) : "";
-        const uint32_t groups = table.U32(section);
-        for (uint32_t g = 0; g < groups && !(options.cap_counts && g >= 0x100); g++)
+        const uint32_t groups = Capped(table.U32(section), kMaxGroups, options);
+        for (uint32_t g = 0; g < groups; g++)
         {
             const uint32_t group = table.U32(section + 4 + 4 * g);
             if (options.skip_empty && group == 0)
@@ -175,16 +209,11 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
                 continue;
             }
 
-            std::optional<uint32_t> names_group;
-            if (names_section && (!options.check_name_counts || g < names->U32(*names_section)))
-            {
-                names_group = names->U32(*names_section + 8 + 4 * g);
-            }
-
+            const std::optional<uint32_t> names_group = name_slot(names_section, 8, g);
             const std::string group_name =
                 options.section_names && names_group ? name(names->U32(*names_group + 4)) : "";
-            const uint32_t items = table.U32(group);
-            for (uint32_t i = 0; i < items && !(options.cap_counts && i >= 0x10000); i++)
+            const uint32_t items = Capped(table.U32(group), kMaxSounds, options);
+            for (uint32_t i = 0; i < items; i++)
             {
                 const uint32_t word = table.U32(group + 8 + 4 * i);
                 const uint32_t entry = word & 0xffffff;
@@ -203,9 +232,9 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
                 const ItemLayout layout = options.first_layouts ? FirstLayoutOf(sound.type) : LayoutOf(sound.type);
                 sound.volume = table.U8(entry + layout.volume);
                 sound.stream = layout.stream;
-                if (names_group && (!options.check_name_counts || i < names->U32(*names_group)))
+                if (const std::optional<uint32_t> slot = name_slot(names_group, 8, i))
                 {
-                    sound.name = name(names->U32(*names_group + 8 + 4 * i));
+                    sound.name = name(*slot);
                 }
 
                 sound.section_name = section_name;
@@ -270,11 +299,11 @@ std::vector<SoundEntry> ReadSounds(std::span<const uint8_t> baa, const BaaOption
     {
         if (table_start && *table_start)
         {
-            table.emplace(ToEnd(baa, *table_start), true, reader_options);
+            table.emplace(ToEnd(r, *table_start), true, reader_options);
         }
         if (names_start && *names_start)
         {
-            names.emplace(ToEnd(baa, *names_start), true, reader_options);
+            names.emplace(ToEnd(r, *names_start), true, reader_options);
         }
     }
     else
@@ -327,10 +356,7 @@ std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const Ba
     std::vector<std::string> names;
     for (const uint32_t offset : systems)
     {
-        const std::span<const uint8_t> data =
-            options.tables_reach_end ? ToEnd(baa, offset)
-                                     : r.Sub(offset, xsflib::Reader(r.Sub(offset, 8), true, reader_options).U32(4));
-        const xsflib::Reader ws(data, true, reader_options);
+        const xsflib::Reader ws(WaveSystemData(r, offset, options), true, reader_options);
         if (!ws.Magic(0, "WSYS"))
         {
             throw xsflib::FormatError(options.wave_system_damaged);
@@ -342,8 +368,8 @@ std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const Ba
             throw xsflib::FormatError(options.wave_system_damaged);
         }
 
-        const uint32_t groups = ws.U32(info + 4);
-        for (uint32_t g = 0; g < groups && !(options.cap_counts && g >= 0x100); g++)
+        const uint32_t groups = Capped(ws.U32(info + 4), kMaxWaveGroups, options);
+        for (uint32_t g = 0; g < groups; g++)
         {
             const uint32_t at = ws.U32(info + 8 + 4 * g);
             if (options.names_inside)
@@ -379,10 +405,7 @@ std::vector<WaveSystem> ReadWaveSystems(std::span<const uint8_t> baa, const BaaO
     std::vector<WaveSystem> systems;
     for (const auto& [number, offset] : commands)
     {
-        const std::span<const uint8_t> data =
-            options.tables_reach_end ? ToEnd(baa, offset)
-                                     : r.Sub(offset, xsflib::Reader(r.Sub(offset, 8), true, reader_options).U32(4));
-        systems.push_back(ReadWaveSystem(data, number));
+        systems.push_back(ReadWaveSystem(WaveSystemData(r, offset, options), number));
     }
 
     return systems;
@@ -392,10 +415,12 @@ ItemLayout LayoutOf(uint8_t type)
 {
     if (type & 0x40)
     {
-        return {1, (type & 0xf0) == 0x60 ? std::optional<uint32_t>(2) : std::nullopt, (type & 0xf0) == 0x70};
+        return {.volume = 1,
+                .file = (type & 0xf0) == 0x60 ? std::optional<uint32_t>(2) : std::nullopt,
+                .stream = (type & 0xf0) == 0x70};
     }
 
-    return {2, type == 0x11 ? std::optional<uint32_t>(10) : std::nullopt};
+    return {.volume = 2, .file = type == 0x11 ? std::optional<uint32_t>(10) : std::nullopt};
 }
 
 ItemLayout FirstLayoutOf(uint8_t type)
@@ -419,8 +444,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
         if (tag == "ws  ")
         {
             const uint32_t number = r.U32(at), offset = r.U32(at + 4);
-            const xsflib::Reader ws(r.Sub(offset, 8), true, kReaderOptions);
-            archive.wave_systems_.push_back(ReadWaveSystem(r.Sub(offset, ws.U32(4)), number));
+            archive.wave_systems_.push_back(ReadWaveSystem(WaveSystemData(r, offset, options), number));
         }
         else if (tag == "bnk ")
         {

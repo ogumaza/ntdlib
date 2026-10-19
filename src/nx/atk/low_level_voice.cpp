@@ -103,15 +103,7 @@ void LowLevelVoice::SetState(State state)
     state_ = state;
     if (state == State::kStop)
     {
-        if (acquired_)
-        {
-            if (IsVoiceValid())
-            {
-                owner_->renderer_->ReleaseVoiceSlot(slot_);
-            }
-            slot_ = -1;
-            acquired_ = false;
-        }
+        ReleaseSlot();
     }
     else if (state == State::kPlay && !acquired_)
     {
@@ -292,6 +284,19 @@ void LowLevelVoice::UpdateWaveBuffer()
     }
 }
 
+void LowLevelVoice::ReleaseSlot()
+{
+    if (acquired_)
+    {
+        if (IsVoiceValid())
+        {
+            owner_->renderer_->ReleaseVoiceSlot(slot_);
+        }
+        slot_ = -1;
+        acquired_ = false;
+    }
+}
+
 bool LowLevelVoice::AppendToRenderer(WaveBuffer& buffer)
 {
     // Every buffer ends a stream. The renderer's played count therefore starts again at each buffer.
@@ -345,15 +350,7 @@ LowLevelVoice* LowLevelVoiceAllocator::AllocVoice()
 void LowLevelVoiceAllocator::FreeVoice(LowLevelVoice& voice)
 {
     voice.FreeAllWaveBuffer();
-    if (voice.acquired_)
-    {
-        if (voice.IsVoiceValid())
-        {
-            renderer_->ReleaseVoiceSlot(voice.slot_);
-        }
-        voice.slot_ = -1;
-        voice.acquired_ = false;
-    }
+    voice.ReleaseSlot();
     voice.allocated_ = false;
     voice.state_ = LowLevelVoice::State::kStop;
 

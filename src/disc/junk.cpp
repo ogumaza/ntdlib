@@ -13,12 +13,12 @@ namespace ntdlib::disc
 
 JunkGenerator::JunkGenerator(const uint8_t* seed)
 {
-    for (size_t i = 0; i < 17; ++i)
+    for (size_t i = 0; i < kSeedWords; ++i)
     {
         buffer_[i] = xsflib::LoadBe32(seed + i * 4);
     }
 
-    for (size_t i = 17; i < kWords; ++i)
+    for (size_t i = kSeedWords; i < kWords; ++i)
     {
         buffer_[i] = (buffer_[i - 17] << 23) ^ (buffer_[i - 16] >> 9) ^ buffer_[i - 1];
     }
@@ -32,7 +32,6 @@ JunkGenerator::JunkGenerator(const uint8_t* seed)
 
 void JunkGenerator::Skip(size_t size)
 {
-    const size_t kBufferBytes = kWords * 4;
     size += position_;
     for (; size >= kBufferBytes; size -= kBufferBytes)
     {
@@ -46,7 +45,7 @@ void JunkGenerator::Generate(uint8_t* out, size_t size)
 {
     while (size)
     {
-        if (position_ == kWords * 4)
+        if (position_ == kBufferBytes)
         {
             Advance();
             position_ = 0;
@@ -66,14 +65,14 @@ void JunkGenerator::Generate(uint8_t* out, size_t size)
 
 void JunkGenerator::Advance()
 {
-    for (size_t i = 0; i < 32; ++i)
+    for (size_t i = 0; i < kLag; ++i)
     {
-        buffer_[i] ^= buffer_[i + kWords - 32];
+        buffer_[i] ^= buffer_[i + kWords - kLag];
     }
 
-    for (size_t i = 32; i < kWords; ++i)
+    for (size_t i = kLag; i < kWords; ++i)
     {
-        buffer_[i] ^= buffer_[i - 32];
+        buffer_[i] ^= buffer_[i - kLag];
     }
 }
 

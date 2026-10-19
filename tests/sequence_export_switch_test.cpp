@@ -31,18 +31,11 @@ void TestVariableShiftsAreAArch64s()
     // Set track variable 0 to 1 and shift it left by 64. AArch64's lsl takes that shift as 0. Then play key 60 if the
     // variable is still 1. Shift it by 40. AArch64 takes that as 8. The Wii U's PowerPC would leave nothing. Play key
     // 62 if the variable is 256.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(Code({0xf0, 0x80,        0x20, U16(0x0001), 0xf0, 0x85, 0x20, U16(0x0040), 0xf0, 0x90,
-                               0x20, U16(0x0001), 0xa2, 0x3c,        0x64, 0x01, 0xf0, 0x85,        0x20, U16(0x0028),
-                               0xf0, 0x90,        0x20, U16(0x0100), 0xa2, 0x3e, 0x64, 0x01,        0xff}));
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p =
+        PerformOnBank(Code({0xf0, 0x80,        0x20, U16(0x0001), 0xf0, 0x85, 0x20, U16(0x0040), 0xf0, 0x90,
+                            0x20, U16(0x0001), 0xa2, 0x3c,        0x64, 0x01, 0xf0, 0x85,        0x20, U16(0x0028),
+                            0xf0, 0x90,        0x20, U16(0x0100), 0xa2, 0x3e, 0x64, 0x01,        0xff}),
+                      OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(NoteKeys(p) == (std::vector<int>{60, 62}));
 }
@@ -225,5 +218,5 @@ int main()
 {
     RunOn(Switch(), kTests);
 
-    return Report();
+    return xsflib::testing::Summary("sequence_export_switch");
 }

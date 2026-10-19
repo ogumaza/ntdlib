@@ -126,7 +126,8 @@ public:
         owner_track = -1;
     }
 
-    // The voice's call when its wave ends or the voice is dropped (VoiceCallbackFunc, 0x022B8BF0).
+    // The voice's call when its wave ends or the voice is dropped (VoiceCallbackFunc, 0x022B8BF0). The channel frees a
+    // voice whose wave ended or that was cancelled. A dropped voice comes here already freed.
     void OnVoiceEvent(Engine& engine, VoiceCallbackStatus status);
 
     // Whether the wave loops.

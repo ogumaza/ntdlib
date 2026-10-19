@@ -34,14 +34,15 @@ inline void PutRef(Bytes& file, size_t at, uint8_t data_type, uint32_t value)
     xsflib::StoreBe32(&file[at + 4], value);
 }
 
-// A file header: the magic, the byte order mark, the version and the blocks' offsets and sizes (filled in later).
-inline Bytes Header(const char* magic, uint16_t version, uint16_t blocks)
+// A file header of `size` bytes: the magic, the byte order mark, the version, the header's size, the number of blocks
+// and the blocks' offsets and sizes (filled in later). An archive's header takes 0x40 bytes.
+inline Bytes Header(const char* magic, uint16_t version, uint16_t blocks, uint16_t size = 0x20)
 {
-    Bytes file(0x20, 0);
+    Bytes file(size, 0);
     std::memcpy(file.data(), magic, 4);
     xsflib::StoreBe16(&file[4], 0xFEFF);
     xsflib::StoreBe16(&file[6], version);
-    xsflib::StoreBe16(&file[0xC], 0x20);
+    xsflib::StoreBe16(&file[0xC], size);
     xsflib::StoreBe16(&file[0xE], blocks);
 
     return file;
@@ -65,7 +66,7 @@ inline void EndBlock(Bytes& file, size_t block, int slot)
     xsflib::StoreBe32(&file[8], static_cast<uint32_t>(file.size()));
 }
 
-// A region (InstParam) playing `wave` at the original key `key`.
+// A region (InstParam) playing `wave` at the original key `key`. Returns the region's offset from `base`.
 inline size_t PutRegion(Bytes& file, size_t base, int32_t wave, uint8_t key)
 {
     const size_t at = Grow(file, 0x30);
@@ -170,8 +171,7 @@ inline Bytes MakeOldBank()
     {
         const size_t info = Grow(file, 0x6C);
         PutWaveInfo(file, info, i * 0x40, static_cast<uint16_t>(0x21 + i));
-        file[refs + i * 8] = 1;
-        xsflib::StoreBe32(&file[refs + i * 8 + 4], static_cast<uint32_t>(info - base));
+        PutRef(file, refs + i * 8, 0, static_cast<uint32_t>(info - base));
     }
 
     EndBlock(file, wave, 1);
@@ -266,6 +266,7 @@ inline Bytes MakeRwar(bool loop = true, uint16_t sample_rate = 32000)
     return file;
 }
 
+// A version 1.2 bank without a WAVE block. MakeRwar builds its waves.
 inline Bytes MakeNewBank()
 {
     Bytes file = Header("RBNK", 0x0102, 1);
@@ -303,55 +304,54 @@ inline Bytes MakeSequence(const Bytes& commands)
     return file;
 }
 
+// An archive's SYMB block, block 0: the string table, with `strings` in order. The payload starts with the string
+// table's offset. The four search trees' offsets after it stay 0.
+inline void PutSymbols(Bytes& file, const std::vector<const char*>& strings)
+{
+    const size_t symbols = Block(file, "SYMB", 0);
+    const size_t base = file.size();
+    xsflib::StoreBe32(&file[Grow(file, 20)], 20);
+    xsflib::StoreBe32(&file[Grow(file, 4)], static_cast<uint32_t>(strings.size()));
+    const size_t offsets = Grow(file, strings.size() * 4);
+    for (size_t i = 0; i < strings.size(); ++i)
+    {
+        xsflib::StoreBe32(&file[offsets + i * 4], static_cast<uint32_t>(file.size() - base));
+        const size_t at = Grow(file, std::strlen(strings[i]) + 1);
+        std::memcpy(&file[at], strings[i], std::strlen(strings[i]));
+    }
+
+    file.resize((file.size() + 3) & ~size_t{3}, 0);
+    EndBlock(file, symbols, 0);
+}
+
+// Appends a table of `count` references to an archive's INFO block, after the count, and points the reference at `ref`
+// to the table. INFO's references count from `base`, the start of its payload. The payload starts with a reference to
+// each of the archive's tables: sounds at 0, banks at 8, players at 0x10, files at 0x18 and groups at 0x20. Returns
+// where the table's references start.
+inline size_t InfoTable(Bytes& file, size_t ref, size_t base, size_t count)
+{
+    const size_t at = Grow(file, 4 + count * 8);
+    xsflib::StoreBe32(&file[at], static_cast<uint32_t>(count));
+    PutRef(file, ref, 0, static_cast<uint32_t>(at - base));
+
+    return at + 4;
+}
+
 // An archive of version 1.4 with one sequence sound, named in SYMB. The sound's sequence and bank (with its RWAR as
 // wave data) are in one group. The sound starts `offset` bytes into the sequence's commands, with the tracks in
 // `allocate_track`. The waves loop unless `loop` is false, and play at `sample_rate` Hz.
 inline Bytes MakeArchive(const Bytes& sequence, uint32_t offset, uint32_t allocate_track, bool loop = true,
                          uint16_t sample_rate = 32000)
 {
-    Bytes file(0x40, 0);
-    std::memcpy(file.data(), "RSAR", 4);
-    xsflib::StoreBe16(&file[4], 0xFEFF);
-    xsflib::StoreBe16(&file[6], 0x0104);
-    xsflib::StoreBe16(&file[0xC], 0x40);
-    xsflib::StoreBe16(&file[0xE], 3);
-
-    // SYMB: the string table, with "SEQ_TEST" and "BANK_TEST".
-    const size_t symbols = Grow(file, 8);
-    std::memcpy(&file[symbols], "SYMB", 4);
-    const size_t symbol_base = file.size();
-    const size_t chunk = Grow(file, 20);
-    xsflib::StoreBe32(&file[chunk], 20);
-    xsflib::StoreBe32(&file[Grow(file, 4)], 2);
-    const size_t string_offsets = Grow(file, 8);
-    const char* const kStrings[] = {"SEQ_TEST", "BANK_TEST"};
-    for (int i = 0; i < 2; ++i)
-    {
-        xsflib::StoreBe32(&file[string_offsets + i * 4], static_cast<uint32_t>(file.size() - symbol_base));
-        const size_t at = Grow(file, std::strlen(kStrings[i]) + 1);
-        std::memcpy(&file[at], kStrings[i], std::strlen(kStrings[i]));
-    }
-
-    file.resize((file.size() + 3) & ~size_t{3}, 0);
-    xsflib::StoreBe32(&file[symbols + 4], static_cast<uint32_t>(file.size() - symbols));
-    xsflib::StoreBe32(&file[0x10], static_cast<uint32_t>(symbols));
-    xsflib::StoreBe32(&file[0x14], static_cast<uint32_t>(file.size() - symbols));
+    Bytes file = Header("RSAR", 0x0104, 3, 0x40);
+    PutSymbols(file, {"SEQ_TEST", "BANK_TEST"});
 
     // INFO: the tables of sounds, banks, files and groups.
-    const size_t info = Grow(file, 8);
-    std::memcpy(&file[info], "INFO", 4);
+    const size_t info = Block(file, "INFO", 1);
     const size_t base = file.size();
     const size_t tables = Grow(file, 0x30);
-    const auto table = [&](int slot, uint32_t count)
-    {
-        const size_t at = Grow(file, 4 + count * 8);
-        xsflib::StoreBe32(&file[at], count);
-        PutRef(file, tables + slot * 8, 0, static_cast<uint32_t>(at - base));
 
-        return at + 4;
-    };
-
-    const size_t sounds = table(0, 1);
+    const size_t sounds = InfoTable(file, tables, base, 1);
     const size_t sound = Grow(file, 0x2C);
     PutRef(file, sounds, 0, static_cast<uint32_t>(sound - base));
     xsflib::StoreBe32(&file[sound], 0);
@@ -367,48 +367,46 @@ inline Bytes MakeArchive(const Bytes& sequence, uint32_t offset, uint32_t alloca
     file[seq + 0xC] = 70;
     file[seq + 0xD] = 1;
 
-    const size_t banks = table(1, 1);
+    const size_t banks = InfoTable(file, tables + 8, base, 1);
     const size_t bank = Grow(file, 8);
     PutRef(file, banks, 0, static_cast<uint32_t>(bank - base));
     xsflib::StoreBe32(&file[bank], 1);
     xsflib::StoreBe32(&file[bank + 4], 1);
 
+    // A file's entry holds a table of the file's positions: a group and an item of the group for each. File f is item f
+    // of group 0.
     const Bytes bank_file = MakeNewBank();
     const Bytes rwar = MakeRwar(loop, sample_rate);
-    const size_t files = table(3, 2);
+    const size_t files = InfoTable(file, tables + 0x18, base, 2);
     for (uint32_t f = 0; f < 2; ++f)
     {
         const size_t entry = Grow(file, 0x1C);
         PutRef(file, files + f * 8, 0, static_cast<uint32_t>(entry - base));
-        const size_t positions = Grow(file, 12);
-        xsflib::StoreBe32(&file[positions], 1);
+        const size_t positions = InfoTable(file, entry + 0x14, base, 1);
         const size_t position = Grow(file, 8);
         xsflib::StoreBe32(&file[position + 4], f);
-        PutRef(file, positions + 4, 0, static_cast<uint32_t>(position - base));
-        PutRef(file, entry + 0x14, 0, static_cast<uint32_t>(positions - base));
+        PutRef(file, positions, 0, static_cast<uint32_t>(position - base));
     }
 
-    const size_t groups = table(4, 1);
+    // The group's entry holds a table of its items: the sequence, then the bank.
+    const size_t groups = InfoTable(file, tables + 0x20, base, 1);
     const size_t group = Grow(file, 0x28);
     PutRef(file, groups, 0, static_cast<uint32_t>(group - base));
-    const size_t items = Grow(file, 4 + 16);
-    xsflib::StoreBe32(&file[items], 2);
-    PutRef(file, group + 0x20, 0, static_cast<uint32_t>(items - base));
+    const size_t items = InfoTable(file, group + 0x20, base, 2);
     size_t item[2];
     for (uint32_t i = 0; i < 2; ++i)
     {
         item[i] = Grow(file, 0x18);
-        PutRef(file, items + 4 + i * 8, 0, static_cast<uint32_t>(item[i] - base));
+        PutRef(file, items + i * 8, 0, static_cast<uint32_t>(item[i] - base));
         xsflib::StoreBe32(&file[item[i]], i);
     }
 
-    xsflib::StoreBe32(&file[info + 4], static_cast<uint32_t>(file.size() - info));
-    xsflib::StoreBe32(&file[0x18], static_cast<uint32_t>(info));
-    xsflib::StoreBe32(&file[0x1C], static_cast<uint32_t>(file.size() - info));
+    EndBlock(file, info, 1);
 
-    // FILE: the group's files (the sequence, then the bank), then its wave data (the bank's RWAR).
-    const size_t data = Grow(file, 0x20);
-    std::memcpy(&file[data], "FILE", 4);
+    // FILE: the group's files (the sequence, then the bank), then its wave data (the bank's RWAR). The block's header
+    // takes 0x20 bytes.
+    const size_t data = Block(file, "FILE", 2);
+    Grow(file, 0x18);
     const size_t group_files = file.size();
     file.insert(file.end(), sequence.begin(), sequence.end());
     file.insert(file.end(), bank_file.begin(), bank_file.end());
@@ -422,10 +420,7 @@ inline Bytes MakeArchive(const Bytes& sequence, uint32_t offset, uint32_t alloca
     xsflib::StoreBe32(&file[item[1] + 4], static_cast<uint32_t>(sequence.size()));
     xsflib::StoreBe32(&file[item[1] + 8], static_cast<uint32_t>(bank_file.size()));
     xsflib::StoreBe32(&file[item[1] + 0x10], static_cast<uint32_t>(rwar.size()));
-    xsflib::StoreBe32(&file[data + 4], static_cast<uint32_t>(file.size() - data));
-    xsflib::StoreBe32(&file[0x20], static_cast<uint32_t>(data));
-    xsflib::StoreBe32(&file[0x24], static_cast<uint32_t>(file.size() - data));
-    xsflib::StoreBe32(&file[8], static_cast<uint32_t>(file.size()));
+    EndBlock(file, data, 2);
 
     return file;
 }
@@ -442,12 +437,7 @@ struct TableSound
 // one more sound at once than the one before it. The first plays one.
 inline Bytes MakeSoundTable(const std::vector<TableSound>& sounds, const std::vector<const char*>& players)
 {
-    Bytes file(0x40, 0);
-    std::memcpy(file.data(), "RSAR", 4);
-    xsflib::StoreBe16(&file[4], 0xFEFF);
-    xsflib::StoreBe16(&file[6], 0x0104);
-    xsflib::StoreBe16(&file[0xC], 0x40);
-    xsflib::StoreBe16(&file[0xE], 3);
+    Bytes file = Header("RSAR", 0x0104, 3, 0x40);
 
     // SYMB: the names of the sounds, then the names of the players.
     std::vector<const char*> strings;
@@ -457,39 +447,14 @@ inline Bytes MakeSoundTable(const std::vector<TableSound>& sounds, const std::ve
     }
 
     strings.insert(strings.end(), players.begin(), players.end());
-    const size_t symbols = Grow(file, 8);
-    std::memcpy(&file[symbols], "SYMB", 4);
-    const size_t symbol_base = file.size();
-    xsflib::StoreBe32(&file[Grow(file, 20)], 20);
-    xsflib::StoreBe32(&file[Grow(file, 4)], static_cast<uint32_t>(strings.size()));
-    const size_t string_offsets = Grow(file, strings.size() * 4);
-    for (size_t i = 0; i < strings.size(); ++i)
-    {
-        xsflib::StoreBe32(&file[string_offsets + i * 4], static_cast<uint32_t>(file.size() - symbol_base));
-        const size_t at = Grow(file, std::strlen(strings[i]) + 1);
-        std::memcpy(&file[at], strings[i], std::strlen(strings[i]));
-    }
-
-    file.resize((file.size() + 3) & ~size_t{3}, 0);
-    xsflib::StoreBe32(&file[symbols + 4], static_cast<uint32_t>(file.size() - symbols));
-    xsflib::StoreBe32(&file[0x10], static_cast<uint32_t>(symbols));
-    xsflib::StoreBe32(&file[0x14], static_cast<uint32_t>(file.size() - symbols));
+    PutSymbols(file, strings);
 
     // INFO: the tables of sounds and players, with empty ones of banks, files and groups.
-    const size_t info = Grow(file, 8);
-    std::memcpy(&file[info], "INFO", 4);
+    const size_t info = Block(file, "INFO", 1);
     const size_t base = file.size();
     const size_t tables = Grow(file, 0x30);
-    const auto table = [&](int slot, size_t count)
-    {
-        const size_t at = Grow(file, 4 + count * 8);
-        xsflib::StoreBe32(&file[at], static_cast<uint32_t>(count));
-        PutRef(file, tables + slot * 8, 0, static_cast<uint32_t>(at - base));
 
-        return at + 4;
-    };
-
-    const size_t sound_refs = table(0, sounds.size());
+    const size_t sound_refs = InfoTable(file, tables, base, sounds.size());
     for (size_t i = 0; i < sounds.size(); ++i)
     {
         const size_t sound = Grow(file, 0x2C);
@@ -500,7 +465,7 @@ inline Bytes MakeSoundTable(const std::vector<TableSound>& sounds, const std::ve
         file[sound + 0x16] = sounds[i].type;
     }
 
-    const size_t player_refs = table(2, players.size());
+    const size_t player_refs = InfoTable(file, tables + 0x10, base, players.size());
     for (size_t i = 0; i < players.size(); ++i)
     {
         const size_t player = Grow(file, 0x10);
@@ -509,15 +474,12 @@ inline Bytes MakeSoundTable(const std::vector<TableSound>& sounds, const std::ve
         file[player + 4] = static_cast<uint8_t>(i + 1);
     }
 
-    for (const int slot : {1, 3, 4})
+    for (const size_t ref : {0x08, 0x18, 0x20})
     {
-        table(slot, 0);
+        InfoTable(file, tables + ref, base, 0);
     }
 
-    xsflib::StoreBe32(&file[info + 4], static_cast<uint32_t>(file.size() - info));
-    xsflib::StoreBe32(&file[0x18], static_cast<uint32_t>(info));
-    xsflib::StoreBe32(&file[0x1C], static_cast<uint32_t>(file.size() - info));
-    xsflib::StoreBe32(&file[8], static_cast<uint32_t>(file.size()));
+    EndBlock(file, info, 1);
 
     return file;
 }

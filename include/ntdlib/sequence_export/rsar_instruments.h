@@ -92,6 +92,6 @@ private:
 };
 
 // The envelope of a Wii region. Builds before March 2008 have no hold.
-EnvelopeValues RegionEnvelope(const rsar::Region& region, bool since_2008);
+EnvelopeValues RegionEnvelope(const rsar::Region& region, bool since_march_2008);
 
 } // namespace ntdlib::sequence_export

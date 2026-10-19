@@ -50,9 +50,15 @@ AxBuild IdentifyBuild(const Microcode& microcode);
 
 // A build of NW4R SND, by the date in its version banner in main.dol ("<< NW4R    - SND \tfinal   build: Mar  8 2008
 // 20:59:14 ..."), as YYYYMMDD. 0 means a build without a banner. The models of NW4R SND follow Wii Sports' build
-// (20070608). Where builds from 20080308 (Mario Kart Wii) on differ, the models check Since2008. Where builds from
-// 20080620 (Wii Music) on differ again, the models check SinceJune2008. A build between two of these counts as the
-// older kind.
+// (20070608). Where builds from 20080308 (Mario Kart Wii) on differ, the models check SinceMarch2008. Where builds from
+// 20080620 (Wii Music) on differ again, the models check SinceJune2008. Builds from 20081120 differ again
+// (SinceNovember2008), and builds from 20090924 once more (SinceSeptember2009). A build between two of these counts as
+// the older kind.
+//
+// The last two dates are those of the earliest builds known to have the change. The latest builds known without the
+// changes are of 20080919 and 20081120. No build from between those dates is known yet. Such a build may have the
+// change or not. It counts as the older kind. Every known build then plays as its code does, and a build from a gap
+// plays as the known build before the gap. A build from a gap that turns up later may move the date.
 //
 // WarioWare: Smooth Moves links a build from 2006 without a banner. That build comes with AX of October 2006. AX's
 // microcode identifies the build (IdentifyBuild). Where that build differs, the models check October2006.
@@ -65,7 +71,7 @@ struct SndBuild
 
     // Builds from March 2008 add time prefixes, the envelope's hold, monophony, note-off types, key groups, sweep_pitch
     // in 64ths and a tempo limit.
-    bool Since2008() const
+    bool SinceMarch2008() const
     {
         return date >= 20080308;
     }
@@ -74,6 +80,20 @@ struct SndBuild
     bool SinceJune2008() const
     {
         return date >= 20080620;
+    }
+
+    // Builds from November 2008 take the low-pass filter's cutoff from a table, as the Wii U's library does
+    // (nwsnd::RevolutionPolicy::LpfFreq).
+    bool SinceNovember2008() const
+    {
+        return date >= 20081120;
+    }
+
+    // Builds from September 2009 move the pitch bend (0xC4) to its value over a time prefix's ticks. They also let a
+    // voice's volume and its envelope's gain go above full level: the voice holds them only at 0.
+    bool SinceSeptember2009() const
+    {
+        return date >= 20090924;
     }
 
     uint32_t date = 0;

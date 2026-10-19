@@ -69,6 +69,25 @@ std::vector<Job> SelectSounds(const sar::SoundArchive& archive, const std::regex
 // Reports that no sound matched --only (`only_text`, empty if it wasn't given) or --bgm. Returns the exit code, 1.
 int NoSoundMatches(const std::string& only_text, bool bgm);
 
+// The sounds that a rip leaves out: those whose data isn't all there, and those that make no sound.
+struct Skipped
+{
+    std::size_t missing_data = 0;
+    std::size_t silent = 0;
+};
+
+// The jobs whose sounds have all their data (MissingData, with `options`) and a volume above 0 in the archive. A
+// sequence whose data isn't all there would play with missing instruments. A sound whose volume is 0 makes no sound:
+// the game's sound library multiplies everything the sound plays by that volume. Reports each sound that it leaves
+// out, and counts it in `skipped`.
+std::vector<Job> SkipIncomplete(const sar::SoundArchive& archive, std::vector<Job> jobs, const sar::Options& options,
+                                Skipped& skipped);
+
+// The jobs whose sounds the length analysis found to sound. The analysis finds the other sequences that never sound.
+// Some play no notes, and some play their notes at a volume of 0. Reports each sound that it leaves out, and counts it
+// in `skipped`.
+std::vector<Job> SkipSilent(std::vector<Job> jobs, Skipped& skipped);
+
 // Whether a file holds a group, by the group file's name (ntdlib/sar/formats.h).
 using sar::IsGroupFileName;
 
@@ -179,7 +198,8 @@ std::vector<uint8_t> BuildArchiveLibrary(const typename Format::FileChunk& archi
     return program.WritePsf(Format::kPsfVersion, settings.Serialize(), tags);
 }
 
-// A mini that plays sound `index` from the library `lib_name`.
+// A mini that plays sound `index` from the library `lib_name`. Rips of the 3DS's sound archives build their minis
+// with it too.
 template <typename Format>
 std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, xsflib::psf::Tags tags)
 {

@@ -10,6 +10,8 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/disc/error.h"
+
 namespace ntdlib::disc
 {
 

@@ -5,9 +5,8 @@
 // blocks until a 0 word. A bank's value is the wave system that it plays. A wave system's value is its load type. The
 // readers here take four kinds of block. The sound table (type 1) lists the sounds by category. Each bank (IBNK) holds
 // instruments. Each wave system (WSYS) names the wave archives (AW) that hold its samples. A game keeps its sequences
-// beside the archive. In an
-// earlier JAudio1, such as Luigi's Mansion's, they're one file that isn't a RARC, and the sequence index (type 4)
-// divides it.
+// beside the archive. In an earlier JAudio1, such as Luigi's Mansion's, they're one file that isn't a RARC. The
+// sequence index (type 4) divides it.
 
 #pragma once
 

@@ -17,33 +17,67 @@ namespace ntdlib::jaudio
 
 using detail::kReaderOptions;
 
-std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc)
+namespace
 {
-    const xsflib::Reader r(rarc, true, kReaderOptions);
+
+// A file entry's size. An entry holds the file's id at +0, its kind at +4, its name's offset among the strings at +6,
+// and its data's offset and size at +8 and +12. Bit 1 of the kind marks a folder.
+constexpr uint32_t kEntrySize = 20;
+
+// The places that an RARC archive's header gives. Offsets in the info block count from its start at 0x20, and file
+// data from the data offset.
+struct RarcHeader
+{
+    std::size_t data = 0;
+    uint32_t entries = 0;
+    std::size_t entry_table = 0;
+    std::size_t strings = 0;
+};
+
+RarcHeader ReadHeader(const xsflib::Reader& r)
+{
     if (r.Size() < 0x40 || !r.Magic(0, "RARC"))
     {
         throw xsflib::FormatError("not an RARC archive");
     }
 
-    // Offsets in the info block count from its start at 0x20, and file data from the data offset.
-    const std::size_t data = std::size_t{r.U32(0x0c)} + 0x20;
-    const uint32_t entries = r.U32(0x28);
-    const std::size_t entry_table = std::size_t{r.U32(0x2c)} + 0x20;
-    const std::size_t strings = std::size_t{r.U32(0x34)} + 0x20;
+    return {.data = std::size_t{r.U32(0x0c)} + 0x20,
+            .entries = r.U32(0x28),
+            .entry_table = std::size_t{r.U32(0x2c)} + 0x20,
+            .strings = std::size_t{r.U32(0x34)} + 0x20};
+}
+
+bool IsFolder(const xsflib::Reader& r, std::size_t entry)
+{
+    return (r.U8(entry + 4) & 0x02) != 0;
+}
+
+// The place of entry `index` of a sequence table. The entries start at 0x20. Each holds a sequence's offset, then its
+// size.
+std::size_t TableEntry(std::size_t index)
+{
+    return 0x20 + index * 8;
+}
+
+} // namespace
+
+std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc)
+{
+    const xsflib::Reader r(rarc, true, kReaderOptions);
+    const RarcHeader header = ReadHeader(r);
     std::vector<ArchiveFile> files;
-    for (uint32_t i = 0; i < entries; i++)
+    for (uint32_t i = 0; i < header.entries; i++)
     {
-        const std::size_t entry = entry_table + 20 * i;
-        const uint8_t kind = r.U8(entry + 4);
-        if (kind & 0x02)
+        const std::size_t entry = header.entry_table + kEntrySize * i;
+        if (IsFolder(r, entry))
         {
-            continue; // a folder
+            continue;
         }
 
         ArchiveFile file;
         file.id = r.U16(entry);
-        file.name = r.CString(strings + r.U16(entry + 6), 0x100);
-        file.data = r.Sub(data + r.U32(entry + 8), r.U32(entry + 12));
+        file.name = r.CString(header.strings + r.U16(entry + 6), 0x100);
+        file.data = r.Sub(header.data + r.U32(entry + 8), r.U32(entry + 12));
         files.push_back(std::move(file));
     }
 
@@ -107,6 +141,18 @@ std::vector<uint8_t> DecodeYaz0(std::span<const uint8_t> data)
     return out;
 }
 
+std::span<const uint8_t> DecodeIfYaz0(std::span<const uint8_t> data, std::vector<uint8_t>& decoded)
+{
+    if (!IsYaz0(data))
+    {
+        return data;
+    }
+
+    decoded = DecodeYaz0(data);
+
+    return decoded;
+}
+
 std::vector<uint8_t> RepackSequenceTable(std::span<const uint8_t> rarc, std::span<const uint8_t> table)
 {
     if (IsYaz0(rarc))
@@ -117,29 +163,22 @@ std::vector<uint8_t> RepackSequenceTable(std::span<const uint8_t> rarc, std::spa
 
     const xsflib::Reader r(rarc, true, kReaderOptions);
     const xsflib::Reader sequences(table, true, kReaderOptions);
-    if (r.Size() < 0x40 || !r.Magic(0, "RARC"))
-    {
-        throw xsflib::FormatError("not an RARC archive");
-    }
-
-    const std::size_t data = std::size_t{r.U32(0x0c)} + 0x20;
-    const uint32_t entries = r.U32(0x28);
-    const std::size_t entry_table = std::size_t{r.U32(0x2c)} + 0x20;
+    const RarcHeader header = ReadHeader(r);
+    const std::size_t data = header.data;
     const uint32_t count = sequences.U32(0);
-    if (data > rarc.size() || entry_table > data || (data - entry_table) / 20 < entries)
+    if (data > rarc.size() || header.entry_table > data || (data - header.entry_table) / kEntrySize < header.entries)
     {
         throw xsflib::FormatError("the sequence archive is damaged");
     }
 
-    // The archive up to its data, then each file's sequence from the table, in the order of the file entries. A table's
-    // entries start at 0x20.
+    // The archive up to its data, then each file's sequence from the table, in the order of the file entries.
     std::vector<uint8_t> out(rarc.begin(), rarc.begin() + static_cast<std::ptrdiff_t>(data));
-    for (uint32_t i = 0; i < entries; i++)
+    for (uint32_t i = 0; i < header.entries; i++)
     {
-        const std::size_t entry = entry_table + 20 * i;
-        if (r.U8(entry + 4) & 0x02)
+        const std::size_t entry = header.entry_table + kEntrySize * i;
+        if (IsFolder(r, entry))
         {
-            continue; // a folder
+            continue;
         }
 
         const uint16_t id = r.U16(entry);
@@ -149,7 +188,7 @@ std::vector<uint8_t> RepackSequenceTable(std::span<const uint8_t> rarc, std::spa
                                       " of the sequence archive");
         }
 
-        const std::size_t at = 0x20 + std::size_t{id} * 8;
+        const std::size_t at = TableEntry(id);
         const std::span<const uint8_t> sequence = sequences.Sub(sequences.U32(at), sequences.U32(at + 4));
         xsflib::StoreBe32(out.data() + entry + 8, static_cast<uint32_t>(out.size() - data));
         xsflib::StoreBe32(out.data() + entry + 12, static_cast<uint32_t>(sequence.size()));
@@ -178,7 +217,7 @@ std::vector<ArchiveFile> ReadSequenceTable(std::span<const uint8_t> table)
     std::vector<ArchiveFile> files;
     for (uint32_t i = 0; i < count; i++)
     {
-        const std::size_t at = 0x20 + std::size_t{i} * 8;
+        const std::size_t at = TableEntry(i);
         const uint32_t size = r.U32(at + 4);
         if (size != 0)
         {

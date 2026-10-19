@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Definitions shared by the DSP's source files: the bits of the status register, the numbers of the hardware registers
-// that more than one file uses, the full flag of the mailboxes, 40-bit arithmetic, and register access by number. Most
-// instructions access registers by number. That access is defined here so that the instruction handlers can inline it.
-// Only the files in src/dsp include this header.
+// that more than one file uses, the full flag of the mailboxes, the boot ROM's addresses, 40-bit arithmetic, and
+// register access by number. Most instructions access registers by number. That access is defined here so that the
+// instruction handlers can inline it. Only the files in src/dsp include this header.
 
 #pragma once
 
@@ -50,6 +50,10 @@ inline constexpr uint8_t kCmbl = 0xff;
 
 // A mailbox's full flag, in its 32 bits.
 inline constexpr uint32_t kMailboxFull = 0x80000000;
+
+// The boot ROM's addresses in IMEM: from its entry, where a reset starts the DSP, up to kRomEnd.
+inline constexpr uint16_t kRomEntry = 0x8000;
+inline constexpr uint16_t kRomEnd = 0x9000;
 
 inline int64_t Sext16(uint16_t value)
 {

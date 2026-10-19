@@ -2,12 +2,6 @@
 
 #include "ntdlib/flipper/z2_params.h"
 
-#include <cstddef>
-#include <stdexcept>
-#include <string>
-
-#include "xsflib/bytes.h"
-
 namespace ntdlib::flipper::z2
 {
 
@@ -31,24 +25,6 @@ std::vector<uint32_t> Profile::Words() const
     words.insert(words.end(), first_scene_waves.begin(), first_scene_waves.end());
     words.push_back(room_wave_count);
     words.insert(words.end(), room_waves.begin(), room_waves.end());
-    return words;
-}
-
-std::vector<uint8_t> WaveList(std::span<const uint32_t> waves)
-{
-    if (waves.size() > kMaxWaves)
-    {
-        throw std::invalid_argument("a sound names " + std::to_string(waves.size()) + " waves, more than " +
-                                    std::to_string(kMaxWaves));
-    }
-
-    std::vector<uint8_t> words(4 + waves.size() * 4);
-    xsflib::StoreBe32(words.data(), static_cast<uint32_t>(waves.size()));
-    for (std::size_t i = 0; i < waves.size(); i++)
-    {
-        xsflib::StoreBe32(words.data() + 4 + i * 4, waves[i]);
-    }
-
     return words;
 }
 

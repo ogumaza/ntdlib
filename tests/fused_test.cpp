@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the PowerPC's arithmetic in fused.h: the sign of the negated fused multiply-add's exact zero, and the
-// conversion of a float to a 32-bit integer, toward zero, at the ends of the integer's range and for NaN.
+// Checks the arithmetic in fused.h: the sign of the negated fused multiply-add's exact zero, and the PowerPC's and
+// ARM's conversions of a float to a 32-bit integer, toward zero, at the ends of the integer's range and for NaN.
 
 #include "ntdlib/fused.h"
 
@@ -14,6 +14,7 @@
 namespace
 {
 
+using ntdlib::ArmToInt32;
 using ntdlib::PowerPcToInt32;
 using xsflib::testing::Check;
 
@@ -45,12 +46,30 @@ void TestPowerPcToInt32()
     Check(PowerPcToInt32(kNan) == INT32_MIN, "NaN gives the most negative integer");
 }
 
+void TestArmToInt32()
+{
+    const float kNan = std::numeric_limits<float>::quiet_NaN();
+    const float kInfinity = std::numeric_limits<float>::infinity();
+
+    Check(ArmToInt32(1.9f) == 1 && ArmToInt32(-1.9f) == -1 && ArmToInt32(0.0f) == 0,
+          "a float converts toward zero on ARM");
+    Check(ArmToInt32(2147483520.0f) == 2147483520 && ArmToInt32(-2147483520.0f) == -2147483520,
+          "the floats nearest the range's ends convert exactly on ARM");
+    Check(ArmToInt32(2147483648.0f) == INT32_MAX && ArmToInt32(3e9f) == INT32_MAX && ArmToInt32(kInfinity) == INT32_MAX,
+          "a float of 2^31 or more gives the largest integer on ARM");
+    Check(ArmToInt32(-2147483648.0f) == INT32_MIN && ArmToInt32(-3e9f) == INT32_MIN &&
+              ArmToInt32(-kInfinity) == INT32_MIN,
+          "a float of -2^31 or less gives the most negative integer on ARM");
+    Check(ArmToInt32(kNan) == 0, "NaN gives 0 on ARM");
+}
+
 } // namespace
 
 int main()
 {
     TestNegatedFma();
     TestPowerPcToInt32();
+    TestArmToInt32();
 
     return xsflib::testing::Summary("fused");
 }

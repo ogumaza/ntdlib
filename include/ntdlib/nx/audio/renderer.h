@@ -358,6 +358,10 @@ private:
     void Insert(int voice);
     void Remove(int voice);
 
+    // The resource of channel `channel` of `voice`, and mix `id` if the renderer has it in use, or nullptr.
+    ChannelResource& Resource(const Voice& voice, int channel);
+    const Mix* MixInUse(int id) const;
+
     // What the client calls of the same names do, before the observer sees them.
     int TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
                       const AdpcmCoefficients* coefficients);

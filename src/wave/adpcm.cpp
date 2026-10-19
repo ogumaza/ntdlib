@@ -49,12 +49,6 @@ constexpr int kImaStep[89] = {7,     8,     9,     10,    11,    12,    13,    1
                               3660,  4026,  4428,  4871,  5358,  5894,  6484,  7132,  7845,  8630,  9493, 10442, 11487,
                               12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
 
-// The value of a 4-bit two's complement nibble.
-int32_t SignedNibble(int32_t nibble)
-{
-    return nibble >= 8 ? nibble - 16 : nibble;
-}
-
 } // namespace
 
 std::vector<int16_t> DecodeDspAdpcm(std::span<const uint8_t> data, uint32_t samples, std::span<const int16_t, 16> coefs,

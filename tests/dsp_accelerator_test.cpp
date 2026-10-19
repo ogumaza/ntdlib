@@ -5,14 +5,15 @@
 // decodes it, the end address with a handler that stops the reads and with one that loops, and PCM scaled by the gain.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <vector>
+
+#include "xsflib/testing/check.h"
 
 #include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/wave/adpcm.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -159,13 +160,5 @@ int main()
     TestPcm();
     TestAccumulators();
 
-    if (xsflib::testing::failures != 0)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", xsflib::testing::failures);
-        return 1;
-    }
-
-    std::printf("dsp_accelerator_test: all checks passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("dsp_accelerator");
 }

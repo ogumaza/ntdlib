@@ -53,9 +53,11 @@ struct GameWatch
     // the position (+4). With `relative_positions`, the position is an offset from the data's start, as in an earlier
     // JAudio1 such as Luigi's Mansion's. Otherwise it's an address. The track's stack depth is at `depth_offset`.
     //
-    // A JAudio1 track can run an interrupt, as Pikmin 2's root tracks do. While a track runs one, the word at
-    // `interrupt_offset` in the track holds the position to return to. Otherwise the word is 0. The analysis counts an
-    // interrupt's commands one level deeper, as in a call. An `interrupt_offset` of 0 leaves interrupts out.
+    // A JAudio1 track can run an interrupt routine. Pikmin 2's root tracks do. While a track is in the routine, a word
+    // of the track holds the position to return to. Otherwise the word is 0. Two fields can give the word's offset.
+    // They set different rules for the routine's commands. With `interrupt_offset`, the analysis counts them one level
+    // deeper. The commands in a call count the same way. With `interrupt_return_offset` (below), the analysis leaves
+    // them out. A field set to 0 turns its rule off.
     uint32_t reader_offset = 0;
     uint32_t depth_offset = 8;
     bool relative_positions = false;
@@ -122,10 +124,10 @@ struct GameWatch
     uint32_t children_offset = 0;
     uint32_t endless_wait = 0;
 
-    // A JAudio1 track that runs its interrupt routine holds the position to return to at `interrupt_return_offset`. The
-    // word is 0 outside the routine. The analysis leaves out the routine's commands and jumps. They aren't the track's
-    // moves. In Super Mario Sunshine, an effect holds a note while a timer routine polls the game every 5 ticks. With 0
-    // there, the routine's commands count as the track's.
+    // The other rule for a JAudio1 track's interrupt routine (see `interrupt_offset`). With the offset of the word that
+    // holds the return position here, the analysis leaves out the routine's commands and jumps. They aren't the
+    // track's moves. In Super Mario Sunshine, an effect holds a note while a timer routine polls the game every 5
+    // ticks. With 0 there, the routine's commands count as the track's.
     uint32_t interrupt_return_offset = 0;
 };
 
@@ -146,6 +148,180 @@ struct GameLengthRules
 
 // The wave banks that wave discovery searches the table for.
 inline constexpr uint32_t kMaxWaveBanks = 256;
+
+// The analysis's reads of the game's memory, through the machine's adapter (see AnalyzeGameSound).
+namespace detail
+{
+
+// Whether `pc` is the place where JAudio2's conditional jump takes its jump.
+inline bool IsConditionalJump(const GameWatch& watch, uint32_t pc)
+{
+    return watch.conditional_jump != 0 && pc == watch.conditional_jump;
+}
+
+// What a track did at the sequence parser's watched place `pc`, in frame `frame`: it started a command, or it took a
+// jump. Returns nothing for a JAudio1 track in its interrupt routine with `interrupt_return_offset`. With
+// `interrupt_offset`, the event of a track in its interrupt routine is one level deeper than the track's depth.
+template <typename Machine>
+std::optional<TrackEvent> ParserEvent(Machine& machine, const GameWatch& watch, uint32_t pc, uint64_t frame)
+{
+    const auto& s = machine.Cpu().state_;
+    const bool conditional = IsConditionalJump(watch, pc);
+    const auto kind = pc == watch.parse_command ? TrackEvent::Kind::kCommand : TrackEvent::Kind::kJump;
+    const uint32_t track = s.gpr[kind == TrackEvent::Kind::kCommand ? watch.command_track_register
+                                 : conditional                      ? watch.conditional_track_register
+                                                                    : watch.jump_track_register];
+    if (watch.jaudio1 && watch.interrupt_return_offset && machine.Word(track + watch.interrupt_return_offset) != 0)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t reader = track + watch.reader_offset;
+    const uint32_t start = machine.Word(reader);
+    const uint32_t position = machine.Word(reader + 4) + (watch.relative_positions ? start : 0);
+    uint8_t command = machine.Byte(position).value_or(0);
+    if (watch.jaudio1 && command >= 0xb0 && command <= 0xbf)
+    {
+        command = machine.Byte(position + 1).value_or(0);
+    }
+
+    uint32_t to = 0;
+    if (conditional)
+    {
+        to = machine.Word(s.gpr[watch.conditional_arguments_register] + 4);
+    }
+    else if (kind == TrackEvent::Kind::kJump)
+    {
+        const uint32_t target = s.gpr[watch.jump_target_register];
+        to = watch.jaudio1 ? target : machine.Word(target);
+    }
+
+    TrackEvent event = {kind, track, position - start, to, machine.Word(track + watch.depth_offset), command, frame};
+    if (watch.interrupt_offset && machine.Word(track + watch.interrupt_offset))
+    {
+        event.depth++;
+    }
+
+    return event;
+}
+
+// A JAudio1 track's parents, nearest first, up to four levels. The list ends with 0s at a track without a parent.
+template <typename Machine>
+std::array<uint32_t, 4> Parents(Machine& machine, const GameWatch& watch, uint32_t track)
+{
+    std::array<uint32_t, 4> up = {};
+    uint32_t at = track;
+    for (std::size_t level = 0; level < up.size() && at; level++)
+    {
+        at = up[level] = machine.Word(at + watch.parent_offset);
+    }
+
+    return up;
+}
+
+// The number of the wave bank at `bank` in the table of wave banks, or nothing for a bank that the table doesn't hold.
+template <typename Machine>
+std::optional<uint16_t> WaveBankNumber(Machine& machine, const GameWatch& watch, uint32_t bank)
+{
+    const uint32_t base = machine.Word(watch.wave_bank_table);
+    const uint32_t table = base + watch.wave_bank_table_offset;
+    const uint32_t banks = watch.wave_bank_count_offset
+                               ? std::min(machine.Word(base + watch.wave_bank_count_offset), kMaxWaveBanks)
+                               : kMaxWaveBanks;
+    for (uint32_t n = 0; n < banks; n++)
+    {
+        if (machine.Word(table + 4 * n) == bank)
+        {
+            return static_cast<uint16_t>(n);
+        }
+    }
+
+    return std::nullopt;
+}
+
+// What a track waits for, from its sequence control.
+template <typename Machine>
+TrackWait ReadWait(Machine& machine, const GameWatch& watch, uint32_t track)
+{
+    const auto ticks = static_cast<int32_t>(machine.Word(track + watch.wait_offset));
+    if (watch.jaudio1)
+    {
+        const bool endless =
+            watch.endless_wait != 0 && ticks >= 0 && static_cast<uint32_t>(ticks) >= watch.endless_wait;
+        return {ticks, ticks < 0 || endless};
+    }
+
+    return {ticks, machine.Byte(track + watch.note_wait_offset).value_or(0) != 0};
+}
+
+// A JAudio1 sequence's root track, from the parameters of its JAISound at `sequence`, or 0 while it has none.
+template <typename Machine>
+uint32_t SequenceRootTrack(Machine& machine, const GameWatch& watch, uint32_t sequence)
+{
+    if (!sequence)
+    {
+        return 0;
+    }
+
+    const uint32_t field = sequence + watch.parameters_offset;
+    const uint32_t parameters = watch.parameters_inline ? field : machine.Word(field);
+    if (!parameters)
+    {
+        return 0;
+    }
+    if (!watch.root_tracks)
+    {
+        return parameters + watch.parameters_track_offset;
+    }
+
+    const uint32_t number = machine.Word(parameters + watch.parameters_track_offset);
+    return number < watch.root_track_count ? machine.Word(watch.root_tracks + 4 * number) : 0;
+}
+
+// A JAudio1 sound's root track, or 0 while the sound has none. A sequence's parameters give its root track. An
+// effect's root track is the track of the effects sequence that the effect's slot picks.
+template <typename Machine>
+uint32_t JAudio1RootTrack(Machine& machine, const GameWatch& watch, uint32_t handle, uint32_t sound)
+{
+    // A sequence's root track is never the effects sequence's. In a table of root tracks, a sequence's parameters
+    // hold number 0, the effects sequence's, until the sound library has given the sequence its tracks. A game
+    // without an effects sequence leaves `effects_sequence` 0.
+    const uint32_t effects =
+        watch.effects_sequence ? SequenceRootTrack(machine, watch, machine.Word(watch.effects_sequence)) : 0;
+    if ((sound & kAafTypeMask) == kAafSequence)
+    {
+        const uint32_t root = SequenceRootTrack(machine, watch, handle);
+        return root != effects ? root : 0;
+    }
+
+    constexpr uint8_t kNoSlot = 0xff;
+    const uint8_t slot = machine.Byte(handle + watch.effect_slot_offset).value_or(kNoSlot);
+    const auto child = static_cast<uint32_t>(slot >> 4);
+    const auto grandchild = static_cast<uint32_t>(slot & 0xf);
+    const uint32_t parent = slot != kNoSlot && effects ? machine.Word(effects + watch.children_offset + 4 * child) : 0;
+    return parent ? machine.Word(parent + watch.children_offset + 4 * grandchild) : 0;
+}
+
+// The root track of the sound whose JAISound is at `handle`, or nothing while the sound has none. A JAudio1 sound's
+// ID gives the root track. In JAudio2, the vtable of the sound's JAISound distinguishes a sequence from an effect. The
+// two hold the root track at different offsets.
+template <typename Machine>
+std::optional<uint32_t> RootTrack(Machine& machine, const GameWatch& watch, uint32_t handle, uint32_t sound)
+{
+    if (watch.jaudio1)
+    {
+        const uint32_t root = JAudio1RootTrack(machine, watch, handle, sound);
+        return root ? std::optional<uint32_t>(root) : std::nullopt;
+    }
+
+    const uint32_t vtable = machine.Word(handle + watch.vtable_offset);
+    const uint32_t offset = vtable == watch.sequence_vtable ? watch.sequence_track_offset
+                            : vtable == watch.effect_vtable ? watch.effect_track_offset
+                                                            : 0;
+    return offset ? std::optional<uint32_t>(handle + offset) : std::nullopt;
+}
+
+} // namespace detail
 
 // Plays the sound that the driver has started and works out its length. The machine's adapter, `machine`, provides:
 //
@@ -186,18 +362,9 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
     uint64_t last_sound = 0;
     const auto on_wave = [&](uint32_t bank, uint32_t id)
     {
-        const uint32_t base = machine.Word(watch.wave_bank_table);
-        const uint32_t table = base + watch.wave_bank_table_offset;
-        const uint32_t banks = watch.wave_bank_count_offset
-                                   ? std::min(machine.Word(base + watch.wave_bank_count_offset), kMaxWaveBanks)
-                                   : kMaxWaveBanks;
-        for (uint32_t n = 0; n < banks; n++)
+        if (const std::optional<uint16_t> number = detail::WaveBankNumber(machine, watch, bank))
         {
-            if (machine.Word(table + 4 * n) == bank)
-            {
-                found->insert({static_cast<uint16_t>(n), static_cast<uint16_t>(id)});
-                break;
-            }
+            found->insert({*number, static_cast<uint16_t>(id)});
         }
 
         if (lookups_sound)
@@ -209,62 +376,23 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
 
     const auto on_watch = [&](uint32_t pc)
     {
-        const auto& s = machine.Cpu().state_;
-        const bool conditional = watch.conditional_jump != 0 && pc == watch.conditional_jump;
-        if (pc != watch.parse_command && pc != watch.jump_handler && !conditional)
+        if (pc != watch.parse_command && pc != watch.jump_handler && !detail::IsConditionalJump(watch, pc))
         {
+            const auto& s = machine.Cpu().state_;
             on_wave(s.gpr[3], s.gpr[4]);
             return;
         }
 
-        const auto kind = pc == watch.parse_command ? TrackEvent::Kind::kCommand : TrackEvent::Kind::kJump;
-        const uint32_t track = s.gpr[kind == TrackEvent::Kind::kCommand ? watch.command_track_register
-                                     : conditional                      ? watch.conditional_track_register
-                                                                        : watch.jump_track_register];
-        if (watch.jaudio1 && watch.interrupt_return_offset &&
-            machine.Word(track + watch.interrupt_return_offset) != 0)
+        const std::optional<TrackEvent> event = detail::ParserEvent(machine, watch, pc, frames);
+        if (!event)
         {
             return;
         }
 
-        const uint32_t reader = track + watch.reader_offset;
-        const uint32_t start = machine.Word(reader);
-        const uint32_t position = machine.Word(reader + 4) + (watch.relative_positions ? start : 0);
-        uint8_t command = machine.Byte(position).value_or(0);
-        if (watch.jaudio1 && command >= 0xb0 && command <= 0xbf)
-        {
-            command = machine.Byte(position + 1).value_or(0);
-        }
-
-        uint32_t to = 0;
-        if (conditional)
-        {
-            to = machine.Word(s.gpr[watch.conditional_arguments_register] + 4);
-        }
-        else if (kind == TrackEvent::Kind::kJump)
-        {
-            const uint32_t target = s.gpr[watch.jump_target_register];
-            to = watch.jaudio1 ? target : machine.Word(target);
-        }
-
-        events.push_back(
-            {kind, track, position - start, to, machine.Word(track + watch.depth_offset), command, frames});
+        events.push_back(*event);
         if (watch.jaudio1)
         {
-            std::array<uint32_t, 4> up = {};
-            uint32_t at = track;
-            for (std::size_t level = 0; level < up.size() && at; level++)
-            {
-                at = up[level] = machine.Word(at + watch.parent_offset);
-            }
-
-            parents.push_back(up);
-        }
-
-        // An interrupt's commands, one level deeper.
-        if (watch.interrupt_offset && machine.Word(track + watch.interrupt_offset))
-        {
-            events.back().depth++;
+            parents.push_back(detail::Parents(machine, watch, event->track));
         }
     };
 
@@ -284,63 +412,10 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
 
     machine.Cpu().Watch(std::move(watched), on_watch);
 
-    // What a track waits for, from its sequence control.
-    const auto read_wait = [&](uint32_t track) -> TrackWait
-    {
-        const auto ticks = static_cast<int32_t>(machine.Word(track + watch.wait_offset));
-        if (watch.jaudio1)
-        {
-            const bool endless =
-                watch.endless_wait != 0 && ticks >= 0 && static_cast<uint32_t>(ticks) >= watch.endless_wait;
-            return {ticks, ticks < 0 || endless};
-        }
-
-        return {ticks, machine.Byte(track + watch.note_wait_offset).value_or(0) != 0};
-    };
-
-    // A JAudio1 sound's root track, or 0 while the sound has none. A sequence's parameters give its root track. An
-    // effect's root track is the track of the effects sequence that the effect's slot picks.
-    const auto jaudio1_root = [&](uint32_t handle) -> uint32_t
-    {
-        const auto root_of = [&](uint32_t sequence) -> uint32_t
-        {
-            uint32_t parameters = 0;
-            if (sequence)
-            {
-                const uint32_t field = sequence + watch.parameters_offset;
-                parameters = watch.parameters_inline ? field : machine.Word(field);
-            }
-            if (!parameters || !watch.root_tracks)
-            {
-                return parameters ? parameters + watch.parameters_track_offset : 0;
-            }
-
-            const uint32_t number = machine.Word(parameters + watch.parameters_track_offset);
-            return number < watch.root_track_count ? machine.Word(watch.root_tracks + 4 * number) : 0;
-        };
-        // A sequence's root track is never the effects sequence's. In a table of root tracks, a sequence's parameters
-        // hold number 0, the effects sequence's, until the sound library has given the sequence its tracks. A game
-        // without an effects sequence leaves `effects_sequence` 0.
-        const uint32_t effects = watch.effects_sequence ? root_of(machine.Word(watch.effects_sequence)) : 0;
-        if ((sound & kAafTypeMask) == kAafSequence)
-        {
-            const uint32_t root = root_of(handle);
-            return root != effects ? root : 0;
-        }
-
-        constexpr uint8_t kNoSlot = 0xff;
-        const uint8_t slot = machine.Byte(handle + watch.effect_slot_offset).value_or(kNoSlot);
-        const auto child = static_cast<uint32_t>(slot >> 4);
-        const auto grandchild = static_cast<uint32_t>(slot & 0xf);
-        const uint32_t parent =
-            slot != kNoSlot && effects ? machine.Word(effects + watch.children_offset + 4 * child) : 0;
-        return parent ? machine.Word(parent + watch.children_offset + 4 * grandchild) : 0;
-    };
-
     // Play until the sound ends, loops twice, holds, falls silent for good or reaches the limit.
     std::vector<int16_t> block(rules.block_frames * 2);
     std::optional<LoopFinder> finder;
-    uint32_t root = 0;                // a JAudio1 sound's root track
+    uint32_t root = 0;                // the sound's root track, once the finder follows it
     std::optional<uint64_t> released; // the frame at which the game released the sound
     const auto ended = [&]() -> Timing
     {
@@ -370,27 +445,15 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
             }
         }
 
-        // The sound's root track, once the sound exists. A JAudio1 sound's ID gives the root track. In JAudio2, the
-        // vtable of the sound's JAISound distinguishes a sequence from an effect, and the two hold the root track at
-        // different offsets.
+        // The sound's root track, once the sound exists.
         const uint32_t handle = machine.Word(handle_address);
-        if (handle && !finder && watch.jaudio1)
+        if (handle && !finder)
         {
-            root = jaudio1_root(handle);
-            if (root)
+            if (const std::optional<uint32_t> track = detail::RootTrack(machine, watch, handle, sound))
             {
-                finder.emplace(root, rules.sample_rate, JAudio1ChangesSound, watch.idle_in_calls);
-            }
-        }
-        else if (handle && !finder)
-        {
-            const uint32_t vtable = machine.Word(handle + watch.vtable_offset);
-            const uint32_t offset = vtable == watch.sequence_vtable ? watch.sequence_track_offset
-                                    : vtable == watch.effect_vtable ? watch.effect_track_offset
-                                                                    : 0;
-            if (offset)
-            {
-                finder.emplace(handle + offset, rules.sample_rate, ChangesSound, watch.idle_in_calls);
+                root = *track;
+                finder.emplace(root, rules.sample_rate, watch.jaudio1 ? JAudio1ChangesSound : ChangesSound,
+                               watch.idle_in_calls);
             }
         }
 
@@ -420,7 +483,7 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
         frames += rules.block_frames;
         if (finder)
         {
-            finder->TakeWaits(read_wait);
+            finder->TakeWaits([&](uint32_t track) { return detail::ReadWait(machine, watch, track); });
         }
 
         // The game releases the sound when its tracks have ended. Its notes can still sound after that: the output runs

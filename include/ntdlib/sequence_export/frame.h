@@ -34,13 +34,6 @@
 #include "xsflib/files.h"
 #include "xsflib/text.h"
 
-namespace ntdlib::sar
-{
-
-class SoundArchive;
-
-} // namespace ntdlib::sar
-
 namespace ntdlib::sequence_export
 {
 
@@ -525,12 +518,5 @@ int Run(const std::vector<std::string>& args, const Converter<Perform, Source, C
 
     return rc;
 }
-
-// Adds the files of `archive`'s external groups, found beside `input` as <group>.bfgrp or in a userManagementFiles
-// folder there. While a group is still missing, adds the archive's group files in the .sarc files beside `input` too
-// (see SoundArchive::MatchesGroupFile). Warns about a file that isn't a group file, and when no group's file is found.
-// `name` names the archive in the warnings. AddGroupFiles has to run before the archive's banks are read. Returns how
-// many group files it added.
-int AddGroupFiles(sar::SoundArchive& archive, const std::filesystem::path& input, const std::string& name);
 
 } // namespace ntdlib::sequence_export

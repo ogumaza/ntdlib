@@ -69,7 +69,7 @@ Pcm DecodeWave(const WaveInfo& info, std::span<const uint8_t> aw)
 
     // Each repeat of an ADPCM loop decodes the frame that holds the loop start from the history that the wave system
     // gives: the two samples before that frame. Where that history leads to other samples than the first pass, play the
-    // first pass once and loop on a repeat. In Four Swords Adventures, every loop stores the first pass's history.
+    // first pass once and loop on a repeat.
     const uint32_t skip = info.loop_start % kFrameSamples;
     const std::size_t loop_frame = std::size_t{info.loop_start} / kFrameSamples * kFrameBytes;
     if (loop_frame > data.size())

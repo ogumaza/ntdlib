@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <limits>
 #include <string>
 
@@ -22,7 +21,6 @@
 #include "xsflib/testing/check.h"
 
 using xsflib::testing::Check;
-using xsflib::testing::failures;
 
 namespace
 {
@@ -36,8 +34,8 @@ uint32_t Bits(float x)
     return std::bit_cast<uint32_t>(x);
 }
 
-// The four kinds of build: the builds of October 2006 (Smooth Moves), June 2007 (Wii Sports), March 2008 (Mario Kart
-// Wii) and June 2008 (Wii Music).
+// Four of the six kinds of build (SndBuild): the builds of October 2006 (Smooth Moves), June 2007 (Wii Sports), March
+// 2008 (Mario Kart Wii) and June 2008 (Wii Music).
 const Wii::Build kOctober2006 = {0, true};
 const Wii::Build kJune2007 = {20070608, false};
 const Wii::Build kMarch2008 = {20080308, false};
@@ -640,13 +638,5 @@ int main()
     TestChannelPitch();
     TestChannelOutputs();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Wii policy tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Wii policy");
 }

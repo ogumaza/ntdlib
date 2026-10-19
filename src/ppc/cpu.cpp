@@ -82,6 +82,60 @@ uint32_t Rotate(uint32_t value, int amount)
     return std::rotl(value, amount & 31);
 }
 
+// The CR field that a comparison of x with y sets: LT, GT or EQ, with SO a copy of XER's summary overflow.
+template <typename T>
+uint32_t CompareField(T x, T y, uint32_t xer)
+{
+    return (x < y ? 8u : x > y ? 4u : 2u) | ((xer & kXerSo) ? 1u : 0u);
+}
+
+void SetCarry(uint32_t& xer, bool carry)
+{
+    xer = carry ? xer | kXerCa : xer & ~kXerCa;
+}
+
+// An overflow also sets the summary overflow. The summary stays set until an mcrxr or a write of XER clears it.
+void SetOverflow(uint32_t& xer, bool overflow)
+{
+    xer = overflow ? xer | kXerOv | kXerSo : xer & ~kXerOv;
+}
+
+// Whether a trap instruction traps: its TO field `to` selects the relations of x to y that trap. They are less than,
+// greater than and equal as signed values (bits 16, 8 and 4), then less than and greater than as unsigned values (bits
+// 2 and 1).
+bool Traps(uint32_t to, int32_t x, int32_t y)
+{
+    return ((to & 16) && x < y) || ((to & 8) && x > y) || ((to & 4) && x == y) ||
+           ((to & 2) && static_cast<uint32_t>(x) < static_cast<uint32_t>(y)) ||
+           ((to & 1) && static_cast<uint32_t>(x) > static_cast<uint32_t>(y));
+}
+
+// A BAT pair: an upper and a lower register that map a block of effective addresses to physical ones.
+struct Bat
+{
+    bool valid;         // Vs, the pair's valid bit for supervisor mode
+    uint32_t effective; // the block's first effective address (BEPI)
+    uint32_t physical;  // the block's first physical address (BRPN)
+    uint32_t length;    // the block's length in bytes, from BL: 128 KiB to 256 MiB
+};
+
+// The number of BAT pairs of each kind that translate: 8 while HID4 enables BATs 4 to 7, otherwise 4.
+int BatCount(const State& state)
+{
+    return (state.spr[spr::kHid4] & kHid4Sbe) ? 8 : 4;
+}
+
+// BAT pair `index` (0 to 7) of the instruction BATs or of the data BATs.
+Bat BatAt(const State& state, int index, bool instruction)
+{
+    const int number = (index < 4 ? spr::kIbat0u + index * 2 : spr::kIbat4u + (index - 4) * 2) + (instruction ? 0 : 8);
+    const uint32_t upper = state.spr[number];
+    const uint32_t lower = state.spr[number + 1];
+    const uint32_t length = ((upper >> 2 & 0x7ff) + 1) << 17;
+
+    return {(upper & 2) != 0, upper & 0xfffe0000 & ~(length - 1), lower & 0xfffe0000 & ~(length - 1), length};
+}
+
 } // namespace
 
 Cpu::Cpu(Bus& bus) : bus_(bus), data_map_(1u << 20, nullptr), fetch_map_(1u << 20, nullptr)
@@ -219,15 +273,13 @@ bool Cpu::ReadVirtual(uint32_t address, void* out, std::size_t size)
     auto* bytes = static_cast<uint8_t*>(out);
     for (std::size_t i = 0; i < size; i++)
     {
-        PAddr physical = 0;
-        uint8_t* page = nullptr;
-        if (!Translate(address + static_cast<uint32_t>(i), false, physical) ||
-            (page = bus_.RamPage(physical & ~kPageMask)) == nullptr)
+        const uint8_t* byte = RamByte(address + static_cast<uint32_t>(i));
+        if (byte == nullptr)
         {
             return false;
         }
 
-        bytes[i] = page[physical & kPageMask];
+        bytes[i] = *byte;
     }
 
     return true;
@@ -238,18 +290,29 @@ bool Cpu::WriteVirtual(uint32_t address, const void* data, std::size_t size)
     const auto* bytes = static_cast<const uint8_t*>(data);
     for (std::size_t i = 0; i < size; i++)
     {
-        PAddr physical = 0;
-        uint8_t* page = nullptr;
-        if (!Translate(address + static_cast<uint32_t>(i), false, physical) ||
-            (page = bus_.RamPage(physical & ~kPageMask)) == nullptr)
+        uint8_t* byte = RamByte(address + static_cast<uint32_t>(i));
+        if (byte == nullptr)
         {
             return false;
         }
 
-        page[physical & kPageMask] = bytes[i];
+        *byte = bytes[i];
     }
 
     return true;
+}
+
+uint8_t* Cpu::RamByte(uint32_t address)
+{
+    PAddr physical = 0;
+    if (!Translate(address, false, physical))
+    {
+        return nullptr;
+    }
+
+    uint8_t* page = bus_.RamPage(physical & ~kPageMask);
+
+    return page == nullptr ? nullptr : page + (physical & kPageMask);
 }
 
 std::string Cpu::Describe() const
@@ -270,19 +333,12 @@ bool Cpu::Step(uint32_t op)
     switch (op >> 26)
     {
     case 3: // twi
+        if (Traps(static_cast<uint32_t>(d), static_cast<int32_t>(s.gpr[a]), Simm(op)))
         {
-            const auto value = static_cast<int32_t>(s.gpr[a]);
-            const int32_t imm = Simm(op);
-            const uint32_t to = static_cast<uint32_t>(d);
-            if (((to & 16) && value < imm) || ((to & 8) && value > imm) || ((to & 4) && value == imm) ||
-                ((to & 2) && static_cast<uint32_t>(value) < static_cast<uint32_t>(imm)) ||
-                ((to & 1) && static_cast<uint32_t>(value) > static_cast<uint32_t>(imm)))
-            {
-                TakeException(Exception::kProgram, stop_pc_, kProgramTrap);
-            }
-
-            return true;
+            TakeException(Exception::kProgram, stop_pc_, kProgramTrap);
         }
+
+        return true;
 
     case 4:
         return Op4(op);
@@ -297,32 +353,24 @@ bool Cpu::Step(uint32_t op)
             const uint32_t inverted = ~s.gpr[a];
             const uint64_t sum = uint64_t{inverted} + imm + 1;
             s.gpr[d] = static_cast<uint32_t>(sum);
-            s.xer = (sum >> 32) ? s.xer | kXerCa : s.xer & ~kXerCa;
+            SetCarry(s.xer, (sum >> 32) != 0);
             return true;
         }
 
     case 10: // cmpli
-        {
-            const uint32_t value = s.gpr[a];
-            const uint32_t imm = Uimm(op);
-            SetCrField(d >> 2, (value < imm ? 8 : value > imm ? 4 : 2) | ((s.xer & kXerSo) ? 1 : 0));
-            return true;
-        }
+        SetCrField(d >> 2, CompareField(s.gpr[a], Uimm(op), s.xer));
+        return true;
 
     case 11: // cmpi
-        {
-            const auto value = static_cast<int32_t>(s.gpr[a]);
-            const int32_t imm = Simm(op);
-            SetCrField(d >> 2, (value < imm ? 8 : value > imm ? 4 : 2) | ((s.xer & kXerSo) ? 1 : 0));
-            return true;
-        }
+        SetCrField(d >> 2, CompareField(static_cast<int32_t>(s.gpr[a]), Simm(op), s.xer));
+        return true;
 
     case 12: // addic
     case 13: // addic.
         {
             const uint64_t sum = uint64_t{s.gpr[a]} + static_cast<uint32_t>(Simm(op));
             s.gpr[d] = static_cast<uint32_t>(sum);
-            s.xer = (sum >> 32) ? s.xer | kXerCa : s.xer & ~kXerCa;
+            SetCarry(s.xer, (sum >> 32) != 0);
             if (op >> 26 == 13)
             {
                 SetCr0(s.gpr[d]);
@@ -719,6 +767,15 @@ bool Cpu::Op31(uint32_t op)
     const uint32_t xo = op >> 1 & 0x3ff;
     const bool oe = (op & 0x400) != 0;
 
+    // The forms with OE set record an overflow in XER.
+    const auto set_overflow = [&](bool overflow)
+    {
+        if (oe)
+        {
+            SetOverflow(s.xer, overflow);
+        }
+    };
+
     // The arithmetic forms: the sum of x, y and a carry in, with the carry and overflow out.
     const auto arith = [&](uint32_t x, uint32_t y, uint32_t carry_in, bool set_carry)
     {
@@ -726,15 +783,10 @@ bool Cpu::Op31(uint32_t op)
         const auto result = static_cast<uint32_t>(sum);
         if (set_carry)
         {
-            s.xer = (sum >> 32) ? s.xer | kXerCa : s.xer & ~kXerCa;
+            SetCarry(s.xer, (sum >> 32) != 0);
         }
 
-        if (oe)
-        {
-            const bool overflow = ((x ^ result) & (y ^ result)) >> 31;
-            s.xer = overflow ? s.xer | kXerOv | kXerSo : s.xer & ~kXerOv;
-        }
-
+        set_overflow(((x ^ result) & (y ^ result)) >> 31);
         s.gpr[d] = result;
         if (Rc(op))
         {
@@ -755,47 +807,24 @@ bool Cpu::Op31(uint32_t op)
         return true;
     };
 
-    const auto set_overflow = [&](bool overflow)
-    {
-        if (oe)
-        {
-            s.xer = overflow ? s.xer | kXerOv | kXerSo : s.xer & ~kXerOv;
-        }
-    };
-
     const uint32_t carry = (s.xer & kXerCa) ? 1 : 0;
     switch (xo)
     {
     case 0: // cmp
-        {
-            const auto x = static_cast<int32_t>(s.gpr[a]);
-            const auto y = static_cast<int32_t>(s.gpr[b]);
-            SetCrField(d >> 2, (x < y ? 8 : x > y ? 4 : 2) | ((s.xer & kXerSo) ? 1 : 0));
-            return true;
-        }
+        SetCrField(d >> 2, CompareField(static_cast<int32_t>(s.gpr[a]), static_cast<int32_t>(s.gpr[b]), s.xer));
+        return true;
 
     case 32: // cmpl
-        {
-            const uint32_t x = s.gpr[a];
-            const uint32_t y = s.gpr[b];
-            SetCrField(d >> 2, (x < y ? 8 : x > y ? 4 : 2) | ((s.xer & kXerSo) ? 1 : 0));
-            return true;
-        }
+        SetCrField(d >> 2, CompareField(s.gpr[a], s.gpr[b], s.xer));
+        return true;
 
     case 4: // tw
+        if (Traps(static_cast<uint32_t>(d), static_cast<int32_t>(s.gpr[a]), static_cast<int32_t>(s.gpr[b])))
         {
-            const auto x = static_cast<int32_t>(s.gpr[a]);
-            const auto y = static_cast<int32_t>(s.gpr[b]);
-            const uint32_t to = static_cast<uint32_t>(d);
-            if (((to & 16) && x < y) || ((to & 8) && x > y) || ((to & 4) && x == y) ||
-                ((to & 2) && static_cast<uint32_t>(x) < static_cast<uint32_t>(y)) ||
-                ((to & 1) && static_cast<uint32_t>(x) > static_cast<uint32_t>(y)))
-            {
-                TakeException(Exception::kProgram, stop_pc_, kProgramTrap);
-            }
-
-            return true;
+            TakeException(Exception::kProgram, stop_pc_, kProgramTrap);
         }
+
+        return true;
 
     case 8: // subfc
     case 520:
@@ -990,7 +1019,7 @@ bool Cpu::Op31(uint32_t op)
                 carry_out = value < 0 && amount > 0 && (static_cast<uint32_t>(value) << (32 - amount)) != 0;
             }
 
-            s.xer = carry_out ? s.xer | kXerCa : s.xer & ~kXerCa;
+            SetCarry(s.xer, carry_out);
             return logical(result);
         }
 
@@ -1392,23 +1421,17 @@ void Cpu::RebuildMap(bool instruction)
     // The BATs that are valid in supervisor mode. The lowest-numbered BAT comes last so that it wins where two overlap.
     std::vector<uint8_t*>& map = instruction ? fetch_map_ : data_map_;
     std::fill(map.begin(), map.end(), nullptr);
-    const int count = (state_.spr[spr::kHid4] & kHid4Sbe) ? 8 : 4;
-    for (int i = count - 1; i >= 0; i--)
+    for (int i = BatCount(state_) - 1; i >= 0; i--)
     {
-        const int base = (i < 4 ? spr::kIbat0u + i * 2 : spr::kIbat4u + (i - 4) * 2) + (instruction ? 0 : 8);
-        const uint32_t upper = state_.spr[base];
-        const uint32_t lower = state_.spr[base + 1];
-        if (!(upper & 2))
+        const Bat bat = BatAt(state_, i, instruction);
+        if (!bat.valid)
         {
             continue;
         }
 
-        const uint32_t length = ((upper >> 2 & 0x7ff) + 1) << 17;
-        const uint32_t effective = upper & 0xfffe0000 & ~(length - 1);
-        const uint32_t physical = lower & 0xfffe0000 & ~(length - 1);
-        for (uint32_t offset = 0; offset < length; offset += 0x1000)
+        for (uint32_t offset = 0; offset < bat.length; offset += 0x1000)
         {
-            map[(effective + offset) >> 12] = bus_.RamPage(physical + offset);
+            map[(bat.effective + offset) >> 12] = bus_.RamPage(bat.physical + offset);
         }
     }
 }
@@ -1421,16 +1444,13 @@ bool Cpu::Translate(uint32_t address, bool instruction, PAddr& physical) const
         return true;
     }
 
-    const int count = (state_.spr[spr::kHid4] & kHid4Sbe) ? 8 : 4;
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < BatCount(state_); i++)
     {
-        const int base = (i < 4 ? spr::kIbat0u + i * 2 : spr::kIbat4u + (i - 4) * 2) + (instruction ? 0 : 8);
-        const uint32_t upper = state_.spr[base];
-        const uint32_t lower = state_.spr[base + 1];
-        const uint32_t mask = ~((((upper >> 2 & 0x7ff) + 1) << 17) - 1);
-        if ((upper & 2) && (address & mask) == (upper & 0xfffe0000 & mask))
+        const Bat bat = BatAt(state_, i, instruction);
+        const uint32_t mask = ~(bat.length - 1);
+        if (bat.valid && (address & mask) == bat.effective)
         {
-            physical = (lower & 0xfffe0000 & mask) | (address & ~mask);
+            physical = bat.physical | (address & ~mask);
             return true;
         }
     }
@@ -1654,8 +1674,7 @@ void Cpu::Fault(uint32_t address, bool write)
 
 void Cpu::SetCr0(uint32_t result)
 {
-    const auto value = static_cast<int32_t>(result);
-    SetCrField(0, (value < 0 ? 8 : value > 0 ? 4 : 2) | ((state_.xer & kXerSo) ? 1 : 0));
+    SetCrField(0, CompareField(static_cast<int32_t>(result), int32_t{0}, state_.xer));
 }
 
 void Cpu::SetCrField(int field, uint32_t value)

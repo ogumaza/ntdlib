@@ -240,7 +240,7 @@ void TestLpf()
     System at_48k(none);
     at_48k.Init(System::Library::kSndCore2, true);
 
-    Check(at_48k.ComputeLpfCoefs(1000).second > b0 && bench.system.ComputeLpfCoefs(4000).second < b0,
+    Check(at_48k.ComputeLpfCoefs(1000).b0 > b0 && bench.system.ComputeLpfCoefs(4000).b0 < b0,
           "AXComputeLpfCoefs's pole is nearer unity for a lower cutoff and a faster renderer");
 }
 

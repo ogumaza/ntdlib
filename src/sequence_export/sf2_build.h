@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -13,13 +14,14 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/loop.h"
+#include "seqlib/sf2/soundfont.h"
+
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/wave/decode.h"
-#include "seqlib/loop.h"
-#include "seqlib/sf2/soundfont.h"
 #include "sequence_export/zone_low_pass.h"
 
 namespace ntdlib::sequence_export
@@ -87,6 +89,22 @@ void AddResamplingFilter(seqlib::sf2::Zone& zone, const ResamplingFilter& filter
 // take the resampling low-pass wherever their span has one.
 void AddZoneLowPass(seqlib::sf2::Zone& zone, const ResamplingFilter* filter, const std::optional<FittedCutoff>& fitted,
                     const ResamplingRegion& region, const PresetKey& key, const Settings& settings);
+
+// A region's zone up to its low-pass, for the wave's channel `channel`, the keys `keys` and the velocities
+// `velocities` (RegionZone).
+using ChannelZoneFunction =
+    std::function<seqlib::sf2::Zone(std::size_t channel, std::pair<int, int> keys, std::pair<int, int> velocities)>;
+
+// Adds the zones of a region that plays the key ranges `keys` at the velocity ranges `velocities` to `zones`: one for
+// each span of a key range (ZoneSpans), each velocity range and each of the wave's `channels`. `zone` gives each zone
+// up to its low-pass. AddZoneLowPass then adds the span's low-pass, with the cutoff that `low_pass` fits to the span
+// (ZoneLowPass::Fit). The region is in preset `index`, whose key is `key`. The region plays `wave` as `region`
+// describes. `wave_key` names the wave.
+void AddRegionZones(std::vector<seqlib::sf2::Zone>& zones, uint32_t index, const PresetKey& key,
+                    const std::vector<std::pair<int, int>>& keys, const std::vector<std::pair<int, int>>& velocities,
+                    std::size_t channels, const ResamplingRegion& region, std::pair<uint32_t, uint32_t> wave_key,
+                    const wave::Pcm& wave, ZoneLowPass& low_pass, const Settings& settings,
+                    const ChannelZoneFunction& zone);
 
 // Names presets by bank slot and program ("b0 p12"), or by program alone ("p12") without `bank_slots`. Adds a number
 // when different track settings produce several presets from the same instrument (seqlib::sf2::PresetNames).

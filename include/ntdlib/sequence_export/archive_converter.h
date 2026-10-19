@@ -3,8 +3,9 @@
 // The command line of a converter of NintendoWare's sound archives, on the command-line frame (frame.h). A converter
 // for the 3DS, the Wii U or the Switch reads CSAR and FSAR archives with sar. A converter for the Wii reads RSAR
 // archives with rsar. Each converter gives its name, its version line, the parts of its help that differ (UsageText)
-// and its console's settings (consoles.h). A converter for the Wii also fills the hooks for its --dol option and for
-// each archive's settings. A converter can take the start-up archives of JAudio games too (jaudio/game_input.h).
+// and its console's settings (consoles.h). MakeArchiveConverter makes the frame's converter of its archives. A program
+// that sets more of the frame's hooks, or takes other inputs too, starts from that converter. jaudio/archive_games.h
+// runs a converter that takes the start-up archives of JAudio games too.
 
 #pragma once
 
@@ -15,7 +16,6 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
-#include <regex>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -25,7 +25,6 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
-#include "ntdlib/sequence_export/jaudio/game_input.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
@@ -55,47 +54,25 @@ struct ArchiveConverter
     // Whether to add the group files that the game keeps beside an archive, as on the Wii U and the Switch.
     bool group_files = false;
 
-    // Whether the program converts JAudio games too. An input that starts as a JAudio start-up archive does
-    // (jaudio::IsStartUpArchive), with the game's other files beside it (jaudio::Game::FromFolder). The game takes the
-    // program's options. Of those beyond the frame's, only --voices applies to its sequences.
-    bool jaudio_games = false;
-
     // Reads the program's options. Every program on the frame takes --var.
     OptionHandler<PerformOptions> option = VarOption<PerformOptions>;
-
-    // Runs once the options are checked, before the first archive, if set.
-    std::function<void()> before_inputs;
-
-    // The settings for `archive`, read from `input`, if set. They replace `settings` for the archive's sequences. It
-    // runs after the archive's report line.
-    std::function<Settings(const std::filesystem::path& input, const Archive& archive,
-                           const Options<PerformOptions>& options)>
-        archive_settings;
 };
 
-// Reads the sound archive at `input`, named `name`, with `settings`, and prints its warnings: a truncated archive, a
-// damaged name table, and each group that can't be read. With `group_files`, adds the group files that the game keeps
-// beside the archive. Returns nothing if the archive can't be read.
+// Reads the sound archive in `bytes`, named `name`, and prints its warnings: a truncated archive, a damaged name table,
+// and each group that can't be read. A CSAR or FSAR archive takes the read options in `settings` (Settings::archive).
 template <typename Archive>
-std::optional<Archive> OpenArchive(const std::filesystem::path& input, const std::string& name,
-                                   const Settings& settings, bool group_files)
+Archive LoadArchive(std::vector<uint8_t> bytes, const std::string& name, const Settings& settings)
 {
-    std::optional<std::vector<uint8_t>> bytes = ReadFile(input);
-    if (!bytes)
-    {
-        return std::nullopt;
-    }
-
-    const std::size_t file_size = bytes->size();
+    const std::size_t file_size = bytes.size();
     Archive archive = [&]
     {
         if constexpr (std::is_same_v<Archive, sar::SoundArchive>)
         {
-            return Archive::Load(std::move(*bytes), settings.archive);
+            return Archive::Load(std::move(bytes), settings.archive);
         }
         else
         {
-            return Archive::Load(std::move(*bytes));
+            return Archive::Load(std::move(bytes));
         }
     }();
 
@@ -117,7 +94,34 @@ std::optional<Archive> OpenArchive(const std::filesystem::path& input, const std
         {
             std::fprintf(stderr, "warning: %s\n", group_error.c_str());
         }
+    }
 
+    return archive;
+}
+
+// Adds the files of `archive`'s external groups, found beside `input` as <group>.bfgrp or in a userManagementFiles
+// folder there. While a group is still missing, adds the archive's group files in the .sarc files beside `input` too
+// (see SoundArchive::MatchesGroupFile). Warns about a file that isn't a group file, and when no group's file is found.
+// `name` names the archive in the warnings. AddGroupFiles has to run before the archive's banks are read. Returns how
+// many group files it added.
+int AddGroupFiles(sar::SoundArchive& archive, const std::filesystem::path& input, const std::string& name);
+
+// Reads the sound archive at `input`, named `name`, with `settings`, and prints its warnings (LoadArchive). With
+// `group_files`, adds the group files that the game keeps beside the archive. Returns nothing if the archive can't be
+// read.
+template <typename Archive>
+std::optional<Archive> OpenArchive(const std::filesystem::path& input, const std::string& name,
+                                   const Settings& settings, bool group_files)
+{
+    std::optional<std::vector<uint8_t>> bytes = ReadFile(input);
+    if (!bytes)
+    {
+        return std::nullopt;
+    }
+
+    Archive archive = LoadArchive<Archive>(std::move(*bytes), name, settings);
+    if constexpr (std::is_same_v<Archive, sar::SoundArchive>)
+    {
         if (group_files)
         {
             AddGroupFiles(archive, input, name);
@@ -207,66 +211,44 @@ std::vector<Sequence> ArchiveSequences(const Archive& archive)
     return sequences;
 }
 
+// The frame's converter of the archives of `archive_converter`: it reads an archive (OpenArchive) and converts its
+// sequences with the console's settings. `archive_converter` has to outlive the converter.
+template <typename Archive>
+Converter<PerformOptions, Archive, Conversion> MakeArchiveConverter(const ArchiveConverter<Archive>& archive_converter)
+{
+    const ArchiveConverter<Archive>* c = &archive_converter;
+    Converter<PerformOptions, Archive, Conversion> converter;
+    converter.program = c->program;
+    converter.version_line = c->version_line;
+    converter.input_word = "archive";
+    converter.folder_message = " is a folder, not a sound archive";
+    converter.samples_folder = kSfzSamplesFolder;
+    converter.usage = [c]
+    {
+        std::puts(UsageText(*c).c_str());
+    };
+    converter.option = ArchiveOptions(*c);
+    converter.open = [c](const std::filesystem::path& input, const std::string& name)
+    {
+        return OpenArchive<Archive>(input, name, c->settings, c->group_files);
+    };
+    converter.sequences = ArchiveSequences<Archive>;
+    converter.convert = [c](Archive& archive, std::size_t index, const PerformOptions& perform)
+    {
+        return ConvertSequence(archive, static_cast<uint32_t>(index), perform, c->settings, c->program);
+    };
+
+    return converter;
+}
+
 // Runs the command line of `archive_converter` with `argc` and `argv`. Returns the exit status for main() to return.
 template <typename Archive>
 int RunArchiveConverter(int argc, char** argv, const ArchiveConverter<Archive>& archive_converter)
 {
-    const ArchiveConverter<Archive>& c = archive_converter;
-    Converter<PerformOptions, Archive, Conversion> converter;
-    converter.program = c.program;
-    converter.version_line = c.version_line;
-    converter.input_word = "archive";
-    converter.folder_message = " is a folder, not a sound archive";
-    converter.samples_folder = kSfzSamplesFolder;
-    converter.usage = [&c]
+    const Converter<PerformOptions, Archive, Conversion> converter = MakeArchiveConverter(archive_converter);
+    const auto run = [&converter](const std::vector<std::string>& args)
     {
-        std::puts(UsageText(c).c_str());
-    };
-    converter.option = ArchiveOptions(c);
-    converter.before_inputs = c.before_inputs;
-    converter.open = [&c](const std::filesystem::path& input, const std::string& name)
-    {
-        return OpenArchive<Archive>(input, name, c.settings, c.group_files);
-    };
-    converter.sequences = ArchiveSequences<Archive>;
-
-    // An archive's sequences convert with the console's settings, or with those that archive_settings gives.
-    Settings settings = c.settings;
-    if (c.archive_settings)
-    {
-        converter.prepare = [&c, &settings](const std::filesystem::path& input, const Archive& archive,
-                                            const Options<PerformOptions>& options, PerformOptions&)
-        {
-            settings = c.archive_settings(input, archive, options);
-        };
-    }
-
-    converter.convert = [&c, &settings](Archive& archive, std::size_t index, const PerformOptions& perform)
-    {
-        return ConvertSequence(archive, static_cast<uint32_t>(index), perform, settings, c.program);
-    };
-
-    // With jaudio_games, a JAudio game's start-up archive converts with the frame's converter of JAudio games.
-    const jaudio::GameConverter games = jaudio::MakeGameConverter(
-        c.program, c.version_line, jaudio::ArchiveProgramOptions(converter.option), converter.usage);
-    const auto run = [&c, &converter, &games](const std::vector<std::string>& args)
-    {
-        if (!c.jaudio_games)
-        {
-            return Run(args, converter);
-        }
-
-        const Options<jaudio::PerformOptions> game_options = ParseOptions<jaudio::PerformOptions>(args, games.option);
-        const OtherInput<PerformOptions> game =
-            [&games, &game_options](const std::string& path, const Options<PerformOptions>&, const std::regex& only,
-                                    bool several, std::vector<std::pair<std::filesystem::path, std::string>>& used)
-        {
-            return jaudio::IsStartUpArchiveFile(PathFromUtf8(path))
-                       ? std::optional<int>(ConvertInput(path, game_options, only, several, used, games))
-                       : std::nullopt;
-        };
-
-        return Run(args, converter, game);
+        return Run(args, converter);
     };
 
     return RunMain(argc, argv, run);

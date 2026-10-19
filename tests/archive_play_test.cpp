@@ -413,6 +413,15 @@ void CheckRefusals(const TempFolder& folder)
     }
 }
 
+// Whether `printed` is the text of a failed check whose message is `message`. Newer builds of seqlib start the text
+// with the check's place, its file and line. Older builds start it with "CHECK failed". The test takes either form.
+bool FailedCheck(const std::string& printed, const std::string& message)
+{
+    const std::string text = "CHECK failed: " + message;
+
+    return printed == text || printed.ends_with(": " + text);
+}
+
 void CheckFailures(const TempFolder& folder)
 {
     const std::string archive = folder.Write("archive.txt", Bytes("Sound\nSilent\nBroken\n")).string();
@@ -423,14 +432,14 @@ void CheckFailures(const TempFolder& folder)
     Check(run.status == 1 && run.printed.empty(), "an archive that can't be loaded fails");
 
     run = Play({archive, "Missing", "1"});
-    Check(run.status == 1 && run.printed == "CHECK failed: the archive has Missing\n",
+    Check(run.status == 1 && FailedCheck(run.printed, "the archive has Missing\n"),
           "a sound that the archive lacks fails");
     run = Play({archive, "Broken", "1"});
-    Check(run.status == 1 && run.printed == "CHECK failed: Broken starts\n", "a sound that doesn't start fails");
+    Check(run.status == 1 && FailedCheck(run.printed, "Broken starts\n"), "a sound that doesn't start fails");
 
     const std::filesystem::path wav = folder.Path() / "silent.wav";
     run = Play({archive, "Silent", "1", "--wav", wav.string()});
-    Check(run.status == 1 && run.printed == "CHECK failed: Silent sounds in its first 1 s\n1 check(s) failed\n",
+    Check(run.status == 1 && FailedCheck(run.printed, "Silent sounds in its first 1 s\n1 check(s) failed\n"),
           "a sound that never sounds fails");
     Check(FileBytes(wav) == xsflib::WavFile(std::vector<int16_t>(6, 0), 2, 48000),
           "the WAV file is written when the sound never sounds");

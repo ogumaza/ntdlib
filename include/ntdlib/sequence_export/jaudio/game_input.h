@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/jaudio/convert.h"
@@ -69,6 +70,12 @@ GameConverter MakeGameConverter(const std::string& program, const std::string& v
 // the program's options beyond the frame's for its archives. A JAudio game takes the same options. Of those, only
 // --voices applies to its sequences.
 OptionHandler<PerformOptions> ArchiveProgramOptions(OptionHandler<sequence_export::PerformOptions> archive_options);
+
+// The JAudio games among the inputs of a program that converts another sound library's archives, for the frame's Run
+// (OtherInput). An input that starts as a start-up archive converts with `games`, with the options that the command
+// line `args` gives the games. Run's converter takes the other inputs. `games` has to outlive the handler.
+OtherInput<sequence_export::PerformOptions> ArchiveProgramGames(const std::vector<std::string>& args,
+                                                                const GameConverter& games);
 
 // `converter` with another way to open its input. Each input, whatever its path, is the game that `open` returns.
 GameConverter MakeOpenGameConverter(const GameConverter& converter, std::function<std::optional<Game>()> open);

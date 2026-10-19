@@ -17,12 +17,9 @@ namespace ntdlib::cafe::snd
 namespace
 {
 
-// How the engine reads the archive's files: the Wii U's flavour, by the players' rules. Those stop at the first
-// problem. The readers take either byte order, by each file's byte order mark.
+// How the engine reads the archive's files: the Wii U's flavour, with the rules that stop at the first problem. The
+// readers take either byte order, by each file's byte order mark.
 const sar::Options kSarOptions{sar::Flavor::kCafe, {}, false, sar::Rules::kStopAtFirstProblem};
-
-// A sequence player's tracks, each with a meter (Engine::MeterTracks).
-constexpr int kTrackMeters = 16;
 
 } // namespace
 
@@ -65,7 +62,6 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
         return nullptr;
     }
 
-    const sar::VelocityRegion* region = note->region;
     Channel* channel = channels_.AllocChannel(*this, std::min(note->wave.channel_count, 2), info.priority,
                                               info.owner_player, info.owner_track);
     if (!channel)
@@ -73,20 +69,7 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
         return nullptr;
     }
 
-    channel->key = static_cast<uint8_t>(info.key);
-    channel->original_key = region->original_key;
-    channel->velocity_volume = SequencePolicy::VelocityVolume(info.velocity);
-    channel->init_volume = static_cast<float>(region->volume) * (1.0f / 127.0f);
-    channel->tune = region->pitch;
-    channel->envelope.SetAttack(region->adshr.attack);
-    channel->envelope.SetHold(region->adshr.hold);
-    channel->envelope.SetDecay(region->adshr.decay);
-    channel->envelope.SetSustain(region->adshr.sustain);
-    channel->envelope.SetRelease(region->adshr.release);
-    channel->init_pan = static_cast<float>(info.init_pan + static_cast<int>(region->pan) - 0x40) / 63.0f;
-    channel->key_group = region->key_group;
-    channel->ignore_note_off = region->ignore_note_off;
-    channel->interpolation_type = region->interpolation;
+    ntdlib::nwsnd::SetUpNoteChannel<SequencePolicy>(*channel, *note->region, info);
     channel->Start(*this, note->wave, info.length);
 
     return channel;
@@ -94,7 +77,7 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
 
 void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus)
 {
-    players_[static_cast<std::size_t>(player)]->ChannelEvent(*this, track, channel);
+    players_[player].ChannelEvent(*this, track, channel);
 }
 
 SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
@@ -116,11 +99,8 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
     }
 
     const sar::Sequence sequence = sar::Sequence::Parse(file, kSarOptions);
-    const int id = static_cast<int>(players_.size());
-    players_.push_back(std::make_unique<SequenceSoundPlayer>(id, info, sequence.data));
-    pending_.push_back({id, 1});
 
-    return players_.back().get();
+    return &players_.Add(1, info, sequence.data);
 }
 
 void Engine::FrameProcess()
@@ -128,24 +108,10 @@ void Engine::FrameProcess()
     voices_.UpdateAllVoiceStatus(*this);
 
     // The sound thread's commands. They start the sounds that are due.
-    for (auto it = pending_.begin(); it != pending_.end();)
-    {
-        if (it->frames > 0)
-        {
-            --it->frames;
-            ++it;
-            continue;
-        }
-
-        players_[static_cast<std::size_t>(it->player)]->Start();
-        it = pending_.erase(it);
-    }
+    players_.StartDue();
 
     // The players' frames (OnUpdateFrameSoundThread), the channels and the voices.
-    for (const std::unique_ptr<SequenceSoundPlayer>& player : players_)
-    {
-        player->Update(*this);
-    }
+    players_.ForEach([this](SequenceSoundPlayer& player) { player.Update(*this); });
     channels_.UpdateAllChannel(*this);
     voices_.UpdateAllVoices(*this);
     ax_voices_.UpdatePriorityList();
@@ -169,15 +135,7 @@ void Engine::RunFrame()
 
 bool Engine::IsBusy() const
 {
-    for (const std::unique_ptr<SequenceSoundPlayer>& player : players_)
-    {
-        if (!player->IsFinished())
-        {
-            return true;
-        }
-    }
-
-    return channels_.ActiveCount() > 0;
+    return players_.AnyPlaying() || channels_.ActiveCount() > 0;
 }
 
 void Engine::MuteTrack(int player, int track, bool mute)
@@ -200,12 +158,12 @@ bool Engine::IsTrackMuted(int player, int track) const
 void Engine::MeterTracks(int player)
 {
     metered_player_ = player;
-    system_->SetMeters(player >= 0 ? kTrackMeters : 0);
+    system_->SetMeters(player >= 0 ? nwsnd::kTrackCount : 0);
 }
 
 std::array<int32_t, 2> Engine::TrackPeaks(int track) const
 {
-    if (metered_player_ < 0 || track < 0 || track >= kTrackMeters)
+    if (metered_player_ < 0 || track < 0 || track >= nwsnd::kTrackCount)
     {
         return {0, 0};
     }
@@ -230,7 +188,7 @@ void Engine::SetHostMixes()
 
         const bool mute = IsTrackMuted(channel.source_player, channel.source_track);
         const bool metered = metered_player_ >= 0 && channel.source_player == metered_player_ &&
-                             channel.source_track >= 0 && channel.source_track < kTrackMeters;
+                             channel.source_track >= 0 && channel.source_track < nwsnd::kTrackCount;
         for (const MultiVoice::Voice& voice : voices_.At(channel.voice).Voices())
         {
             if (voice.renderer >= 0)
@@ -252,14 +210,8 @@ void Engine::SetHostMixes()
 
 Engine::Snapshot Engine::Save() const
 {
-    Snapshot snapshot{this, ax_voices_.Save(), renderer_.Save(), voices_,        channels_, random_, global_vars_,
-                      {},   pending_,          effects_.Save(),  ringing_frames_};
-    for (const std::unique_ptr<SequenceSoundPlayer>& player : players_)
-    {
-        snapshot.players.push_back(*player);
-    }
-
-    return snapshot;
+    return {this,    ax_voices_.Save(), renderer_.Save(), voices_,         channels_,
+            random_, global_vars_,      players_.Save(),  effects_.Save(), ringing_frames_};
 }
 
 void Engine::Restore(const Snapshot& snapshot)
@@ -268,19 +220,10 @@ void Engine::Restore(const Snapshot& snapshot)
     {
         throw std::invalid_argument("a snapshot of another engine");
     }
-    if (snapshot.players.size() > players_.size())
-    {
-        throw std::invalid_argument("a snapshot with players that the engine doesn't have");
-    }
+    players_.CheckRestore(snapshot.players);
 
-    // The players that started after the snapshot go. The others keep their places. The starts that wait reach the
-    // players in their places.
-    players_.erase(players_.begin() + static_cast<std::ptrdiff_t>(snapshot.players.size()), players_.end());
-    for (std::size_t i = 0; i < players_.size(); ++i)
-    {
-        *players_[i] = snapshot.players[i];
-    }
-    pending_ = snapshot.pending;
+    // The players and the starts that wait.
+    players_.Restore(snapshot.players);
 
     // The voices at each level, the channels and the rest go back into their places.
     ax_voices_.Restore(snapshot.ax_voices);
