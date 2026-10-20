@@ -8,7 +8,8 @@
 // archive back byte for byte. After an edit, each sequence file takes the size that its commands give, and the files
 // after it move. ReplaceFile gives any other file new bytes, and the files after it move the same way. FileCopies finds
 // the copies of a file. WriteTableValues writes the values of the tables that have a place there, such as a sound's
-// volume. StartFields finds where the tables hold each sound's start.
+// volume. TableValuePlaces finds which of a sound's optional values have a place. StartFields finds where the tables
+// hold each sound's start.
 
 #pragma once
 
@@ -141,6 +142,25 @@ std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequen
 // keeps its byte. Throws xsflib::FormatError if the tables can't be read.
 void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const SoundInfo> sounds,
                       std::span<const PlayerInfo> players);
+
+// The values of a sound that its entry holds only with an option: the pan mode and curve, the player priority and the
+// actor player, and a sequence sound's channel priority and release priority fix. Every entry holds the sound's player
+// and volume, and a sequence sound's tracks' flags. WriteTableValues writes an optional value only where the entry
+// holds it.
+struct ValuePlaces
+{
+    friend bool operator==(const ValuePlaces&, const ValuePlaces&) = default;
+
+    bool pan = false;      // the pan mode and curve
+    bool priority = false; // the player priority and the actor player
+    bool channel = false;  // a sequence sound's channel priority and release priority fix
+};
+
+// Which optional values the tables of `archive`, an archive of `flavor`, hold for each sound of the sound table, in
+// order. The reader reads only the archive's header and its INFO block. `archive` can end after the block. On the 3DS,
+// no sound has a place for a priority: the reader reads no 3DS sound's player priority or actor player. Throws
+// xsflib::FormatError if the tables can't be read.
+std::vector<ValuePlaces> TableValuePlaces(std::span<const uint8_t> archive, Flavor flavor);
 
 // Where the tables of `archive`, an archive of `flavor`, hold each sound's start in its sequence file's bytecode: the
 // position of the 32-bit field from the archive's start, for each sound of the sound table in order. A sound that isn't

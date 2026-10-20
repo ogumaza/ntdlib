@@ -59,8 +59,8 @@ void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const 
                  const HostMix& host = {});
 
 // Adds an aux bus's return into one channel of the device's main bus. The volume goes from `from` to `to` across the
-// frame (0x04C5).
-void ReturnAux(std::span<const int32_t> returned, uint16_t from, uint16_t to, std::span<int32_t> main);
+// frame (0x04C5). Returns the largest magnitude that it adds, for a host's meter.
+int32_t ReturnAux(std::span<const int32_t> returned, uint16_t from, uint16_t to, std::span<int32_t> main);
 
 // One channel of a device's output, in 24-bit scale: the main bus at the device's volume (0x0517). The volume goes from
 // `from` to `to` across the frame.

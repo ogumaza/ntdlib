@@ -5,8 +5,9 @@
 // bytes, a sequence file laid out otherwise than the writer lays it out, and a group. The group holds a copy of a file
 // that only it holds, and a copy of one of the archive's sequence files. Another archive holds a sequence file with
 // bytes that no command reaches. A third archive's tables take new values. A fourth holds a wave sound beside a
-// sequence sound, for the fields of the sounds' starts. The files that stay in the bytes become runs of their own, and
-// take new bytes: in the FILE block, in a group, and in both.
+// sequence sound, for the fields of the sounds' starts. A fifth holds sounds with some of the options and without
+// them, for the places of the values. The files that stay in the bytes become runs of their own, and take new bytes:
+// in the FILE block, in a group, and in both.
 
 #include <algorithm>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -619,6 +621,76 @@ void TestTableValues(Flavor flavor)
     XSFLIB_CHECK(std::search(off.begin(), off.end(), channel.begin(), channel.end()) != off.end());
 }
 
+// The places of the optional values. Song holds every option, Plain none, Wave a pan and Ranked a priority. A new
+// value reads back where TableValuePlaces finds a place for it, and nowhere else. Ranked plays file 2. Its entry
+// follows Wave's details, and its first word has bit 1 set: a reader that took Wave for a sequence sound would find a
+// channel priority there. The header and the INFO block give the places by themselves. An archive read in the other
+// byte order, or cut short inside its INFO block, is refused.
+void TestValuePlaces(Flavor flavor)
+{
+    using ntdlib::sar::ValuePlaces;
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {
+        {.name = "Song", .file = 0, .pan = 0x0001, .priority = 0x0140, .banks = {0}, .channel_priority = 0x40},
+        {.name = "Plain", .file = 0},
+        {.name = "Wave", .kind = sar_files::SoundSpec::kWaveSound, .file = 1, .pan = 0x0100},
+        {.name = "Ranked", .file = 2, .priority = 0x0040}};
+    spec.banks = {{"BANK", 1}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})},
+                  {.bytes = {1, 2, 3, 4}},
+                  {.bytes = sar_files::Sequence(flavor, kOther, {{"Ranked", 0}})}};
+    const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
+    ntdlib::sar::Options strict = OptionsFor(flavor);
+    strict.rules = ntdlib::sar::Rules::kStopAtFirstProblem;
+    const ntdlib::sar::SoundArchive before = ntdlib::sar::SoundArchive::Load(archive, strict);
+    std::vector<ntdlib::sar::SoundInfo> sounds = before.Sounds();
+    for (ntdlib::sar::SoundInfo& sound : sounds)
+    {
+        sound.pan_curve = 5;
+        sound.player_priority = 33;
+        sound.channel_priority = 99;
+    }
+    std::vector<uint8_t> written = archive;
+    ntdlib::sar::WriteTableValues(written, flavor, sounds, before.Players());
+    const std::vector<ntdlib::sar::SoundInfo> after = ntdlib::sar::SoundArchive::Load(written, strict).Sounds();
+
+    // The INFO block ends the bytes that the reader reads.
+    const std::string_view magic = "INFO";
+    const auto info = static_cast<std::size_t>(std::search(archive.begin(), archive.end(), magic.begin(), magic.end()) -
+                                               archive.begin());
+    const std::size_t end = info + xsflib::Reader(archive, flavor == Flavor::kCafe).U32(info + 4);
+    const Flavor other = flavor == Flavor::kCafe ? Flavor::kNx : Flavor::kCafe;
+    const auto refused = [](std::span<const uint8_t> bytes, Flavor read_as)
+    {
+        try
+        {
+            ntdlib::sar::TableValuePlaces(bytes, read_as);
+        }
+        catch (const xsflib::FormatError&)
+        {
+            return true;
+        }
+
+        return false;
+    };
+
+    const std::vector<ValuePlaces> places = ntdlib::sar::TableValuePlaces(archive, flavor);
+    const std::vector<ValuePlaces> head = ntdlib::sar::TableValuePlaces(std::span(archive).first(end), flavor);
+
+    const bool ctr = flavor == Flavor::kCtr;
+    const std::vector<ValuePlaces> expected = {
+        {true, !ctr, true}, {false, false, false}, {true, false, false}, {false, !ctr, false}};
+    XSFLIB_CHECK(places == expected && head == places && after.size() == places.size());
+    for (std::size_t i = 0; i < places.size() && i < after.size(); ++i)
+    {
+        const ntdlib::sar::SoundInfo& sound = after[i];
+        const ValuePlaces changed{sound.pan_curve == 5, sound.player_priority == 33, sound.channel_priority == 99};
+        XSFLIB_CHECK(changed == places[i]);
+    }
+    XSFLIB_CHECK(refused(archive, other) && refused(std::span(archive).first(info + 16), flavor));
+}
+
 // The file of other bytes and the odd sequence file become runs of their own. The group holds fields, and stays in the
 // bytes. A longer file of other bytes moves the files after it, and the tables follow. A shorter odd file moves them
 // back. A new cut of the new archive gives the same fields. In an archive cut short, the group lies partly past the
@@ -859,6 +931,7 @@ int main()
         TestRefusals(flavor);
         TestBytes(flavor);
         TestTableValues(flavor);
+        TestValuePlaces(flavor);
         TestFiles(flavor);
         TestFilesInGroups(flavor);
         TestFileRefusals(flavor);

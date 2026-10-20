@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.8.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.9.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -199,12 +199,13 @@ xsflib_add_project_test(ntdlib dsp ntdlib::dsp)
 xsflib_add_project_test(ntdlib dsp_accelerator ntdlib::dsp)
 
 # Disc images of the GameCube and the Wii, and a game's files on them: plain images (ISO, NKit), WBFS, WDF, extracted
-# discs and titles, and the sound archives inside CPK archives. It requires no other library.
+# discs and titles, the sound archives inside CPK archives, and FSYS archives. It requires no other library.
 xsflib_add_project_library(ntdlib disc src/disc/cpk.cpp src/disc/cpk_files.cpp src/disc/cx.cpp src/disc/encodings.cpp
-                           src/disc/file_table.cpp src/disc/game.cpp src/disc/image.cpp src/disc/source.cpp
-                           src/disc/title.cpp)
+                           src/disc/file_table.cpp src/disc/fsys.cpp src/disc/game.cpp src/disc/image.cpp
+                           src/disc/source.cpp src/disc/title.cpp)
 target_link_libraries(ntdlib_disc PUBLIC ntdlib::common)
 xsflib_add_project_test(ntdlib disc_cpk ntdlib::disc)
+xsflib_add_project_test(ntdlib disc_fsys ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_options ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_title ntdlib::disc)
 xsflib_add_project_test(ntdlib disc_text ntdlib::disc)
@@ -278,10 +279,12 @@ xsflib_add_project_test(ntdlib nwsnd_archive_files ntdlib::nwsnd_archive)
 # A sound archive of the 3DS, the Wii U or the Switch cut into pieces for an editor, and joined again: its sequence
 # files, decoded into commands, and the runs of bytes between them. Also the readers and the writers of the sequence
 # files (CSEQ and FSEQ), the wave files (CWAV and FWAV), the wave archives (CWAR and FWAR) and the archives' STRG and
-# INFO blocks. WithTables puts new STRG and INFO blocks in an archive.
-xsflib_add_project_library(ntdlib sar_layout src/sar/info_block.cpp src/sar/layout.cpp src/sar/sequence_file.cpp
-                           src/sar/string_block.cpp src/sar/tables.cpp src/sar/wave_file.cpp)
+# INFO blocks. WithTables puts new STRG and INFO blocks in an archive. The banks, wave sound files, waves and wave
+# archives of the Wii U become the Switch's, and the Switch's the Wii U's.
+xsflib_add_project_library(ntdlib sar_layout src/sar/byte_order.cpp src/sar/info_block.cpp src/sar/layout.cpp
+                           src/sar/sequence_file.cpp src/sar/string_block.cpp src/sar/tables.cpp src/sar/wave_file.cpp)
 target_link_libraries(ntdlib_sar_layout PUBLIC ntdlib::nwsnd_commands ntdlib::sar)
+xsflib_add_project_test(ntdlib sar_byte_order ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_info_block ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_layout ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_sequence_file ntdlib::sar_layout)

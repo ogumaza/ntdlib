@@ -2,9 +2,11 @@
 
 #include "ntdlib/cafe/ax/render.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 
 #include "ntdlib/cafe/ax/resample.h"
@@ -332,13 +334,18 @@ void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const 
     }
 }
 
-void ReturnAux(std::span<const int32_t> returned, uint16_t from, uint16_t to, std::span<int32_t> main)
+int32_t ReturnAux(std::span<const int32_t> returned, uint16_t from, uint16_t to, std::span<int32_t> main)
 {
     const auto gains = Ramp(from, to, main.size());
+    int64_t peak = 0;
     for (std::size_t i = 0; i < main.size(); ++i)
     {
-        main[i] = Store32(int64_t{main[i]} + ((int64_t{returned[i]} * gains[i]) >> 15));
+        const int64_t added = (int64_t{returned[i]} * gains[i]) >> 15;
+        main[i] = Store32(int64_t{main[i]} + added);
+        peak = std::max(peak, added < 0 ? -added : added);
     }
+
+    return static_cast<int32_t>(std::min<int64_t>(peak, std::numeric_limits<int32_t>::max()));
 }
 
 void OutputBus(std::span<const int32_t> bus, uint16_t from, uint16_t to, std::span<int32_t> out)

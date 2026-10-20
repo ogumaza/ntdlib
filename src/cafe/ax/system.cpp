@@ -821,6 +821,24 @@ std::array<int32_t, 2> System::MeterPeaks(int meter) const
     return meter_peaks_[static_cast<std::size_t>(meter)];
 }
 
+std::array<int32_t, 2> System::AuxReturnPeaks(Device device, uint32_t index, int bus) const
+{
+    if (bus < 0 || bus > 2)
+    {
+        return {0, 0};
+    }
+    if (device == Device::kTv && index == 0)
+    {
+        return aux_peaks_[0][static_cast<std::size_t>(bus)];
+    }
+    if (device == Device::kDrc && index < kDrcCount)
+    {
+        return aux_peaks_[1 + index][static_cast<std::size_t>(bus)];
+    }
+
+    return {0, 0};
+}
+
 HostMix System::TakeHostMix(const Voice& voice)
 {
     HostVoice& host = host_[voice.index];
@@ -1099,6 +1117,8 @@ void System::ReturnAux(int frame)
         for (int bus = 0; bus < 3; ++bus)
         {
             AuxBus& aux = aux_[device][bus];
+            std::array<int32_t, 2>& peaks = aux_peaks_[device][static_cast<std::size_t>(bus)];
+            peaks = {0, 0};
             if (!aux.callback)
             {
                 continue;
@@ -1114,8 +1134,12 @@ void System::ReturnAux(int frame)
                 Buses::Channel& main = device == 0 ? main_.tv[0][channel] : main_.drc[device - 1][0][channel];
                 const std::size_t at = static_cast<std::size_t>(channel) * kMaxSamplesPerFrame;
                 std::copy_n(sent.begin(), samples, out.begin() + static_cast<std::ptrdiff_t>(at));
-                ntdlib::cafe::ax::ReturnAux({back.data() + at, samples}, aux.dsp_return_volume, aux.return_volume,
-                                            {main.data(), samples});
+                const int32_t peak = ntdlib::cafe::ax::ReturnAux({back.data() + at, samples}, aux.dsp_return_volume,
+                                                                 aux.return_volume, {main.data(), samples});
+                if (channel < 2)
+                {
+                    peaks[static_cast<std::size_t>(channel)] = peak;
+                }
             }
             aux.dsp_return_volume = aux.return_volume;
         }

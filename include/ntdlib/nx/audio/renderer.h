@@ -169,6 +169,14 @@ public:
     void SetVoiceMeter(int voice, int meter);
     std::span<const int32_t> MeterPeaks(int meter) const;
 
+    // A host's peaks of a mix's buffers. nn::audio has no such peaks. While MeterMix has them on, each frame finds the
+    // peak of each of mix `mix`'s buffers after the mix's effects, before the mix's volumes: the largest magnitude, on
+    // the scale of the mix's samples. MixPeaks gives the last frame's, one for each of the mix's buffers, or none for a
+    // mix without them. Peaks turned on give 0 until the next frame. The peaks change nothing in the output and make no
+    // call to the observer. They aren't part of a snapshot.
+    void MeterMix(int mix, bool on);
+    std::span<const int32_t> MixPeaks(int mix) const;
+
     // Queues a buffer: false when the voice already has 4 that it hasn't released.
     bool AppendWaveBuffer(int voice, const WaveBufferInfo& buffer);
 
@@ -377,8 +385,9 @@ private:
     void LayOutMixes();
     void RenderVoice(Voice& voice);
     void AddToMeter(const Voice::Server& server, int buffer, const int32_t* work, int32_t start, int32_t end);
-    void RenderSubMix(const Mix& mix);
+    void RenderSubMix(int id);
     void RenderFinalMix();
+    void MeasureMix(int id);
     void Depop(const Mix& mix);
     void RenderEffects(const Mix& mix);
     int32_t* Buffer(int index);
@@ -405,6 +414,9 @@ private:
     int meter_channel_count_ = 0;
     std::vector<int32_t> meter_sums_;  // by meter, channel and sample
     std::vector<int32_t> meter_peaks_; // by meter and channel
+
+    // The host's peaks of the mixes' buffers (MeterMix), by mix and buffer. A mix without them has none.
+    std::vector<std::vector<int32_t>> mix_peaks_;
 };
 
 struct Renderer::Snapshot

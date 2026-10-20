@@ -27,6 +27,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/reference.h"
 #include "ntdlib/sar/sequence_file.h"
+#include "ntdlib/sar/tables.h"
 
 namespace ntdlib::sar
 {
@@ -1383,6 +1384,31 @@ std::vector<std::optional<std::size_t>> StartFields(std::span<const uint8_t> arc
     }
 
     return fields;
+}
+
+std::vector<ValuePlaces> TableValuePlaces(std::span<const uint8_t> archive, Flavor flavor)
+{
+    // The header's table of blocks gives the INFO block. The reads stop at the block's end.
+    const std::span<const uint8_t> block = TablesOf(archive, flavor).info;
+    const auto info = static_cast<std::size_t>(block.data() - archive.data());
+    const xsflib::Reader r(archive.first(info + block.size()), flavor == Flavor::kCafe);
+    const std::map<uint16_t, std::size_t> tables = TablesOf(r, info + 8);
+
+    // The options where WriteTableValues writes the values.
+    std::vector<ValuePlaces> places;
+    for (const std::size_t sound : EntriesOf(r, tables, kSoundTable))
+    {
+        ValuePlaces& place = places.emplace_back();
+        place.pan = OptionAt(r, sound + 20, 1).has_value();
+        place.priority = flavor != Flavor::kCtr && OptionAt(r, sound + 20, 2).has_value();
+        const Reference detail = ReadRef(r, sound + 12);
+        if (detail.type == kSequenceSound)
+        {
+            place.channel = OptionAt(r, sound + static_cast<uint32_t>(detail.offset) + 12, 1).has_value();
+        }
+    }
+
+    return places;
 }
 
 } // namespace ntdlib::sar

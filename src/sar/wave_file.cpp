@@ -5,15 +5,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "xsflib/binary.h"
-
 #include "ntdlib/sar/formats.h"
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+
 #include "sar/file_bytes.h"
 
 namespace ntdlib::sar
@@ -25,6 +28,9 @@ constexpr uint16_t kWaveInfoBlock = 0x7000;
 constexpr uint16_t kWaveDataBlock = 0x7001;
 constexpr uint16_t kArchiveInfoBlock = 0x6800;
 constexpr uint16_t kArchiveFileBlock = 0x6801;
+constexpr uint16_t kBankInfoBlock = 0x5800;
+constexpr uint16_t kWaveSoundInfoBlock = 0x6800;
+constexpr uint16_t kWaveTableReference = 0x0100;   // from a bank's or a wave sound file's INFO to its table of waves
 constexpr uint16_t kChannelInfoReference = 0x7100; // from the table of channels to a channel's info
 constexpr uint16_t kDataReference = 0x1F00;        // to a channel's samples in DATA, or to a wave in FILE
 constexpr uint16_t kDspAdpcmReference = 0x0300;    // from a channel's info to its DSP-ADPCM info
@@ -312,6 +318,53 @@ std::vector<uint8_t> WaveArchiveFile::Write() const
     out.U32(0x0C, static_cast<uint32_t>(out.Size()));
 
     return out.Take();
+}
+
+std::vector<uint8_t> WithWaveArchives(std::span<const uint8_t> file, Flavor flavor,
+                                      const std::map<uint32_t, uint32_t>& wave_archives)
+{
+    // The file's kind and console. INFO's first two references lead to its tables.
+    const bool bank = file.size() >= 4 && std::memcmp(file.data() + 1, "BNK", 3) == 0;
+    if (!bank && (file.size() < 4 || std::memcmp(file.data() + 1, "WSD", 3) != 0))
+    {
+        throw xsflib::FormatError("not a bank file or a wave sound file");
+    }
+    const auto [read_flavor, r] = Open(file, bank ? "BNK" : "WSD", bank ? "bank file" : "wave sound file");
+    if (read_flavor != flavor)
+    {
+        throw xsflib::FormatError("a file of another console");
+    }
+    const std::size_t info = BlockOf(r, bank ? kBankInfoBlock : kWaveSoundInfoBlock, "INFO").first + 8;
+    std::optional<std::size_t> table;
+    for (std::size_t i = 0; i < 2; ++i)
+    {
+        const int32_t offset = r.S32(info + i * 8 + 4);
+        if (r.U16(info + i * 8) == kWaveTableReference && offset >= 0)
+        {
+            table = info + static_cast<std::size_t>(offset);
+        }
+    }
+    if (!table)
+    {
+        throw xsflib::FormatError("a file without a table of waves");
+    }
+
+    // Each wave's wave archive, mapped.
+    const uint32_t count = r.U32(*table);
+    r.Sub(*table + 4, std::size_t{count} * 8);
+    std::vector<uint8_t> bytes(file.begin(), file.end());
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const std::size_t at = *table + 4 + std::size_t{i} * 8;
+        const auto mapped = wave_archives.find(r.U32(at));
+        if (mapped != wave_archives.end())
+        {
+            r.BigEndian() ? xsflib::StoreBe32(&bytes[at], mapped->second)
+                          : xsflib::StoreLe32(&bytes[at], mapped->second);
+        }
+    }
+
+    return bytes;
 }
 
 } // namespace ntdlib::sar

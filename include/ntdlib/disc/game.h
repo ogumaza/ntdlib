@@ -33,8 +33,8 @@ struct GameOptions
     ImageOptions image{};
 
     // Messages for a program that words them otherwise. An empty one keeps the default, given here. Only an image's
-    // checks use not_this_console and damaged_file_system. An extracted disc has fixed messages for its sys/boot.bin,
-    // and LoadGame doesn't parse its sys/fst.bin.
+    // checks use not_this_console and damaged_file_system. An extracted disc has fixed messages for its sys/boot.bin.
+    // LoadGame reads its sys/fst.bin only to check a header without the magic word (see LoadGame).
     std::string not_this_console{};    // a disc of neither console: "it isn't a GameCube disc image"
     std::string other_console{};       // a disc of the other console: "it's a Wii disc, and xyz is for GameCube discs"
     std::string damaged_file_system{}; // "the disc's file system is damaged"
@@ -126,7 +126,8 @@ struct GameFiles
 };
 
 // Returns the console whose disc header `header` starts, from the header's magic word: the GameCube's word at 0x1C or
-// the Wii's word at 0x18. Returns nothing for other data.
+// the Wii's word at 0x18. Returns nothing for other data. That includes a header without the magic word, even one
+// that LoadGame accepts.
 std::optional<Console> DiscConsole(std::span<const uint8_t> header);
 
 // Returns the format of a GameCube or Wii disc image whose first bytes are `header`, by Image::Format's names: "ISO"
@@ -137,6 +138,12 @@ std::optional<std::string> ImageFormat(std::span<const uint8_t> header);
 // Loads a disc image or an extracted disc of the console that `options` names, or with GameOptions::titles a title's
 // folder. An extracted disc is a folder with sys/main.dol and files/, either directly or in a DATA folder. Dolphin and
 // Wiimm's tools extract discs in these layouts. Returns an error message on failure and nothing on success.
+//
+// Some GameCube discs that never went on sale leave the magic word out of their header. LoadGame accepts such a disc
+// when the rest of it is intact. The file system table must parse. main.dol must be a DOL whose entry point lies in
+// one of its sections. On an image, the header must place both files past the system area of the header and bi2.bin.
+// Both must end inside the image and inside a GameCube disc's capacity. A disc of the other console, or any other
+// data, is still refused.
 std::optional<std::string> LoadGame(const std::filesystem::path& path, GameFiles& out, const GameOptions& options);
 
 } // namespace ntdlib::disc

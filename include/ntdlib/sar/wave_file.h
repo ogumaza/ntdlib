@@ -15,10 +15,14 @@
 // follows. Its waves start 32 bytes after the block's start or later: each wave starts on a boundary of the archive, of
 // the same size as in a wave file. The last wave ends the file. An archive without waves ends 32 bytes after FILE's
 // start.
+//
+// A bank file and a wave sound file name their waves through a table of waves. WithWaveArchives puts other wave
+// archives in the table, for a file that goes into another archive.
 
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <vector>
@@ -75,5 +79,14 @@ struct WaveArchiveFile
     uint32_t version = 0x00010000;
     std::vector<std::vector<uint8_t>> waves; // each a wave file's bytes, in the archive's order
 };
+
+// `file`, a bank file or a wave sound file of `flavor` (CBNK, FBNK, CWSD or FWSD), with other wave archives in its
+// table of waves. The file's INFO block refers to the table: a count, then a wave archive's item ID and a wave's index
+// for each wave. Each ID that `wave_archives` maps takes the ID that it maps to. The file's other bytes stay. A bank's
+// regions and a wave sound's notes name their waves by their places in the table, and those stay too. Throws
+// xsflib::FormatError for bytes that aren't such a file, a file of another console, and a file without a table of
+// waves.
+std::vector<uint8_t> WithWaveArchives(std::span<const uint8_t> file, Flavor flavor,
+                                      const std::map<uint32_t, uint32_t>& wave_archives);
 
 } // namespace ntdlib::sar

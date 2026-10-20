@@ -302,6 +302,38 @@ std::span<const int32_t> Renderer::MeterPeaks(int meter) const
     return std::span<const int32_t>(meter_peaks_).subspan(static_cast<std::size_t>(meter) * channels, channels);
 }
 
+void Renderer::MeterMix(int mix, bool on)
+{
+    if (mix < 0 || mix >= static_cast<int>(mixes_.size()))
+    {
+        throw std::out_of_range("the renderer has no such mix");
+    }
+
+    mix_peaks_.resize(mixes_.size());
+    std::vector<int32_t>& peaks = mix_peaks_[static_cast<std::size_t>(mix)];
+    if (on)
+    {
+        peaks.assign(static_cast<std::size_t>(kMaxMixBuffers), 0);
+    }
+    else
+    {
+        peaks.clear();
+    }
+}
+
+std::span<const int32_t> Renderer::MixPeaks(int mix) const
+{
+    if (mix < 0 || static_cast<std::size_t>(mix) >= mix_peaks_.size())
+    {
+        return {};
+    }
+
+    const std::vector<int32_t>& peaks = mix_peaks_[static_cast<std::size_t>(mix)];
+    const auto buffers = static_cast<std::size_t>(std::max(mixes_[static_cast<std::size_t>(mix)].buffer_count, 0));
+
+    return std::span<const int32_t>(peaks).first(std::min(peaks.size(), buffers));
+}
+
 bool Renderer::AppendWaveBuffer(int voice, const WaveBufferInfo& buffer)
 {
     const bool appended = QueueWaveBuffer(voice, buffer);
@@ -618,6 +650,30 @@ int32_t Renderer::WriteAuxReturn(int aux, std::span<const int32_t> samples)
     return static_cast<int32_t>(count);
 }
 
+// The largest magnitude of each of the mix's buffers in the frame, for a host that has the mix's peaks on.
+void Renderer::MeasureMix(int id)
+{
+    if (static_cast<std::size_t>(id) >= mix_peaks_.size() || mix_peaks_[static_cast<std::size_t>(id)].empty())
+    {
+        return;
+    }
+
+    const Mix& mix = mixes_[static_cast<std::size_t>(id)];
+    std::vector<int32_t>& peaks = mix_peaks_[static_cast<std::size_t>(id)];
+    for (int b = 0; b < mix.buffer_count && b < static_cast<int>(peaks.size()); ++b)
+    {
+        const int32_t* samples = Buffer(mix.offset + b);
+        int64_t peak = 0;
+        for (int t = 0; t < parameter_.sample_count; ++t)
+        {
+            const int64_t x = samples[t];
+            peak = std::max(peak, x < 0 ? -x : x);
+        }
+        peaks[static_cast<std::size_t>(b)] =
+            static_cast<int32_t>(std::min<int64_t>(peak, std::numeric_limits<int32_t>::max()));
+    }
+}
+
 int32_t* Renderer::Buffer(int index)
 {
     return buffers_.data() + static_cast<std::size_t>(index) * static_cast<std::size_t>(parameter_.sample_count);
@@ -895,7 +951,7 @@ void Renderer::Generate()
         { return mixes_[static_cast<std::size_t>(a)].offset < mixes_[static_cast<std::size_t>(b)].offset; });
     for (const int id : mix_order)
     {
-        RenderSubMix(mixes_[static_cast<std::size_t>(id)]);
+        RenderSubMix(id);
     }
     RenderFinalMix();
 
@@ -1204,10 +1260,12 @@ void Renderer::RenderEffects(const Mix& mix)
     }
 }
 
-void Renderer::RenderSubMix(const Mix& mix)
+void Renderer::RenderSubMix(int id)
 {
+    const Mix& mix = mixes_[static_cast<std::size_t>(id)];
     Depop(mix);
     RenderEffects(mix);
+    MeasureMix(id);
 
     const Mix* destination = MixInUse(mix.destination);
     if (destination == nullptr)
@@ -1239,6 +1297,7 @@ void Renderer::RenderFinalMix()
 
     Depop(mix);
     RenderEffects(mix);
+    MeasureMix(kFinalMix);
     const int32_t gain = ToFixed(mix.volume, kGainBits);
     for (int b = 0; b < mix.buffer_count; ++b)
     {

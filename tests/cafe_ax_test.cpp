@@ -7,7 +7,7 @@
 // with the hash in cafe_ax_test_hashes.h. The scenarios and their runner are in cafe_ax_scenarios.h. The rest of the
 // test checks particular behaviours: the ADPCM history at a voice's start and at its loop, a one-shot voice's last
 // sample, the interpolation, the 4-tap filters, the low-pass filter, both GamePads, each device's upsample stage, the
-// aux buses' timing, the FIR upsampler and AXGetVoiceLoopCount.
+// aux buses' timing, a host's peaks of their returns, the FIR upsampler and AXGetVoiceLoopCount.
 //
 // usage: ntdlib_cafe_ax_test [--dump <folder>]
 //   --dump writes each scenario's stage lines.
@@ -315,6 +315,60 @@ void TestAux()
     Check(main == std::vector<int32_t>{0, 0, 1000, 1000}, "the aux bus returns two frames later");
 }
 
+void TestAuxReturnPeaks()
+{
+    // The voice sends 1000 to the left of aux bus A and to the right of aux bus B. Bus A comes back at half volume, and
+    // bus B's callback turns its samples over. Two frames later, bus A adds 500 to the left of the main bus, and bus B
+    // adds -1000 to the right. Each bus's peaks are the largest magnitudes that it adds. Bus C has no callback, and
+    // gives 0. A restore leaves the peaks as they were. A device, an index or a bus that doesn't exist gives 0.
+    Bench bench({0x03, 0xE8}, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 0, 0);
+    std::vector<System::ChannelMix> mix(ntdlib::cafe::ax::kTvChannels);
+    mix[0][1].volume = ntdlib::cafe::ax::kUnityVolume;
+    mix[1][2].volume = ntdlib::cafe::ax::kUnityVolume;
+    bench.system.SetVoiceDeviceMix(*bench.voice, System::Device::kTv, 0, mix);
+    const auto turned_over = [](std::span<int32_t* const> channels, uint32_t samples)
+    {
+        for (int32_t* channel : channels)
+        {
+            std::transform(channel, channel + samples, channel, [](int32_t sample) { return -sample; });
+        }
+    };
+    bench.system.RegisterAuxCallback(System::Device::kTv, 0, 0, [](std::span<int32_t* const>, uint32_t) {});
+    bench.system.RegisterAuxCallback(System::Device::kTv, 0, 1, turned_over);
+    bench.system.SetAuxReturnVolume(System::Device::kTv, 0, 0, 0x4000);
+    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    const System::Snapshot snapshot = bench.system.Save();
+    std::vector<std::array<int32_t, 2>> a;
+    std::vector<std::array<int32_t, 2>> b;
+
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        bench.system.RenderFrame();
+        a.push_back(bench.system.AuxReturnPeaks(System::Device::kTv, 0, 0));
+        b.push_back(bench.system.AuxReturnPeaks(System::Device::kTv, 0, 1));
+    }
+    const std::array<int32_t, 2> c = bench.system.AuxReturnPeaks(System::Device::kTv, 0, 2);
+    const int32_t left = bench.system.MainBuses().tv[0][0][10];
+    const int32_t right = bench.system.MainBuses().tv[0][1][10];
+    bench.system.Restore(snapshot);
+    const std::array<int32_t, 2> restored = bench.system.AuxReturnPeaks(System::Device::kTv, 0, 0);
+
+    constexpr std::array<int32_t, 2> kSilent = {0, 0};
+    Check(a[0] == kSilent && a[1] == kSilent && b[0] == kSilent && b[1] == kSilent,
+          "an aux bus's peaks are 0 until it returns");
+    Check(left == 500 && right == -1000, "the aux buses return at their volumes");
+    Check(a[2] == std::array<int32_t, 2>{500, 0} && b[2] == std::array<int32_t, 2>{0, 1000},
+          "an aux bus's peaks are the largest magnitudes that it adds");
+    Check(c == kSilent, "an aux bus without a callback has peaks of 0");
+    Check(restored == a[2], "a restore leaves the aux buses' peaks");
+    Check(bench.system.AuxReturnPeaks(System::Device::kTv, 1, 0) == kSilent &&
+              bench.system.AuxReturnPeaks(System::Device::kDrc, 2, 0) == kSilent &&
+              bench.system.AuxReturnPeaks(System::Device::kRemote, 0, 0) == kSilent &&
+              bench.system.AuxReturnPeaks(System::Device::kTv, 0, 3) == kSilent &&
+              bench.system.AuxReturnPeaks(System::Device::kTv, 0, -1) == kSilent,
+          "a device, an index or an aux bus that doesn't exist has peaks of 0");
+}
+
 void TestLoopCount()
 {
     // AXGetVoiceLoopCount counts a loop each time the game's copy of the position has gone back since the last call.
@@ -482,6 +536,7 @@ int main(int argc, char** argv)
     TestLpf();
     TestDevices();
     TestAux();
+    TestAuxReturnPeaks();
     TestUpsampler();
     TestLoopCount();
 

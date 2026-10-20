@@ -2,8 +2,9 @@
 
 // Checks the model of the audio renderer without game data: the decoders on hand-made buffers, the sample-rate
 // converter's filters at a ratio of 1, the biquad on filters whose output is known, the gains, mixes and depop against
-// their formulas, a voice's frames through the renderer (its samples, what the updates report and when, and the fade
-// when it stops), and the I3DL2 reverb with a density below 0 and with each of nn::audio's presets.
+// their formulas, a voice's frames through the renderer (its samples, what the updates report and when, the fade when
+// it stops, and a host's mutes, meters and peaks of a mix), and the I3DL2 reverb with a density below 0 and with each
+// of nn::audio's presets.
 
 #include <algorithm>
 #include <array>
@@ -170,9 +171,10 @@ void TestDepop()
 }
 
 // A mono PCM16 voice at the renderer's rate, at full volume to the final mix's first buffer, playing samples of 10000.
+// The renderer has room for `sub_mixes` sub-mixes of two buffers each.
 struct OneVoice
 {
-    OneVoice() : renderer(Parameter())
+    explicit OneVoice(int sub_mixes = 0) : renderer(Parameter(sub_mixes))
     {
         for (int i = 0; i < kFrame * 8; ++i)
         {
@@ -188,10 +190,11 @@ struct OneVoice
         renderer.SetVoiceMixVolume(voice, 1.0f, 0, 0);
     }
 
-    static audio::RendererParameter Parameter()
+    static audio::RendererParameter Parameter(int sub_mixes)
     {
         audio::RendererParameter parameter;
-        parameter.mix_buffer_count = 2;
+        parameter.mix_buffer_count = 2 + 2 * sub_mixes;
+        parameter.sub_mix_count = sub_mixes;
         parameter.voice_count = 4;
 
         return parameter;
@@ -476,6 +479,83 @@ void TestRendererMeters()
     XSFLIB_CHECK(refused);
 }
 
+void TestRendererMixPeaks()
+{
+    // The voice goes into a sub-mix's left buffer at a gain of 1, and the sub-mix into the final mix at 0.5. The
+    // sub-mix's peaks come before its volume: 9980 in the first frame, where the voice's fourth sample overshoots, then
+    // 9959. Its right buffer stays at 0. The final mix's peaks are half of those, rounded half up: 4990, then 4980. So
+    // are the output's. Peaks turned on give 0 before the next frame, and change nothing in the output. A restore
+    // leaves them as they were. A mix whose peaks are off gives none. A mix that doesn't exist throws
+    // std::out_of_range.
+    const auto through_sub_mix = [](OneVoice& one)
+    {
+        const int sub_mix = one.renderer.AcquireSubMix(48000, 2);
+        one.renderer.SetSubMixDestination(sub_mix, audio::Renderer::kFinalMix);
+        one.renderer.SetSubMixMixVolume(sub_mix, 0.5f, 0, 0);
+        one.renderer.SetSubMixMixVolume(sub_mix, 1.0f, 1, 1);
+        one.renderer.SetVoiceDestination(one.voice, sub_mix);
+        one.Append(0, kFrame * 8, nullptr);
+        one.renderer.SetVoicePlayState(one.voice, audio::PlayState::kStarted);
+
+        return sub_mix;
+    };
+    const auto peaks_of = [](const audio::Renderer& renderer, int mix)
+    {
+        const std::span<const int32_t> peaks = renderer.MixPeaks(mix);
+
+        return std::vector<int32_t>(peaks.begin(), peaks.end());
+    };
+
+    OneVoice metered(1);
+    OneVoice plain(1);
+    const int sub_mix = through_sub_mix(metered);
+    through_sub_mix(plain);
+    metered.renderer.MeterMix(sub_mix, true);
+    metered.renderer.MeterMix(audio::Renderer::kFinalMix, true);
+    const std::vector<int32_t> before = peaks_of(metered.renderer, sub_mix);
+    const audio::Renderer::Snapshot snapshot = metered.renderer.Save();
+    std::vector<std::vector<int32_t>> sub_mix_peaks;
+    std::vector<std::vector<int32_t>> final_mix_peaks;
+    std::vector<std::vector<int32_t>> heard;
+    bool same = true;
+
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        metered.renderer.RenderFrame();
+        plain.renderer.RenderFrame();
+        sub_mix_peaks.push_back(peaks_of(metered.renderer, sub_mix));
+        final_mix_peaks.push_back(peaks_of(metered.renderer, audio::Renderer::kFinalMix));
+        const std::array<int32_t, 2> output = OutputPeaks(metered.renderer);
+        heard.emplace_back(output.begin(), output.end());
+        same = same && std::ranges::equal(metered.renderer.DeviceOutput(), plain.renderer.DeviceOutput());
+    }
+    metered.renderer.Restore(snapshot);
+    const std::vector<int32_t> restored = peaks_of(metered.renderer, sub_mix);
+    metered.renderer.MeterMix(sub_mix, false);
+    const std::vector<int32_t> off = peaks_of(metered.renderer, sub_mix);
+    bool refused = false;
+    try
+    {
+        metered.renderer.MeterMix(2, true);
+    }
+    catch (const std::out_of_range&)
+    {
+        refused = true;
+    }
+
+    const std::vector<int32_t> kSilent = {0, 0};
+    XSFLIB_CHECK(before == kSilent);
+    XSFLIB_CHECK(sub_mix_peaks[0] == std::vector<int32_t>({9980, 0}) &&
+                 sub_mix_peaks[1] == std::vector<int32_t>({9959, 0}));
+    XSFLIB_CHECK(final_mix_peaks[0] == std::vector<int32_t>({4990, 0}) &&
+                 final_mix_peaks[1] == std::vector<int32_t>({4980, 0}));
+    XSFLIB_CHECK(heard == final_mix_peaks);
+    XSFLIB_CHECK(same);
+    XSFLIB_CHECK(restored == std::vector<int32_t>({9959, 0}));
+    XSFLIB_CHECK(off.empty() && peaks_of(plain.renderer, sub_mix).empty());
+    XSFLIB_CHECK(refused);
+}
+
 // The output of a new reverb with `parameters`, for 64 frames (320 ms) from a click. The feedback lines' longest delays
 // reach 272 ms.
 std::vector<int32_t> I3dl2Click(const audio::I3dl2ReverbParameterSet& parameters)
@@ -565,6 +645,7 @@ int main()
     TestRendererStartMuted();
     TestRendererRestoreMuted();
     TestRendererMeters();
+    TestRendererMixPeaks();
     TestI3dl2NegativeDelay();
     TestI3dl2Presets();
 

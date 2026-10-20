@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -66,6 +67,19 @@ constexpr uint32_t kJapan = 0;
 constexpr uint64_t kNkitHeader = 0x200;
 constexpr uint64_t kNkitHeaderEnd = 0x220;
 
+// Where the disc header gives the offset of main.dol: in bytes on a GameCube disc, and in units of 4 bytes in a Wii
+// partition.
+constexpr size_t kHeaderDolOffset = 0x420;
+
+// The size of main.dol's header. The header gives the size of the whole file (Dol::Size).
+constexpr size_t kDolHeaderSize = 0x100;
+
+// A GameCube disc's system area, the disc header and bi2.bin, ends here. The apploader follows it.
+constexpr uint64_t kSystemAreaEnd = kHeaderSize + 0x2000;
+
+// The capacity of a GameCube disc.
+constexpr uint64_t kGameCubeDiscSize = 1'459'978'240;
+
 // The message for a folder that holds neither an extracted disc nor a title.
 constexpr char kNoGame[] =
     "the folder holds no game. An extracted disc holds sys/main.dol and files/, directly or in a DATA folder. A "
@@ -92,8 +106,12 @@ std::string OtherConsoleMessage(const GameOptions& options)
 }
 
 // Checks that `header` starts a disc header of the console that `options` names. Throws Error with
-// OtherConsoleMessage for a header of the other console, and with `neither` for any other data.
-void CheckConsole(const uint8_t* header, const GameOptions& options, const std::string& neither)
+// OtherConsoleMessage for a header of the other console, and with `neither` for any other data. A header of neither
+// console passes when `options` names the GameCube and `intact_without_magic` returns true. That function checks that
+// the rest of the disc is intact. Some discs that never went on sale, such as tech demos, leave the GameCube's magic
+// word out of their header.
+void CheckConsole(const uint8_t* header, const GameOptions& options, const std::string& neither,
+                  const std::function<bool()>& intact_without_magic = {})
 {
     const bool gamecube = xsflib::LoadBe32(header + kGameCubeMagicOffset) == kGameCubeMagic;
     const bool wii = xsflib::LoadBe32(header + kWiiMagicOffset) == kWiiMagic;
@@ -103,7 +121,71 @@ void CheckConsole(const uint8_t* header, const GameOptions& options, const std::
     }
 
     const bool other_console = options.console == Console::kWii ? gamecube : wii;
+    if (!other_console && options.console == Console::kGameCube && intact_without_magic && intact_without_magic())
+    {
+        return;
+    }
+
     throw Error(other_console ? OtherConsoleMessage(options) : neither);
+}
+
+// Whether a GameCube disc's file system table and main.dol are intact: the table parses, and main.dol is a DOL whose
+// entry point lies in one of its sections.
+bool SystemFilesIntact(std::span<const uint8_t> fst, std::span<const uint8_t> dol)
+{
+    try
+    {
+        detail::ParseFileTable(fst, 0, std::string());
+    }
+    catch (const Error&)
+    {
+        return false;
+    }
+
+    const std::optional<Dol> parsed = Dol::Parse(dol);
+
+    return parsed && !parsed->At(parsed->Entry()).empty();
+}
+
+// Whether `image` holds a GameCube disc whose header leaves out the magic word but is otherwise intact. The header must
+// place main.dol and the file system table past the system area. Both must end inside the bytes that a plain image
+// stores, and inside a GameCube disc's capacity. Neither may be larger than the loaders read (kMaxFileSize). Both must
+// be intact (SystemFilesIntact). A read that fails gives false.
+bool IntactWithoutMagic(Image& image)
+{
+    try
+    {
+        uint8_t header[kHeaderSize];
+        image.Read(0, header, sizeof(header));
+        const uint64_t end = std::min(image.StoredSize().value_or(kGameCubeDiscSize), kGameCubeDiscSize);
+        const uint64_t dol_offset = xsflib::LoadBe32(header + kHeaderDolOffset);
+        const uint64_t fst_offset = xsflib::LoadBe32(header + kHeaderFstOffset);
+        const uint64_t fst_size = xsflib::LoadBe32(header + kHeaderFstSize);
+        if (dol_offset < kSystemAreaEnd || fst_offset < kSystemAreaEnd || dol_offset + kDolHeaderSize > end ||
+            fst_offset + fst_size > end || fst_size > kMaxFileSize)
+        {
+            return false;
+        }
+
+        std::vector<uint8_t> dol(kDolHeaderSize);
+        image.Read(dol_offset, dol.data(), dol.size());
+        const uint64_t dol_size = Dol::Size(dol);
+        if (dol_offset + dol_size > end || dol_size > kMaxFileSize)
+        {
+            return false;
+        }
+
+        dol.resize(static_cast<size_t>(dol_size));
+        image.Read(dol_offset, dol.data(), dol.size());
+        std::vector<uint8_t> fst(static_cast<size_t>(fst_size));
+        image.Read(fst_offset, fst.data(), fst.size());
+
+        return SystemFilesIntact(fst, dol);
+    }
+    catch (const Error&)
+    {
+        return false;
+    }
 }
 
 // The message for an image of neither console.
@@ -168,7 +250,7 @@ public:
     {
         uint8_t header[0x208];
         image_->Read(0, header, sizeof(header));
-        CheckConsole(header, options, NotThisConsoleMessage(options));
+        CheckConsole(header, options, NotThisConsoleMessage(options), [this] { return IntactWithoutMagic(*image_); });
 
         // A program that reads plain images may reject one that ends before the disc header's 0x440 bytes.
         const std::optional<uint64_t> stored = image_->StoredSize();
@@ -383,7 +465,7 @@ void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
         const std::vector<uint8_t> apploader = game->Read(0x2440, 0x20);
         out.apploader = game->Read(0x2440, 0x20 + uint64_t{xsflib::LoadBe32(apploader.data() + 0x14)} +
                                                xsflib::LoadBe32(apploader.data() + 0x18));
-        const uint64_t dol_offset = uint64_t{xsflib::LoadBe32(out.boot.data() + 0x420)} << shift;
+        const uint64_t dol_offset = uint64_t{xsflib::LoadBe32(out.boot.data() + kHeaderDolOffset)} << shift;
         const std::vector<uint8_t> dol_header = game->Read(dol_offset, 0x100);
         out.dol = game->Read(dol_offset, Dol::Size(dol_header));
     }
@@ -446,12 +528,13 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     }
     CheckConsole(out.boot.data(), options,
                  options.console == Console::kWii ? "sys/boot.bin isn't a Wii disc's header"
-                                                  : "sys/boot.bin isn't a GameCube disc's header");
+                                                  : "sys/boot.bin isn't a GameCube disc's header",
+                 [&out] { return SystemFilesIntact(out.fst, out.dol); });
 
     // A folder may leave these files out. A Wii folder keeps its tmd.bin beside sys/. An extracted GameCube disc gives
-    // its region in bi2.bin. A Wii partition's bi2.bin doesn't.
+    // its region in bi2.bin, with the magic word in its header or without it. A Wii partition's bi2.bin doesn't.
     ReadHostFile(sys / "bi2.bin", out.bi2);
-    if (out.bi2.size() >= kBi2Region + 4 && DiscConsole(out.boot) == Console::kGameCube)
+    if (out.bi2.size() >= kBi2Region + 4 && DiscConsole(out.boot) != Console::kWii)
     {
         out.region = xsflib::LoadBe32(out.bi2.data() + kBi2Region);
     }

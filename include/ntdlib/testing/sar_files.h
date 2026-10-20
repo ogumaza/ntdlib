@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -477,12 +478,15 @@ struct NoteEventSpec
     uint32_t note = 0;
 };
 
-// A wave sound: its pan, pitch and envelope when they're set, its tracks of note events, and its notes. A note is laid
+// A wave sound: its pan, pitch, filter, sends and envelope when they're set, its tracks of note events, and its
+// notes. The sends are the main send, the number of effect sends and the effect sends, up to 8 bytes. A note is laid
 // out as a bank's region. Its wave is an index into the file's waves.
 struct WaveSoundSpec
 {
     std::optional<int> pan;
     std::optional<float> pitch;
+    std::optional<uint32_t> filter;
+    std::vector<uint8_t> sends;
     std::optional<std::array<uint8_t, 5>> adshr;
     std::vector<std::vector<NoteEventSpec>> tracks;
     std::vector<Region> notes;
@@ -512,7 +516,7 @@ inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFil
         const size_t data = info.Add(24);
         info.Ref(sounds + 4 + 8 * i, 0x4900, data, sounds);
 
-        // The settings: optional parameters, with the envelope behind a reference.
+        // The settings: optional parameters, with the sends after them and the envelope behind a reference.
         std::vector<std::pair<int, uint32_t>> values;
         if (sound.pan)
         {
@@ -522,12 +526,27 @@ inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFil
         {
             values.push_back({1, std::bit_cast<uint32_t>(*sound.pitch)});
         }
+        if (sound.filter)
+        {
+            values.push_back({2, *sound.filter});
+        }
+        if (!sound.sends.empty())
+        {
+            values.push_back({8, 0});
+        }
         if (sound.adshr)
         {
             values.push_back({9, 0});
         }
         const size_t settings = info.Options(values);
         info.Ref(data, 0x4901, settings, data);
+        if (!sound.sends.empty())
+        {
+            const size_t sends = info.Add(8);
+            const size_t value = settings + 4 * (values.size() - (sound.adshr ? 1 : 0));
+            info.U32(value, static_cast<uint32_t>(sends - settings));
+            std::memcpy(info.data.data() + sends, sound.sends.data(), std::min<size_t>(sound.sends.size(), 8));
+        }
         if (sound.adshr)
         {
             detail::PutEnvelope(info, settings + 4 * values.size(), settings, *sound.adshr);

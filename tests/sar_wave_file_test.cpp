@@ -8,11 +8,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/sar/formats.h"
@@ -294,6 +298,76 @@ void TestRefusals()
     XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WaveArchiveFile::Read(no_file); }));
 }
 
+// The wave archive and the index of each wave of a bank or a wave sound file.
+std::vector<std::pair<uint32_t, uint32_t>> PairsOf(const std::vector<ntdlib::sar::WaveId>& waves)
+{
+    std::vector<std::pair<uint32_t, uint32_t>> pairs;
+    for (const ntdlib::sar::WaveId& wave : waves)
+    {
+        pairs.emplace_back(wave.wave_archive_item, wave.index);
+    }
+
+    return pairs;
+}
+
+// A bank's and a wave sound file's waves take the wave archives that the map gives. The waves that the map leaves out
+// keep theirs, and only the bytes of the IDs change.
+void TestWaveArchives(Flavor flavor)
+{
+    const uint32_t war0 = ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 0);
+    const uint32_t war1 = ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 1);
+    const uint32_t war7 = ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 7);
+    const std::vector<std::pair<uint32_t, uint32_t>> waves = {{war0, 0}, {war1, 5}, {war0, 2}};
+    sar_files::BankSpec bank_spec;
+    bank_spec.waves = waves;
+    bank_spec.instruments = {std::nullopt};
+    sar_files::WaveSoundFileSpec sound_spec;
+    sound_spec.waves = waves;
+    const std::vector<uint8_t> bank = sar_files::Bank(flavor, bank_spec);
+    const std::vector<uint8_t> sounds = sar_files::WaveSoundFile(flavor, sound_spec);
+
+    const std::vector<uint8_t> new_bank = ntdlib::sar::WithWaveArchives(bank, flavor, {{war0, war7}});
+    const std::vector<uint8_t> new_sounds = ntdlib::sar::WithWaveArchives(sounds, flavor, {{war0, war7}, {war7, war1}});
+
+    const std::vector<std::pair<uint32_t, uint32_t>> expected = {{war7, 0}, {war1, 5}, {war7, 2}};
+    XSFLIB_CHECK(PairsOf(ntdlib::sar::Bank::Parse(new_bank, StrictOptions(flavor)).waves) == expected);
+    XSFLIB_CHECK(PairsOf(ntdlib::sar::WaveSoundFile::Parse(new_sounds, StrictOptions(flavor)).waves) == expected);
+    for (const auto& [before, after] : {std::pair(&bank, &new_bank), std::pair(&sounds, &new_sounds)})
+    {
+        const auto differ = [](uint8_t a, uint8_t b)
+        {
+            return a != b;
+        };
+        std::size_t changed = 0;
+        for (std::size_t i = 0; i < before->size() && i < after->size(); ++i)
+        {
+            changed += differ((*before)[i], (*after)[i]) ? 1 : 0;
+        }
+        XSFLIB_CHECK(before->size() == after->size() && changed == 2);
+    }
+}
+
+// WithWaveArchives refuses another file, a file of another console, and a table of waves past the file's end: here
+// the last wave's index lies past it.
+void TestWaveArchiveRefusals()
+{
+    sar_files::BankSpec spec;
+    spec.waves.assign(64, {ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 0), 0});
+    const std::vector<uint8_t> bank = sar_files::Bank(Flavor::kNx, spec);
+    const auto info =
+        static_cast<std::size_t>(std::ranges::search(bank, std::string_view("INFO")).begin() - bank.begin()) + 8;
+    const std::size_t table = info + xsflib::LoadLe32(&bank[info + 4]);
+    std::vector<uint8_t> cut = bank;
+    cut.resize(table + 4 + 63 * 8 + 4);
+
+    XSFLIB_CHECK(!Throws<xsflib::FormatError>([&] { ntdlib::sar::WithWaveArchives(bank, Flavor::kNx, {}); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ntdlib::sar::WithWaveArchives(bank, Flavor::kCafe, {}); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ntdlib::sar::WithWaveArchives(bank, Flavor::kCtr, {}); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>(
+        [&] { ntdlib::sar::WithWaveArchives(WaveArchiveFile().Write(), Flavor::kNx, {}); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ntdlib::sar::WithWaveArchives(cut, Flavor::kNx, {}); }));
+}
+
 } // namespace
 
 int main()
@@ -304,8 +378,10 @@ int main()
         TestPcmWave(flavor);
         TestWaveArchive(flavor);
         TestOtherLayout(flavor);
+        TestWaveArchives(flavor);
     }
     TestRefusals();
+    TestWaveArchiveRefusals();
 
     if (failures)
     {

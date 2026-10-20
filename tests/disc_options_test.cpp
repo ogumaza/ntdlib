@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of ntdlib::disc without disc_containers: the messages and checks that GameOptions sets for a program that reads
-// only plain images, the file system table's order, the files of an extracted disc, a file read in parts, reads split
-// at blocks' bounds, and ContainerFormat, DiscConsole and ImageFormat. The images and folders are made up here, in a
-// temporary folder.
+// only plain images, the file system table's order, the files of an extracted disc, a disc whose header leaves out the
+// magic word, a file read in parts, reads split at blocks' bounds, and ContainerFormat, DiscConsole and ImageFormat.
+// The images and folders are made up here, in a temporary folder.
 
 #include <algorithm>
 #include <cstddef>
@@ -64,6 +64,30 @@ std::vector<uint8_t> GameCubeImage(uint32_t entries = 3, uint32_t baa_size = 16)
     {
         image[i] = static_cast<uint8_t>(i);
     }
+
+    return image;
+}
+
+// A small main.dol: a header, then one text section of 0x20 bytes, loaded at 0x80003100. `entry` is the entry point.
+std::vector<uint8_t> SmallDol(uint32_t entry = 0x80003100)
+{
+    std::vector<uint8_t> dol(0x120, 0);
+    StoreBe32(dol, 0x00, 0x100);      // the section's offset in the file
+    StoreBe32(dol, 0x48, 0x80003100); // its load address
+    StoreBe32(dol, 0x90, 0x20);       // its size
+    StoreBe32(dol, 0xE0, entry);
+
+    return dol;
+}
+
+// GameCubeImage without the magic word in the disc header, and with SmallDol at 0x2500. Some discs that never went on
+// sale leave the word out.
+std::vector<uint8_t> UnmarkedImage(uint32_t entries = 3)
+{
+    std::vector<uint8_t> image = GameCubeImage(entries);
+    StoreBe32(image, 0x1C, 0);
+    const std::vector<uint8_t> dol = SmallDol();
+    std::copy(dol.begin(), dol.end(), image.begin() + 0x2500);
 
     return image;
 }
@@ -255,6 +279,94 @@ void TestExtractedDisc()
           "an extracted disc's files, past the broken links and without the AppleDouble files");
 }
 
+// A GameCube disc whose header leaves out the magic word loads if the rest of it is intact, from an image or from a
+// folder. Data without the magic word is otherwise refused as before, with the message for data of neither console.
+// The other console's options refuse even an intact disc.
+void TestUnmarkedDisc()
+{
+    const TempFolder folder("disc_options_test");
+    const disc::GameOptions options = PlainOnly();
+    const disc::GameOptions defaults{disc::Console::kGameCube, "xyz"};
+    const fs::path unmarked = folder.Write("unmarked.iso", UnmarkedImage());
+
+    disc::GameFiles game;
+    std::optional<std::string> error = disc::LoadGame(unmarked, game, options);
+    Check(!error && game.files.size() == 2 && game.GameId() == std::string("G") + std::string(5, '\0'),
+          "an unmarked image loads: " + error.value_or(""));
+    Check(Outcome(unmarked, options) == "read", "an unmarked image's files read");
+    error = disc::LoadGame(unmarked, game, defaults);
+    Check(!error && game.dol == SmallDol() && game.region == 0u,
+          "an unmarked image's system files read: " + error.value_or(""));
+
+    // Each image below breaks one check. Otherwise it is UnmarkedImage.
+    std::vector<uint8_t> empty_dol = GameCubeImage();
+    StoreBe32(empty_dol, 0x1C, 0);
+    std::vector<uint8_t> entry_outside = UnmarkedImage();
+    StoreBe32(entry_outside, 0x2500 + 0xE0, 0x80003120);
+    std::vector<uint8_t> dol_past_end = UnmarkedImage();
+    StoreBe32(dol_past_end, 0x2500 + 0x90, 0x10000);
+    std::vector<uint8_t> dol_in_system_area = UnmarkedImage();
+    std::copy_n(dol_in_system_area.begin() + 0x2500, 0x120, dol_in_system_area.begin() + 0x1000);
+    StoreBe32(dol_in_system_area, 0x420, 0x1000);
+    std::vector<uint8_t> fst_past_end = UnmarkedImage();
+    StoreBe32(fst_past_end, 0x424, 0x100000);
+    std::vector<uint8_t> fst_in_system_area = UnmarkedImage();
+    std::copy_n(fst_in_system_area.begin() + 0x2800, 0x2F, fst_in_system_area.begin() + 0x1000);
+    StoreBe32(fst_in_system_area, 0x424, 0x1000);
+    std::vector<uint8_t> cut = UnmarkedImage();
+    cut.resize(0x2810);
+    std::vector<uint8_t> short_image = UnmarkedImage();
+    short_image.resize(0x100);
+
+    const std::string neither = "not a start-up archive or a GameCube disc image";
+    Check(Outcome(folder.Write("count.iso", UnmarkedImage(1000)), options) == neither, "an unmarked damaged table");
+    Check(Outcome(folder.Write("empty_dol.iso", empty_dol), options) == neither, "an unmarked image without a DOL");
+    Check(Outcome(folder.Write("entry.iso", entry_outside), options) == neither,
+          "an unmarked image whose entry point lies outside main.dol");
+    Check(Outcome(folder.Write("dol_past_end.iso", dol_past_end), options) == neither,
+          "an unmarked image whose main.dol runs past its end");
+    Check(Outcome(folder.Write("dol_in_system_area.iso", dol_in_system_area), options) == neither,
+          "an unmarked image whose main.dol lies in the system area");
+    Check(Outcome(folder.Write("fst_past_end.iso", fst_past_end), options) == neither,
+          "an unmarked image whose table lies past its end");
+    Check(Outcome(folder.Write("fst_in_system_area.iso", fst_in_system_area), options) == neither,
+          "an unmarked image whose table lies in the system area");
+    Check(Outcome(folder.Write("cut.iso", cut), options) == neither, "an unmarked image cut short in its table");
+    Check(Outcome(folder.Write("short.iso", short_image), options) == neither,
+          "an unmarked image shorter than the disc header");
+    Check(Outcome(unmarked, {disc::Console::kWii, "xyz"}) == "it isn't a Wii disc image",
+          "the Wii's options refuse an unmarked image");
+
+    // An extracted disc gives its region in bi2.bin, with the magic word or without it.
+    const fs::path root = folder.Path() / "disc";
+    fs::create_directories(root / "sys");
+    fs::create_directories(root / "files");
+    std::vector<uint8_t> boot(0x440, 0);
+    std::vector<uint8_t> bi2(0x2000, 0);
+    StoreBe32(bi2, 0x18, 1);
+    const std::vector<uint8_t> image = UnmarkedImage();
+    folder.Write("disc/sys/boot.bin", boot);
+    folder.Write("disc/sys/bi2.bin", bi2);
+    folder.Write("disc/sys/main.dol", SmallDol());
+    folder.Write("disc/sys/fst.bin", std::vector<uint8_t>(image.begin() + 0x2800, image.begin() + 0x282F));
+    folder.Write("disc/files/a.bin", {1, 2, 3});
+
+    error = disc::LoadGame(root, game, defaults);
+    Check(!error && game.files.size() == 1 && game.region == 1u,
+          "an unmarked extracted disc loads: " + error.value_or(""));
+    Check(Outcome(root, {disc::Console::kWii, "xyz"}) == "sys/boot.bin isn't a Wii disc's header",
+          "the Wii's options refuse an unmarked extracted disc");
+
+    folder.Write("disc/sys/main.dol", SmallDol(0x80003120));
+    Check(Outcome(root, defaults) == "sys/boot.bin isn't a GameCube disc's header",
+          "an unmarked extracted disc whose entry point lies outside main.dol");
+
+    folder.Write("disc/sys/main.dol", SmallDol());
+    folder.Write("disc/sys/fst.bin", {0});
+    Check(Outcome(root, defaults) == "sys/boot.bin isn't a GameCube disc's header",
+          "an unmarked extracted disc with a damaged table");
+}
+
 // A file in parts reads as one. A read past the end is rejected, or padded with zeros. The messages name the whole by
 // the noun given.
 void TestSource()
@@ -329,6 +441,7 @@ int main()
     TestMessages();
     TestDefaults();
     TestExtractedDisc();
+    TestUnmarkedDisc();
     TestSource();
     TestReadByBlocks();
     TestFormats();

@@ -275,6 +275,13 @@ public:
     void SetVoiceMeter(const Voice& voice, int meter);
     std::array<int32_t, 2> MeterPeaks(int meter) const;
 
+    // A host's meters of the aux buses. AX has no such meters. AuxReturnPeaks gives the peaks of the left and right of
+    // what aux bus `bus` added back into the device's main bus in the last frame, at its return volume: the largest
+    // magnitude, on the scale of the buses' 16-bit samples. `index` is the GamePad's index, or 0 for the TV. A bus
+    // without a callback gives 0, and so does a device or a bus that doesn't exist. The peaks change nothing in the
+    // output. They aren't part of a snapshot.
+    std::array<int32_t, 2> AuxReturnPeaks(Device device, uint32_t index, int bus) const;
+
     // A copy of AX's state between frames: the voices with both copies of their blocks, the allocation, the aux buses'
     // buffers and return volumes, and the final mix stages with the upsamplers' histories. The last frame's buses and
     // output aren't part of it.
@@ -395,6 +402,9 @@ private:
     bool mutes_at_once_ = false; // the first frame after a restore
     std::vector<std::array<Buses::Channel, 2>> meter_sums_;
     std::vector<std::array<int32_t, 2>> meter_peaks_;
+
+    // The peaks of the left and right of each aux bus's return in the last frame (AuxReturnPeaks), by device and bus.
+    std::array<std::array<std::array<int32_t, 2>, 3>, 1 + kDrcCount> aux_peaks_{};
 };
 
 struct System::Snapshot
