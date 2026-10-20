@@ -23,8 +23,8 @@ namespace ntdlib::sequence_export
 class BankSet;
 class RsarBankSet;
 
-// A sequence's SFZ files ("Track <n>.sfz") and the samples that they share, such as "w0_12.wav", or "w0_12L.wav" and
-// "w0_12R.wav" for stereo (seqlib/sfz/track_file.h).
+// A sequence's SFZ files ("Track <n>.sfz", or "<label> Track <n>.sfz" for a piece of several sequences) and the samples
+// that they share, such as "w0_12.wav", or "w0_12L.wav" and "w0_12R.wav" for stereo (seqlib/sfz/track_file.h).
 using SfzFile = seqlib::sfz::File;
 using SfzSample = seqlib::sfz::Sample;
 using SfzInstruments = seqlib::sfz::Instruments;

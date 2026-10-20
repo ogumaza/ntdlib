@@ -18,11 +18,18 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
+#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include "seqlib/midi/recorder.h"
+#include "seqlib/sf2/units.h"
+#include "xsflib/binary.h"
 
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
@@ -35,10 +42,6 @@
 #include "ntdlib/sequence_export/recording_engine.h"
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
-#include "seqlib/midi/recorder.h"
-#include "seqlib/sf2/units.h"
-#include "xsflib/binary.h"
-
 #include "sequence_export/lengths.h"
 
 namespace ntdlib::sequence_export
@@ -5456,9 +5459,27 @@ uint32_t Performer::MsToTick(double ms) const
     return static_cast<uint32_t>(tick_ms_.size() - 1 + std::ceil((ms - tick_ms_.back()) / per_tick));
 }
 
-// Runs as many passes of a sequence's performance as it takes. The counted loops in `endless_loops` loop for ever.
-Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& banks, const PerformOptions& options,
-                          const Settings& settings, const std::set<std::pair<int, uint32_t>>& endless_loops = {})
+// What the sequences of a piece share in their passes (PerformTogether): the least CC11 peak that each sequence's
+// levels scale for, and the parts that each of its tracks may have. Without part limits, the passes fit the parts into
+// MIDI's channels themselves (FitParts).
+struct SharedPasses
+{
+    double peak = 0.0;
+    std::optional<std::array<uint8_t, kTrackCount>> part_limits;
+};
+
+// A sequence's performance, with the CC11 peak that its levels were scaled for (LevelScale).
+struct Passes
+{
+    Performance performance;
+    double peak = 0.0;
+};
+
+// Runs as many passes of a sequence's performance as it takes. The passes take what `shared` gives. The counted loops
+// in `endless_loops` loop for ever.
+Passes PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& banks, const PerformOptions& options,
+                     const Settings& settings, const SharedPasses& shared = {},
+                     const std::set<std::pair<int, uint32_t>>& endless_loops = {})
 {
     // Rerun sequences in these cases (PassFindings). When filters change during notes, the rerun moves those filters
     // from presets to controllers. When legatos raise MIDI notes above the velocities they start at, the rerun starts
@@ -5474,12 +5495,18 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
     // passes until one leaves nothing to change, four at most. A pass whose parts don't fit MIDI's channels also
     // requires another pass. That pass keeps each track to the parts that fit (FitParts). Every later pass does the
     // same.
-    PassFindings earlier; // what the last pass found, for the next to play by
-    double peak = 0.0;    // the CC11 peak the next pass scales for
-    double applied = 0.0; // the peak the last pass scaled for
+    PassFindings earlier;      // what the last pass found, for the next to play by
+    double peak = shared.peak; // the CC11 peak the next pass scales for
+    double applied = 0.0;      // the peak the last pass scaled for
     std::array<uint8_t, kTrackCount> part_limits;
     part_limits.fill(kPartCount);
     bool limited = false;
+    if (shared.part_limits)
+    {
+        part_limits = *shared.part_limits;
+        limited = true;
+    }
+
     std::vector<Performer::LoopChoice> loop_choices;
     Performance performance;
     for (int pass = 0; pass < 4; pass++)
@@ -5493,7 +5520,7 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
         // endless. Their passes then count as loops of the sequence.
         if (endless_loops.empty() && !performer.LimitLoops().empty())
         {
-            return PerformPasses(sound, seq, banks, options, settings, performer.LimitLoops());
+            return PerformPasses(sound, seq, banks, options, settings, shared, performer.LimitLoops());
         }
 
         applied = peak;
@@ -5520,18 +5547,473 @@ Performance PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& 
         {
             found = PassFindings{.filter_moves = found.filter_moves};
         }
-        if (parts_fit && found == earlier && LevelScale(performer.LevelPeak()) == LevelScale(peak))
+        const double level_peak = std::max(shared.peak, performer.LevelPeak());
+        if (parts_fit && found == earlier && LevelScale(level_peak) == LevelScale(peak))
         {
             break;
         }
 
         earlier = std::move(found);
-        peak = performer.LevelPeak();
+        peak = level_peak;
     }
 
     SetLevelCut(performance, applied);
 
-    return performance;
+    return {std::move(performance), applied};
+}
+
+// A Wii sound's fields and its sequence's bytecode, in sar's form, for the performer.
+struct WiiSequence
+{
+    SoundInfo sound;
+    Sequence seq;
+};
+
+// Reads sequence `sound_index` of the Wii's `archive`. The Wii's arguments are big-endian. Throws FormatError for a
+// sequence that the archive doesn't hold.
+WiiSequence ReadWiiSequence(const rsar::SoundArchive& archive, uint32_t sound_index)
+{
+    const rsar::SoundInfo& sound = archive.Sounds()[sound_index];
+    const auto file = archive.FileData(sound.file_id);
+    if (file.empty() && !archive.FileMissing(sound.file_id))
+    {
+        throw xsflib::FormatError("sequence file is not stored in the archive");
+    }
+    if (file.empty())
+    {
+        throw xsflib::FormatError(archive.Truncated() ? "sequence extends past the truncated archive"
+                                                      : "sequence extends past the archive");
+    }
+
+    WiiSequence wii;
+    wii.seq.data = rsar::Sequence::Parse(file).data;
+    wii.seq.big_endian = true;
+
+    SoundInfo& info = wii.sound;
+    info.name = sound.name;
+    info.file_id = sound.file_id;
+    info.volume = sound.volume;
+    info.pan_mode = sound.pan_mode;
+    info.pan_curve = sound.pan_curve;
+    info.allocate_track_flags = sound.allocate_track_flags;
+    info.start_offset = sound.start_offset;
+
+    return wii;
+}
+
+// How a sequence of a piece plays (PerformTogether): the passes of its main loop to play at least (PerformOptions'
+// `loops`), and what it shares with the piece's other sequences.
+struct PieceRun
+{
+    bool operator==(const PieceRun& other) const
+    {
+        return loops == other.loops && shared.peak == other.shared.peak &&
+               shared.part_limits == other.shared.part_limits;
+    }
+
+    int loops = 1;
+    SharedPasses shared;
+};
+
+// A sequence of a piece, how it plays and its performance.
+struct PieceSequence
+{
+    WiiSequence wii;
+    PieceRun run;
+    Passes played;
+};
+
+// Performs a sequence of a piece as `run` gives.
+Passes PlayPieceSequence(const WiiSequence& wii, const PieceRun& run, Regions& banks, const PerformOptions& options,
+                         const Settings& settings)
+{
+    PerformOptions played = options;
+    played.loops = run.loops;
+
+    return PerformPasses(wii.sound, wii.seq, banks, played, settings, run.shared);
+}
+
+// Whether a track's `events` play a note.
+bool TrackPlays(const std::vector<TrackEvent>& events)
+{
+    const auto note_on = [](const TrackEvent& e)
+    {
+        return e.kind == EventKind::kNoteOn;
+    };
+
+    return std::ranges::any_of(events, note_on);
+}
+
+// Whether `perf` plays a note.
+bool PlaysNotes(const Performance& perf)
+{
+    return std::ranges::any_of(perf.tracks, TrackPlays);
+}
+
+// Whether `perf` has a main loop that the MIDI writer marks: one that ends after it starts.
+bool MarksLoop(const Performance& perf)
+{
+    return perf.loop && perf.loop->end > perf.loop->start;
+}
+
+// The time in milliseconds at which the MIDI tempo of `perf` places fractional tick `tick`.
+double TempoMs(const Performance& perf, double tick)
+{
+    const double timebase = std::max<uint32_t>(perf.timebase, 1);
+    double ms = 0.0;
+    double from = 0.0;
+    double bpm = 120.0;
+    for (const Performance::Tempo& change : perf.tempo)
+    {
+        if (change.tick >= tick)
+        {
+            break;
+        }
+
+        ms += (change.tick - from) * 60000.0 / (bpm * timebase);
+        from = change.tick;
+        bpm = change.bpm;
+    }
+
+    return ms + (tick - from) * 60000.0 / (bpm * timebase);
+}
+
+// The fractional tick at which the MIDI tempo of `perf` places the time `ms`.
+double TempoTick(const Performance& perf, double ms)
+{
+    const double timebase = std::max<uint32_t>(perf.timebase, 1);
+    double at_ms = 0.0;
+    double from = 0.0;
+    double bpm = 120.0;
+    for (const Performance::Tempo& change : perf.tempo)
+    {
+        const double change_ms = at_ms + (change.tick - from) * 60000.0 / (bpm * timebase);
+        if (change_ms >= ms)
+        {
+            break;
+        }
+
+        at_ms = change_ms;
+        from = change.tick;
+        bpm = change.bpm;
+    }
+
+    return from + (ms - at_ms) * bpm * timebase / 60000.0;
+}
+
+// Where the MIDI writer places event `e` of `perf`, in fractional ticks: at the start of its frame, even after its tick
+// (seqlib::midi::FrameTiming::kFrameStart, the timing of the Wii's conversion).
+double EventPlace(const Performance& perf, const TrackEvent& e)
+{
+    if (e.after > 0)
+    {
+        return e.tick + e.after;
+    }
+
+    return e.tick < perf.frame_ticks.size() ? perf.frame_ticks[e.tick] : static_cast<double>(e.tick);
+}
+
+// The timing of a piece's MIDI file: the sequence whose tempo it takes, which sequences place their ticks at that
+// sequence's times, the frames of those ticks, and the piece's main loop and end in those ticks.
+struct PieceTiming
+{
+    std::size_t lead = 0;
+    std::vector<bool> timed;
+    std::vector<double> frame_ticks;
+    std::optional<Performance::Loop> loop;
+    int loops = 0;
+    uint32_t end_tick = 0;
+    std::vector<std::string> warnings;
+};
+
+// Whether `perf` places its ticks at the same times as `lead`: the same timebase and tempo, and the same frames,
+// `frames`, for the ticks that both have.
+bool SameTiming(const Performance& perf, const Performance& lead, const std::vector<double>& frames)
+{
+    const auto same_tempo = [](const Performance::Tempo& a, const Performance::Tempo& b)
+    {
+        return a.tick == b.tick && a.bpm == b.bpm;
+    };
+    const std::size_t common = std::min(perf.frame_ticks.size(), frames.size());
+
+    return perf.timebase == lead.timebase && std::ranges::equal(perf.tempo, lead.tempo, same_tempo) &&
+           std::equal(frames.begin(), frames.begin() + static_cast<std::ptrdiff_t>(common), perf.frame_ticks.begin());
+}
+
+// The fractional tick in the ticks of `lead` at which `lead`'s MIDI tempo places fractional tick `tick` of `perf`.
+double LeadTick(const Performance& perf, const Performance& lead, double tick)
+{
+    return TempoTick(lead, TempoMs(perf, tick));
+}
+
+// Works out the timing of the piece that `sequences` play, with a main loop that plays at least `loops` times.
+//
+// The piece takes the tempo of its first sequence with notes, the lead. A sequence with the lead's timing keeps its
+// ticks. Any other sequence's events move to the places in the lead's ticks where the lead's tempo puts their times.
+//
+// The sequences with notes that loop must have the lead's timing and loops of one length. Each marks its loop on the
+// first pass that the game's next pass repeats (ChooseSteadyPass). The piece marks the latest of those passes. Each
+// sequence then plays one of its later passes there. The game's next pass repeats that pass too. The other sequences
+// with notes have to end before the piece's loop. A sequence without notes doesn't count. The piece ends where its
+// looping sequences end. Where the loops don't fit together, the piece has no loop, with a warning.
+PieceTiming TimePiece(const std::vector<PieceSequence>& sequences, int loops)
+{
+    PieceTiming timing;
+    const auto plays = [](const PieceSequence& s)
+    {
+        return PlaysNotes(s.played.performance);
+    };
+    const auto first = std::ranges::find_if(sequences, plays);
+    timing.lead = first == sequences.end() ? 0 : static_cast<std::size_t>(first - sequences.begin());
+
+    // The sequences with the lead's timing, the frames of their ticks, and the end of the piece without a loop.
+    const Performance& lead = sequences[timing.lead].played.performance;
+    timing.frame_ticks = lead.frame_ticks;
+    std::vector<std::size_t> looping;
+    double end = 0.0;
+    for (const PieceSequence& s : sequences)
+    {
+        const Performance& perf = s.played.performance;
+        const bool timed = SameTiming(perf, lead, timing.frame_ticks);
+        timing.timed.push_back(timed);
+        if (timed && perf.frame_ticks.size() > timing.frame_ticks.size())
+        {
+            timing.frame_ticks = perf.frame_ticks;
+        }
+
+        end = std::max(end, timed ? perf.end_tick : LeadTick(perf, lead, perf.end_tick));
+        if (PlaysNotes(perf) && MarksLoop(perf))
+        {
+            looping.push_back(timing.timed.size() - 1);
+        }
+    }
+
+    timing.end_tick = static_cast<uint32_t>(std::ceil(end));
+    if (looping.empty())
+    {
+        return timing;
+    }
+
+    // The loops must have the lead's timing and one length, and start a whole number of passes apart.
+    const uint32_t length =
+        sequences[looping[0]].played.performance.loop->end - sequences[looping[0]].played.performance.loop->start;
+    uint32_t start = 0;
+    uint32_t loop_end = 0;
+    bool fits = true;
+    for (const std::size_t k : looping)
+    {
+        const Performance& perf = sequences[k].played.performance;
+        fits = fits && timing.timed[k] && perf.loop->end - perf.loop->start == length;
+        start = std::max(start, perf.loop->start);
+        loop_end = std::max(loop_end, perf.end_tick);
+    }
+    for (const std::size_t k : looping)
+    {
+        const Performance& perf = sequences[k].played.performance;
+        fits = fits && (start - perf.loop->start) % length == 0 && (loop_end - perf.loop->start) % length == 0;
+    }
+    if (!fits)
+    {
+        timing.warnings.push_back("the sequences loop at different places: the piece has no loop markers");
+        return timing;
+    }
+
+    // The sequences with notes that don't loop end before the piece's loop. Their events at the loop's tick are no
+    // notes.
+    for (std::size_t k = 0; k < sequences.size(); k++)
+    {
+        const Performance& perf = sequences[k].played.performance;
+        if (!PlaysNotes(perf) || MarksLoop(perf))
+        {
+            continue;
+        }
+
+        double last = 0.0;
+        for (const std::vector<TrackEvent>& events : perf.tracks)
+        {
+            for (const TrackEvent& e : events)
+            {
+                last = std::max(last, timing.timed[k] ? e.tick + e.after : LeadTick(perf, lead, EventPlace(perf, e)));
+            }
+        }
+        while (start < last)
+        {
+            start += length;
+        }
+    }
+
+    loop_end = std::max(loop_end, start + static_cast<uint32_t>(std::max(loops, 1)) * length);
+    timing.loop = Performance::Loop{start, start + length};
+    timing.loops = static_cast<int>((loop_end - start) / length);
+    timing.end_tick = loop_end;
+
+    return timing;
+}
+
+// The fractional place `place` in the ticks of a piece as an event's tick and the fraction after it (TrackEvent). The
+// fraction is above 0 for any place above 0. The MIDI writer then puts the event at that place, not at its tick's
+// frame.
+std::pair<uint32_t, double> TickAndAfter(double place)
+{
+    if (place <= 0.0)
+    {
+        return {0, 0.0};
+    }
+
+    const double tick = std::ceil(place) - 1.0;
+
+    return {static_cast<uint32_t>(tick), place - tick};
+}
+
+// Merges the performances of `sequences` into the performance of their piece, with `timing`. The piece keeps each
+// sequence's tracks with notes, in order, each named after its sequence's label and its track. Note ids and presets
+// are numbered across the piece. Throws FormatError when the tracks with notes are more than MIDI's 16.
+Performance MergePiece(const std::vector<PieceSequence>& sequences, const PieceTiming& timing)
+{
+    const Performance& lead = sequences[timing.lead].played.performance;
+    Performance piece;
+    piece.timebase = lead.timebase;
+    piece.tempo = lead.tempo;
+    piece.frame_ticks = timing.frame_ticks;
+    piece.since_march_2008 = lead.since_march_2008;
+    piece.balance = lead.balance;
+    piece.loop = timing.loop;
+    piece.loops = timing.loops;
+    piece.end_tick = timing.end_tick;
+
+    int next_track = 0;
+    uint32_t note_base = 0;
+    for (std::size_t k = 0; k < sequences.size(); k++)
+    {
+        const Performance& perf = sequences[k].played.performance;
+        const std::string& label = sequences[k].wii.sound.name;
+
+        // Each track with notes, with the piece's note ids and presets, at the lead's ticks. The piece takes only the
+        // presets that those tracks use.
+        uint32_t last_note = 0;
+        for (int t = 0; t < kTrackCount; t++)
+        {
+            if (!TrackPlays(perf.tracks[t]))
+            {
+                continue;
+            }
+            if (next_track == kTrackCount)
+            {
+                throw xsflib::FormatError("the sequences play notes on more tracks than MIDI's 16 channels");
+            }
+
+            std::vector<TrackEvent>& events = piece.tracks[next_track];
+            for (TrackEvent e : perf.tracks[t])
+            {
+                if (e.note != 0)
+                {
+                    last_note = std::max(last_note, e.note);
+                    e.note += note_base;
+                }
+                if (e.kind == EventKind::kPreset)
+                {
+                    e.preset = seqlib::midi::PresetIndex(piece.presets, perf.presets[e.preset]);
+                }
+                if (!timing.timed[k])
+                {
+                    std::tie(e.tick, e.after) = TickAndAfter(LeadTick(perf, lead, EventPlace(perf, e)));
+                }
+                events.push_back(e);
+            }
+
+            piece.track_names[next_track] = label + " Track " + std::to_string(t);
+            piece.biquad_types[next_track] = perf.biquad_types[t];
+            next_track++;
+        }
+        note_base += last_note;
+
+        // What the sequence's performance found, and its length. The sequences share their levels' cut.
+        piece.seconds = std::max(piece.seconds, perf.seconds);
+        piece.truncated = piece.truncated || perf.truncated;
+        piece.holds = piece.holds || perf.holds;
+        piece.level_cut_db = std::max(piece.level_cut_db, perf.level_cut_db);
+        for (const auto& [what, count] : perf.approximations)
+        {
+            piece.approximations[what] += count;
+        }
+        for (const std::string& warning : perf.warnings)
+        {
+            piece.warnings.push_back(label + ": " + warning);
+        }
+    }
+
+    piece.warnings.insert(piece.warnings.end(), timing.warnings.begin(), timing.warnings.end());
+
+    return piece;
+}
+
+// How each of `sequences` has to play for its piece, `piece`, with `timing` (PerformTogether): every looping sequence
+// to the piece's end, every sequence's levels at the scale of the loudest, and each track within the parts that the
+// piece's MIDI channels leave it.
+std::vector<PieceRun> PieceRuns(const std::vector<PieceSequence>& sequences, const PieceTiming& timing,
+                                const Performance& piece)
+{
+    std::vector<PieceRun> runs;
+    double peak = 0.0;
+    for (const PieceSequence& s : sequences)
+    {
+        runs.push_back(s.run);
+        peak = std::max(peak, s.played.peak);
+    }
+
+    // The parts that each of the piece's tracks uses, and the parts that MIDI's channels leave it.
+    std::array<uint8_t, kTrackCount> used{};
+    for (int t = 0; t < kTrackCount; t++)
+    {
+        for (const TrackEvent& e : piece.tracks[t])
+        {
+            if (e.kind == EventKind::kNoteOn)
+            {
+                used[t] = std::max<uint8_t>(used[t], static_cast<uint8_t>(e.part + 1));
+            }
+        }
+    }
+    const std::array<uint8_t, kTrackCount> fitted = FitParts(piece, used);
+
+    int piece_track = 0;
+    for (std::size_t k = 0; k < sequences.size(); k++)
+    {
+        const Performance& perf = sequences[k].played.performance;
+        PieceRun& run = runs[k];
+        if (timing.loop && MarksLoop(perf) && PlaysNotes(perf))
+        {
+            const uint32_t length = perf.loop->end - perf.loop->start;
+            const auto passes = static_cast<int>((timing.end_tick - perf.loop->start) / length);
+            if (passes > perf.loops)
+            {
+                run.loops = std::max(run.loops, passes);
+            }
+        }
+        if (LevelScale(peak) != LevelScale(sequences[k].played.peak))
+        {
+            run.shared.peak = peak;
+        }
+
+        // The piece's tracks hold this sequence's tracks with notes, in order.
+        std::array<uint8_t, kTrackCount> limits;
+        limits.fill(1);
+        bool over = false;
+        for (int t = 0; t < kTrackCount; t++)
+        {
+            if (piece_track < kTrackCount && TrackPlays(perf.tracks[t]))
+            {
+                limits[t] = fitted[piece_track];
+                over = over || fitted[piece_track] < used[piece_track];
+                piece_track++;
+            }
+        }
+        if (over)
+        {
+            run.shared.part_limits = limits;
+        }
+    }
+
+    return runs;
 }
 
 } // namespace
@@ -5556,41 +6038,73 @@ Performance Perform(const SoundArchive& archive, uint32_t sound_index, BankSet& 
 
     const Sequence seq = Sequence::Parse(file, settings.archive);
     SarRegions regions(banks);
-    return PerformPasses(sound, seq, regions, options, settings);
+    return PerformPasses(sound, seq, regions, options, settings).performance;
 }
 
 // Finds, reads and performs a Wii archive's sequence. The sound's fields and the sequence's bytecode go to the
-// performer in sar's form. The Wii's arguments are big-endian.
+// performer in sar's form (ReadWiiSequence).
 Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, RsarBankSet& banks,
                     const PerformOptions& options, const Settings& settings)
 {
-    const rsar::SoundInfo& sound = archive.Sounds()[sound_index];
-    const auto file = archive.FileData(sound.file_id);
-    if (file.empty() && !archive.FileMissing(sound.file_id))
-    {
-        throw xsflib::FormatError("sequence file is not stored in the archive");
-    }
-    if (file.empty())
-    {
-        throw xsflib::FormatError(archive.Truncated() ? "sequence extends past the truncated archive"
-                                                      : "sequence extends past the archive");
-    }
-
-    Sequence seq;
-    seq.data = rsar::Sequence::Parse(file).data;
-    seq.big_endian = true;
-
-    SoundInfo info;
-    info.name = sound.name;
-    info.file_id = sound.file_id;
-    info.volume = sound.volume;
-    info.pan_mode = sound.pan_mode;
-    info.pan_curve = sound.pan_curve;
-    info.allocate_track_flags = sound.allocate_track_flags;
-    info.start_offset = sound.start_offset;
-
+    const WiiSequence wii = ReadWiiSequence(archive, sound_index);
     RsarRegions regions(banks, settings.wii_build.SinceMarch2008());
-    return PerformPasses(info, seq, regions, options, settings);
+    return PerformPasses(wii.sound, wii.seq, regions, options, settings).performance;
+}
+
+Performance PerformTogether(const rsar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
+                            RsarBankSet& banks, const PerformOptions& options, const Settings& settings)
+{
+    if (sound_indices.empty())
+    {
+        throw std::invalid_argument("no sequences to perform together");
+    }
+
+    // One SoundFont holds the piece's instruments. The sequences therefore share their bank, and the pan mode that
+    // places its stereo waves.
+    const rsar::SoundInfo& first = archive.Sounds()[sound_indices[0]];
+    for (const uint32_t index : sound_indices)
+    {
+        const rsar::SoundInfo& sound = archive.Sounds()[index];
+        if (sound.bank != first.bank || sound.pan_mode != first.pan_mode)
+        {
+            throw std::invalid_argument(first.name + " and " + sound.name + " differ in bank or pan mode");
+        }
+    }
+
+    // Each sequence plays alone first. Then each that has to play otherwise for the piece plays again (PieceRuns). A
+    // run can only add passes, lower the levels' scale or take parts away. The runs therefore settle in a round or two.
+    RsarRegions regions(banks, settings.wii_build.SinceMarch2008());
+    std::vector<PieceSequence> sequences;
+    for (const uint32_t index : sound_indices)
+    {
+        PieceSequence& s = sequences.emplace_back();
+        s.wii = ReadWiiSequence(archive, index);
+        s.run.loops = options.loops;
+        s.played = PlayPieceSequence(s.wii, s.run, regions, options, settings);
+    }
+
+    for (int round = 0; round < 3; round++)
+    {
+        const PieceTiming timing = TimePiece(sequences, options.loops);
+        Performance piece = MergePiece(sequences, timing);
+        const std::vector<PieceRun> runs = PieceRuns(sequences, timing, piece);
+        bool again = false;
+        for (std::size_t k = 0; k < sequences.size(); k++)
+        {
+            if (runs[k] != sequences[k].run)
+            {
+                sequences[k].run = runs[k];
+                sequences[k].played = PlayPieceSequence(sequences[k].wii, runs[k], regions, options, settings);
+                again = true;
+            }
+        }
+        if (!again)
+        {
+            return piece;
+        }
+    }
+
+    return MergePiece(sequences, TimePiece(sequences, options.loops));
 }
 
 PresetKey StartingPresetKey(uint32_t program, const Settings& settings)

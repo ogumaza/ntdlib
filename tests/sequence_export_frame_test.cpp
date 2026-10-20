@@ -384,6 +384,26 @@ void TestBatchInputs()
     Check(fake.before_inputs == 5, "the hook runs for each run with inputs, after the options are checked");
 }
 
+void TestOnlyPicksAPieceByItsLabels()
+{
+    // A piece of several sequences answers --only to its name and to the label of each of its sequences.
+    const TempFolder folder("sequence_export_frame_test");
+    const fs::path input = folder.Path() / "game.txt";
+    WriteFile(input, std::string("Piece\nOther\n"));
+    FakeConverter fake;
+    fake.converter.sequences = [](const FakeSource& source)
+    {
+        return std::vector<Sequence>{{0, source.names[0], {"PIECE_S1", "PIECE_S2"}}, {1, source.names[1]}};
+    };
+    const fs::path out = folder.Path() / "game_fake";
+
+    const int label = Run({"fake", "--quiet", "--only", "_S2$", Utf8(input)}, fake.converter);
+    const int none = Run({"fake", "--quiet", "--only", "_S3$", Utf8(input)}, fake.converter);
+
+    Check(label == 0 && fs::exists(out / "Piece.mid") && !fs::exists(out / "Other.mid"), "--only picks a label");
+    Check(none == 1, "--only that picks no name and no label");
+}
+
 void TestOtherInputs()
 {
     // An input that another of the program's converters reads doesn't reach the converter. Its status counts.
@@ -483,6 +503,7 @@ int main()
     TestSwitchHasNoVoices();
     TestBatch();
     TestBatchInputs();
+    TestOnlyPicksAPieceByItsLabels();
     TestOtherInputs();
     TestRunMain();
     TestUsage();

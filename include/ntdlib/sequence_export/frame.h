@@ -242,11 +242,13 @@ Options<Perform> ParseOptions(const std::vector<std::string>& args, const Option
     return o;
 }
 
-// A sequence of an input: its index there, and its name.
+// A sequence of an input: its index there, and its name. A piece of several sequences that play together also gives
+// their labels (ConvertTogether in convert.h). --only picks the piece by its name or by any of its labels.
 struct Sequence
 {
     std::size_t index = 0;
     std::string name;
+    std::vector<std::string> labels = {};
 };
 
 // Converts the selected sequences to `out_dir` and reports each result unless `quiet` is set. `convert` converts a
@@ -383,9 +385,13 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
     }
 
     std::vector<Sequence> selected;
+    const auto matches = [&only](const std::string& name)
+    {
+        return std::regex_search(name, only);
+    };
     for (Sequence& sequence : converter.sequences(*source))
     {
-        if (std::regex_search(sequence.name, only))
+        if (matches(sequence.name) || std::ranges::any_of(sequence.labels, matches))
         {
             selected.push_back(std::move(sequence));
         }

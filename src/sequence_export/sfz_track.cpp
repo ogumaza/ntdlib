@@ -310,12 +310,15 @@ SfzInstruments BuildTrackFiles(const Performance& perf, const seqlib::midi::Midi
                                const std::vector<std::string>& preset_names, const Settings& settings,
                                const std::string& program, const PresetRegionsFunction& regions)
 {
+    // A file takes its MIDI track's name. The tracks of a piece of several sequences have names ("<label> Track <n>").
+    // Other tracks have none, and their files are "Track <n>.sfz".
     seqlib::sfz::TrackFileOptions options;
     options.title = title;
     options.program = program;
     options.preset_names = preset_names;
     options.presets = perf.presets.size();
     options.level_cut_db = perf.level_cut_db;
+    options.track_names = true;
     auto text = [&](int t)
     {
         return TrackAdditions(perf, t, settings, regions);

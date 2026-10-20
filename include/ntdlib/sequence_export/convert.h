@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,15 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
 // The same for a sequence of the Wii's RSAR format.
 Conversion ConvertSequence(const rsar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
                            const Settings& settings, const std::string& program);
+
+// The same for sequences `sound_indices` of the Wii's RSAR format that a game starts in one sound frame and plays as
+// one piece: one MIDI file, one SoundFont and one set of SFZ files, titled `name` (PerformTogether in performer.h).
+// The SoundFont's comment lists the sequences. Each SFZ file is named after its MIDI track. Throws FormatError if a
+// sequence cannot be read or the piece's tracks with notes are more than 16. Throws std::invalid_argument when
+// `sound_indices` is empty or the sequences don't share their bank and pan mode.
+Conversion ConvertTogether(const rsar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
+                           const std::string& name, const PerformOptions& options, const Settings& settings,
+                           const std::string& program);
 
 // A SoundFont of a bank's instruments, from program `first` to program `last`.
 struct BankSoundFont

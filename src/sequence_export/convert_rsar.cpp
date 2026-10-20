@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// Sequence conversion for the Wii's RSAR format (see convert.h). This file builds the SoundFont from NW4R SND's banks.
-// seqlib writes the MIDI file, and sfz_rsar.cpp the SFZ files.
+// Sequence conversion for the Wii's RSAR format (see convert.h): of a sequence, or of sequences that play together as
+// one piece. This file builds the SoundFont from NW4R SND's banks. seqlib writes the MIDI file, and sfz_rsar.cpp the
+// SFZ files.
 //
 // Each performance preset combines a bank instrument with its track settings. Each such preset becomes one SoundFont
 // instrument and preset, with a zone for each region. Zones contain the region's key and velocity ranges, sample, root
@@ -9,15 +10,21 @@
 // also get a copy in bank 128. Synths take drum instruments from there.
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <stdexcept>
+#include <string>
 #include <utility>
+
+#include "seqlib/loop.h"
+#include "seqlib/midi/performance_writer.h"
+#include "seqlib/sf2/presets.h"
 
 #include "ntdlib/sequence_export/conversion.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/rsar_instruments.h"
-#include "seqlib/loop.h"
-#include "seqlib/midi/performance_writer.h"
-#include "seqlib/sf2/presets.h"
 #include "sequence_export/sf2_build.h"
 #include "sequence_export/wii_pan.h"
 #include "sequence_export/zone_low_pass.h"
@@ -133,18 +140,17 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));
 }
 
-} // namespace
-
-Conversion ConvertSequence(const rsar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
-                           const Settings& settings, const std::string& program)
+// Builds the MIDI file, the SoundFont and the SFZ files of `performance`. The performance plays the bank in `banks`.
+// `title` names the files. `source` says in the SoundFont's comment what the performance plays, such as "sequence
+// <label>".
+Conversion ConvertPerformance(Performance performance, RsarBankSet& banks, const std::string& title,
+                              const std::string& source, const Settings& settings, const std::string& program)
 {
-    const rsar::SoundInfo& sound = archive.Sounds()[sound_index];
-    RsarBankSet banks(archive, sound, settings);
     Conversion c;
-    c.performance = Perform(archive, sound_index, banks, options, settings);
+    c.performance = std::move(performance);
 
     // NW4R SND runs a tick at its frame's start, a little after MIDI's tempo puts the tick.
-    const seqlib::midi::MidiReport midi = WriteMidiFile(c, sound.name, {seqlib::midi::FrameTiming::kFrameStart});
+    const seqlib::midi::MidiReport midi = WriteMidiFile(c, title, {seqlib::midi::FrameTiming::kFrameStart});
 
     // The attenuation that keeps the loudest region that the performance plays at full level (SoundFontCut).
     auto volume_of = [&banks](const PresetKey& key, int note, int velocity)
@@ -167,18 +173,60 @@ Conversion ConvertSequence(const rsar::SoundArchive& archive, uint32_t sound_ind
     }
 
     sf2::SoundFont& sf = builder.Result();
-    std::string comment = "Converted by " + program + " from sequence " + sound.name + ".";
+    std::string comment = "Converted by " + program + " from " + source + ".";
     if (banks.GetBank())
     {
         comment += " Bank: " + banks.BankName() + ".";
     }
 
-    WriteSoundFont(c, sf, sound.name, comment, program);
-    c.sfz = BuildSfz(c.performance, midi, banks, sound.name, names, balance, settings, program);
+    WriteSoundFont(c, sf, title, comment, program);
+    c.sfz = BuildSfz(c.performance, midi, banks, title, names, balance, settings, program);
 
     CollectWarnings(c, midi, builder.Warnings(), banks.Errors());
 
     return c;
+}
+
+} // namespace
+
+Conversion ConvertSequence(const rsar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
+                           const Settings& settings, const std::string& program)
+{
+    const rsar::SoundInfo& sound = archive.Sounds()[sound_index];
+    RsarBankSet banks(archive, sound, settings);
+    Performance performance = Perform(archive, sound_index, banks, options, settings);
+
+    return ConvertPerformance(std::move(performance), banks, sound.name, "sequence " + sound.name, settings, program);
+}
+
+Conversion ConvertTogether(const rsar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
+                           const std::string& name, const PerformOptions& options, const Settings& settings,
+                           const std::string& program)
+{
+    if (sound_indices.empty())
+    {
+        throw std::invalid_argument("no sequences to convert together");
+    }
+
+    RsarBankSet banks(archive, archive.Sounds()[sound_indices[0]], settings);
+    Performance performance = PerformTogether(archive, sound_indices, banks, options, settings);
+
+    // The SoundFont's comment lists the sequences: "sequences A, B and C together".
+    std::string source = sound_indices.size() == 1 ? "sequence " : "sequences ";
+    for (std::size_t k = 0; k < sound_indices.size(); k++)
+    {
+        if (k > 0)
+        {
+            source += k + 1 == sound_indices.size() ? " and " : ", ";
+        }
+        source += archive.Sounds()[sound_indices[k]].name;
+    }
+    if (sound_indices.size() > 1)
+    {
+        source += " together";
+    }
+
+    return ConvertPerformance(std::move(performance), banks, name, source, settings, program);
 }
 
 } // namespace ntdlib::sequence_export

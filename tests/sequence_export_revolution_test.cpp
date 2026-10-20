@@ -17,6 +17,7 @@
 #include <numbers>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -736,6 +737,9 @@ struct TestSounds
 
     // The build of NW4R SND that a main.dol shows, in place of the one that `version` gives.
     std::optional<SndBuild> build = std::nullopt;
+
+    // The sounds' names, in order. A sound past the list's end has none.
+    std::vector<std::string> names = {};
 };
 
 // Builds an archive with a sound for each of `sequences`, all of them on one bank whose one region plays one wave.
@@ -758,7 +762,8 @@ SoundArchive SequenceArchive(const std::vector<std::vector<uint8_t>>& sequences,
     files.push_back({Rbnk({instrument}), Rwar({wave})});
 
     const uint32_t bank = static_cast<uint32_t>(sequences.size());
-    return SoundArchive::Load(Rsar(files, {.version = options.version, .sequences = sounds, .banks = {bank}}));
+    return SoundArchive::Load(
+        Rsar(files, {.version = options.version, .sequences = sounds, .banks = {bank}, .names = options.names}));
 }
 
 // Performs `commands` as the one sound of a SequenceArchive.
@@ -775,6 +780,24 @@ Performance PerformCommandsWith(const std::vector<uint8_t>& commands, const Perf
     BankSet banks(archive, archive.Sounds()[0]);
 
     return Perform(archive, 0, banks, options);
+}
+
+// Performs sounds `indices` of `archive` together, as one piece (PerformTogether), under `options`.
+Performance PerformTogether(const SoundArchive& archive, const std::vector<uint32_t>& indices,
+                            const PerformOptions& options = {})
+{
+    BankSet banks(archive, archive.Sounds()[indices.at(0)]);
+
+    return ntdlib::sequence_export::PerformTogether(archive, indices, banks, options, SettingsFor(archive, options));
+}
+
+// Converts sounds `indices` of `archive` together, as the piece `name` (ConvertTogether).
+Conversion ConvertTogether(const SoundArchive& archive, const std::vector<uint32_t>& indices, const std::string& name)
+{
+    const PerformOptions options;
+
+    return ntdlib::sequence_export::ConvertTogether(archive, indices, name, options, SettingsFor(archive, options),
+                                                    Wii().program);
 }
 
 // The ticks and kinds of track `t`'s note events.
@@ -3263,6 +3286,257 @@ void TestSfzCommentKeepsTheNameOnItsLine()
     }
 }
 
+// The ticks, keys and velocities of the note-ons of track `t` of piece `p`, with the fractions of a tick that they come
+// after their ticks (TrackEvent::after).
+std::vector<std::tuple<double, int, int>> PieceNoteOns(const Performance& p, int t)
+{
+    std::vector<std::tuple<double, int, int>> notes;
+    for (const TrackEvent& e : p.tracks[t])
+    {
+        if (e.kind == EventKind::kNoteOn)
+        {
+            notes.emplace_back(e.tick + e.after, e.key, e.value);
+        }
+    }
+
+    return notes;
+}
+
+// The note id of the first note-on of track `t` of `p`, or 0 without one.
+uint32_t FirstNoteId(const Performance& p, int t)
+{
+    for (const TrackEvent& e : p.tracks[t])
+    {
+        if (e.kind == EventKind::kNoteOn)
+        {
+            return e.note;
+        }
+    }
+
+    return 0;
+}
+
+// Sequence A plays key 60 on track 0. B's track 0 opens track 1 and waits. Track 1 plays key 64 a tick later. C plays
+// nothing.
+const std::vector<std::vector<uint8_t>> kPieceOfTwoTracks = {
+    {0x3c, 0x64, 0x30, 0xff},
+    {0x88, 0x01, 0x00, 0x00, 0x08, 0x80, 0x31, 0xff, 0x80, 0x01, 0x40, 0x64, 0x30, 0xff},
+    {0x80, 0x30, 0xff},
+};
+
+void TestPieceKeepsEachSequencesTracksWithNotes()
+{
+    // The piece holds A's track 0 and B's track 1, in that order, named after their sequences and tracks. B's note
+    // takes another note id than A's. Both notes play program 0 with the same settings. They share one preset. The
+    // piece ends with B, a tick after A.
+    const SoundArchive archive = SequenceArchive(kPieceOfTwoTracks, {.track_flags = 3, .names = {"A", "B", "C"}});
+
+    const Performance first = PerformSound(archive, 0);
+    const Performance second = PerformSound(archive, 1);
+    const Performance p = PerformTogether(archive, {0, 1, 2});
+
+    const std::vector<std::tuple<uint32_t, int, int>> kFirst = {{0, 60, 100}};
+    const std::vector<std::tuple<uint32_t, int, int>> kSecond = {{1, 64, 100}};
+    const auto empty = [](const std::vector<TrackEvent>& events)
+    {
+        return events.empty();
+    };
+    XSFLIB_CHECK(NoteOns(p, 0) == kFirst && NoteOns(p, 1) == kSecond &&
+                 std::all_of(p.tracks.begin() + 2, p.tracks.end(), empty));
+    XSFLIB_CHECK(p.track_names[0] == "A Track 0" && p.track_names[1] == "B Track 1" && p.track_names[2].empty());
+    XSFLIB_CHECK(FirstNoteId(p, 0) != FirstNoteId(p, 1) && p.presets.size() == 1);
+    XSFLIB_CHECK(p.end_tick == second.end_tick && second.end_tick == first.end_tick + 1);
+    XSFLIB_CHECK(!p.loop && p.loops == 0 && p.warnings.empty());
+}
+
+void TestPieceLoopsOnThePassThatEverySequenceRepeats()
+{
+    // A plays key 60 for 960 ticks, 10 s, and loops. B plays key 62 for 960 ticks and then loops key 64 for 960 ticks.
+    // A marks its loop on its first pass, B on its second. The piece marks B's. A then plays its second pass beside
+    // B's, and plays on to the piece's end.
+    const SoundArchive archive =
+        SequenceArchive({{0x3c, 0x64, 0x87, 0x40, 0x89, 0x00, 0x00, 0x00},
+                         {0x3e, 0x64, 0x87, 0x40, 0x40, 0x64, 0x87, 0x40, 0x89, 0x00, 0x00, 0x04}},
+                        {.names = {"A", "B"}});
+
+    const Performance alone = PerformSound(archive, 0);
+    const Performance p = PerformTogether(archive, {0, 1});
+
+    const std::vector<std::tuple<uint32_t, int, int>> kFirst = {{0, 60, 100}, {960, 60, 100}};
+    const std::vector<std::tuple<uint32_t, int, int>> kSecond = {{0, 62, 100}, {960, 64, 100}};
+    XSFLIB_CHECK(alone.loop && alone.loop->start == 0 && alone.loops == 1 && alone.end_tick == 960);
+    XSFLIB_CHECK(p.loop && p.loop->start == 960 && p.loop->end == 1920 && p.loops == 1 && p.end_tick == 1920);
+    XSFLIB_CHECK(NoteOns(p, 0) == kFirst && NoteOns(p, 1) == kSecond);
+}
+
+void TestPieceLoopsAfterItsSequencesThatEnd()
+{
+    // A loops key 60 every 960 ticks. B holds key 62 for 1000 ticks and ends. The pass of A that B's note reaches into
+    // doesn't repeat. The piece marks the pass after it, and A plays three passes.
+    const SoundArchive archive =
+        SequenceArchive({{0x3c, 0x64, 0x87, 0x40, 0x89, 0x00, 0x00, 0x00}, {0x3e, 0x64, 0x87, 0x68, 0xff}});
+
+    const Performance p = PerformTogether(archive, {0, 1});
+
+    const std::vector<std::tuple<uint32_t, int, int>> kFirst = {{0, 60, 100}, {960, 60, 100}, {1920, 60, 100}};
+    XSFLIB_CHECK(p.loop && p.loop->start == 1920 && p.loop->end == 2880 && p.loops == 1 && p.end_tick == 2880);
+    XSFLIB_CHECK(NoteOns(p, 0) == kFirst && NoteEvents(p, 1).back().first == 1000);
+}
+
+void TestPieceWhoseLoopsDontMeetHasNoLoop()
+{
+    // A loops every 960 ticks, B every 480. The piece has no loop markers, and says why.
+    const SoundArchive archive = SequenceArchive(
+        {{0x3c, 0x64, 0x87, 0x40, 0x89, 0x00, 0x00, 0x00}, {0x40, 0x64, 0x83, 0x60, 0x89, 0x00, 0x00, 0x00}});
+
+    const Performance p = PerformTogether(archive, {0, 1});
+
+    const std::vector<std::string> kWarnings = {
+        "the sequences loop at different places: the piece has no loop markers"};
+    XSFLIB_CHECK(!p.loop && p.loops == 0 && p.warnings == kWarnings && p.end_tick == 960);
+}
+
+void TestPieceTakesTheTempoOfItsFirstSequence()
+{
+    // A plays at tempo 150, B at tempo 180. B's note at tick 48 is due at 333.3 ms. It sounds at the start of the frame
+    // that runs the tick, at 333 ms. In A's ticks, that's 39.96. The note goes there, between two ticks. NW4R SND times
+    // the ticks in single precision, a little off the frame.
+    const SoundArchive archive = SequenceArchive(
+        {{0xe1, 0x00, 0x96, 0x3c, 0x64, 0x60, 0xff}, {0xe1, 0x00, 0xb4, 0x80, 0x30, 0x40, 0x64, 0x30, 0xff}});
+
+    const Performance p = PerformTogether(archive, {0, 1});
+
+    const std::vector<std::tuple<double, int, int>> notes = PieceNoteOns(p, 1);
+    const double ms = notes.empty() ? 0.0 : std::get<0>(notes[0]) * 60000.0 / (150.0 * 48.0);
+    XSFLIB_CHECK(p.tempo.size() == 1 && p.tempo[0].tick == 0 && p.tempo[0].bpm == 150.0);
+    XSFLIB_CHECK(notes.size() == 1 && std::fabs(ms - 111 * kFrameMs) < 1e-3);
+    XSFLIB_CHECK(NoteOns(p, 0) == (std::vector<std::tuple<uint32_t, int, int>>{{0, 60, 100}}));
+}
+
+void TestPieceSharesOneLevelScale()
+{
+    // A's note requires CC11 252 (TestLevelTooLoudForMidiIsCut). B's note at full level requires CC11 127. B sends
+    // that alone. In the piece, every CC11 scales by the same amount to fit A's. B's then becomes 64. The tracks keep
+    // their balance.
+    const SoundArchive archive =
+        SequenceArchive({{0xc1, 0x40, 0xd5, 0xff, 0x3c, 0x7f, 0x30, 0xff}, {0x3c, 0x7f, 0x30, 0xff}});
+
+    const Performance alone = PerformSound(archive, 1);
+    const Performance p = PerformTogether(archive, {0, 1});
+
+    const std::vector<std::pair<uint32_t, int>> kFull = {{0, 127}};
+    const std::vector<std::pair<uint32_t, int>> kScaled = {{0, 64}};
+    XSFLIB_CHECK(Controls(alone, EventKind::kExpression) == kFull && alone.level_cut_db == 0.0);
+    XSFLIB_CHECK(Controls(p, EventKind::kExpression, 0) == kFull && Controls(p, EventKind::kExpression, 1) == kScaled);
+    XSFLIB_CHECK(std::fabs(p.level_cut_db - 40.0 * std::log10(127.0 / 64.0)) < 1e-9);
+}
+
+void TestPieceSharesMidisChannels()
+{
+    // Each of A's 8 tracks releases a key with a slow release and changes the volume during the release
+    // (TestWhatMidiCantSeparateIsReported). Then it plays another key at the new volume. Alone, that note goes to
+    // another part, with a channel of its own. B plays a note on each of its 8 tracks. In the piece, the 16 tracks take
+    // every channel. MIDI then can't keep A's new volumes away from its releases.
+    std::vector<uint8_t> releases;
+    std::vector<uint8_t> notes;
+    for (uint8_t t = 1; t < 8; t++)
+    {
+        releases.insert(releases.end(), {0x88, t, 0x00, 0x00, 7 * 5});
+        notes.insert(notes.end(), {0x88, t, 0x00, 0x00, 7 * 5});
+    }
+    releases.insert(releases.end(), {0xc7, 0x00, 0xd3, 0x40, 0x3c, 0x64, 0x60, 0x80, 0x01, 0xc8, 0x01,
+                                     0x80, 0x01, 0xc1, 0x40, 0x3e, 0x64, 0x30, 0x80, 0x30, 0xff});
+    notes.insert(notes.end(), {0x3c, 0x64, 0x30, 0xff});
+    const SoundArchive archive = SequenceArchive({releases, notes}, {.track_flags = 0xff});
+
+    const Performance alone = PerformSound(archive, 0);
+    const Performance p = PerformTogether(archive, {0, 1});
+    const Conversion c = ConvertTogether(archive, {0, 1}, "Piece");
+
+    const std::string kDetached = "detached notes (still receive track controller changes in MIDI)";
+    const std::vector<int> kAloneParts = {0, 1};
+    const std::vector<int> kPieceParts = {0, 0};
+    XSFLIB_CHECK(!alone.approximations.contains(kDetached) && NoteParts(alone) == kAloneParts);
+    XSFLIB_CHECK(p.approximations.contains(kDetached) && NoteParts(p) == kPieceParts);
+    XSFLIB_CHECK(c.channels == 16 && ntdlib::testing::CheckConversion(c, "Piece") == 0);
+}
+
+void TestPieceConvertsToOneSetOfFiles()
+{
+    // The piece's MIDI tracks and SFZ files take the names of its tracks. The SoundFont's comment lists the sequences.
+    const SoundArchive archive = SequenceArchive(kPieceOfTwoTracks, {.track_flags = 3, .names = {"A", "B", "C"}});
+
+    const Conversion c = ConvertTogether(archive, {0, 1}, "Piece");
+
+    const std::vector<std::string> tracks = seqlib::midi::TrackNames(seqlib::midi::Read(c.midi));
+    std::vector<std::string> files;
+    for (const SfzFile& f : c.sfz.files)
+    {
+        files.push_back(f.name);
+    }
+    const sf2::Records records = sf2::Read(c.sf2);
+    const auto comment = records.chunks.find("ICMT");
+    const std::vector<std::string> kTracks = {"Piece", "A Track 0", "B Track 1"};
+    const std::vector<std::string> kFiles = {"A Track 0.sfz", "B Track 1.sfz"};
+    XSFLIB_CHECK(ntdlib::testing::CheckConversion(c, "Piece") == 0 && c.channels == 2);
+    XSFLIB_CHECK(tracks == kTracks && files == kFiles);
+    XSFLIB_CHECK(comment != records.chunks.end() &&
+                 Text(comment->second).starts_with("Converted by xyz2midi from sequences A and B together."));
+}
+
+void TestPieceOfMoreThan16TracksIsReported()
+{
+    // A plays a note on each of its 16 tracks, and B on one more.
+    std::vector<uint8_t> all_tracks;
+    for (uint8_t t = 1; t < 16; t++)
+    {
+        all_tracks.insert(all_tracks.end(), {0x88, t, 0x00, 0x00, 15 * 5});
+    }
+    all_tracks.insert(all_tracks.end(), {0x3c, 0x64, 0x30, 0xff});
+    const SoundArchive archive = SequenceArchive({all_tracks, {0x3c, 0x64, 0x30, 0xff}}, {.track_flags = 0xffff});
+
+    std::string message;
+    try
+    {
+        PerformTogether(archive, {0, 1});
+    }
+    catch (const xsflib::FormatError& e)
+    {
+        message = e.what();
+    }
+
+    XSFLIB_CHECK(message == "the sequences play notes on more tracks than MIDI's 16 channels");
+}
+
+void TestPieceRequiresOneBankAndPanMode()
+{
+    // A and B play one bank, but B's sound places stereo waves in another pan mode. A piece also requires a sequence.
+    const std::vector<ArchiveFile> files = {
+        {Rseq({0x3c, 0x64, 0x30, 0xff})},
+        {Rseq({0x3c, 0x64, 0x30, 0xff})},
+        {Rbnk({TestInstrument{{TestRegion{}}}}), Rwar({Rwav(64, std::vector<int16_t>(64, 1000), 1, true)})},
+    };
+    const SoundArchive archive = SoundArchive::Load(
+        Rsar(files, {.sequences = {{.file_id = 0}, {.file_id = 1, .pan_mode = 1}}, .banks = {2}, .names = {"A", "B"}}));
+    BankSet banks(archive, archive.Sounds()[0]);
+    const auto message = [&archive, &banks](const std::vector<uint32_t>& indices)
+    {
+        try
+        {
+            ntdlib::sequence_export::PerformTogether(archive, indices, banks, {}, kSettings);
+        }
+        catch (const std::invalid_argument& e)
+        {
+            return std::string(e.what());
+        }
+
+        return std::string();
+    };
+
+    XSFLIB_CHECK(message({0, 1}) == "A and B differ in bank or pan mode");
+    XSFLIB_CHECK(message({}) == "no sequences to perform together");
+}
+
 // The tests on the Wii.
 const Test kTests[] = {
     TestAdpcmLoopIsInSamples,
@@ -3380,6 +3654,16 @@ const Test kTests[] = {
     TestBalanceModeKeepsStereoWavesAt3DbDown,
     TestSfzFileHasTheTracksPresetsAndFilter,
     TestSfzCommentKeepsTheNameOnItsLine,
+    TestPieceKeepsEachSequencesTracksWithNotes,
+    TestPieceLoopsOnThePassThatEverySequenceRepeats,
+    TestPieceLoopsAfterItsSequencesThatEnd,
+    TestPieceWhoseLoopsDontMeetHasNoLoop,
+    TestPieceTakesTheTempoOfItsFirstSequence,
+    TestPieceSharesOneLevelScale,
+    TestPieceSharesMidisChannels,
+    TestPieceConvertsToOneSetOfFiles,
+    TestPieceOfMoreThan16TracksIsReported,
+    TestPieceRequiresOneBankAndPanMode,
 };
 
 } // namespace
