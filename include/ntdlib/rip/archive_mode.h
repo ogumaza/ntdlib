@@ -20,13 +20,14 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/rip/archive.h"
-#include "ntdlib/sar/formats.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/files.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/rip/tool.h"
+
+#include "ntdlib/rip/archive.h"
+#include "ntdlib/sar/formats.h"
 
 namespace ntdlib::rip
 {
@@ -160,7 +161,7 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
     return count;
 }
 
-// What a sound archive holds (such as "FSAR 2.2.0, 2911 sequences, 28 wave sounds, 220 streams"), or why it can't be
+// What a sound archive holds (its version, and its counts of sequences, wave sounds and streams), or why it can't be
 // read, with the archive reader's `options`.
 inline std::string DescribeArchive(std::vector<uint8_t> bytes, const sar::Options& options)
 {

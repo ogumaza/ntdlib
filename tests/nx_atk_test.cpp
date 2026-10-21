@@ -8,9 +8,10 @@
 #include <cstdint>
 #include <string>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nx/atk/envelope.h"
 #include "ntdlib/nx/atk/util.h"
-#include "xsflib/testing/check.h"
 
 using namespace xsflib::testing;
 

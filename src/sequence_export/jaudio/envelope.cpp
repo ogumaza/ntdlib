@@ -8,7 +8,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <vector>
+
+#include "ntdlib/sequence_export/jaudio/sound_data.h"
 
 namespace ntdlib::sequence_export::jaudio
 {
@@ -418,8 +423,9 @@ Sf2Envelope ConvertEnvelope(const EnvelopeCurve& curve)
 
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeCurve& curve)
 {
-    // sfizz falls by a factor of e^-9, 9 * 20 / ln(10) dB, over a decay or release time.
-    const double kFallDb = 9.0 * 20.0 / std::log(10.0);
+    // A decay or release falls by a factor of e^-8 (8 * 20 / ln(10) dB) over its time (sfzformat.com's ampeg_attack
+    // page).
+    const double kFallDb = 8.0 * 20.0 / std::log(10.0);
     const Shape s = FitShape(curve);
     SfzEnvelope e;
     e.peak_db = s.peak_db;

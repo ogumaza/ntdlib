@@ -10,6 +10,11 @@
 #include <span>
 #include <utility>
 
+#include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
+#include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::snd
@@ -570,6 +575,7 @@ AxVoice* AxVoices::AllocVoice(uint32_t priority, AxVoice::DisposeCallback dispos
     {
         return nullptr;
     }
+
     if (priority != 255)
     {
         system_->SetVoicePriority(*ax_voice, 16);

@@ -16,15 +16,23 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "seqlib/loop.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/presets.h"
+#include "seqlib/sf2/soundfont.h"
 
+#include "ntdlib/rsar/decode.h"
+#include "ntdlib/rsar/formats.h"
 #include "ntdlib/sequence_export/conversion.h"
 #include "ntdlib/sequence_export/convert.h"
+#include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/performer.h"
+#include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/rsar_instruments.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sequence_export/sfz.h"
 #include "sequence_export/sf2_build.h"
 #include "sequence_export/wii_pan.h"
 #include "sequence_export/zone_low_pass.h"

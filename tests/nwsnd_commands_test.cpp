@@ -27,6 +27,7 @@ using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
 using ntdlib::nwsnd::Grammar;
 using ntdlib::nwsnd::LabelOffset;
+using xsflib::testing::ErrorOf;
 
 const Grammar kSwitch = ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::NxPolicy>();
 
@@ -66,7 +67,7 @@ void TestNames()
 // Two tracks: the first opens the second.
 void TestTracks()
 {
-    const std::vector<uint8_t> bytes = {
+    const std::vector<uint8_t> kBytes = {
         0xFE, 0x03, 0x00,             // the tracks to allocate: 0 and 1
         0x88, 0x01, 0x0E, 0x00, 0x00, // open track 1 at 0x0E
         0xC1, 0x64,                   // volume 100
@@ -76,7 +77,7 @@ void TestTracks()
         0x80, 0x81, 0x00,             // wait 128
         0xFF,                         // end
     };
-    const Sequence sequence = RoundTrip(bytes, {{"Song", 0}}, kSwitch);
+    const Sequence sequence = RoundTrip(kBytes, {{"Song", 0}}, kSwitch);
     const std::vector<Command>& items = sequence.items;
     XSFLIB_CHECK(items.size() == 8 && sequence.labels.size() == 1 && sequence.labels[0].item == 0);
     XSFLIB_CHECK(items[0].kind == Kind::kAllocateTracks && items[0].value.value == 3 * kOne);
@@ -93,7 +94,7 @@ void TestTracks()
 // The prefixes, the commands after 0xF0, and a variable-length value in more bytes than it requires.
 void TestPrefixes()
 {
-    const std::vector<uint8_t> bytes = {
+    const std::vector<uint8_t> kBytes = {
         0xA2, 0xC1, 0x50,                               // if: volume 80
         0xA3, 0xC1, 0x64, 0x30, 0x00,                   // volume 100 over 48 ticks
         0xA4, 0xC0, 0x40, 0xF6, 0xFF, 0x0A, 0x00,       // pan 64 over -10 to 10 ticks at random
@@ -111,7 +112,7 @@ void TestPrefixes()
         0x80, 0x80, 0x80, 0x80, 0x05,                   // wait 5 in 4 bytes
         0xFF,                                           // end
     };
-    const std::vector<Command> items = RoundTrip(bytes, {{"Song", 0}}, kSwitch).items;
+    const std::vector<Command> items = RoundTrip(kBytes, {{"Song", 0}}, kSwitch).items;
     XSFLIB_CHECK(items.size() == 16);
     XSFLIB_CHECK(items[0].kind == Kind::kVolume && items[0].conditional && items[0].value.value == 80 * kOne);
     XSFLIB_CHECK(!items[1].conditional && items[1].time && IsArgument(*items[1].time, Source::kValue, 48 * kOne));
@@ -137,7 +138,7 @@ void TestPrefixes()
 // Bytes that no command reaches, a target past the end, and a label where the bytes run out inside a command.
 void TestData()
 {
-    const std::vector<uint8_t> bytes = {
+    const std::vector<uint8_t> kBytes = {
         0x8A, 0x0A, 0x00, 0x00, // call 0x0A
         0x89, 0x20, 0x00, 0x00, // jump to 0x20, past the end
         0x12, 0x34,             // no command reaches these
@@ -145,7 +146,7 @@ void TestData()
         0x56,                   //
         0x80,                   // 0x0C: a wait whose value runs past the end
     };
-    const Sequence sequence = RoundTrip(bytes, {{"Song", 0}, {"Cut", 0x0C}, {"End", 0x0D}}, kSwitch);
+    const Sequence sequence = RoundTrip(kBytes, {{"Song", 0}, {"Cut", 0x0C}, {"End", 0x0D}}, kSwitch);
     const std::vector<Command>& items = sequence.items;
     XSFLIB_CHECK(items.size() == 6);
     XSFLIB_CHECK(items[0].kind == Kind::kCall && items[0].target == 3 && !items[0].target_outside);
@@ -155,8 +156,8 @@ void TestData()
     XSFLIB_CHECK(sequence.labels[1].item == 5 && sequence.labels[2].item == 6);
 
     // A value that takes more than 32 bits: the encoder would write other bytes, and the bytes stay as data.
-    const std::vector<uint8_t> overflow = {0x80, 0x81, 0x80, 0x80, 0x80, 0x80, 0x00, 0xFF};
-    const std::vector<Command> kept = RoundTrip(overflow, {{"Song", 0}}, kSwitch).items;
+    const std::vector<uint8_t> kOverflow = {0x80, 0x81, 0x80, 0x80, 0x80, 0x80, 0x00, 0xFF};
+    const std::vector<Command> kept = RoundTrip(kOverflow, {{"Song", 0}}, kSwitch).items;
     XSFLIB_CHECK(kept.size() == 2 && IsData(kept[0], {0x80, 0x81, 0x80, 0x80, 0x80, 0x80, 0x00}));
     XSFLIB_CHECK(kept[1].kind == Kind::kEnd);
 }
@@ -165,80 +166,73 @@ void TestData()
 void TestGuesses()
 {
     // The end after a track's last jump.
-    const std::vector<uint8_t> loop = {0xC1, 0x64, 0x89, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00};
-    const std::vector<Command> looped = RoundTrip(loop, {{"Song", 0}}, kSwitch).items;
+    const std::vector<uint8_t> kLoop = {0xC1, 0x64, 0x89, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00};
+    const std::vector<Command> looped = RoundTrip(kLoop, {{"Song", 0}}, kSwitch).items;
     XSFLIB_CHECK(looped.size() == 4 && looped[1].kind == Kind::kJump && looped[1].target == 0);
     XSFLIB_CHECK(looped[2].kind == Kind::kEnd && IsData(looped[3], {0x00, 0x00}));
 
     // A track that no command starts, with a loop of its own.
-    const std::vector<uint8_t> track = {0xFF, 0xC1, 0x50, 0x3C, 0x7F, 0x30, 0x89, 0x01, 0x00, 0x00};
-    const std::vector<Command> tracked = RoundTrip(track, {{"Song", 0}}, kSwitch).items;
+    const std::vector<uint8_t> kTrack = {0xFF, 0xC1, 0x50, 0x3C, 0x7F, 0x30, 0x89, 0x01, 0x00, 0x00};
+    const std::vector<Command> tracked = RoundTrip(kTrack, {{"Song", 0}}, kSwitch).items;
     XSFLIB_CHECK(tracked.size() == 4 && tracked[1].kind == Kind::kVolume && tracked[2].kind == Kind::kNote);
     XSFLIB_CHECK(tracked[3].kind == Kind::kJump && tracked[3].target == 1);
 
     // Commands that run into a track that the player reaches.
-    const std::vector<uint8_t> join = {0x88, 0x01, 0x0A, 0x00, 0x00, 0xFF, 0xC1,
-                                       0x50, 0x80, 0x0C, 0x3C, 0x7F, 0x30, 0xFF};
-    const std::vector<Command> joined = RoundTrip(join, {{"Song", 0}}, kSwitch).items;
+    const std::vector<uint8_t> kJoin = {0x88, 0x01, 0x0A, 0x00, 0x00, 0xFF, 0xC1,
+                                        0x50, 0x80, 0x0C, 0x3C, 0x7F, 0x30, 0xFF};
+    const std::vector<Command> joined = RoundTrip(kJoin, {{"Song", 0}}, kSwitch).items;
     XSFLIB_CHECK(joined.size() == 6 && joined[0].target == 4 && joined[2].kind == Kind::kVolume);
     XSFLIB_CHECK(joined[3].kind == Kind::kWait && joined[4].kind == Kind::kNote);
 
     // A jump to where no item starts: the bytes stay as data.
-    const std::vector<uint8_t> stray = {0xFF, 0x89, 0x07, 0x00, 0x00, 0x12, 0x34, 0x56};
-    const std::vector<Command> strayed = RoundTrip(stray, {{"Song", 0}}, kSwitch).items;
+    const std::vector<uint8_t> kStray = {0xFF, 0x89, 0x07, 0x00, 0x00, 0x12, 0x34, 0x56};
+    const std::vector<Command> strayed = RoundTrip(kStray, {{"Song", 0}}, kSwitch).items;
     XSFLIB_CHECK(strayed.size() == 2 && IsData(strayed[1], {0x89, 0x07, 0x00, 0x00, 0x12, 0x34, 0x56}));
 }
 
 // Sounds that start where no label lies.
 void TestEntries()
 {
-    const std::vector<uint8_t> bytes = {
+    const std::vector<uint8_t> kBytes = {
         0xFF,                   // end
         0x8A, 0x07, 0x00, 0x00, // 0x01: call 0x07
         0xFF,                   // end
         0x00,                   //
         0xFD,                   // 0x07: return
     };
-    const std::vector<LabelOffset> labels = {{"Song", 0}};
-    const std::vector<uint32_t> entries = {1};
-    const ntdlib::nwsnd::Decoded decoded = ntdlib::nwsnd::DecodeSequence(bytes, labels, kSwitch, entries);
+    const std::vector<LabelOffset> kLabels = {{"Song", 0}};
+    const std::vector<uint32_t> kEntries = {1};
+    const ntdlib::nwsnd::Decoded decoded = ntdlib::nwsnd::DecodeSequence(kBytes, kLabels, kSwitch, kEntries);
     const std::vector<Command>& items = decoded.sequence.items;
-    XSFLIB_CHECK(!decoded.opaque && decoded.entries == entries && items.size() == 5);
+    XSFLIB_CHECK(!decoded.opaque && decoded.entries == kEntries && items.size() == 5);
     XSFLIB_CHECK(items[1].kind == Kind::kCall && items[1].target == 4 && IsData(items[3], {0x00}));
     XSFLIB_CHECK(items[4].kind == Kind::kReturn);
-    XSFLIB_CHECK(ntdlib::nwsnd::EncodeSequence(decoded.sequence, kSwitch).bytes == bytes);
+    XSFLIB_CHECK(ntdlib::nwsnd::EncodeSequence(decoded.sequence, kSwitch).bytes == kBytes);
 
     // Without the entry, the call leads where no item starts, and its bytes stay as data.
-    const std::vector<Command> unentered = RoundTrip(bytes, labels, kSwitch).items;
+    const std::vector<Command> unentered = RoundTrip(kBytes, kLabels, kSwitch).items;
     XSFLIB_CHECK(unentered.size() == 2 && IsData(unentered[1], {0x8A, 0x07, 0x00, 0x00, 0xFF, 0x00, 0xFD}));
 
     // An entry inside a command.
-    const std::vector<uint32_t> inside = {1, 2};
-    const ntdlib::nwsnd::Decoded split = ntdlib::nwsnd::DecodeSequence(bytes, labels, kSwitch, inside);
-    XSFLIB_CHECK(split.opaque && split.sequence.items.size() == 3 && split.entries == inside);
+    const std::vector<uint32_t> kInside = {1, 2};
+    const ntdlib::nwsnd::Decoded split = ntdlib::nwsnd::DecodeSequence(kBytes, kLabels, kSwitch, kInside);
+    XSFLIB_CHECK(split.opaque && split.sequence.items.size() == 3 && split.entries == kInside);
 
-    bool threw = false;
-    try
-    {
-        const std::vector<uint32_t> past = {9};
-        ntdlib::nwsnd::DecodeSequence(bytes, labels, kSwitch, past);
-    }
-    catch (const std::invalid_argument&)
-    {
-        threw = true;
-    }
-    XSFLIB_CHECK(threw);
+    const std::vector<uint32_t> kPast = {9};
+    XSFLIB_CHECK(
+        !ErrorOf<std::invalid_argument>([&] { ntdlib::nwsnd::DecodeSequence(kBytes, kLabels, kSwitch, kPast); })
+             .empty());
 }
 
 // A jump or a label inside a command: the decoder keeps every byte as data, split at the labels.
 void TestOpaque()
 {
-    const std::vector<uint8_t> jump = {0xC1, 0x64, 0x89, 0x01, 0x00, 0x00};
-    const Sequence jumped = RoundTrip(jump, {{"Song", 0}}, kSwitch, true);
-    XSFLIB_CHECK(jumped.items.size() == 1 && IsData(jumped.items[0], jump) && jumped.labels[0].item == 0);
+    const std::vector<uint8_t> kJump = {0xC1, 0x64, 0x89, 0x01, 0x00, 0x00};
+    const Sequence jumped = RoundTrip(kJump, {{"Song", 0}}, kSwitch, true);
+    XSFLIB_CHECK(jumped.items.size() == 1 && IsData(jumped.items[0], kJump) && jumped.labels[0].item == 0);
 
-    const std::vector<uint8_t> label = {0xC1, 0x64, 0xFF};
-    const Sequence labelled = RoundTrip(label, {{"Song", 0}, {"Inside", 1}}, kSwitch, true);
+    const std::vector<uint8_t> kLabel = {0xC1, 0x64, 0xFF};
+    const Sequence labelled = RoundTrip(kLabel, {{"Song", 0}, {"Inside", 1}}, kSwitch, true);
     XSFLIB_CHECK(labelled.items.size() == 2 && IsData(labelled.items[0], {0xC1}));
     XSFLIB_CHECK(IsData(labelled.items[1], {0x64, 0xFF}) && labelled.labels[1].item == 1);
 }
@@ -247,7 +241,7 @@ void TestOpaque()
 void TestConsoles()
 {
     // The 3DS: big-endian arguments, and no byte after 0xF0 0xA0.
-    const std::vector<uint8_t> ctr = {
+    const std::vector<uint8_t> kCtr = {
         0xE1, 0x00, 0x78,             // tempo 120
         0xF0, 0xA0,                   // a command that does nothing
         0xF0, 0xE1, 0x01, 0x00,       // LFO 1's delay 256
@@ -255,7 +249,7 @@ void TestConsoles()
         0xFF,                         // end
     };
     const Grammar ctr_grammar = ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::CtrPolicy>();
-    const std::vector<Command> ctr_items = RoundTrip(ctr, {{"Song", 0}}, ctr_grammar).items;
+    const std::vector<Command> ctr_items = RoundTrip(kCtr, {{"Song", 0}}, ctr_grammar).items;
     XSFLIB_CHECK(ctr_items.size() == 5 && ctr_items[0].kind == Kind::kTempo && ctr_items[0].value.value == 120 * kOne);
     XSFLIB_CHECK(ctr_items[1].kind == Kind::kOther && ctr_items[1].encoding.opcode == 0xF0A0);
     XSFLIB_CHECK(ctr_items[2].kind == Kind::kLfoDelay && ctr_items[2].value.value == 1280 * kOne);
@@ -263,7 +257,7 @@ void TestConsoles()
 
     // The Wii: a variable prefix after a random one applies, and an end ends the track whatever the condition. Before
     // 2008, 0xA3 is a command that does nothing.
-    const std::vector<uint8_t> wii = {
+    const std::vector<uint8_t> kWii = {
         0xA3, 0xC1, 0x64,       // volume 100
         0xA0, 0xA1, 0xC1, 0x02, // the volume in variable 2
         0xA2, 0xFF,             // end
@@ -272,7 +266,7 @@ void TestConsoles()
     ntdlib::SndBuild build;
     build.date = 20070101;
     const Grammar wii_2007 = ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::RevolutionPolicy>(build);
-    const std::vector<Command> items_2007 = RoundTrip(wii, {{"Song", 0}}, wii_2007).items;
+    const std::vector<Command> items_2007 = RoundTrip(kWii, {{"Song", 0}}, wii_2007).items;
     XSFLIB_CHECK(items_2007.size() == 5 && items_2007[0].kind == Kind::kOther && items_2007[0].encoding.opcode == 0xA3);
     XSFLIB_CHECK(items_2007[1].kind == Kind::kVolume && items_2007[1].value.value == 100 * kOne);
     XSFLIB_CHECK(items_2007[2].kind == Kind::kVolume && IsArgument(items_2007[2].value, Source::kVariable, 2));
@@ -282,10 +276,43 @@ void TestConsoles()
     // From 2008, 0xA3 is a time prefix, and the volume reads a time.
     build.date = 20080308;
     const Grammar wii_2008 = ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::RevolutionPolicy>(build);
-    const std::vector<Command> items_2008 = RoundTrip(wii, {{"Song", 0}}, wii_2008).items;
+    const std::vector<Command> items_2008 = RoundTrip(kWii, {{"Song", 0}}, wii_2008).items;
     XSFLIB_CHECK(items_2008.size() == 4 && items_2008[0].kind == Kind::kVolume && items_2008[0].time);
     XSFLIB_CHECK(IsArgument(*items_2008[0].time, Source::kValue, 0xA0A1 * kOne) &&
                  items_2008[1].value.value == 2 * kOne);
+}
+
+// One command at a time, and whether the track goes on after it.
+void TestOneCommand()
+{
+    const std::vector<uint8_t> kBytes = {
+        0xA2, 0x89, 0x05, 0x00, 0x00, // if: jump to 5
+        0x3C, 0x7F, 0x30,             // note 60, velocity 127, 48 ticks
+        0xA2, 0xFF,                   // if: end
+        0x89, 0x00, 0x00, 0x00,       // jump to 0
+        0xC1,                         // a volume whose value lies past the end
+    };
+    const auto jump = ntdlib::nwsnd::DecodeCommand(kBytes, 0, kSwitch);
+    XSFLIB_CHECK(jump && jump->size == 5 && jump->command.kind == Kind::kJump && jump->command.conditional);
+    XSFLIB_CHECK(jump && jump->command.target == 5 && ntdlib::nwsnd::FallsThrough(jump->command, kSwitch));
+
+    const auto note = ntdlib::nwsnd::DecodeCommand(kBytes, 5, kSwitch);
+    XSFLIB_CHECK(note && note->size == 3 && note->command.kind == Kind::kNote && note->command.key == 60);
+    XSFLIB_CHECK(note && IsArgument(note->command.value, Source::kValue, 48 * kOne));
+
+    // The Switch's end goes on when its condition fails. The Wii's ends the track whatever the condition.
+    const auto end = ntdlib::nwsnd::DecodeCommand(kBytes, 8, kSwitch);
+    XSFLIB_CHECK(end && end->size == 2 && end->command.kind == Kind::kEnd);
+    XSFLIB_CHECK(end && ntdlib::nwsnd::FallsThrough(end->command, kSwitch));
+    const Grammar wii = ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::RevolutionPolicy>();
+    XSFLIB_CHECK(end && !ntdlib::nwsnd::FallsThrough(end->command, wii));
+
+    const auto back = ntdlib::nwsnd::DecodeCommand(kBytes, 10, kSwitch);
+    XSFLIB_CHECK(back && back->size == 4 && back->command.target == 0);
+    XSFLIB_CHECK(back && !ntdlib::nwsnd::FallsThrough(back->command, kSwitch));
+
+    XSFLIB_CHECK(!ntdlib::nwsnd::DecodeCommand(kBytes, 14, kSwitch));
+    XSFLIB_CHECK(!ntdlib::nwsnd::DecodeCommand(kBytes, 15, kSwitch));
 }
 
 // A sequence made without bytes: the encoder writes the usual bytes, and puts each target's offset in.
@@ -311,12 +338,12 @@ void TestEncode()
     sequence.labels = {{"Song", 0}};
 
     const ntdlib::nwsnd::Encoded encoded = ntdlib::nwsnd::EncodeSequence(sequence, kSwitch);
-    const std::vector<uint8_t> expected = {0x88, 0x01, 0x0B, 0x00, 0x00, 0xA3, 0xC1, 0x64,
-                                           0x60, 0x00, 0xFF, 0x40, 0x64, 0x81, 0x48, 0xFF};
-    XSFLIB_CHECK(encoded.bytes == expected && encoded.offsets == std::vector<uint32_t>({0, 5, 10, 11, 15, 16}));
+    const std::vector<uint8_t> kExpected = {0x88, 0x01, 0x0B, 0x00, 0x00, 0xA3, 0xC1, 0x64,
+                                            0x60, 0x00, 0xFF, 0x40, 0x64, 0x81, 0x48, 0xFF};
+    XSFLIB_CHECK(encoded.bytes == kExpected && encoded.offsets == std::vector<uint32_t>({0, 5, 10, 11, 15, 16}));
 
-    const std::vector<LabelOffset> labels = {{"Song", 0}};
-    const ntdlib::nwsnd::Decoded decoded = ntdlib::nwsnd::DecodeSequence(encoded.bytes, labels, kSwitch);
+    const std::vector<LabelOffset> kLabels = {{"Song", 0}};
+    const ntdlib::nwsnd::Decoded decoded = ntdlib::nwsnd::DecodeSequence(encoded.bytes, kLabels, kSwitch);
     XSFLIB_CHECK(!decoded.opaque && decoded.sequence == sequence);
 }
 
@@ -325,16 +352,8 @@ bool Refuses(const Command& command)
 {
     Sequence sequence;
     sequence.items.push_back(command);
-    try
-    {
-        ntdlib::nwsnd::EncodeSequence(sequence, kSwitch);
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
 
-    return false;
+    return !ErrorOf<std::invalid_argument>([&] { ntdlib::nwsnd::EncodeSequence(sequence, kSwitch); }).empty();
 }
 
 void TestRefusals()
@@ -402,6 +421,7 @@ int main()
     TestEntries();
     TestOpaque();
     TestConsoles();
+    TestOneCommand();
     TestEncode();
     TestRefusals();
 

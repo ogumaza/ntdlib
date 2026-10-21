@@ -16,14 +16,15 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/settings.h"
 #include "seqlib/midi/reader.h"
 #include "seqlib/sf2/reader.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
+
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/convert.h"
+#include "ntdlib/sequence_export/settings.h"
 
 namespace ntdlib::testing
 {

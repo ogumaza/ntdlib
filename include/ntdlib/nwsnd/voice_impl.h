@@ -21,7 +21,7 @@ namespace ntdlib::nwsnd
 // ------------------------------------------------------------------------------------------------------- MultiVoice
 
 template <typename Policy>
-bool MultiVoice<Policy>::Alloc(Engine& engine, int channels, uint32_t priority, ChannelId owner)
+bool MultiVoice<Policy>::Alloc(Engine& engine, int channels, uint32_t priority, VoiceOwner owner)
 {
     const int count = channels > 2 ? 2 : (channels < 1 ? 1 : channels);
     channel_count_ = 0;
@@ -65,7 +65,7 @@ bool MultiVoice<Policy>::Alloc(Engine& engine, int channels, uint32_t priority, 
 }
 
 template <typename Policy>
-void MultiVoice<Policy>::InitParam(ChannelId owner)
+void MultiVoice<Policy>::InitParam(VoiceOwner owner)
 {
     owner_ = owner;
     biquad_value_ = 0.0f;
@@ -79,6 +79,9 @@ void MultiVoice<Policy>::InitParam(ChannelId owner)
     sdk_started_ = false;
     pan_mode_ = 0;
     pan_curve_ = 0;
+
+    // nn::atk's allocation (0xc245e0) sets the side to 0 too.
+    side_ = 0;
 
     const auto init_output = [](auto& param)
     {
@@ -392,11 +395,18 @@ bool MultiVoice<Policy>::IsPlayFinished(Engine& engine) const
 }
 
 template <typename Policy>
-void MultiVoice<Policy>::CallOwner(Engine& engine, VoiceCallbackStatus status, ChannelId owner)
+void MultiVoice<Policy>::CallOwner(Engine& engine, VoiceCallbackStatus status, VoiceOwner owner)
 {
-    if (owner != kNoChannel)
+    if (owner.channel != kNoChannel)
     {
-        engine.Channels().At(owner).OnVoiceEvent(engine, status);
+        engine.Channels().At(owner.channel).OnVoiceEvent(engine, status);
+    }
+    else if constexpr (requires { engine.VoiceEvent(owner, status); })
+    {
+        if (owner.player >= 0)
+        {
+            engine.VoiceEvent(owner, status);
+        }
     }
 }
 
@@ -540,6 +550,12 @@ MultiVoiceManager<Policy>::MultiVoiceManager(int count) : count_(count)
 template <typename Policy>
 VoiceId MultiVoiceManager<Policy>::AllocVoice(Engine& engine, int channels, uint32_t priority, ChannelId owner)
 {
+    return AllocVoice(engine, channels, priority, VoiceOwner{owner});
+}
+
+template <typename Policy>
+VoiceId MultiVoiceManager<Policy>::AllocVoice(Engine& engine, int channels, uint32_t priority, VoiceOwner owner)
+{
     if constexpr (Console::kDropVoicesForChannels)
     {
         if (QueueEmpty() && !DropLowestPriorityVoices(engine, channels, priority))
@@ -658,7 +674,7 @@ bool MultiVoiceManager<Policy>::DropLowestPriorityVoices(Engine& engine, int cha
 template <typename Policy>
 void MultiVoiceManager<Policy>::DropVoice(Engine& engine, MultiVoice<Policy>& voice)
 {
-    const ChannelId owner = voice.owner_;
+    const VoiceOwner owner = voice.owner_;
     voice.Stop(engine);
     voice.Free(engine);
     voice.CallOwner(engine, VoiceCallbackStatus::kDropVoice, owner);

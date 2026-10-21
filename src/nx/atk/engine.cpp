@@ -11,7 +11,24 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 #include <vector>
+
+#include "ntdlib/nwsnd/archive_files.h"
+#include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nwsnd/sequence.h"
+#include "ntdlib/nwsnd/stream_sound_player.h"
+#include "ntdlib/nwsnd/voice.h"
+#include "ntdlib/nx/atk/channel.h"
+#include "ntdlib/nx/atk/effect.h"
+#include "ntdlib/nx/atk/hardware.h"
+#include "ntdlib/nx/atk/low_level_voice.h"
+#include "ntdlib/nx/atk/sequence.h"
+#include "ntdlib/nx/atk/sound_players.h"
+#include "ntdlib/nx/atk/voice.h"
+#include "ntdlib/nx/audio/renderer.h"
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
 
 namespace ntdlib::nx::atk
 {
@@ -79,7 +96,23 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
 
 void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus)
 {
-    players_[player].ChannelEvent(*this, track, channel);
+    std::visit(
+        [&](auto& owner)
+        {
+            if constexpr (requires { owner.ChannelEvent(*this, track, channel); })
+            {
+                owner.ChannelEvent(*this, track, channel);
+            }
+        },
+        players_[player]);
+}
+
+void Engine::VoiceEvent(const ntdlib::nwsnd::VoiceOwner& owner, ntdlib::nwsnd::VoiceCallbackStatus status)
+{
+    if (StreamSoundPlayer* player = players_.Get<StreamSoundPlayer>(owner.player))
+    {
+        player->VoiceEvent(*this, owner.stream_channel, status);
+    }
 }
 
 SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
@@ -103,7 +136,78 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
 
     const sar::Sequence sequence = sar::Sequence::Parse(file, kSarOptions);
 
-    return &players_.Add(1, info, sequence.data, receiver_);
+    return &players_.Add<SequenceSoundPlayer>(1, info, sequence.data, receiver_);
+}
+
+WaveSoundPlayer* Engine::StartWaveSound(uint32_t index)
+{
+    if (index >= archive_->Sounds().size())
+    {
+        return nullptr;
+    }
+
+    const sar::SoundInfo& info = archive_->Sounds()[index];
+    if (info.type != sar::SoundType::kWaveSound)
+    {
+        return nullptr;
+    }
+
+    const std::span<const uint8_t> file = archive_->FileData(info.file_id);
+    if (file.empty())
+    {
+        return nullptr;
+    }
+
+    const sar::WaveSoundFile wsd = sar::WaveSoundFile::Parse(file, kSarOptions);
+    if (info.wave_sound_index >= wsd.sounds.size())
+    {
+        return nullptr;
+    }
+
+    // The wave of the sound's first note, as WaveFileReader::ReadWaveInfo (0xc0b410) reads it.
+    const sar::WaveSoundFile::WaveSound& sound = wsd.sounds[info.wave_sound_index];
+    std::optional<WaveInfo> wave;
+    if (!sound.notes.empty() && sound.notes[0].wave_id_index < wsd.waves.size())
+    {
+        const sar::WaveId& id = wsd.waves[sound.notes[0].wave_id_index];
+        wave = files_.Wave(id.wave_archive_item, id.index);
+    }
+
+    return &players_.Add<WaveSoundPlayer>(1, info, sound, wave, receiver_);
+}
+
+StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file)
+{
+    if (index >= archive_->Sounds().size() || archive_->Sounds()[index].type != sar::SoundType::kStream)
+    {
+        return nullptr;
+    }
+
+    return StartStreamSound(archive_->Sounds()[index], file);
+}
+
+StreamSoundPlayer* Engine::StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file)
+{
+    auto stream = std::make_unique<const sar::StreamFile>(sar::StreamFile::Read(file));
+    const ntdlib::nwsnd::StreamTracks tracks = ntdlib::nwsnd::StreamTracksOf(info.stream, *stream);
+    if (tracks.tracks.empty())
+    {
+        return nullptr;
+    }
+
+    // The player's channels: the stream's first 16 (the stream's info, 0xc0ea80). The renderer reads each channel's
+    // samples where the stream holds them.
+    std::vector<WaveInfo> waves;
+    const std::size_t count = std::min<std::size_t>(stream->channels.size(), 16);
+    for (std::size_t channel = 0; channel < count; ++channel)
+    {
+        WaveInfo wave = ntdlib::nwsnd::StreamChannelWave<WaveInfo>(*stream, channel);
+        wave.channels[0].data = stream->channels[channel].samples;
+        waves.push_back(wave);
+    }
+    streams_.push_back(std::move(stream));
+
+    return &players_.Add<StreamSoundPlayer>(1, info, tracks, std::move(waves), receiver_);
 }
 
 void Engine::FrameProcess()
@@ -111,10 +215,10 @@ void Engine::FrameProcess()
     voices_.UpdateAllVoiceStatus(*this);
 
     // The sound thread's commands. They start the sounds that are due.
-    players_.StartDue();
+    players_.StartDue(*this);
 
     // The players' frames, the channels and the voices, a renderer frame each.
-    players_.ForEach([this](SequenceSoundPlayer& player) { player.Update(*this, 1); });
+    players_.ForEach([this](auto& player) { player.Update(*this); });
     channels_.UpdateAllChannel(*this);
     voices_.UpdateAllVoices(*this);
 

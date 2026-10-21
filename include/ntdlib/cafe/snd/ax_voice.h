@@ -8,13 +8,16 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <list>
 #include <utility>
 
 #include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
 #include "ntdlib/cafe/snd/util.h"
 
 namespace ntdlib::cafe::snd

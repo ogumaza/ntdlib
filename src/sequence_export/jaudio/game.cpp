@@ -6,18 +6,29 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
+#include <span>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "xsflib/ascii.h"
-#include "xsflib/binary.h"
 #include "xsflib/files.h"
 #include "xsflib/sha1.h"
 
+#include "ntdlib/disc/error.h"
+#include "ntdlib/disc/game.h"
 #include "ntdlib/jaudio/aaf.h"
+#include "ntdlib/jaudio/rarc.h"
+#include "ntdlib/sequence_export/jaudio/performance.h"
+#include "ntdlib/sequence_export/jaudio/sound_data.h"
 
 namespace ntdlib::sequence_export::jaudio
 {
@@ -117,6 +128,7 @@ Game Game::FromFolder(const fs::path& baa, const std::string& program)
         {
             break;
         }
+
         for (const fs::path& where : {Subfolder(folder, "Seqs").value_or(folder), folder})
         {
             archives = files_in(where, extension);
@@ -330,6 +342,7 @@ void Game::FindSequences()
             {
                 continue;
             }
+
             seq.data = archive_->Collection();
             seq.start = *start;
 
@@ -348,6 +361,7 @@ void Game::FindSequences()
             {
                 continue;
             }
+
             played[static_cast<std::size_t>(file - sequence_files_.begin())] = true;
             seq.data = file->data;
             seq.start = 0;

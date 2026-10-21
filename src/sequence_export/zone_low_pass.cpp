@@ -6,12 +6,20 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <numbers>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "ntdlib/ax/lpf.h"
 #include "ntdlib/sequence_export/filter.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/wave/decode.h"
 
 namespace ntdlib::sequence_export
 {

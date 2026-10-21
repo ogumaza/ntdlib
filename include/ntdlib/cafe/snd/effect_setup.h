@@ -54,13 +54,13 @@ constexpr uint8_t kEffectDeviceDrc = 1;
 // for every sound that no other effect on the same device's bus lists.
 struct EffectSetup
 {
+    bool operator==(const EffectSetup&) const = default;
+
     uint8_t device = kEffectDeviceTv;
     uint8_t bus = 0; // 0 A, 1 B, 2 C
     EffectType type = EffectType::kDelay;
     std::vector<uint32_t> params;
     std::vector<uint32_t> sounds; // indices in the archive's sound table
-
-    bool operator==(const EffectSetup&) const = default;
 };
 
 // Whether `setup` lists `sound`.

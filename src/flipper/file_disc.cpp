@@ -11,8 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/disc/header.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/disc/header.h"
 
 namespace ntdlib::flipper
 {

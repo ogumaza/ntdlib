@@ -3,10 +3,12 @@
 #include "ntdlib/flipper/exi.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 
-#include "ntdlib/dsp/memory.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/dsp/memory.h"
 
 namespace ntdlib::flipper
 {
@@ -152,13 +154,13 @@ void Exi<Memory>::Write(uint32_t offset, uint32_t value)
 template <typename Memory>
 bool Exi<Memory>::InterruptPending() const
 {
-    return std::any_of(channels_.begin(), channels_.end(),
-                       [](const Channel& c)
-                       {
-                           return ((c.status & csr::kExiInterrupt) && (c.status & csr::kExiInterruptMask)) ||
-                                  ((c.status & csr::kTransferInterrupt) && (c.status & csr::kTransferInterruptMask)) ||
-                                  ((c.status & csr::kExtInterrupt) && (c.status & csr::kExtInterruptMask));
-                       });
+    const auto pending = [](const Channel& c)
+    {
+        return ((c.status & csr::kExiInterrupt) && (c.status & csr::kExiInterruptMask)) ||
+               ((c.status & csr::kTransferInterrupt) && (c.status & csr::kTransferInterruptMask)) ||
+               ((c.status & csr::kExtInterrupt) && (c.status & csr::kExtInterruptMask));
+    };
+    return std::any_of(channels_.begin(), channels_.end(), pending);
 }
 
 template <typename Memory>

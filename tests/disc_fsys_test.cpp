@@ -7,7 +7,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <string>
 #include <vector>
 
@@ -234,14 +233,8 @@ void TestDamagedArchives()
 // Runs `test`, and counts an exception that escapes it as a failed check.
 void Run(const std::string& name, void (*test)())
 {
-    try
-    {
-        test();
-    }
-    catch (const std::exception& e)
-    {
-        Check(false, name + " throws: " + e.what());
-    }
+    const std::string error = ErrorOf(test);
+    Check(error.empty(), name + " throws: " + error);
 }
 
 } // namespace

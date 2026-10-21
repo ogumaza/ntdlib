@@ -73,8 +73,8 @@ struct SfzEnvelope
     double attack = 0.0, hold = 0.0, decay = 0.0, sustain = 100.0, release = 0.0;
 };
 
-// Converts to sfizz's SFZ envelope, with the same attack fit as SoundFont. As in the game, decay and release are linear
-// in dB. They fall by a factor of e^-9 (78.17 dB) over their specified duration.
+// Converts to an SFZ envelope, with the same attack fit as SoundFont. As in the game, decay and release are linear in
+// dB. They fall by a factor of e^-8 (69.49 dB) over their time. sfzformat.com's ampeg_attack page gives that curve.
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& v, const Settings& settings);
 
 } // namespace ntdlib::sequence_export

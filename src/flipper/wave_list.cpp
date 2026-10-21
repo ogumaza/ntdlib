@@ -3,8 +3,11 @@
 #include "ntdlib/flipper/wave_list.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "xsflib/bytes.h"
 

@@ -12,10 +12,11 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/archive_files.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -131,12 +132,12 @@ void TestArchive(bool big_endian)
     const sar::SoundArchive archive = sar::SoundArchive::Load(build::Archive(big_endian, spec), options);
 
     int loads = 0;
-    Files files(archive, options,
-                [&loads](LoadedWaveArchive& loaded)
-                {
-                    loaded.address = kAddress;
-                    ++loads;
-                });
+    const auto load = [&loads](LoadedWaveArchive& loaded)
+    {
+        loaded.address = kAddress;
+        ++loads;
+    };
+    Files files(archive, options, load);
 
     // Banks and wave archives by item, each read once.
     const sar::Bank* first_bank = files.Bank(kBank);

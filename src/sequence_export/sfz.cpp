@@ -15,15 +15,20 @@
 #include "ntdlib/sequence_export/sfz.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "seqlib/file_name.h"
+#include "seqlib/midi/performance_writer.h"
 
+#include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/instruments.h"
+#include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/performer.h"
-
+#include "ntdlib/sequence_export/resampling.h"
+#include "ntdlib/sequence_export/settings.h"
 #include "sequence_export/sfz_track.h"
 
 namespace ntdlib::sequence_export

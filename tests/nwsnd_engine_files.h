@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT
 
-// The waves and the archive that the tests of the Wii U's and the Switch's archive engines play, in the console's byte
-// order: big-endian on the Wii U, little-endian on the Switch.
+// The waves, the streams and the archives that the tests of the Wii U's and the Switch's archive engines play, in the
+// console's byte order: big-endian on the Wii U, little-endian on the Switch.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
 #include "ntdlib/testing/sar_files.h"
 
 namespace nwsnd_engine_files
@@ -110,6 +113,95 @@ inline std::vector<uint8_t> ProgramArchive(bool big_endian, const std::vector<ui
                   {sar_files::WaveArchive(big_endian, wave_files), "", false}};
 
     return sar_files::Archive(big_endian, spec);
+}
+
+// An archive with one wave sound, WSD_NOTE, at `volume`, with the settings of `sound`. Its wave sound file names
+// `waves`, wave i at index i of a wave archive. The sound's channel priority is `channel_priority`, if given.
+inline std::vector<uint8_t> WaveSoundArchive(bool big_endian, const sar_files::WaveSoundSpec& sound,
+                                             const std::vector<sar_files::WaveSpec>& waves, uint8_t volume = 127,
+                                             std::optional<uint32_t> channel_priority = std::nullopt)
+{
+    sar_files::WaveSoundFileSpec file;
+    std::vector<std::vector<uint8_t>> wave_files;
+    for (std::size_t i = 0; i < waves.size(); ++i)
+    {
+        file.waves.push_back({0x05000000, static_cast<uint32_t>(i)});
+        wave_files.push_back(sar_files::Wave(big_endian, waves[i]));
+    }
+    file.sounds = {sound};
+
+    sar_files::SoundSpec entry;
+    entry.name = "WSD_NOTE";
+    entry.kind = sar_files::SoundSpec::kWaveSound;
+    entry.volume = volume;
+    entry.channel_priority = channel_priority;
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {entry};
+    spec.wave_archives = {{"WARC_NOTE", 1}};
+    spec.players = {{"PLAYER_NOTE", 1}};
+    spec.files = {{sar_files::WaveSoundFile(big_endian, file), "", false},
+                  {sar_files::WaveArchive(big_endian, wave_files), "", false}};
+
+    return sar_files::Archive(big_endian, spec);
+}
+
+// A wave sound that plays wave 0 at original key 60, with the default settings.
+inline sar_files::WaveSoundSpec PlainWaveSound()
+{
+    sar_files::WaveSoundSpec sound;
+    sar_files::Region note;
+    note.original_key = 60;
+    sound.notes = {note};
+
+    return sound;
+}
+
+// A stream track that plays `channels` with the default settings.
+inline ntdlib::sar::StreamTrackInfo StreamTrack(std::vector<uint8_t> channels)
+{
+    ntdlib::sar::StreamTrackInfo track;
+    track.channels = std::move(channels);
+
+    return track;
+}
+
+// An archive with one stream sound, STRM_NOTE, at `volume`, with `stream`'s tracks. The stream's file lies outside the
+// archive.
+inline std::vector<uint8_t> StreamArchive(bool big_endian, const ntdlib::sar::StreamSoundInfo& stream,
+                                          uint8_t volume = 127)
+{
+    sar_files::SoundSpec entry;
+    entry.name = "STRM_NOTE";
+    entry.kind = sar_files::SoundSpec::kStream;
+    entry.volume = volume;
+    entry.stream = stream;
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {entry};
+    spec.players = {{"PLAYER_NOTE", 1}};
+    spec.files = {{{}, "stream/STRM_NOTE.bfstm", false}};
+
+    return sar_files::Archive(big_endian, spec);
+}
+
+// The bytes of a stream file of `flavor` with `channels` in 16-bit PCM at 48 kHz, looped from `loop_start` if given,
+// and with `tracks` in the file if given. The writer lays the file out as version 4.0.0. Another `version` then takes
+// that version's place in the header. The reader reads the layout by its references.
+inline std::vector<uint8_t> PcmStream(ntdlib::sar::Flavor flavor, const std::vector<std::vector<int16_t>>& channels,
+                                      std::optional<uint32_t> loop_start = std::nullopt,
+                                      std::optional<std::vector<ntdlib::sar::StreamFile::Track>> tracks = std::nullopt,
+                                      uint32_t version = 0x00040000)
+{
+    ntdlib::sar::StreamFile stream =
+        ntdlib::sar::MakeStream(flavor, 0x00040000, ntdlib::sar::WaveEncoding::kPcm16, 48000, channels, loop_start);
+    stream.tracks = std::move(tracks);
+    std::vector<uint8_t> bytes = stream.Write();
+    const bool big_endian = flavor == ntdlib::sar::Flavor::kCafe;
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        bytes[8 + i] = static_cast<uint8_t>(version >> (big_endian ? 24 - 8 * i : 8 * i));
+    }
+
+    return bytes;
 }
 
 } // namespace nwsnd_engine_files

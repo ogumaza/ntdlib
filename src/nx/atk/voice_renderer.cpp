@@ -11,6 +11,10 @@
 
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/nx/atk/hardware.h"
+#include "ntdlib/nx/atk/low_level_voice.h"
+#include "ntdlib/nx/atk/util.h"
+#include "ntdlib/nx/atk/voice.h"
 
 namespace ntdlib::nx::atk
 {
@@ -226,6 +230,7 @@ VoiceRenderer::Gains VoiceRenderer::CalcMixVolume(const MultiVoice& voice, int c
         }
         else if (mode == OutputMode::kStereo || mode == OutputMode::kSurround)
         {
+            const uint32_t side = voice.Side();
             if (voice.ChannelCount() >= 2 && voice.PanMode() == 1)
             {
                 // Balance: each channel keeps its side.
@@ -238,15 +243,29 @@ VoiceRenderer::Gains VoiceRenderer::CalcMixVolume(const MultiVoice& voice, int c
                     right = util::CalcPanRatio(0.0f - output.pan, info, mode);
                 }
             }
+            else if (side != 0 && voice.PanMode() != 0 && !hardware.surround_pan_curves)
+            {
+                // Balance for a stream's channel: the left channel keeps the left, and the right one the right.
+                if (side == 1)
+                {
+                    left = util::CalcPanRatio(output.pan, info, mode);
+                }
+                else
+                {
+                    right = util::CalcPanRatio(0.0f - output.pan, info, mode);
+                }
+            }
             else
             {
-                // Dual: a stereo wave's channels start at the sides and move with the pan.
+                // Dual: a stereo wave's channels start at the sides and move with the pan. So do the channels of a
+                // stream's pair, by their sides. The second channel of a stereo wave on the left side takes the left.
                 float pan = output.pan;
-                if (voice.ChannelCount() == 2 && channel == 0)
+                const bool stereo = voice.ChannelCount() == 2;
+                if ((stereo && channel == 0) || (stereo && channel == 1 && side == 1) || (!stereo && side == 1))
                 {
                     pan = pan + -1.0f;
                 }
-                else if (voice.ChannelCount() == 2 && channel == 1)
+                else if ((stereo && channel == 1) || side == 2)
                 {
                     pan = pan + 1.0f;
                 }

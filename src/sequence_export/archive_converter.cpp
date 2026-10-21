@@ -18,6 +18,7 @@
 
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/sarc.h"
+#include "ntdlib/sequence_export/frame.h"
 
 namespace ntdlib::sequence_export
 {

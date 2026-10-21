@@ -29,9 +29,13 @@
 
 #include "cafe_ax_scenarios.h"
 #include "cafe_ax_test_hashes.h"
+#include "ntdlib/ax/ax.h"
 #include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/render.h"
 #include "ntdlib/cafe/ax/resample.h"
 #include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
 
 using xsflib::testing::Check;
 
@@ -49,25 +53,23 @@ using ax_scenarios::Runner;
 using ax_scenarios::Scenario;
 using ax_scenarios::Scenarios;
 
-} // namespace
-
-// One voice on the model, playing `bytes` from 0x10000000 into the TV's left channel at unity, without rate
+// One voice on the model, playing `bytes_` from 0x10000000 into the TV's left channel at unity, without rate
 // conversion.
 class Bench
 {
 public:
     Bench(std::vector<uint8_t> data, ntdlib::cafe::ax::SampleFormat format, uint32_t loop_flag, uint32_t loop,
           uint32_t end, uint32_t current)
-        : bytes(std::move(data))
+        : bytes_(std::move(data))
     {
-        memory.Map(0x10000000, bytes);
-        voice = system.AcquireVoice(10);
-        system.SetVoiceOffsets(*voice, {format, static_cast<uint16_t>(loop_flag), loop, end, current, 0x10000000});
-        system.SetVoiceSrcType(*voice, 0);
-        system.SetVoiceVe(*voice, {ntdlib::cafe::ax::kUnityVolume, 0});
+        memory_.Map(0x10000000, bytes_);
+        voice_ = system_.AcquireVoice(10);
+        system_.SetVoiceOffsets(*voice_, {format, static_cast<uint16_t>(loop_flag), loop, end, current, 0x10000000});
+        system_.SetVoiceSrcType(*voice_, 0);
+        system_.SetVoiceVe(*voice_, {ntdlib::cafe::ax::kUnityVolume, 0});
         std::vector<System::ChannelMix> mix(ntdlib::cafe::ax::kTvChannels);
         mix[0][0].volume = ntdlib::cafe::ax::kUnityVolume;
-        system.SetVoiceDeviceMix(*voice, System::Device::kTv, 0, mix);
+        system_.SetVoiceDeviceMix(*voice_, System::Device::kTv, 0, mix);
     }
 
     Bench(const Bench&) = delete;
@@ -76,16 +78,16 @@ public:
     // Renders a frame and returns the TV's left main bus.
     std::vector<int32_t> Frame()
     {
-        system.RenderFrame();
-        const auto& bus = system.VoiceBuses().tv[0][0];
-        return {bus.begin(), bus.begin() + system.SamplesPerFrame()};
+        system_.RenderFrame();
+        const auto& bus = system_.VoiceBuses().tv[0][0];
+        return {bus.begin(), bus.begin() + system_.SamplesPerFrame()};
     }
 
     // In the order they're made: the memory maps the bytes, and the model reads the memory.
-    std::vector<uint8_t> bytes;
-    Memory memory;
-    System system{memory};
-    Voice* voice = nullptr;
+    std::vector<uint8_t> bytes_;
+    Memory memory_;
+    System system_{memory_};
+    Voice* voice_ = nullptr;
 };
 
 // An ADPCM frame whose samples, with coefficient pair 0 at (1, 0), all repeat the history.
@@ -102,8 +104,8 @@ void TestAdpcmHistory()
 {
     // A voice starts from the history that the game gives it. A one-shot voice plays its last sample, then nothing.
     Bench bench(std::vector<uint8_t>(8, 0), ntdlib::cafe::ax::SampleFormat::kAdpcm, 0, 2, 15, 2);
-    bench.system.SetVoiceAdpcm(*bench.voice, FlatAdpcm(1000));
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    bench.system_.SetVoiceAdpcm(*bench.voice_, FlatAdpcm(1000));
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     const std::vector<int32_t> frame = bench.Frame();
 
@@ -115,10 +117,10 @@ void TestAdpcmHistory()
     for (const auto type : {ntdlib::cafe::ax::VoiceType::kNormal, ntdlib::cafe::ax::VoiceType::kStream})
     {
         Bench loop(std::vector<uint8_t>(8, 0), ntdlib::cafe::ax::SampleFormat::kAdpcm, 1, 2, 15, 2);
-        loop.system.SetVoiceType(*loop.voice, type);
-        loop.system.SetVoiceAdpcm(*loop.voice, FlatAdpcm(1000));
-        loop.system.SetVoiceAdpcmLoop(*loop.voice, {0, 500, 0});
-        loop.system.SetVoiceState(*loop.voice, ntdlib::cafe::ax::VoiceState::kRun);
+        loop.system_.SetVoiceType(*loop.voice_, type);
+        loop.system_.SetVoiceAdpcm(*loop.voice_, FlatAdpcm(1000));
+        loop.system_.SetVoiceAdpcmLoop(*loop.voice_, {0, 500, 0});
+        loop.system_.SetVoiceState(*loop.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
         const std::vector<int32_t> looped = loop.Frame();
 
@@ -134,7 +136,7 @@ void TestPcm16()
 
     // Without rate conversion, a one-shot voice plays its last sample.
     Bench once(kBytes, ntdlib::cafe::ax::SampleFormat::kPcm16, 0, 0, 2, 0);
-    once.system.SetVoiceState(*once.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    once.system_.SetVoiceState(*once.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     const std::vector<int32_t> frame = once.Frame();
 
@@ -144,9 +146,9 @@ void TestPcm16()
     // Linear interpolation goes from the oldest of the last four samples. So at a ratio of 1 it gives the sample three
     // before.
     Bench linear(kBytes, ntdlib::cafe::ax::SampleFormat::kPcm16, 0, 0, 3, 0);
-    linear.system.SetVoiceSrcType(*linear.voice, 1);
-    linear.system.SetVoiceSrcRatio(*linear.voice, 1.0f);
-    linear.system.SetVoiceState(*linear.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    linear.system_.SetVoiceSrcType(*linear.voice_, 1);
+    linear.system_.SetVoiceSrcRatio(*linear.voice_, 1.0f);
+    linear.system_.SetVoiceState(*linear.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     const std::vector<int32_t> interpolated = linear.Frame();
 
@@ -202,9 +204,9 @@ void TestFourTap()
         bytes.insert(bytes.end(), {0x27, 0x10});
     }
     Bench bench(bytes, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 199, 0);
-    bench.system.SetVoiceSrcType(*bench.voice, 2);
-    bench.system.SetVoiceSrcRatio(*bench.voice, 1.0f);
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    bench.system_.SetVoiceSrcType(*bench.voice_, 2);
+    bench.system_.SetVoiceSrcRatio(*bench.voice_, 1.0f);
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     const std::vector<int32_t> frame = bench.Frame();
 
@@ -216,9 +218,9 @@ void TestLpf()
 {
     // A step through the low-pass filter rises to the input without ringing, and continues across frames.
     Bench bench({0x27, 0x10}, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 0, 0);
-    const auto [a0, b0] = bench.system.ComputeLpfCoefs(1000);
-    bench.system.SetVoiceLpf(*bench.voice, {1, 0, static_cast<int16_t>(a0), static_cast<int16_t>(b0)});
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    const auto [a0, b0] = bench.system_.ComputeLpfCoefs(1000);
+    bench.system_.SetVoiceLpf(*bench.voice_, {1, 0, static_cast<int16_t>(a0), static_cast<int16_t>(b0)});
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     std::vector<int32_t> samples;
     for (int frame = 0; frame < 4; ++frame)
@@ -240,7 +242,7 @@ void TestLpf()
     System at_48k(none);
     at_48k.Init(System::Library::kSndCore2, true);
 
-    Check(at_48k.ComputeLpfCoefs(1000).b0 > b0 && bench.system.ComputeLpfCoefs(4000).b0 < b0,
+    Check(at_48k.ComputeLpfCoefs(1000).b0 > b0 && bench.system_.ComputeLpfCoefs(4000).b0 < b0,
           "AXComputeLpfCoefs's pole is nearer unity for a lower cutoff and a faster renderer");
 }
 
@@ -250,15 +252,15 @@ void TestDevices()
     Bench bench({0x03, 0xE8}, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 0, 0);
     std::vector<System::ChannelMix> mix(ntdlib::cafe::ax::kDrcChannels);
     mix[0][0].volume = ntdlib::cafe::ax::kUnityVolume;
-    bench.system.SetVoiceDeviceMix(*bench.voice, System::Device::kDrc, 1, mix);
+    bench.system_.SetVoiceDeviceMix(*bench.voice_, System::Device::kDrc, 1, mix);
     mix[0][0].volume = 0;
     mix[1][0].volume = 0x4000;
-    bench.system.SetVoiceDeviceMix(*bench.voice, System::Device::kDrc, 0, mix);
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    bench.system_.SetVoiceDeviceMix(*bench.voice_, System::Device::kDrc, 0, mix);
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     bench.Frame();
 
-    const ntdlib::cafe::ax::Buses& buses = bench.system.VoiceBuses();
+    const ntdlib::cafe::ax::Buses& buses = bench.system_.VoiceBuses();
     Check(buses.drc[1][0][0][5] == 1000 && buses.drc[0][0][1][5] == 500 && buses.drc[0][0][0][5] == 0,
           "both GamePads are mixed, each into its channels");
 
@@ -267,14 +269,14 @@ void TestDevices()
     for (int frame = 0; frame < 3; ++frame)
     {
         bench.Frame();
-        before.insert(before.end(), bench.system.Drc48(1, 0).begin(), bench.system.Drc48(1, 0).end());
+        before.insert(before.end(), bench.system_.Drc48(1, 0).begin(), bench.system_.Drc48(1, 0).end());
     }
 
     Bench after({0x03, 0xE8}, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 0, 0);
     mix[0][0].volume = ntdlib::cafe::ax::kUnityVolume;
-    after.system.SetVoiceDeviceMix(*after.voice, System::Device::kDrc, 1, mix);
-    after.system.SetDeviceUpsampleStage(System::Device::kTv, true);
-    after.system.SetVoiceState(*after.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    after.system_.SetVoiceDeviceMix(*after.voice_, System::Device::kDrc, 1, mix);
+    after.system_.SetDeviceUpsampleStage(System::Device::kTv, true);
+    after.system_.SetVoiceState(*after.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     std::vector<int32_t> unaffected;
     for (int frame = 0; frame < 4; ++frame)
@@ -282,7 +284,7 @@ void TestDevices()
         after.Frame();
         if (frame > 0)
         {
-            unaffected.insert(unaffected.end(), after.system.Drc48(1, 0).begin(), after.system.Drc48(1, 0).end());
+            unaffected.insert(unaffected.end(), after.system_.Drc48(1, 0).begin(), after.system_.Drc48(1, 0).end());
         }
     }
 
@@ -295,20 +297,20 @@ void TestAux()
     Bench bench({0x03, 0xE8}, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 0, 0);
     std::vector<System::ChannelMix> mix(ntdlib::cafe::ax::kTvChannels);
     mix[0][1].volume = ntdlib::cafe::ax::kUnityVolume;
-    bench.system.SetVoiceDeviceMix(*bench.voice, System::Device::kTv, 0, mix);
+    bench.system_.SetVoiceDeviceMix(*bench.voice_, System::Device::kTv, 0, mix);
     std::vector<int32_t> seen;
     const auto aux_callback = [&seen](std::span<int32_t* const> channels, uint32_t)
     {
         seen.push_back(channels[0][10]);
     };
-    bench.system.RegisterAuxCallback(System::Device::kTv, 0, 0, aux_callback);
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    bench.system_.RegisterAuxCallback(System::Device::kTv, 0, 0, aux_callback);
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     std::vector<int32_t> main;
     for (int frame = 0; frame < 4; ++frame)
     {
-        bench.system.RenderFrame();
-        main.push_back(bench.system.MainBuses().tv[0][0][10]);
+        bench.system_.RenderFrame();
+        main.push_back(bench.system_.MainBuses().tv[0][0][10]);
     }
 
     Check(seen == std::vector<int32_t>{0, 1000, 1000, 1000}, "an aux callback receives the last frame's sends");
@@ -325,7 +327,7 @@ void TestAuxReturnPeaks()
     std::vector<System::ChannelMix> mix(ntdlib::cafe::ax::kTvChannels);
     mix[0][1].volume = ntdlib::cafe::ax::kUnityVolume;
     mix[1][2].volume = ntdlib::cafe::ax::kUnityVolume;
-    bench.system.SetVoiceDeviceMix(*bench.voice, System::Device::kTv, 0, mix);
+    bench.system_.SetVoiceDeviceMix(*bench.voice_, System::Device::kTv, 0, mix);
     const auto turned_over = [](std::span<int32_t* const> channels, uint32_t samples)
     {
         for (int32_t* channel : channels)
@@ -333,25 +335,25 @@ void TestAuxReturnPeaks()
             std::transform(channel, channel + samples, channel, [](int32_t sample) { return -sample; });
         }
     };
-    bench.system.RegisterAuxCallback(System::Device::kTv, 0, 0, [](std::span<int32_t* const>, uint32_t) {});
-    bench.system.RegisterAuxCallback(System::Device::kTv, 0, 1, turned_over);
-    bench.system.SetAuxReturnVolume(System::Device::kTv, 0, 0, 0x4000);
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
-    const System::Snapshot snapshot = bench.system.Save();
+    bench.system_.RegisterAuxCallback(System::Device::kTv, 0, 0, [](std::span<int32_t* const>, uint32_t) {});
+    bench.system_.RegisterAuxCallback(System::Device::kTv, 0, 1, turned_over);
+    bench.system_.SetAuxReturnVolume(System::Device::kTv, 0, 0, 0x4000);
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
+    const System::Snapshot snapshot = bench.system_.Save();
     std::vector<std::array<int32_t, 2>> a;
     std::vector<std::array<int32_t, 2>> b;
 
     for (int frame = 0; frame < 3; ++frame)
     {
-        bench.system.RenderFrame();
-        a.push_back(bench.system.AuxReturnPeaks(System::Device::kTv, 0, 0));
-        b.push_back(bench.system.AuxReturnPeaks(System::Device::kTv, 0, 1));
+        bench.system_.RenderFrame();
+        a.push_back(bench.system_.AuxReturnPeaks(System::Device::kTv, 0, 0));
+        b.push_back(bench.system_.AuxReturnPeaks(System::Device::kTv, 0, 1));
     }
-    const std::array<int32_t, 2> c = bench.system.AuxReturnPeaks(System::Device::kTv, 0, 2);
-    const int32_t left = bench.system.MainBuses().tv[0][0][10];
-    const int32_t right = bench.system.MainBuses().tv[0][1][10];
-    bench.system.Restore(snapshot);
-    const std::array<int32_t, 2> restored = bench.system.AuxReturnPeaks(System::Device::kTv, 0, 0);
+    const std::array<int32_t, 2> c = bench.system_.AuxReturnPeaks(System::Device::kTv, 0, 2);
+    const int32_t left = bench.system_.MainBuses().tv[0][0][10];
+    const int32_t right = bench.system_.MainBuses().tv[0][1][10];
+    bench.system_.Restore(snapshot);
+    const std::array<int32_t, 2> restored = bench.system_.AuxReturnPeaks(System::Device::kTv, 0, 0);
 
     constexpr std::array<int32_t, 2> kSilent = {0, 0};
     Check(a[0] == kSilent && a[1] == kSilent && b[0] == kSilent && b[1] == kSilent,
@@ -361,11 +363,11 @@ void TestAuxReturnPeaks()
           "an aux bus's peaks are the largest magnitudes that it adds");
     Check(c == kSilent, "an aux bus without a callback has peaks of 0");
     Check(restored == a[2], "a restore leaves the aux buses' peaks");
-    Check(bench.system.AuxReturnPeaks(System::Device::kTv, 1, 0) == kSilent &&
-              bench.system.AuxReturnPeaks(System::Device::kDrc, 2, 0) == kSilent &&
-              bench.system.AuxReturnPeaks(System::Device::kRemote, 0, 0) == kSilent &&
-              bench.system.AuxReturnPeaks(System::Device::kTv, 0, 3) == kSilent &&
-              bench.system.AuxReturnPeaks(System::Device::kTv, 0, -1) == kSilent,
+    Check(bench.system_.AuxReturnPeaks(System::Device::kTv, 1, 0) == kSilent &&
+              bench.system_.AuxReturnPeaks(System::Device::kDrc, 2, 0) == kSilent &&
+              bench.system_.AuxReturnPeaks(System::Device::kRemote, 0, 0) == kSilent &&
+              bench.system_.AuxReturnPeaks(System::Device::kTv, 0, 3) == kSilent &&
+              bench.system_.AuxReturnPeaks(System::Device::kTv, 0, -1) == kSilent,
           "a device, an index or an aux bus that doesn't exist has peaks of 0");
 }
 
@@ -423,11 +425,11 @@ void TestUpsampler()
     // By default, a device converts a 32 kHz renderer's output to 48 kHz with the FIR filter, before the final-mix
     // callback. A constant from the first sample rings, then settles where each phase's taps take it.
     Bench bench({0x03, 0xE8}, ntdlib::cafe::ax::SampleFormat::kPcm16, 1, 0, 0, 0);
-    bench.system.SetVoiceState(*bench.voice, ntdlib::cafe::ax::VoiceState::kRun);
+    bench.system_.SetVoiceState(*bench.voice_, ntdlib::cafe::ax::VoiceState::kRun);
 
     bench.Frame();
 
-    const std::span<const int32_t> step = bench.system.Tv48(0);
+    const std::span<const int32_t> step = bench.system_.Tv48(0);
     Check(std::vector<int32_t>(step.begin(), step.begin() + 21) ==
               std::vector<int32_t>{-5,  2,    6,   -27,  23,   30,  -136, 206,  953, 1105, 947,
                                    999, 1016, 991, 1000, 1000, 999, 999,  1000, 999, 999},
@@ -491,6 +493,8 @@ void TestUpsampler()
           "the linear upsampler weighs an input by 1/3, 1 and 1/3");
 }
 
+} // namespace
+
 int main(int argc, char** argv)
 {
     std::string dump_folder;
@@ -521,6 +525,8 @@ int main(int argc, char** argv)
             {
                 out << line << "\n";
             }
+            out.close();
+            Check(static_cast<bool>(out), scenario.name + "'s lines are written to the dump folder");
         }
 
         const uint64_t hash = Hash(lines);

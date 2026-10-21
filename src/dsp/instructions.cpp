@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "dsp/internal.h"
+#include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/dsp.h"
 
 namespace ntdlib::dsp
@@ -419,37 +420,41 @@ void Dsp<Memory>::UseGenericHandlers()
     handlers_ = GenericHandlers();
 }
 
+// A table of handlers holds 65,536 of them: 512 KB. A copy on the stack could overflow a thread that a plugin host
+// starts. Each table is therefore filled in place.
 template <typename Memory>
 const typename Dsp<Memory>::Handler* Dsp<Memory>::GenericHandlers()
 {
-    static const std::array<Handler, 0x10000> kTable = []
+    static std::array<Handler, 0x10000> table;
+    static const bool kFilled = []
     {
-        std::array<Handler, 0x10000> built;
-        built.fill([](Dsp& dsp, uint16_t op) { dsp.Execute(op); });
+        table.fill([](Dsp& dsp, uint16_t op) { dsp.Execute(op); });
 
-        return built;
+        return true;
     }();
+    static_cast<void>(kFilled);
 
-    return kTable.data();
+    return table.data();
 }
 
 template <typename Memory>
 const typename Dsp<Memory>::Handler* Dsp<Memory>::Handlers()
 {
-    static const std::array<Handler, 0x10000> kTable = []
+    static std::array<Handler, 0x10000> table;
+    static const bool kFilled = []
     {
-        std::array<Handler, 0x10000> built;
-        std::copy_n(GenericHandlers(), built.size(), built.begin());
+        std::copy_n(GenericHandlers(), table.size(), table.begin());
 
-        [&built]<std::size_t... i>(std::index_sequence<i...>)
+        []<std::size_t... i>(std::index_sequence<i...>)
         {
-            ((built[kFrequentWords[i]] = &ExecuteWord<kFrequentWords[i]>), ...);
+            ((table[kFrequentWords[i]] = &ExecuteWord<kFrequentWords[i]>), ...);
         }(std::make_index_sequence<std::size(kFrequentWords)>());
 
-        return built;
+        return true;
     }();
+    static_cast<void>(kFilled);
 
-    return kTable.data();
+    return table.data();
 }
 
 template <typename Memory>

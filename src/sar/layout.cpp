@@ -75,7 +75,7 @@ struct Start
 {
     uint32_t file = 0;
     uint32_t offset = 0;
-    std::optional<std::size_t> at;
+    std::optional<std::size_t> at = std::nullopt;
 };
 
 // What the cutter reads of an archive's tables.
@@ -472,31 +472,77 @@ Structure ReadStructure(std::span<const uint8_t> archive, Flavor flavor)
     return structure;
 }
 
-// The copies of a sequence file: where each starts, its size, and its sounds' starts.
+// Reads the files of `group`, a group file that a game keeps beside an archive of `flavor`, and the fields of the group
+// file that hold their offsets and sizes. Nothing for a file that isn't a group file of the console, or whose tables
+// can't be read.
+std::optional<Structure> ReadGroupFileStructure(std::span<const uint8_t> group, Flavor flavor)
+{
+    try
+    {
+        const xsflib::Reader r(group, flavor == Flavor::kCafe);
+        if (r.U16(4) != 0xFEFF)
+        {
+            return std::nullopt;
+        }
+
+        Structure structure;
+        ReadGroup(r, 0, flavor == Flavor::kCtr ? "CGRP" : "FGRP", structure);
+
+        return structure;
+    }
+    catch (const xsflib::FormatError&)
+    {
+        return std::nullopt;
+    }
+}
+
+// A file that a cut takes: the archive, or a group file beside it. Its bytes, and what the cutter reads of its tables.
+struct Source
+{
+    std::span<const uint8_t> bytes;
+    Structure structure;
+};
+
+// Where a copy of a file lies: in which source of a cut, the archive first, and where it starts there.
+struct CopyAt
+{
+    friend auto operator<=>(const CopyAt&, const CopyAt&) = default;
+
+    std::size_t source = 0;
+    std::size_t start = 0;
+};
+
+// The copies of a sequence file: where each lies, its size, and its sounds' starts.
 struct Family
 {
-    std::vector<std::size_t> copies; // in order
+    std::vector<CopyAt> copies; // in order, the archive's first
     std::size_t size = 0;
     std::set<uint32_t> starts;
     std::optional<Decoded> decoded;
     bool kept = false;
+    bool placed = false;   // whether the pieces hold the first copy
     uint32_t sequence = 0; // in the layout
-    uint32_t piece = 0;    // the first copy's piece
+    uint32_t piece = 0;    // the first copy's piece, in the archive
 };
 
-// The sequence files of `archive`. Copies that share a file ID belong to one family. Returns each file ID's family.
-std::map<uint32_t, std::size_t> FamiliesOf(std::span<const uint8_t> archive, const Structure& structure, Flavor flavor,
+// The sequence files of `sources`. Copies that share a file ID belong to one family, in the archive and in the group
+// files. Returns each file ID's family.
+std::map<uint32_t, std::size_t> FamiliesOf(std::span<const Source> sources, Flavor flavor,
                                            std::vector<Family>& families)
 {
     // The sequence files, by where they lie, and the file IDs that name each.
     const char* magic = flavor == Flavor::kCtr ? "CSEQ" : "FSEQ";
-    std::map<std::pair<std::size_t, std::size_t>, std::set<uint32_t>> copies;
-    for (const Location& file : structure.files)
+    std::map<std::pair<CopyAt, std::size_t>, std::set<uint32_t>> copies;
+    for (std::size_t s = 0; s < sources.size(); ++s)
     {
-        if (file.size >= 4 && file.start <= archive.size() && file.size <= archive.size() - file.start &&
-            std::memcmp(archive.data() + file.start, magic, 4) == 0)
+        const std::span<const uint8_t> bytes = sources[s].bytes;
+        for (const Location& file : sources[s].structure.files)
         {
-            copies[{file.start, file.size}].insert(file.file);
+            if (file.size >= 4 && file.start <= bytes.size() && file.size <= bytes.size() - file.start &&
+                std::memcmp(bytes.data() + file.start, magic, 4) == 0)
+            {
+                copies[{CopyAt{s, file.start}, file.size}].insert(file.file);
+            }
         }
     }
 
@@ -586,7 +632,7 @@ struct Copy
     std::size_t end = 0;
     std::size_t padded = 0;
     uint32_t piece = 0;
-    std::optional<uint32_t> padding;
+    std::optional<uint32_t> padding = std::nullopt;
     uint32_t next = 0; // the piece after the copy and its padding
     bool run = false;  // a file that becomes a run, with no family
 };
@@ -599,18 +645,21 @@ struct Run
     uint32_t piece = 0;
 };
 
-// The copies of the families kept, in order, with each copy's padding in an archive of `size` bytes.
-std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t alignment, std::size_t size)
+// The copies of the families kept that lie in source `source`, in order, with each copy's padding in a source of `size`
+// bytes.
+std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t source, std::size_t alignment,
+                           std::size_t size)
 {
     std::vector<Copy> copies;
     for (std::size_t i = 0; i < families.size(); ++i)
     {
-        for (const std::size_t start : families[i].copies)
+        for (const CopyAt& copy : families[i].copies)
         {
-            if (families[i].kept)
+            if (families[i].kept && copy.source == source)
             {
-                const std::size_t end = start + families[i].size;
-                copies.push_back({.family = i, .start = start, .end = end, .padded = PaddedEnd(end, alignment, size)});
+                const std::size_t end = copy.start + families[i].size;
+                copies.push_back(
+                    {.family = i, .start = copy.start, .end = end, .padded = PaddedEnd(end, alignment, size)});
             }
         }
     }
@@ -678,31 +727,40 @@ void ForEachInside(const Structure& structure, const std::vector<Copy>& copies, 
     }
 }
 
-// Leaves out the families that the archive's layout keeps in the bytes: a copy whose padding isn't zeros, a field that
-// points inside a copy or lies in one, and copies that overlap.
-void LeaveOut(std::span<const uint8_t> archive, const Structure& structure, std::size_t alignment,
-              std::vector<Family>& families)
+// Leaves out the families that the layout of a source keeps in the bytes: a copy whose padding isn't zeros, a field
+// that points inside a copy or lies in one, and copies that overlap. Each step covers every source before the next.
+// `alignments` gives each source's alignment.
+void LeaveOut(std::span<const Source> sources, std::span<const std::size_t> alignments, std::vector<Family>& families)
 {
-    for (const Copy& copy : CopiesOf(families, alignment, archive.size()))
+    for (std::size_t s = 0; s < sources.size(); ++s)
     {
-        families[copy.family].kept = families[copy.family].kept && PaddedWithZeros(archive, copy.end, copy.padded);
+        const std::span<const uint8_t> bytes = sources[s].bytes;
+        for (const Copy& copy : CopiesOf(families, s, alignments[s], bytes.size()))
+        {
+            families[copy.family].kept = families[copy.family].kept && PaddedWithZeros(bytes, copy.end, copy.padded);
+        }
     }
 
-    std::vector<Copy> copies = CopiesOf(families, alignment, archive.size());
-    ForEachInside(structure, copies, [&](std::size_t i) { families[copies[i].family].kept = false; });
+    for (std::size_t s = 0; s < sources.size(); ++s)
+    {
+        const std::vector<Copy> copies = CopiesOf(families, s, alignments[s], sources[s].bytes.size());
+        ForEachInside(sources[s].structure, copies, [&](std::size_t i) { families[copies[i].family].kept = false; });
+    }
 
     // Of two copies that overlap, the later one stays in the bytes.
-    copies = CopiesOf(families, alignment, archive.size());
-    std::size_t end = 0;
-    for (const Copy& copy : copies)
+    for (std::size_t s = 0; s < sources.size(); ++s)
     {
-        if (copy.start < end)
+        std::size_t end = 0;
+        for (const Copy& copy : CopiesOf(families, s, alignments[s], sources[s].bytes.size()))
         {
-            families[copy.family].kept = false;
-            continue;
-        }
+            if (copy.start < end)
+            {
+                families[copy.family].kept = false;
+                continue;
+            }
 
-        end = copy.end;
+            end = copy.end;
+        }
     }
 }
 
@@ -751,56 +809,58 @@ void AddRuns(std::span<const uint8_t> archive, const Structure& structure, std::
     std::ranges::sort(copies, {}, &Copy::start);
 }
 
-// The pieces of a cut, and the places of the archive's positions in them.
+// The pieces of one source of a cut, and the places of the source's positions in them.
 class Pieces
 {
 public:
-    Pieces(std::span<const uint8_t> archive, std::vector<Family>& families, std::vector<Copy> copies,
-           std::size_t alignment, Layout& layout)
-        : copies_(std::move(copies)), size_(archive.size())
+    // Cuts `bytes`, a source of the cut, into `pieces`. The first copy of each family adds the family's sequence to
+    // `sequences`. The archive's pieces come first, and hold each family's first copy.
+    Pieces(std::span<const uint8_t> bytes, std::vector<Family>& families, std::vector<Copy> copies,
+           std::size_t alignment, std::vector<commands::Sequence>& sequences, std::vector<Piece>& pieces)
+        : copies_(std::move(copies)), size_(bytes.size())
     {
         std::size_t cursor = 0;
         for (Copy& copy : copies_)
         {
             if (copy.start > cursor)
             {
-                AddRun(archive, cursor, copy.start, layout);
+                AddRun(bytes, cursor, copy.start, pieces);
             }
 
-            copy.piece = static_cast<uint32_t>(layout.pieces.size());
+            copy.piece = static_cast<uint32_t>(pieces.size());
             if (copy.run)
             {
                 files_.insert(copy.piece);
-                layout.pieces.emplace_back(
-                    std::vector<uint8_t>(archive.begin() + static_cast<std::ptrdiff_t>(copy.start),
-                                         archive.begin() + static_cast<std::ptrdiff_t>(copy.end)));
+                pieces.emplace_back(std::vector<uint8_t>(bytes.begin() + static_cast<std::ptrdiff_t>(copy.start),
+                                                         bytes.begin() + static_cast<std::ptrdiff_t>(copy.end)));
             }
             else
             {
                 Family& family = families[copy.family];
-                if (family.copies.front() == copy.start)
+                if (!family.placed)
                 {
-                    family.sequence = static_cast<uint32_t>(layout.sequences.size());
+                    family.placed = true;
+                    family.sequence = static_cast<uint32_t>(sequences.size());
                     family.piece = copy.piece;
-                    layout.sequences.push_back(std::move(family.decoded->sequence));
+                    sequences.push_back(std::move(family.decoded->sequence));
                 }
-                layout.pieces.emplace_back(SequencePiece{family.sequence, family.decoded->version});
+                pieces.emplace_back(SequencePiece{family.sequence, family.decoded->version});
             }
-            // The padding after a copy that ends the archive adds no bytes.
+            // The padding after a copy that ends the source adds no bytes.
             if (alignment > 1)
             {
-                copy.padding = static_cast<uint32_t>(layout.pieces.size());
-                layout.pieces.emplace_back(Padding{copy.end == size_ ? uint32_t{1} : static_cast<uint32_t>(alignment)});
+                copy.padding = static_cast<uint32_t>(pieces.size());
+                pieces.emplace_back(Padding{copy.end == size_ ? uint32_t{1} : static_cast<uint32_t>(alignment)});
             }
-            copy.next = static_cast<uint32_t>(layout.pieces.size());
+            copy.next = static_cast<uint32_t>(pieces.size());
             cursor = copy.padded;
         }
-        if (cursor < archive.size())
+        if (cursor < bytes.size())
         {
-            AddRun(archive, cursor, archive.size(), layout);
+            AddRun(bytes, cursor, bytes.size(), pieces);
         }
 
-        end_ = static_cast<uint32_t>(layout.pieces.size());
+        end_ = static_cast<uint32_t>(pieces.size());
     }
 
     // The place of position `x`. A size ends at `x`, and starts at `from`: a range that starts at a copy ends before
@@ -863,11 +923,11 @@ public:
     }
 
 private:
-    void AddRun(std::span<const uint8_t> archive, std::size_t start, std::size_t end, Layout& layout)
+    void AddRun(std::span<const uint8_t> bytes, std::size_t start, std::size_t end, std::vector<Piece>& pieces)
     {
-        runs_.push_back({start, end, static_cast<uint32_t>(layout.pieces.size())});
-        layout.pieces.emplace_back(std::vector<uint8_t>(archive.begin() + static_cast<std::ptrdiff_t>(start),
-                                                        archive.begin() + static_cast<std::ptrdiff_t>(end)));
+        runs_.push_back({start, end, static_cast<uint32_t>(pieces.size())});
+        pieces.emplace_back(std::vector<uint8_t>(bytes.begin() + static_cast<std::ptrdiff_t>(start),
+                                                 bytes.begin() + static_cast<std::ptrdiff_t>(end)));
     }
 
     // The place of position `x`, past the start of `copy` and no further than the end of its padding.
@@ -892,14 +952,49 @@ private:
     uint32_t end_ = 0;
 };
 
-// Cuts `archive` by its structure: the families of sequence files that decode, the other files that become runs, each
-// with its padding, and the fields. Throws xsflib::FormatError for a field that the pieces can't place.
-Layout CutBy(std::span<const uint8_t> archive, const Structure& structure, Flavor flavor)
+// The fields of `structure` that an edit can change, placed among `pieces`. `placed` cut the pieces. Throws
+// xsflib::FormatError for a field that the pieces can't place.
+std::vector<Field> FieldsOf(const Structure& structure, const Pieces& placed, std::span<const Piece> pieces)
+{
+    // A field whose places lie in one run, or in runs with no sequence, file or padding between them, can't change.
+    std::vector<uint32_t> changing(pieces.size() + 1, 0);
+    for (std::size_t i = 0; i < pieces.size(); ++i)
+    {
+        const bool fixed = std::holds_alternative<std::vector<uint8_t>>(pieces[i]) && !placed.IsFile(i);
+        changing[i + 1] = changing[i] + (fixed ? 0 : 1);
+    }
+
+    std::vector<Field> fields;
+    for (const Distance& distance : structure.distances)
+    {
+        const std::optional<Place> at = placed.FieldAt(distance.at);
+        const std::optional<Place> from = placed.PlaceOf(distance.from, false, distance.from);
+        const std::optional<Place> to = placed.PlaceOf(distance.to, distance.size, distance.from);
+        if (!at || !from || !to)
+        {
+            throw xsflib::FormatError("a field that the pieces can't place");
+        }
+
+        const auto [low, high] = std::minmax(from->piece, to->piece);
+        if (changing[high] != changing[low])
+        {
+            fields.push_back({*at, *from, *to});
+        }
+    }
+
+    return fields;
+}
+
+// Cuts `sources`, the archive and the group files beside it, by their structures: the families of sequence files that
+// decode, the other files that become runs, each with its padding, and the fields. Throws xsflib::FormatError for a
+// field that the pieces can't place.
+Layout CutBy(std::span<const Source> sources, Flavor flavor)
 {
     // Each family's starts, and its commands when every copy holds the same bytes and they decode.
     std::vector<Family> families;
-    const std::map<uint32_t, std::size_t> family_of = FamiliesOf(archive, structure, flavor, families);
-    for (const Start& start : structure.starts)
+    const std::map<uint32_t, std::size_t> family_of = FamiliesOf(sources, flavor, families);
+    const Structure& archive = sources.front().structure;
+    for (const Start& start : archive.starts)
     {
         const auto found = family_of.find(start.file);
         if (found != family_of.end())
@@ -911,70 +1006,72 @@ Layout CutBy(std::span<const uint8_t> archive, const Structure& structure, Flavo
     const nwsnd::Grammar grammar = GrammarFor(flavor);
     for (Family& family : families)
     {
-        const std::span<const uint8_t> first = archive.subspan(family.copies.front(), family.size);
-        auto same = [&](std::size_t start)
+        // A sequence file that only group files hold stays in their bytes. The archive's tables hold its sounds'
+        // starts, and no field reaches from the archive into a group file.
+        if (family.size == 0 || family.copies.front().source != 0)
         {
-            return std::ranges::equal(archive.subspan(start, family.size), first);
+            continue;
+        }
+
+        const CopyAt& front = family.copies.front();
+        const std::span<const uint8_t> first = sources[front.source].bytes.subspan(front.start, family.size);
+        auto same = [&](const CopyAt& copy)
+        {
+            return std::ranges::equal(sources[copy.source].bytes.subspan(copy.start, family.size), first);
         };
-        if (family.size > 0 && std::ranges::all_of(family.copies, same))
+        if (std::ranges::all_of(family.copies, same))
         {
             family.decoded = Decode(first, family.starts, flavor, grammar);
             family.kept = family.decoded.has_value();
         }
     }
 
-    const std::size_t alignment = AlignmentOf(structure);
-    LeaveOut(archive, structure, alignment, families);
-    std::vector<Copy> copies = CopiesOf(families, alignment, archive.size());
-    AddRuns(archive, structure, alignment, copies);
+    std::vector<std::size_t> alignments;
+    for (const Source& source : sources)
+    {
+        alignments.push_back(AlignmentOf(source.structure));
+    }
+    LeaveOut(sources, alignments, families);
 
+    // The archive comes first, and its copies give the families their sequences.
     Layout layout;
     layout.flavor = flavor;
-    const Pieces pieces(archive, families, std::move(copies), alignment, layout);
-
-    // A field whose places lie in one run, or in runs with no sequence, file or padding between them, can't change.
-    std::vector<uint32_t> changing(layout.pieces.size() + 1, 0);
-    for (std::size_t i = 0; i < layout.pieces.size(); ++i)
+    layout.group_files.resize(sources.size() - 1);
+    for (std::size_t s = 0; s < sources.size(); ++s)
     {
-        const bool fixed = std::holds_alternative<std::vector<uint8_t>>(layout.pieces[i]) && !pieces.IsFile(i);
-        changing[i + 1] = changing[i] + (fixed ? 0 : 1);
-    }
-
-    for (const Distance& distance : structure.distances)
-    {
-        const std::optional<Place> at = pieces.FieldAt(distance.at);
-        const std::optional<Place> from = pieces.PlaceOf(distance.from, false, distance.from);
-        const std::optional<Place> to = pieces.PlaceOf(distance.to, distance.size, distance.from);
-        if (!at || !from || !to)
+        const Source& source = sources[s];
+        std::vector<Piece>& pieces = s == 0 ? layout.pieces : layout.group_files[s - 1].pieces;
+        std::vector<Copy> copies = CopiesOf(families, s, alignments[s], source.bytes.size());
+        AddRuns(source.bytes, source.structure, alignments[s], copies);
+        const Pieces placed(source.bytes, families, std::move(copies), alignments[s], layout.sequences, pieces);
+        std::vector<Field> fields = FieldsOf(source.structure, placed, pieces);
+        if (s > 0)
         {
-            throw xsflib::FormatError("a field that the pieces can't place");
-        }
-
-        const auto [low, high] = std::minmax(from->piece, to->piece);
-        if (changing[high] != changing[low])
-        {
-            layout.fields.push_back({*at, *from, *to});
-        }
-    }
-
-    // A sound's start counts from the bytecode's first item.
-    for (const Start& start : structure.starts)
-    {
-        const auto found = family_of.find(start.file);
-        if (!start.at || found == family_of.end() || !families[found->second].kept)
-        {
+            layout.group_files[s - 1].fields = std::move(fields);
             continue;
         }
 
-        const Family& family = families[found->second];
-        const std::optional<Place> at = pieces.FieldAt(*start.at);
-        if (!at)
-        {
-            throw xsflib::FormatError("a sound's start that the pieces can't place");
-        }
+        layout.fields = std::move(fields);
 
-        layout.fields.push_back(
-            {*at, Place{family.piece, 0, true}, Place{family.piece, family.decoded->entries.at(start.offset), true}});
+        // A sound's start counts from the bytecode's first item.
+        for (const Start& start : archive.starts)
+        {
+            const auto found = family_of.find(start.file);
+            if (!start.at || found == family_of.end() || !families[found->second].kept)
+            {
+                continue;
+            }
+
+            const Family& family = families[found->second];
+            const std::optional<Place> at = placed.FieldAt(*start.at);
+            if (!at)
+            {
+                throw xsflib::FormatError("a sound's start that the pieces can't place");
+            }
+
+            layout.fields.push_back({*at, Place{family.piece, 0, true},
+                                     Place{family.piece, family.decoded->entries.at(start.offset), true}});
+        }
     }
 
     return layout;
@@ -985,7 +1082,7 @@ struct Laid
 {
     std::size_t start = 0;
     std::size_t size = 0;
-    std::vector<std::size_t> items; // a sequence piece's items, and the end of its bytecode
+    std::vector<std::size_t> items = {}; // a sequence piece's items, and the end of its bytecode
     bool run = false;
 };
 
@@ -1053,16 +1150,148 @@ bool Follows(std::span<const uint8_t> archive, const Structure& before, std::spa
     return true;
 }
 
+// What the cutter reads of `bytes`: an archive of `flavor`, or a group file beside one when `group` gives the group
+// file's place among them. Nothing for a group file whose tables can't be read. Throws xsflib::FormatError for an
+// archive whose tables can't be read.
+std::optional<Structure> StructureOf(std::span<const uint8_t> bytes, Flavor flavor, std::optional<std::size_t> group)
+{
+    return group ? ReadGroupFileStructure(bytes, flavor) : ReadStructure(bytes, flavor);
+}
+
+// The pieces in which each copy of file `file` holds `bytes`: the pieces of the archive, or of group file `group`
+// beside it when `group` gives the group file's place. Nothing when they hold no copy, and for a group file whose
+// tables can't be read. Throws the exceptions of ReplaceFile.
+std::optional<std::vector<Piece>> ReplaceCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
+                                                std::span<const Piece> pieces, std::span<const Field> fields,
+                                                std::optional<std::size_t> group, uint32_t file,
+                                                std::span<const uint8_t> bytes)
+{
+    const std::vector<uint8_t> joined = Join(flavor, sequences, pieces, fields);
+    const std::optional<Structure> before = StructureOf(joined, flavor, group);
+    if (!before)
+    {
+        return std::nullopt;
+    }
+    const std::vector<std::size_t> starts = Starts(joined, flavor, pieces);
+
+    // Each copy of the file, in the FILE block and in the groups, is a run of its own. The run takes the bytes. Several
+    // pieces can start where the copy starts: padding of no bytes, then the run.
+    const std::string name = "file " + std::to_string(file);
+    const std::string where = group ? " in group file " + std::to_string(*group) : "";
+    std::vector<Piece> replaced(pieces.begin(), pieces.end());
+    std::vector<Location> copies;
+    for (const Location& location : before->files)
+    {
+        if (location.file != file)
+        {
+            continue;
+        }
+
+        auto piece = static_cast<std::size_t>(std::ranges::lower_bound(starts, location.start) - starts.begin());
+        const auto holds_copy = [&](std::size_t i)
+        {
+            const auto* run = std::get_if<std::vector<uint8_t>>(&pieces[i]);
+            return run && run->size() == location.size;
+        };
+        while (piece < pieces.size() && starts[piece] == location.start && !holds_copy(piece))
+        {
+            ++piece;
+        }
+        if (piece == pieces.size() || starts[piece] != location.start)
+        {
+            throw std::invalid_argument("a copy of " + name + where + " isn't a piece of its own");
+        }
+
+        replaced[piece] = std::vector<uint8_t>(bytes.begin(), bytes.end());
+        copies.push_back(location);
+    }
+    if (copies.empty())
+    {
+        return std::nullopt;
+    }
+
+    // Another file ID that names the same bytes would take them too.
+    for (const Location& location : before->files)
+    {
+        const auto same = [&](const Location& copy)
+        {
+            return copy.start == location.start && copy.size == location.size;
+        };
+        if (location.file != file && std::ranges::any_of(copies, same))
+        {
+            throw std::invalid_argument(name + where + " shares its bytes with file " + std::to_string(location.file));
+        }
+    }
+
+    // The tables follow when each copy holds the bytes, and every other file keeps its bytes.
+    const std::vector<uint8_t> after = Join(flavor, sequences, replaced, fields);
+    const std::optional<Structure> read = StructureOf(after, flavor, group);
+    if (!read || !Follows(joined, *before, after, *read, file, copies, bytes))
+    {
+        const std::string tables =
+            group ? "the tables of group file " + std::to_string(*group) : "the archive's tables";
+        throw std::invalid_argument(tables + " don't follow the new bytes of " + name);
+    }
+
+    return replaced;
+}
+
+// The copies of file `file` in `joined`: an archive, or a group file beside one when `group` gives its place among
+// them. Each copy gives the larger file that holds it whole, if one does: a group's file in an archive.
+std::vector<FileCopy> CopiesIn(std::span<const uint8_t> joined, const Structure& structure, uint32_t file,
+                               std::optional<std::size_t> group)
+{
+    std::vector<FileCopy> copies;
+    for (const Location& location : structure.files)
+    {
+        if (location.file != file)
+        {
+            continue;
+        }
+
+        FileCopy& copy = copies.emplace_back();
+        copy.start = location.start;
+        copy.group_file = group;
+        const std::span<const uint8_t> bytes = BytesOf(joined, location);
+        copy.bytes.assign(bytes.begin(), bytes.end());
+        for (const Location& other : structure.files)
+        {
+            const bool holds =
+                other.start <= location.start && location.start + location.size <= other.start + other.size;
+            if (other.file != file && holds && other.size > location.size)
+            {
+                copy.group = other.file;
+            }
+        }
+    }
+    std::ranges::sort(copies, {}, &FileCopy::start);
+
+    return copies;
+}
+
 } // namespace
 
 Layout Cut(std::span<const uint8_t> archive, const Options& options)
+{
+    return Cut(archive, {}, options);
+}
+
+Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options)
 {
     // The reader checks the tables, and reports what it can't read.
     static_cast<void>(SoundArchive::Load(std::vector<uint8_t>(archive.begin(), archive.end()), options));
 
     try
     {
-        return CutBy(archive, ReadStructure(archive, options.flavor), options.flavor);
+        // A group file that isn't one of the console's has no structure, and stays one run.
+        std::vector<Source> sources;
+        sources.push_back({archive, ReadStructure(archive, options.flavor)});
+        for (const std::vector<uint8_t>& group_file : group_files)
+        {
+            sources.push_back({group_file, ReadGroupFileStructure(group_file, options.flavor).value_or(Structure{})});
+        }
+
+        return CutBy(sources, options.flavor);
     }
     catch (const xsflib::FormatError&)
     {
@@ -1071,6 +1300,14 @@ Layout Cut(std::span<const uint8_t> archive, const Options& options)
     Layout layout;
     layout.flavor = options.flavor;
     layout.pieces.emplace_back(std::vector<uint8_t>(archive.begin(), archive.end()));
+    for (const std::vector<uint8_t>& group_file : group_files)
+    {
+        GroupFileLayout& cut = layout.group_files.emplace_back();
+        if (!group_file.empty())
+        {
+            cut.pieces.emplace_back(group_file);
+        }
+    }
 
     return layout;
 }
@@ -1187,63 +1424,29 @@ std::vector<Piece> ReplaceFile(Flavor flavor, std::span<const commands::Sequence
                                std::span<const Piece> pieces, std::span<const Field> fields, uint32_t file,
                                std::span<const uint8_t> bytes)
 {
-    const std::vector<uint8_t> archive = Join(flavor, sequences, pieces, fields);
-    const Structure before = ReadStructure(archive, flavor);
-    const std::vector<std::size_t> starts = Starts(archive, flavor, pieces);
+    return ReplaceFile(flavor, sequences, pieces, fields, {}, file, bytes).pieces;
+}
 
-    // Each copy of the file, in the FILE block and in the groups, is a run of its own. The run takes the bytes. Several
-    // pieces can start where the copy starts: padding of no bytes, then the run.
-    const std::string name = "file " + std::to_string(file);
-    std::vector<Piece> replaced(pieces.begin(), pieces.end());
-    std::vector<Location> copies;
-    for (const Location& location : before.files)
+ReplacedPieces ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
+                           std::span<const Field> fields, std::span<const GroupFileLayout> group_files, uint32_t file,
+                           std::span<const uint8_t> bytes)
+{
+    ReplacedPieces replaced;
+    std::optional<std::vector<Piece>> archive =
+        ReplaceCopies(flavor, sequences, pieces, fields, std::nullopt, file, bytes);
+    bool found = archive.has_value();
+    replaced.pieces = archive ? std::move(*archive) : std::vector<Piece>(pieces.begin(), pieces.end());
+    for (std::size_t g = 0; g < group_files.size(); ++g)
     {
-        if (location.file != file)
-        {
-            continue;
-        }
-
-        auto piece = static_cast<std::size_t>(std::ranges::lower_bound(starts, location.start) - starts.begin());
-        const auto holds_copy = [&](std::size_t i)
-        {
-            const auto* run = std::get_if<std::vector<uint8_t>>(&pieces[i]);
-            return run && run->size() == location.size;
-        };
-        while (piece < pieces.size() && starts[piece] == location.start && !holds_copy(piece))
-        {
-            ++piece;
-        }
-        if (piece == pieces.size() || starts[piece] != location.start)
-        {
-            throw std::invalid_argument("a copy of " + name + " isn't a piece of its own");
-        }
-
-        replaced[piece] = std::vector<uint8_t>(bytes.begin(), bytes.end());
-        copies.push_back(location);
+        const GroupFileLayout& group_file = group_files[g];
+        std::optional<std::vector<Piece>> group =
+            ReplaceCopies(flavor, sequences, group_file.pieces, group_file.fields, g, file, bytes);
+        found = found || group.has_value();
+        replaced.group_files.push_back(group ? std::move(*group) : group_file.pieces);
     }
-    if (copies.empty())
+    if (!found)
     {
-        throw std::invalid_argument("the archive holds no " + name);
-    }
-
-    // Another file ID that names the same bytes would take them too.
-    for (const Location& location : before.files)
-    {
-        const auto same = [&](const Location& copy)
-        {
-            return copy.start == location.start && copy.size == location.size;
-        };
-        if (location.file != file && std::ranges::any_of(copies, same))
-        {
-            throw std::invalid_argument(name + " shares its bytes with file " + std::to_string(location.file));
-        }
-    }
-
-    // The tables follow when each copy holds the bytes, and every other file keeps its bytes.
-    const std::vector<uint8_t> joined = Join(flavor, sequences, replaced, fields);
-    if (!Follows(archive, before, joined, ReadStructure(joined, flavor), file, copies, bytes))
-    {
-        throw std::invalid_argument("the archive's tables don't follow the new bytes of " + name);
+        throw std::invalid_argument("the archive holds no file " + std::to_string(file));
     }
 
     return replaced;
@@ -1253,32 +1456,23 @@ std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequen
                                  std::span<const Piece> pieces, std::span<const Field> fields, uint32_t file)
 {
     const std::vector<uint8_t> archive = Join(flavor, sequences, pieces, fields);
-    const Structure structure = ReadStructure(archive, flavor);
 
-    // Each copy, and the larger file that holds it whole, if one does: a group's file.
-    std::vector<FileCopy> copies;
-    for (const Location& location : structure.files)
+    return CopiesIn(archive, ReadStructure(archive, flavor), file, std::nullopt);
+}
+
+std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
+                                 std::span<const Piece> pieces, std::span<const Field> fields,
+                                 std::span<const GroupFileLayout> group_files, uint32_t file)
+{
+    std::vector<FileCopy> copies = FileCopies(flavor, sequences, pieces, fields, file);
+    for (std::size_t g = 0; g < group_files.size(); ++g)
     {
-        if (location.file != file)
+        const std::vector<uint8_t> joined = Join(flavor, sequences, group_files[g].pieces, group_files[g].fields);
+        if (const std::optional<Structure> structure = ReadGroupFileStructure(joined, flavor))
         {
-            continue;
-        }
-
-        FileCopy& copy = copies.emplace_back();
-        copy.start = location.start;
-        const std::span<const uint8_t> bytes = BytesOf(archive, location);
-        copy.bytes.assign(bytes.begin(), bytes.end());
-        for (const Location& other : structure.files)
-        {
-            const bool holds =
-                other.start <= location.start && location.start + location.size <= other.start + other.size;
-            if (other.file != file && holds && other.size > location.size)
-            {
-                copy.group = other.file;
-            }
+            std::ranges::move(CopiesIn(joined, *structure, file, g), std::back_inserter(copies));
         }
     }
-    std::ranges::sort(copies, {}, &FileCopy::start);
 
     return copies;
 }
@@ -1329,7 +1523,7 @@ void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const
         // A sequence sound's banks, as many as its list holds, its tracks and its channels' priority.
         const std::size_t q = p + static_cast<uint32_t>(detail.offset);
         const std::size_t list = q + static_cast<uint32_t>(ReadRef(r, q).offset);
-        const uint32_t slots = std::min<uint32_t>(r.U32(list), 4);
+        const uint32_t slots = std::min<uint32_t>(r.U32(list), kBankSlots);
         for (uint32_t k = 0; k < slots && k < sound.banks.size(); ++k)
         {
             put(list + 4 + std::size_t{k} * 4, sound.banks[k], 0xFFFFFFFF);

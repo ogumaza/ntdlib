@@ -8,6 +8,7 @@
 // new note takes the voice of the oldest note of the lowest priority. A note that every voice outranks plays nothing.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -16,15 +17,16 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/recording_engine.h"
 #include "ntdlib/sequence_export/sfz.h"
-#include "seqlib/midi/performance_writer.h"
+#include "ntdlib/testing/sar_files.h"
 #include "sequence_export_test.h"
-#include "xsflib/testing/check.h"
 
 using namespace ntdlib::sequence_export;
 using namespace ntdlib::sequence_export::tests;
@@ -266,10 +268,10 @@ void TestOneShotLeadFollowsTheRate()
     region.original_key = 60;
     const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, region}}};
     const files::KeyTable keys{files::KeyTable::kDirect, 0, {{127, velocities}}};
-    const std::vector<std::pair<uint32_t, uint32_t>> waves = {{0x05000000, 0}};
+    const std::vector<std::pair<uint32_t, uint32_t>> kWaves = {{0x05000000, 0}};
     std::vector<ArchiveFile> archive_files(3);
     archive_files[0].data = Fseq({0xd3, 100, 0xc9, 66, 0xcf, 5, 49, 110, 4, 0xff}); // release, porta, its time, note
-    archive_files[1].data = files::Bank(console->settings.archive.flavor, {waves, {keys}});
+    archive_files[1].data = files::Bank(console->settings.archive.flavor, {kWaves, {keys}});
     archive_files[2].data = Fwar({Pcm16Fwav(7935, std::vector<int16_t>(7935, 1000), 1, false, 22050)});
     const SoundArchive archive = SoundArchive::Load(
         Fsar(archive_files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),

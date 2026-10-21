@@ -51,8 +51,8 @@ DspAdpcmChannel EncodeDspAdpcm(std::span<const int16_t> samples, uint32_t loop_s
 // Moves the loop's start forward to the start of a frame of 14 samples. Each of `channels` holds the wave's samples up
 // to the end of its loop. The samples from `loop_start` up to the new start repeat after the loop's end, and the loop
 // then plays the same samples. A decoder that goes back to the loop's start then starts at a frame's header. Returns
-// the new start. A start on a frame stays where it is. Throws std::invalid_argument for a loop start past the end of a
-// channel.
+// the new start. A start on a frame stays where it is. Throws std::invalid_argument for a loop start at or past the end
+// of a channel.
 uint32_t AlignDspAdpcmLoop(std::vector<std::vector<int16_t>>& channels, uint32_t loop_start);
 
 } // namespace ntdlib::wave

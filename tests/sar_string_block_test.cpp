@@ -7,7 +7,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -15,12 +14,13 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/string_block.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -126,16 +126,7 @@ StringBlock Block(Flavor flavor, std::vector<ItemName> names)
 template <class Error, class Call>
 bool Throws(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const Error&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<Error>(call).empty();
 }
 
 // Bit `index` of `name`, as the header describes it.
@@ -347,11 +338,11 @@ void TestOrderOfTypes()
     const Tree tree(bytes, Flavor::kNx);
 
     // Leaves at 0, 1, 3, 5 and on: each name after the first adds its leaf and then an inner node.
-    const uint32_t expected[] = {6, 5, 4, 3, 2, 1, 0};
-    const uint32_t places[] = {0, 1, 3, 5, 7, 9, 11};
+    const uint32_t kExpected[] = {6, 5, 4, 3, 2, 1, 0};
+    const uint32_t kPlaces[] = {0, 1, 3, 5, 7, 9, 11};
     for (std::size_t k = 0; k < 7; ++k)
     {
-        XSFLIB_CHECK(tree.Flags(places[k]) == 1 && tree.String(places[k]) == expected[k]);
+        XSFLIB_CHECK(tree.Flags(kPlaces[k]) == 1 && tree.String(kPlaces[k]) == kExpected[k]);
     }
     CheckTree(bytes, Flavor::kNx, 7);
 }
@@ -359,11 +350,11 @@ void TestOrderOfTypes()
 // Names that hold others at their start, and an empty name. The bits past a name's end are 0.
 void TestPrefixes(Flavor flavor)
 {
-    const std::vector<std::string> names = {"SE_AB", "SE", "S", "", "SE_A", "SE_B", "SE_A0"};
+    const std::vector<std::string> kNames = {"SE_AB", "SE", "S", "", "SE_A", "SE_B", "SE_A0"};
     std::vector<ItemName> items;
-    for (std::size_t k = 0; k < names.size(); ++k)
+    for (std::size_t k = 0; k < kNames.size(); ++k)
     {
-        items.push_back({names[k], ItemId(ntdlib::sar::kSoundItem, static_cast<uint32_t>(k))});
+        items.push_back({kNames[k], ItemId(ntdlib::sar::kSoundItem, static_cast<uint32_t>(k))});
     }
 
     const std::vector<uint8_t> bytes = Block(flavor, items).Write();
@@ -453,16 +444,8 @@ void TestOtherLayout(Flavor flavor)
 // Whether StringBlock::Read refuses `bytes` with a message that holds `part`.
 bool Refuses(const std::vector<uint8_t>& bytes, const std::string& part)
 {
-    try
-    {
-        StringBlock::Read(bytes, Flavor::kNx);
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        return std::string(e.what()).find(part) != std::string::npos;
-    }
-
-    return false;
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { StringBlock::Read(bytes, Flavor::kNx); });
+    return !message.empty() && message.find(part) != std::string::npos;
 }
 
 // The writer refuses a name with a zero byte, two names alike, an item of a type without names and two names that
@@ -531,13 +514,5 @@ int main()
     TestOrderOfTypes();
     TestRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("STRG block tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("STRG block");
 }

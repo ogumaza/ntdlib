@@ -9,8 +9,9 @@
 #include <span>
 #include <string_view>
 
-#include "ntdlib/dol.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/dol.h"
 
 namespace ntdlib
 {

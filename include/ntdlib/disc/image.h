@@ -17,7 +17,7 @@
 #include <span>
 #include <string>
 
-#include "ntdlib/disc/source.h"
+#include "ntdlib/disc/error.h"
 
 namespace ntdlib::disc
 {

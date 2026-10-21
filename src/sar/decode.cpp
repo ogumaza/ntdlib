@@ -4,9 +4,15 @@
 
 #include "ntdlib/sar/decode.h"
 
+#include <cstdint>
+#include <span>
 #include <string>
 
 #include "xsflib/binary.h"
+
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/wave/adpcm.h"
+#include "ntdlib/wave/decode.h"
 
 namespace ntdlib::sar
 {

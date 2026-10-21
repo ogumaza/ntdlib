@@ -9,13 +9,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <map>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "xsflib/bytes.h"
+#include "xsflib/files.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/disc/game.h"
@@ -51,12 +52,15 @@ inline void StoreBe64(Bytes& data, size_t at, uint64_t value)
     xsflib::StoreBe64(data.data() + at, value);
 }
 
-// Writes `data` to the file at `path`, and makes the file's folder first.
+// Writes `data` to the file at `path`, and makes the file's folder first. Throws std::runtime_error when the file
+// can't be written.
 inline void WriteFile(const fs::path& path, const Bytes& data)
 {
     fs::create_directories(path.parent_path());
-    std::ofstream file(path, std::ios::binary);
-    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    if (const std::optional<std::string> error = xsflib::WriteFile(path, data))
+    {
+        throw std::runtime_error(*error);
+    }
 }
 
 inline Bytes Text(const std::string& text)

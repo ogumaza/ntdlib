@@ -3,7 +3,6 @@
 #include "ntdlib/cafe/axfx/math.h"
 
 #include <bit>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 

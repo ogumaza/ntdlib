@@ -23,14 +23,14 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/file_name.h"
 #include "seqlib/loop.h"
+#include "seqlib/midi/performance.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/midi/reader.h"
+#include "seqlib/pcm.h"
 #include "seqlib/sf2/reader.h"
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
-#include "seqlib/wav.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -125,6 +125,7 @@ using seqlib::PrepareForSfz;
 using seqlib::midi::MidiReport;
 using seqlib::midi::NoteCount;
 using seqlib::sf2::ToTimecents;
+using xsflib::testing::ErrorOf;
 
 // A tick at the default tempo and timebase, 120 beats a minute of 48 ticks, in milliseconds.
 constexpr double kTickMs = 60000.0 / (120.0 * 48.0);
@@ -160,11 +161,6 @@ public:
 // Decoded PCM, with seqlib's loop and the wave's sample rate.
 struct Pcm : seqlib::Pcm
 {
-    uint32_t Length() const
-    {
-        return loop_end;
-    }
-
     uint32_t sample_rate = 32000;
 };
 
@@ -406,11 +402,11 @@ struct TestInstrument
 void WriteRegion(Writer& w, std::size_t at, const TestRegion& r)
 {
     w.U32(at, static_cast<uint32_t>(r.wave_index));
-    const uint8_t kFields[] = {r.attack,        r.decay,     r.sustain,      r.release, r.hold, 0,
-                               r.note_off_type, r.key_group, r.original_key, r.volume,  r.pan,  0};
-    for (std::size_t i = 0; i < std::size(kFields); i++)
+    const uint8_t fields[] = {r.attack,        r.decay,     r.sustain,      r.release, r.hold, 0,
+                              r.note_off_type, r.key_group, r.original_key, r.volume,  r.pan,  0};
+    for (std::size_t i = 0; i < std::size(fields); i++)
     {
-        w.U8(at + 4 + i, kFields[i]);
+        w.U8(at + 4 + i, fields[i]);
     }
 
     uint32_t tune;
@@ -794,9 +790,9 @@ Performance PerformTogether(const SoundArchive& archive, const std::vector<uint3
 // Converts sounds `indices` of `archive` together, as the piece `name` (ConvertTogether).
 Conversion ConvertTogether(const SoundArchive& archive, const std::vector<uint32_t>& indices, const std::string& name)
 {
-    const PerformOptions options;
+    const PerformOptions kOptions;
 
-    return ntdlib::sequence_export::ConvertTogether(archive, indices, name, options, SettingsFor(archive, options),
+    return ntdlib::sequence_export::ConvertTogether(archive, indices, name, kOptions, SettingsFor(archive, kOptions),
                                                     Wii().program);
 }
 
@@ -1011,15 +1007,11 @@ void TestTruncatedArchiveWhoseTablesCantBeReadIsReported()
     const std::size_t info = xsflib::LoadBe32(&bytes[0x18]);
     const std::size_t cut = info + 0x20;
 
-    std::string message;
-    try
+    const auto load_cut = [&]
     {
         SoundArchive::Load(std::vector<uint8_t>(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(cut)));
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    };
+    const std::string message = ErrorOf<xsflib::FormatError>(load_cut);
 
     XSFLIB_CHECK(message.starts_with("truncated archive: " + std::to_string(cut) + " of " +
                                      std::to_string(bytes.size()) + " bytes; cannot read tables (read out of bounds"));
@@ -1031,16 +1023,8 @@ void TestOtherPlatformsArchivesAreReported()
     {
         std::vector<uint8_t> bytes(0x40, 0);
         std::memcpy(bytes.data(), magic, 4);
-        try
-        {
-            SoundArchive::Load(bytes);
-        }
-        catch (const xsflib::FormatError& e)
-        {
-            return std::string(e.what());
-        }
 
-        return std::string();
+        return ErrorOf<xsflib::FormatError>([&] { SoundArchive::Load(bytes); });
     };
 
     XSFLIB_CHECK(message_for("CSAR") == "unsupported CSAR archive (3DS); expected RSAR (Wii)");
@@ -1183,13 +1167,13 @@ void TestTrackThatTheGameSilencesKeepsItsNotes()
     // Track 0 opens track 1, and each plays a note at full level. A game's code can set a track's volume to 0 through
     // the sound's handle (PerformOptions::tracks). The silenced track's note stays in the file, and CC11 holds it at 0.
     // Track 1 plays on at full level.
-    const std::vector<uint8_t> commands = {0x88, 0x01, 0x00, 0x00, 0x09, 0x3c, 0x7f,
-                                           0x18, 0xff, 0x40, 0x7f, 0x18, 0xff};
+    const std::vector<uint8_t> kCommands = {0x88, 0x01, 0x00, 0x00, 0x09, 0x3c, 0x7f,
+                                            0x18, 0xff, 0x40, 0x7f, 0x18, 0xff};
     PerformOptions silenced;
     silenced.tracks = 0xfffe;
 
-    const Performance all = PerformCommandsWith(commands, {}, {.track_flags = 3});
-    const Performance some = PerformCommandsWith(commands, silenced, {.track_flags = 3});
+    const Performance all = PerformCommandsWith(kCommands, {}, {.track_flags = 3});
+    const Performance some = PerformCommandsWith(kCommands, silenced, {.track_flags = 3});
 
     const std::vector<std::tuple<uint32_t, int, int>> kFirst = {{0, 60, 127}};
     const std::vector<std::tuple<uint32_t, int, int>> kSecond = {{0, 64, 127}};
@@ -1210,12 +1194,12 @@ void TestSoundsSendsAddToTheTracks()
     // the track's send on its bus, and holds the sum at 1 at most. The track's send A of 100 and the sound's 0.5 reach
     // the full send: CC91 127. Its send B of 16 and the sound's 0.25 make 16 + 31.75: CC93 48. Without the sound's
     // sends, CC91 and CC93 take the track's sends as they are.
-    const std::vector<uint8_t> commands = {0xd9, 0x64, 0xda, 0x10, 0x3c, 0x7f, 0x18, 0xff};
+    const std::vector<uint8_t> kCommands = {0xd9, 0x64, 0xda, 0x10, 0x3c, 0x7f, 0x18, 0xff};
     PerformOptions sends;
     sends.fx_sends = {0.5f, 0.25f, 0.0f};
 
-    const Performance plain = PerformCommandsWith(commands, {});
-    const Performance sent = PerformCommandsWith(commands, sends);
+    const Performance plain = PerformCommandsWith(kCommands, {});
+    const Performance sent = PerformCommandsWith(kCommands, sends);
 
     const std::vector<std::pair<uint32_t, int>> kPlainA = {{0, 100}};
     const std::vector<std::pair<uint32_t, int>> kPlainB = {{0, 16}};
@@ -1234,9 +1218,10 @@ void TestTrackAboveFullLevelLiftsTheZones()
     // plays at the velocity squared times the region's volume times the track's volumes. The voice limits that to full
     // level. The regions split at velocity 63. Key 60 at velocity 63 plays the region of volume 20. The game plays the
     // note at 20 / 127 * 4.03 = 0.635 times the velocity's level, 3.95 dB down. The region's zone is
-    // 200 log10(127 / 20) - 121 = 39.55 cB down: 40 cB in the SoundFont and -3.96 dB in the SFZ file. Key 60 at
-    // velocity 127 plays the region of volume 64. The game would play the note at 64 / 127 * 4.03 = 2.03 times full
-    // level. The voice holds the note at full level. That region's zone has no attenuation and no volume opcode.
+    // 200 log10(127 / 20) - 121 = 39.55 cB down: -3.96 dB in the SFZ file. The SoundFont's generator holds 2.5 times
+    // that, 99 cB (seqlib's ToZoneAttenuation). Key 60 at velocity 127 plays the region of volume 64. The game would
+    // play the note at 64 / 127 * 4.03 = 2.03 times full level. The voice holds the note at full level. That region's
+    // zone has no attenuation and no volume opcode.
     const SoundArchive archive = SequenceArchive(
         {{0xd5, 0xff, 0x3c, 0x3f, 0x18, 0x3c, 0x7f, 0x18, 0xff}},
         {.velocity_regions = {TestRegion{.volume = 20}, TestRegion{.volume = 64}}, .upper_velocities = {63, 127}});
@@ -1264,13 +1249,13 @@ void TestTrackAboveFullLevelLiftsTheZones()
         }
     }
 
-    const std::map<int, int> kAttenuations = {{0, 40}, {64, 0}};
+    const std::map<int, int> kAttenuations = {{0, 99}, {64, 0}};
     XSFLIB_CHECK(seqlib::sf2::Check(c.sf2).empty() && attenuations == kAttenuations);
 
     XSFLIB_CHECK(c.sfz.files.size() == 1);
     for (const SfzFile& f : c.sfz.files)
     {
-        XSFLIB_CHECK(f.text.find(" lovel=0 hivel=63 volume=-3.96 pitch_keycenter=60") != std::string::npos);
+        XSFLIB_CHECK(f.text.find(" lovel=1 hivel=63 volume=-3.96 pitch_keycenter=60") != std::string::npos);
         XSFLIB_CHECK(f.text.find(" lovel=64 hivel=127 pitch_keycenter=60") != std::string::npos);
     }
 }
@@ -1289,8 +1274,7 @@ void TestTheWavesRateAlonePicksTheLowPass()
     const std::vector<ZoneCutoff> kZones = {{{0, 127}, 6489, 0x0003, 12800}};
     XSFLIB_CHECK(Sf2Problem(c.sf2).empty() && ZoneCutoffs(c.sf2) == kZones);
     const std::string text = c.sfz.files.size() == 1 ? c.sfz.files[0].text : "";
-    XSFLIB_CHECK(RegionLowPass(text, {0, 127}) ==
-                 " fil_type=lpf_1p cutoff=7867.4 fil_keytrack=100 fil_keycenter=60");
+    XSFLIB_CHECK(RegionLowPass(text, {0, 127}) == " fil_type=lpf_1p cutoff=7867.4 fil_keytrack=100 fil_keycenter=60");
     XSFLIB_CHECK(c.performance.approximations.empty());
 }
 
@@ -2727,11 +2711,11 @@ void TestPitchLfoChangedDuringANoteGoesOutAsPitchBends()
     }
     const bool reported = std::ranges::any_of(
         p.approximations, [](const auto& approximation) { return approximation.first.starts_with("LFO parameters"); });
-    const float peak = 40.0f / 128.0f;
+    const float kPeak = 40.0f / 128.0f;
 
     XSFLIB_CHECK(preset && preset->lfo_type == 3 && !reported);
-    XSFLIB_CHECK(first >= 96 && high > peak * 0.99f && high < peak * 1.001f && low < -peak * 0.99f &&
-                 low > -peak * 1.001f);
+    XSFLIB_CHECK(first >= 96 && high > kPeak * 0.99f && high < kPeak * 1.001f && low < -kPeak * 0.99f &&
+                 low > -kPeak * 1.001f);
 }
 
 void TestDeepTremoloIsKeptTo6dB()
@@ -2760,7 +2744,7 @@ void TestDeepTremoloIsKeptTo6dB()
 
         return values;
     };
-    const char* kReport = "volume LFO deeper than 6 dB (limited to 6 dB: it dips less than in the game)";
+    const char* const kReport = "volume LFO deeper than 6 dB (limited to 6 dB: it dips less than in the game)";
     XSFLIB_CHECK(modulation(deep) == std::vector<int>{32} && deep.approximations.count(kReport) == 1);
     XSFLIB_CHECK(modulation(shallow) == std::vector<int>{64} && shallow.approximations.count(kReport) == 0);
     XSFLIB_CHECK(modulation(vibrato) == std::vector<int>{64} && vibrato.approximations.count(kReport) == 0);
@@ -2770,9 +2754,9 @@ void TestVolumeLfoAboveFullLevelIsReported()
 {
     // A volume LFO at depth 127 and range 1 swings almost 6 dB. At sustain 127, the envelope's gain is at full level.
     // The LFO's upper half lifts the gain above full level. The game's voice holds the gain at full level there
-    // (Voice::SetVeVolume). Keys 60 and 62 are each reported once. Both get a fit (TestVolumeLfoAboveFullLevelIsFitted).
-    // At sustain 64 (-11.9 dB), with the LFO 500 ms late (lfo_delay 100), the gain stays below full level. A pitch LFO
-    // doesn't change the gain.
+    // (Voice::SetVeVolume). Keys 60 and 62 are each reported once. Both get a fit
+    // (TestVolumeLfoAboveFullLevelIsFitted). At sustain 64 (-11.9 dB), with the LFO 500 ms late (lfo_delay 100), the
+    // gain stays below full level. A pitch LFO doesn't change the gain.
     const SoundArchive archive =
         SequenceArchive({{0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0x3e, 0x64, 0x30, 0xff},
                          {0xd2, 0x40, 0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0xe0, 0x00, 0x64, 0x3c, 0x64, 0x60, 0xff},
@@ -2782,7 +2766,7 @@ void TestVolumeLfoAboveFullLevelIsReported()
     const Performance below = PerformSound(archive, 1);
     const Performance vibrato = PerformSound(archive, 2);
 
-    const char* kReport =
+    const char* const kReport =
         "volume LFO above full level (limited in the game; the SoundFont and SFZ swing less, from a lower level)";
     XSFLIB_CHECK(lifted.approximations.count(kReport) == 1 && lifted.approximations.at(kReport) == 2);
     XSFLIB_CHECK(below.approximations.empty() && vibrato.approximations.empty());
@@ -2809,9 +2793,9 @@ void TestVolumeLfoAboveFullLevelIsFitted()
     // As in TestVolumeLfoAboveFullLevelIsReported, a volume LFO at depth 127 and range 1 swings 5.95 dB on a note at
     // full level. The game holds the LFO's upper half at full level. The least-squares fit to the game's level halves
     // the swing and lowers the note by a third of the swing (5.95 dB / pi, 1.9 dB). The SoundFont's modulator from CC1
-    // to the volume LFO has half the amount, 60 cB, and the zone's attenuation takes the cut. The SFZ's LFO swings half
-    // as far, and the region's volume takes the cut. At sustain 64 with the LFO 500 ms late, the gain stays below full
-    // level, and the note keeps the full swing.
+    // to the volume LFO has half the amount, 60 cB. The zone's generator holds 2.5 times the cut of 20 cB: 50 cB
+    // (seqlib's ToZoneAttenuation). The SFZ's LFO swings half as far, and the region's volume takes the cut. At
+    // sustain 64 with the LFO 500 ms late, the gain stays below full level, and the note keeps the full swing.
     const SoundArchive archive =
         SequenceArchive({{0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff},
                          {0xd2, 0x40, 0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0xe0, 0x00, 0x64, 0x3c, 0x64, 0x60, 0xff}});
@@ -2845,7 +2829,7 @@ void TestVolumeLfoAboveFullLevelIsFitted()
             attenuation = found == gens.end() ? 0 : found->second;
         }
     }
-    XSFLIB_CHECK(seqlib::sf2::Check(lifted.sf2).empty() && lfo_amount == 60 && attenuation == 20);
+    XSFLIB_CHECK(seqlib::sf2::Check(lifted.sf2).empty() && lfo_amount == 60 && attenuation == 50);
 
     // The SFZ: 6 dB * 2 * 127 / 128 at full CC1, halved, and the region 2 dB lower.
     XSFLIB_CHECK(lifted.sfz.files.size() == 1);
@@ -3016,9 +3000,9 @@ void TestLaterBuildsTakeTheLowPassFromTheTable()
     // Builds from November 2008 take the low-pass's cutoff from kLpfFreq, as the Wii U does. Argument 30 gives the
     // value (30 - 64) / 64 + 1 = 0.46875, the Wii U's step 9. The SoundFont and the SFZ take the Wii U's fits for that
     // step. Older builds work the cutoff out: 805 Hz. Arguments 0 to 57 leave the low-pass on in every build.
-    const SndBuild old_build{.date = 20080919};
-    const SndBuild new_build{.date = 20081120};
-    const Settings new_settings = Wii(new_build).settings;
+    const SndBuild kOldBuild{.date = 20080919};
+    const SndBuild kNewBuild{.date = 20081120};
+    const Settings new_settings = Wii(kNewBuild).settings;
     const ntdlib::sequence_export::FilterTables& cafe = ntdlib::sequence_export::kCafeFilters;
 
     const GameFilters filters = TrackFilters(30, 0, 0, new_settings);
@@ -3026,10 +3010,10 @@ void TestLaterBuildsTakeTheLowPassFromTheTable()
     XSFLIB_CHECK(filters.low_pass == 30 && sf.cutoff == cafe.low_pass_cutoff[9] &&
                  sf.low_pass_hz == ntdlib::nwsnd::tables::kLpfFreq[9]);
     XSFLIB_CHECK(ntdlib::sequence_export::SfzLowPassCutoff(30, new_settings) == cafe.sfz_low_pass_cutoff[9]);
-    XSFLIB_CHECK(LowPassHz(30, old_build) == 805 && LowPassHz(30, new_build) == ntdlib::nwsnd::tables::kLpfFreq[9]);
-    XSFLIB_CHECK(LowPassHz(0, new_build) == 80 && TrackFilters(57, 0, 0, new_settings).low_pass == 57 &&
+    XSFLIB_CHECK(LowPassHz(30, kOldBuild) == 805 && LowPassHz(30, kNewBuild) == ntdlib::nwsnd::tables::kLpfFreq[9]);
+    XSFLIB_CHECK(LowPassHz(0, kNewBuild) == 80 && TrackFilters(57, 0, 0, new_settings).low_pass == 57 &&
                  TrackFilters(58, 0, 0, new_settings).low_pass == -1);
-    XSFLIB_CHECK(&ntdlib::sequence_export::RevolutionFilters(old_build) ==
+    XSFLIB_CHECK(&ntdlib::sequence_export::RevolutionFilters(kOldBuild) ==
                  &ntdlib::sequence_export::kRevolutionFilters);
 }
 
@@ -3037,10 +3021,10 @@ void TestLaterBuildsMoveTheBendOverATimePrefix()
 {
     // A time prefix of 4 ticks before a bend of 64: a semitone up at the default range of 2. Builds from September 2009
     // move the bend there over the 4 ticks, a quarter of the way each tick. Older builds set it at once.
-    const std::vector<uint8_t> commands = {0xa3, 0xc4, 0x40, 0x00, 0x04, 0x3c, 0x7f, 0x18, 0xff};
+    const std::vector<uint8_t> kCommands = {0xa3, 0xc4, 0x40, 0x00, 0x04, 0x3c, 0x7f, 0x18, 0xff};
 
-    const Performance moving = PerformCommands(commands, {.build = SndBuild{.date = 20090924}});
-    const Performance jumping = PerformCommands(commands, {.build = SndBuild{.date = 20081120}});
+    const Performance moving = PerformCommands(kCommands, {.build = SndBuild{.date = 20090924}});
+    const Performance jumping = PerformCommands(kCommands, {.build = SndBuild{.date = 20081120}});
 
     const std::vector<std::pair<uint32_t, float>> kMoving = {{1, 0.25f}, {2, 0.5f}, {3, 0.75f}, {4, 1.0f}};
     const std::vector<std::pair<uint32_t, float>> kJumping = {{0, 1.0f}};
@@ -3080,7 +3064,7 @@ void TestSfzFilterFollowsTheGame()
     XSFLIB_CHECK(BiquadStep(3, 127) == 121 && BiquadStep(5, 127) == 92 && BiquadStep(4, 64) == 69);
     XSFLIB_CHECK(BiquadStep(1, 0) == -1 && BiquadStep(0, 64) == -1 && BiquadStep(6, 64) == -1);
 
-    // AX's pole for 31 Hz is sfizz's one-pole at 31.5 Hz, 11190 cents below 20 kHz, and lower settings still give lower
+    // AX's pole for 31 Hz is sfizz's one-pole at 31.2 Hz, 11190 cents below 20 kHz, and lower settings still give lower
     // cutoffs.
     XSFLIB_CHECK(SfzLowPassCutoff(0) == -11190);
     int falling = 0;
@@ -3114,30 +3098,15 @@ void TestMissingBlockIsReported()
     w.Add(WaveInfoSize(1));
     Block(w, 0, info);
 
-    std::string message;
-    try
-    {
-        Wave::ParseFile(w.bytes);
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { Wave::ParseFile(w.bytes); });
 
     XSFLIB_CHECK(message == "no INFO or DATA block");
 }
 
 void TestShortFileIsReported()
 {
-    std::string message;
-    try
-    {
-        Wave::ParseFile(std::vector<uint8_t>{'R', 'W', 'A', 'V'});
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    const std::string message =
+        ErrorOf<xsflib::FormatError>([&] { Wave::ParseFile(std::vector<uint8_t>{'R', 'W', 'A', 'V'}); });
 
     XSFLIB_CHECK(message == "too short to be an RWAV file");
 }
@@ -3243,7 +3212,7 @@ void TestSfzFileHasTheTracksPresetsAndFilter()
     XSFLIB_CHECK(f.name == "Track 2.sfz");
     XSFLIB_CHECK(has("MIDI gain was reduced by 2.5 dB. Region volumes restore that gain.\n"));
     XSFLIB_CHECK(has("<control>\ndefault_path=../samples/\n"));
-    XSFLIB_CHECK(has("bend_up=199.975586 bend_down=-199.975586\n"));
+    XSFLIB_CHECK(has("bend_up=200 bend_down=-200\n"));
 
     // CC7, CC10 and CC11 act at once, with CC7 and CC11 squared.
     XSFLIB_CHECK(has("pan_oncc10=100 pan_curvecc10=7 pan_smoothcc10=0\n"));
@@ -3254,12 +3223,15 @@ void TestSfzFileHasTheTracksPresetsAndFilter()
     // The low-pass is filter 1. Controller value 60 gives sfizz's cutoff for AX's at 48 Hz, 10440 cents below 20 kHz,
     // and 0 leaves the filter open.
     XSFLIB_CHECK(low_pass.value == 60);
-    XSFLIB_CHECK(has("fil_type=lpf_1p cutoff=20000 cutoff_oncc103=12000 cutoff_curvecc103=8\n"));
-    XSFLIB_CHECK(has("<curve> curve_index=8\nv000=0 ") && has(" v060=-0.87 "));
+    XSFLIB_CHECK(has("fil_type=lpf_1p cutoff=1000 cutoff_oncc103=9600 cutoff_curvecc103=8\n"));
+    XSFLIB_CHECK(has("<curve> curve_index=8\nv000=0.540241 ") && has(" v060=-0.547259 "));
 
     // Each preset gets a master. Notes starting with the biquad controller above 0 use the high-pass in filter slot 2.
     XSFLIB_CHECK(has("// first\n<master> loprog=0 hiprog=0\n") && has("// second\n<master> loprog=1 hiprog=1\n"));
-    XSFLIB_CHECK(has("<group> hicc104=0\n<group> locc104=1 fil2_type=hpf_2p cutoff2=1000 "));
+    XSFLIB_CHECK(
+        has("<group> hicc104=0\n<group> locc104=1 fil2_type=hpf_2p cutoff2=1000 cutoff2_oncc104=9600 "
+            "cutoff2_curvecc104=9 resonance2=0 resonance2_oncc104=40 resonance2_curvecc104=10 "
+            "volume_oncc104=2 volume_curvecc104=11"));
 }
 
 void TestSfzCommentKeepsTheNameOnItsLine()
@@ -3495,15 +3467,7 @@ void TestPieceOfMoreThan16TracksIsReported()
     all_tracks.insert(all_tracks.end(), {0x3c, 0x64, 0x30, 0xff});
     const SoundArchive archive = SequenceArchive({all_tracks, {0x3c, 0x64, 0x30, 0xff}}, {.track_flags = 0xffff});
 
-    std::string message;
-    try
-    {
-        PerformTogether(archive, {0, 1});
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { PerformTogether(archive, {0, 1}); });
 
     XSFLIB_CHECK(message == "the sequences play notes on more tracks than MIDI's 16 channels");
 }
@@ -3521,16 +3485,8 @@ void TestPieceRequiresOneBankAndPanMode()
     BankSet banks(archive, archive.Sounds()[0]);
     const auto message = [&archive, &banks](const std::vector<uint32_t>& indices)
     {
-        try
-        {
-            ntdlib::sequence_export::PerformTogether(archive, indices, banks, {}, kSettings);
-        }
-        catch (const std::invalid_argument& e)
-        {
-            return std::string(e.what());
-        }
-
-        return std::string();
+        return ErrorOf<std::invalid_argument>(
+            [&] { ntdlib::sequence_export::PerformTogether(archive, indices, banks, {}, kSettings); });
     };
 
     XSFLIB_CHECK(message({0, 1}) == "A and B differ in bank or pan mode");

@@ -20,15 +20,16 @@
 #include <system_error>
 #include <vector>
 
-#include "ntdlib/rip/archive_mode.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/testing/sar_files.h"
-#include "temp_folder.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/psf/program.h"
 #include "xsflib/psf/streaming.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/rip/archive_mode.h"
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/testing/sar_files.h"
+#include "temp_folder.h"
 
 namespace
 {

@@ -3,7 +3,8 @@
 // Archive mode's model of nn::atk for one sound archive. Each frame, the model runs what the sound thread runs
 // (SoundThread::Run, 0xc18b40, around its FrameProcess, 0xc18590), then the audio renderer's frame. The model reads the
 // archive's banks and waves where they lie in the archive, as a game's sound heap holds them, and plays the archive's
-// sequence sounds. Each function's comment gives the address of the routine it follows in WarioWare: Get It Together!'s
+// sequence sounds and wave sounds. A stream sound plays from the bytes of its stream file, which the game keeps beside
+// the archive. Each function's comment gives the address of the routine it follows in WarioWare: Get It Together!'s
 // main.
 
 #pragma once
@@ -13,23 +14,28 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <utility>
 #include <vector>
 
 #include "ntdlib/nwsnd/archive_files.h"
+#include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/length_hooks.h"
-#include "ntdlib/nwsnd/sequence_players.h"
+#include "ntdlib/nwsnd/sound_players.h"
+#include "ntdlib/nwsnd/voice.h"
 #include "ntdlib/nx/atk/channel.h"
 #include "ntdlib/nx/atk/effect.h"
 #include "ntdlib/nx/atk/hardware.h"
 #include "ntdlib/nx/atk/low_level_voice.h"
 #include "ntdlib/nx/atk/sequence.h"
+#include "ntdlib/nx/atk/sound_players.h"
 #include "ntdlib/nx/atk/util.h"
 #include "ntdlib/nx/atk/voice.h"
 #include "ntdlib/nx/atk/voice_renderer.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
 
 namespace ntdlib::nx::atk
 {
@@ -65,6 +71,20 @@ public:
     // files aren't in the archive.
     SequenceSoundPlayer* StartSequence(uint32_t index);
 
+    // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
+    // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks
+    // its wave sound file or the file lacks the sound. A missing wave leaves the player nothing to play: it finishes in
+    // its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
+    WaveSoundPlayer* StartWaveSound(uint32_t index);
+
+    // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
+    // names beside the archive. The engine keeps the stream's channels. Returns the player, or nullptr if there's no
+    // such stream sound or no track plays. Throws xsflib::FormatError for a file that sar::StreamFile::Read refuses.
+    StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
+
+    // The same for a stream sound of `info`, which the archive needn't hold.
+    StreamSoundPlayer* StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file);
+
     // A frame of 5 ms: the sound thread's frame, then the renderer's frame.
     void RunFrame();
 
@@ -81,7 +101,7 @@ public:
     // such mute. The game's mute and silence of a track change what the track plays. A muted track plays on as before,
     // and none of the voices of its notes reach the mixes, their releases and sends included. A change takes effect
     // across the next frame (see audio::Renderer::SetVoiceMuted). The mutes aren't part of a snapshot. They stay
-    // through a restore.
+    // through a restore. A wave sound's channel plays on track 0. A stream's voices take no mutes and no meters.
     void MuteTrack(int player, int track, bool mute);
     bool IsTrackMuted(int player, int track) const;
 
@@ -96,10 +116,11 @@ public:
     Snapshot Save() const;
 
     // Returns the engine to a snapshot that it saved. The players that started after the snapshot go, and the pointers
-    // that StartSequence gave for them dangle. The other players keep their places. The restore replaces each effect
-    // with a copy of the snapshot's effect. Pointers kept to the effects that AppendEffect took then dangle too. The
-    // banks and waves that notes have read stay read. Throws std::invalid_argument for a snapshot of another engine, or
-    // one with players or effects that the engine doesn't have.
+    // that StartSequence, StartWaveSound and StartStreamSound gave for them dangle. The other players keep their
+    // places. The restore replaces each effect with a copy of the snapshot's effect. Pointers kept to the effects that
+    // AppendEffect took then dangle too. The banks and waves that notes have read stay read. Throws
+    // std::invalid_argument for a snapshot of another engine, or one with players or effects that the engine doesn't
+    // have.
     void Restore(const Snapshot& snapshot);
 
     Random& Rng()
@@ -152,6 +173,9 @@ public:
     // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
     void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
 
+    // Passes the callback of a stream's voice on to the stream's player.
+    void VoiceEvent(const ntdlib::nwsnd::VoiceOwner& owner, ntdlib::nwsnd::VoiceCallbackStatus status);
+
     // The counted loops that the length analysis takes as endless, each a track and its loop's body (see ntdlib's
     // LoopsForEver).
     void SetEndlessLoops(std::set<std::pair<int, uint32_t>> loops)
@@ -165,7 +189,7 @@ public:
     }
 
 private:
-    using Players = ntdlib::nwsnd::SequencePlayers<SequenceSoundPlayer>;
+    using Players = ntdlib::nwsnd::SoundPlayers<SequenceSoundPlayer, WaveSoundPlayer, StreamSoundPlayer>;
 
     // An effect on a bus, with the renderer's aux and the buffer it processes the samples in.
     struct AttachedEffect
@@ -209,6 +233,9 @@ private:
     // reads it.
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
     Files files_;
+
+    // The streams that stream sounds play. Their channels stay while the engine runs, through a restore too.
+    std::vector<std::unique_ptr<const sar::StreamFile>> streams_;
 
     std::set<std::pair<int, uint32_t>> endless_loops_;
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track

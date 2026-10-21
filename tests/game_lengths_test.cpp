@@ -15,7 +15,11 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/jaudio/aaf.h"
+#include "ntdlib/jaudio/wave_system.h"
 
 namespace jaudio = ntdlib::jaudio;
 
@@ -59,62 +63,62 @@ struct FakeCpu
     std::function<void(uint32_t pc)> on_watch;
 };
 
-// A machine whose output and CPU the test drives: before each block, `step` gets the block's number and fills it.
+// A machine whose output and CPU the test drives: before each block, `step_` gets the block's number and fills it.
 class FakeMachine
 {
 public:
     std::size_t Render(int16_t* out, std::size_t frames)
     {
         std::fill(out, out + 2 * frames, int16_t{0});
-        step(*this, blocks_++, out, frames);
+        step_(*this, blocks_++, out, frames);
 
         return frames;
     }
 
     uint32_t Word(uint32_t address) const
     {
-        const auto it = words.find(address);
+        const auto it = words_.find(address);
 
-        return it == words.end() ? 0 : it->second;
+        return it == words_.end() ? 0 : it->second;
     }
 
     std::optional<uint8_t> Byte(uint32_t address) const
     {
-        const auto it = bytes.find(address);
+        const auto it = bytes_.find(address);
 
-        return it == bytes.end() ? std::nullopt : std::optional<uint8_t>(it->second);
+        return it == bytes_.end() ? std::nullopt : std::optional<uint8_t>(it->second);
     }
 
     FakeCpu& Cpu()
     {
-        return cpu;
+        return cpu_;
     }
 
     // The game has started the sound: a sequence with the root track at kTrack.
     void StartSound()
     {
-        words[kHandleAddress] = kHandle;
-        words[kHandle] = kSequenceVtable;
-        words[kTrack] = kTrackData;
+        words_[kHandleAddress] = kHandle;
+        words_[kHandle] = kSequenceVtable;
+        words_[kTrack] = kTrackData;
     }
 
     // The root track runs the command at `at`.
     void Command(uint32_t at, uint8_t command)
     {
-        words[kTrack + 4] = kTrackData + at;
-        bytes[kTrackData + at] = command;
-        cpu.state_.gpr[4] = kTrack;
-        cpu.on_watch(kParse);
+        words_[kTrack + 4] = kTrackData + at;
+        bytes_[kTrackData + at] = command;
+        cpu_.state_.gpr[4] = kTrack;
+        cpu_.on_watch(kParse);
     }
 
     // The root track jumps from the command that ends at `at` to `to`.
     void Jump(uint32_t at, uint32_t to)
     {
-        words[kTrack + 4] = kTrackData + at;
-        words[0x80800000] = to;
-        cpu.state_.gpr[4] = kTrack;
-        cpu.state_.gpr[5] = 0x80800000;
-        cpu.on_watch(kJump);
+        words_[kTrack + 4] = kTrackData + at;
+        words_[0x80800000] = to;
+        cpu_.state_.gpr[4] = kTrack;
+        cpu_.state_.gpr[5] = 0x80800000;
+        cpu_.on_watch(kJump);
     }
 
     // The root track takes a conditional jump from the command that ends at `at` to `to`. The jump's arguments are the
@@ -122,26 +126,26 @@ public:
     // the analysis watches the place.
     void ConditionalJump(uint32_t at, uint32_t to)
     {
-        words[kTrack + 4] = kTrackData + at;
-        words[0x80800100] = 1;
-        words[0x80800104] = to;
-        cpu.state_.gpr[4] = 0;
-        cpu.state_.gpr[5] = 0;
-        cpu.state_.gpr[30] = kTrack;
-        cpu.state_.gpr[31] = 0x80800100;
-        if (std::find(cpu.watched.begin(), cpu.watched.end(), kConditionalJump) != cpu.watched.end())
+        words_[kTrack + 4] = kTrackData + at;
+        words_[0x80800100] = 1;
+        words_[0x80800104] = to;
+        cpu_.state_.gpr[4] = 0;
+        cpu_.state_.gpr[5] = 0;
+        cpu_.state_.gpr[30] = kTrack;
+        cpu_.state_.gpr[31] = 0x80800100;
+        if (std::find(cpu_.watched.begin(), cpu_.watched.end(), kConditionalJump) != cpu_.watched.end())
         {
-            cpu.on_watch(kConditionalJump);
+            cpu_.on_watch(kConditionalJump);
         }
     }
 
-    FakeCpu cpu;
-    std::map<uint32_t, uint32_t> words;
-    std::map<uint32_t, uint8_t> bytes;
-    std::function<void(FakeMachine&, uint64_t block, int16_t* out, std::size_t frames)> step;
+    FakeCpu cpu_;
+    std::map<uint32_t, uint32_t> words_;
+    std::map<uint32_t, uint8_t> bytes_;
+    std::function<void(FakeMachine&, uint64_t block, int16_t* out, std::size_t frames)> step_;
 
     // Whether a JAudio1 track's reader holds its position as an offset from the data's start, as in an earlier JAudio1.
-    bool relative_positions = false;
+    bool relative_positions_ = false;
 
 private:
     uint64_t blocks_ = 0;
@@ -176,7 +180,7 @@ void TestRelease()
 {
     // The sound plays for 100 blocks of 1 ms, then the game releases it. It ends 0.5 s after its last sound.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         if (block == 0)
         {
@@ -188,7 +192,7 @@ void TestRelease()
         }
         if (block == 100)
         {
-            m.words[kHandleAddress] = 0;
+            m.words_[kHandleAddress] = 0;
         }
     };
 
@@ -197,14 +201,14 @@ void TestRelease()
     XSFLIB_CHECK(timing && timing->length_ms == 100 + 500 && timing->fade_ms == 0 && !timing->silent);
 
     // The wave lookup is watched only for wave discovery.
-    XSFLIB_CHECK(machine.cpu.watched == (std::vector<uint32_t>{kParse, kJump}));
+    XSFLIB_CHECK(machine.cpu_.watched == (std::vector<uint32_t>{kParse, kJump}));
 }
 
 void TestSilent()
 {
     // A sound that the game releases without a sound is silent.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t*, std::size_t)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t*, std::size_t)
     {
         if (block == 0)
         {
@@ -212,7 +216,7 @@ void TestSilent()
         }
         if (block == 10)
         {
-            m.words[kHandleAddress] = 0;
+            m.words_[kHandleAddress] = 0;
         }
     };
 
@@ -248,7 +252,7 @@ void TestLoop()
 {
     // A note and a wait, then the jump back to the note, twice. The second jump back is the loop's point.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
@@ -268,9 +272,9 @@ void TestWaveDiscovery()
 {
     // A note looks up wave 42 of the bank at the table's fourth entry. With lookups_sound, the lookup counts as sound.
     FakeMachine machine;
-    machine.words[kWaveBankTable] = 0x80710000;
-    machine.words[0x80710000 + 0xf4 + 4 * 3] = 0x80720000;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t*, std::size_t)
+    machine.words_[kWaveBankTable] = 0x80710000;
+    machine.words_[0x80710000 + 0xf4 + 4 * 3] = 0x80720000;
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t*, std::size_t)
     {
         if (block == 0)
         {
@@ -278,13 +282,13 @@ void TestWaveDiscovery()
         }
         if (block == 2)
         {
-            m.cpu.state_.gpr[3] = 0x80720000;
-            m.cpu.state_.gpr[4] = 42;
-            m.cpu.on_watch(kWaveLookup);
+            m.cpu_.state_.gpr[3] = 0x80720000;
+            m.cpu_.state_.gpr[4] = 42;
+            m.cpu_.on_watch(kWaveLookup);
         }
         if (block == 5)
         {
-            m.words[kHandleAddress] = 0;
+            m.words_[kHandleAddress] = 0;
         }
     };
 
@@ -293,11 +297,11 @@ void TestWaveDiscovery()
 
     XSFLIB_CHECK(found == (std::set<jaudio::WaveUse>{{3, 42}}));
     XSFLIB_CHECK(timing && !timing->silent);
-    XSFLIB_CHECK(machine.cpu.watched == (std::vector<uint32_t>{kParse, kJump, kWaveLookup}));
+    XSFLIB_CHECK(machine.cpu_.watched == (std::vector<uint32_t>{kParse, kJump, kWaveLookup}));
 
     // With the table's count at +0xf8, the walk stops at the count: a table of 3 banks has no fourth entry.
     FakeMachine counted = machine;
-    counted.words[0x80710000 + 0xf8] = 3;
+    counted.words_[0x80710000 + 0xf8] = 3;
     jaudio::GameWatch watch = Watch();
     watch.wave_bank_count_offset = 0xf8;
 
@@ -312,14 +316,14 @@ void TestVtableOffset()
     // A JAISound whose vtable pointer follows its members, at +0x94. Its first word is the handle's back-pointer. The
     // loop of TestLoop is found through the vtable at +0x94.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             m.StartSound();
-            m.words[kHandle] = kHandleAddress;
-            m.words[kHandle + 0x94] = kSequenceVtable;
+            m.words_[kHandle] = kHandleAddress;
+            m.words_[kHandle + 0x94] = kSequenceVtable;
         }
         Pass(m, block);
     };
@@ -374,18 +378,18 @@ void TestConditionalJump()
     };
 
     FakeMachine machine;
-    machine.step = step;
+    machine.step_ = step;
     jaudio::GameWatch watch = Watch();
     watch.conditional_jump = kConditionalJump;
 
     const auto timing = jaudio::AnalyzeGameSound(machine, kHandleAddress, watch, kRules);
 
     XSFLIB_CHECK(timing && timing->length_ms == 11 && timing->fade_ms == 10'000);
-    XSFLIB_CHECK(machine.cpu.watched == (std::vector<uint32_t>{kParse, kJump, kConditionalJump}));
+    XSFLIB_CHECK(machine.cpu_.watched == (std::vector<uint32_t>{kParse, kJump, kConditionalJump}));
 
     // Without the watch, no jump back reaches the analysis. The sound plays to the limit.
     FakeMachine unwatched;
-    unwatched.step = step;
+    unwatched.step_ = step;
     jaudio::GameLengthRules rules = kRules;
     rules.limit_ms = 100;
 
@@ -444,38 +448,38 @@ jaudio::GameWatch JAudio1Watch()
 // kOtherSlotTrack. kChildTrack is a child of the sequence's root track.
 void StartJAudio1Sound(FakeMachine& m)
 {
-    m.words[kHandleAddress] = kHandle;
-    m.words[kHandle + 0x38] = kJAudio1Parameters;
-    m.words[kEffectsHandleAddress] = kEffectsSound;
-    m.words[kEffectsSound + 0x38] = kEffectsParameters;
-    m.words[kEffectsRoot + 0x2fc + 1 * 4] = kSlotParent;
-    m.words[kSlotParent + 0x2f8] = kEffectsRoot;
-    m.words[kSlotParent + 0x2fc + 2 * 4] = kSlotTrack;
-    m.words[kSlotParent + 0x2fc + 3 * 4] = kOtherSlotTrack;
-    m.words[kSlotTrack + 0x2f8] = kSlotParent;
-    m.words[kOtherSlotTrack + 0x2f8] = kSlotParent;
-    m.words[kChildTrack + 0x2f8] = kJAudio1Root;
+    m.words_[kHandleAddress] = kHandle;
+    m.words_[kHandle + 0x38] = kJAudio1Parameters;
+    m.words_[kEffectsHandleAddress] = kEffectsSound;
+    m.words_[kEffectsSound + 0x38] = kEffectsParameters;
+    m.words_[kEffectsRoot + 0x2fc + 1 * 4] = kSlotParent;
+    m.words_[kSlotParent + 0x2f8] = kEffectsRoot;
+    m.words_[kSlotParent + 0x2fc + 2 * 4] = kSlotTrack;
+    m.words_[kSlotParent + 0x2fc + 3 * 4] = kOtherSlotTrack;
+    m.words_[kSlotTrack + 0x2f8] = kSlotParent;
+    m.words_[kOtherSlotTrack + 0x2f8] = kSlotParent;
+    m.words_[kChildTrack + 0x2f8] = kJAudio1Root;
 }
 
 // A JAudio1 track runs the command `command` at `at`, followed by the byte `next`. The track's reader is at +0xc.
 void JAudio1Command(FakeMachine& m, uint32_t track, uint32_t at, uint8_t command, uint8_t next = 0)
 {
-    m.words[track + 0xc] = kTrackData;
-    m.words[track + 0x10] = (m.relative_positions ? 0 : kTrackData) + at;
-    m.bytes[kTrackData + at] = command;
-    m.bytes[kTrackData + at + 1] = next;
-    m.cpu.state_.gpr[kCommandTrack] = track;
-    m.cpu.on_watch(kParse);
+    m.words_[track + 0xc] = kTrackData;
+    m.words_[track + 0x10] = (m.relative_positions_ ? 0 : kTrackData) + at;
+    m.bytes_[kTrackData + at] = command;
+    m.bytes_[kTrackData + at + 1] = next;
+    m.cpu_.state_.gpr[kCommandTrack] = track;
+    m.cpu_.on_watch(kParse);
 }
 
 // A JAudio1 track jumps from the command that ends at `at` to `to`. The register holds the target itself.
 void JAudio1Jump(FakeMachine& m, uint32_t track, uint32_t at, uint32_t to)
 {
-    m.words[track + 0xc] = kTrackData;
-    m.words[track + 0x10] = (m.relative_positions ? 0 : kTrackData) + at;
-    m.cpu.state_.gpr[kJumpTrack] = track;
-    m.cpu.state_.gpr[kJumpTarget] = to;
-    m.cpu.on_watch(kJump);
+    m.words_[track + 0xc] = kTrackData;
+    m.words_[track + 0x10] = (m.relative_positions_ ? 0 : kTrackData) + at;
+    m.cpu_.state_.gpr[kJumpTrack] = track;
+    m.cpu_.state_.gpr[kJumpTarget] = to;
+    m.cpu_.on_watch(kJump);
 }
 
 // One pass of TestLoop's loop on `track`, in blocks 1 to 6: a note, a wait, and the jump back to the note. The note
@@ -517,7 +521,7 @@ void TestJAudio1Sequence()
     // The sequence's root track loops as in TestLoop. The effects sequence's track loops sooner. That track isn't part
     // of the sound.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
@@ -536,7 +540,7 @@ void TestJAudio1Sequence()
     // The root track finishes. Then the effects sequence's track loops, and the sound doesn't. It sounds for 10 blocks,
     // and the game releases it.
     machine = FakeMachine{};
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         if (block < 10)
         {
@@ -552,7 +556,7 @@ void TestJAudio1Sequence()
         }
         if (block == 10)
         {
-            m.words[kHandleAddress] = 0;
+            m.words_[kHandleAddress] = 0;
         }
         OtherLoop(m, kSlotTrack, block, 2);
     };
@@ -565,7 +569,7 @@ void TestJAudio1Sequence()
     // A child of the root track is part of the sound. Once the root track has finished, the child's loop is the sound's
     // loop.
     machine = FakeMachine{};
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
@@ -587,14 +591,14 @@ void TestJAudio1Sequence()
     // A game without an effects sequence. The sequence's root track loops as in TestLoop. The word at address 0 holds
     // the sound's JAISound. The analysis mustn't take it for the effects sequence's.
     machine = FakeMachine{};
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
-            m.words[kHandleAddress] = kHandle;
-            m.words[kHandle + 0x38] = kJAudio1Parameters;
-            m.words[0] = kHandle;
+            m.words_[kHandleAddress] = kHandle;
+            m.words_[kHandle + 0x38] = kJAudio1Parameters;
+            m.words_[0] = kHandle;
         }
         JAudio1Pass(m, kJAudio1Root, block);
     };
@@ -611,17 +615,17 @@ void TestJAudio1Effect()
     // An effect plays in the effects sequence's track of its slot, 0x12: child 2 of child 1. It loops as in TestLoop.
     // The track of slot 0x13 loops sooner. That track isn't part of the effect. The effect has no slot until block 1.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             StartJAudio1Sound(m);
-            m.bytes[kHandle] = 0xff;
+            m.bytes_[kHandle] = 0xff;
         }
         if (block == 1)
         {
-            m.bytes[kHandle] = 0x12;
+            m.bytes_[kHandle] = 0x12;
         }
         JAudio1Pass(m, kSlotTrack, block);
         OtherLoop(m, kOtherSlotTrack, block);
@@ -653,12 +657,12 @@ jaudio::GameWatch InlineJAudio1Watch()
 // child of slot 2 is kSlotTrack.
 void StartInlineJAudio1Sound(FakeMachine& m)
 {
-    m.words[kHandleAddress] = kHandle;
-    m.words[kEffectsHandleAddress] = kEffectsSound;
-    m.words[kInlineEffectsRoot + 0x2fc + 1 * 4] = kSlotParent;
-    m.words[kSlotParent + 0x2f8] = kInlineEffectsRoot;
-    m.words[kSlotParent + 0x2fc + 2 * 4] = kSlotTrack;
-    m.words[kSlotTrack + 0x2f8] = kSlotParent;
+    m.words_[kHandleAddress] = kHandle;
+    m.words_[kEffectsHandleAddress] = kEffectsSound;
+    m.words_[kInlineEffectsRoot + 0x2fc + 1 * 4] = kSlotParent;
+    m.words_[kSlotParent + 0x2f8] = kInlineEffectsRoot;
+    m.words_[kSlotParent + 0x2fc + 2 * 4] = kSlotTrack;
+    m.words_[kSlotTrack + 0x2f8] = kSlotParent;
 }
 
 void TestInlineJAudio1()
@@ -666,7 +670,7 @@ void TestInlineJAudio1()
     // The sequence's root track loops as in TestLoop. The effects sequence's track of slot 0x12 loops sooner. That
     // track isn't part of the sound.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
@@ -684,13 +688,13 @@ void TestInlineJAudio1()
 
     // An effect in slot 0x12 loops as in TestJAudio1Effect.
     machine = FakeMachine{};
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             StartInlineJAudio1Sound(m);
-            m.bytes[kHandle] = 0x12;
+            m.bytes_[kHandle] = 0x12;
         }
         JAudio1Pass(m, kSlotTrack, block);
     };
@@ -712,7 +716,7 @@ constexpr uint8_t kJAudio1ReturnFromInterrupt = 0xe3;
 std::optional<xsflib::rip::Timing> AnalyzeInterrupts(uint32_t interrupt_offset)
 {
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
@@ -723,10 +727,10 @@ std::optional<xsflib::rip::Timing> AnalyzeInterrupts(uint32_t interrupt_offset)
 
         JAudio1Command(m, kJAudio1Root, 0x08, kJAudio1Wait);
         JAudio1Jump(m, kJAudio1Root, 0x0a, 0x08);
-        m.words[kJAudio1Root + kInterruptOffset] = kTrackData + 0x0a;
+        m.words_[kJAudio1Root + kInterruptOffset] = kTrackData + 0x0a;
         JAudio1Command(m, kJAudio1Root, 0x40, kJAudio1SyncCpu);
         JAudio1Command(m, kJAudio1Root, 0x43, kJAudio1ReturnFromInterrupt);
-        m.words[kJAudio1Root + kInterruptOffset] = 0;
+        m.words_[kJAudio1Root + kInterruptOffset] = 0;
         JAudio1Pass(m, kChildTrack, block);
     };
 
@@ -773,17 +777,17 @@ jaudio::GameWatch PooledJAudio1Watch()
 void StartPooledJAudio1Sound(FakeMachine& m)
 {
     StartJAudio1Sound(m);
-    m.relative_positions = true;
-    m.words[kJAudio1Parameters] = 0;
-    m.words[kEffectsParameters] = 0;
-    m.words[kRootTracks] = kEffectsRoot;
+    m.relative_positions_ = true;
+    m.words_[kJAudio1Parameters] = 0;
+    m.words_[kEffectsParameters] = 0;
+    m.words_[kRootTracks] = kEffectsRoot;
 }
 
 // The sound library gives the sound's sequence its tracks: root track number `number`.
 void GivePooledTracks(FakeMachine& m, uint32_t number)
 {
-    m.words[kJAudio1Parameters] = number;
-    m.words[kRootTracks + number * 4] = kJAudio1Root;
+    m.words_[kJAudio1Parameters] = number;
+    m.words_[kRootTracks + number * 4] = kJAudio1Root;
 }
 
 void TestPooledJAudio1()
@@ -794,7 +798,7 @@ void TestPooledJAudio1()
     // The effects sequence's track loops sooner. That track isn't part of the sound, though the sequence's parameters
     // name the effects sequence's root track in block 0.
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
@@ -822,13 +826,13 @@ void TestPooledJAudio1()
     // A number past the table's end gives the sound no root track. Then no loop counts, and the sound plays to the
     // limit.
     machine = FakeMachine{};
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             StartPooledJAudio1Sound(m);
-            m.words[kJAudio1Parameters] = 16;
+            m.words_[kJAudio1Parameters] = 16;
         }
         JAudio1Pass(m, kJAudio1Root, block);
     };
@@ -843,13 +847,13 @@ void TestPooledJAudio1()
     // An effect in slot 0x12 of the effects sequence, whose root track comes from the table, loops as in
     // TestJAudio1Effect.
     machine = FakeMachine{};
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             StartPooledJAudio1Sound(m);
-            m.bytes[kHandle] = 0x12;
+            m.bytes_[kHandle] = 0x12;
         }
         JAudio1Pass(m, kSlotTrack, block);
         OtherLoop(m, kOtherSlotTrack, block);
@@ -867,14 +871,14 @@ void TestPooledJAudio1()
 std::optional<xsflib::rip::Timing> AnalyzeLongWait(uint32_t endless_wait, int32_t wait)
 {
     FakeMachine machine;
-    machine.step = [wait](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [wait](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             StartPooledJAudio1Sound(m);
-            m.bytes[kHandle] = 0x12;
-            m.words[kChildTrack + 0x2f8] = kSlotTrack;
+            m.bytes_[kHandle] = 0x12;
+            m.words_[kChildTrack + 0x2f8] = kSlotTrack;
             return;
         }
 
@@ -883,7 +887,7 @@ std::optional<xsflib::rip::Timing> AnalyzeLongWait(uint32_t endless_wait, int32_
         if (block == 1)
         {
             JAudio1Command(m, kChildTrack, 0x20, kNote);
-            m.words[kChildTrack + 0x14] = static_cast<uint32_t>(wait);
+            m.words_[kChildTrack + 0x14] = static_cast<uint32_t>(wait);
         }
     };
 
@@ -919,14 +923,14 @@ void TestEndlessWait()
 std::optional<xsflib::rip::Timing> AnalyzeInterruptRoutine(uint32_t interrupt_return_offset)
 {
     FakeMachine machine;
-    machine.step = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
+    machine.step_ = [](FakeMachine& m, uint64_t block, int16_t* out, std::size_t frames)
     {
         Sound(out, frames);
         if (block == 0)
         {
             StartPooledJAudio1Sound(m);
-            m.bytes[kHandle] = 0x12;
-            m.words[kChildTrack + 0x2f8] = kSlotTrack;
+            m.bytes_[kHandle] = 0x12;
+            m.words_[kChildTrack + 0x2f8] = kSlotTrack;
             return;
         }
 
@@ -935,16 +939,16 @@ std::optional<xsflib::rip::Timing> AnalyzeInterruptRoutine(uint32_t interrupt_re
         if (block == 1)
         {
             JAudio1Command(m, kChildTrack, 0x20, kNote);
-            m.words[kChildTrack + 0x14] = static_cast<uint32_t>(-1);
+            m.words_[kChildTrack + 0x14] = static_cast<uint32_t>(-1);
         }
         else if (block % 5 == 2)
         {
-            m.words[kChildTrack + 0x50] = kTrackData + 0x25;
+            m.words_[kChildTrack + 0x50] = kTrackData + 0x25;
             JAudio1Command(m, kChildTrack, 0x40, 0xa7);
             JAudio1Command(m, kChildTrack, 0x43, 0xc8);
             JAudio1Jump(m, kChildTrack, 0x48, 0x4f);
             JAudio1Command(m, kChildTrack, 0x4f, 0xe3);
-            m.words[kChildTrack + 0x50] = 0;
+            m.words_[kChildTrack + 0x50] = 0;
         }
     };
 

@@ -4,8 +4,8 @@
 // the Switch's policy (see sequence.h), and the data they work with. nw::snd has the same MultiVoice and manager. A
 // MultiVoice plays each channel of a wave on a LowLevelVoice of its own (see voice_renderer.h). Each comment gives the
 // address of the routine that a type follows in WarioWare: Get It Together!'s main. The optional packet of output gains
-// that a game can give a voice (+0x260) and the side of a stream's channels (+0x1c0) aren't modelled: a sequence's
-// voices have neither.
+// that a game can give a voice (+0x260) isn't modelled. Only the game's code gives one. The side of a stream's channels
+// (+0x1c0) is in nwsnd/voice.h.
 
 #pragma once
 

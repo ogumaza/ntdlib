@@ -14,42 +14,36 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <initializer_list>
-#include <ios>
 #include <map>
+#include <optional>
 #include <random>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "seqlib/file_name.h"
-#include "seqlib/loop.h"
 #include "seqlib/midi/encoder.h"
-#include "seqlib/midi/performance_writer.h"
-#include "seqlib/midi/reader.h"
-#include "seqlib/read_error.h"
+#include "seqlib/midi/performance.h"
 #include "seqlib/sf2/reader.h"
-#include "seqlib/sf2/units.h"
+#include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/writer.h"
-#include "seqlib/wav.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
+#include "xsflib/files.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/nwsnd/envelope.h"
-#include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
-#include "ntdlib/sar/reference.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
-#include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/testing/length_cases.h"
@@ -60,9 +54,8 @@ using namespace ntdlib::sequence_export;
 using namespace ntdlib::sequence_export::tests;
 using ntdlib::nwsnd::DecibelSquare;
 using ntdlib::nwsnd::HoldMs;
-using ntdlib::sar::Bank;
-using ntdlib::sar::Instrument;
 using ntdlib::sar::SoundInfo;
+using xsflib::testing::ErrorOf;
 
 namespace sf2 = seqlib::sf2;
 
@@ -1316,11 +1309,11 @@ void TestPitchLfoChangedDuringANoteGoesOutAsPitchBends()
     }
     const bool reported = std::ranges::any_of(
         p.approximations, [](const auto& approximation) { return approximation.first.starts_with("LFO parameters"); });
-    const float peak = 40.0f / 128.0f;
+    const float kPeak = 40.0f / 128.0f;
 
     XSFLIB_CHECK(preset && preset->lfo_type == 3 && !reported);
-    XSFLIB_CHECK(first >= 96 && high > peak * 0.99f && high < peak * 1.001f && low < -peak * 0.99f &&
-                 low > -peak * 1.001f);
+    XSFLIB_CHECK(first >= 96 && high > kPeak * 0.99f && high < kPeak * 1.001f && low < -kPeak * 0.99f &&
+                 low > -kPeak * 1.001f);
 }
 
 void TestRandomLfoCurveInPitchBendsIsReportedOnce()
@@ -1369,10 +1362,10 @@ void TestDeepTremoloIsKeptTo6dB()
     // A volume LFO (type 1) at depth 127 swings 6 dB per unit of range. The game can't raise a note more than 6 dB. At
     // range 2, CC1 drops from 64 to 32. That swings 6 dB in the SoundFont, and the change is reported. At range 1, CC1
     // stays at 64. A pitch LFO at range 2 keeps 64 too.
-    const std::vector<uint8_t> kBank = OneRegionFbnk({{0x05000000, 0}});
-    const Performance deep = PerformOnBank({0xcc, 0x01, 0xcd, 0x02, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}, kBank);
-    const Performance shallow = PerformOnBank({0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}, kBank);
-    const Performance vibrato = PerformOnBank({0xcc, 0x00, 0xcd, 0x02, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}, kBank);
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
+    const Performance deep = PerformOnBank({0xcc, 0x01, 0xcd, 0x02, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}, bank);
+    const Performance shallow = PerformOnBank({0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}, bank);
+    const Performance vibrato = PerformOnBank({0xcc, 0x00, 0xcd, 0x02, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}, bank);
 
     auto modulation = [](const Performance& p)
     {
@@ -1387,7 +1380,7 @@ void TestDeepTremoloIsKeptTo6dB()
 
         return values;
     };
-    const char* kReport = "volume LFO deeper than 6 dB (limited to 6 dB: it dips less than in the game)";
+    const char* const kReport = "volume LFO deeper than 6 dB (limited to 6 dB: it dips less than in the game)";
     XSFLIB_CHECK(modulation(deep) == std::vector<int>{32} && deep.approximations.count(kReport) == 1);
     XSFLIB_CHECK(modulation(shallow) == std::vector<int>{64} && shallow.approximations.count(kReport) == 0);
     XSFLIB_CHECK(modulation(vibrato) == std::vector<int>{64} && vibrato.approximations.count(kReport) == 0);
@@ -1400,9 +1393,9 @@ void TestNoteReleasedInItsAttackKeepsTheGamesLevel()
     // long, has reached -16 dB. A second sequence plays the note for 200 ticks, past the attack. A SoundFont attack
     // that ramps up over t * 10^(-L / 20) reaches the game's level L dB at the release, t into the note. Only the first
     // note gets one.
-    const std::vector<uint8_t> kBank = OneRegionFbnk({{0x05000000, 0}});
-    const Performance early = PerformOnBank({0xd0, 0x14, 0x3c, 0x64, 0x05, 0xff}, kBank);
-    const Performance late = PerformOnBank({0xd0, 0x14, 0x3c, 0x64, 0x81, 0x48, 0xff}, kBank);
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
+    const Performance early = PerformOnBank({0xd0, 0x14, 0x3c, 0x64, 0x05, 0xff}, bank);
+    const Performance late = PerformOnBank({0xd0, 0x14, 0x3c, 0x64, 0x81, 0x48, 0xff}, bank);
 
     EnvelopeValues env;
     env.attack = 20;
@@ -1840,8 +1833,7 @@ void TestRunArchiveCheckGivesMainsExitCode()
     const std::vector<uint8_t> bytes = Fsar(files, {.sequences = {{0, 0}}});
     const std::filesystem::path path = std::filesystem::temp_directory_path() /
                                        ("sequence_export_test_" + std::to_string(std::random_device{}()) + ".bin");
-    std::ofstream(path, std::ios::binary)
-        .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    XSFLIB_CHECK(!xsflib::WriteFile(path, bytes));
     std::string test = "xyz2midi_test", archive = path.string(), missing = path.string() + ".missing";
     char* without_argument[] = {test.data()};
     char* unreadable[] = {test.data(), missing.data()};
@@ -2065,20 +2057,21 @@ void TestTrackStartsNoMoreNotesATickThanTheGameHasVoices()
         }
     }
 
-    const std::string kLegatosPastCap = "more than " + std::to_string(voices) +
-                                        " legatos in a tick (keeping the MIDI preset and limiting gain to the starting "
-                                        "level)";
-    const std::string kPastCap =
+    const std::string legatos_past_cap =
+        "more than " + std::to_string(voices) +
+        " legatos in a tick (keeping the MIDI preset and limiting gain to the starting "
+        "level)";
+    const std::string past_cap_ending =
         console->settings.engine == Engine::kCafe
             ? " new channels on a track in one tick (excess omitted; the game keeps the first)"
             : " new channels on a track in one tick (excess omitted; the game keeps the newest)";
-    auto past_cap = [&kPastCap](const Performance& p)
+    auto past_cap = [&past_cap_ending](const Performance& p)
     {
         return std::ranges::count_if(p.approximations,
-                                     [&kPastCap](const auto& a) { return a.first.ends_with(kPastCap); });
+                                     [&past_cap_ending](const auto& a) { return a.first.ends_with(past_cap_ending); });
     };
-    const auto left_out = capped.approximations.find("more than " + std::to_string(voices) + kPastCap);
-    const auto past_most = most.approximations.find("more than " + std::to_string(kMaxVoiceLimit) + kPastCap);
+    const auto left_out = capped.approximations.find("more than " + std::to_string(voices) + past_cap_ending);
+    const auto past_most = most.approximations.find("more than " + std::to_string(kMaxVoiceLimit) + past_cap_ending);
     const bool option = console->settings.voice_limit > 0;
     const bool drops = option && console->settings.engine != Engine::kCtr;
     XSFLIB_CHECK(note_ons(flood) == voices + 4 && past_cap(flood) == 0);
@@ -2087,9 +2080,9 @@ void TestTrackStartsNoMoreNotesATickThanTheGameHasVoices()
                                   : past_cap(capped) == 0);
     XSFLIB_CHECK(note_ons(most) == static_cast<int>(kMaxVoiceLimit) && past_most != most.approximations.end() &&
                  past_most->second == 6);
-    XSFLIB_CHECK(note_ons(tied) == 1 && tied_pitch == 12.0f && !tied.approximations.contains(kLegatosPastCap));
+    XSFLIB_CHECK(note_ons(tied) == 1 && tied_pitch == 12.0f && !tied.approximations.contains(legatos_past_cap));
     XSFLIB_CHECK(note_ons(held) == 1 && held.holds);
-    XSFLIB_CHECK(note_ons(loud) == 1 && loud.level_cut_db == 0.0 && loud.approximations.contains(kLegatosPastCap));
+    XSFLIB_CHECK(note_ons(loud) == 1 && loud.level_cut_db == 0.0 && loud.approximations.contains(legatos_past_cap));
 }
 
 void TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays()
@@ -2296,14 +2289,15 @@ void TestSlowDecaySplitsItsError()
 
 void TestSfzDecayTakesTheGamesTime()
 {
-    // sfizz falls by e^9 (78.17 dB) over its decay time. Use the game's time to fall 78.17 dB, based on its 1000 / rate
-    // envelope milliseconds per 100 dB, in real time.
+    // SFZ's decay falls by a factor of e^-8 (69.49 dB) over its time (sfzformat.com's ampeg_attack page). The test
+    // expects the game's time to fall 69.49 dB. The game's envelope falls 100 dB in 1000 / rate of its milliseconds.
+    // env_time_scale turns them into real milliseconds.
     const double decay_ms = 1000.0 / DecayRate(100) * console->settings.env_time_scale;
 
     const SfzEnvelope d = ConvertEnvelopeForSfz(EnvelopeValues{127, 100, 64, 0, 100});
 
-    const double kSfizzFallDb = 9.0 * 20.0 / std::log(10.0);
-    XSFLIB_CHECK(std::abs(d.decay * 1000.0 - decay_ms * kSfizzFallDb / 100.0) < 1e-9 * decay_ms);
+    const double kSfzFallDb = 8.0 * 20.0 / std::log(10.0);
+    XSFLIB_CHECK(std::abs(d.decay * 1000.0 - decay_ms * kSfzFallDb / 100.0) < 1e-9 * decay_ms);
     XSFLIB_CHECK(d.release == d.decay && d.attack == 0.0 && d.hold == 0.0);
     XSFLIB_CHECK(std::abs(d.sustain - 100.0 * std::pow(10.0, DecibelSquare(64) / 200.0)) < 1e-9);
 
@@ -2450,30 +2444,15 @@ void TestMissingBlockIsReported()
     wave[ctr ? 0x10 : 0x11] = 1;
     wave[ctr ? 0x15 : 0x14] = 0x70;
 
-    std::string message;
-    try
-    {
-        DecodeWave(wave);
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { DecodeWave(wave); });
 
     XSFLIB_CHECK(message == "bad " + magic + ": no DATA block");
 }
 
 void TestShortFileIsReported()
 {
-    std::string message;
-    try
-    {
-        DecodeWave(std::vector<uint8_t>{'C', 'W', 'A', 'V'});
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    const std::string message =
+        ErrorOf<xsflib::FormatError>([&] { DecodeWave(std::vector<uint8_t>{'C', 'W', 'A', 'V'}); });
 
     XSFLIB_CHECK(message == ByConsole<std::string>("bad FWAV: too short to be an FWAV file",
                                                    "bad FWAV: too short to be an FWAV file",
@@ -2816,8 +2795,9 @@ void TestMidiWriterSendsTheFilterToEveryLayer()
     XSFLIB_CHECK(rep.channels == 2);
     for (const int channel : {0, 1})
     {
-        const std::vector<uint8_t> kFilter = {static_cast<uint8_t>(0xb0 | channel), kFilterController, 40};
-        XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), kFilter.begin(), kFilter.end()) != bytes.end());
+        const std::vector<uint8_t> filter_change = {static_cast<uint8_t>(0xb0 | channel), kFilterController, 40};
+        XSFLIB_CHECK(std::search(bytes.begin(), bytes.end(), filter_change.begin(), filter_change.end()) !=
+                     bytes.end());
     }
 }
 
@@ -2894,7 +2874,7 @@ void TestSfzFileHasTheTracksPresetsAndFilters()
     XSFLIB_CHECK(f.name == "Track 2.sfz");
     XSFLIB_CHECK(has("MIDI gain was reduced by 2.5 dB. Region volumes restore that gain.\n"));
     XSFLIB_CHECK(has("<control>\ndefault_path=../samples/\n"));
-    XSFLIB_CHECK(has("bend_up=199.975586 bend_down=-199.975586\n"));
+    XSFLIB_CHECK(has("bend_up=200 bend_down=-200\n"));
 
     // CC7, CC10 and CC11 act at once, with CC7 and CC11 squared.
     XSFLIB_CHECK(has("pan_oncc10=100 pan_curvecc10=7 pan_smoothcc10=0\n"));
@@ -2905,13 +2885,48 @@ void TestSfzFileHasTheTracksPresetsAndFilters()
     // Low-pass uses filter 1. Controller value 60 selects nominal 80 Hz: 9558 cents below 20 kHz, 8936 on the Switch,
     // the 115 Hz of nn::atk's table, or 9131 on the 3DS. 0 leaves it open.
     XSFLIB_CHECK(low_pass.value == 60);
-    XSFLIB_CHECK(has("fil_type=lpf_1p cutoff=20000 cutoff_oncc103=12000 cutoff_curvecc103=8\n"));
-    const std::string v060 = ByConsole<std::string>(" v060=-0.7965 ", " v060=-0.744667 ", " v060=-0.760917 ");
-    XSFLIB_CHECK(has("<curve> curve_index=8\nv000=0 ") && has(v060));
+    XSFLIB_CHECK(has("fil_type=lpf_1p cutoff=1000 cutoff_oncc103=9600 cutoff_curvecc103=8\n"));
+    const std::string v060 = ByConsole<std::string>(" v060=-0.455384 ", " v060=-0.390592 ", " v060=-0.410905 ");
+    XSFLIB_CHECK(has("<curve> curve_index=8\nv000=0.540241 ") && has(v060));
 
     // Each preset gets a master. Notes starting with the biquad controller above 0 use high-pass in filter slot 2.
     XSFLIB_CHECK(has("// first\n<master> loprog=0 hiprog=0\n") && has("// second\n<master> loprog=1 hiprog=1\n"));
-    XSFLIB_CHECK(has("<group> hicc104=0\n<group> locc104=1 fil2_type=hpf_2p cutoff2=1000 "));
+    XSFLIB_CHECK(
+        has("<group> hicc104=0\n<group> locc104=1 fil2_type=hpf_2p cutoff2=1000 cutoff2_oncc104=9600 "
+            "cutoff2_curvecc104=9 resonance2=0 resonance2_oncc104=40 resonance2_curvecc104=10 "
+            "volume_oncc104=2 volume_curvecc104=11"));
+}
+
+// Band-pass type 5's widest steps go below -40 dB. A track of that type takes a resonance amount of 50 dB. A track of
+// another type takes 40 dB.
+void TestSfzResonanceAmountFitsTheType()
+{
+    const SoundArchive archive = SoundArchive::Load(Fsar({}), console->settings.archive);
+    BankSet banks(archive, SoundInfo{}, console->settings);
+    auto track_file = [&](int type)
+    {
+        Performance p;
+        p.presets.resize(1);
+        TrackEvent biquad;
+        biquad.kind = kSfzBiquadEvent;
+        biquad.value = SfzBiquadValue(type, 64);
+        TrackEvent preset;
+        preset.kind = EventKind::kPreset;
+        p.tracks[0] = {biquad, preset};
+        p.biquad_types[0] = static_cast<uint8_t>(type);
+        MidiReport midi;
+        midi.bend_ranges[0] = 2;
+        const SfzInstruments sfz = BuildSfz(p, midi, banks, "TITLE", {"first"});
+        return sfz.files.size() == 1 ? sfz.files[0].text : std::string();
+    };
+
+    const std::string wide = track_file(5);
+    const std::string narrow = track_file(4);
+
+    XSFLIB_CHECK(wide.find("// Biquad resonance (Q in dB): units of 50 dB\n") != std::string::npos);
+    XSFLIB_CHECK(wide.find(" resonance=0 resonance_oncc104=50 ") != std::string::npos);
+    XSFLIB_CHECK(narrow.find("// Biquad resonance (Q in dB): units of 40 dB\n") != std::string::npos);
+    XSFLIB_CHECK(narrow.find(" resonance=0 resonance_oncc104=40 ") != std::string::npos);
 }
 
 // The archive of the tests of a bank's conversion. Its sequence plays program 0 at key 60, then program 2 at key 64.
@@ -2957,6 +2972,7 @@ void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
     {
         return;
     }
+
     const BankSoundFont& sound_font = bank.sound_fonts[0];
     const seqlib::sf2::Records v = seqlib::sf2::Read(sound_font.sf2);
     const seqlib::sf2::Records w = seqlib::sf2::Read(sequence.sf2);
@@ -3005,18 +3021,19 @@ void TestBankSfzFilesPlayEachInstrumentByItself()
     {
         return;
     }
+
     const std::string& track = sequence.sfz.files[0].text;
     const std::string& first = bank.sfz.files[0].text;
     const std::string& second = bank.sfz.files[1].text;
-    const std::string global = "amplitude_smoothcc11=0\n\n";
+    const std::string kGlobal = "amplitude_smoothcc11=0\n\n";
     XSFLIB_CHECK(bank.sfz.files[0].name == seqlib::SafeFileName(name) + "_0.sfz");
     XSFLIB_CHECK(bank.sfz.files[1].name == seqlib::SafeFileName(name) + "_2.sfz");
     XSFLIB_CHECK(first.starts_with("// Program 0 of " + name + ", converted by " + console->program + ".\n\n"));
     XSFLIB_CHECK(first.find("<control>\ndefault_path=../samples/\n") != std::string::npos);
-    XSFLIB_CHECK(first.find("bend_up=199.975586 bend_down=-199.975586\n") != std::string::npos);
+    XSFLIB_CHECK(first.find("bend_up=200 bend_down=-200\n") != std::string::npos);
     XSFLIB_CHECK(first.find("<master>") == std::string::npos && first.find("<region> ") != std::string::npos);
-    XSFLIB_CHECK(preset(first, global) == preset(track, "<master> loprog=0 hiprog=0\n"));
-    XSFLIB_CHECK(preset(second, global) == preset(track, "<master> loprog=1 hiprog=1\n"));
+    XSFLIB_CHECK(preset(first, kGlobal) == preset(track, "<master> loprog=0 hiprog=0\n"));
+    XSFLIB_CHECK(preset(second, kGlobal) == preset(track, "<master> loprog=1 hiprog=1\n"));
     XSFLIB_CHECK(bank.sfz.samples.size() == 3 && sequence.sfz.samples.size() == 3);
     for (std::size_t i = 0; i < bank.sfz.samples.size() && i < sequence.sfz.samples.size(); i++)
     {
@@ -3029,11 +3046,11 @@ void TestBankSfzFilesPlayEachInstrumentByItself()
 // programs to the digits of the last one.
 void TestBankProgramsAbove127TakeTheNextBank()
 {
-    const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, files::Region{}}}};
-    const files::KeyTable keys{files::KeyTable::kDirect, 0, {{127, velocities}}};
+    const files::VelocityTable kVelocities{files::VelocityTable::kDirect, 0, {{127, files::Region{}}}};
+    const files::KeyTable kKeys{files::KeyTable::kDirect, 0, {{127, kVelocities}}};
     std::vector<std::optional<files::KeyTable>> instruments(131);
-    instruments[0] = keys;
-    instruments[130] = keys;
+    instruments[0] = kKeys;
+    instruments[130] = kKeys;
     std::vector<ArchiveFile> archive_files(2);
     archive_files[0].data = files::Bank(console->settings.archive.flavor, {{{0x05000000, 0}}, instruments});
     archive_files[1].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
@@ -3052,26 +3069,21 @@ void TestBankProgramsAbove127TakeTheNextBank()
 }
 
 // A region above volume 127 attenuates every zone of the SoundFont, as in a sequence's SoundFont, and the conversion
-// says so. A bank that the archive lacks throws.
+// says so. A bank that the archive lacks throws. The SFZ file plays the region at 6 dB. SFZ's documentation gives
+// volume a range up to 6 dB.
 void TestLoudBankIsAttenuatedAndAMissingBankThrows()
 {
     const SoundArchive archive = BankTestArchive(254);
-    bool threw = false;
 
     const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
     const Conversion sequence = ConvertSequence(archive, 0);
-    try
-    {
-        ConvertBank(archive, 1, console->settings, console->program);
-    }
-    catch (const std::out_of_range&)
-    {
-        threw = true;
-    }
+    const bool threw =
+        !ErrorOf<std::out_of_range>([&] { ConvertBank(archive, 1, console->settings, console->program); }).empty();
 
     XSFLIB_CHECK(bank.warnings ==
                  std::vector<std::string>{
                      "region volume exceeds 127 (SoundFont attenuated by 6.0 dB; SFZ keeps the original volume)"});
+    XSFLIB_CHECK(bank.sfz.files.size() == 2 && bank.sfz.files[1].text.find(" volume=6 ") != std::string::npos);
     XSFLIB_CHECK(seqlib::sf2::Read(bank.sound_fonts.at(0).sf2).chunks.at("igen") ==
                  seqlib::sf2::Read(sequence.sf2).chunks.at("igen"));
     XSFLIB_CHECK(threw);
@@ -3082,11 +3094,11 @@ void TestLoudBankIsAttenuatedAndAMissingBankThrows()
 // 65,535 generators.
 SoundArchive LargeBankArchive(uint32_t first = 0, uint32_t last = 99)
 {
-    const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, files::Region{}}}};
+    const files::VelocityTable kVelocities{files::VelocityTable::kDirect, 0, {{127, files::Region{}}}};
     files::KeyTable keys{files::KeyTable::kIndex, 0, {}};
     for (int key = 0; key < 128; key++)
     {
-        keys.entries.emplace_back(key, velocities);
+        keys.entries.emplace_back(key, kVelocities);
     }
     std::vector<std::optional<files::KeyTable>> instruments(100);
     for (uint32_t p = first; p <= last; p++)
@@ -3114,6 +3126,7 @@ void TestLargeBankSplitsItsSoundFont()
     {
         return;
     }
+
     uint32_t next = 0;
     for (const BankSoundFont& sound_font : bank.sound_fonts)
     {
@@ -3317,6 +3330,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestInnerLoopCountsAgainOnceTheOuterLoopTakesLong,
     TestSoundsOwnPanCurveIsReported,
     TestSfzFileHasTheTracksPresetsAndFilters,
+    TestSfzResonanceAmountFitsTheType,
     TestDirectVelocityTableTakesVelocitiesAbove127,
     TestSfzCommentKeepsTheNameOnItsLine,
     TestBankSoundFontHoldsEachInstrumentAtItsProgram,

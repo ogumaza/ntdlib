@@ -27,8 +27,4 @@ std::string DecodeShiftJis(std::span<const uint8_t> text);
 // with capital hex digits.
 std::string DecodeWindows1252(std::span<const uint8_t> text);
 
-// Appends the character `code` to `out` in UTF-8. `code` is a Unicode code point up to U+10FFFF, and not a surrogate
-// (U+D800 to U+DFFF).
-void AppendUtf8(std::string& out, uint32_t code);
-
 } // namespace ntdlib::disc::detail

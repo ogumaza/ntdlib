@@ -23,7 +23,10 @@
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/render.h"
 #include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
 
 namespace ax_scenarios
 {

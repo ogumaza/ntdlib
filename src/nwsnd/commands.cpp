@@ -16,7 +16,6 @@
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/commands/units.h"
 #include "ntdlib/nwsnd/units.h"
 
 namespace ntdlib::nwsnd
@@ -813,21 +812,6 @@ bool ReadsBack(std::span<const uint8_t> bytes, std::size_t start, const Command&
     return !r.PastEnd() && r.At() == bytes.size() && read == command;
 }
 
-// Whether the track goes on to the next command after `command`.
-bool FallsThrough(const Command& command, const Grammar& grammar)
-{
-    switch (command.kind)
-    {
-    case Kind::kJump:
-    case Kind::kReturn:
-        return command.conditional;
-    case Kind::kEnd:
-        return command.conditional && grammar.end_is_conditional;
-    default:
-        return true;
-    }
-}
-
 // A command that the decoder read, at its offset.
 struct Read
 {
@@ -974,12 +958,12 @@ void Guess(std::span<const uint8_t> data, const std::set<uint32_t>& cuts, const 
             return target >= data.size() || found.cover[target] == Cover::kStart || cuts.contains(target) ||
                    std::any_of(run.begin(), run.end(), [&](const auto& read) { return read.first == target; });
         };
-        counts = counts && std::all_of(run.begin(), run.end(),
-                                       [&](const auto& read)
-                                       {
-                                           const Command& command = read.second.command;
-                                           return !commands::HasTarget(command.kind) || leads(command.target);
-                                       });
+        const auto target_leads = [&](const auto& read)
+        {
+            const Command& command = read.second.command;
+            return !commands::HasTarget(command.kind) || leads(command.target);
+        };
+        counts = counts && std::all_of(run.begin(), run.end(), target_leads);
         if (!counts)
         {
             at = end;
@@ -1097,8 +1081,11 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
             cuts.insert(read.command.target);
         }
     }
-    opaque = opaque || std::any_of(cuts.begin(), cuts.end(), [&](uint32_t cut)
-                                   { return cut < data.size() && found.cover[cut] == Cover::kInside; });
+    const auto inside = [&](uint32_t cut)
+    {
+        return cut < data.size() && found.cover[cut] == Cover::kInside;
+    };
+    opaque = opaque || std::any_of(cuts.begin(), cuts.end(), inside);
 
     Decoded decoded;
     std::map<uint32_t, uint32_t> items; // byte offset to item
@@ -1124,6 +1111,31 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
     }
 
     return decoded;
+}
+
+std::optional<DecodedCommand> DecodeCommand(std::span<const uint8_t> data, uint32_t at, const Grammar& grammar)
+{
+    const std::optional<Read> read = ReadAt(data, at, grammar);
+    if (!read)
+    {
+        return std::nullopt;
+    }
+
+    return DecodedCommand{read->command, read->size};
+}
+
+bool FallsThrough(const commands::Command& command, const Grammar& grammar)
+{
+    switch (command.kind)
+    {
+    case Kind::kJump:
+    case Kind::kReturn:
+        return command.conditional;
+    case Kind::kEnd:
+        return command.conditional && grammar.end_is_conditional;
+    default:
+        return true;
+    }
 }
 
 Encoded EncodeSequence(const commands::Sequence& sequence, const Grammar& grammar)

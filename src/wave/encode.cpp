@@ -16,7 +16,6 @@
 
 namespace ntdlib::wave
 {
-
 namespace
 {
 
@@ -195,6 +194,7 @@ std::array<int16_t, 16> PairsOf(std::span<const int16_t> samples)
         {
             break;
         }
+
         pairs.push_back(BestPair(frames[static_cast<std::size_t>(worst - errors.begin())]));
 
         // The rounds: each frame goes to its best pair, then each pair becomes the best pair for its group.
@@ -204,6 +204,7 @@ std::array<int16_t, 16> PairsOf(std::span<const int16_t> samples)
             {
                 break;
             }
+
             std::vector<FrameSums> group_sums(pairs.size());
             std::vector<bool> used(pairs.size(), false);
             for (std::size_t f = 0; f < frames.size(); f++)
@@ -211,6 +212,7 @@ std::array<int16_t, 16> PairsOf(std::span<const int16_t> samples)
                 AddSums(group_sums[groups[f]], frames[f], weights[f]);
                 used[groups[f]] = true;
             }
+
             for (std::size_t p = 0; p < pairs.size(); p++)
             {
                 if (used[p])
@@ -219,6 +221,7 @@ std::array<int16_t, 16> PairsOf(std::span<const int16_t> samples)
                 }
             }
         }
+
         Assign(frames, weights, pairs, groups, errors);
     }
 
@@ -390,6 +393,7 @@ uint32_t AlignDspAdpcmLoop(std::vector<std::vector<int16_t>>& channels, uint32_t
     {
         throw std::invalid_argument("a loop that starts too late in a wave for a frame after it");
     }
+
     for (std::vector<int16_t>& channel : channels)
     {
         for (std::size_t i = loop_start; i < aligned; i++)

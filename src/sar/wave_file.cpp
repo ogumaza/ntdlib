@@ -13,10 +13,10 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
 
 namespace ntdlib::sar

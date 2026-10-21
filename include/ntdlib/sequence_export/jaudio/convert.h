@@ -14,6 +14,7 @@
 
 #include "seqlib/sf2/soundfont.h"
 
+#include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/instruments.h"
 #include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/sfz.h"

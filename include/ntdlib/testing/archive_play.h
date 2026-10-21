@@ -42,10 +42,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/nwsnd/channel.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/channel_log.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/nwsnd/channel.h"
 
 namespace ntdlib::testing
 {

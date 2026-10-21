@@ -334,7 +334,7 @@ inline const std::vector<std::pair<Method, std::string>> kRvzMethods = {
 inline Bytes Compress(Method method, const Bytes& data, Bytes& props)
 {
     Bytes out(data.size() * 2 + 0x10000);
-    size_t size = out.size();
+    size_t size = 0;
     switch (method)
     {
     case Method::kBzip2:
@@ -375,7 +375,6 @@ inline Bytes Compress(Method method, const Bytes& data, Bytes& props)
         break;
 
     default:
-        size = 0;
         break;
     }
 
@@ -468,12 +467,12 @@ struct WiaContents
     Method method = Method::kNone;
     uint32_t chunk_size = 0;
     uint32_t disc_type = 0;
-    Bytes head;
+    Bytes head = {};
     uint64_t disc_size = 0;
-    Bytes raw_table;
-    Bytes partition_table;
+    Bytes raw_table = {};
+    Bytes partition_table = {};
     uint32_t partitions = 0;
-    std::vector<GroupData> groups;
+    std::vector<GroupData> groups = {};
 };
 
 // Stores the disc in `iso` up to `end` as raw data in `wia`: the raw data table's one entry, from 0x80 to `end`, and a

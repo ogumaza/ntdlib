@@ -10,15 +10,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <functional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "seqlib/sfz/opcodes.h"
 #include "seqlib/sfz/text.h"
+#include "seqlib/sfz/track_file.h"
 #include "seqlib/wav.h"
 
 #include "ntdlib/sequence_export/jaudio/convert.h"
 #include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/instruments.h"
+#include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/wave.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -30,11 +36,12 @@ using seqlib::WavFile;
 using seqlib::sfz::Number;
 
 // Write a region's opcodes: its sample, keys and velocities, tuning, level, pan, envelope and loop. Add `gain_db` to
-// its volume. A region at the DSP's pitch limit plays every key at its tuning.
+// its volume. A region at the DSP's pitch limit plays every key at its tuning. A range of velocities from 0 starts at
+// 1. A velocity of 0 is a note-off.
 std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double gain_db)
 {
     std::string s = "<region> sample=" + wave.name + " lokey=" + std::to_string(z.low_key) +
-                    " hikey=" + std::to_string(z.high_key) + " lovel=" + std::to_string(z.low_velocity) +
+                    " hikey=" + std::to_string(z.high_key) + " lovel=" + std::to_string(std::max(z.low_velocity, 1)) +
                     " hivel=" + std::to_string(z.high_velocity) + " pitch_keycenter=" + std::to_string(z.root_key);
     if (z.fixed_pitch)
     {

@@ -23,7 +23,10 @@
 
 #include "disc/image_parts.h"
 #include "ntdlib/disc/compression.h"
+#include "ntdlib/disc/error.h"
+#include "ntdlib/disc/image.h"
 #include "ntdlib/disc/junk.h"
+#include "ntdlib/disc/source.h"
 
 namespace ntdlib::disc
 {
@@ -630,8 +633,11 @@ public:
 
     void Read(uint64_t offset, uint8_t* out, size_t size) override
     {
-        ReadByBlocks(offset, out, size, kSectorData, [this](uint64_t index, size_t within, uint8_t* piece, size_t n)
-                     { ReadSector(segments_[0].first_sector + index, within, piece, n); });
+        const auto read = [this](uint64_t index, size_t within, uint8_t* piece, size_t n)
+        {
+            ReadSector(segments_[0].first_sector + index, within, piece, n);
+        };
+        ReadByBlocks(offset, out, size, kSectorData, read);
     }
 
 private:

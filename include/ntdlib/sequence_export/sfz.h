@@ -12,10 +12,11 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/sequence_export/performance.h"
-#include "ntdlib/sequence_export/settings.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sfz/track_file.h"
+
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/settings.h"
 
 namespace ntdlib::sequence_export
 {

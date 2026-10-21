@@ -6,11 +6,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
-#include "sequence_export/runs.h"
 #include "xsflib/binary.h"
+
+#include "ntdlib/rsar/decode.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/sequence_export/envelope.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "sequence_export/runs.h"
 
 namespace ntdlib::sequence_export
 {

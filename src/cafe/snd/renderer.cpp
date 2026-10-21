@@ -8,6 +8,10 @@
 #include <cstdint>
 #include <span>
 
+#include "ntdlib/cafe/snd/ax_voice.h"
+#include "ntdlib/cafe/snd/sequence.h"
+#include "ntdlib/cafe/snd/util.h"
+#include "ntdlib/cafe/snd/voice.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
 

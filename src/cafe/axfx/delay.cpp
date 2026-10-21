@@ -2,9 +2,12 @@
 
 #include "ntdlib/cafe/axfx/delay.h"
 
+#include <array>
+#include <cstdint>
 #include <vector>
 
 #include "cafe/axfx/util.h"
+#include "ntdlib/cafe/axfx/axfx.h"
 #include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::axfx
@@ -117,7 +120,7 @@ void DelayExp::Process(const Buffers& frame, uint32_t samples, const Buffers& bu
     }
 
     // The low-pass weighs its last output by lpf_coef_ and the input by the rest of 128.
-    const int32_t input_gain = 128 - lpf_coef_;
+    const uint32_t input_gain = 128u - static_cast<uint32_t>(lpf_coef_);
     for (uint32_t i = 0; i < samples; i++)
     {
         std::array<int32_t, kChannelCount> delayed{};
@@ -130,8 +133,8 @@ void DelayExp::Process(const Buffers& frame, uint32_t samples, const Buffers& bu
                 input += static_cast<uint32_t>(bus_in[channel][i]);
             }
 
-            const uint32_t sum = static_cast<uint32_t>(input_gain) * input +
-                                 static_cast<uint32_t>(lpf_coef_) * static_cast<uint32_t>(last_[channel]);
+            const uint32_t sum =
+                input_gain * input + static_cast<uint32_t>(lpf_coef_) * static_cast<uint32_t>(last_[channel]);
             last_[channel] = static_cast<int32_t>(sum) >> 7;
             const uint32_t feedback = static_cast<uint32_t>(Scale(delayed[channel], feedback_gain_));
             line_[channel][position_] = static_cast<int32_t>(static_cast<uint32_t>(last_[channel]) + feedback);

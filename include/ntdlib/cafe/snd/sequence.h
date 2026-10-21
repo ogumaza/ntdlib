@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <span>
 
+#include "ntdlib/cafe/snd/ax_voice.h"
 #include "ntdlib/cafe/snd/channel.h"
 #include "ntdlib/cafe/snd/voice.h"
 #include "ntdlib/nwsnd/archive_files.h"
@@ -76,6 +77,47 @@ struct SequencePolicy : ntdlib::nwsnd::CafePolicy
     // The Wii U's channels have no receivers.
     static void SetReceiver(NoteOnInfo&, const Receiver*)
     {
+    }
+
+    // A stream's voice takes the track's front bypass each frame: any of the track's flags sets it (UpdateVoiceParams,
+    // 0x022B5024). The voices keep the pan mode and curve that their allocation gives them.
+    template <typename Voice>
+    static void SetStreamVoiceMode(Voice& voice, uint32_t, uint32_t, bool front_bypass)
+    {
+        voice.SetFrontBypass(front_bypass);
+    }
+
+    // The output parameters of channel `index` of a stream's track of `count` channels (MixSettingForOutputParam,
+    // 0x022B4D8C). A channel by itself takes the track's. The channels of a pair mix by the TV's mix mode on every
+    // device. With the pan, the left channel's pan moves 1 to the left and the right channel's 1 to the right. With the
+    // mix parameters, the right channel's voice takes the second channel's parameters as its first. A track of more
+    // channels gives its voices none.
+    template <typename Voice>
+    static void SetStreamVoiceOutputs(Voice& voice, const Outputs& outputs, int count, int index)
+    {
+        if (count == 1)
+        {
+            voice.SetOutputs(outputs);
+        }
+        else if (count == 2)
+        {
+            Outputs pair = outputs;
+            const uint32_t mode = outputs.tv.mix_mode;
+            const auto mix_setting = [mode, index](OutputParam& param)
+            {
+                if (mode == 0)
+                {
+                    param.pan = index == 0 ? param.pan - 1.0f : param.pan + 1.0f;
+                }
+                else if (mode == 1 && index == 1)
+                {
+                    param.mix_parameter[0] = param.mix_parameter[1];
+                    param.mix_parameter[1] = {};
+                }
+            };
+            ForEachOutput(mix_setting, pair);
+            voice.SetOutputs(pair);
+        }
     }
 };
 

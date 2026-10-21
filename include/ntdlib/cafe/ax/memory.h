@@ -16,10 +16,18 @@ namespace ntdlib::cafe::ax
 class Memory
 {
 public:
-    // Maps `bytes` at `address`. The bytes must outlive the Memory, and regions mustn't overlap.
+    // Maps `bytes` at `address`. The bytes must outlive the Memory, or their region must go first (Unmap). Regions
+    // mustn't overlap.
     void Map(uint32_t address, std::span<const uint8_t> bytes)
     {
         regions_.push_back({address, bytes});
+    }
+
+    // Removes the region mapped at `address`, if any. Reads there then give 0.
+    void Unmap(uint32_t address)
+    {
+        std::erase_if(regions_, [address](const Region& region) { return region.address == address; });
+        last_ = 0;
     }
 
     // The byte at `address`, or 0 where nothing is mapped.

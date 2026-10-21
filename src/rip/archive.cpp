@@ -19,6 +19,8 @@
 
 #include "xsflib/ascii.h"
 
+#include "ntdlib/sar/formats.h"
+
 namespace ntdlib::rip
 {
 

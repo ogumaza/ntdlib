@@ -13,11 +13,14 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/consoles.h"
-#include "ntdlib/sequence_export/resampling.h"
 #include "seqlib/sf2/soundfont.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/sequence_export/consoles.h"
+#include "ntdlib/sequence_export/convert.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/resampling.h"
+#include "ntdlib/sequence_export/settings.h"
 #include "sequence_export/sf2_build.h"
 #include "sequence_export_test.h"
 
@@ -104,11 +107,11 @@ void TestTheWiiPicksByTheWavesRateAlone()
 // The filters' cutoffs follow the note's pitch: a fraction of the wave's rate times the pitch ratio. The tuning counts.
 void TestCutoffsFollowThePitch()
 {
-    const ResamplingRegion tuned = {60, 1.5f, 32000, 0};
+    const ResamplingRegion kTuned = {60, 1.5f, 32000, 0};
 
     XSFLIB_CHECK(ResamplingCutoffHz(0.25, 60, RegionAt(32000)) == 8000.0);
     XSFLIB_CHECK(ResamplingCutoffHz(0.25, 72, RegionAt(32000)) == 16000.0);
-    XSFLIB_CHECK(ResamplingCutoffHz(0.25, 48, tuned) == 6000.0);
+    XSFLIB_CHECK(ResamplingCutoffHz(0.25, 48, kTuned) == 6000.0);
 }
 
 // On the Wii U, a 32 kHz wave's keys split at 60 and 64.
@@ -140,7 +143,7 @@ void TestZonesKeepTheLowerCutoff()
     const std::vector<ResamplingSpan> spans = ZoneSpans({0, 127}, RegionAt(32000), key, settings);
     const std::vector<ResamplingSpan> none = ZoneSpans({0, 127}, RegionAt(32000), controlled, settings);
 
-    const std::vector<std::pair<std::pair<int, int>, const ResamplingFilter*>> kExpected = {
+    const std::vector<std::pair<std::pair<int, int>, const ResamplingFilter*>> expected = {
         {{0, 60}, nullptr},   {{61, 63}, Above1(settings)}, {{64, 64}, nullptr}, {{65, 70}, Above4Thirds(settings)},
         {{71, 127}, nullptr},
     };
@@ -149,7 +152,7 @@ void TestZonesKeepTheLowerCutoff()
     {
         got.emplace_back(span.keys, span.filter);
     }
-    XSFLIB_CHECK((got == kExpected));
+    XSFLIB_CHECK((got == expected));
     XSFLIB_CHECK((none.size() == 1 && none[0].keys == std::pair{0, 127} && none[0].filter == nullptr));
 }
 
@@ -257,12 +260,12 @@ void TestZonesTakeTheLowPassesAboveTheThresholds()
 
     const int above_1 = ByConsole(61, 68, 61);
     const int above_4_thirds = ByConsole(65, 73, 66);
-    const std::vector<ZoneCutoff> kZones = {
+    const std::vector<ZoneCutoff> zones = {
         {{0, above_1 - 1}},
         {{above_1, above_4_thirds - 1}, ByConsole(6691, 6686, 6704), 0x0003, 12800},
         {{above_4_thirds, 127}, ByConsole(5934, 6085, 5955), 0x0003, 12800},
     };
-    XSFLIB_CHECK(Sf2Problem(c.sf2).empty() && ZoneCutoffs(c.sf2) == kZones);
+    XSFLIB_CHECK(Sf2Problem(c.sf2).empty() && ZoneCutoffs(c.sf2) == zones);
 
     const std::string above_1_cutoff = ByConsole<std::string>("9644.8", "8448", "9622.4");
     const std::string above_4_thirds_cutoff = ByConsole<std::string>("5708.8", "5321.6", "5692.8");

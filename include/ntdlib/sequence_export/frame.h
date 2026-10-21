@@ -27,12 +27,13 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/performance.h"
 #include "seqlib/file_name.h"
 #include "xsflib/ascii.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 #include "xsflib/text.h"
+
+#include "ntdlib/sequence_export/performance.h"
 
 namespace ntdlib::sequence_export
 {
@@ -385,9 +386,9 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
     }
 
     std::vector<Sequence> selected;
-    const auto matches = [&only](const std::string& name)
+    const auto matches = [&only](const std::string& text)
     {
-        return std::regex_search(name, only);
+        return std::regex_search(text, only);
     };
     for (Sequence& sequence : converter.sequences(*source))
     {

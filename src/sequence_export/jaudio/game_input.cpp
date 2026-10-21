@@ -2,15 +2,27 @@
 
 #include "ntdlib/sequence_export/jaudio/game_input.h"
 
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <functional>
 #include <ios>
+#include <memory>
+#include <optional>
 #include <regex>
+#include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "ntdlib/jaudio/aaf.h"
+#include "ntdlib/sequence_export/frame.h"
+#include "ntdlib/sequence_export/jaudio/convert.h"
+#include "ntdlib/sequence_export/jaudio/game.h"
+#include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/sfz.h"
+#include "ntdlib/sequence_export/performance.h"
 
 namespace ntdlib::sequence_export::jaudio
 {
@@ -119,6 +131,7 @@ OptionHandler<PerformOptions> ArchiveProgramOptions(OptionHandler<sequence_expor
         {
             return false;
         }
+
         if (option == "--voices")
         {
             perform.voice_limit = archive.voice_limit;

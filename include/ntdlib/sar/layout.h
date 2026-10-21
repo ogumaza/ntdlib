@@ -10,6 +10,10 @@
 // the copies of a file. WriteTableValues writes the values of the tables that have a place there, such as a sound's
 // volume. TableValuePlaces finds which of a sound's optional values have a place. StartFields finds where the tables
 // hold each sound's start.
+//
+// A game can keep groups in files beside the archive. The cut takes them too, each into pieces of its own. A copy of
+// one of the archive's sequence files there becomes a piece of the same sequence, and an edit of the sequence reaches
+// it. ReplaceFile and FileCopies reach the copies of a file in the group files.
 
 #pragma once
 
@@ -68,6 +72,18 @@ struct Padding
 // A run of the archive's bytes, a sequence file or padding.
 using Piece = std::variant<std::vector<uint8_t>, SequencePiece, Padding>;
 
+// A group file that a game keeps beside an archive, cut by the rules that cut the archive. The sequence pieces of a
+// group file name sequences of the archive's layout. The fields lie in the group file's runs, and their places lie
+// among the group file's pieces. A place at the end lies at the group file's end. Join gives the group file back from
+// these pieces and fields.
+struct GroupFileLayout
+{
+    friend bool operator==(const GroupFileLayout&, const GroupFileLayout&) = default;
+
+    std::vector<Piece> pieces; // in the order of the group file's bytes
+    std::vector<Field> fields; // the fields whose distances an edit can change
+};
+
 struct Layout
 {
     friend bool operator==(const Layout&, const Layout&) = default;
@@ -76,6 +92,7 @@ struct Layout
     std::vector<commands::Sequence> sequences; // in the order of their first files
     std::vector<Piece> pieces;                 // in the order of the archive's bytes
     std::vector<Field> fields;                 // the fields whose distances an edit can change
+    std::vector<GroupFileLayout> group_files;  // the group files beside the archive, in the order that Cut took them
 };
 
 // Cuts `archive`, read with `options`. A sequence file becomes a piece when its commands give its bytes back. The
@@ -91,6 +108,17 @@ struct Layout
 // adds no bytes. In an archive cut short, a group that lies partly past the end stays in the bytes whole. An archive
 // whose fields can't all be placed becomes one run. Throws xsflib::FormatError if the archive's tables can't be read.
 Layout Cut(std::span<const uint8_t> archive, const Options& options);
+
+// Cuts `archive` and `group_files`, the group files that the game keeps beside it, read with `options`. Unless a copy
+// in a group file keeps a sequence file in the bytes, the archive comes out as Cut(archive, options) gives it. Each
+// group file comes out by the same rules as the archive. The FILE block of a group file holds the copies of the group's
+// files, and the tables of the group file hold its fields. A copy of a sequence file joins the archive's sequence when
+// the archive holds a copy of the file too. Unless every copy, in the archive and in the group files, holds the same
+// bytes, none becomes a piece. A sequence file that only group files hold stays in their bytes: the archive's tables
+// would hold the starts of the file's sounds in another file's bytecode. Such a file can still become a run of its
+// own. A group file that isn't a group file of the archive's console becomes one run. So does each group file when the
+// archive becomes one run. Throws xsflib::FormatError if the archive's tables can't be read.
+Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options);
 
 // The archive's bytes from its pieces, whose sequences are in `sequences`, with `fields` written. Throws
 // std::invalid_argument for a piece that names a sequence the layout lacks, a sequence that the encoder can't write, a
@@ -114,8 +142,28 @@ std::vector<Piece> ReplaceFile(Flavor flavor, std::span<const commands::Sequence
                                std::span<const Piece> pieces, std::span<const Field> fields, uint32_t file,
                                std::span<const uint8_t> bytes);
 
+// The pieces of an archive and of the group files beside it.
+struct ReplacedPieces
+{
+    friend bool operator==(const ReplacedPieces&, const ReplacedPieces&) = default;
+
+    std::vector<Piece> pieces;                   // the archive's pieces
+    std::vector<std::vector<Piece>> group_files; // the pieces of each group file, in order
+};
+
+// The pieces in which file `file` holds `bytes`, in the archive and in `group_files`, the group files beside it.
+// `pieces`, with `sequences` and `fields`, join to the archive of `flavor`. Each copy of the file, in the archive and
+// in the group files, has to be a run of its own. Each copy takes `bytes` by the rules of ReplaceFile. The
+// archive need not hold a copy, and neither need a group file. A group file whose tables can't be read holds no copy.
+// Throws std::invalid_argument for a file that none of them holds, and the exceptions of ReplaceFile for the archive
+// and for each group file that holds a copy.
+ReplacedPieces ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
+                           std::span<const Field> fields, std::span<const GroupFileLayout> group_files, uint32_t file,
+                           std::span<const uint8_t> bytes);
+
 // A copy of a file in an archive: where it starts, the file ID of the group's file that holds it, if a group's file
-// does, and its bytes.
+// does, and its bytes. For a copy in a group file beside the archive, `group_file` gives the group file's place in
+// the list of group files, and `start` the copy's start in the group file.
 struct FileCopy
 {
     friend bool operator==(const FileCopy&, const FileCopy&) = default;
@@ -123,6 +171,7 @@ struct FileCopy
     std::size_t start = 0;
     std::optional<uint32_t> group;
     std::vector<uint8_t> bytes;
+    std::optional<std::size_t> group_file;
 };
 
 // The copies of file `file`, in the FILE block and in the groups, in the order of their starts. `pieces`, with
@@ -132,6 +181,13 @@ struct FileCopy
 std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
                                  std::span<const Piece> pieces, std::span<const Field> fields, uint32_t file);
 
+// The copies of file `file` in the archive, as FileCopies gives them, then those in `group_files`, the group files
+// beside it, in the order of the group files and of the copies' starts. A group file whose tables can't be read holds
+// no copy. Throws the exceptions of FileCopies.
+std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
+                                 std::span<const Piece> pieces, std::span<const Field> fields,
+                                 std::span<const GroupFileLayout> group_files, uint32_t file);
+
 // Writes the values of `sounds` and `players` into the tables of `archive`, an archive of `flavor`. Each value goes
 // where SoundArchive reads it with Rules::kStopAtFirstProblem. Sound i takes the values of `sounds[i]`: its player,
 // volume, pan mode and curve, player priority and actor player, and for a sequence sound its banks, its tracks' flags,
@@ -139,14 +195,15 @@ std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequen
 // tables don't hold stays as it is: an option that a sound leaves out, and a bank past the sound's list of banks. So do
 // a 3DS sound's player, player priority and actor player. The reader doesn't read those. The names, the files, the
 // kinds and the starts stay too. Bytes that the reader doesn't read keep theirs. A release priority fix that stays on
-// keeps its byte. Throws xsflib::FormatError if the tables can't be read.
+// keeps its byte. WithValuePlaces and WithBankLists (ntdlib/sar/tables.h) give the entries places for the options and
+// the banks first. Throws xsflib::FormatError if the tables can't be read.
 void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const SoundInfo> sounds,
                       std::span<const PlayerInfo> players);
 
 // The values of a sound that its entry holds only with an option: the pan mode and curve, the player priority and the
 // actor player, and a sequence sound's channel priority and release priority fix. Every entry holds the sound's player
 // and volume, and a sequence sound's tracks' flags. WriteTableValues writes an optional value only where the entry
-// holds it.
+// holds it. WithValuePlaces (ntdlib/sar/tables.h) gives an entry the places that it leaves out.
 struct ValuePlaces
 {
     friend bool operator==(const ValuePlaces&, const ValuePlaces&) = default;

@@ -8,6 +8,7 @@
 #include <span>
 
 #include "seqlib/loop.h"
+#include "seqlib/pcm.h"
 
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
 

@@ -746,7 +746,7 @@ int main(int argc, char** argv)
     }
 
     const fs::path dir = temp ? temp->Path() : fs::path(argv[1]);
-    try
+    const auto tests = [&dir]
     {
         fs::create_directories(dir);
         TestLz();
@@ -754,11 +754,7 @@ int main(int argc, char** argv)
         TestTitles(dir);
         TestOtherTitles(dir);
         TestRefusals(dir);
-    }
-    catch (const std::exception& e)
-    {
-        Check(false, std::string("unexpected error: ") + e.what());
-    }
+    };
 
-    return xsflib::testing::Summary("disc title");
+    return xsflib::testing::RunTest("disc title", tests);
 }

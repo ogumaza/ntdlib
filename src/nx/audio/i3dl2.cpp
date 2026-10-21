@@ -8,8 +8,6 @@
 #include <cstdint>
 
 #include "ntdlib/aarch64.h"
-#include "ntdlib/nx/audio/dsp.h"
-
 #include "nx/audio/arithmetic.h"
 #include "nx/audio/tables.h"
 

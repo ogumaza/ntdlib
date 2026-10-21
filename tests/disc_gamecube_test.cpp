@@ -25,6 +25,7 @@
 #include "ntdlib/disc/compression.h"
 #include "ntdlib/disc/containers.h"
 #include "ntdlib/disc/game.h"
+#include "ntdlib/disc/image.h"
 #include "ntdlib/testing/image_manifest.h"
 #include "temp_folder.h"
 
@@ -46,13 +47,13 @@ using disc_writers::kWiaMethods;
 using disc_writers::Wdf;
 using disc_writers::WiaContents;
 using disc_writers::WiaFile;
+using ntdlib::disc::Method;
 using xsflib::testing::Check;
 using xsflib::testing::failures;
 namespace fs = std::filesystem;
 
 // How the tests load games: as a GameCube rip tool named xyz would, with every container.
 const ntdlib::disc::GameOptions kOptions{ntdlib::disc::Console::kGameCube, "xyz", {ntdlib::disc::OpenContainer}};
-using ntdlib::disc::Method;
 
 // The test game on a GameCube disc.
 const GameLayout kLayout = {

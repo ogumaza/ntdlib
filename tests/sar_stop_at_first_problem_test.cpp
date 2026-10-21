@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -50,16 +51,9 @@ bool StartsWith(std::span<const uint8_t> data, const std::vector<uint8_t>& start
 template <typename Parse>
 void CheckThrows(const std::string& what, Parse parse, const std::string& words)
 {
-    try
-    {
-        parse();
-        Check(false, what + " is rejected");
-    }
-    catch (const std::runtime_error& e)
-    {
-        Check(std::string(e.what()).find(words) != std::string::npos,
-              what + " is rejected with \"" + words + "\": " + e.what());
-    }
+    const std::string message = ErrorOf<std::runtime_error>(parse);
+    Check(!message.empty() && message.find(words) != std::string::npos,
+          what + " is rejected with \"" + words + "\": " + message);
 }
 
 void TestWaves(bool big_endian, const std::string& order)
@@ -193,6 +187,33 @@ void TestSequence(bool big_endian, const std::string& order)
           order + ": the sequence's labels");
 }
 
+// A stream sound's details: a stereo track that sets every field, and a mono track that keeps the defaults.
+sar::StreamSoundInfo StreamDetails()
+{
+    sar::StreamSoundInfo stream;
+    stream.valid_tracks = 3;
+    stream.channel_count = 3;
+    stream.pitch = 1.5f;
+    stream.main_send = 100;
+    stream.aux_sends = {10, 20, 30};
+    sar::StreamTrackInfo stereo;
+    stereo.channels = {0, 1};
+    stereo.volume = 90;
+    stereo.pan = 30;
+    stereo.span = 5;
+    stereo.flags = 1;
+    stereo.main_send = 110;
+    stereo.aux_sends = {1, 2, 3};
+    stereo.low_pass = 50;
+    stereo.biquad_type = 2;
+    stereo.biquad_value = 7;
+    sar::StreamTrackInfo mono;
+    mono.channels = {2};
+    stream.tracks = {stereo, mono};
+
+    return stream;
+}
+
 sar_files::ArchiveSpec ArchiveSpec(bool big_endian)
 {
     // A sequence, a wave sound and a stream. The sequence's bank is in its first and third slots, and the second slot
@@ -218,6 +239,7 @@ sar_files::ArchiveSpec ArchiveSpec(bool big_endian)
     stream.name = "STRM_TEST";
     stream.kind = sar_files::SoundSpec::kStream;
     stream.file = 3;
+    stream.stream = StreamDetails();
     spec.sounds = {sequence, wave_sound, stream};
 
     sar_files::WaveSpec wave;
@@ -264,7 +286,8 @@ void TestArchive(bool big_endian, const std::string& order)
     Check(archive.Sounds()[1].name == "WSD_TEST" && archive.Sounds()[1].type == sar::SoundType::kWaveSound &&
               archive.Sounds()[1].player_priority == 64 && archive.Sounds()[1].banks.empty(),
           order + ": the wave sound");
-    Check(archive.Sounds()[2].name == "STRM_TEST" && archive.Sounds()[2].type == sar::SoundType::kStream,
+    Check(archive.Sounds()[2].name == "STRM_TEST" && archive.Sounds()[2].type == sar::SoundType::kStream &&
+              archive.Sounds()[2].stream == StreamDetails(),
           order + ": the stream");
     Check(archive.FindSound("STRM_TEST") == 2u && !archive.FindSound("NOTHING"), order + ": finding sounds by name");
 

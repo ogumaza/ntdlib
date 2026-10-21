@@ -14,6 +14,8 @@
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/types.h"
+
 namespace ntdlib::ppc
 {
 namespace

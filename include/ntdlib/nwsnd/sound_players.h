@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// The sequence players of the Wii U's and the Switch's archive engines, each in its place (its Id()), and the starts
-// that wait for the sound thread.
+// The sound players of the Wii U's and the Switch's archive engines, each in its place (its Id()), and the starts that
+// wait for the sound thread. A place holds a player of one of the kinds: a sequence, a wave sound or a stream sound.
 
 #pragma once
 
@@ -9,15 +9,18 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ntdlib::nwsnd
 {
 
-template <typename Player>
-class SequencePlayers
+template <typename... Kinds>
+class SoundPlayers
 {
 public:
+    using Player = std::variant<Kinds...>;
+
     // A start that waits holds its player's place, not a pointer. A restore can put another player object in that
     // place.
     struct PendingStart
@@ -33,15 +36,16 @@ public:
         std::vector<PendingStart> pending;
     };
 
-    // Adds a player made from its place and `args`, and a start that waits `frames` sound frames. Returns the player.
-    template <typename... Args>
-    Player& Add(int frames, Args&&... args)
+    // Adds a player of kind `Kind`, made from its place and `args`, and a start that waits `frames` sound frames.
+    // Returns the player.
+    template <typename Kind, typename... Args>
+    Kind& Add(int frames, Args&&... args)
     {
         const int place = static_cast<int>(players_.size());
-        players_.push_back(std::make_unique<Player>(place, std::forward<Args>(args)...));
+        players_.push_back(std::make_unique<Player>(std::in_place_type<Kind>, place, std::forward<Args>(args)...));
         pending_.push_back({place, frames});
 
-        return *players_.back();
+        return std::get<Kind>(*players_.back());
     }
 
     Player& operator[](int place)
@@ -49,8 +53,22 @@ public:
         return *players_[static_cast<std::size_t>(place)];
     }
 
+    // The player at `place` if it's of kind `Kind`, or nullptr.
+    template <typename Kind>
+    Kind* Get(int place)
+    {
+        if (place < 0 || static_cast<std::size_t>(place) >= players_.size())
+        {
+            return nullptr;
+        }
+
+        return std::get_if<Kind>(players_[static_cast<std::size_t>(place)].get());
+    }
+
     // The sound thread's commands: starts each player that is due, and counts a frame down for each start that waits.
-    void StartDue()
+    // A player whose start requires the engine gets `engine`.
+    template <typename Engine>
+    void StartDue(Engine& engine)
     {
         for (auto it = pending_.begin(); it != pending_.end();)
         {
@@ -61,18 +79,30 @@ public:
                 continue;
             }
 
-            players_[static_cast<std::size_t>(it->player)]->Start();
+            std::visit(
+                [&engine](auto& player)
+                {
+                    if constexpr (requires { player.Start(engine); })
+                    {
+                        player.Start(engine);
+                    }
+                    else
+                    {
+                        player.Start();
+                    }
+                },
+                *players_[static_cast<std::size_t>(it->player)]);
             it = pending_.erase(it);
         }
     }
 
-    // Calls `fn` with each player in order of place.
+    // Calls `fn` with each player in order of place. `fn` takes each kind.
     template <typename Fn>
     void ForEach(const Fn& fn)
     {
         for (const std::unique_ptr<Player>& player : players_)
         {
-            fn(*player);
+            std::visit(fn, *player);
         }
     }
 
@@ -81,7 +111,7 @@ public:
     {
         for (const std::unique_ptr<Player>& player : players_)
         {
-            if (!player->IsFinished())
+            if (!std::visit([](const auto& each) { return each.IsFinished(); }, *player))
             {
                 return true;
             }
@@ -101,7 +131,8 @@ public:
         return snapshot;
     }
 
-    // Throws std::invalid_argument for a snapshot with more players than these. Changes nothing.
+    // Throws std::invalid_argument for a snapshot with more players than these. Changes nothing. A player of another
+    // kind can hold a place that a restore emptied. The snapshot's player then takes the place again.
     void CheckRestore(const Snapshot& snapshot) const
     {
         if (snapshot.players.size() > players_.size())

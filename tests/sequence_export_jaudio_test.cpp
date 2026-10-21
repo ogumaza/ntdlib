@@ -11,7 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
-#include <numbers>
+#include <memory>
 #include <optional>
 #include <random>
 #include <set>
@@ -22,12 +22,14 @@
 
 #include "seqlib/midi/reader.h"
 #include "seqlib/sf2/reader.h"
-#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/conversion.h"
+#include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/jaudio/archive_games.h"
 #include "ntdlib/sequence_export/jaudio/convert.h"
 #include "ntdlib/sequence_export/jaudio/envelope.h"
@@ -764,11 +766,11 @@ void TestHeldNoteKeepsItsPart()
             volume = e.part;
         }
     }
-    const std::string approximation =
+    const std::string kApproximation =
         "released notes take later settings of their track while it holds a note on their part";
     Check(first && second && *first == *second, "both notes play on one part");
     Check(volume && volume == second, "the held note takes the track's volume");
-    Check(perf.approximations.contains(approximation), "the release takes the volume too, as an approximation");
+    Check(perf.approximations.contains(kApproximation), "the release takes the volume too, as an approximation");
 }
 
 void TestDefaultKeepsEveryNote()
@@ -821,12 +823,13 @@ void TestDefaultKeepsEveryNote()
                 n += e.kind == EventKind::kNoteOff && e.tick < 48 ? 1 : 0;
             }
         }
+
         return n;
     };
-    const std::string approximation = "notes cut when the game's 64 voices ran out";
-    Check(cut_short(kept) == 0 && !kept.approximations.contains(approximation),
+    const std::string kApproximation = "notes cut when the game's 64 voices ran out";
+    Check(cut_short(kept) == 0 && !kept.approximations.contains(kApproximation),
           "by default every note plays to its end");
-    Check(cut_short(limited) == 6 && limited.approximations.contains(approximation),
+    Check(cut_short(limited) == 6 && limited.approximations.contains(kApproximation),
           "with --voices 64, six notes are cut as in the game");
 }
 
@@ -1020,13 +1023,6 @@ class Sequence1
 public:
     explicit Sequence1(uint32_t base = kFirstSequence) : base_(base)
     {
-    }
-
-    Sequence1& Byte(uint32_t v)
-    {
-        b_.U8(v);
-
-        return *this;
     }
 
     Sequence1& OpenTrack(uint32_t track, uint32_t offset)
@@ -1256,11 +1252,11 @@ void TestJAudio1Folder()
     // A name file beside the archive names the sounds by their IDs.
     std::vector<uint8_t> asn(16 + 20 * 32);
     xsflib::StoreBe32(asn.data() + 12, 2);
-    const std::string field = "JA_BGM_FIELD";
-    const std::string boss = "JA_BGM_BOSS_2";
-    std::copy(field.begin(), field.end(), asn.begin() + 16 + 18 * 32);
+    const std::string kField = "JA_BGM_FIELD";
+    const std::string kBoss = "JA_BGM_BOSS_2";
+    std::copy(kField.begin(), kField.end(), asn.begin() + 16 + 18 * 32);
     xsflib::StoreBe32(asn.data() + 16 + 18 * 32 + 28, 0x80000001);
-    std::copy(boss.begin(), boss.end(), asn.begin() + 16 + 19 * 32);
+    std::copy(kBoss.begin(), kBoss.end(), asn.begin() + 16 + 19 * 32);
     xsflib::StoreBe32(asn.data() + 16 + 19 * 32 + 28, 0x80000004);
     xsflib::WriteFile(folder / "test.asn", asn);
 

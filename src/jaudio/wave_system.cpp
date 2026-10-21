@@ -4,13 +4,16 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "jaudio/reader.h"
 #include "xsflib/binary.h"
+
+#include "jaudio/reader.h"
 
 namespace ntdlib::jaudio
 {

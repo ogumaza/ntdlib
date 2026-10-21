@@ -17,6 +17,7 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/util.h"

@@ -12,6 +12,12 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+
+#include "ntdlib/jaudio/archive.h"
+#include "ntdlib/jaudio/bank.h"
+#include "ntdlib/jaudio/rarc.h"
+#include "ntdlib/jaudio/wave_system.h"
 
 namespace ntdlib::jaudio
 {

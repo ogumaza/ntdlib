@@ -2,6 +2,8 @@
 
 // The Wii U's fitted filter tables. tools/sequence_export/filter_tables.py writes them from the game's code.
 
+#include <cstdint>
+
 #include "ntdlib/sequence_export/filter.h"
 
 namespace ntdlib::sequence_export

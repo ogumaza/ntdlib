@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "seqlib/loop.h"
+#include "seqlib/pcm.h"
 
 namespace ntdlib::sequence_export
 {

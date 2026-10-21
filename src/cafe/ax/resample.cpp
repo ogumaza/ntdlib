@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/coef_rom.h"
 

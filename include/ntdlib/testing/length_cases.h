@@ -16,8 +16,9 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/testing/sar_files.h"
 
 namespace ntdlib::testing::length_cases
 {
@@ -500,44 +501,18 @@ inline std::vector<uint8_t> Bytecode(std::size_t index, bool big_endian)
 // the cases in order, and nothing more.
 inline std::vector<uint8_t> Archive(bool big_endian)
 {
-    // A wave of 1 s that ends, and one of 0.1 s that loops: PCM16 at 0x1000.
-    std::vector<uint8_t> samples(2 * 32000);
-    for (std::size_t i = 0; i < samples.size(); i += 2)
-    {
-        samples[big_endian ? i : i + 1] = 0x10;
-    }
-
-    sar_files::WaveSpec once;
-    once.encoding = 1;
-    once.loop_end = 32000;
-    once.channels = {samples};
-    sar_files::WaveSpec looping = once;
+    // A wave of 1 s that ends, and one of 0.1 s that loops. Program 0 plays the wave that ends, and program 1 the one
+    // that loops.
+    const sar_files::WaveSpec once = sar_files::ConstantWave(big_endian);
+    sar_files::WaveSpec looping = sar_files::ConstantWave(big_endian, 3200);
     looping.loop = true;
-    looping.loop_end = 3200;
-    looping.channels = {std::vector<uint8_t>(samples.begin(), samples.begin() + 2 * 3200)};
-
-    // Program 0 plays the wave that ends, and program 1 the one that loops.
-    sar_files::BankSpec bank;
-    bank.waves = {{0x05000000, 0}, {0x05000000, 1}};
-    for (uint32_t wave = 0; wave < 2; ++wave)
-    {
-        sar_files::Region region;
-        region.wave = wave;
-        region.original_key = 60;
-        region.adshr = {127, 127, 127, 0, 127};
-        sar_files::VelocityTable velocities;
-        velocities.entries = {{0, region}};
-        sar_files::KeyTable keys;
-        keys.entries = {{0, velocities}};
-        bank.instruments.push_back(keys);
-    }
 
     sar_files::ArchiveSpec spec;
     spec.banks = {{"BANK", 0}};
     spec.wave_archives = {{"WARC", 1}};
     spec.players = {{"PLAYER", 1}};
     spec.files = {
-        {sar_files::Bank(big_endian, bank), "", false},
+        {sar_files::Bank(big_endian, sar_files::OneRegionBank(2)), "", false},
         {sar_files::WaveArchive(big_endian, {sar_files::Wave(big_endian, once), sar_files::Wave(big_endian, looping)}),
          "", false}};
 

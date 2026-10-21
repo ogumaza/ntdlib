@@ -2,10 +2,21 @@
 
 #include "ntdlib/flipper/game_source.h"
 
+#include <cstdint>
 #include <map>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
 #include <utility>
+#include <vector>
+
+#include "xsflib/bytes.h"
+#include "xsflib/psf/program.h"
 
 #include "ntdlib/disc/header.h"
+#include "ntdlib/flipper/file_disc.h"
+#include "ntdlib/ppc/cpu.h"
 
 namespace ntdlib::flipper
 {

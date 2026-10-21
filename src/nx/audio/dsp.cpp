@@ -2,11 +2,13 @@
 
 #include "ntdlib/nx/audio/dsp.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <span>
 
 #include "ntdlib/fused.h"
 #include "ntdlib/wave/adpcm.h"

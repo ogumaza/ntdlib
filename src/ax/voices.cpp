@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <optional>
 
+#include "ntdlib/ax/ax.h"
+
 namespace ntdlib::ax
 {
 

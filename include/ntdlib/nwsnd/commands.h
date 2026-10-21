@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -66,6 +67,22 @@ struct Decoded
 // start without a label. Throws std::invalid_argument for a label or an entry past the end of `data`.
 Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffset> labels, const Grammar& grammar,
                        std::span<const uint32_t> entries = {});
+
+// One command that DecodeCommand read, and the bytes it takes. Its values are in the units of units.h. A jump's, a
+// call's or a track start's target is a byte offset into the bytecode.
+struct DecodedCommand
+{
+    commands::Command command;
+    uint32_t size = 0;
+};
+
+// Reads the command at byte offset `at` of `data` as the console's sequence player parses it. Returns nothing when the
+// command runs past the end of `data`.
+std::optional<DecodedCommand> DecodeCommand(std::span<const uint8_t> data, uint32_t at, const Grammar& grammar);
+
+// Whether a track goes on to the next command after `command`. An unconditional jump, return or end ends it, and so
+// does a conditional end where the grammar's ends ignore the condition.
+bool FallsThrough(const commands::Command& command, const Grammar& grammar);
 
 // The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
 // the end.

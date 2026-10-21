@@ -18,7 +18,6 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/rsar/reference.h"
 #include "xsflib/binary.h"
 
 namespace ntdlib::rsar

@@ -14,10 +14,12 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sar/wave_file.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
+#include "ntdlib/sar/wave_file.h"
 
 namespace ntdlib::sar
 {
@@ -577,6 +579,26 @@ WaveFile ConvertWave(const WaveFile& wave, Flavor flavor, uint32_t version)
         {
             channel.samples.resize(bytes);
         }
+        for (std::size_t k = 0; other_order && k + 1 < channel.samples.size(); k += 2)
+        {
+            std::swap(channel.samples[k], channel.samples[k + 1]);
+        }
+    }
+
+    return converted;
+}
+
+StreamFile ConvertStream(const StreamFile& stream, Flavor flavor, uint32_t version)
+{
+    CheckFlavors(stream.flavor, flavor, "a stream");
+
+    StreamFile converted = stream;
+    converted.flavor = flavor;
+    converted.version = version;
+    const bool other_order =
+        stream.encoding == WaveEncoding::kPcm16 && (stream.flavor == Flavor::kCafe) != (flavor == Flavor::kCafe);
+    for (StreamFile::Channel& channel : converted.channels)
+    {
         for (std::size_t k = 0; other_order && k + 1 < channel.samples.size(); k += 2)
         {
             std::swap(channel.samples[k], channel.samples[k + 1]);

@@ -2,16 +2,19 @@
 
 // Tests of the search for a sound archive's tables, of their replacement and of new items (ntdlib/sar/tables.h), in
 // each flavor's byte order. The tests build archives as the header describes. The places that they expect are worked
-// out by hand. The tests of new items build their archives with ntdlib/testing/sar_tools.h.
+// out by hand. The tests of new items build their archives with ntdlib/testing/sar_tools.h. So do the tests of the
+// places of optional values. sar_tools.h takes the options out of the entries, and WithValuePlaces has to put them back
+// as sar_tools.h lays them out.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
+#include <map>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -20,12 +23,13 @@
 
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/info_block.h"
+#include "ntdlib/sar/layout.h"
 #include "ntdlib/sar/string_block.h"
 #include "ntdlib/sar/tables.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sar_tools.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -35,19 +39,26 @@ using ntdlib::sar::InfoBlock;
 using ntdlib::sar::ItemId;
 using ntdlib::sar::NewBank;
 using ntdlib::sar::NewSequenceSound;
+using ntdlib::sar::NewStreamSound;
 using ntdlib::sar::NewWaveArchive;
 using ntdlib::sar::NewWaveSound;
 using ntdlib::sar::SoundArchive;
 using ntdlib::sar::SoundInfo;
 using ntdlib::sar::StringBlock;
 using ntdlib::sar::TablesOf;
+using ntdlib::sar::TableValuePlaces;
+using ntdlib::sar::ValuePlaces;
 using ntdlib::sar::WithBankLists;
 using ntdlib::sar::WithNewBank;
+using ntdlib::sar::WithNewExternalFile;
 using ntdlib::sar::WithNewFile;
 using ntdlib::sar::WithNewSequenceSound;
+using ntdlib::sar::WithNewStreamSound;
 using ntdlib::sar::WithNewWaveArchive;
 using ntdlib::sar::WithNewWaveSounds;
 using ntdlib::sar::WithTables;
+using ntdlib::sar::WithValuePlaces;
+using ntdlib::sar::WriteTableValues;
 
 namespace sar_files = ntdlib::testing::sar_files;
 namespace sar_tools = ntdlib::testing::sar_tools;
@@ -90,8 +101,8 @@ std::vector<uint8_t> ExternalFileEntry(Flavor flavor)
     std::vector<uint8_t> entry(20);
     Store(entry, 0, flavor, 0x220D, 2);
     Store(entry, 4, flavor, 12, 4);
-    const std::string name = "a.bin";
-    std::ranges::copy(name, entry.begin() + 12);
+    const std::string kName = "a.bin";
+    std::ranges::copy(kName, entry.begin() + 12);
 
     return entry;
 }
@@ -186,20 +197,7 @@ std::vector<uint8_t> TestArchive(Flavor flavor)
 template <class Error, class Call>
 bool Throws(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const Error&)
-    {
-        return true;
-    }
-    catch (...)
-    {
-        return false;
-    }
-
-    return false;
+    return !ErrorOf<Error>(call).empty();
 }
 
 // Checks that `archive` holds files 0 and 3 at `start0` and `start3`, as its tables say, and that its header gives its
@@ -303,32 +301,33 @@ void TestNoNames(Flavor flavor)
 
 void TestRefusals()
 {
-    const Flavor flavor = Flavor::kNx;
-    const std::vector<uint8_t> good = TestArchive(flavor);
-    const ntdlib::sar::Tables tables = TablesOf(good, flavor);
-    const std::optional<StringBlock> strings = StringBlock::Read(*tables.strings, flavor);
-    InfoBlock grown = InfoBlock::Read(tables.info, flavor);
+    const Flavor kFlavor = Flavor::kNx;
+    const std::vector<uint8_t> good = TestArchive(kFlavor);
+    const ntdlib::sar::Tables tables = TablesOf(good, kFlavor);
+    const std::optional<StringBlock> strings = StringBlock::Read(*tables.strings, kFlavor);
+    InfoBlock grown = InfoBlock::Read(tables.info, kFlavor);
     grown.sounds.push_back(std::vector<uint8_t>(24, 0xA1));
     auto refused = [&](const std::vector<uint8_t>& archive)
     {
-        return Throws<xsflib::FormatError>([&] { WithTables(archive, flavor, strings, grown); });
+        return Throws<xsflib::FormatError>([&] { WithTables(archive, kFlavor, strings, grown); });
     };
     auto with = [&](std::size_t at, uint32_t value, int size)
     {
         std::vector<uint8_t> changed = good;
-        Store(changed, at, flavor, value, size);
+        Store(changed, at, kFlavor, value, size);
+
         return changed;
     };
 
     // TablesOf refuses an archive without an INFO block, and one cut short in a table.
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { TablesOf(with(0x20, 0x2003, 2), flavor); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { TablesOf(with(0x20, 0x2003, 2), kFlavor); }));
     const std::vector<uint8_t> cut(good.begin(), good.begin() + 300);
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { TablesOf(cut, flavor); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { TablesOf(cut, kFlavor); }));
 
     // Tables of another flavor.
     InfoBlock cafe = grown;
     cafe.flavor = Flavor::kCafe;
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithTables(good, flavor, strings, cafe); }));
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithTables(good, kFlavor, strings, cafe); }));
 
     // Headers that list other blocks, or the blocks in another order.
     XSFLIB_CHECK(refused(with(0x10, 2, 2)));
@@ -345,13 +344,13 @@ void TestRefusals()
     XSFLIB_CHECK(refused(with(0x30, 480, 4)));
     std::vector<uint8_t> gap = with(0x30, 480, 4);
     gap.insert(gap.begin() + 448, 32, 0);
-    Store(gap, 0x0C, flavor, static_cast<uint32_t>(gap.size()), 4);
+    Store(gap, 0x0C, kFlavor, static_cast<uint32_t>(gap.size()), 4);
     XSFLIB_CHECK(refused(gap));
     XSFLIB_CHECK(refused(std::vector<uint8_t>(good.begin(), good.end() - 1)));
     XSFLIB_CHECK(refused(with(0x0C, 600, 4)));
     std::vector<uint8_t> longer = good;
     longer.push_back(0);
-    Store(longer, 0x0C, flavor, static_cast<uint32_t>(longer.size()), 4);
+    Store(longer, 0x0C, kFlavor, static_cast<uint32_t>(longer.size()), 4);
     XSFLIB_CHECK(refused(longer));
 
     // A FILE block with another magic or size, with bytes before its first file, or that ends before its first file's
@@ -360,18 +359,18 @@ void TestRefusals()
     XSFLIB_CHECK(refused(with(448 + 4, 100, 4)));
     XSFLIB_CHECK(refused(with(448 + 8 + 55, 1, 1)));
     std::vector<uint8_t> short_block(good.begin(), good.begin() + 480);
-    Store(short_block, 0x0C, flavor, 480, 4);
-    Store(short_block, 0x34, flavor, 32, 4);
-    Store(short_block, 448 + 4, flavor, 32, 4);
+    Store(short_block, 0x0C, kFlavor, 480, 4);
+    Store(short_block, 0x34, kFlavor, 32, 4);
+    Store(short_block, 448 + 4, kFlavor, 32, 4);
     XSFLIB_CHECK(refused(short_block));
 
     // Files whose locations lie outside their entries, or before the first file.
     InfoBlock outside = grown;
-    Store(outside.files[0], 4, flavor, 100, 4);
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithTables(good, flavor, strings, outside); }));
+    Store(outside.files[0], 4, kFlavor, 100, 4);
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithTables(good, kFlavor, strings, outside); }));
     InfoBlock before = grown;
-    Store(before.files[3], 16, flavor, 8, 4);
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithTables(good, flavor, strings, before); }));
+    Store(before.files[3], 16, kFlavor, 8, 4);
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithTables(good, kFlavor, strings, before); }));
 }
 
 // The archive of the tests of new items: sequence sounds A and B, which play file 0, wave sound C in file 1, a bank, a
@@ -438,20 +437,21 @@ bool SameValues(const SoundInfo& a, const SoundInfo& b)
 std::vector<std::pair<uint32_t, uint32_t>> StringIndices(const std::vector<uint8_t>& archive, Flavor flavor)
 {
     const InfoBlock info = InfoBlock::Read(TablesOf(archive, flavor).info, flavor);
-    const std::vector<std::vector<uint8_t>>* tables[] = {&info.sounds, &info.sound_groups, &info.banks,
-                                                         &info.wave_archives, &info.groups, &info.players};
-    const uint32_t types[] = {ntdlib::sar::kSoundItem, ntdlib::sar::kSoundGroupItem, ntdlib::sar::kBankItem,
-                              ntdlib::sar::kWaveArchiveItem, ntdlib::sar::kGroupItem, ntdlib::sar::kPlayerItem};
-    const std::size_t options[] = {20, 24, 12, 8, 4, 4};
+    const std::vector<std::vector<uint8_t>>* tables[] = {&info.sounds,        &info.sound_groups, &info.banks,
+                                                         &info.wave_archives, &info.groups,       &info.players};
+    const uint32_t kTypes[] = {ntdlib::sar::kSoundItem,       ntdlib::sar::kSoundGroupItem, ntdlib::sar::kBankItem,
+                               ntdlib::sar::kWaveArchiveItem, ntdlib::sar::kGroupItem,      ntdlib::sar::kPlayerItem};
+    const std::size_t kOptions[] = {20, 24, 12, 8, 4, 4};
     std::vector<std::pair<uint32_t, uint32_t>> indices;
     for (std::size_t k = 0; k < 6; ++k)
     {
         for (std::size_t i = 0; i < tables[k]->size(); ++i)
         {
             const std::vector<uint8_t>& entry = (*tables[k])[i];
-            if ((Load32(entry, options[k], flavor) & 1) != 0)
+            if ((Load32(entry, kOptions[k], flavor) & 1) != 0)
             {
-                indices.push_back({ItemId(types[k], static_cast<uint32_t>(i)), Load32(entry, options[k] + 4, flavor)});
+                indices.push_back(
+                    {ItemId(kTypes[k], static_cast<uint32_t>(i)), Load32(entry, kOptions[k] + 4, flavor)});
             }
         }
     }
@@ -502,8 +502,8 @@ void TestToolsArchive(Flavor flavor)
 void TestNewFile(Flavor flavor)
 {
     const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
-    const std::vector<uint8_t> bytes(100, 0x5A);
-    const ntdlib::sar::ArchiveWithFile first = WithNewFile(archive, flavor, bytes);
+    const std::vector<uint8_t> kBytes(100, 0x5A);
+    const ntdlib::sar::ArchiveWithFile first = WithNewFile(archive, flavor, kBytes);
     const ntdlib::sar::ArchiveWithFile second = WithNewFile(first.archive, flavor, std::vector<uint8_t>(3, 0x5B));
 
     XSFLIB_CHECK(first.file == 4 && second.file == 5);
@@ -511,7 +511,7 @@ void TestNewFile(Flavor flavor)
     {
         const SoundArchive read = Load(with->archive, flavor);
         XSFLIB_CHECK(read.FileCount() == with->file + 1);
-        XSFLIB_CHECK(std::ranges::equal(read.FileData(4), bytes));
+        XSFLIB_CHECK(std::ranges::equal(read.FileData(4), kBytes));
         const std::size_t start = read.FileOffset(with->file).value_or(1);
         XSFLIB_CHECK(start % AlignmentOf(flavor) == 0);
         XSFLIB_CHECK(with->archive.size() == start + read.FileData(with->file).size());
@@ -540,6 +540,120 @@ void TestNewFile(Flavor flavor)
     XSFLIB_CHECK(xsflib::Reader(entry, flavor == Flavor::kCafe).U16(0) == 0x220C);
     XSFLIB_CHECK(xsflib::Reader(entry, flavor == Flavor::kCafe).U16(12) == 0x1F00);
     XSFLIB_CHECK(ctr || (Load32(entry, 28, flavor) == 20 && Load32(entry, 32, flavor) == 0));
+}
+
+// A file in the middle takes longer bytes, and the files after it move by whole multiples of the alignment. Its old
+// bytes give the archive back. A shorter file moves them back. The last file takes bytes without zeros after them.
+void TestFileBytes(Flavor flavor)
+{
+    sar_files::ArchiveSpec spec = ItemsSpec(true);
+    spec.files.push_back({.group_only = true});
+    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, spec);
+    const SoundArchive before = Load(archive, flavor);
+    const std::vector<uint8_t> kLonger(100, 0x5A);
+    const std::vector<uint8_t> kShorter(3, 0x5B);
+    const std::vector<uint8_t> grown = ntdlib::sar::WithFileBytes(archive, flavor, 1, kLonger);
+    const std::vector<uint8_t> shrunk = ntdlib::sar::WithFileBytes(archive, flavor, 1, kShorter);
+    const std::vector<uint8_t> last = ntdlib::sar::WithFileBytes(archive, flavor, 3, kLonger);
+    const std::vector<uint8_t> old(before.FileData(1).begin(), before.FileData(1).end());
+
+    const std::size_t alignment = AlignmentOf(flavor);
+    const auto align = [alignment](std::size_t at)
+    {
+        return (at + alignment - 1) / alignment * alignment;
+    };
+    const std::size_t start = before.FileOffset(1).value_or(0);
+    const auto shift = [&](std::size_t size)
+    {
+        return static_cast<int64_t>(align(start + size)) - static_cast<int64_t>(align(start + old.size()));
+    };
+    for (const auto& [bytes, file, size] :
+         {std::tuple{&grown, 1u, kLonger.size()}, std::tuple{&shrunk, 1u, kShorter.size()},
+          std::tuple{&last, 3u, kLonger.size()}})
+    {
+        const SoundArchive read = Load(*bytes, flavor);
+        XSFLIB_CHECK(read.FileData(file).size() == size && read.FileData(file)[0] == (size == 3 ? 0x5B : 0x5A));
+        for (uint32_t i = 0; i < 4; ++i)
+        {
+            XSFLIB_CHECK(i == file || std::ranges::equal(read.FileData(i), before.FileData(i)));
+        }
+        XSFLIB_CHECK(Load32(*bytes, 0x0C, flavor) == bytes->size());
+        const std::size_t block = Load32(*bytes, 0x30, flavor);
+        XSFLIB_CHECK(Load32(*bytes, 0x34, flavor) == bytes->size() - block);
+        XSFLIB_CHECK(Load32(*bytes, block + 4, flavor) == bytes->size() - block);
+    }
+    const SoundArchive grown_read = Load(grown, flavor);
+    XSFLIB_CHECK(static_cast<int64_t>(grown_read.FileOffset(2).value_or(0)) ==
+                 static_cast<int64_t>(before.FileOffset(2).value_or(0)) + shift(kLonger.size()));
+    XSFLIB_CHECK(last.size() == before.FileOffset(3).value_or(0) + kLonger.size());
+    XSFLIB_CHECK(ntdlib::sar::WithFileBytes(grown, flavor, 1, old) == archive);
+    XSFLIB_CHECK(ntdlib::sar::WithFileBytes(shrunk, flavor, 1, old) == archive);
+
+    const auto refusal = [&](uint32_t file)
+    {
+        return ErrorOf<std::invalid_argument>([&] { ntdlib::sar::WithFileBytes(archive, flavor, file, kLonger); });
+    };
+    XSFLIB_CHECK(refusal(4) == "the archive's FILE block holds no copy of file 4");
+    XSFLIB_CHECK(refusal(5) == "the archive holds no file 5");
+
+    // Bytes other than zeros in the padding after file 2 keep it as it is.
+    std::vector<uint8_t> unpadded = archive;
+    unpadded[before.FileOffset(2).value_or(0) + before.FileData(2).size() + 1] = 1;
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { ntdlib::sar::WithFileBytes(unpadded, flavor, 2, kLonger); }) ==
+                 "an archive laid out another way: file 2 runs past its end, or bytes other than zeros pad it");
+}
+
+// Two file IDs that name the same bytes both take the new bytes. A file that lies inside another keeps the other file
+// as it is, unless the call gives the inner file a new offset. The inner file then moves there.
+void TestSharedFileBytes(Flavor flavor)
+{
+    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
+    const ntdlib::sar::Tables tables = TablesOf(archive, flavor);
+    const auto with_entry = [&](const std::vector<uint8_t>& entry)
+    {
+        InfoBlock info = InfoBlock::Read(tables.info, flavor);
+        info.files[3] = entry;
+
+        return WithTables(archive, flavor, StringBlock::Read(*tables.strings, flavor), std::move(info));
+    };
+    const std::vector<uint8_t> second = InfoBlock::Read(tables.info, flavor).files[2];
+    const std::vector<uint8_t> shared = with_entry(second);
+    std::vector<uint8_t> inner = second;
+    Store(inner, 16, flavor, Load32(second, 16, flavor) + 8, 4);
+    Store(inner, 20, flavor, 4, 4);
+    const std::vector<uint8_t> inside = with_entry(inner);
+    const std::vector<uint8_t> kLonger(100, 0x5A);
+
+    const SoundArchive read = Load(ntdlib::sar::WithFileBytes(shared, flavor, 2, kLonger), flavor);
+
+    XSFLIB_CHECK(std::ranges::equal(read.FileData(2), kLonger) && std::ranges::equal(read.FileData(3), kLonger));
+    XSFLIB_CHECK(std::ranges::equal(read.FileData(1), Load(archive, flavor).FileData(1)));
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { ntdlib::sar::WithFileBytes(inside, flavor, 2, kLonger); }) ==
+                 "an archive laid out another way: file 3 overlaps file 2");
+
+    std::vector<uint8_t> counted(100);
+    for (std::size_t k = 0; k < counted.size(); ++k)
+    {
+        counted[k] = static_cast<uint8_t>(k);
+    }
+    const std::vector<ntdlib::sar::InnerFile> kInnerFile = {{8, 16}};
+    const SoundArchive moved = Load(ntdlib::sar::WithFileBytes(inside, flavor, 2, counted, kInnerFile), flavor);
+    XSFLIB_CHECK(std::ranges::equal(moved.FileData(2), counted));
+    XSFLIB_CHECK(std::ranges::equal(moved.FileData(3), std::span(counted).subspan(16, 4)));
+    XSFLIB_CHECK(std::ranges::equal(moved.FileData(1), Load(archive, flavor).FileData(1)));
+    const auto refusal = [&](const std::vector<ntdlib::sar::InnerFile>& files)
+    {
+        return ErrorOf([&] { ntdlib::sar::WithFileBytes(inside, flavor, 2, counted, files); });
+    };
+    XSFLIB_CHECK(refusal({{4, 16}}) == "an archive laid out another way: file 3 overlaps file 2");
+    XSFLIB_CHECK(refusal({{8, 97}}) == "file 3 would run past the new bytes of file 2");
+
+    // A file that starts inside another and runs past its end overlaps it.
+    std::vector<uint8_t> across = inner;
+    Store(across, 20, flavor, static_cast<uint32_t>(Load(archive, flavor).FileData(2).size()), 4);
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>(
+                     [&] { ntdlib::sar::WithFileBytes(with_entry(across), flavor, 2, counted, kInnerFile); }) ==
+                 "an archive laid out another way: file 3 overlaps file 2");
 }
 
 // A new sound copies its model's values, and takes its name, its file, its start and its banks. Its name goes in after
@@ -589,8 +703,8 @@ void TestNewSequenceSound(Flavor flavor)
 void TestNewSoundWithoutNames(Flavor flavor)
 {
     const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(false));
-    const NewSequenceSound sound{.model = 1, .name = "", .file = 0, .start = 0, .banks = {}};
-    const std::vector<uint8_t> added = WithNewSequenceSound(archive, flavor, sound);
+    const NewSequenceSound kSound{.model = 1, .name = "", .file = 0, .start = 0, .banks = {}};
+    const std::vector<uint8_t> added = WithNewSequenceSound(archive, flavor, kSound);
 
     const SoundArchive read = Load(added, flavor);
     XSFLIB_CHECK(read.Sounds().size() == 4 && read.Sounds()[3].name == "SEQ_3" && read.Sounds()[3].file_id == 0);
@@ -605,12 +719,12 @@ void TestNewSoundWithoutNames(Flavor flavor)
 
 void TestNewSoundRefusals()
 {
-    const Flavor flavor = Flavor::kNx;
-    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
+    const Flavor kFlavor = Flavor::kNx;
+    const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, ItemsSpec(true));
     const uint32_t bank = ItemId(ntdlib::sar::kBankItem, 0);
     const auto refused = [&](const NewSequenceSound& sound, const std::vector<uint8_t>& in)
     {
-        return Throws<std::invalid_argument>([&] { WithNewSequenceSound(in, flavor, sound); });
+        return Throws<std::invalid_argument>([&] { WithNewSequenceSound(in, kFlavor, sound); });
     };
     const NewSequenceSound good{.model = 0, .name = "NEW", .file = 0, .start = 0, .banks = {bank}};
     XSFLIB_CHECK(!refused(good, archive));
@@ -639,26 +753,26 @@ void TestNewSoundRefusals()
     XSFLIB_CHECK(refused(sound, archive));
     sound.name = "BANK_A";
     XSFLIB_CHECK(refused(sound, archive));
-    XSFLIB_CHECK(refused(good, sar_tools::Archive(flavor, ItemsSpec(false))));
+    XSFLIB_CHECK(refused(good, sar_tools::Archive(kFlavor, ItemsSpec(false))));
 
     // A model whose details leave the start out takes only a start of 0.
-    const ntdlib::sar::Tables tables = TablesOf(archive, flavor);
-    const StringBlock strings = StringBlock::Read(*tables.strings, flavor);
-    InfoBlock info = InfoBlock::Read(tables.info, flavor);
-    const std::size_t details = Load32(info.sounds[0], 16, flavor);
-    Store(info.sounds[0], details + 12, flavor, 2, 4);
-    const std::vector<uint8_t> no_start = WithTables(archive, flavor, strings, info);
+    const ntdlib::sar::Tables tables = TablesOf(archive, kFlavor);
+    const StringBlock strings = StringBlock::Read(*tables.strings, kFlavor);
+    InfoBlock info = InfoBlock::Read(tables.info, kFlavor);
+    const std::size_t details = Load32(info.sounds[0], 16, kFlavor);
+    Store(info.sounds[0], details + 12, kFlavor, 2, 4);
+    const std::vector<uint8_t> no_start = WithTables(archive, kFlavor, strings, info);
     sound = good;
     sound.start = 1;
     XSFLIB_CHECK(refused(sound, no_start));
-    const SoundArchive read = Load(WithNewSequenceSound(no_start, flavor, good), flavor);
+    const SoundArchive read = Load(WithNewSequenceSound(no_start, kFlavor, good), kFlavor);
     XSFLIB_CHECK(read.Sounds().size() == 4 && read.Sounds()[3].start_offset == 0);
 
     // A model whose list of banks doesn't end its entry.
-    info = InfoBlock::Read(tables.info, flavor);
+    info = InfoBlock::Read(tables.info, kFlavor);
     info.sounds[0].resize(info.sounds[0].size() + 4);
-    const std::vector<uint8_t> longer = WithTables(archive, flavor, strings, info);
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithNewSequenceSound(longer, flavor, good); }));
+    const std::vector<uint8_t> longer = WithTables(archive, kFlavor, strings, info);
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithNewSequenceSound(longer, kFlavor, good); }));
 }
 
 // New wave sounds copy their models' values, and take their names, their file and their indices. A copy of a wave sound
@@ -688,16 +802,20 @@ void TestNewWaveSounds(Flavor flavor)
         expected.file_id = with.file;
         expected.wave_sound_index = 0;
         XSFLIB_CHECK(read.Sounds()[3].name == "WSD_NEW" && SameValues(read.Sounds()[3], expected));
-        const SoundInfo plain;
+        const SoundInfo kPlain;
         expected = before.Sounds()[0];
         expected.type = ntdlib::sar::SoundType::kWaveSound;
         expected.file_id = with.file;
         expected.wave_sound_index = 3;
         expected.banks = {};
-        expected.allocate_track_flags = plain.allocate_track_flags;
-        expected.start_offset = plain.start_offset;
-        expected.channel_priority = plain.channel_priority;
-        expected.release_priority_fix = plain.release_priority_fix;
+        expected.allocate_track_flags = kPlain.allocate_track_flags;
+        expected.start_offset = kPlain.start_offset;
+        if (flavor == Flavor::kCtr)
+        {
+            // ntdlib reads no wave sound's channel priority on the 3DS.
+            expected.channel_priority = kPlain.channel_priority;
+            expected.release_priority_fix = kPlain.release_priority_fix;
+        }
         XSFLIB_CHECK(read.Sounds()[4].name == "WSD_NEW2" && SameValues(read.Sounds()[4], expected));
     }
     CheckNames(added, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "WSD_NEW", "WSD_NEW2", "BANK_A", "GROUP_A", "PLAYER_A"});
@@ -728,15 +846,257 @@ void TestNewWaveSounds(Flavor flavor)
     XSFLIB_CHECK(info.sounds.size() == 5 && info.sounds[4] == converted);
 }
 
+// A new file outside the archive: its entry holds its path, as the tools write one. A second one follows the first.
+void TestNewExternalFile(Flavor flavor)
+{
+    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
+    const ntdlib::sar::ArchiveWithFile first = WithNewExternalFile(archive, flavor, "stream/STRM_NEW.bfstm");
+    const ntdlib::sar::ArchiveWithFile second = WithNewExternalFile(first.archive, flavor, "ab.bfstm");
+
+    XSFLIB_CHECK(first.file == 4 && second.file == 5);
+    const SoundArchive read = Load(second.archive, flavor);
+    XSFLIB_CHECK(read.FileCount() == 6 && read.FileData(4).empty() && read.FileData(5).empty());
+    // ntdlib reads no paths in an archive of the 3DS. The entry below holds the path there too.
+    XSFLIB_CHECK(flavor == Flavor::kCtr ||
+                 (read.ExternalPath(4) == "stream/STRM_NEW.bfstm" && read.ExternalPath(5) == "ab.bfstm"));
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        XSFLIB_CHECK(std::ranges::equal(read.FileData(i), Load(archive, flavor).FileData(i)));
+    }
+
+    // The entry: a reference to the path 12 bytes on, no options, then the path, a zero, and zeros up to 4 bytes.
+    const InfoBlock info = InfoBlock::Read(TablesOf(second.archive, flavor).info, flavor);
+    const std::string kPath = "stream/STRM_NEW.bfstm";
+    std::vector<uint8_t> expected(12 + 24);
+    Store(expected, 0, flavor, 0x220D, 2);
+    Store(expected, 4, flavor, 12, 4);
+    std::ranges::copy(kPath, expected.begin() + 12);
+    XSFLIB_CHECK(info.files.size() == 6 && info.files[4] == expected && info.files[5].size() == 12 + 12);
+    const ntdlib::sar::Tables tables = TablesOf(second.archive, flavor);
+    XSFLIB_CHECK(WithTables(second.archive, flavor, StringBlock::Read(*tables.strings, flavor),
+                            InfoBlock::Read(tables.info, flavor)) == second.archive);
+
+    // An empty path, and a path with a zero byte.
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithNewExternalFile(archive, flavor, ""); }));
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithNewExternalFile(archive, flavor, std::string("a\0b", 3)); }));
+}
+
+// A stream sound's details: three tracks that play, two of them, and four channels, with every value set.
+ntdlib::sar::StreamSoundInfo StreamDetails()
+{
+    ntdlib::sar::StreamSoundInfo stream;
+    stream.valid_tracks = 3;
+    stream.channel_count = 4;
+    stream.pitch = 1.25f;
+    stream.main_send = 100;
+    stream.aux_sends = {10, 20, 30};
+    for (uint8_t t = 0; t < 2; ++t)
+    {
+        ntdlib::sar::StreamTrackInfo track;
+        track.channels = {static_cast<uint8_t>(2 * t), static_cast<uint8_t>(2 * t + 1)};
+        track.volume = static_cast<uint8_t>(90 + t);
+        track.pan = static_cast<uint8_t>(30 + t);
+        track.span = static_cast<uint8_t>(1 + t);
+        track.flags = static_cast<uint8_t>(2 + t);
+        track.main_send = static_cast<uint8_t>(110 + t);
+        track.aux_sends = {1, 2, static_cast<uint8_t>(3 + t)};
+        track.low_pass = static_cast<uint8_t>(50 + t);
+        track.biquad_type = 1;
+        track.biquad_value = static_cast<uint8_t>(7 + t);
+        stream.tracks.push_back(std::move(track));
+    }
+
+    return stream;
+}
+
+// A new stream sound copies its model's values, and takes its name, its file and its details. A copy of a stream sound
+// keeps the fields of its model's details before its table of tracks. A copy of a sequence sound takes those of
+// version 2.2.0. A copy of a stream sound with the model's details holds the model's entry with another file and string
+// index.
+void TestNewStreamSound(Flavor flavor)
+{
+    sar_files::ArchiveSpec spec = ItemsSpec(true);
+    sar_files::SoundSpec model;
+    model.name = "STRM_D";
+    model.kind = sar_files::SoundSpec::kStream;
+    model.file = 3;
+    model.stream = StreamDetails();
+    spec.sounds.push_back(model);
+    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, spec);
+    const SoundArchive before = Load(archive, flavor);
+    const ntdlib::sar::ArchiveWithFile with = WithNewExternalFile(archive, flavor, "stream/STRM_NEW.bfstm");
+
+    NewStreamSound sound{.model = 3, .name = "STRM_NEW", .file = with.file, .stream = StreamDetails()};
+    sound.stream.valid_tracks = 1;
+    sound.stream.channel_count = 1;
+    sound.stream.tracks.resize(1);
+    sound.stream.tracks[0].channels = {0};
+    const std::vector<uint8_t> first = WithNewStreamSound(with.archive, flavor, sound);
+    const NewStreamSound copy{.model = 3, .name = "STRM_SAME", .file = 3, .stream = StreamDetails()};
+    const std::vector<uint8_t> second = WithNewStreamSound(first, flavor, copy);
+    const NewStreamSound from_sequence{.model = 0, .name = "STRM_SEQ", .file = with.file, .stream = StreamDetails()};
+    const std::vector<uint8_t> third = WithNewStreamSound(second, flavor, from_sequence);
+
+    const SoundArchive read = Load(third, flavor);
+    XSFLIB_CHECK(read.Sounds().size() == 7);
+    for (std::size_t i = 0; i < 4 && read.Sounds().size() == 7; ++i)
+    {
+        XSFLIB_CHECK(read.Sounds()[i].name == before.Sounds()[i].name);
+        XSFLIB_CHECK(SameValues(read.Sounds()[i], before.Sounds()[i]) &&
+                     read.Sounds()[i].stream == before.Sounds()[i].stream);
+    }
+    if (read.Sounds().size() == 7)
+    {
+        SoundInfo expected = before.Sounds()[3];
+        expected.file_id = with.file;
+        XSFLIB_CHECK(read.Sounds()[4].name == "STRM_NEW" && SameValues(read.Sounds()[4], expected) &&
+                     read.Sounds()[4].stream == sound.stream);
+        XSFLIB_CHECK(read.Sounds()[5].name == "STRM_SAME" && SameValues(read.Sounds()[5], before.Sounds()[3]) &&
+                     read.Sounds()[5].stream == copy.stream);
+        expected = before.Sounds()[0];
+        expected.type = ntdlib::sar::SoundType::kStream;
+        expected.file_id = with.file;
+        const SoundInfo kPlain;
+        expected.banks = {};
+        expected.allocate_track_flags = kPlain.allocate_track_flags;
+        expected.start_offset = kPlain.start_offset;
+        expected.channel_priority = kPlain.channel_priority;
+        expected.release_priority_fix = kPlain.release_priority_fix;
+        XSFLIB_CHECK(read.Sounds()[6].name == "STRM_SEQ" && SameValues(read.Sounds()[6], expected) &&
+                     read.Sounds()[6].stream == from_sequence.stream);
+    }
+    CheckNames(
+        third, flavor,
+        {"SEQ_A", "SEQ_B", "WSD_C", "STRM_D", "STRM_NEW", "STRM_SAME", "STRM_SEQ", "BANK_A", "GROUP_A", "PLAYER_A"});
+
+    // The copy with the model's details holds the model's entry, with the new string index. The copy of the sequence
+    // sound holds the same details: those of 2.2.0.
+    const InfoBlock old_info = InfoBlock::Read(TablesOf(archive, flavor).info, flavor);
+    const InfoBlock info = InfoBlock::Read(TablesOf(third, flavor).info, flavor);
+    std::vector<uint8_t> same = old_info.sounds[3];
+    Store(same, 24, flavor, 5, 4);
+    XSFLIB_CHECK(info.sounds.size() == 7 && info.sounds[5] == same);
+    const std::size_t details = Load32(same, 16, flavor);
+    const std::size_t sequence_details = Load32(info.sounds[6], 16, flavor);
+    XSFLIB_CHECK(info.sounds.size() == 7 && std::ranges::equal(std::span(same).subspan(details),
+                                                               std::span(info.sounds[6]).subspan(sequence_details)));
+}
+
+// A new stream sound in an archive of 2.0.0 holds no pitch and no sends, and one of 2.1.0 holds no reference to
+// nothing. A copy of a stream sound keeps its model's fields before the table of tracks, whatever the version.
+void TestNewStreamSoundVersions(Flavor flavor)
+{
+    for (const uint32_t version : {0x00020000u, 0x00020100u})
+    {
+        sar_files::ArchiveSpec spec = ItemsSpec(true);
+        sar_files::SoundSpec model;
+        model.name = "STRM_D";
+        model.kind = sar_files::SoundSpec::kStream;
+        model.file = 3;
+        model.stream = StreamDetails();
+        spec.sounds.push_back(model);
+        std::vector<uint8_t> archive = sar_tools::Archive(flavor, spec);
+        Store(archive, 8, flavor, version, 4);
+        const NewStreamSound sound{.model = 0, .name = "STRM_NEW", .file = 0, .stream = StreamDetails()};
+        const std::vector<uint8_t> added = WithNewStreamSound(archive, flavor, sound);
+        const SoundArchive read = Load(added, flavor);
+        ntdlib::sar::StreamSoundInfo expected = StreamDetails();
+        if (version < 0x00020100)
+        {
+            expected.pitch = 1.0f;
+            expected.main_send = 127;
+            expected.aux_sends = {};
+            for (ntdlib::sar::StreamTrackInfo& track : expected.tracks)
+            {
+                track.main_send = 127;
+                track.aux_sends = {};
+                track.low_pass = 64;
+                track.biquad_type = 0;
+                track.biquad_value = 0;
+            }
+        }
+        XSFLIB_CHECK(read.Sounds().size() == 5 && read.Sounds()[4].stream == expected);
+
+        // The table of tracks follows 16 bytes of details in 2.0.0, and 24 in 2.1.0. A track's info takes 12 bytes in
+        // 2.0.0, and 24 with its sends in 2.1.0.
+        const InfoBlock info = InfoBlock::Read(TablesOf(added, flavor).info, flavor);
+        const std::vector<uint8_t>& entry = info.sounds[4];
+        const std::size_t details = Load32(entry, 16, flavor);
+        const std::size_t table = details + Load32(entry, details + 8, flavor);
+        XSFLIB_CHECK(table == details + (version < 0x00020100 ? 16 : 24));
+        XSFLIB_CHECK(Load32(entry, table + 8, flavor) == 20u &&
+                     Load32(entry, table + 16, flavor) == (version < 0x00020100 ? 20u + 12 + 8 : 20u + 24 + 8 + 8));
+
+        // The model's details lay their fields out as 2.2.0 does: 36 bytes before the table. The copy keeps them.
+        const NewStreamSound copy{.model = 3, .name = "STRM_COPY", .file = 0, .stream = StreamDetails()};
+        const std::vector<uint8_t> copied = WithNewStreamSound(archive, flavor, copy);
+        const InfoBlock copy_info = InfoBlock::Read(TablesOf(copied, flavor).info, flavor);
+        const std::vector<uint8_t>& copy_entry = copy_info.sounds[4];
+        const std::size_t copy_details = Load32(copy_entry, 16, flavor);
+        XSFLIB_CHECK(Load32(copy_entry, copy_details + 8, flavor) == 36u &&
+                     Load32(copy_entry, copy_details + 28, flavor) == kNone &&
+                     Load32(copy_entry, copy_details + 32, flavor) == kNone);
+    }
+}
+
+void TestNewStreamSoundRefusals()
+{
+    const Flavor kFlavor = Flavor::kNx;
+    const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, ItemsSpec(true));
+    const auto refuses = [&](NewStreamSound sound)
+    {
+        return Throws<std::invalid_argument>([&] { WithNewStreamSound(archive, kFlavor, sound); });
+    };
+    const NewStreamSound sound{.model = 0, .name = "STRM_NEW", .file = 0, .stream = StreamDetails()};
+    XSFLIB_CHECK(!refuses(sound));
+    NewStreamSound other = sound;
+    other.model = 3;
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.file = 4;
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.name = "SEQ_A";
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.name = "";
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.stream.tracks.resize(9);
+    other.stream.valid_tracks = 1;
+    for (ntdlib::sar::StreamTrackInfo& track : other.stream.tracks)
+    {
+        track.channels = {0};
+    }
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.stream.valid_tracks = 4;
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.stream.tracks[1].channels = {4};
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.stream.tracks[1].channels = {};
+    XSFLIB_CHECK(refuses(other));
+    other = sound;
+    other.stream.channel_count = 17;
+    other.stream.tracks[1].channels.assign(17, 0);
+    XSFLIB_CHECK(refuses(other));
+    other.stream.tracks[1].channels.resize(16);
+    XSFLIB_CHECK(!refuses(other));
+    XSFLIB_CHECK(Throws<std::invalid_argument>(
+        [&] { WithNewStreamSound(sar_tools::Archive(Flavor::kCtr, ItemsSpec(true)), Flavor::kCtr, sound); }));
+}
+
 // In an archive without names, the entries keep their string indices. The new sounds take the ones after the sounds',
 // and the later ones move up.
 void TestNewWaveSoundsWithoutNames(Flavor flavor)
 {
     const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(false));
-    const std::vector<NewWaveSound> sounds = {{.model = 2, .name = "", .file = 1, .index = 1},
-                                              {.model = 1, .name = "", .file = 1, .index = 0}};
+    const std::vector<NewWaveSound> kSounds = {{.model = 2, .name = "", .file = 1, .index = 1},
+                                               {.model = 1, .name = "", .file = 1, .index = 0}};
 
-    const std::vector<uint8_t> added = WithNewWaveSounds(archive, flavor, sounds);
+    const std::vector<uint8_t> added = WithNewWaveSounds(archive, flavor, kSounds);
 
     const SoundArchive read = Load(added, flavor);
     XSFLIB_CHECK(read.Sounds().size() == 5 && read.Sounds()[3].name == "WSD_3" && read.Sounds()[4].name == "WSD_4");
@@ -753,65 +1113,65 @@ void TestNewWaveSoundsWithoutNames(Flavor flavor)
 
 void TestNewWaveSoundRefusals()
 {
-    const Flavor flavor = Flavor::kNx;
+    const Flavor kFlavor = Flavor::kNx;
     sar_files::ArchiveSpec spec = ItemsSpec(true);
     sar_files::SoundSpec stream;
     stream.name = "STRM_D";
     stream.kind = sar_files::SoundSpec::kStream;
     spec.sounds.push_back(stream);
-    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, spec);
+    const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, spec);
     const auto refused = [&](const std::vector<NewWaveSound>& sounds, const std::vector<uint8_t>& in)
     {
-        return Throws<std::invalid_argument>([&] { WithNewWaveSounds(in, flavor, sounds); });
+        return Throws<std::invalid_argument>([&] { WithNewWaveSounds(in, kFlavor, sounds); });
     };
-    const NewWaveSound good{.model = 2, .name = "NEW", .file = 1, .index = 0};
-    XSFLIB_CHECK(!refused({good}, archive));
-    XSFLIB_CHECK(WithNewWaveSounds(archive, flavor, {}) == archive);
+    const NewWaveSound kGood{.model = 2, .name = "NEW", .file = 1, .index = 0};
+    XSFLIB_CHECK(!refused({kGood}, archive));
+    XSFLIB_CHECK(WithNewWaveSounds(archive, kFlavor, {}) == archive);
 
     // Models past the table or of another kind, a file past the table, and names that are missing, taken or out of
     // place.
-    NewWaveSound sound = good;
+    NewWaveSound sound = kGood;
     sound.model = 4;
     XSFLIB_CHECK(refused({sound}, archive));
     sound.model = 3;
     XSFLIB_CHECK(refused({sound}, archive));
-    sound = good;
+    sound = kGood;
     sound.file = 4;
     XSFLIB_CHECK(refused({sound}, archive));
-    sound = good;
+    sound = kGood;
     sound.name = "";
     XSFLIB_CHECK(refused({sound}, archive));
     sound.name = "WSD_C";
     XSFLIB_CHECK(refused({sound}, archive));
     sound.name = "PLAYER_A";
     XSFLIB_CHECK(refused({sound}, archive));
-    XSFLIB_CHECK(refused({good, good}, archive));
-    XSFLIB_CHECK(refused({good}, sar_tools::Archive(flavor, ItemsSpec(false))));
+    XSFLIB_CHECK(refused({kGood, kGood}, archive));
+    XSFLIB_CHECK(refused({kGood}, sar_tools::Archive(kFlavor, ItemsSpec(false))));
 
     // A sequence sound whose details leave its channel priority out, and one whose list of banks doesn't end its entry.
-    const ntdlib::sar::Tables tables = TablesOf(archive, flavor);
-    const StringBlock strings = StringBlock::Read(*tables.strings, flavor);
-    InfoBlock info = InfoBlock::Read(tables.info, flavor);
-    const std::size_t details = Load32(info.sounds[0], 16, flavor);
-    Store(info.sounds[0], details + 12, flavor, 1, 4);
-    const std::vector<uint8_t> no_priority = WithTables(archive, flavor, strings, info);
-    sound = good;
+    const ntdlib::sar::Tables tables = TablesOf(archive, kFlavor);
+    const StringBlock strings = StringBlock::Read(*tables.strings, kFlavor);
+    InfoBlock info = InfoBlock::Read(tables.info, kFlavor);
+    const std::size_t details = Load32(info.sounds[0], 16, kFlavor);
+    Store(info.sounds[0], details + 12, kFlavor, 1, 4);
+    const std::vector<uint8_t> no_priority = WithTables(archive, kFlavor, strings, info);
+    sound = kGood;
     sound.model = 0;
-    XSFLIB_CHECK(
-        Throws<xsflib::FormatError>([&] { WithNewWaveSounds(no_priority, flavor, std::vector<NewWaveSound>{sound}); }));
-    info = InfoBlock::Read(tables.info, flavor);
+    XSFLIB_CHECK(Throws<xsflib::FormatError>(
+        [&] { WithNewWaveSounds(no_priority, kFlavor, std::vector<NewWaveSound>{sound}); }));
+    info = InfoBlock::Read(tables.info, kFlavor);
     info.sounds[0].resize(info.sounds[0].size() + 4);
-    const std::vector<uint8_t> longer = WithTables(archive, flavor, strings, info);
+    const std::vector<uint8_t> longer = WithTables(archive, kFlavor, strings, info);
     XSFLIB_CHECK(
-        Throws<xsflib::FormatError>([&] { WithNewWaveSounds(longer, flavor, std::vector<NewWaveSound>{sound}); }));
+        Throws<xsflib::FormatError>([&] { WithNewWaveSounds(longer, kFlavor, std::vector<NewWaveSound>{sound}); }));
 
     // A sequence sound whose details hold no start gives the channel priority in the start's place.
-    info = InfoBlock::Read(tables.info, flavor);
-    Store(info.sounds[0], details + 12, flavor, 2, 4);
-    const std::vector<uint8_t> no_start = WithTables(archive, flavor, strings, info);
+    info = InfoBlock::Read(tables.info, kFlavor);
+    Store(info.sounds[0], details + 12, kFlavor, 2, 4);
+    const std::vector<uint8_t> no_start = WithTables(archive, kFlavor, strings, info);
     const InfoBlock added = InfoBlock::Read(
-        TablesOf(WithNewWaveSounds(no_start, flavor, std::vector<NewWaveSound>{sound}), flavor).info, flavor);
-    XSFLIB_CHECK(added.sounds.size() == 5 && Load32(added.sounds[4], details + 12, flavor) == 5);
+        TablesOf(WithNewWaveSounds(no_start, kFlavor, std::vector<NewWaveSound>{sound}), kFlavor).info, kFlavor);
+    XSFLIB_CHECK(added.sounds.size() == 5 && Load32(added.sounds[4], details + 12, kFlavor) == 5);
 }
 
 // The wave archive and the index of each wave of a bank or a wave sound file.
@@ -928,17 +1288,17 @@ void TestNewItemsWithoutNames(Flavor flavor)
 // and names that are missing, taken or out of place.
 void TestNewItemRefusals()
 {
-    const Flavor flavor = Flavor::kNx;
-    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
-    const std::vector<uint8_t> unnamed = sar_tools::Archive(flavor, ItemsSpec(false));
+    const Flavor kFlavor = Flavor::kNx;
+    const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, ItemsSpec(true));
+    const std::vector<uint8_t> unnamed = sar_tools::Archive(kFlavor, ItemsSpec(false));
     const uint32_t wave_archive = ItemId(ntdlib::sar::kWaveArchiveItem, 0);
     const auto refused = [&](const NewBank& bank, const std::vector<uint8_t>& in)
     {
-        return Throws<std::invalid_argument>([&] { WithNewBank(in, flavor, bank); });
+        return Throws<std::invalid_argument>([&] { WithNewBank(in, kFlavor, bank); });
     };
     const auto refused_wave_archive = [&](const NewWaveArchive& added, const std::vector<uint8_t>& in)
     {
-        return Throws<std::invalid_argument>([&] { WithNewWaveArchive(in, flavor, added); });
+        return Throws<std::invalid_argument>([&] { WithNewWaveArchive(in, kFlavor, added); });
     };
     const NewBank good{.name = "NEW", .file = 0, .wave_archives = {wave_archive}};
     XSFLIB_CHECK(!refused(good, archive));
@@ -989,12 +1349,12 @@ void TestBankLists(Flavor flavor)
 // another kind, and an entry that its list doesn't end.
 void TestBankListRefusals()
 {
-    const Flavor flavor = Flavor::kNx;
-    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
+    const Flavor kFlavor = Flavor::kNx;
+    const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, ItemsSpec(true));
     const uint32_t bank = ItemId(ntdlib::sar::kBankItem, 0);
     const auto refused = [&](uint32_t sound, const std::vector<uint32_t>& list)
     {
-        return Throws<std::invalid_argument>([&] { WithBankLists(archive, flavor, {{sound, list}}); });
+        return Throws<std::invalid_argument>([&] { WithBankLists(archive, kFlavor, {{sound, list}}); });
     };
     XSFLIB_CHECK(!refused(0, {bank}));
 
@@ -1004,11 +1364,169 @@ void TestBankListRefusals()
     XSFLIB_CHECK(refused(0, {ItemId(ntdlib::sar::kBankItem, 1)}));
     XSFLIB_CHECK(refused(0, {ItemId(ntdlib::sar::kPlayerItem, 0)}));
 
-    const ntdlib::sar::Tables tables = TablesOf(archive, flavor);
-    InfoBlock info = InfoBlock::Read(tables.info, flavor);
+    const ntdlib::sar::Tables tables = TablesOf(archive, kFlavor);
+    InfoBlock info = InfoBlock::Read(tables.info, kFlavor);
     info.sounds[0].resize(info.sounds[0].size() + 4);
-    const std::vector<uint8_t> longer = WithTables(archive, flavor, StringBlock::Read(*tables.strings, flavor), info);
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithBankLists(longer, flavor, {{0, {bank}}}); }));
+    const std::vector<uint8_t> longer = WithTables(archive, kFlavor, StringBlock::Read(*tables.strings, kFlavor), info);
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithBankLists(longer, kFlavor, {{0, {bank}}}); }));
+}
+
+// The places of each sound's optional values in the archive of the tests of new items, in `flavor`: the pan and the
+// priorities of every sound, and the channel priority of the sequence sounds. ntdlib reads no 3DS sound's priorities.
+std::map<uint32_t, ValuePlaces> AllPlaces(Flavor flavor)
+{
+    const bool priority = flavor != Flavor::kCtr;
+
+    return {{0, {true, priority, true}}, {1, {true, priority, true}}, {2, {true, priority, false}}};
+}
+
+// The places of optional values. The sounds lose the options of their pan, their priorities and their channel
+// priority, and WithValuePlaces gives them back as the tools lay them out. The archive then reads as it did without
+// them, with each name. The old values give the archive back. An entry that holds the options keeps them. Each place
+// also comes back by itself, and the others stay out.
+void TestValuePlaces(Flavor flavor, bool names)
+{
+    const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(names));
+    const std::map<uint32_t, ValuePlaces> places = AllPlaces(flavor);
+    const std::vector<uint8_t> bare = sar_tools::WithoutValuePlaces(archive, flavor, places);
+    const std::vector<uint8_t> placed = WithValuePlaces(bare, flavor, places);
+
+    // Without the options, the reader reads a pan of 0, priorities of 64 and no release priority fix.
+    const SoundArchive old = Load(archive, flavor);
+    const SoundArchive without = Load(bare, flavor);
+    const SoundInfo& a = without.Sounds()[0];
+    const auto entries = [flavor](const std::vector<uint8_t>& bytes)
+    {
+        std::vector<std::size_t> sizes;
+        for (const std::vector<uint8_t>& entry : InfoBlock::Read(TablesOf(bytes, flavor).info, flavor).sounds)
+        {
+            sizes.push_back(entry.size());
+        }
+
+        return sizes;
+    };
+    const std::size_t priority = flavor == Flavor::kCtr ? 0 : 4;
+    const std::vector<std::size_t> full = entries(archive);
+    XSFLIB_CHECK(entries(bare) ==
+                 std::vector<std::size_t>({full[0] - 8 - priority, full[1] - 8 - priority, full[2] - 4 - priority}));
+    XSFLIB_CHECK(TableValuePlaces(bare, flavor) == std::vector<ValuePlaces>(3));
+    XSFLIB_CHECK(a.pan_mode == 0 && a.pan_curve == 0 && a.channel_priority == 64 && !a.release_priority_fix);
+    XSFLIB_CHECK(a.player_priority == 64 && a.actor_player_id == 0 && a.start_offset == 5);
+    XSFLIB_CHECK(a.banks == old.Sounds()[0].banks && a.volume == 90 && without.Sounds()[2].wave_sound_index == 2);
+
+    // The places come back, and the archive reads as it did without them.
+    const SoundArchive with = Load(placed, flavor);
+    XSFLIB_CHECK(TableValuePlaces(placed, flavor) == TableValuePlaces(archive, flavor));
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        XSFLIB_CHECK(SameValues(with.Sounds()[i], without.Sounds()[i]));
+        XSFLIB_CHECK(with.Sounds()[i].name == old.Sounds()[i].name);
+    }
+    XSFLIB_CHECK(with.FileCount() == 4 && with.FileData(3).size() == 16 && with.FileData(3)[0] == 0xF3);
+    if (names)
+    {
+        CheckNames(placed, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "BANK_A", "GROUP_A", "PLAYER_A"});
+    }
+
+    // The old values give the archive back, and the archive keeps its options.
+    std::vector<uint8_t> written = placed;
+    WriteTableValues(written, flavor, old.Sounds(), old.Players());
+    XSFLIB_CHECK(written == archive);
+    XSFLIB_CHECK(WithValuePlaces(archive, flavor, places) == archive);
+    XSFLIB_CHECK(WithValuePlaces(bare, flavor, {}) == bare);
+
+    // Each place by itself.
+    const std::vector<ValuePlaces> kEach = {{true, false, false}, {false, true, false}, {false, false, true}};
+    for (const ValuePlaces& one : kEach)
+    {
+        if (one.priority && flavor == Flavor::kCtr)
+        {
+            continue;
+        }
+
+        const std::vector<uint8_t> partly = WithValuePlaces(bare, flavor, {{0, one}});
+        const std::vector<ValuePlaces> held = TableValuePlaces(partly, flavor);
+        XSFLIB_CHECK(held[0] == one && held[1] == ValuePlaces() && held[2] == ValuePlaces());
+        XSFLIB_CHECK(SameValues(Load(partly, flavor).Sounds()[0], a));
+        XSFLIB_CHECK(sar_tools::WithoutValuePlaces(partly, flavor, {{0, one}}) == bare);
+    }
+}
+
+// WithValuePlaces refuses a sound past the table, a channel priority of a wave sound, a 3DS sound's priorities, an
+// unknown option, and details that don't follow the options.
+void TestValuePlaceRefusals()
+{
+    for (const Flavor flavor : kFlavors)
+    {
+        const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
+        const std::vector<uint8_t> bare = sar_tools::WithoutValuePlaces(archive, flavor, AllPlaces(flavor));
+        const auto refused = [&](uint32_t sound, const ValuePlaces& places)
+        {
+            return Throws<std::invalid_argument>([&] { WithValuePlaces(bare, flavor, {{sound, places}}); });
+        };
+        XSFLIB_CHECK(!refused(0, {true, false, true}) && !refused(2, {true, false, false}));
+        XSFLIB_CHECK(refused(3, {true, false, false}));
+        XSFLIB_CHECK(refused(2, {false, false, true}));
+        XSFLIB_CHECK(refused(0, {false, true, false}) == (flavor == Flavor::kCtr));
+    }
+
+    // Sound 0's entry with an option of bit 4, with its details at its start, and with an option of bit 2 in its
+    // details. Without the priorities, the sound's options hold its string index 24 bytes in, the pan's value 28 bytes
+    // in and the offset of the 3D settings 32 bytes in. The offset of the details lies 16 bytes in. Without the channel
+    // priority, the details' options hold the start 16 bytes into the details. The offset of the list of banks lies 4
+    // bytes into the details.
+    const Flavor kFlavor = Flavor::kNx;
+    const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, ItemsSpec(false));
+    const std::vector<uint8_t> bare = sar_tools::WithoutValuePlaces(archive, kFlavor, {{0, {false, true, true}}});
+    const auto changed = [&](auto change)
+    {
+        InfoBlock info = InfoBlock::Read(TablesOf(bare, kFlavor).info, kFlavor);
+        std::vector<uint8_t>& entry = info.sounds[0];
+        const auto add = [&](std::size_t at, uint32_t value)
+        {
+            Store(entry, at, kFlavor, Load32(entry, at, kFlavor) + value, 4);
+        };
+        change(entry, add);
+
+        return WithTables(bare, kFlavor, std::nullopt, info);
+    };
+    const auto add_unknown = [](std::vector<uint8_t>& entry, auto add)
+    {
+        entry.insert(entry.begin() + 32, 4, 0);
+        add(20, 0x10);
+        add(36, 4);
+        add(16, 4);
+    };
+    const std::vector<uint8_t> unknown = changed(add_unknown);
+    const auto add_unknown_detail = [&](std::vector<uint8_t>& entry, auto add)
+    {
+        const std::size_t details = Load32(entry, 16, kFlavor);
+        entry.insert(entry.begin() + static_cast<std::ptrdiff_t>(details + 20), 4, 0);
+        add(details + 12, 4);
+        add(details + 4, 4);
+    };
+    const std::vector<uint8_t> unknown_detail = changed(add_unknown_detail);
+    const std::vector<uint8_t> early = changed([](std::vector<uint8_t>&, auto add) { add(16, 0u - 40u); });
+    const std::vector<uint8_t> past = changed([](std::vector<uint8_t>&, auto add) { add(16, 1000); });
+    const std::vector<uint8_t> settings = changed([](std::vector<uint8_t>&, auto add) { add(32, 0u - 20u); });
+    for (const std::vector<uint8_t>* other : {&unknown, &unknown_detail})
+    {
+        XSFLIB_CHECK(SameValues(Load(*other, kFlavor).Sounds()[0], Load(bare, kFlavor).Sounds()[0]));
+    }
+
+    const auto refused = [&](const std::vector<uint8_t>& bytes, const ValuePlaces& places)
+    {
+        return Throws<xsflib::FormatError>([&] { WithValuePlaces(bytes, kFlavor, {{0, places}}); });
+    };
+    XSFLIB_CHECK(!refused(bare, {false, true, true}));
+    XSFLIB_CHECK(refused(unknown, {false, true, false}) && !refused(unknown, {false, false, true}));
+    XSFLIB_CHECK(refused(unknown_detail, {false, false, true}) && !refused(unknown_detail, {false, true, false}));
+    XSFLIB_CHECK(refused(early, {false, true, false}) && !refused(early, {true, false, false}));
+    XSFLIB_CHECK(refused(past, {false, true, false}) && refused(settings, {false, true, false}));
+
+    // An archive cut short comes back as it is when its entries hold the places.
+    const std::vector<uint8_t> cut(archive.begin(), archive.end() - 4);
+    XSFLIB_CHECK(WithValuePlaces(cut, kFlavor, AllPlaces(kFlavor)) == cut);
 }
 
 } // namespace
@@ -1024,28 +1542,32 @@ int main()
         TestNoNames(flavor);
         TestToolsArchive(flavor);
         TestNewFile(flavor);
+        TestFileBytes(flavor);
+        TestSharedFileBytes(flavor);
         TestNewSequenceSound(flavor);
         TestNewSoundWithoutNames(flavor);
         TestNewWaveSounds(flavor);
         TestNewWaveSoundsWithoutNames(flavor);
+        TestNewExternalFile(flavor);
+        if (flavor != Flavor::kCtr)
+        {
+            TestNewStreamSound(flavor);
+            TestNewStreamSoundVersions(flavor);
+        }
         TestNewBank(flavor);
         TestNewWaveArchive(flavor);
         TestNewItemsWithoutNames(flavor);
         TestBankLists(flavor);
+        TestValuePlaces(flavor, true);
+        TestValuePlaces(flavor, false);
     }
     TestRefusals();
     TestNewSoundRefusals();
     TestNewWaveSoundRefusals();
+    TestNewStreamSoundRefusals();
     TestNewItemRefusals();
     TestBankListRefusals();
+    TestValuePlaceRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Tables tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Tables");
 }

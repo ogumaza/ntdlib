@@ -227,6 +227,16 @@ private:
         int count = 0;
     };
 
+    // The steps of an address register after an access, by the two bits that encode them: none, a decrement, an
+    // increment, or an add of its index register.
+    enum AddressStep : int
+    {
+        kNoStep,
+        kDecrementStep,
+        kIncrementStep,
+        kAddIndexStep,
+    };
+
     // An instruction's handler (instructions.cpp). A table maps each instruction word to its handler. Most words go to
     // Execute. The words that AX's microcodes run most have dedicated handlers. In those handlers the compiler folds
     // away every test of the instruction's kind.
@@ -277,16 +287,7 @@ private:
     uint16_t AddIndex(uint16_t address, uint16_t index, uint16_t wrap) const;
     uint16_t SubtractIndex(uint16_t address, uint16_t index, uint16_t wrap) const;
 
-    // The steps of an address register after an access, by the two bits that encode them: none, a decrement, an
-    // increment, or an add of its index register. SteppedAddress gives $arI after its step.
-    enum AddressStep : int
-    {
-        kNoStep,
-        kDecrementStep,
-        kIncrementStep,
-        kAddIndexStep,
-    };
-
+    // SteppedAddress gives $arI after its step.
     uint16_t SteppedAddress(int i, int step) const;
 
     void RaiseException(int number);

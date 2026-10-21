@@ -9,10 +9,14 @@
 #include <cstdint>
 #include <vector>
 
-#include "ntdlib/sequence_export/passes.h"
-#include "ntdlib/sequence_export/performance.h"
 #include "seqlib/midi/performance_writer.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/sequence_export/envelope.h"
+#include "ntdlib/sequence_export/filter.h"
+#include "ntdlib/sequence_export/passes.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/settings.h"
 
 using namespace ntdlib::sequence_export;
 

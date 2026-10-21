@@ -4,24 +4,24 @@
 // each bank and wave sound file in both byte orders from one spec. A file of one order has to become the file of the
 // other, byte for byte. The readers of formats.h read the files back.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 #include <stdexcept>
-#include <utility>
 #include <vector>
+
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
 
 #include "ntdlib/sar/byte_order.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/testing/sar_files.h"
-#include "xsflib/binary.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -41,16 +41,7 @@ constexpr uint32_t kWaveSoundVersion = 0x00010100;
 template <typename Error, typename Call>
 bool Throws(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const Error&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<Error>(call).empty();
 }
 
 ntdlib::sar::Options Options(Flavor flavor)
@@ -464,13 +455,5 @@ int main()
     TestAdpcmWave();
     TestWaveArchive();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Byte order tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Byte order");
 }

@@ -27,8 +27,10 @@
 namespace ntdlib::sequence_export
 {
 
-// Builds the instrument's global zone. The engine has no velocity-to-filter modulator. The zone disables the default
-// one by overriding both the SoundFont 2.01 and FluidSynth versions.
+// Builds the instrument's global zone. The zone starts with seqlib's kGlobalZoneModulators. The engine has no
+// velocity-to-filter modulator. The first two of those modulators disable the default one by overriding both the
+// SoundFont 2.01 and FluidSynth versions. The fourth, kCc10ToPan, gives CC10 the pan range that most synthesizers give
+// it.
 //
 // CC1 holds LFO depth / 2. The resulting depth is MML depth / 128 times `range` semitones for pitch, or 6 * range dB
 // for volume. When the LFO is omitted, the zone disables the default CC1-to-vibrato modulator too.

@@ -5,11 +5,14 @@
 #include "ntdlib/wave/decode.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <utility>
+#include <vector>
+
+#include "xsflib/binary.h"
 
 #include "ntdlib/wave/adpcm.h"
 #include "ntdlib/wave/pcm.h"
-#include "xsflib/binary.h"
 
 namespace ntdlib::wave
 {

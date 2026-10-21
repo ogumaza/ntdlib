@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "ntdlib/nx/audio/dsp.h"
 #include "nx/audio/arithmetic.h"
 
 namespace ntdlib::nx::audio

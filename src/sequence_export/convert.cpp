@@ -19,12 +19,19 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/conversion.h"
-#include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/performer.h"
-#include "ntdlib/sequence_export/sfz.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/presets.h"
+#include "seqlib/sf2/soundfont.h"
+
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/conversion.h"
+#include "ntdlib/sequence_export/instruments.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/performer.h"
+#include "ntdlib/sequence_export/resampling.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sequence_export/sfz.h"
+#include "ntdlib/wave/decode.h"
 #include "sequence_export/sf2_build.h"
 #include "sequence_export/zone_low_pass.h"
 
@@ -216,7 +223,7 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
 
     sf2::SoundFont& sf = builder.Result();
     std::string comment = "Converted by " + program + " from sequence " + sound.name + ". Banks:";
-    for (int slot = 0; slot < 4; slot++)
+    for (int slot = 0; slot < sar::kBankSlots; slot++)
     {
         if (banks.GetBank(slot))
         {
@@ -267,10 +274,10 @@ BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, c
 
     // Each instrument becomes a preset at its program, with a track's starting settings. Those set no filter. The
     // presets therefore need no performance for the fit of their low-passes (ZoneLowPass).
-    const Performance none;
+    const Performance kNone;
     const auto build = [&](std::span<const uint32_t> run)
     {
-        SoundFontBuilder builder(banks, quieter, none, settings);
+        SoundFontBuilder builder(banks, quieter, kNone, settings);
         for (const uint32_t p : run)
         {
             builder.Add(p, StartingPresetKey(p, settings), "Program " + std::to_string(p));

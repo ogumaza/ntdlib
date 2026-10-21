@@ -11,16 +11,20 @@
 #include <optional>
 #include <regex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
+#include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/consoles.h"
 #include "ntdlib/sequence_export/frame.h"
+#include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/testing/sar_files.h"
 #include "temp_folder.h"
-#include "xsflib/testing/check.h"
 
 using namespace ntdlib::sequence_export;
 using ntdlib::testing::TempFolder;
@@ -274,6 +278,7 @@ void TestOptions()
     auto error = [&](std::vector<std::string> args)
     {
         args.insert(args.begin(), "fake");
+
         return ErrorOf([&]() { ParseOptions<PerformOptions>(args, var); });
     };
     XSFLIB_CHECK(error({"--bad"}) == "unknown option --bad");

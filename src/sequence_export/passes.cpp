@@ -3,12 +3,21 @@
 #include "ntdlib/sequence_export/passes.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <map>
+#include <optional>
 #include <set>
+#include <utility>
+#include <vector>
+
+#include "seqlib/midi/performance.h"
 
 #include "ntdlib/sequence_export/filter.h"
+#include "ntdlib/sequence_export/performance_base.h"
 
 namespace ntdlib::sequence_export
 {
@@ -335,6 +344,7 @@ void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartS
         {
             continue;
         }
+
         const auto next = next_pass.settings.find({t, next_pass.parts[track], kind});
         if (next == next_pass.settings.end() || !SameSetting(next->second, at_start))
         {

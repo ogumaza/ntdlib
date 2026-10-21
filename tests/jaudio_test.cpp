@@ -9,16 +9,18 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
+
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
 
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
 
 namespace jaudio = ntdlib::jaudio;
 namespace files = ntdlib::testing::jaudio_files;
@@ -159,14 +161,14 @@ void TestFirstLayouts()
 
     // The command list: "AA_<", bst and bstn with two arguments each, bms with three, baac with two, ws with three,
     // then ">_AA". The table, the names, the sequence block, baac's block and the wave system follow it.
-    const uint32_t table_at = 4 + 12 + 12 + 16 + 12 + 16 + 4;
-    const auto names_at = static_cast<uint32_t>(table_at + blocks.table.size());
+    const uint32_t kTableAt = 4 + 12 + 12 + 16 + 12 + 16 + 4;
+    const auto names_at = static_cast<uint32_t>(kTableAt + blocks.table.size());
     const auto sequence_at = static_cast<uint32_t>(names_at + blocks.names.size());
     const uint32_t more_at = sequence_at + 4;
     const auto ws_at = static_cast<uint32_t>(more_at + more.Size());
     files::Bytes a;
     a.Tag("AA_<");
-    a.Tag("bst ").U32(table_at).U32(names_at);
+    a.Tag("bst ").U32(kTableAt).U32(names_at);
     a.Tag("bstn").U32(names_at).U32(sequence_at);
     a.Tag("bms ").U32(0x01000000).U32(sequence_at).U32(more_at);
     a.Tag("baac").U32(more_at).U32(ws_at);

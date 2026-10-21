@@ -119,19 +119,6 @@ struct Settings
     // ends just short of it. A pass that ends this many milliseconds before 10 s counts as reaching it: 1.0 (W, S),
     // 0.0 (3, R).
     double early_ticks_ms = 1.0;
-
-    // The loop and end rules. Every console's settings turn all three on.
-    //
-    // A jump back inside a call, after a conditional command that can leave it, isn't the sequence's loop
-    // (Performer::Leavable).
-    bool subroutine_loop_rule = true;
-
-    // A track that runs the core's limit of commands in a tick without a wait (the policy's kParseLimit) resumes in the
-    // next tick. It stops once it has run that way for 10 s. On the Wii, the parse limit ends such a track at once.
-    bool stop_runaway_tracks = true;
-
-    // A sequence that finishes drops its loop.
-    bool drop_loop_when_finished = true;
 };
 
 } // namespace ntdlib::sequence_export

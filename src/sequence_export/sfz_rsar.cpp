@@ -6,13 +6,19 @@
 // rates. The MIDI note-offs give that release. The regions select no interpolation.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/rsar_instruments.h"
-#include "ntdlib/sequence_export/sfz.h"
+#include "seqlib/midi/performance_writer.h"
 
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/resampling.h"
+#include "ntdlib/sequence_export/rsar_instruments.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sequence_export/sfz.h"
 #include "sequence_export/sfz_track.h"
 #include "sequence_export/wii_pan.h"
 

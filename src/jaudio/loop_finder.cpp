@@ -117,8 +117,8 @@ void LoopFinder::Command(Track& track, const TrackEvent& event)
     }
 
     const auto& idle = track.idle;
-    if (idle && (event.depth > idle->depth ||
-                 (event.depth == idle->depth && event.at >= idle->start && event.at < idle->end)))
+    if (idle &&
+        (event.depth > idle->depth || (event.depth == idle->depth && event.at >= idle->start && event.at < idle->end)))
     {
         return;
     }

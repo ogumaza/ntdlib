@@ -18,6 +18,7 @@
 #include "xsflib/testing/check.h"
 
 #include "disc_files.h"
+#include "ntdlib/disc/error.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
 #include "ntdlib/disc/source.h"
@@ -123,20 +124,16 @@ std::string Outcome(const fs::path& path, const disc::GameOptions& options)
         return *error;
     }
 
-    try
+    const auto read_every_file = [&]
     {
         for (const disc::GameFile& file : game.files)
         {
             std::vector<uint8_t> data;
             game.read_file(file.path, data);
         }
-    }
-    catch (const disc::Error& e)
-    {
-        return e.what();
-    }
-
-    return "read";
+    };
+    const std::string error = xsflib::testing::ErrorOf<disc::Error>(read_every_file);
+    return error.empty() ? "read" : error;
 }
 
 void TestPlainImage()
@@ -209,18 +206,18 @@ void TestDefaults()
     const TempFolder folder("disc_options_test");
     std::vector<uint8_t> rvz(0x100, 0);
     std::copy_n("RVZ\x01", 4, rvz.begin());
-    const disc::GameOptions options{disc::Console::kGameCube, "xyz"};
+    const disc::GameOptions kOptions{disc::Console::kGameCube, "xyz"};
 
     disc::GameFiles game;
     const std::optional<std::string> error =
-        disc::LoadGame(folder.Write("past_end.iso", GameCubeImage(3, 0x10000)), game, options);
+        disc::LoadGame(folder.Write("past_end.iso", GameCubeImage(3, 0x10000)), game, kOptions);
     std::vector<uint8_t> baa;
     const bool read = !error && game.read_file("a.baa", baa);
 
     Check(read && baa.size() == 0x10000 && baa[0x20] == 0, "by default, a read past the image's end gives zeros");
-    Check(Outcome(folder.Write("rvz.bin", rvz), options) == "it isn't a GameCube disc image",
+    Check(Outcome(folder.Write("rvz.bin", rvz), kOptions) == "it isn't a GameCube disc image",
           "without an opener, a container reads as a plain image");
-    Check(Outcome(folder.Write("count.iso", GameCubeImage(1000)), options) == "the disc's file system is damaged",
+    Check(Outcome(folder.Write("count.iso", GameCubeImage(1000)), kOptions) == "the disc's file system is damaged",
           "the default message for a damaged table");
 
     disc::GameOptions null_opener{disc::Console::kGameCube, "xyz"};
@@ -286,7 +283,7 @@ void TestUnmarkedDisc()
 {
     const TempFolder folder("disc_options_test");
     const disc::GameOptions options = PlainOnly();
-    const disc::GameOptions defaults{disc::Console::kGameCube, "xyz"};
+    const disc::GameOptions kDefaults{disc::Console::kGameCube, "xyz"};
     const fs::path unmarked = folder.Write("unmarked.iso", UnmarkedImage());
 
     disc::GameFiles game;
@@ -294,7 +291,7 @@ void TestUnmarkedDisc()
     Check(!error && game.files.size() == 2 && game.GameId() == std::string("G") + std::string(5, '\0'),
           "an unmarked image loads: " + error.value_or(""));
     Check(Outcome(unmarked, options) == "read", "an unmarked image's files read");
-    error = disc::LoadGame(unmarked, game, defaults);
+    error = disc::LoadGame(unmarked, game, kDefaults);
     Check(!error && game.dol == SmallDol() && game.region == 0u,
           "an unmarked image's system files read: " + error.value_or(""));
 
@@ -318,21 +315,21 @@ void TestUnmarkedDisc()
     std::vector<uint8_t> short_image = UnmarkedImage();
     short_image.resize(0x100);
 
-    const std::string neither = "not a start-up archive or a GameCube disc image";
-    Check(Outcome(folder.Write("count.iso", UnmarkedImage(1000)), options) == neither, "an unmarked damaged table");
-    Check(Outcome(folder.Write("empty_dol.iso", empty_dol), options) == neither, "an unmarked image without a DOL");
-    Check(Outcome(folder.Write("entry.iso", entry_outside), options) == neither,
+    const std::string kNeither = "not a start-up archive or a GameCube disc image";
+    Check(Outcome(folder.Write("count.iso", UnmarkedImage(1000)), options) == kNeither, "an unmarked damaged table");
+    Check(Outcome(folder.Write("empty_dol.iso", empty_dol), options) == kNeither, "an unmarked image without a DOL");
+    Check(Outcome(folder.Write("entry.iso", entry_outside), options) == kNeither,
           "an unmarked image whose entry point lies outside main.dol");
-    Check(Outcome(folder.Write("dol_past_end.iso", dol_past_end), options) == neither,
+    Check(Outcome(folder.Write("dol_past_end.iso", dol_past_end), options) == kNeither,
           "an unmarked image whose main.dol runs past its end");
-    Check(Outcome(folder.Write("dol_in_system_area.iso", dol_in_system_area), options) == neither,
+    Check(Outcome(folder.Write("dol_in_system_area.iso", dol_in_system_area), options) == kNeither,
           "an unmarked image whose main.dol lies in the system area");
-    Check(Outcome(folder.Write("fst_past_end.iso", fst_past_end), options) == neither,
+    Check(Outcome(folder.Write("fst_past_end.iso", fst_past_end), options) == kNeither,
           "an unmarked image whose table lies past its end");
-    Check(Outcome(folder.Write("fst_in_system_area.iso", fst_in_system_area), options) == neither,
+    Check(Outcome(folder.Write("fst_in_system_area.iso", fst_in_system_area), options) == kNeither,
           "an unmarked image whose table lies in the system area");
-    Check(Outcome(folder.Write("cut.iso", cut), options) == neither, "an unmarked image cut short in its table");
-    Check(Outcome(folder.Write("short.iso", short_image), options) == neither,
+    Check(Outcome(folder.Write("cut.iso", cut), options) == kNeither, "an unmarked image cut short in its table");
+    Check(Outcome(folder.Write("short.iso", short_image), options) == kNeither,
           "an unmarked image shorter than the disc header");
     Check(Outcome(unmarked, {disc::Console::kWii, "xyz"}) == "it isn't a Wii disc image",
           "the Wii's options refuse an unmarked image");
@@ -351,19 +348,19 @@ void TestUnmarkedDisc()
     folder.Write("disc/sys/fst.bin", std::vector<uint8_t>(image.begin() + 0x2800, image.begin() + 0x282F));
     folder.Write("disc/files/a.bin", {1, 2, 3});
 
-    error = disc::LoadGame(root, game, defaults);
+    error = disc::LoadGame(root, game, kDefaults);
     Check(!error && game.files.size() == 1 && game.region == 1u,
           "an unmarked extracted disc loads: " + error.value_or(""));
     Check(Outcome(root, {disc::Console::kWii, "xyz"}) == "sys/boot.bin isn't a Wii disc's header",
           "the Wii's options refuse an unmarked extracted disc");
 
     folder.Write("disc/sys/main.dol", SmallDol(0x80003120));
-    Check(Outcome(root, defaults) == "sys/boot.bin isn't a GameCube disc's header",
+    Check(Outcome(root, kDefaults) == "sys/boot.bin isn't a GameCube disc's header",
           "an unmarked extracted disc whose entry point lies outside main.dol");
 
     folder.Write("disc/sys/main.dol", SmallDol());
     folder.Write("disc/sys/fst.bin", {0});
-    Check(Outcome(root, defaults) == "sys/boot.bin isn't a GameCube disc's header",
+    Check(Outcome(root, kDefaults) == "sys/boot.bin isn't a GameCube disc's header",
           "an unmarked extracted disc with a damaged table");
 }
 

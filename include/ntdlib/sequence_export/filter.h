@@ -25,9 +25,10 @@
 #include <cstdint>
 #include <span>
 
+#include "seqlib/midi/performance.h"
+
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sound_build.h"
-#include "seqlib/midi/performance.h"
 
 namespace ntdlib::sequence_export
 {

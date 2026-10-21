@@ -18,8 +18,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/performance_base.h"
 #include "seqlib/midi/performance.h"
+
+#include "ntdlib/sequence_export/performance_base.h"
 
 namespace ntdlib::sequence_export
 {

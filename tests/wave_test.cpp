@@ -11,11 +11,12 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/wave/adpcm.h"
 #include "ntdlib/wave/decode.h"
 #include "ntdlib/wave/pcm.h"
 #include "wave_cases.h"
-#include "xsflib/testing/check.h"
 
 using namespace ntdlib::wave;
 using xsflib::testing::Check;

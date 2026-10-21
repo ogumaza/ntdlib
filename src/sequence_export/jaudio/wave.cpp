@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <span>
+#include <vector>
 
-#include "xsflib/binary.h"
-
+#include "ntdlib/sequence_export/jaudio/sound_data.h"
 #include "ntdlib/wave/adpcm.h"
 #include "ntdlib/wave/pcm.h"
 

@@ -7,8 +7,10 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include "dsp/internal.h"
+#include "ntdlib/dsp/accumulator.h"
 
 namespace ntdlib::dsp
 {

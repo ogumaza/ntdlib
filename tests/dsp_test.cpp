@@ -32,16 +32,19 @@
 #include <memory>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "dsp_test_hashes.h"
+#include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/coef_rom.h"
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/types.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -677,7 +680,13 @@ void WriteScenarios(const fs::path& folder)
     {
         std::string name = std::to_string(n);
         name = "r" + std::string(5 - name.size(), '0') + name + ".scn";
-        std::ofstream(folder / name, std::ios::binary) << RandomProgram(n);
+        std::ofstream file(folder / name, std::ios::binary);
+        file << RandomProgram(n);
+        file.close();
+        if (!file)
+        {
+            throw std::runtime_error("can't write " + (folder / name).string());
+        }
     }
 }
 
@@ -817,6 +826,7 @@ void CheckCpuInterrupt()
         dsp.LoadIram(0x0010, program);
         dsp.StartAt(0x0010);
         dsp.regs_.sr = 0x0a00;
+
         return dsp;
     };
     const auto requested = [](dsp::Dsp<dsp::GameCubeMemory>& dsp)

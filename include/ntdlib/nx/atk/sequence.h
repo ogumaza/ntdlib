@@ -83,6 +83,40 @@ struct SequencePolicy : ntdlib::nwsnd::NxPolicy
     {
         info.receiver = receiver;
     }
+
+    // A stream's voice takes the player's pan mode and curve each frame (UpdateVoiceParams, 0xc10460). nn::atk's voices
+    // have no front bypass.
+    template <typename Voice>
+    static void SetStreamVoiceMode(Voice& voice, uint32_t pan_mode, uint32_t pan_curve, bool)
+    {
+        voice.SetPanCurve(pan_curve);
+        voice.SetPanMode(pan_mode);
+    }
+
+    // The output parameters of channel `index` of a stream's track of `count` channels. A channel by itself takes side
+    // 0. The channels of a pair take sides 1 and 2, the left and the right (0xc26430). With the mix parameters, the
+    // right channel's voice takes the second channel's parameters as its first (0xc10850). A track of more channels
+    // gives its voices none.
+    template <typename Voice>
+    static void SetStreamVoiceOutputs(Voice& voice, const OutputParam& output, int count, int index)
+    {
+        if (count == 1)
+        {
+            voice.SetSide(0);
+            voice.SetOutputs(output);
+        }
+        else if (count == 2)
+        {
+            voice.SetSide(index == 0 ? 1u : 2u);
+            OutputParam param = output;
+            if (index == 1 && param.mix_mode == 1)
+            {
+                param.mix_parameter[0] = param.mix_parameter[1];
+                param.mix_parameter[1] = {};
+            }
+            voice.SetOutputs(param);
+        }
+    }
 };
 
 using SequenceTrack = ntdlib::nwsnd::SequenceTrack<SequencePolicy>;

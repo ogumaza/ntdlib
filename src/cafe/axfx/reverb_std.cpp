@@ -6,11 +6,11 @@
 #include <optional>
 #include <vector>
 
-#include "ntdlib/fused.h"
-
 #include "cafe/axfx/reverb_lines.h"
 #include "cafe/axfx/reverb_tables.h"
 #include "cafe/axfx/util.h"
+#include "ntdlib/cafe/axfx/axfx.h"
+#include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::axfx
 {

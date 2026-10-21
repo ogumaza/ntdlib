@@ -4,6 +4,11 @@
 
 #include "ntdlib/sequence_export/performance.h"
 
+#include <cstdint>
+
+#include "ntdlib/sequence_export/envelope.h"
+#include "ntdlib/sequence_export/settings.h"
+
 namespace ntdlib::sequence_export
 {
 

@@ -11,14 +11,14 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
+#include "seqlib/midi/performance.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/sfz.h"
-#include "seqlib/midi/performance_writer.h"
 #include "sequence_export_test.h"
-#include "xsflib/testing/check.h"
 
 using namespace ntdlib::sequence_export;
 using namespace ntdlib::sequence_export::tests;

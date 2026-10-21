@@ -20,9 +20,15 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+#include "xsflib/player/player.h"
+#include "xsflib/psf/program.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/disc/header.h"
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/flipper/audio_interface.h"
+#include "ntdlib/flipper/disc.h"
 #include "ntdlib/flipper/file_disc.h"
 #include "ntdlib/flipper/game_source.h"
 #include "ntdlib/flipper/machine.h"
@@ -30,12 +36,12 @@
 #include "ntdlib/flipper/registers.h"
 #include "ntdlib/ppc/cpu.h"
 #include "ntdlib/types.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
 
+using xsflib::player::kDriverFinished;
+using xsflib::player::kDriverPlaying;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
 
@@ -57,11 +63,11 @@ void CheckDisc(uint32_t unit)
     const std::string name = "offsets in units of " + std::to_string(unit);
     const std::vector<uint8_t> kSound(1000, 0x5a);
     const std::vector<uint8_t> kSequences = {1, 2, 3, 4, 5, 6, 7};
-    const std::vector<std::pair<std::string, std::span<const uint8_t>>> files = {
+    const std::vector<std::pair<std::string, std::span<const uint8_t>>> kFiles = {
         {"AudioRes/a.baa", kSound},
         {"AudioRes/Seqs/b.arc", kSequences},
     };
-    ntdlib::flipper::FileDisc disc(std::vector<uint8_t>(0x440, 0), files, unit);
+    ntdlib::flipper::FileDisc disc(std::vector<uint8_t>(0x440, 0), kFiles, unit);
 
     // The header gives the table's offset and size. The table starts with the root directory's entry.
     const std::vector<uint8_t> header = ReadDisc(disc, 0, 0x440);
@@ -208,11 +214,6 @@ public:
     {
     }
 
-    ntdlib::ppc::Cpu& Cpu()
-    {
-        return cpu_;
-    }
-
     TestMemory& Memory()
     {
         return memory_;
@@ -248,7 +249,7 @@ public:
 
     TestDspInterface dsp_interface_;
     TestExi exi_;
-    std::vector<std::string> reports;
+    std::vector<std::string> reports_;
 
 private:
     friend class ntdlib::flipper::MachineBase<TestMachine>;
@@ -278,7 +279,7 @@ void CheckMachineBase()
     TestMachine machine;
     machine.on_unknown_io = [&](const std::string& line)
     {
-        machine.reports.push_back(line);
+        machine.reports_.push_back(line);
     };
 
     Check(machine.RamPage(0x1000) == machine.Memory().bytes.data() + 0x1000, "machine: the second page of memory");
@@ -287,7 +288,7 @@ void CheckMachineBase()
     machine.WriteIo(0x0c003024, 4, 0x9abc);
     uint32_t value = 0;
     machine.ReadIo(0x0c008000, 2, value);
-    Check(machine.reports ==
+    Check(machine.reports_ ==
               std::vector<std::string>{"write32 0c003024 = 00005678 at pc 00000000", "read16 0c008000 at pc 00000000"},
           "machine: each unknown register is reported once");
     machine.WriteIo(0x0c006c00, 4, 0x40);
@@ -302,7 +303,7 @@ void CheckSharedBlocks()
     TestMachine machine;
     machine.on_unknown_io = [&](const std::string& line)
     {
-        machine.reports.push_back(line);
+        machine.reports_.push_back(line);
     };
     uint32_t value = 0;
 
@@ -334,12 +335,12 @@ void CheckSharedBlocks()
     machine.ReadIo(0x0c006808, 4, value);
     Check(machine.exi_.regs[2] == 0x01020304 && value == 0x01020304, "shared blocks: EXI's registers");
 
-    machine.reports.clear();
+    machine.reports_.clear();
     Check(!machine.ReadIo(0x0c006000, 4, value) && !machine.ReadIo(0x0c007000, 4, value),
           "shared blocks: the machine handles the disc interface and the blocks after AI");
-    Check(
-        machine.reports == std::vector<std::string>{"read32 0c006000 at pc 00000000", "read32 0c007000 at pc 00000000"},
-        "shared blocks: the machine reports the blocks that it doesn't handle");
+    Check(machine.reports_ ==
+              std::vector<std::string>{"read32 0c006000 at pc 00000000", "read32 0c007000 at pc 00000000"},
+          "shared blocks: the machine reports the blocks that it doesn't handle");
 }
 
 // A machine with GameCube memory and a disc, for the boot. It runs no code.
@@ -404,8 +405,8 @@ void CheckBoot(uint32_t unit)
     const std::string name = "boot (unit " + std::to_string(unit) + ")";
     std::vector<uint8_t> header(ntdlib::disc::kHeaderSize, 0);
     std::copy_n("GTST01", 6, header.begin());
-    const std::vector<uint8_t> data(100, 0x5a);
-    ntdlib::flipper::FileDisc disc(header, {{"Audio/a.bin", data}, {"b.bin", data}}, unit);
+    const std::vector<uint8_t> kData(100, 0x5a);
+    ntdlib::flipper::FileDisc disc(header, {{"Audio/a.bin", kData}, {"b.bin", kData}}, unit);
     BootMachine machine(disc);
     const ntdlib::flipper::BootInfo info{unit, 0x81700000, 3, 162000000, 486000000};
     const auto loaded = machine.LoadBootInfo(info);
@@ -488,9 +489,10 @@ void CheckGameSource()
     Check(samples.size() == 16 && samples[0] == 0x0203 && samples[1] == 0x0001 && samples[15] == 0x1c1d,
           "game source: each block's sample is right, then left");
 
-    xsflib::StoreBe32(memory.At(0x01700018, 4), 2);
-    Check(ntdlib::flipper::DriverStatus(memory, 0x81700018) == 2 && ntdlib::flipper::DriverStatus(memory, 0) == 1 &&
-              ntdlib::flipper::DriverStatus(memory, 0x81fffffe) == 1,
+    xsflib::StoreBe32(memory.At(0x01700018, 4), kDriverFinished);
+    Check(ntdlib::flipper::DriverStatus(memory, 0x81700018) == kDriverFinished &&
+              ntdlib::flipper::DriverStatus(memory, 0) == kDriverPlaying &&
+              ntdlib::flipper::DriverStatus(memory, 0x81fffffe) == kDriverPlaying,
           "game source: the driver's status word, and 1 without one");
     Check(ntdlib::flipper::StopMessage(ntdlib::ppc::StopReason::kFault) ==
                   "the emulated program accessed memory that isn't there" &&

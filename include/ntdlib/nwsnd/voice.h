@@ -15,6 +15,10 @@
 // without them), InitialVoiceParam() (a voice's parameters when it's allocated), and ForEachOutput (see channel.h). The
 // receivers live outside the engine. A copy of the MultiVoices outputs to the same receivers.
 //
+// A MultiVoice calls back its owner: a channel (see channel.h), or a channel of a stream. The engine's
+// VoiceEvent(owner, status) passes the callback of a stream's channel on to the stream's player. An engine without
+// streams needn't have VoiceEvent.
+//
 // The engine's Renderer() supplies:
 //
 //     Acquire(priority, voice)                a renderer voice for a wave channel's voice, or -1. When the renderer
@@ -54,6 +58,17 @@ enum class VoiceState : uint32_t
 
 template <typename Policy>
 class MultiVoiceManager;
+
+// What a MultiVoice calls back (the callback and its argument): the channel at `channel`, or else channel
+// `stream_channel` of the stream of the player at `player` among the engine's players.
+struct VoiceOwner
+{
+    friend bool operator==(const VoiceOwner&, const VoiceOwner&) = default;
+
+    ChannelId channel = kNoChannel;
+    int player = -1;
+    int stream_channel = -1;
+};
 
 // A channel's voices (driver::MultiVoice): a renderer voice for each channel of the wave, up to two. MultiVoiceManager
 // holds the MultiVoices.
@@ -109,6 +124,14 @@ public:
 
     // Each output device's parameters (SetTvParam and SetDrcParam, 0x022AA844 and 0x022AA84C).
     void SetOutputs(const Outputs& outputs);
+
+    // nn::atk's side of a stream's channel (0xc26430): 0 for a channel by itself, or 1 and 2 for the left and the right
+    // channel of a pair. The console's mix places the channel by it. Allocation sets it to 0. A change takes effect
+    // at the next calculation of the mix.
+    void SetSide(uint32_t side)
+    {
+        side_ = side;
+    }
 
     // nn::atk's mix for the voices to output to (SetOutputReceiver, 0xc25970). The MultiVoice keeps the mix from one
     // allocation to the next. Each of its voices holds the mix for the renderer.
@@ -174,6 +197,11 @@ public:
         return receiver_;
     }
 
+    uint32_t Side() const
+    {
+        return side_;
+    }
+
     // The voices of the wave's channels, for the renderer's calculations.
     std::span<Voice> Voices()
     {
@@ -192,8 +220,8 @@ private:
     static constexpr uint16_t kSyncBiquad = 0x20;
     static constexpr uint16_t kSyncVe = 0x40;
 
-    bool Alloc(Engine& engine, int channels, uint32_t priority, ChannelId owner); // 0x022AA2B0
-    void InitParam(ChannelId owner);                                              // 0x022AA1C0
+    bool Alloc(Engine& engine, int channels, uint32_t priority, VoiceOwner owner); // 0x022AA2B0
+    void InitParam(VoiceOwner owner);                                              // 0x022AA1C0
 
     // Each frame: first the calculations that the changes require (Calc, 0x0229D168). Then the start and the parameters
     // passed to the voices (Update, 0x0229D3AC).
@@ -206,7 +234,7 @@ private:
     bool IsPlayFinished(Engine& engine) const; // 0x0229BC2C
 
     // Calls the owner back (the callback that VoiceCallbackFunc receives).
-    void CallOwner(Engine& engine, VoiceCallbackStatus status, ChannelId owner);
+    void CallOwner(Engine& engine, VoiceCallbackStatus status, VoiceOwner owner);
 
     void CalcSrc();              // 0x0229BF24
     void CalcVe(Engine& engine); // 0x0229C028
@@ -224,23 +252,24 @@ private:
     VoiceId place_ = kNoVoice; // the MultiVoice's place among the manager's MultiVoices
     std::array<Voice, 2> voices_;
     int channel_count_ = 0;
-    ChannelId owner_ = kNoChannel; // the callback's channel
-    bool active_ = false;          // +0x374
-    bool started_ = false;         // +0x375
-    bool sdk_started_ = false;     // +0x376: the voices have been started on the renderer
-    uint16_t sync_ = 0;            // +0x380
-    uint8_t biquad_type_ = 0;      // +0x382
-    bool front_bypass_ = false;    // +0x384
-    float volume_ = 1.0f;          // +0x388
-    float pitch_ = 1.0f;           // +0x38C
-    uint32_t pan_mode_ = 0;        // +0x390
-    uint32_t pan_curve_ = 0;       // +0x394
-    float lpf_freq_ = 1.0f;        // +0x398
-    float biquad_value_ = 0.0f;    // +0x39C
-    uint32_t priority_ = 0;        // +0x3A0
-    uint32_t output_line_ = 1;     // +0x3A4
-    Outputs outputs_;              // +0x3A8
+    VoiceOwner owner_;                   // what the callback calls back
+    bool active_ = false;                // +0x374
+    bool started_ = false;               // +0x375
+    bool sdk_started_ = false;           // +0x376: the voices have been started on the renderer
+    uint16_t sync_ = 0;                  // +0x380
+    uint8_t biquad_type_ = 0;            // +0x382
+    bool front_bypass_ = false;          // +0x384
+    float volume_ = 1.0f;                // +0x388
+    float pitch_ = 1.0f;                 // +0x38C
+    uint32_t pan_mode_ = 0;              // +0x390
+    uint32_t pan_curve_ = 0;             // +0x394
+    float lpf_freq_ = 1.0f;              // +0x398
+    float biquad_value_ = 0.0f;          // +0x39C
+    uint32_t priority_ = 0;              // +0x3A0
+    uint32_t output_line_ = 1;           // +0x3A4
+    Outputs outputs_;                    // +0x3A8
     const Receiver* receiver_ = nullptr; // nn::atk's +0x280
+    uint32_t side_ = 0;                  // nn::atk's +0x1c0
 };
 
 // The MultiVoices, a fixed number of them: those in use in a list from the lowest priority up, the newest last among
@@ -261,7 +290,9 @@ public:
 
     // The place of a MultiVoice for `channels` channels, or kNoVoice (AllocVoice, 0x022AAC0C). When every MultiVoice is
     // in use, the lowest one of a lower or equal priority is dropped. nn::atk drops the lowest ones that make room for
-    // the channels instead (see console.h's kDropVoicesForChannels). The MultiVoice calls back the channel at `owner`.
+    // the channels instead (see console.h's kDropVoicesForChannels). The MultiVoice calls back `owner`, or the channel
+    // at `owner`.
+    VoiceId AllocVoice(Engine& engine, int channels, uint32_t priority, VoiceOwner owner);
     VoiceId AllocVoice(Engine& engine, int channels, uint32_t priority, ChannelId owner);
 
     // Drops the MultiVoice of the lowest priority, the oldest among equals. Nothing is dropped if that MultiVoice's

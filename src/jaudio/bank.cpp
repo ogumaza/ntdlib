@@ -6,11 +6,17 @@
 #include "ntdlib/jaudio/bank.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
+
+#include "xsflib/binary.h"
 
 #include "jaudio/reader.h"
-#include "xsflib/binary.h"
 
 namespace ntdlib::jaudio
 {

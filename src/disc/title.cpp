@@ -24,9 +24,9 @@
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 #include "xsflib/sha1.h"
+#include "xsflib/utf8.h"
 
 #include "disc/cpk_files.h"
-#include "disc/encodings.h"
 #include "disc/file_table.h"
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/error.h"
@@ -346,12 +346,8 @@ std::string DecodeUtf16Be(std::span<const uint8_t> text)
             code = 0x10000 + ((code - 0xD800) << 10) + (next - 0xDC00);
             i += 2;
         }
-        else if (code >= 0xD800 && code < 0xE000)
-        {
-            code = 0xFFFD;
-        }
 
-        AppendUtf8(out, code < 0x20 ? ' ' : code);
+        xsflib::AppendUtf8(out, code < 0x20 ? ' ' : code);
     }
 
     const size_t first = out.find_first_not_of(' ');

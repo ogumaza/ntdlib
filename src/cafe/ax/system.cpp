@@ -3,6 +3,7 @@
 #include "ntdlib/cafe/ax/system.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -15,7 +16,13 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/ax/ax.h"
 #include "ntdlib/ax/lpf.h"
+#include "ntdlib/ax/voices.h"
+#include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/render.h"
+#include "ntdlib/cafe/ax/voice.h"
 #include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::ax

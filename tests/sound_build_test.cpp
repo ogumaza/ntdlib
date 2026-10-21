@@ -10,9 +10,10 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/testing/dol_files.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/testing/dol_files.h"
 
 using ntdlib::testing::MicrocodeDol;
 using xsflib::testing::Check;
@@ -35,11 +36,11 @@ void TestMicrocodeIdentifiesAx()
     // AX of October 2006 reads 0x120-byte PBs, and every later AX 0x140 bytes. A file without AX's microcode has none.
     const std::vector<uint8_t> old_dol = MicrocodeDol(0x120, "");
     const std::vector<uint8_t> new_dol = MicrocodeDol(0x140, "");
-    const std::vector<uint8_t> zeros(0x3000, 0);
+    const std::vector<uint8_t> kZeros(0x3000, 0);
 
     const std::optional<ntdlib::Microcode> old_ax = ntdlib::FindMicrocode(old_dol);
     const std::optional<ntdlib::Microcode> new_ax = ntdlib::FindMicrocode(new_dol);
-    const std::optional<ntdlib::Microcode> none = ntdlib::FindMicrocode(zeros);
+    const std::optional<ntdlib::Microcode> none = ntdlib::FindMicrocode(kZeros);
     const std::optional<ntdlib::Microcode> empty = ntdlib::FindMicrocode({});
 
     XSFLIB_CHECK(old_ax && old_ax->address == 0x80004000 && old_ax->words.size() == ntdlib::kMicrocodeWords &&
@@ -100,15 +101,15 @@ void TestBuildsFollowTheirDates()
     // Builds from November 20 2008 take the low-pass's cutoff from a table. Builds from September 24 2009 also move
     // the pitch bend over a time prefix and let the gains pass full level. A build from between the known builds
     // counts as the older kind.
-    const ntdlib::SndBuild september_2008{.date = 20080919};
-    const ntdlib::SndBuild november_2008{.date = 20081120};
-    const ntdlib::SndBuild gap_2009{.date = 20090923};
-    const ntdlib::SndBuild september_2009{.date = 20090924};
+    const ntdlib::SndBuild kSeptember2008{.date = 20080919};
+    const ntdlib::SndBuild kNovember2008{.date = 20081120};
+    const ntdlib::SndBuild kGap2009{.date = 20090923};
+    const ntdlib::SndBuild kSeptember2009{.date = 20090924};
 
-    Check(september_2008.SinceJune2008() && !september_2008.SinceNovember2008(), "the build of September 2008");
-    Check(november_2008.SinceNovember2008() && !november_2008.SinceSeptember2009(), "the build of November 2008");
-    Check(gap_2009.SinceNovember2008() && !gap_2009.SinceSeptember2009(), "a build from before September 24 2009");
-    Check(september_2009.SinceNovember2008() && september_2009.SinceSeptember2009(), "the build of September 2009");
+    Check(kSeptember2008.SinceJune2008() && !kSeptember2008.SinceNovember2008(), "the build of September 2008");
+    Check(kNovember2008.SinceNovember2008() && !kNovember2008.SinceSeptember2009(), "the build of November 2008");
+    Check(kGap2009.SinceNovember2008() && !kGap2009.SinceSeptember2009(), "a build from before September 24 2009");
+    Check(kSeptember2009.SinceNovember2008() && kSeptember2009.SinceSeptember2009(), "the build of September 2009");
 }
 
 void TestDamagedDayIsCheckedOnRequest()

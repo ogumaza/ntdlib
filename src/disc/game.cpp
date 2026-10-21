@@ -31,6 +31,7 @@
 #include "disc/file_table.h"
 #include "disc/image_parts.h"
 #include "disc/title.h"
+#include "ntdlib/disc/error.h"
 #include "ntdlib/disc/header.h"
 #include "ntdlib/disc/image.h"
 #include "ntdlib/disc/source.h"
@@ -54,6 +55,7 @@ using detail::kSectorData;
 using detail::LoadTitle;
 using detail::ReadHostFile;
 using detail::RejectTitleFile;
+
 constexpr uint64_t kHashes = 0x400; // the hashes at the start of a sector
 
 // The disc's region field (GameFiles::region): the word at kBi2Region in a GameCube disc's bi2.bin, or the word at
@@ -382,8 +384,11 @@ public:
             return;
         }
 
-        ReadByBlocks(offset, out, size, kSectorData, [this](uint64_t sector, size_t within, uint8_t* piece, size_t n)
-                     { image_->Read(data_offset_ + sector * kSector + kHashes + within, piece, n); });
+        const auto read = [this](uint64_t sector, size_t within, uint8_t* piece, size_t n)
+        {
+            image_->Read(data_offset_ + sector * kSector + kHashes + within, piece, n);
+        };
+        ReadByBlocks(offset, out, size, kSectorData, read);
     }
 
     std::vector<uint8_t> Read(uint64_t offset, uint64_t size) override
@@ -478,6 +483,7 @@ void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
     {
         throw Error(DamagedMessage(options));
     }
+
     out.fst = game->Read(fst_offset, fst_size);
 
     auto files = std::make_shared<std::map<std::string, FileEntry>>(

@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -23,7 +22,7 @@
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/testing/sar_files.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -219,31 +218,14 @@ void TestOtherLayout(Flavor flavor)
 template <class Error, class Call>
 bool Throws(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const Error&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<Error>(call).empty();
 }
 
 // Whether WaveFile::Read refuses `bytes` with a message that holds `part`.
 bool Refuses(const std::vector<uint8_t>& bytes, const std::string& part)
 {
-    try
-    {
-        WaveFile::Read(bytes);
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        return std::string(e.what()).find(part) != std::string::npos;
-    }
-
-    return false;
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { WaveFile::Read(bytes); });
+    return !message.empty() && message.find(part) != std::string::npos;
 }
 
 // The writer refuses an IMA-ADPCM wave, and a DSP-ADPCM info that doesn't match the encoding. The readers refuse
@@ -383,13 +365,5 @@ int main()
     TestRefusals();
     TestWaveArchiveRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Wave file tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Wave file");
 }

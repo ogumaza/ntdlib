@@ -32,8 +32,8 @@ namespace ntdlib::disc
 struct FsysFile
 {
     uint32_t id = 0;
-    std::string name;
-    std::vector<uint8_t> data;
+    std::string name = {};
+    std::vector<uint8_t> data = {};
 };
 
 // Decompresses LZSS data. Throws Error if the data is damaged or truncated, or if its header gives a size that its

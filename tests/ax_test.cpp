@@ -13,9 +13,10 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/ax/lpf.h"
 #include "ntdlib/ax/voices.h"
-#include "xsflib/testing/check.h"
 
 namespace ax = ntdlib::ax;
 using xsflib::testing::Check;

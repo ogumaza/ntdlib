@@ -14,11 +14,13 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
+#include "xsflib/player/player.h"
+#include "xsflib/psf/program.h"
+
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/flipper/file_disc.h"
 #include "ntdlib/ppc/cpu.h"
-#include "xsflib/bytes.h"
-#include "xsflib/psf/program.h"
 
 namespace ntdlib::flipper
 {
@@ -62,11 +64,11 @@ uint32_t DriverStatus(Memory& memory, uint32_t address)
 {
     if (!address)
     {
-        return 1;
+        return xsflib::player::kDriverPlaying;
     }
 
     const uint8_t* word = memory.At(dsp::ToPhysical(address), 4);
-    return word != nullptr ? xsflib::LoadBe32(word) : 1;
+    return word != nullptr ? xsflib::LoadBe32(word) : xsflib::player::kDriverPlaying;
 }
 
 // The message for a CPU stop that ends a render (a fault or an instruction that the CPU doesn't support), or nothing.

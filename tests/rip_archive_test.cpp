@@ -11,10 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
-#include "xsflib/testing/check.h"
 
 using namespace xsflib::testing;
 
@@ -192,6 +193,7 @@ void TestGroupsInSarcs()
     const auto search = [&](const std::vector<uint8_t>& archive, const std::vector<std::string>& paths, auto find)
     {
         read.clear();
+
         return rip::FindGroups<Chunk>(archive, find, kStrictRules, [&paths] { return paths; }, read_sarc);
     };
 

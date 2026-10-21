@@ -74,10 +74,10 @@ struct WaveUse
     uint16_t id = 0;
 };
 
-// The groups that hold `waves`, each as (system << 16) | group, in ascending order. For each system, the group that
-// holds the most of the waves comes first. Then the group that holds the most of the rest, and so on. Of two groups
-// that hold as many, the earlier one comes first. Waves that no group holds are left out. A game that loads its groups
-// as its scenes require them plays a sound with these groups loaded.
+// The groups that hold `waves`, each as (system << 16) | group, in ascending order. For each system, the first group
+// chosen holds the most of the waves. The next holds the most of the rest, and so on. Of two groups that hold as many,
+// the earlier one is chosen. Waves that no group holds are left out. A game that loads its groups as its scenes require
+// them plays a sound with these groups loaded.
 std::vector<uint32_t> WaveGroups(const std::vector<WaveSystem>& systems, const std::vector<WaveUse>& waves);
 
 // Whether one of `groups`, each (system << 16) | group as WaveGroups gives them, holds the wave.

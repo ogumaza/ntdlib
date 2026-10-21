@@ -68,6 +68,7 @@ public:
         {
             return nullptr;
         }
+
         const std::span<const uint8_t> file = archive_->FileData(archive_->Banks()[*index].file_id);
         if (file.empty())
         {
@@ -92,6 +93,7 @@ public:
         {
             return nullptr;
         }
+
         const std::span<const uint8_t> file = archive_->FileData(archive_->WaveArchives()[*index].file_id);
         if (file.empty())
         {
@@ -184,11 +186,13 @@ public:
         {
             return std::nullopt;
         }
+
         const sar::VelocityRegion* region = bank->instruments[program]->Find(key, velocity);
         if (region == nullptr || region->wave_id_index >= bank->waves.size())
         {
             return std::nullopt;
         }
+
         const sar::WaveId& id = bank->waves[region->wave_id_index];
         std::optional<WaveInfo> wave = Wave(id.wave_archive_item, id.index);
         if (!wave)

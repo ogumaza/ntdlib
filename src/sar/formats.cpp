@@ -5,16 +5,23 @@
 #include "ntdlib/sar/formats.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <map>
+#include <optional>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
-#include "ntdlib/sar/reference.h"
+#include "xsflib/binary.h"
 #include "xsflib/text.h"
 #include "xsflib/utf8.h"
+
+#include "ntdlib/sar/reference.h"
 
 namespace ntdlib::sar
 {
@@ -358,20 +365,112 @@ std::map<uint32_t, std::string> ReadItemNames(const xsflib::Reader& r, std::size
     return item_names;
 }
 
-// The type of the sound at the INFO entry at `p`, and the details of that type, from the entry's reference `detail`.
-void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& detail, SoundInfo& s)
+// A send value at `at`: the main send, then a send to each aux bus.
+void ReadSends(const xsflib::Reader& r, std::size_t at, uint8_t& main_send, std::array<uint8_t, 3>& aux_sends)
+{
+    main_send = r.U8(at);
+    for (std::size_t bus = 0; bus < aux_sends.size(); ++bus)
+    {
+        aux_sends[bus] = r.U8(at + 1 + bus);
+    }
+}
+
+// A stream sound's details at `q`, in an FSAR archive of version `version`. The details start with the tracks that
+// play, the number of channels and a reference to the table of tracks. From 2.1.0 on, the pitch and a reference to the
+// sends follow. Details without a table of tracks give nothing more. A track's info holds its volume, its pan, its
+// span, its flags and a reference to the indices of its channels. From 2.1.0 on, a reference to its sends follows, then
+// the low-pass value and the biquad filter's type and value.
+void ReadStreamDetails(const xsflib::Reader& r, std::size_t q, uint32_t version, StreamSoundInfo& stream)
+{
+    constexpr uint32_t kMostTracks = 8;
+    constexpr uint32_t kMostChannels = 16;
+    const bool sends = version >= 0x00020100;
+    stream.valid_tracks = r.U16(q);
+    stream.channel_count = r.U16(q + 2);
+    const Reference table_ref = ReadRef(r, q + 4);
+    if (table_ref.type != 0x0101)
+    {
+        return; // details without tracks hold nothing more
+    }
+
+    if (sends)
+    {
+        stream.pitch = r.F32(q + 12);
+        const Reference send = ReadRef(r, q + 16);
+        if (send.type == 0x220F)
+        {
+            ReadSends(r, q + send.offset, stream.main_send, stream.aux_sends);
+        }
+    }
+
+    const std::size_t table = q + table_ref.offset;
+    const uint32_t count = r.U32(table);
+    for (uint32_t i = 0; i < count && i < kMostTracks; ++i)
+    {
+        const Reference track_ref = ReadRef(r, table + 4 + std::size_t{i} * 8);
+        const std::size_t t = table + track_ref.offset;
+        StreamTrackInfo& track = stream.tracks.emplace_back();
+        track.volume = r.U8(t);
+        track.pan = r.U8(t + 1);
+        track.span = r.U8(t + 2);
+        track.flags = r.U8(t + 3);
+        const Reference indices = ReadRef(r, t + 4);
+        if (indices.type == 0x0100)
+        {
+            const uint32_t channels = r.U32(t + indices.offset);
+            for (uint32_t k = 0; k < channels && k < kMostChannels; ++k)
+            {
+                track.channels.push_back(r.U8(t + indices.offset + 4 + k));
+            }
+        }
+        if (sends)
+        {
+            const Reference send = ReadRef(r, t + 12);
+            if (send.type == 0x220F)
+            {
+                ReadSends(r, t + send.offset, track.main_send, track.aux_sends);
+            }
+            track.low_pass = r.U8(t + 20);
+            track.biquad_type = r.U8(t + 21);
+            track.biquad_value = r.U8(t + 22);
+        }
+    }
+}
+
+// The type of the sound at the INFO entry at `p`, and the details of that type, from the entry's reference `detail`. A
+// stream sound's details are read only in FSAR archives, of version `version`.
+void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& detail, bool ctr, uint32_t version,
+                      SoundInfo& s)
 {
     switch (detail.type)
     {
     case 0x2201:
         s.type = SoundType::kStream;
+        if (!ctr)
+        {
+            ReadStreamDetails(r, p + detail.offset, version, s.stream);
+        }
         break;
 
     case 0x2202:
-        // The wave sound's details start with its index in its wave sound file.
-        s.type = SoundType::kWaveSound;
-        s.wave_sound_index = r.U32(p + detail.offset);
-        break;
+        {
+            // The wave sound's details start with its index in its wave sound file and its tracks. On the Wii U and the
+            // Switch, the options that follow give the channel's priority and the release priority fix
+            // (SoundArchiveFile::WaveSoundInfo's GetChannelPriority and GetIsReleasePriorityFix).
+            s.type = SoundType::kWaveSound;
+            const std::size_t q = p + detail.offset;
+            s.wave_sound_index = r.U32(q);
+            if (!ctr)
+            {
+                const OptionParams so = OptionParams::Read(r, q + 8);
+                if (so.values[0])
+                {
+                    s.channel_priority = static_cast<uint8_t>(*so.values[0]);
+                    s.release_priority_fix = ((*so.values[0] >> 8) & 0xff) != 0;
+                }
+            }
+            break;
+        }
 
     case 0x2203:
         {
@@ -383,7 +482,7 @@ void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& d
             const Reference banks = ReadRef(r, q);
             const std::size_t bt = q + banks.offset;
             const uint32_t nb = r.U32(bt);
-            for (uint32_t k = 0; k < nb && k < 4; k++)
+            for (uint32_t k = 0; k < nb && k < kBankSlots; k++)
             {
                 s.banks.push_back(r.U32(bt + 4 + k * 4));
             }
@@ -421,8 +520,9 @@ void NameUnnamedSound(SoundInfo& s, uint32_t index)
     }
 }
 
-// Reads sound `index` from the INFO entry at `p`.
-SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std::string name)
+// Reads sound `index` from the INFO entry at `p`, in an archive of version `version`.
+SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std::string name, bool ctr,
+                    uint32_t version)
 {
     SoundInfo s;
     s.name = std::move(name);
@@ -437,10 +537,32 @@ SoundInfo ReadSound(const xsflib::Reader& r, std::size_t p, uint32_t index, std:
         s.pan_curve = static_cast<uint8_t>(*options.values[1] >> 8);
     }
 
-    ReadSoundDetails(r, p, ReadRef(r, p + 12), s);
+    ReadSoundDetails(r, p, ReadRef(r, p + 12), ctr, version, s);
     NameUnnamedSound(s, index);
 
     return s;
+}
+
+// Reads a sound group from the INFO entry at `p`: the IDs of its first and last sounds, then a reference to the table
+// of its file IDs. The table holds its count and the IDs.
+SoundGroupInfo ReadSoundGroup(const xsflib::Reader& r, std::size_t p, std::string name)
+{
+    SoundGroupInfo g;
+    g.name = std::move(name);
+    g.first_sound = ItemNumber(r.U32(p));
+    g.last_sound = ItemNumber(r.U32(p + 4));
+    const Reference files = ReadRef(r, p + 8);
+    if (files.type == 0x0100 && files.offset >= 0)
+    {
+        const std::size_t table = p + static_cast<std::size_t>(files.offset);
+        const uint32_t count = r.U32(table);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            g.file_ids.push_back(r.U32(table + 4 + std::size_t{i} * 4));
+        }
+    }
+
+    return g;
 }
 
 // The places of the INFO block's tables at `info_off`, by type. The block's eight references lead to the tables of
@@ -815,7 +937,13 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
     };
 
     // Each wave sound: references to its settings, its tracks and its notes. The settings are optional parameters: the
-    // pan in the first, the pitch in the second, and the offset of a reference to the envelope in the tenth.
+    // pan and the surround pan in the first, the pitch in the second, the filters in the third, the offset of the sends
+    // in the ninth, and the offset of a reference to the envelope in the tenth. The sends hold the main send, the
+    // number of aux sends and the aux sends. The Wii U's and the Switch's readers read up to 3 aux sends, and the
+    // filters from version 1.1.0 on (WaveSoundFileReader, 0x022B95E4 in Animal Crossing: amiibo Festival and 0xc285d0
+    // in WarioWare: Get It Together!'s main).
+    const bool ctr = options.flavor == Flavor::kCtr;
+    const bool filters = !ctr && r.U32(0x08) >= 0x00010100;
     for (const std::size_t sound_at : table(*sound_table))
     {
         WaveSound sound;
@@ -824,10 +952,30 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
         if (opt.values[0])
         {
             sound.pan = static_cast<uint8_t>(*opt.values[0]);
+            if (!ctr)
+            {
+                sound.span = static_cast<uint8_t>(*opt.values[0] >> 8);
+            }
         }
         if (opt.values[1])
         {
             sound.pitch = r.F32(opt.value_offset[1]);
+        }
+        if (opt.values[2] && filters)
+        {
+            sound.low_pass = static_cast<uint8_t>(*opt.values[2]);
+            sound.biquad_type = static_cast<uint8_t>(*opt.values[2] >> 8);
+            sound.biquad_value = static_cast<uint8_t>(*opt.values[2] >> 16);
+        }
+        if (opt.values[8] && !ctr)
+        {
+            const std::size_t sends = settings + *opt.values[8];
+            sound.main_send = r.U8(sends);
+            const std::size_t count = std::min<std::size_t>(r.U8(sends + 1), sound.aux_sends.size());
+            for (std::size_t bus = 0; bus < count; ++bus)
+            {
+                sound.aux_sends[bus] = r.U8(sends + 2 + bus);
+            }
         }
         if (opt.values[9])
         {
@@ -973,7 +1121,8 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
 
     auto read_sound = [&](uint32_t i, std::size_t p)
     {
-        sounds_.push_back(ReadSound(r, p, i, name_of(ItemId(kSoundItem, i))));
+        sounds_.push_back(
+            ReadSound(r, p, i, name_of(ItemId(kSoundItem, i)), options_.flavor == Flavor::kCtr, version_));
     };
     for_each_entry(0x2100, "sound", read_sound);
 
@@ -991,6 +1140,24 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
         wave_archives_.push_back({name.empty() ? "WARC_" + std::to_string(i) : name, r.U32(p)});
     };
     for_each_entry(0x2103, "wave archive", read_wave_archive);
+
+    // A sound group names a set of sounds, such as the wave sounds of a wave sound file. A table that can't be read
+    // leaves none.
+    auto read_sound_group = [&](uint32_t i, std::size_t p)
+    {
+        sound_groups_.push_back(ReadSoundGroup(r, p, name_of(ItemId(kSoundGroupItem, i))));
+    };
+    if (tables.contains(0x2104))
+    {
+        try
+        {
+            for_each_entry(0x2104, "sound group", read_sound_group);
+        }
+        catch (const xsflib::FormatError&)
+        {
+            sound_groups_.clear();
+        }
+    }
 
     // Files can be in the FILE block (0x220C), external (0x220D, a file name), or have no location (a null reference or
     // offset 0xFFFFFFFF). Files without locations may be stored in groups.
@@ -1013,6 +1180,10 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
                 f.internal = start + size <= bytes_.size();
                 f.missing = !f.internal;
             }
+        }
+        else if (loc.type == 0x220D && options_.flavor != Flavor::kCtr)
+        {
+            f.external_path = r.CString(p + loc.offset, 0x400);
         }
 
         f.grouped = !f.internal && !f.missing && loc.type != 0x220D;
@@ -1215,7 +1386,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
             s.actor_player_id = static_cast<uint8_t>(*opt.values[2] >> 8);
         }
 
-        ReadSoundDetails(r, p, detail, s);
+        ReadSoundDetails(r, p, detail, ctr, version_, s);
         NameUnnamedSound(s, i);
         sounds_.push_back(std::move(s));
     };
@@ -1233,6 +1404,12 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
         wave_archives_.push_back({name_of(ItemId(kWaveArchiveItem, i)), r.U32(p)});
     };
     for_each(0x2103, read_wave_archive);
+
+    const auto read_sound_group = [&](uint32_t i, std::size_t p)
+    {
+        sound_groups_.push_back(ReadSoundGroup(r, p, name_of(ItemId(kSoundGroupItem, i))));
+    };
+    for_each(0x2104, read_sound_group);
 
     if (!ctr)
     {

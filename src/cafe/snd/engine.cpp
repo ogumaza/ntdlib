@@ -3,14 +3,35 @@
 #include "ntdlib/cafe/snd/engine.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "xsflib/rip/length.h"
+
+#include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
+#include "ntdlib/cafe/snd/channel.h"
+#include "ntdlib/cafe/snd/renderer.h"
+#include "ntdlib/cafe/snd/sequence.h"
+#include "ntdlib/cafe/snd/sound_players.h"
+#include "ntdlib/cafe/snd/voice.h"
+#include "ntdlib/nwsnd/archive_files.h"
+#include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nwsnd/sequence.h"
+#include "ntdlib/nwsnd/stream_sound_player.h"
+#include "ntdlib/nwsnd/voice.h"
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
 
 namespace ntdlib::cafe::snd
 {
@@ -45,13 +66,24 @@ Engine::Engine(ax::System& system, ax::Memory& memory, const sar::SoundArchive& 
 Engine::~Engine()
 {
     system_->RegisterFrameCallback({});
+    for (const uint32_t address : stream_addresses_)
+    {
+        memory_->Unmap(address);
+    }
+}
+
+uint32_t Engine::Map(std::span<const uint8_t> bytes)
+{
+    const uint32_t address = next_address_;
+    memory_->Map(address, bytes);
+    next_address_ += (static_cast<uint32_t>(bytes.size()) + 0xFF) & ~0xFFu;
+
+    return address;
 }
 
 void Engine::MapWaveArchive(ntdlib::nwsnd::LoadedWaveArchive& loaded)
 {
-    loaded.address = next_address_;
-    memory_->Map(loaded.address, loaded.file);
-    next_address_ += (static_cast<uint32_t>(loaded.file.size()) + 0xFF) & ~0xFFu;
+    loaded.address = Map(loaded.file);
 }
 
 Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const NoteOnInfo& info)
@@ -77,7 +109,23 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
 
 void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus)
 {
-    players_[player].ChannelEvent(*this, track, channel);
+    std::visit(
+        [&](auto& owner)
+        {
+            if constexpr (requires { owner.ChannelEvent(*this, track, channel); })
+            {
+                owner.ChannelEvent(*this, track, channel);
+            }
+        },
+        players_[player]);
+}
+
+void Engine::VoiceEvent(const ntdlib::nwsnd::VoiceOwner& owner, ntdlib::nwsnd::VoiceCallbackStatus status)
+{
+    if (StreamSoundPlayer* player = players_.Get<StreamSoundPlayer>(owner.player))
+    {
+        player->VoiceEvent(*this, owner.stream_channel, status);
+    }
 }
 
 SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
@@ -92,6 +140,7 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
     {
         return nullptr;
     }
+
     const std::span<const uint8_t> file = archive_->FileData(info.file_id);
     if (file.empty())
     {
@@ -100,7 +149,78 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
 
     const sar::Sequence sequence = sar::Sequence::Parse(file, kSarOptions);
 
-    return &players_.Add(1, info, sequence.data);
+    return &players_.Add<SequenceSoundPlayer>(1, info, sequence.data);
+}
+
+WaveSoundPlayer* Engine::StartWaveSound(uint32_t index)
+{
+    if (index >= archive_->Sounds().size())
+    {
+        return nullptr;
+    }
+
+    const sar::SoundInfo& info = archive_->Sounds()[index];
+    if (info.type != sar::SoundType::kWaveSound)
+    {
+        return nullptr;
+    }
+
+    const std::span<const uint8_t> file = archive_->FileData(info.file_id);
+    if (file.empty())
+    {
+        return nullptr;
+    }
+
+    const sar::WaveSoundFile wsd = sar::WaveSoundFile::Parse(file, kSarOptions);
+    if (info.wave_sound_index >= wsd.sounds.size())
+    {
+        return nullptr;
+    }
+
+    // The wave of the sound's first note, as WaveFileReader (0x022B85B0) reads it.
+    const sar::WaveSoundFile::WaveSound& sound = wsd.sounds[info.wave_sound_index];
+    std::optional<WaveInfo> wave;
+    if (!sound.notes.empty() && sound.notes[0].wave_id_index < wsd.waves.size())
+    {
+        const sar::WaveId& id = wsd.waves[sound.notes[0].wave_id_index];
+        wave = files_.Wave(id.wave_archive_item, id.index);
+    }
+
+    return &players_.Add<WaveSoundPlayer>(1, info, sound, wave);
+}
+
+StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file)
+{
+    if (index >= archive_->Sounds().size() || archive_->Sounds()[index].type != sar::SoundType::kStream)
+    {
+        return nullptr;
+    }
+
+    return StartStreamSound(archive_->Sounds()[index], file);
+}
+
+StreamSoundPlayer* Engine::StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file)
+{
+    auto stream = std::make_unique<const sar::StreamFile>(sar::StreamFile::Read(file));
+    const ntdlib::nwsnd::StreamTracks tracks = ntdlib::nwsnd::StreamTracksOf(info.stream, *stream);
+    if (tracks.tracks.empty())
+    {
+        return nullptr;
+    }
+
+    // The player's channels: the stream's first 16. AX reads each channel's samples from its place in AX's memory.
+    std::vector<WaveInfo> waves;
+    const std::size_t count = std::min<std::size_t>(stream->channels.size(), 16);
+    for (std::size_t channel = 0; channel < count; ++channel)
+    {
+        WaveInfo wave = ntdlib::nwsnd::StreamChannelWave<WaveInfo>(*stream, channel);
+        wave.channels[0].address = Map(stream->channels[channel].samples);
+        stream_addresses_.push_back(wave.channels[0].address);
+        waves.push_back(wave);
+    }
+    streams_.push_back(std::move(stream));
+
+    return &players_.Add<StreamSoundPlayer>(1, info, tracks, std::move(waves));
 }
 
 void Engine::FrameProcess()
@@ -108,10 +228,10 @@ void Engine::FrameProcess()
     voices_.UpdateAllVoiceStatus(*this);
 
     // The sound thread's commands. They start the sounds that are due.
-    players_.StartDue();
+    players_.StartDue(*this);
 
     // The players' frames (OnUpdateFrameSoundThread), the channels and the voices.
-    players_.ForEach([this](SequenceSoundPlayer& player) { player.Update(*this); });
+    players_.ForEach([this](auto& player) { player.Update(*this); });
     channels_.UpdateAllChannel(*this);
     voices_.UpdateAllVoices(*this);
     ax_voices_.UpdatePriorityList();

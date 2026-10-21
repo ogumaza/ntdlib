@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// What AX gives for ax_test's scenarios: a hash of each scenario's stage lines (see ax_test.cpp). A change to one is a
-// change to what AX does.
+// What AX gives for cafe_ax_test's scenarios: a hash of each scenario's stage lines (see cafe_ax_scenarios.h). A change
+// to one is a change to what AX does.
 
 #pragma once
 

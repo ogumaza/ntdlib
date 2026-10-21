@@ -15,10 +15,11 @@
 #include <stdexcept>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/nx/audio/renderer.h"
-#include "xsflib/testing/check.h"
 
 using namespace xsflib::testing;
 
@@ -150,8 +151,8 @@ void TestGains()
     std::vector<int32_t> mixed(kFrame, 5);
     const int32_t kDelta = kUnity / kFrame;
     const int32_t last = audio::ApplyMixRamp(mixed.data(), samples.data(), 0, kDelta, kFrame, 23);
-    const int64_t expected = (int64_t{10000} * (kDelta * (kFrame - 1)) + (1 << 22)) >> 23;
-    XSFLIB_CHECK(mixed[0] == 5 && last == expected && mixed[kFrame - 1] == 5 + expected);
+    const int64_t kExpected = (int64_t{10000} * (kDelta * (kFrame - 1)) + (1 << 22)) >> 23;
+    XSFLIB_CHECK(mixed[0] == 5 && last == kExpected && mixed[kFrame - 1] == 5 + kExpected);
 
     audio::ApplyMix(mixed.data(), samples.data(), kUnity, kFrame, 23);
     XSFLIB_CHECK(mixed[0] == 10005);
@@ -462,15 +463,7 @@ void TestRendererMeters()
     metered.renderer.RenderFrame();
     const std::array<int32_t, 2> muted = MeterPeaks(metered.renderer, 0);
     constexpr std::array<int32_t, 2> kSilent = {0, 0};
-    bool refused = false;
-    try
-    {
-        metered.renderer.MeterPeaks(2);
-    }
-    catch (const std::out_of_range&)
-    {
-        refused = true;
-    }
+    const bool refused = !ErrorOf<std::out_of_range>([&] { metered.renderer.MeterPeaks(2); }).empty();
 
     XSFLIB_CHECK(exact && same);
     XSFLIB_CHECK(falling[0] == 9959 && falling[1] == 0 && heard[0] == 9959);
@@ -533,15 +526,7 @@ void TestRendererMixPeaks()
     const std::vector<int32_t> restored = peaks_of(metered.renderer, sub_mix);
     metered.renderer.MeterMix(sub_mix, false);
     const std::vector<int32_t> off = peaks_of(metered.renderer, sub_mix);
-    bool refused = false;
-    try
-    {
-        metered.renderer.MeterMix(2, true);
-    }
-    catch (const std::out_of_range&)
-    {
-        refused = true;
-    }
+    const bool refused = !ErrorOf<std::out_of_range>([&] { metered.renderer.MeterMix(2, true); }).empty();
 
     const std::vector<int32_t> kSilent = {0, 0};
     XSFLIB_CHECK(before == kSilent);

@@ -216,7 +216,9 @@ public:
 
     // AXSetDeviceRemixMatrix: `out` rows of `in` weights. The final mix stage applies the matrix whose `in` is the
     // final-mix callback's output channel count and whose `out` is the device's channel count (2, for stereo). A matrix
-    // with the same counts replaces an older one. Returns 0, or -1 for an unknown device.
+    // with the same counts replaces an older one. Returns 0, or -1 for an unknown device. Returns -7 for an `in` of 0
+    // or more than the device's channels (6 for the TV, 4 for a GamePad), an `out` of 0, or a matrix of fewer than `in`
+    // times `out` weights.
     int SetDeviceRemixMatrix(Device device, uint32_t in, uint32_t out, std::span<const float> matrix);
 
     // Generates the next frame.

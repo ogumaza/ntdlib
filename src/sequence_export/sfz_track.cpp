@@ -7,15 +7,29 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <numbers>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "ntdlib/nwsnd/envelope.h"
-#include "ntdlib/sequence_export/filter.h"
 #include "seqlib/loop.h"
+#include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/units.h"
 #include "seqlib/sfz/opcodes.h"
 #include "seqlib/sfz/text.h"
+#include "seqlib/sfz/track_file.h"
 #include "seqlib/wav.h"
+
+#include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/sequence_export/envelope.h"
+#include "ntdlib/sequence_export/filter.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/resampling.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sequence_export/sfz.h"
+#include "ntdlib/wave/decode.h"
 #include "sequence_export/pcm.h"
 
 namespace ntdlib::sequence_export
@@ -32,10 +46,15 @@ constexpr int kBiquadCutoffCurve = 9;     // kSfzBiquadController to the biquad 
 constexpr int kBiquadResonanceCurve = 10; // ... and resonance
 constexpr int kBiquadGainCurve = 11;      // ... and gain
 
-// Modulation amounts at curve value 1: cutoff in cents, resonance and volume in dB. Curves stay within -1..1 for
-// compatibility with other SFZ players.
-constexpr int kCutoffSpan = 12000;
-constexpr int kResonanceSpan = 60;
+// Modulation amounts at curve value 1: cutoff in cents, resonance and volume in dB. The curves' values stay within the
+// range that sfzformat.com gives them. The cutoffs move from kCutoffBase and the resonance from 0 dB. Curve values from
+// -1 to 1 then reach from 3.9 Hz to 256 kHz, and from -40 to 40 dB. Those amounts stay within the documented ranges
+// too. The widest steps of one band-pass type go below -40 dB. A track of that type takes kWideResonanceSpan. That
+// amount lies outside the documented range.
+constexpr int kCutoffBase = kSfzBiquadBase;
+constexpr int kCutoffSpan = 9600;
+constexpr int kResonanceSpan = 40;
+constexpr int kWideResonanceSpan = 50;
 constexpr int kGainSpan = 2;
 
 // Returns opcode `name` for filter 1 or 2, e.g. "cutoff" or "cutoff2".
@@ -79,6 +98,28 @@ std::string LfoOpcodes(const PresetKey& key, const Settings& settings)
     return s + "\n";
 }
 
+// The step of biquad type `type` that controller value `v` selects. Value 0 turns the biquad off. Its curve point
+// takes value 1's step.
+SfzBiquad BiquadStep(int type, int v, const Settings& settings)
+{
+    return SfzBiquadStep(type, TrackFilters(0x40, type, std::max(v, 1), settings).biquad_step, settings);
+}
+
+// The resonance amount for biquad type `type`. A type with a step below -40 dB takes kWideResonanceSpan. Every other
+// type takes kResonanceSpan.
+int ResonanceSpan(int type, const Settings& settings)
+{
+    for (int v = 1; v < 128; v++)
+    {
+        if (BiquadStep(type, v, settings).resonance < -100 * kResonanceSpan)
+        {
+            return kWideResonanceSpan;
+        }
+    }
+
+    return kResonanceSpan;
+}
+
 // Writes opcodes for biquad preset `type` in filter slot `index`.
 std::string BiquadOpcodes(int type, int index, const Settings& settings)
 {
@@ -87,12 +128,12 @@ std::string BiquadOpcodes(int type, int index, const Settings& settings)
     const std::string curve = "_curvecc" + std::to_string(kSfzBiquadController);
     const int shape = BiquadShape(type, settings);
     return FilterOpcode("fil", index) + "_type=" + kKinds[shape - 1] + " " + FilterOpcode("cutoff", index) + "=" +
-           std::to_string(kSfzBiquadBase) + " " + FilterOpcode("cutoff", index) + cc + "=" +
-           std::to_string(kCutoffSpan) + " " + FilterOpcode("cutoff", index) + curve + "=" +
-           std::to_string(kBiquadCutoffCurve) + " " + FilterOpcode("resonance", index) + "=0 " +
-           FilterOpcode("resonance", index) + cc + "=" + std::to_string(kResonanceSpan) + " " +
-           FilterOpcode("resonance", index) + curve + "=" + std::to_string(kBiquadResonanceCurve) + " volume" + cc +
-           "=" + std::to_string(kGainSpan) + " volume" + curve + "=" + std::to_string(kBiquadGainCurve);
+           std::to_string(kCutoffBase) + " " + FilterOpcode("cutoff", index) + cc + "=" + std::to_string(kCutoffSpan) +
+           " " + FilterOpcode("cutoff", index) + curve + "=" + std::to_string(kBiquadCutoffCurve) + " " +
+           FilterOpcode("resonance", index) + "=0 " + FilterOpcode("resonance", index) + cc + "=" +
+           std::to_string(ResonanceSpan(type, settings)) + " " + FilterOpcode("resonance", index) + curve + "=" +
+           std::to_string(kBiquadResonanceCurve) + " volume" + cc + "=" + std::to_string(kGainSpan) + " volume" +
+           curve + "=" + std::to_string(kBiquadGainCurve);
 }
 
 // The text that track `t`'s file adds to seqlib's track file: the filters' curves and opcodes, each preset's LFO, and
@@ -116,31 +157,34 @@ seqlib::sfz::TrackText TrackAdditions(const Performance& perf, int t, const Sett
     seqlib::sfz::TrackText text;
     if (low_pass)
     {
-        const auto cutoff = [&settings](int v)
+        const double open = 1200.0 * std::log2(static_cast<double>(kSfzLowPassOpen) / kCutoffBase);
+        const auto cutoff = [open, &settings](int v)
         {
             const int index = TrackFilters(0x40 - v, 0, 0, settings).low_pass;
-            return index < 0 ? 0.0 : SfzLowPassCutoff(index, settings) / static_cast<double>(kCutoffSpan);
+            return (index < 0 ? open : open + SfzLowPassCutoff(index, settings)) / kCutoffSpan;
         };
         text.curves += Curve(kLowPassCurve,
-                             "Low-pass cutoff by controller value: units of 12000 cents relative to 20 kHz", cutoff);
+                             "Low-pass cutoff by controller value: units of 9600 cents relative to 1000 Hz", cutoff);
     }
     if (biquad != 0)
     {
         auto step = [biquad, &settings](int v)
         {
-            return SfzBiquadStep(biquad, TrackFilters(0x40, biquad, std::max(v, 1), settings).biquad_step, settings);
+            return BiquadStep(biquad, v, settings);
         };
-        text.curves += Curve(kBiquadCutoffCurve, "Biquad cutoff: units of 12000 cents relative to 1000 Hz",
+        const int span = ResonanceSpan(biquad, settings);
+        const std::string resonance = "Biquad resonance (Q in dB): units of " + std::to_string(span) + " dB";
+        text.curves += Curve(kBiquadCutoffCurve, "Biquad cutoff: units of 9600 cents relative to 1000 Hz",
                              [&](int v) { return step(v).cutoff / static_cast<double>(kCutoffSpan); });
-        text.curves += Curve(kBiquadResonanceCurve, "Biquad resonance (Q in dB): units of 60 dB",
-                             [&](int v) { return step(v).resonance / 100.0 / kResonanceSpan; });
+        text.curves +=
+            Curve(kBiquadResonanceCurve, resonance.c_str(), [&](int v) { return step(v).resonance / 100.0 / span; });
         text.curves += Curve(kBiquadGainCurve, "Biquad gain: units of 2 dB",
                              [&](int v) { return step(v).gain / 100.0 / kGainSpan; });
     }
     if (low_pass)
     {
         const std::string cc = std::to_string(kSfzLowPassController);
-        text.global = "fil_type=lpf_1p cutoff=" + std::to_string(kSfzLowPassOpen) + " cutoff_oncc" + cc + "=" +
+        text.global = "fil_type=lpf_1p cutoff=" + std::to_string(kCutoffBase) + " cutoff_oncc" + cc + "=" +
                       std::to_string(kCutoffSpan) + " cutoff_curvecc" + cc + "=" + std::to_string(kLowPassCurve) + "\n";
     }
 
@@ -207,9 +251,9 @@ const SfzWave& SfzSampleSet::Get(std::pair<uint32_t, uint32_t> key, const std::f
 std::string SfzRegionStart(const std::string& sample, std::pair<int, int> keys, std::pair<int, int> velocities,
                            double pan)
 {
-    std::string s = "<region> sample=" + sample + " lokey=" + std::to_string(keys.first) +
-                    " hikey=" + std::to_string(keys.second) + " lovel=" + std::to_string(velocities.first) +
-                    " hivel=" + std::to_string(velocities.second);
+    std::string s =
+        "<region> sample=" + sample + " lokey=" + std::to_string(keys.first) + " hikey=" + std::to_string(keys.second) +
+        " lovel=" + std::to_string(std::max(velocities.first, 1)) + " hivel=" + std::to_string(velocities.second);
     const int pan_tenths = static_cast<int>(std::lround(seqlib::sf2::SoundFontPan(pan) * 1000.0));
     if (pan_tenths != 0)
     {
@@ -221,13 +265,8 @@ std::string SfzRegionStart(const std::string& sample, std::pair<int, int> keys, 
 
 std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const ResamplingRegion& region, int slot)
 {
-    std::string s = " " + FilterOpcode("fil", slot) + "_type=" + (filter.sfz_two_pole ? "lpf_2p" : "lpf_1p") + " " +
-                    FilterOpcode("cutoff", slot) + "=" +
-                    Number(ResamplingCutoffHz(filter.sfz_cutoff, region.original_key, region), 1);
-    if (filter.sfz_two_pole)
-    {
-        s += " " + FilterOpcode("resonance", slot) + "=" + Number(filter.sfz_resonance, 1);
-    }
+    const std::string s = " " + FilterOpcode("fil", slot) + "_type=lpf_1p " + FilterOpcode("cutoff", slot) + "=" +
+                          Number(ResamplingCutoffHz(filter.sfz_cutoff, region.original_key, region), 1);
 
     return s + " " + FilterOpcode("fil", slot) + "_keytrack=100 " + FilterOpcode("fil", slot) +
            "_keycenter=" + std::to_string(region.original_key);
@@ -270,8 +309,10 @@ std::string SfzPitchOpcodes(uint8_t original_key, float tune)
 
 std::string SfzVolumeOpcode(uint8_t volume, double gain_db, bool silent, int16_t lift)
 {
-    // The region's linear volume, in hundredths of a dB. A lift raises it up to full level (PresetKey::lift).
-    double level = volume != 0 ? 2000.0 * std::log10(volume / 127.0) : 0.0;
+    // The region's linear volume, in hundredths of a dB, up to 6 dB. A lift raises it up to full level
+    // (PresetKey::lift).
+    constexpr double kTopLevel = 600.0;
+    double level = volume != 0 ? std::min(kTopLevel, 2000.0 * std::log10(volume / 127.0)) : 0.0;
     if (lift > 0)
     {
         level = std::min(0.0, level + 10.0 * lift);
@@ -334,16 +375,15 @@ std::string InstrumentFile(const PresetKey& key, const std::string& name, const 
                            const Settings& settings, const std::string& program, const PresetRegionsFunction& regions)
 {
     // The frame of seqlib's track files: the samples' folder, CC10's pan curve, the bend range, and CC7, CC10 and CC11
-    // without smoothing. A track's bend range starts at 2 semitones. sfizz divides the pitch wheel's values by 8191,
-    // and a bend's full range has 8192 steps.
+    // without smoothing. A track's bend range starts at 2 semitones. SFZ's documentation gives bend ranges in whole
+    // cents.
     constexpr int kPanCurve = 7;
     constexpr int kBendRange = 2;
-    constexpr double kBendScale = 8191.0 / 8192.0;
     std::string s = "// " + seqlib::sfz::CommentText(name) + " of " + seqlib::sfz::CommentText(title) +
                     ", converted by " + program + ".\n\n";
     s += "<control>\ndefault_path=../" + seqlib::sfz::kSamplesFolder + "/\nhint_ram_based=1\n\n";
     s += Curve(kPanCurve, "CC10 to pan", [](int v) { return (v - 64) / 64.0; });
-    const std::string bend = Number(kBendRange * 100.0 * kBendScale, 6);
+    const std::string bend = std::to_string(kBendRange * 100);
     s += "<global>\nbend_up=" + bend + " bend_down=-" + bend + "\n";
     s += "pan_oncc10=100 pan_curvecc10=" + std::to_string(kPanCurve) + " pan_smoothcc10=0\n";
     s += "amplitude_oncc7=100 amplitude_curvecc7=4 amplitude_smoothcc7=0 amplitude_oncc11=100 amplitude_curvecc11=4 "

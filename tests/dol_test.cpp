@@ -24,6 +24,7 @@ namespace
 
 using ntdlib::testing::SetDolSection;
 using xsflib::testing::Check;
+using xsflib::testing::ErrorOf;
 
 // A DOL with three sections after its 0x100-byte header. Text section 0 holds 0x20 bytes at file offset 0x100, loaded
 // at 0x80003100. Text section 1 holds 0x10 bytes at file offset 0x130, loaded straight after text section 0. Data
@@ -97,15 +98,8 @@ void TestParseMain()
 
     Check(dol.Sections().size() == 3 && dol.Entry() == 0x80003100, "ParseMain reads a DOL as Parse does");
 
-    std::string message;
-    try
-    {
-        ntdlib::Dol::ParseMain(std::span(file).first(0xff));
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        message = e.what();
-    }
+    const std::string message =
+        ErrorOf<xsflib::FormatError>([&] { ntdlib::Dol::ParseMain(std::span(file).first(0xff)); });
     Check(message == "main.dol isn't a DOL", "ParseMain throws FormatError for a file shorter than a DOL's header");
 }
 

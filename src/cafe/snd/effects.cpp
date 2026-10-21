@@ -2,15 +2,24 @@
 
 #include "ntdlib/cafe/snd/effects.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/axfx/axfx.h"
+#include "ntdlib/cafe/axfx/chorus.h"
+#include "ntdlib/cafe/axfx/delay.h"
+#include "ntdlib/cafe/axfx/reverb_hi.h"
+#include "ntdlib/cafe/axfx/reverb_std.h"
+#include "ntdlib/cafe/snd/effect_setup.h"
+#include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/nwsnd/console.h"
 
 namespace ntdlib::cafe::snd
@@ -173,9 +182,11 @@ Effects::Effects(ax::System& system, const std::vector<EffectSetup>& setups, con
     {
         const Bus& bus = buses_[i];
         system.SetAuxReturnVolume(bus.device, 0, bus.bus, ax::kUnityVolume);
-        system.RegisterAuxCallback(bus.device, 0, bus.bus,
-                                   [this, i](std::span<int32_t* const> channels, uint32_t samples)
-                                   { Run(buses_[i], channels, samples); });
+        const auto callback = [this, i](std::span<int32_t* const> channels, uint32_t samples)
+        {
+            Run(buses_[i], channels, samples);
+        };
+        system.RegisterAuxCallback(bus.device, 0, bus.bus, callback);
     }
 }
 
@@ -189,7 +200,7 @@ Effects::~Effects()
 
 Effects::Snapshot Effects::Save() const
 {
-    Snapshot snapshot{this, {}};
+    Snapshot snapshot;
     for (const Bus& bus : buses_)
     {
         snapshot.models.push_back(bus.models);

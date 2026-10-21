@@ -10,6 +10,8 @@
 #include <span>
 #include <string>
 
+#include "xsflib/utf8.h"
+
 #include "disc/cp932.h"
 
 namespace ntdlib::disc::detail
@@ -64,7 +66,7 @@ std::string DecodeShiftJis(std::span<const uint8_t> text)
         }
         if (byte >= 0xA1 && byte <= 0xDF)
         {
-            AppendUtf8(out, 0xFF61 + (byte - 0xA1u));
+            xsflib::AppendUtf8(out, 0xFF61 + (byte - 0xA1u));
             continue;
         }
 
@@ -79,7 +81,7 @@ std::string DecodeShiftJis(std::span<const uint8_t> text)
         const uint8_t trail = text[i + 1];
         if (const uint16_t code = Cp932(byte, trail))
         {
-            AppendUtf8(out, code);
+            xsflib::AppendUtf8(out, code);
             ++i;
         }
         else
@@ -109,37 +111,11 @@ std::string DecodeWindows1252(std::span<const uint8_t> text)
         }
         else
         {
-            AppendUtf8(out, code);
+            xsflib::AppendUtf8(out, code);
         }
     }
 
     return out;
-}
-
-void AppendUtf8(std::string& out, uint32_t code)
-{
-    if (code < 0x80)
-    {
-        out += static_cast<char>(code);
-    }
-    else if (code < 0x800)
-    {
-        out += static_cast<char>(0xC0 | code >> 6);
-        out += static_cast<char>(0x80 | (code & 0x3F));
-    }
-    else if (code < 0x10000)
-    {
-        out += static_cast<char>(0xE0 | code >> 12);
-        out += static_cast<char>(0x80 | (code >> 6 & 0x3F));
-        out += static_cast<char>(0x80 | (code & 0x3F));
-    }
-    else
-    {
-        out += static_cast<char>(0xF0 | code >> 18);
-        out += static_cast<char>(0x80 | (code >> 12 & 0x3F));
-        out += static_cast<char>(0x80 | (code >> 6 & 0x3F));
-        out += static_cast<char>(0x80 | (code & 0x3F));
-    }
 }
 
 } // namespace ntdlib::disc::detail

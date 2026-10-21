@@ -10,12 +10,14 @@
 #include <cstdint>
 #include <limits>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/nwsnd/util.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -309,12 +311,12 @@ public:
 
     void ChannelEvent(int, int, Channel&, Channel::CallbackStatus status)
     {
-        last_status = status;
-        ++callbacks;
+        last_status_ = status;
+        ++callbacks_;
     }
 
-    Channel::CallbackStatus last_status = Channel::CallbackStatus::kStopped;
-    int callbacks = 0;
+    Channel::CallbackStatus last_status_ = Channel::CallbackStatus::kStopped;
+    int callbacks_ = 0;
 
 private:
     ChannelManager channels_{24};
@@ -394,7 +396,7 @@ void TestChannelUpdate()
     channel->OnVoiceEvent(engine, ntdlib::nwsnd::VoiceCallbackStatus::kFinishWave);
 
     XSFLIB_CHECK(engine.Channels().ActiveCount() == 0 && voice.freed);
-    XSFLIB_CHECK(engine.callbacks == 1 && engine.last_status == Channel::CallbackStatus::kFinish);
+    XSFLIB_CHECK(engine.callbacks_ == 1 && engine.last_status_ == Channel::CallbackStatus::kFinish);
 }
 
 } // namespace

@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/disc/header.h"
 #include "ntdlib/dsp/dsp.h"
 #include "ntdlib/dsp/memory.h"
@@ -28,7 +30,6 @@
 #include "ntdlib/flipper/registers.h"
 #include "ntdlib/ppc/cpu.h"
 #include "ntdlib/types.h"
-#include "xsflib/bytes.h"
 
 namespace ntdlib::flipper
 {
@@ -82,6 +83,9 @@ constexpr uint32_t kBusClock = 0x800000f8;
 constexpr uint32_t kCpuClock = 0x800000fc;
 
 } // namespace low
+
+// The Wii's bus clock, in Hz. The OS stores it at low::kBusClock.
+inline constexpr uint32_t kWiiBusClockHz = 243'000'000;
 
 // The console's values for the boot's low memory (see MachineBase::LoadBootInfo).
 struct BootInfo

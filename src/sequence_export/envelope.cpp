@@ -8,13 +8,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <type_traits>
 #include <vector>
 
+#include "seqlib/sf2/units.h"
+
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
-#include "seqlib/sf2/units.h"
+#include "ntdlib/sequence_export/settings.h"
 
 namespace ntdlib::sequence_export
 {
@@ -297,18 +300,19 @@ double Sf2AttackMs(const EnvelopeValues& v, const Settings& settings)
 
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& v, const Settings& settings)
 {
-    // sfizz multiplies amplitude by exp(-9 / (time * rate)) per sample: a fall of 9 * 200 / ln(10) tenths of a dB over
-    // the decay or release time.
-    constexpr double kSfizzFall = 9.0 * 200.0 / 2.302585092994046;
+    // sfzformat.com's ampeg_attack page gives a decay's or release's step as close to exp(-8 / (time * rate)) a sample.
+    // The stage then falls 8 * 200 / ln(10) tenths of a dB over its time. sfizz 1.2.3 steps by exp(-9 / (time * rate)).
+    // Its decays and releases fall 12.5 % faster than the page gives.
+    constexpr double kSfzFall = 8.0 * 200.0 / 2.302585092994046;
 
     const double scale = settings.env_time_scale;
     SfzEnvelope e;
     const double attack_ms = v.attack < 127 ? AttackMs(v.attack) * scale : 0.0;
     e.attack = Sf2AttackMs(v, settings) / 1000.0;
     e.hold = (nwsnd::HoldMs(v.hold) * scale + attack_ms * (1.0 - kAttackRamp)) / 1000.0;
-    e.decay = kSfizzFall / DecayRate(v.decay, settings.engine) * scale / 1000.0;
+    e.decay = kSfzFall / DecayRate(v.decay, settings.engine) * scale / 1000.0;
     e.sustain = 100.0 * std::pow(10.0, nwsnd::DecibelSquare(v.sustain) / 200.0);
-    e.release = kSfizzFall / DecayRate(v.release, settings.engine) * scale / 1000.0;
+    e.release = kSfzFall / DecayRate(v.release, settings.engine) * scale / 1000.0;
 
     return e;
 }

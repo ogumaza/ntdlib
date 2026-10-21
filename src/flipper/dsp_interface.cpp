@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <span>
 
 #include "ntdlib/dsp/dsp.h"
 #include "ntdlib/dsp/memory.h"

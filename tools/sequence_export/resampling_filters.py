@@ -33,8 +33,8 @@ kernel 0. Half of the second range lies above 2. Rates there count 0.4 times as 
 The filters:
 - SoundFont: FluidSynth's cookbook low-pass at a resonance of 0 (Q = 10^(-3.01 / 20)), with the cutoff held to 0.45 of
   the rate. A higher resonance would change the voice's level. FluidSynth divides the gain by the square root of Q.
-- SFZ: sfizz's lpf_2p, a cookbook low-pass with Q = 10^(resonance / 20), or sfizz's lpf_1p, a one-pole low-pass with
-  its pole at exp(-2 pi cutoff / rate). sfizz holds the cutoff to 20 kHz. The script takes the better of the two.
+- SFZ: sfizz's lpf_1p, a one-pole low-pass with its pole at exp(-2 pi cutoff / rate). sfizz holds the cutoff to
+  20 kHz.
 
 AX's sets are fitted at the mixing rate of the Wii and the Wii U, 32 kHz, and again at the Switch's 48 kHz. The 3DS's
 kernels are fitted at the DSP's 32728 Hz. The script prints each fit's RMS error and, for a few points, the target and
@@ -54,7 +54,6 @@ except ImportError:
 ROM = Path(__file__).resolve().parents[2] / "include" / "ntdlib" / "dsp" / "coef_rom.h"
 FLOOR_DB = -30.0
 CUTOFFS = np.geomspace(0.05, 1.0, 1200)  # the cutoffs tried, as fractions of the played rate
-RESONANCES = np.arange(-200, 121, 2) / 10.0  # the lpf_2p resonances tried, in dB
 
 # The synths' default rates, and the highest cutoffs that they run.
 FLUIDSYNTH_RATE = 44100.0
@@ -170,20 +169,10 @@ def fit(name, above, response, rate_range, mixing_rate):
     sf2_cutoff, sf2_error = CUTOFFS[np.argmin(errors)], errors.min()
 
     sfizz = Points(response, rates, mixing_rate, SFIZZ_RATE)
-    sfz_cutoffs = np.minimum(cutoffs * sfizz.played, SFIZZ_HIGHEST)
-    errors = sfizz.errors(one_pole_db(sfizz.f, sfz_cutoffs, SFIZZ_RATE))
-    one_cutoff, one_error = CUTOFFS[np.argmin(errors)], errors.min()
-    two_error, two_cutoff, two_resonance = None, None, None
-    for resonance in RESONANCES:
-        errors = sfizz.errors(cookbook_db(sfizz.f, sfz_cutoffs, 10.0 ** (resonance / 20.0), SFIZZ_RATE))
-        if two_error is None or errors.min() < two_error:
-            two_error, two_cutoff, two_resonance = errors.min(), CUTOFFS[np.argmin(errors)], resonance
-
-    two_pole = two_error < one_error
-    sfz_cutoff, sfz_resonance = (two_cutoff, two_resonance) if two_pole else (one_cutoff, 0.0)
+    errors = sfizz.errors(one_pole_db(sfizz.f, np.minimum(cutoffs * sfizz.played, SFIZZ_HIGHEST), SFIZZ_RATE))
+    sfz_cutoff, sfz_error = CUTOFFS[np.argmin(errors)], errors.min()
     print(f"// {name} at {mixing_rate:.0f} Hz: SoundFont RMS {sf2_error:.2f} dB at {sf2_cutoff:.4f}, "
-          f"lpf_1p RMS {one_error:.2f} dB at {one_cutoff:.4f}, "
-          f"lpf_2p RMS {two_error:.2f} dB at {two_cutoff:.4f} and {two_resonance:.1f} dB", file=sys.stderr)
+          f"lpf_1p RMS {sfz_error:.2f} dB at {sfz_cutoff:.4f}", file=sys.stderr)
     for rate in (rates[0], rates[RATES // 2], rates[-1]):
         row = int(np.argmin(np.abs(rates - rate)))
         played = fluidsynth.played[row, 0]
@@ -191,12 +180,10 @@ def fit(name, above, response, rate_range, mixing_rate):
             column = int(np.argmin(np.abs(fluidsynth.f[0] - f)))
             f = fluidsynth.f[0, column]
             sf2 = cookbook_db(f, min(sf2_cutoff * played, FLUIDSYNTH_HIGHEST), FLUIDSYNTH_Q, FLUIDSYNTH_RATE)
-            sfz_hz = min(sfz_cutoff * played, SFIZZ_HIGHEST)
-            sfz = (cookbook_db(f, sfz_hz, 10.0 ** (sfz_resonance / 20.0), SFIZZ_RATE) if two_pole else
-                   one_pole_db(f, sfz_hz, SFIZZ_RATE))
+            sfz = one_pole_db(f, min(sfz_cutoff * played, SFIZZ_HIGHEST), SFIZZ_RATE)
             print(f"//   rate {rate:.3f}, {f:5.0f} Hz: target {fluidsynth.target[row, column]:6.2f} dB, "
                   f"SoundFont {sf2:6.2f} dB, SFZ {sfz:6.2f} dB", file=sys.stderr)
-    values = [above, f"{sf2_cutoff:.4f}", "true" if two_pole else "false", f"{sfz_cutoff:.4f}", f"{sfz_resonance:.1f}"]
+    values = [above, f"{sf2_cutoff:.4f}", f"{sfz_cutoff:.4f}"]
     return "{" + ", ".join(values) + "}"
 
 

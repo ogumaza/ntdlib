@@ -13,12 +13,13 @@
 #include <limits>
 #include <string>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/util.h"
-#include "xsflib/testing/check.h"
 
 using xsflib::testing::Check;
 
@@ -52,13 +53,13 @@ void TestArithmetic()
     // The track's float volume multiplies after the main volume and before the sound's volume
     // (SeqTrack::UpdateChannelParam, 0x800403e0). The tempo ratio multiplies before the division by 60,000
     // (SeqPlayer::UpdateTick, 0x8003eec4). Both products follow the game's order.
-    const float track = 100.0f / 127.0f;
-    const float track2 = 90.0f / 127.0f;
-    const float main = 120.0f / 127.0f;
+    const float kTrack = 100.0f / 127.0f;
+    const float kTrack2 = 90.0f / 127.0f;
+    const float kMain = 120.0f / 127.0f;
     float in_order = 1.0f;
-    in_order *= track * track;
-    in_order *= track2 * track2;
-    in_order *= main * main;
+    in_order *= kTrack * kTrack;
+    in_order *= kTrack2 * kTrack2;
+    in_order *= kMain * kMain;
     in_order *= 0.3f;
     in_order *= Wii::PlayerVolume(100);
     XSFLIB_CHECK(Bits(Wii::TrackVolume(100, 90, 120, 0.3f, Wii::PlayerVolume(100))) == Bits(in_order));
@@ -254,6 +255,7 @@ void TestRatios()
         info.curve = curve;
         info.center_zero_db = center_zero_db;
         info.clamp_to_unity = clamp_to_unity;
+
         return Bits(CalcPanRatio<Wii>(value, info, ntdlib::nwsnd::OutputMode::kStereo));
     };
 
@@ -400,8 +402,8 @@ public:
 
     void ChannelEvent(int, int, Channel&, Channel::CallbackStatus status)
     {
-        last_status = status;
-        ++callbacks;
+        last_status_ = status;
+        ++callbacks_;
     }
 
     // A note of player 0's track 0 that plays a wave for ever: a note's volume of 0.5 on a track's volume of 0.6, with
@@ -422,8 +424,8 @@ public:
         return voices_.At(channel.voice);
     }
 
-    Channel::CallbackStatus last_status = Channel::CallbackStatus::kStopped;
-    int callbacks = 0;
+    Channel::CallbackStatus last_status_ = Channel::CallbackStatus::kStopped;
+    int callbacks_ = 0;
 
 private:
     Wii::Build build_;
@@ -475,7 +477,7 @@ Ended ReleaseSilentTrack(const Wii::Build& build, bool owned)
     channel.Release(engine);
     engine.Channels().UpdateAllChannel(engine);
 
-    return {engine.Channels().ActiveCount(), engine.callbacks};
+    return {engine.Channels().ActiveCount(), engine.callbacks_};
 }
 
 void TestReleasedNotes()
@@ -508,8 +510,8 @@ void TestReleasedNotes()
         ++frames;
     }
 
-    XSFLIB_CHECK(silent && frames == 2 && engine.callbacks == 1 &&
-                 engine.last_status == Channel::CallbackStatus::kStopped);
+    XSFLIB_CHECK(silent && frames == 2 && engine.callbacks_ == 1 &&
+                 engine.last_status_ == Channel::CallbackStatus::kStopped);
 }
 
 void TestVolumeLfo()

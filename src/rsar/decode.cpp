@@ -4,6 +4,10 @@
 
 #include "ntdlib/rsar/decode.h"
 
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/wave/adpcm.h"
+#include "ntdlib/wave/decode.h"
+
 namespace ntdlib::rsar
 {
 namespace

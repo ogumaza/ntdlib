@@ -6,13 +6,18 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
-#include "ntdlib/rsar/reference.h"
 #include "xsflib/binary.h"
 #include "xsflib/utf8.h"
+
+#include "ntdlib/rsar/reference.h"
 
 namespace ntdlib::rsar
 {
@@ -377,6 +382,7 @@ Bank Bank::Parse(std::span<const uint8_t> file, const ReadOptions& options)
     {
         throw xsflib::FormatError("invalid instrument table");
     }
+
     for (uint32_t i = 0; i < count; i++)
     {
         bank.instruments_.push_back(read_node(base + 4 + i * std::size_t{8}, 0, read_node));
@@ -394,6 +400,7 @@ Bank Bank::Parse(std::span<const uint8_t> file, const ReadOptions& options)
         {
             throw xsflib::FormatError("invalid wave table");
         }
+
         for (uint32_t i = 0; i < waves; i++)
         {
             bank.wave_infos_.push_back(wave_base + ReadRef(r, wave_base + 4 + i * std::size_t{8}).offset);
@@ -601,6 +608,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
     {
         throw xsflib::FormatError(Short(options_) ? "no INFO block" : "the sound archive has no INFO block");
     }
+
     if (options_.playback_fields)
     {
         info_size_ = r.U32(0x1c);

@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "seqlib/file_name.h"
-#include "seqlib/loop.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/midi/reader.h"
 #include "seqlib/read_error.h"
@@ -47,6 +46,7 @@
 #include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
+#include "ntdlib/sound_build.h"
 #include "ntdlib/testing/sar_files.h"
 
 namespace ntdlib::sequence_export::tests
@@ -246,12 +246,12 @@ inline std::string Sf2Problem(const std::vector<uint8_t>& d)
 // amount of its modulator to initialFilterFc. -1 for a generator or a modulator that the zone lacks.
 struct ZoneCutoff
 {
+    bool operator==(const ZoneCutoff&) const = default;
+
     std::pair<int, int> keys;
     int cutoff = -1;
     int source = -1;
     int amount = -1;
-
-    bool operator==(const ZoneCutoff&) const = default;
 };
 
 // The ZoneCutoff of each instrument zone of the SoundFont `d` that plays a sample, in order.
@@ -560,6 +560,7 @@ inline std::vector<uint8_t> Fsar(const std::vector<ArchiveFile>& archive_files, 
             {
                 throw std::logic_error("Fsar takes bank item IDs or 0xFFFFFFFF in a sequence's bank slots");
             }
+
             sound.banks.push_back(id == 0xffffffff ? id : id & 0x00ffffff);
         }
         spec.sounds.push_back(sound);
@@ -700,8 +701,8 @@ inline std::vector<std::pair<double, float>> PitchPlaces(const Performance& p, i
 }
 
 // True if `pitches` glide up 12 semitones over 120 ms with a pitch for each sound frame. Each frame moves the sweep on
-// by an envelope step: 40 frames on the Wii U, and 24 on the Switch and the 3DS. Each pitch must be where its frame
-// starts at tempo 120. That tempo is 0.096 ticks a millisecond.
+// by an envelope step: 40 frames on the Wii and the Wii U, and 24 on the Switch and the 3DS. Each pitch must be where
+// its frame starts at tempo 120. That tempo is 0.096 ticks a millisecond.
 inline bool GlidesEveryFrame(const std::vector<std::pair<double, float>>& pitches)
 {
     const int step_ms = console->settings.env_step_ms;

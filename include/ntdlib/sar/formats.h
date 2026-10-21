@@ -3,9 +3,9 @@
 // NintendoWare sound format readers: the 3DS's BCSAR archives and their CSEQ, CBNK, CWAR, CWAV, CWSD and CGRP files,
 // and the BFSAR archives of the Wii U and the Switch, with their FSEQ, FBNK, FWAR, FWAV, FWSD and FGRP files. The F
 // formats are the 3DS's C formats with new names, laid out the same way. Each file is in the byte order that its byte
-// order mark gives: little-endian on the 3DS and the Switch, big-endian on the Wii U. The readers support CSAR 2.3 on
-// the 3DS, FSAR 2.0.0 to 2.3.0 on the Wii U, and FSAR 2.2.0 and 2.5.0 on the Switch. The layouts follow nw::snd's
-// readers on the 3DS, except the wave sound file's.
+// order mark gives: little-endian on the 3DS and the Switch, big-endian on the Wii U. The readers support CSAR 2.0.0 to
+// 2.3.2 on the 3DS, FSAR 2.0.0 to 2.3.0 on the Wii U, and FSAR 2.2.0 and 2.5.0 on the Switch. The layouts follow
+// nw::snd's readers on the 3DS, except the wave sound file's.
 
 #pragma once
 
@@ -39,6 +39,9 @@ constexpr uint32_t kNoItem = 0xFFFFFFFF;
 
 // A group's file ID when the game keeps the group outside the archive (see SoundArchive::ExternalGroups).
 constexpr uint32_t kExternalGroupFile = 0xFFFFFFFF;
+
+// The number of a sequence sound's bank slots (SoundInfo::banks). A track selects one of them with a command.
+constexpr int kBankSlots = 4;
 
 // The type of item `id`, from its top byte.
 constexpr uint32_t ItemType(uint32_t id)
@@ -128,6 +131,8 @@ enum class WaveEncoding : uint8_t
 // read the first frame's predictor and scale, and the decoder's state at the loop's start.
 struct DspAdpcmInfo
 {
+    friend bool operator==(const DspAdpcmInfo&, const DspAdpcmInfo&) = default;
+
     std::array<int16_t, 16> coefs{};
     uint16_t pred_scale = 0;
     int16_t yn1 = 0, yn2 = 0;
@@ -242,11 +247,13 @@ struct Bank
     std::vector<std::optional<Instrument>> instruments;
 };
 
-// A wave sound file (CWSD or FWSD): the waves that its wave sounds play, and the wave sounds. A wave sound plays its
-// tracks. Each note event of a track plays one of the sound's notes. A note holds its wave and its settings as a bank's
-// velocity region holds them. The INFO block (0x6800) holds a reference to a table of the waves (0x0100) and one to a
-// table of references to the wave sounds (0x0101). A wave sound (0x4900) holds references to its settings (0x4901), to
-// its tracks (0x4903) and to its notes (0x4902). A track holds a reference to its note events (0x4904).
+// A wave sound file (CWSD or FWSD): the waves that its wave sounds play, and the wave sounds. A wave sound holds tracks
+// of note events. Each note event plays one of the sound's notes. A note holds its wave and its settings as a bank's
+// velocity region holds them. The sound libraries of the Wii U and the Switch play only the wave of a sound's first
+// note, once, with the sound's settings (see nwsnd/wave_sound_player.h). The INFO block (0x6800) holds a reference to a
+// table of the waves (0x0100) and one to a table of references to the wave sounds (0x0101). A wave sound (0x4900) holds
+// references to its settings (0x4901), to its tracks (0x4903) and to its notes (0x4902). A track holds a reference to
+// its note events (0x4904).
 struct WaveSoundFile
 {
     // A note event: its position, its length and the note that it plays, an index into WaveSound::notes. The reader
@@ -258,12 +265,21 @@ struct WaveSoundFile
         uint32_t note = 0;
     };
 
-    // A wave sound: its pan, its pitch and its envelope, its tracks of note events and its notes. A note's
-    // `wave_id_index` is an index into WaveSoundFile::waves. The reader leaves out the sound's sends and filter.
+    // A wave sound: its pan, its surround pan, its pitch, its sends, its filters and its envelope, its tracks of note
+    // events and its notes. A note's `wave_id_index` is an index into WaveSoundFile::waves. The sends are a main send
+    // and a send to each aux bus, A to C. A low-pass value of 64 filters nothing. The reader reads the surround pan,
+    // the sends and the filters on the Wii U and the Switch only, and the filters only from version 1.1.0 of the file
+    // on, as the sound libraries there read them.
     struct WaveSound
     {
         uint8_t pan = 64;
+        uint8_t span = 0;
         float pitch = 1.0f;
+        uint8_t main_send = 127;
+        std::array<uint8_t, 3> aux_sends{};
+        uint8_t low_pass = 64;
+        uint8_t biquad_type = 0;
+        uint8_t biquad_value = 0;
         Adshr adshr;
         std::vector<std::vector<NoteEvent>> tracks;
         std::vector<VelocityRegion> notes;
@@ -302,6 +318,40 @@ enum class SoundType
     kUnknown
 };
 
+// A track of a stream sound: the channels of the stream that it plays, with its volume, its pan, its span and its
+// flags. From FSAR 2.1.0 on, the archive also gives its sends and its filters. The sends are a main send and a send to
+// each aux bus, A to C. A low-pass value of 64 filters nothing.
+struct StreamTrackInfo
+{
+    friend bool operator==(const StreamTrackInfo&, const StreamTrackInfo&) = default;
+
+    std::vector<uint8_t> channels;
+    uint8_t volume = 127;
+    uint8_t pan = 64;
+    uint8_t span = 0;
+    uint8_t flags = 0;
+    uint8_t main_send = 127;
+    std::array<uint8_t, 3> aux_sends{};
+    uint8_t low_pass = 64;
+    uint8_t biquad_type = 0;
+    uint8_t biquad_value = 0;
+};
+
+// A stream sound's details on the Wii U and the Switch: the tracks that play when the sound starts, a bit each, the
+// number of the stream's channels, and the tracks. From FSAR 2.1.0 on, the archive also gives the sound's pitch and
+// its sends. The readers read at most 8 tracks, and 16 channels of a track.
+struct StreamSoundInfo
+{
+    friend bool operator==(const StreamSoundInfo&, const StreamSoundInfo&) = default;
+
+    uint16_t valid_tracks = 0;
+    uint16_t channel_count = 0;
+    float pitch = 1.0f;
+    uint8_t main_send = 127;
+    std::array<uint8_t, 3> aux_sends{};
+    std::vector<StreamTrackInfo> tracks;
+};
+
 // Sound metadata. Missing names are generated from type and index, e.g. SEQ_12. As in other item names, control
 // characters, line breaks and invalid UTF-8 bytes become '?'.
 struct SoundInfo
@@ -321,11 +371,17 @@ struct SoundInfo
     // Wave sounds only: the sound's place among the wave sounds of its wave sound file (WaveSoundFile::sounds).
     uint32_t wave_sound_index = 0;
 
+    // Stream sounds of the Wii U and the Switch only.
+    StreamSoundInfo stream;
+
     // Sequence sounds only.
     std::vector<uint32_t> banks; // up to four bank item IDs (0x03xxxxxx), or 0xFFFFFFFF for an empty slot
     uint32_t allocate_track_flags = 1;
     uint32_t start_offset = 0;
-    uint8_t channel_priority = 64;     // added to each track's priority
+
+    // Sequence sounds, and wave sounds of the Wii U and the Switch. A sequence adds the channels' priority to each
+    // track's priority. A wave sound's channel takes it plus 64, the priority of a track that sets none.
+    uint8_t channel_priority = 64;
     bool release_priority_fix = false; // a released channel keeps its priority
 };
 
@@ -358,6 +414,16 @@ struct GroupInfo
     uint32_t file_id = 0;
 };
 
+// A sound group: sounds with consecutive IDs that NintendoWare's tools build as a set, and the files that they play.
+// The wave sounds of a wave sound file make up such a set, for example.
+struct SoundGroupInfo
+{
+    std::string name;         // empty where the archive gives none
+    uint32_t first_sound = 0; // the index of its first sound among the archive's sounds
+    uint32_t last_sound = 0;  // the index of its last sound
+    std::vector<uint32_t> file_ids;
+};
+
 // A CSAR or FSAR archive's sound, bank and wave archive tables. Files may be stored directly in the archive, in groups
 // (CGRP or FGRP) inside it, or in group files that the game keeps beside it.
 class SoundArchive
@@ -378,6 +444,12 @@ public:
     const Options& ReadOptions() const
     {
         return options_;
+    }
+
+    // The archive's bytes, as Load took them.
+    std::span<const uint8_t> Bytes() const
+    {
+        return bytes_;
     }
 
     const std::vector<SoundInfo>& Sounds() const
@@ -405,6 +477,12 @@ public:
     const std::vector<GroupInfo>& Groups() const
     {
         return groups_;
+    }
+
+    // The sound groups, by their indexes in the table. With kReadPastDamage, a table that can't be read gives none.
+    const std::vector<SoundGroupInfo>& SoundGroups() const
+    {
+        return sound_groups_;
     }
 
     // The IDs of the files that group `group` of Groups() loads, in the order of its file's table. The game loads them
@@ -452,8 +530,8 @@ public:
     // for an external file, for a file in a group file added, or for a file absent from all readable groups.
     std::optional<std::size_t> FileOffset(uint32_t file_id) const;
 
-    // The path that the file table gives an external file. Read with kStopAtFirstProblem on the Wii U and the Switch.
-    // Empty for a file in the archive.
+    // The path that the file table gives an external file, such as a stream's, on the Wii U and the Switch. Empty for
+    // a file in the archive.
     std::string ExternalPath(uint32_t file_id) const;
 
     // True if any part of the file extends past the archive. For files stored only in groups, true if no readable group
@@ -515,6 +593,7 @@ private:
     std::vector<WaveArchiveInfo> wave_archives_;
     std::vector<PlayerInfo> players_;
     std::vector<GroupInfo> groups_;
+    std::vector<SoundGroupInfo> sound_groups_;
     std::vector<std::string> external_groups_;
     std::vector<FileEntry> files_;
     uint32_t version_ = 0;

@@ -13,13 +13,15 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/sarc.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/wave/adpcm.h"
-#include "xsflib/binary.h"
-#include "xsflib/testing/check.h"
 
 using namespace xsflib;
 
@@ -405,7 +407,7 @@ std::vector<uint8_t> SequenceFile(const Format& f, const std::vector<uint8_t>& c
     return w.bytes;
 }
 
-// A test file, either embedded or absent using one of the two supported location encodings.
+// A test file: embedded, absent using one of the two supported location encodings, or at a path outside the archive.
 struct ArchiveFile
 {
     enum Place
@@ -430,11 +432,22 @@ struct SequenceSound
     std::vector<uint32_t> banks = {};
 };
 
-// Test archive tables: sequences, bank files, wave archives, group files and item names keyed by ID. Group file ID
-// 0xFFFFFFFF means no file. Defaults allow partial designated initializers without warnings.
+// A test sound group: the indexes of its first and last sounds, and its file IDs. A damaged group's table of file IDs
+// gives a count that runs past the archive's end.
+struct SoundGroup
+{
+    uint32_t first = 0;
+    uint32_t last = 0;
+    std::vector<uint32_t> file_ids = {};
+    bool damaged = false;
+};
+
+// Test archive tables: sequences, sound groups, bank files, wave archives, group files and item names keyed by ID.
+// Group file ID 0xFFFFFFFF means no file. Defaults allow partial designated initializers without warnings.
 struct ArchiveLists
 {
     std::vector<SequenceSound> sequences = {};
+    std::vector<SoundGroup> sound_groups = {};
     std::vector<uint32_t> banks = {}, wave_archives = {}, groups = {};
     std::vector<std::pair<uint32_t, std::string>> names = {};
 };
@@ -445,8 +458,7 @@ std::vector<uint8_t> Archive(const Format& f, const std::vector<ArchiveFile>& fi
     Writer w = BinaryFileHeader(f, "SAR", lists.names.empty() ? 2 : 3);
     w.U32(0x08, f.version);
 
-    // INFO: eight table references followed by their tables. Sound sets and players are empty; player settings are
-    // zero.
+    // INFO: eight table references followed by their tables. Players are empty; player settings are zero.
     const std::size_t info = w.Add(8 + 8 * 8), body = info + 8;
     const uint16_t kTables[8] = {0x2100, 0x2104, 0x2101, 0x2103, 0x2105, 0x2102, 0x2106, 0x220b};
     std::size_t file_table = 0;
@@ -482,6 +494,37 @@ std::vector<uint8_t> Archive(const Format& f, const std::vector<ArchiveFile>& fi
                 {
                     w.U32(q + 24 + b * 4, sound.banks[b]);
                 }
+            }
+        }
+
+        if (kTables[i] == 0x2104)
+        {
+            // Sound group entry, as NintendoWare's tools lay out a wave sound set: the first and last sound IDs, a
+            // reference to the table of file IDs at +28, and a reference to the wave sound details after the table.
+            // The details refer to an empty table of wave archive IDs.
+            const std::vector<SoundGroup>& groups = lists.sound_groups;
+            w.U32(t, static_cast<uint32_t>(groups.size()));
+            const std::size_t refs = w.Add(groups.size() * 8);
+            for (std::size_t g = 0; g < groups.size(); g++)
+            {
+                const SoundGroup& group = groups[g];
+                const std::size_t details = 32 + group.file_ids.size() * 4;
+                const std::size_t e = w.Add(details + 16);
+                w.U16(refs + g * 8, 0x2204);
+                w.U32(refs + g * 8 + 4, static_cast<uint32_t>(e - t));
+                w.U32(e, 0x01000000 | group.first);
+                w.U32(e + 4, 0x01000000 | group.last);
+                w.U16(e + 8, 0x0100);
+                w.U32(e + 12, 28);
+                w.U16(e + 16, 0x2205);
+                w.U32(e + 20, static_cast<uint32_t>(details));
+                w.U32(e + 28, group.damaged ? 0x40000000 : static_cast<uint32_t>(group.file_ids.size()));
+                for (std::size_t k = 0; k < group.file_ids.size(); k++)
+                {
+                    w.U32(e + 32 + k * 4, group.file_ids[k]);
+                }
+                w.U16(e + details, 0x0100);
+                w.U32(e + details + 4, 12);
             }
         }
 
@@ -768,10 +811,10 @@ void TestUnreadableGroupTableIsReported(Flavor flavor)
 
     const SoundArchive a = SoundArchive::Load(w.bytes, OptionsOf(flavor));
 
-    const std::string error =
+    const std::string kError =
         "cannot read group table (read out of bounds at offset 2147483704); files stored only in groups may be missing";
     Check(Text(a.FileData(0)) == "stored" && a.FileData(3).empty() && !a.FileMissing(3) &&
-              a.GroupErrors() == std::vector<std::string>{error},
+              a.GroupErrors() == std::vector<std::string>{kError},
           "an unreadable group table (" + NameOf(flavor) + ")");
 }
 
@@ -852,8 +895,8 @@ void TestGroupFilesBesideTheArchiveAreAdded(Flavor flavor)
     const Format f = FormatOf(flavor);
     std::vector<ArchiveFile> files(1);
     files[0].place = ArchiveFile::kNullLocation;
-    SoundArchive archive = SoundArchive::Load(
-        Archive(f, files, {.groups = {0xffffffff}, .names = {{0x06000000, "GROUP_SE"}}}), OptionsOf(flavor));
+    const std::vector<uint8_t> bytes = Archive(f, files, {.groups = {0xffffffff}, .names = {{0x06000000, "GROUP_SE"}}});
+    SoundArchive archive = SoundArchive::Load(bytes, OptionsOf(flavor));
     const bool missing_before = archive.FileData(0).empty() && !archive.FileMissing(0);
     const std::vector<uint8_t> group = Group(f, {{0, "kept beside"}}, {});
 
@@ -866,6 +909,7 @@ void TestGroupFilesBesideTheArchiveAreAdded(Flavor flavor)
     Check(Text(archive.FileData(0)) == "kept beside" && refused == "bad magic, expected " + MagicOf(f, "GRP"),
           "its file once added" + on);
     Check(archive.GroupFiles() == std::vector<std::vector<uint8_t>>{group}, "the group file kept" + on);
+    Check(std::ranges::equal(archive.Bytes(), bytes), "the archive's bytes kept" + on);
 }
 
 void TestSarcFilesAreRead()
@@ -981,6 +1025,7 @@ void TestArchivesOfOtherConsolesAreRefused()
     auto with_magic = [](std::vector<uint8_t> bytes, const char* magic)
     {
         std::memcpy(bytes.data(), magic, 4);
+
         return bytes;
     };
     const std::vector<uint8_t> ctr = Archive(FormatOf(Flavor::kCtr), {});
@@ -1152,7 +1197,8 @@ void TestSarFilesBuildThe3dsFiles()
 void TestWaveSoundFilesAreRead(Flavor flavor)
 {
     // Two wave sounds: one with its settings, and one without them whose second track has no events. The archive gives
-    // each sound's place in the file, in both rules.
+    // each sound's place in the file, in both rules, and the channel priority of one. The 3DS's readers read neither
+    // the surround pan, the filters and the sends, nor a wave sound's channel priority.
     namespace sar_files = ntdlib::testing::sar_files;
     sar_files::Region pitched;
     pitched.wave = 1;
@@ -1161,7 +1207,10 @@ void TestWaveSoundFilesAreRead(Flavor flavor)
     panned.pan = 100;
     sar_files::WaveSoundSpec set;
     set.pan = 20;
+    set.span = 70;
     set.pitch = 1.5f;
+    set.filter = 50 | 2 << 8 | 90 << 16;
+    set.sends = {100, 4, 30, 40, 50, 60};
     set.adshr = std::array<uint8_t, 5>{1, 2, 3, 4, 5};
     set.tracks = {{{0.0f, 0.0f, 0}}};
     set.notes = {pitched};
@@ -1179,6 +1228,7 @@ void TestWaveSoundFilesAreRead(Flavor flavor)
     sar_files::SoundSpec second = first;
     second.name = "WSD_SET";
     second.wave_sound_index = 0;
+    second.channel_priority = 0x0130;
     sar_files::ArchiveSpec spec;
     spec.sounds = {first, second};
     spec.players = {{"PLAYER", 1}};
@@ -1196,6 +1246,12 @@ void TestWaveSoundFilesAreRead(Flavor flavor)
         Check(archive->Sounds().size() == 2 && archive->Sounds()[0].type == SoundType::kWaveSound &&
                   archive->Sounds()[0].wave_sound_index == 1 && archive->Sounds()[1].wave_sound_index == 0,
               console + ": the wave sounds' places in their file");
+        const bool ctr = flavor == Flavor::kCtr;
+        Check(archive->Sounds().size() == 2 && archive->Sounds()[0].channel_priority == 64 &&
+                  !archive->Sounds()[0].release_priority_fix &&
+                  archive->Sounds()[1].channel_priority == (ctr ? 64 : 48) &&
+                  archive->Sounds()[1].release_priority_fix == !ctr,
+              console + ": the wave sounds' channel priorities");
     }
     Check(read.waves.size() == 2 && read.waves[0].wave_archive_item == 0x05000000 && read.waves[0].index == 3 &&
               read.waves[1].wave_archive_item == 0x05000001 && read.waves[1].index == 0,
@@ -1208,10 +1264,18 @@ void TestWaveSoundFilesAreRead(Flavor flavor)
         Check(a.pan == 20 && a.pitch == 1.5f && a.adshr.attack == 1 && a.adshr.decay == 2 && a.adshr.sustain == 3 &&
                   a.adshr.hold == 4 && a.adshr.release == 5,
               console + ": a wave sound's settings");
+        const bool ctr = flavor == Flavor::kCtr;
+        Check(ctr ? a.span == 0 && a.low_pass == 64 && a.biquad_type == 0 && a.main_send == 127 &&
+                        a.aux_sends == std::array<uint8_t, 3>{}
+                  : a.span == 70 && a.low_pass == 50 && a.biquad_type == 2 && a.biquad_value == 90 &&
+                        a.main_send == 100 && a.aux_sends == std::array<uint8_t, 3>{30, 40, 50},
+              console + ": a wave sound's surround pan, filters and sends");
         Check(a.tracks.size() == 1 && a.tracks[0].size() == 1 && a.tracks[0][0].note == 0 && a.notes.size() == 1 &&
                   a.notes[0].wave_id_index == 1 && a.notes[0].original_key == 72,
               console + ": a wave sound's track and note");
-        Check(b.pan == 64 && b.pitch == 1.0f && b.adshr.attack == 127 && b.adshr.release == 127,
+        Check(b.pan == 64 && b.span == 0 && b.pitch == 1.0f && b.low_pass == 64 && b.biquad_type == 0 &&
+                  b.main_send == 127 && b.aux_sends == std::array<uint8_t, 3>{} && b.adshr.attack == 127 &&
+                  b.adshr.release == 127,
               console + ": a wave sound's default settings");
         Check(b.tracks.size() == 2 && b.tracks[0].size() == 2 && b.tracks[1].empty() && b.tracks[0][0].length == 1.0f &&
                   b.tracks[0][0].note == 1 && b.tracks[0][1].position == 0.5f && b.tracks[0][1].length == 0.25f &&
@@ -1314,6 +1378,7 @@ void TestStrictRulesRefuseOtherArchivesInTheirWords()
     auto with_magic = [](std::vector<uint8_t> bytes, const char* magic)
     {
         std::memcpy(bytes.data(), magic, 4);
+
         return bytes;
     };
     const std::vector<uint8_t> ctr = Archive(FormatOf(Flavor::kCtr), {});
@@ -1403,6 +1468,69 @@ void TestStrictRulesKeepTheArchivesNames(Flavor flavor)
     Check(strict.FindSound("Seq\n1") == 0u && !strict.FindSound("SEQ_0"), "FindSound" + on);
 }
 
+void TestSoundGroupsAreRead(Flavor flavor)
+{
+    // Both rules read the sound groups: the first named, the second without a name and with two files. A damaged table
+    // leaves none with kReadPastDamage, and stops the archive with kStopAtFirstProblem.
+    const Format f = FormatOf(flavor);
+    std::vector<ArchiveFile> files(3);
+    files[0].data = SequenceFile(f, {0xff});
+    files[1].data = Bytes("second");
+    files[2].data = Bytes("third");
+    const ArchiveLists kLists{.sequences = {{0, 0}, {0, 0}, {0, 0}},
+                              .sound_groups = {{0, 1, {0}}, {2, 2, {1, 2}}},
+                              .names = {{0x02000000, "WSDSET_FIRST"}}};
+    ArchiveLists damaged = kLists;
+    damaged.sound_groups[1].damaged = true;
+
+    const std::string on = " (" + NameOf(flavor) + ")";
+    for (const Options& options : {StrictOptionsOf(flavor), OptionsOf(flavor)})
+    {
+        const SoundArchive archive = SoundArchive::Load(Archive(f, files, kLists), options);
+        const std::vector<SoundGroupInfo>& groups = archive.SoundGroups();
+        Check(groups.size() == 2 && groups[0].name == "WSDSET_FIRST" && groups[1].name.empty(),
+              "the sound groups' names" + on);
+        Check(groups.size() == 2 && groups[0].first_sound == 0 && groups[0].last_sound == 1 &&
+                  groups[1].first_sound == 2 && groups[1].last_sound == 2,
+              "the sound groups' sounds" + on);
+        Check(groups.size() == 2 && groups[0].file_ids == std::vector<uint32_t>{0} &&
+                  groups[1].file_ids == std::vector<uint32_t>{1, 2},
+              "the sound groups' files" + on);
+    }
+    const SoundArchive lenient = SoundArchive::Load(Archive(f, files, damaged), OptionsOf(flavor));
+    Check(lenient.SoundGroups().empty() && lenient.Sounds().size() == 3, "a damaged table of sound groups" + on);
+    Check(!ErrorOf([&] { SoundArchive::Load(Archive(f, files, damaged), StrictOptionsOf(flavor)); }).empty(),
+          "a damaged table of sound groups with kStopAtFirstProblem" + on);
+}
+
+void TestSarFilesBuildSoundGroups(Flavor flavor)
+{
+    // sar_files lays out a named sound group and an unnamed one, and both rules read them back.
+    namespace sar_files = ntdlib::testing::sar_files;
+    sar_files::ArchiveSpec spec;
+    for (const char* name : {"WSD_A", "WSD_B", "WSD_C"})
+    {
+        sar_files::SoundSpec sound;
+        sound.name = name;
+        sound.kind = sar_files::SoundSpec::kWaveSound;
+        spec.sounds.push_back(sound);
+    }
+    spec.files = {{{1, 2, 3, 4}, "", false}, {{5, 6, 7, 8}, "", false}};
+    spec.sound_groups = {{"WSDSET_AB", 0, 1, {0}}, {"", 2, 2, {1}}};
+
+    const std::string on = " (" + NameOf(flavor) + ")";
+    for (const Options& options : {StrictOptionsOf(flavor), OptionsOf(flavor)})
+    {
+        const SoundArchive archive = SoundArchive::Load(sar_files::Archive(flavor, spec), options);
+        const std::vector<SoundGroupInfo>& groups = archive.SoundGroups();
+        Check(groups.size() == 2 && groups[0].name == "WSDSET_AB" && groups[0].first_sound == 0 &&
+                  groups[0].last_sound == 1 && groups[0].file_ids == std::vector<uint32_t>{0} &&
+                  groups[1].name.empty() && groups[1].first_sound == 2 && groups[1].last_sound == 2 &&
+                  groups[1].file_ids == std::vector<uint32_t>{1},
+              "sar_files' sound groups" + on);
+    }
+}
+
 void TestStrictRulesCountRegionsAsTheyComeToThem(Flavor flavor)
 {
     const std::vector<uint8_t> bank = SharedRegionsBank(FormatOf(flavor), 2);
@@ -1436,8 +1564,9 @@ void TestKeyBoundsFollowTheRules(Flavor flavor)
 
 void TestStrictRulesReadTheirFields()
 {
-    // On the Wii U and the Switch, kStopAtFirstProblem reads labels and external paths. On every console, it reads the
-    // ADPCM state at the loop, and takes a file past the archive's end as truncation.
+    // On the Wii U and the Switch, kStopAtFirstProblem reads labels, and both rules read external paths. On every
+    // console, kStopAtFirstProblem reads the ADPCM state at the loop, and takes a file past the archive's end as
+    // truncation.
     const Format cafe = FormatOf(Flavor::kCafe);
     const std::vector<uint8_t> sequence = LabelledSequenceFile(cafe, {0xff, 0xff}, {{"SEQ_MAIN", 1}});
     std::vector<int16_t> info(22, 0);
@@ -1468,7 +1597,11 @@ void TestStrictRulesReadTheirFields()
               lenient_wave.channels[0].adpcm->loop_pred_scale == 0,
           "the ADPCM state at the loop");
     Check(archive.Truncated() && archive.FileData(0).empty() && archive.FileCount() == 3, "a file past the end");
-    Check(archive.ExternalPath(1) == "stream/BGM.bfstm" && archive.ExternalPath(0).empty(), "an external path");
+    const SoundArchive lenient =
+        SoundArchive::Load(Archive(cafe, files, {.groups = {2, 0xffffffff}}), OptionsOf(Flavor::kCafe));
+    Check(archive.ExternalPath(1) == "stream/BGM.bfstm" && archive.ExternalPath(0).empty() &&
+              lenient.ExternalPath(1) == "stream/BGM.bfstm",
+          "an external path");
     Check(archive.Groups().size() == 2 && archive.Groups()[1].file_id == 0xffffffff && archive.Version() == 0x00020200,
           "the groups and the version");
 }
@@ -1499,6 +1632,8 @@ int main()
         TestWaveLongerThanItsDataIsReported(flavor);
         TestWaveDecodesItsFirstTwoChannels(flavor);
         TestStrictRulesKeepTheArchivesNames(flavor);
+        TestSoundGroupsAreRead(flavor);
+        TestSarFilesBuildSoundGroups(flavor);
         TestStrictRulesCountRegionsAsTheyComeToThem(flavor);
         TestKeyBoundsFollowTheRules(flavor);
         TestWaveSoundFilesAreRead(flavor);

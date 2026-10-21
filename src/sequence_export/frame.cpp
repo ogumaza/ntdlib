@@ -3,12 +3,20 @@
 #include "ntdlib/sequence_export/frame.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <functional>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xsflib/cli/tool.h"
+#include "xsflib/files.h"
+#include "xsflib/text.h"
 
 namespace ntdlib::sequence_export
 {

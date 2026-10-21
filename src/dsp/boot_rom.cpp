@@ -13,6 +13,8 @@
 #include <span>
 
 #include "dsp/internal.h"
+#include "ntdlib/dsp/accelerator.h"
+#include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/dsp.h"
 
 namespace ntdlib::dsp

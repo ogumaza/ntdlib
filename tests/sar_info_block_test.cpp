@@ -3,10 +3,10 @@
 // Tests of the reader and the writer of a sound archive's INFO block (ntdlib/sar/info_block.h), in each flavor's byte
 // order. The bytes that the tests expect follow from the layout that the header describes, worked out by hand.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -17,7 +17,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/info_block.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -92,20 +92,7 @@ std::vector<uint8_t> Start(Flavor flavor, uint32_t size, const std::array<uint32
 template <class Error, class Call>
 bool Throws(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const Error&)
-    {
-        return true;
-    }
-    catch (...)
-    {
-        return false;
-    }
-
-    return false;
+    return !ErrorOf<Error>(call).empty();
 }
 
 // Checks that `block` writes `expected`, and that `expected` reads as `block`.
@@ -262,6 +249,7 @@ void TestRefusals()
     {
         std::vector<uint8_t> changed = good;
         std::copy(bytes.begin(), bytes.end(), changed.begin() + static_cast<std::ptrdiff_t>(at));
+
         return changed;
     };
 
@@ -321,13 +309,5 @@ int main()
     }
     TestRefusals();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("INFO block tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("INFO block");
 }

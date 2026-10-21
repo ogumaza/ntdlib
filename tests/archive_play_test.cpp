@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <list>
 #include <memory>
 #include <optional>
@@ -21,13 +22,14 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/nwsnd/channel.h"
 #include "seqlib/testing/check.h"
-#include "temp_folder.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/channel_log.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/wav.h"
+
+#include "ntdlib/nwsnd/channel.h"
+#include "temp_folder.h"
 
 using ntdlib::nwsnd::ChannelId;
 using ntdlib::nwsnd::kNoChannel;
@@ -459,7 +461,7 @@ void CheckPlay(const TempFolder& folder)
     Check(FileBytes(wav) == xsflib::WavFile(std::vector<int16_t>{2, -2, 4, -4, 6, -6}, 2, 48000),
           "the WAV file holds every frame's output");
 
-    const std::string expected =
+    const std::string kExpected =
         "frame\trandom\tnote\tchannel\ttrack\tkey\toriginal_key\tvelocity\tenvelope\tlevel\tvolume\tpitch\tpan\tspan\t"
         "note_pan\tmain_send\tfx_send_a\tfx_send_b\tfx_send_c\n"
         "1\t01010101\t0\t00000000\t-1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n"
@@ -468,7 +470,7 @@ void CheckPlay(const TempFolder& folder)
         "3\t03030303\t1\t00000002\t-1\t60\t64\t0.5\t3\t-12.5\t0.75\t1.5\t-0.5\t1\t0.25\t0.5\t0.25\t0\t0.125\n"
         "3\t03030303\t2\t00000000\t3\t48\t60\t1\t0\t0\t0\t0\t0.5\t0\t-0.25\t0\t0\t0\t0\n"
         "3\t03030303\t3\t00000001\t3\t72\t72\t0.25\t4\t-3\t0.125\t2\t0\t0.5\t0\t1\t0.5\t0\t0.25\n";
-    Check(FileBytes(log) == Bytes(expected), "the log gives each channel's track, voice and outputs");
+    Check(FileBytes(log) == Bytes(kExpected), "the log gives each channel's track, voice and outputs");
 }
 
 } // namespace

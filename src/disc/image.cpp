@@ -22,6 +22,8 @@
 #include "xsflib/bytes.h"
 
 #include "disc/image_parts.h"
+#include "ntdlib/disc/error.h"
+#include "ntdlib/disc/source.h"
 
 namespace ntdlib::disc
 {

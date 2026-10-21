@@ -5,12 +5,21 @@
 #include "ntdlib/sequence_export/instruments.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
-#include "sequence_export/runs.h"
 #include "xsflib/binary.h"
 #include "xsflib/text.h"
+
+#include "ntdlib/sar/decode.h"
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/envelope.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "sequence_export/runs.h"
 
 namespace ntdlib::sequence_export
 {
@@ -98,7 +107,7 @@ std::vector<PlayedRanges> RegionRanges(const Instrument& inst)
 BankSet::BankSet(const SoundArchive& archive, const SoundInfo& sound, const Settings& settings)
     : archive_(archive), options_(settings.archive)
 {
-    for (std::size_t slot = 0; slot < sound.banks.size() && slot < 4; slot++)
+    for (std::size_t slot = 0; slot < sound.banks.size() && slot < sar::kBankSlots; slot++)
     {
         const uint32_t item = sound.banks[slot];
         if (item == kNoItem)
@@ -147,13 +156,13 @@ void BankSet::ReadBank(std::size_t slot, std::size_t index)
 
 const Bank* BankSet::GetBank(int slot) const
 {
-    return slot >= 0 && slot < 4 && banks_[slot] ? &*banks_[slot] : nullptr;
+    return slot >= 0 && slot < sar::kBankSlots && banks_[slot] ? &*banks_[slot] : nullptr;
 }
 
 const std::string& BankSet::BankName(int slot) const
 {
     static const std::string kNone;
-    return slot >= 0 && slot < 4 ? bank_names_[slot] : kNone;
+    return slot >= 0 && slot < sar::kBankSlots ? bank_names_[slot] : kNone;
 }
 
 const Instrument* BankSet::GetInstrument(int slot, uint32_t program) const

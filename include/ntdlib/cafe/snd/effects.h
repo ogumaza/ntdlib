@@ -87,7 +87,6 @@ private:
 
 struct Effects::Snapshot
 {
-    const Effects* owner = nullptr;
     std::vector<std::vector<Model>> models; // a list for each of the Effects' buses, in order
 };
 

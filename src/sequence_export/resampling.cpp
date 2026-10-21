@@ -6,6 +6,10 @@
 
 #include <array>
 #include <cmath>
+#include <utility>
+#include <vector>
+
+#include "ntdlib/sequence_export/settings.h"
 
 namespace ntdlib::sequence_export
 {
@@ -13,24 +17,24 @@ namespace
 {
 
 // The fits of tools/sequence_export/resampling_filters.py: the rate above which the console plays through the filter,
-// the SoundFont cutoff, whether the SFZ low-pass has two poles, the SFZ cutoff and lpf_2p's resonance.
+// the SoundFont cutoff and the SFZ cutoff.
 
 // AX's 8 kHz and 12 kHz sets, on the Wii and the Wii U.
 constexpr std::array<ResamplingFilter, 2> kAxFilters = {{
-    {4.0 / 3.0, 0.2518, false, 0.1784, 0.0},
-    {1.0, 0.3899, false, 0.3014, 0.0},
+    {4.0 / 3.0, 0.2518, 0.1784},
+    {1.0, 0.3899, 0.3014},
 }};
 
 // The same sets on the Switch. The fits depend on the mixing rate (see the script).
 constexpr std::array<ResamplingFilter, 2> kSwitchFilters = {{
-    {4.0 / 3.0, 0.2748, false, 0.1663, 0.0},
-    {1.0, 0.3889, false, 0.2640, 0.0},
+    {4.0 / 3.0, 0.2748, 0.1663},
+    {1.0, 0.3889, 0.2640},
 }};
 
 // The 3DS's kernels 0 and 1.
 constexpr std::array<ResamplingFilter, 2> kCtrKernels = {{
-    {4.0 / 3.0, 0.2549, false, 0.1779, 0.0},
-    {1.0, 0.3928, false, 0.3007, 0.0},
+    {4.0 / 3.0, 0.2549, 0.1779},
+    {1.0, 0.3928, 0.3007},
 }};
 
 } // namespace

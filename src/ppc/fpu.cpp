@@ -353,6 +353,7 @@ bool Cpu::LoadStoreFloat(uint32_t op)
     {
         return false;
     }
+
     if (update)
     {
         s.gpr[a] = address;

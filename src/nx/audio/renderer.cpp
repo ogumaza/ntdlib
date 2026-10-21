@@ -8,9 +8,13 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
+#include "ntdlib/nx/audio/dsp.h"
+#include "ntdlib/nx/audio/voice.h"
 #include "nx/audio/arithmetic.h"
 
 namespace ntdlib::nx::audio
@@ -874,8 +878,11 @@ void Renderer::LayOutMixes()
 
     std::vector<int> order(mixes_.size());
     std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b)
-                     { return distance[static_cast<std::size_t>(a)] > distance[static_cast<std::size_t>(b)]; });
+    const auto farther = [&](int a, int b)
+    {
+        return distance[static_cast<std::size_t>(a)] > distance[static_cast<std::size_t>(b)];
+    };
+    std::stable_sort(order.begin(), order.end(), farther);
     int offset = 0;
     for (const int id : order)
     {
@@ -907,18 +914,18 @@ void Renderer::Generate()
             sorted.push_back(static_cast<int>(slot));
         }
     }
-    std::stable_sort(sorted.begin(), sorted.end(),
-                     [&](int a, int b)
-                     {
-                         const Voice::Server& x = At(a).server;
-                         const Voice::Server& y = At(b).server;
-                         if (x.priority != y.priority)
-                         {
-                             return x.priority > y.priority;
-                         }
+    const auto renders_first = [&](int a, int b)
+    {
+        const Voice::Server& x = At(a).server;
+        const Voice::Server& y = At(b).server;
+        if (x.priority != y.priority)
+        {
+            return x.priority > y.priority;
+        }
 
-                         return x.sort_order > y.sort_order;
-                     });
+        return x.sort_order > y.sort_order;
+    };
+    std::stable_sort(sorted.begin(), sorted.end(), renders_first);
     for (const int index : sorted)
     {
         RenderVoice(At(index));
@@ -946,9 +953,11 @@ void Renderer::Generate()
             mix_order.push_back(static_cast<int>(id));
         }
     }
-    std::stable_sort(
-        mix_order.begin(), mix_order.end(), [&](int a, int b)
-        { return mixes_[static_cast<std::size_t>(a)].offset < mixes_[static_cast<std::size_t>(b)].offset; });
+    const auto lower_offset = [&](int a, int b)
+    {
+        return mixes_[static_cast<std::size_t>(a)].offset < mixes_[static_cast<std::size_t>(b)].offset;
+    };
+    std::stable_sort(mix_order.begin(), mix_order.end(), lower_offset);
     for (const int id : mix_order)
     {
         RenderSubMix(id);

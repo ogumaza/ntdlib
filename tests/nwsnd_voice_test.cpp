@@ -15,13 +15,15 @@
 #include <type_traits>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/nwsnd/voice.h"
 #include "ntdlib/nwsnd/voice_impl.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -148,12 +150,12 @@ public:
 
     void SetParam(int renderer, const VoiceParam& param)
     {
-        if (params.size() <= static_cast<std::size_t>(renderer))
+        if (params_.size() <= static_cast<std::size_t>(renderer))
         {
-            params.resize(static_cast<std::size_t>(renderer) + 1);
+            params_.resize(static_cast<std::size_t>(renderer) + 1);
         }
 
-        params[static_cast<std::size_t>(renderer)] = param;
+        params_[static_cast<std::size_t>(renderer)] = param;
     }
 
     void AppendWave(ntdlib::nwsnd::VoiceId, std::span<Voice>, const typename TestPolicy<Console>::WaveInfo&)
@@ -162,7 +164,7 @@ public:
 
     bool IsPlayFinished(ntdlib::nwsnd::VoiceId place) const
     {
-        return place == finished;
+        return place == finished_;
     }
 
     float OutputVolume() const
@@ -182,8 +184,8 @@ public:
     {
     }
 
-    std::vector<VoiceParam> params;                            // by renderer voice
-    ntdlib::nwsnd::VoiceId finished = ntdlib::nwsnd::kNoVoice; // the MultiVoice whose wave has ended
+    std::vector<VoiceParam> params_;                            // by renderer voice
+    ntdlib::nwsnd::VoiceId finished_ = ntdlib::nwsnd::kNoVoice; // the MultiVoice whose wave has ended
 
 private:
     std::vector<bool> used_;
@@ -231,7 +233,7 @@ public:
 
     void ChannelEvent(int, int track, Channel<Console>& channel, typename Channel<Console>::CallbackStatus status)
     {
-        events.push_back({track, channel.place, status});
+        events_.push_back({track, channel.place, status});
     }
 
     // A note on track `track` at `priority`: a channel that plays a one-shot wave of `channels` channels, for ever.
@@ -260,7 +262,7 @@ public:
         return voices_.At(channel.voice);
     }
 
-    std::vector<Event<Console>> events;
+    std::vector<Event<Console>> events_;
 
 private:
     ChannelManager<Console> channels_;
@@ -282,8 +284,8 @@ void TestDrop()
     Channel<Console>* third = engine.Note(2, 30);
 
     Check(third != nullptr, Name<Console>("drop: the third note gets a voice"));
-    Check(engine.events.size() == 1 && engine.events[0].track == 0 && engine.events[0].place == low_place &&
-              engine.events[0].status == Channel<Console>::CallbackStatus::kDrop,
+    Check(engine.events_.size() == 1 && engine.events_[0].track == 0 && engine.events_[0].place == low_place &&
+              engine.events_[0].status == Channel<Console>::CallbackStatus::kDrop,
           Name<Console>("drop: the note of the lowest priority is dropped"));
     Check(!engine.Channels().At(low_place).active, Name<Console>("drop: the dropped channel stops"));
 
@@ -307,7 +309,7 @@ void TestRelease()
 
     engine.Note(2, 64);
 
-    Check(engine.events.size() == 1 && engine.events[0].place == first_place,
+    Check(engine.events_.size() == 1 && engine.events_[0].place == first_place,
           Name<Console>("release: the released channel's voice is dropped first"));
 }
 
@@ -325,15 +327,15 @@ void TestOneShot()
 
     Check(engine.Channels().ActiveCount() == 1 && engine.Voices().ActiveCount() == 1,
           Name<Console>("one-shot: the note sounds"));
-    Check(!engine.Renderer().params.empty() && engine.Renderer().params[0].pitch == 1.0f,
+    Check(!engine.Renderer().params_.empty() && engine.Renderer().params_[0].pitch == 1.0f,
           Name<Console>("one-shot: the voice gets the channel's pitch"));
 
-    engine.Renderer().finished = voice;
+    engine.Renderer().finished_ = voice;
 
     engine.Frame();
 
-    Check(engine.events.size() == 1 && engine.events[0].track == 5 && engine.events[0].place == place &&
-              engine.events[0].status == Channel<Console>::CallbackStatus::kFinish,
+    Check(engine.events_.size() == 1 && engine.events_[0].track == 5 && engine.events_[0].place == place &&
+              engine.events_[0].status == Channel<Console>::CallbackStatus::kFinish,
           Name<Console>("one-shot: the owner receives a callback that the wave finished"));
     Check(engine.Channels().ActiveCount() == 0 && engine.Voices().ActiveCount() == 0,
           Name<Console>("one-shot: the channel and its voice are free"));
@@ -437,15 +439,15 @@ void TestDropForChannels()
     engine.Note(0, 10);
     engine.Note(1, 20);
 
-    Check(engine.Note(2, 30, 2) != nullptr && engine.events.size() == 2 && engine.events[0].track == 0 &&
-              engine.events[1].track == 1,
+    Check(engine.Note(2, 30, 2) != nullptr && engine.events_.size() == 2 && engine.events_[0].track == 0 &&
+              engine.events_[1].track == 1,
           "Switch: drop: a stereo note drops the two voices of the lowest priority");
 
     TestEngine<CafePolicy> cafe(4, 2);
     cafe.Note(0, 10);
     cafe.Note(1, 20);
 
-    Check(cafe.Note(2, 30, 2) != nullptr && cafe.events.size() == 1 && cafe.events[0].track == 0,
+    Check(cafe.Note(2, 30, 2) != nullptr && cafe.events_.size() == 1 && cafe.events_[0].track == 0,
           "Wii U: drop: a stereo note drops the voice of the lowest priority alone");
 
     // Nothing is dropped unless each voice that would make room has a priority below 255.
@@ -453,7 +455,7 @@ void TestDropForChannels()
     full.Note(0, 10);
     full.Note(1, 255);
 
-    Check(full.Note(2, 255, 2) == nullptr && full.events.empty(), "Switch: drop: a voice of priority 255 stays");
+    Check(full.Note(2, 255, 2) == nullptr && full.events_.empty(), "Switch: drop: a voice of priority 255 stays");
 }
 
 void TestRetry()
@@ -464,15 +466,16 @@ void TestRetry()
     engine.Note(0, 10);
     engine.Note(1, 20);
 
-    Check(engine.Note(2, 30) != nullptr && engine.events.size() == 1 && engine.events[0].track == 0 &&
-              engine.events[0].status == Channel<NxPolicy>::CallbackStatus::kDrop,
+    Check(engine.Note(2, 30) != nullptr && engine.events_.size() == 1 && engine.events_[0].track == 0 &&
+              engine.events_[0].status == Channel<NxPolicy>::CallbackStatus::kDrop,
           "Switch: retry: the voice of the lowest priority makes way when the renderer has none left");
 
     TestEngine<CafePolicy> cafe(4, 4, 2);
     cafe.Note(0, 10);
     cafe.Note(1, 20);
 
-    Check(cafe.Note(2, 30) == nullptr && cafe.events.empty(), "Wii U: retry: no voice when the renderer has none left");
+    Check(cafe.Note(2, 30) == nullptr && cafe.events_.empty(),
+          "Wii U: retry: no voice when the renderer has none left");
 }
 
 void TestClamps()

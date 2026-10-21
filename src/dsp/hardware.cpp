@@ -6,12 +6,15 @@
 #include <algorithm>
 #include <cstdint>
 #include <span>
+#include <vector>
+
+#include "xsflib/bytes.h"
 
 #include "dsp/internal.h"
+#include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/coef_rom.h"
 #include "ntdlib/dsp/dsp.h"
 #include "ntdlib/types.h"
-#include "xsflib/bytes.h"
 
 namespace ntdlib::dsp
 {

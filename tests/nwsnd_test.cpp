@@ -8,12 +8,13 @@
 #include <limits>
 #include <string>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/sound_build.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -122,24 +123,24 @@ void TestUtil()
 
     // The Wii's builds before November 2008 work the cutoff out as 32000 * 2^(10 (value - 1)) Hz, truncated, from 31 Hz
     // to 32000 Hz. A NaN gives the lowest cutoff. So does a value of 0.
-    const ntdlib::SndBuild old_wii{.date = 20080919};
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f, old_wii) == 31 &&
-                 nwsnd::CalcLpfFreq<RevolutionPolicy>(0.5f, old_wii) == 1000);
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f, old_wii) == 14993);
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(1.0f, old_wii) == 32000 &&
-                 nwsnd::CalcLpfFreq<RevolutionPolicy>(2.0f, old_wii) == 32000);
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(-1.0f, old_wii) == 31 &&
-                 nwsnd::CalcLpfFreq<RevolutionPolicy>(kNan, old_wii) == 31);
+    const ntdlib::SndBuild kOldWii{.date = 20080919};
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f, kOldWii) == 31 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(0.5f, kOldWii) == 1000);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f, kOldWii) == 14993);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(1.0f, kOldWii) == 32000 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(2.0f, kOldWii) == 32000);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(-1.0f, kOldWii) == 31 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(kNan, kOldWii) == 31);
 
     // Later builds take the cutoff from kLpfFreq, as the Wii U does. The other consoles' cutoffs don't depend on the
     // build.
-    const ntdlib::SndBuild new_wii{.date = 20081120};
+    const ntdlib::SndBuild kNewWii{.date = 20081120};
     for (const float value : {0.0f, 0.13f, 0.5f, 57.0f / 64.0f, 0.95f, 1.0f, 2.0f, -1.0f, kNan})
     {
-        XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(value, new_wii) == nwsnd::CalcLpfFreq<CafePolicy>(value));
+        XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(value, kNewWii) == nwsnd::CalcLpfFreq<CafePolicy>(value));
     }
-    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f, new_wii) == 80 &&
-                 nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f, new_wii) == tables::kLpfFreq[22]);
+    XSFLIB_CHECK(nwsnd::CalcLpfFreq<RevolutionPolicy>(0.0f, kNewWii) == 80 &&
+                 nwsnd::CalcLpfFreq<RevolutionPolicy>(57.0f / 64.0f, kNewWii) == tables::kLpfFreq[22]);
     XSFLIB_CHECK(nwsnd::CalcLpfFreq<CafePolicy>(0.5f, CafePolicy::Build{}) == tables::kLpfFreq[10]);
 
     // A centred pan, and surround output: the Wii U takes the surround curves, and the Switch only if the sound's
@@ -427,12 +428,16 @@ void TestCafeLfo()
     lfo.Update(100);
     XSFLIB_CHECK(lfo.GetValue(random) == drawn);
 
-    // A phase starts the cycle part of the way through.
+    // A phase starts the cycle part of the way through. A phase of 127 is a whole cycle.
     lfo.param.curve = 2;
     lfo.param.phase = 127;
     lfo.Reset();
     lfo.Update(250);
     XSFLIB_CHECK(lfo.GetValue(random) == 0.25f);
+    lfo.param.phase = 32;
+    lfo.Reset();
+    lfo.Update(250);
+    XSFLIB_CHECK(lfo.GetValue(random) == 32.0f / 127.0f + 0.25f);
 }
 
 } // namespace

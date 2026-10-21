@@ -9,10 +9,20 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
 #include <tuple>
+#include <utility>
 #include <variant>
+#include <vector>
 
-#include "xsflib/binary.h"
+#include "ntdlib/sequence_export/jaudio/envelope.h"
+#include "ntdlib/sequence_export/jaudio/sound_data.h"
+#include "ntdlib/sequence_export/jaudio/wave.h"
 
 namespace ntdlib::sequence_export::jaudio
 {

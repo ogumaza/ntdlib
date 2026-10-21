@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -21,7 +20,7 @@
 #include "ntdlib/wave/encode.h"
 #include "wave_cases.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -172,16 +171,7 @@ double FrameError(std::span<const int16_t> input, std::size_t start, int32_t c1,
 template <typename Function>
 bool Refuses(Function function)
 {
-    try
-    {
-        function();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::invalid_argument>(function).empty();
 }
 
 void TestBytes()
@@ -192,12 +182,12 @@ void TestBytes()
 
 void TestSilence()
 {
-    const std::vector<int16_t> silence(100, 0);
+    const std::vector<int16_t> kSilence(100, 0);
 
-    const DspAdpcmChannel channel = EncodeDspAdpcm(silence, 50, DspAdpcmSum::kWrap);
+    const DspAdpcmChannel channel = EncodeDspAdpcm(kSilence, 50, DspAdpcmSum::kWrap);
 
     XSFLIB_CHECK(channel.data.size() == 64);
-    XSFLIB_CHECK(Decode(channel, silence.size(), DspAdpcmSum::kWrap) == silence);
+    XSFLIB_CHECK(Decode(channel, kSilence.size(), DspAdpcmSum::kWrap) == kSilence);
     XSFLIB_CHECK(channel.loop_yn1 == 0 && channel.loop_yn2 == 0);
 }
 
@@ -423,12 +413,12 @@ void TestAlign()
     XSFLIB_CHECK(wrapped == 14);
     XSFLIB_CHECK(short_loop[0] == std::vector<int16_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 11, 12, 11, 12}));
     XSFLIB_CHECK(Refuses([&] { AlignDspAdpcmLoop(inside, 51); }));
-    XSFLIB_CHECK(Refuses(
-        [&]
-        {
-            std::vector<std::vector<int16_t>> uneven = {ramp, {1, 2}};
-            AlignDspAdpcmLoop(uneven, 5);
-        }));
+    const auto align_uneven = [&]
+    {
+        std::vector<std::vector<int16_t>> uneven = {ramp, {1, 2}};
+        AlignDspAdpcmLoop(uneven, 5);
+    };
+    XSFLIB_CHECK(Refuses(align_uneven));
 }
 
 } // namespace
@@ -449,13 +439,5 @@ int main()
     TestLoopState();
     TestAlign();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Wave encoder tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Wave encoder");
 }

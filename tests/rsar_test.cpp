@@ -10,17 +10,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <span>
 #include <string>
 #include <vector>
 
-#include "ntdlib/rsar/decode.h"
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/testing/rsar_files.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/rsar/decode.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/testing/rsar_files.h"
 
 namespace
 {
@@ -30,6 +30,7 @@ using namespace xsflib;
 using namespace ntdlib;
 using namespace ntdlib::testing::rsar_files;
 using xsflib::testing::Check;
+using xsflib::testing::ErrorOf;
 
 // The rules of playback: the sentences, names as the archive has them, every field, and the sound type of an archive
 // before version 1.1 from the sound table.
@@ -87,15 +88,8 @@ void CheckWaves(const std::string& name, const rsar::Bank& bank, uint8_t first)
 void CheckRefused(const std::string& name, const Bytes& bytes, const std::string& words,
                   const rsar::ReadOptions& options = kPlayback)
 {
-    try
-    {
-        rsar::SoundArchive::Load(bytes, options);
-        Check(false, name + ": loaded");
-    }
-    catch (const xsflib::FormatError& e)
-    {
-        Check(std::string(e.what()).find(words) != std::string::npos, name + ": the message \"" + e.what() + "\"");
-    }
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { rsar::SoundArchive::Load(bytes, options); });
+    Check(!message.empty() && message.find(words) != std::string::npos, name + ": the message \"" + message + "\"");
 }
 
 // The offset of the first copy of `text` in `bytes`.
@@ -292,7 +286,7 @@ void CheckDecoding()
           "a PCM16 wave decodes");
     Check(two.channels.size() == 2 && two.channels[1] == std::vector<int16_t>({1, -2, 300, -32768}),
           "a wave decodes its first two channels");
-    Check(xsflib::testing::ErrorOf(decode_longer) == "wave data shorter than the declared sample count",
+    Check(ErrorOf(decode_longer) == "wave data shorter than the declared sample count",
           "a wave longer than its data is reported");
 }
 
@@ -300,7 +294,7 @@ void CheckDecoding()
 
 int main()
 {
-    try
+    const auto tests = []
     {
         CheckBanks();
         CheckArchive();
@@ -308,11 +302,7 @@ int main()
         CheckOtherFormats();
         CheckDefaultRules();
         CheckDecoding();
-    }
-    catch (const std::exception& e)
-    {
-        Check(false, std::string("unexpected error: ") + e.what());
-    }
+    };
 
-    return xsflib::testing::Summary("rsar");
+    return xsflib::testing::RunTest("rsar", tests);
 }

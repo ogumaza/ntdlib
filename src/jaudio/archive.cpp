@@ -14,9 +14,12 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/binary.h"
+
 #include "jaudio/reader.h"
 #include "ntdlib/jaudio/aaf.h"
-#include "xsflib/binary.h"
+#include "ntdlib/jaudio/bank.h"
+#include "ntdlib/jaudio/wave_system.h"
 
 namespace ntdlib::jaudio
 {
@@ -125,6 +128,7 @@ std::span<const uint8_t> WaveSystemData(const xsflib::Reader& r, uint32_t offset
     }
 
     r.Sub(offset, 8);
+
     return r.Sub(offset, r.U32(std::size_t{offset} + 4));
 }
 
@@ -432,7 +436,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
 {
     SoundArchive archive;
     archive.data_ = std::move(baa);
-    const BaaOptions options;
+    const BaaOptions kOptions;
     const xsflib::Reader r(archive.data_, true, kReaderOptions);
 
     // Each command's arguments are offsets into the archive. A wave system is read as the walk reaches it.
@@ -444,7 +448,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
         if (tag == "ws  ")
         {
             const uint32_t number = r.U32(at), offset = r.U32(at + 4);
-            archive.wave_systems_.push_back(ReadWaveSystem(WaveSystemData(r, offset, options), number));
+            archive.wave_systems_.push_back(ReadWaveSystem(WaveSystemData(r, offset, kOptions), number));
         }
         else if (tag == "bnk ")
         {
@@ -469,7 +473,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
             }
         }
     };
-    WalkCommands(r, options, read_command);
+    WalkCommands(r, kOptions, read_command);
 
     // Banks: each plays the wave system that its chunk names. A bank's chunks can end past its size (see Bank::Parse).
     // Each bank therefore gets the rest of the archive.
@@ -513,7 +517,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
     {
         const std::optional<xsflib::Reader> names =
             bstn.empty() ? std::nullopt : std::optional<xsflib::Reader>(xsflib::Reader(bstn, true, kReaderOptions));
-        archive.sounds_ = ReadSoundTable(xsflib::Reader(bst, true, kReaderOptions), bst_offset, names, options);
+        archive.sounds_ = ReadSoundTable(xsflib::Reader(bst, true, kReaderOptions), bst_offset, names, kOptions);
     }
 
     return archive;

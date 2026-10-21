@@ -2,10 +2,14 @@
 
 #include "ntdlib/cafe/axfx/chorus.h"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include "cafe/axfx/util.h"
+#include "ntdlib/cafe/axfx/axfx.h"
 #include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::axfx

@@ -532,11 +532,11 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     if (!index.empty())
     {
         b.resize(index_at + index_size);
-        const std::string header = "BARC----";
-        std::copy(header.begin(), header.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at));
+        const std::string kHeader = "BARC----";
+        std::copy(kHeader.begin(), kHeader.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at));
         put32(index_at + 12, static_cast<uint32_t>(index.size()));
-        const std::string archive = "JaiArcS.arc";
-        std::copy(archive.begin(), archive.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at + 16));
+        const std::string kArchive = "JaiArcS.arc";
+        std::copy(kArchive.begin(), kArchive.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at + 16));
         for (std::size_t i = 0; i < index.size(); i++)
         {
             const std::size_t at = index_at + 0x20 + 0x20 * i;

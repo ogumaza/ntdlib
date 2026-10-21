@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <exception>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -24,6 +23,7 @@
 #include "disc_files.h"
 #include "ntdlib/disc/cpk.h"
 #include "ntdlib/disc/game.h"
+#include "ntdlib/disc/image.h"
 #include "temp_folder.h"
 
 namespace
@@ -605,9 +605,9 @@ void TestDamagedStreams()
 void TestLayouts()
 {
     const std::vector<TestFile> files = TestFiles();
-    const std::vector<std::string> paths = {"SOUND/plain.brsar", "literal.brsar", "A/B/Lengths.BRSAR",
-                                            "SOUND/effects.bin", "SOUND/zero.brsar"};
-    const std::vector<std::pair<std::string, Layout>> layouts = {
+    const std::vector<std::string> kPaths = {"SOUND/plain.brsar", "literal.brsar", "A/B/Lengths.BRSAR",
+                                             "SOUND/effects.bin", "SOUND/zero.brsar"};
+    const std::vector<std::pair<std::string, Layout>> kLayouts = {
         {"unmasked", {}},
         {"masked", {.masked = true}},
         {"with the TOC last", {.toc_last = true}},
@@ -616,7 +616,7 @@ void TestLayouts()
         {"with other widths", {.other_widths = true}},
     };
 
-    for (const auto& [name, layout] : layouts)
+    for (const auto& [name, layout] : kLayouts)
     {
         const Bytes cpk = Cpk(EntriesOf(files), layout);
         const disc::CpkRead read = MemoryRead(cpk);
@@ -626,8 +626,8 @@ void TestLayouts()
         Check(listed.size() == files.size(), "a CPK " + name + " lists every file");
         for (size_t i = 0; i < std::min(listed.size(), files.size()); ++i)
         {
-            const std::string what = name + ": " + paths[i];
-            Check(listed[i].path == paths[i], what + " has its path");
+            const std::string what = name + ": " + kPaths[i];
+            Check(listed[i].path == kPaths[i], what + " has its path");
             Check(listed[i].size == files[i].data.size(), what + " has its size");
             Check(listed[i].stored_size == files[i].entry.stored.size(), what + " has its stored size");
             Check(disc::ReadCpkFile(read, listed[i], 1 << 20) == files[i].data, what + " reads");
@@ -925,14 +925,8 @@ void TestDamagedGames()
 // Runs `test`, and counts an exception that escapes it as a failed check.
 void Run(const std::string& name, void (*test)())
 {
-    try
-    {
-        test();
-    }
-    catch (const std::exception& e)
-    {
-        Check(false, name + " throws: " + e.what());
-    }
+    const std::string error = ErrorOf(test);
+    Check(error.empty(), name + " throws: " + error);
 }
 
 } // namespace

@@ -7,14 +7,29 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <functional>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "ntdlib/sequence_export/filter.h"
+#include "seqlib/loop.h"
 #include "seqlib/midi/performance.h"
 #include "seqlib/sf2/presets.h"
 #include "seqlib/sf2/samples.h"
+#include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
+
+#include "ntdlib/sequence_export/envelope.h"
+#include "ntdlib/sequence_export/filter.h"
+#include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/resampling.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/wave/decode.h"
 #include "sequence_export/pcm.h"
+#include "sequence_export/zone_low_pass.h"
 
 namespace ntdlib::sequence_export
 {
@@ -51,7 +66,7 @@ int CutoffAtKey0(const ResamplingFilter& filter, const ResamplingRegion& region)
 sf2::Zone GlobalZone(const PresetKey& key, const Settings& settings)
 {
     sf2::Zone global;
-    global.modulators.assign(sf2::kNoVelocityFilterFullBend.begin(), sf2::kNoVelocityFilterFullBend.end());
+    global.modulators.assign(sf2::kGlobalZoneModulators.begin(), sf2::kGlobalZoneModulators.end());
     if (key.filter_controller)
     {
         global.modulators.push_back({kSrcFilterController, sf2::kInitialFilterFc, -kFilterControllerRange, 0});
@@ -76,8 +91,7 @@ sf2::Zone GlobalZone(const PresetKey& key, const Settings& settings)
     const double pitch_amount = key.lfo_type == 0 && lfo ? 100.0 * key.lfo_range * kDepthScale : 0.0;
     global.modulators.push_back({sf2::kSrcModWheel, sf2::kVibLfoToPitch, amount(pitch_amount), 0});
 
-    const int freq =
-        std::clamp(static_cast<int>(std::lround(1200.0 * std::log2(std::max(hz, 0.001) / 8.176))), -16000, 4500);
+    const int freq = sf2::LfoFrequency(std::max(hz, 0.001));
     const int delay = ToTimecents(LfoDelayMs(key, settings), -12000, 5000);
     if (key.lfo_type == 1 && lfo)
     {
@@ -344,6 +358,7 @@ std::string RegionVolumeCutText(double quieter)
     std::snprintf(what, sizeof(what),
                   "region volume exceeds 127 (SoundFont attenuated by %.1f dB; SFZ keeps the original volume)",
                   quieter / 10.0);
+
     return what;
 }
 

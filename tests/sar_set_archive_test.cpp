@@ -11,10 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/set_archive.h"
 #include "ntdlib/testing/sar_files.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {

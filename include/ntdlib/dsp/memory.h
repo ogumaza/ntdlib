@@ -19,8 +19,9 @@
 #include <new>
 #include <stdexcept>
 
-#include "ntdlib/types.h"
 #include "xsflib/memory_image.h"
+
+#include "ntdlib/types.h"
 
 namespace ntdlib::dsp
 {

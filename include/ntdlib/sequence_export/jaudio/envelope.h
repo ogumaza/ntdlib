@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -131,8 +132,8 @@ struct SfzEnvelope
     double peak_db = 0.0;
 };
 
-// Convert to sfizz's SFZ envelope, fitted as for SoundFont. Over their time, sfizz's decays and releases fall by a
-// factor of e^-9 (78.17 dB).
+// Convert to an SFZ envelope, fitted as for SoundFont. Over their time, SFZ's decays and releases fall by a factor of
+// e^-8 (69.49 dB). sfzformat.com's ampeg_attack page gives that curve.
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeCurve& curve);
 
 using seqlib::sf2::ToTimecents;

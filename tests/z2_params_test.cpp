@@ -10,6 +10,8 @@
 
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/flipper/wave_list.h"
+
 namespace z2 = ntdlib::flipper::z2;
 using ntdlib::flipper::WaveList;
 using xsflib::testing::Check;

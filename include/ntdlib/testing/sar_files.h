@@ -19,8 +19,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/sar/formats.h"
 
 namespace ntdlib::testing::sar_files
 {
@@ -470,6 +471,47 @@ inline std::vector<uint8_t> Bank(bool big_endian, const BankSpec& spec)
     return Bank(detail::FlavorOf(big_endian), spec);
 }
 
+// A wave of `length` PCM16 samples at 32,000 Hz, each 0x1000, in the byte order that `big_endian` gives. The default
+// length is 1 s. The wave plays once.
+inline WaveSpec ConstantWave(bool big_endian, uint32_t length = 32000)
+{
+    std::vector<uint8_t> samples(2 * size_t{length});
+    for (size_t i = 0; i < samples.size(); i += 2)
+    {
+        samples[big_endian ? i : i + 1] = 0x10;
+    }
+
+    WaveSpec wave;
+    wave.encoding = 1;
+    wave.loop_end = length;
+    wave.channels = {samples};
+
+    return wave;
+}
+
+// A bank of `programs` programs with one region each. Program i plays wave i of wave archive 0 at every key and
+// velocity, from original key 60. Its envelope (127, 127, 127, 0, 127) starts at full level, holds it and releases at
+// the fastest rate.
+inline BankSpec OneRegionBank(uint32_t programs = 1)
+{
+    BankSpec bank;
+    for (uint32_t wave = 0; wave < programs; ++wave)
+    {
+        Region region;
+        region.wave = wave;
+        region.original_key = 60;
+        region.adshr = {127, 127, 127, 0, 127};
+        VelocityTable velocities;
+        velocities.entries = {{0, region}};
+        KeyTable keys;
+        keys.entries = {{0, velocities}};
+        bank.waves.emplace_back(sar::ItemId(sar::kWaveArchiveItem, 0), wave);
+        bank.instruments.push_back(keys);
+    }
+
+    return bank;
+}
+
 // A note event of a wave sound's track: its position, its length and the note that it plays.
 struct NoteEventSpec
 {
@@ -478,12 +520,14 @@ struct NoteEventSpec
     uint32_t note = 0;
 };
 
-// A wave sound: its pan, pitch, filter, sends and envelope when they're set, its tracks of note events, and its
-// notes. The sends are the main send, the number of effect sends and the effect sends, up to 8 bytes. A note is laid
-// out as a bank's region. Its wave is an index into the file's waves.
+// A wave sound: its pan, surround pan, pitch, filter, sends and envelope when they're set, its tracks of note events,
+// and its notes. The pan and the surround pan share their option. The sends are the main send, the number of effect
+// sends and the effect sends, up to 8 bytes. A note is laid out as a bank's region. Its wave is an index into the
+// file's waves.
 struct WaveSoundSpec
 {
     std::optional<int> pan;
+    std::optional<int> span;
     std::optional<float> pitch;
     std::optional<uint32_t> filter;
     std::vector<uint8_t> sends;
@@ -518,9 +562,11 @@ inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFil
 
         // The settings: optional parameters, with the sends after them and the envelope behind a reference.
         std::vector<std::pair<int, uint32_t>> values;
-        if (sound.pan)
+        if (sound.pan || sound.span)
         {
-            values.push_back({0, static_cast<uint8_t>(*sound.pan)});
+            const auto pan = static_cast<uint8_t>(sound.pan.value_or(64));
+            const auto span = static_cast<uint8_t>(sound.span.value_or(0));
+            values.push_back({0, pan | uint32_t{span} << 8});
         }
         if (sound.pitch)
         {
@@ -672,30 +718,101 @@ struct SoundSpec
     // Wave sounds only: the sound's place in its wave sound file.
     uint32_t wave_sound_index = 0;
 
+    // Streams only: the details, laid out as FSAR 2.2.0 lays them out. Without them, a stream's details are 12 zero
+    // bytes.
+    std::optional<sar::StreamSoundInfo> stream = std::nullopt;
+
     // Sequences only.
     std::vector<uint32_t> banks = {}; // indices into the banks, or 0xFFFFFFFF for an empty slot
     uint32_t allocate_track_flags = 1;
     std::optional<uint32_t> start_offset = std::nullopt;
-    std::optional<uint32_t> channel_priority = std::nullopt; // channel priority | release priority fix << 8
+
+    // Sequences and wave sounds: channel priority | release priority fix << 8. A wave sound's details hold it in their
+    // options.
+    std::optional<uint32_t> channel_priority = std::nullopt;
 };
 
 struct FileSpec
 {
-    std::vector<uint8_t> bytes; // a file the archive holds
-    std::string external;       // or the path of one outside it
-    bool group_only = false;    // or one only a group holds
+    std::vector<uint8_t> bytes = {};   // a file the archive holds
+    std::string external = {};         // or the path of one outside it
+    bool group_only = false;           // or one only a group holds
+    std::vector<uint32_t> groups = {}; // the indices of the groups that its entry lists: sar_tools's archives list them
+};
+
+// A sound group, laid out as NintendoWare's tools lay out a wave sound set: the indices of its first and last sounds,
+// its files, and the wave sound details with an empty table of wave archives. An empty name leaves the group unnamed.
+struct SoundGroupSpec
+{
+    std::string name;
+    uint32_t first = 0;
+    uint32_t last = 0;
+    std::vector<uint32_t> files;
 };
 
 struct ArchiveSpec
 {
-    std::vector<SoundSpec> sounds;
-    std::vector<std::pair<std::string, uint32_t>> banks;         // name and file
-    std::vector<std::pair<std::string, uint32_t>> wave_archives; // name and file
-    std::vector<std::pair<std::string, uint32_t>> players;       // name and playable sound max
-    std::vector<std::pair<std::string, uint32_t>> groups;        // name and file
-    std::vector<FileSpec> files;
+    std::vector<SoundSpec> sounds = {};
+    std::vector<std::pair<std::string, uint32_t>> banks = {};         // name and file
+    std::vector<std::pair<std::string, uint32_t>> wave_archives = {}; // name and file
+    std::vector<std::pair<std::string, uint32_t>> players = {};       // name and playable sound max
+    std::vector<std::pair<std::string, uint32_t>> groups = {};        // name and file
+    std::vector<FileSpec> files = {};
     bool names = true; // false leaves the string block out
+    std::vector<SoundGroupSpec> sound_groups = {};
 };
+
+// Appends a send value: the main send, a send to each aux bus, and 4 bytes of padding.
+inline void AppendSends(Bytes& info, uint8_t main_send, const std::array<uint8_t, 3>& aux_sends)
+{
+    const size_t at = info.Add(8);
+    info.U8(at, main_send);
+    for (size_t bus = 0; bus < aux_sends.size(); ++bus)
+    {
+        info.U8(at + 1 + bus, aux_sends[bus]);
+    }
+}
+
+// Appends a stream sound's details as FSAR 2.2.0 lays them out, and returns where they start: the tracks that play,
+// the channels, a reference to the table of tracks, the pitch, a reference to the sends, a reference to nothing and
+// the prefetch's file of none. The table follows, then each track's info, its channels' indices and its sends. The
+// sound's sends come last.
+inline size_t StreamDetails(Bytes& info, const sar::StreamSoundInfo& stream)
+{
+    const size_t detail = info.Add(0x24);
+    info.U16(detail, stream.valid_tracks);
+    info.U16(detail + 2, stream.channel_count);
+    info.U32(detail + 12, std::bit_cast<uint32_t>(stream.pitch));
+    info.NullRef(detail + 24, 0);
+    info.U32(detail + 32, 0xFFFFFFFF);
+    const size_t table = info.Add(4 + 8 * stream.tracks.size());
+    info.Ref(detail + 4, 0x0101, table, detail);
+    info.U32(table, static_cast<uint32_t>(stream.tracks.size()));
+    for (size_t i = 0; i < stream.tracks.size(); ++i)
+    {
+        const sar::StreamTrackInfo& track = stream.tracks[i];
+        const size_t t = info.Add(0x18);
+        info.Ref(table + 4 + 8 * i, 0x220E, t, table);
+        info.U8(t, track.volume);
+        info.U8(t + 1, track.pan);
+        info.U8(t + 2, track.span);
+        info.U8(t + 3, track.flags);
+        info.U8(t + 20, track.low_pass);
+        info.U8(t + 21, track.biquad_type);
+        info.U8(t + 22, track.biquad_value);
+        const size_t indices = info.Add(4 + track.channels.size());
+        info.Align(4);
+        info.Ref(t + 4, 0x0100, indices, t);
+        info.U32(indices, static_cast<uint32_t>(track.channels.size()));
+        std::copy(track.channels.begin(), track.channels.end(), info.data.begin() + static_cast<long>(indices + 4));
+        info.Ref(t + 12, 0x220F, info.Size(), t);
+        AppendSends(info, track.main_send, track.aux_sends);
+    }
+    info.Ref(detail + 16, 0x220F, info.Size(), detail);
+    AppendSends(info, stream.main_send, stream.aux_sends);
+
+    return detail;
+}
 
 inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
 {
@@ -713,6 +830,17 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
     for (size_t i = 0; i < spec.sounds.size(); ++i)
     {
         names.push_back({0x01000000 | static_cast<uint32_t>(i), spec.sounds[i].name});
+    }
+    std::vector<std::optional<uint32_t>> group_strings;
+    for (size_t i = 0; i < spec.sound_groups.size(); ++i)
+    {
+        group_strings.push_back(spec.sound_groups[i].name.empty()
+                                    ? std::nullopt
+                                    : std::optional<uint32_t>(static_cast<uint32_t>(names.size())));
+        if (!spec.sound_groups[i].name.empty())
+        {
+            names.push_back({0x02000000 | static_cast<uint32_t>(i), spec.sound_groups[i].name});
+        }
     }
     name_all(3, spec.banks);
     name_all(4, spec.players);
@@ -789,11 +917,23 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
         }
         info.Options(values);
 
+        if (sound.kind == SoundSpec::kStream && sound.stream)
+        {
+            info.Ref(s + 12, static_cast<uint16_t>(sound.kind), StreamDetails(info, *sound.stream), s);
+            continue;
+        }
+
+        // The details. A wave sound's details hold its index, a track count of 0 and its options.
         const size_t detail = info.Add(12);
         info.Ref(s + 12, static_cast<uint16_t>(sound.kind), detail, s);
         if (sound.kind == SoundSpec::kWaveSound)
         {
             info.U32(detail, sound.wave_sound_index);
+            if (sound.channel_priority)
+            {
+                info.U32(detail + 8, 1);
+                info.U32(info.Add(4), *sound.channel_priority);
+            }
         }
         if (sound.kind != SoundSpec::kSequence)
         {
@@ -822,7 +962,34 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
         }
     }
 
-    table(1, 0x2104, 0);
+    // A sound group: the IDs of its first and last sounds, a reference to the table of its files, a reference to the
+    // wave sound details, and the option of its name's string. The table follows, then the details: a reference to
+    // the table of wave archives, no options, and the empty table.
+    const size_t sound_groups = table(1, 0x2104, spec.sound_groups.size());
+    for (size_t i = 0; i < spec.sound_groups.size(); ++i)
+    {
+        const SoundGroupSpec& group = spec.sound_groups[i];
+        const size_t g = entry(sound_groups, i, 0x2204, 24);
+        info.U32(g, 0x01000000 | group.first);
+        info.U32(g + 4, 0x01000000 | group.last);
+        std::vector<std::pair<int, uint32_t>> values;
+        if (group_strings[i])
+        {
+            values.push_back({0, *group_strings[i]});
+        }
+        info.Options(values);
+        const size_t group_files = info.Add(4 + 4 * group.files.size());
+        info.Ref(g + 8, 0x0100, group_files, g);
+        info.U32(group_files, static_cast<uint32_t>(group.files.size()));
+        for (size_t k = 0; k < group.files.size(); ++k)
+        {
+            info.U32(group_files + 4 + 4 * k, group.files[k]);
+        }
+        const size_t details = info.Add(12);
+        info.Ref(g + 16, 0x2205, details, g);
+        const size_t wave_archive_table = info.Add(4);
+        info.Ref(details, 0x0100, wave_archive_table, details);
+    }
     const size_t banks = table(2, 0x2101, spec.banks.size());
     for (size_t i = 0; i < spec.banks.size(); ++i)
     {

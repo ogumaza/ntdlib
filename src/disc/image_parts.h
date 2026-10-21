@@ -46,25 +46,25 @@ class BlockImage : public Image
 public:
     void Read(uint64_t offset, uint8_t* out, size_t size) override
     {
-        ReadByBlocks(offset, out, size, block_size_,
-                     [this](uint64_t index, size_t within, uint8_t* piece, size_t n)
-                     {
-                         if (index != cached_index_)
-                         {
-                             cached_index_ = std::numeric_limits<uint64_t>::max();
-                             cached_present_ = FetchBlock(index, cached_);
-                             cached_index_ = index;
-                         }
+        const auto read = [this](uint64_t index, size_t within, uint8_t* piece, size_t n)
+        {
+            if (index != cached_index_)
+            {
+                cached_index_ = std::numeric_limits<uint64_t>::max();
+                cached_present_ = FetchBlock(index, cached_);
+                cached_index_ = index;
+            }
 
-                         if (cached_present_)
-                         {
-                             std::copy_n(cached_.begin() + static_cast<std::ptrdiff_t>(within), n, piece);
-                         }
-                         else
-                         {
-                             std::fill_n(piece, n, uint8_t{0});
-                         }
-                     });
+            if (cached_present_)
+            {
+                std::copy_n(cached_.begin() + static_cast<std::ptrdiff_t>(within), n, piece);
+            }
+            else
+            {
+                std::fill_n(piece, n, uint8_t{0});
+            }
+        };
+        ReadByBlocks(offset, out, size, block_size_, read);
     }
 
 protected:

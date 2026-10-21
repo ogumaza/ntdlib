@@ -17,10 +17,11 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/rip/length.h"
+
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/loop_finder.h"
 #include "ntdlib/jaudio/wave_system.h"
-#include "xsflib/rip/length.h"
 
 namespace ntdlib::jaudio
 {

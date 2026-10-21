@@ -5,8 +5,11 @@
 #include <array>
 #include <cstddef>
 
+#include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
+#include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
+#include "ntdlib/nwsnd/voice.h"
 #include "ntdlib/nwsnd/voice_impl.h"
 #include "ntdlib/nx/atk/channel.h"
 #include "ntdlib/nx/atk/engine.h"

@@ -16,12 +16,15 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
+#include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
 #include "ntdlib/nwsnd/util.h"
-#include "xsflib/testing/check.h"
+#include "ntdlib/sound_build.h"
 
 // The test's types are in a named namespace. Templates explicitly instantiated on a type in an unnamed namespace have
 // internal linkage, and GCC then warns about each of their members that no test calls.
@@ -380,7 +383,7 @@ struct TestPolicy : Console
         std::vector<int32_t> lengths;
         std::vector<int> init_pans;
         std::vector<uint32_t> loops;
-        std::vector<bool> quiet_at_loop; // whether the looping track was quiet when the loop was reported
+        std::vector<bool> quiet_at_loop;      // whether the looping track was quiet when the loop was reported
         std::vector<uint32_t> track_loops;    // each track's passes, as (track << 24) | the loop's start
         std::vector<bool> idle_at_track_loop; // whether each of those passes was idle
         bool follow_loops = true;
@@ -536,6 +539,9 @@ template class ntdlib::nwsnd::SequenceTrack<TestPolicy<ntdlib::nwsnd::Revolution
 template class ntdlib::nwsnd::SequenceSoundPlayer<TestPolicy<ntdlib::nwsnd::RevolutionPolicy>>;
 template class ntdlib::nwsnd::SequenceTrack<TestPolicy<ntdlib::nwsnd::RevolutionPolicy, true>>;
 template class ntdlib::nwsnd::SequenceSoundPlayer<TestPolicy<ntdlib::nwsnd::RevolutionPolicy, true>>;
+
+namespace
+{
 
 // The hooks on the looping sequence: each tick starts and ends, the first at its frame's start. The note command starts
 // a note. The ticks count the note down and release it. The jump back is a command.
@@ -1584,6 +1590,8 @@ void TestWiiTrackVolume()
     xsflib::testing::Check(volume(1, 0.0f) == 0.0f, "the Wii: a track volume of 0 silences the track");
     xsflib::testing::Check(volume(2, 0.0f) == full, "the Wii: a track whose bit isn't set keeps its volume");
 }
+
+} // namespace
 
 int main()
 {

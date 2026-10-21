@@ -26,11 +26,13 @@
 #include "ntdlib/nwsnd/archive_files.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
+#include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/nwsnd/voice.h"
 #include "ntdlib/nwsnd/voice_impl.h"
+#include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/instruments.h"
 
@@ -1181,6 +1183,7 @@ public:
         {
             return nullptr;
         }
+
         const sar::Pcm* pcm = banks_->GetWave(slot, region->wave_id_index);
         if (!pcm)
         {

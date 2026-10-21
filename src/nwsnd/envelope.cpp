@@ -7,6 +7,7 @@
 
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/tables.h"
+#include "ntdlib/nwsnd/util.h"
 
 namespace ntdlib::nwsnd
 {

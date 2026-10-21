@@ -16,7 +16,8 @@
 // A wave's settings and DSP-ADPCM infos hold fields of 1, 2 or 4 bytes too. 16-bit PCM samples take the other byte
 // order. DSP-ADPCM's frames and 8-bit PCM samples stay as they are. The Switch starts each channel's samples on 64
 // bytes, and the Wii U on 32. ConvertWave writes the wave again through WaveFile, and the samples move to the
-// console's boundaries.
+// console's boundaries. A stream (FSTM) holds the same kinds of fields and samples. Its SEEK block is little-endian on
+// both consoles, and stays.
 
 #pragma once
 
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
 #include "ntdlib/sar/wave_file.h"
 
 namespace ntdlib::sar
@@ -43,6 +45,11 @@ std::vector<uint8_t> WithOtherByteOrder(std::span<const uint8_t> file, uint32_t 
 // before 0x00010200 holds 0 there. A wave converted from such a version to a later one takes the loop's start there, or
 // 0 without a loop. Throws std::invalid_argument for a 3DS wave and for `flavor` of the 3DS.
 WaveFile ConvertWave(const WaveFile& wave, Flavor flavor, uint32_t version);
+
+// `stream`, a stream of the Wii U or the Switch, as a stream of `flavor` with version `version`. The settings, the
+// tracks, the DSP-ADPCM infos and the history stay. 16-bit PCM takes `flavor`'s byte order. Throws
+// std::invalid_argument for a 3DS stream and for `flavor` of the 3DS.
+StreamFile ConvertStream(const StreamFile& stream, Flavor flavor, uint32_t version);
 
 // `archive`, a wave archive of the Wii U or the Switch, as a wave archive of `flavor` with version `version`. Each wave
 // becomes a wave of `flavor` with version `wave_version`, as ConvertWave makes it. Throws std::invalid_argument for a

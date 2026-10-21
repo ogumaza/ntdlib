@@ -24,6 +24,7 @@
 #include "ntdlib/disc/compression.h"
 #include "ntdlib/disc/containers.h"
 #include "ntdlib/disc/game.h"
+#include "ntdlib/disc/image.h"
 #include "temp_folder.h"
 
 namespace
@@ -48,12 +49,12 @@ using disc_writers::kWiaMethods;
 using disc_writers::Wdf;
 using disc_writers::WiaContents;
 using disc_writers::WiaFile;
+using ntdlib::disc::Method;
 using xsflib::testing::Check;
 namespace fs = std::filesystem;
 
 // How the tests load games: as a Wii rip tool named xyz would, with every container.
 const ntdlib::disc::GameOptions kOptions{ntdlib::disc::Console::kWii, "xyz", {ntdlib::disc::OpenContainer}};
-using ntdlib::disc::Method;
 
 constexpr uint64_t kSector = 0x8000;
 constexpr uint64_t kSectorData = 0x7C00;

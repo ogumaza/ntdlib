@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -23,13 +24,13 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/midi/recorder.h"
+
 #include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/instruments.h"
+#include "ntdlib/sequence_export/jaudio/sound_data.h"
 #include "ntdlib/sequence_export/jaudio/wave.h"
 #include "ntdlib/sequence_export/passes.h"
-#include "seqlib/midi/recorder.h"
-#include "xsflib/binary.h"
-
 #include "sequence_export/lengths.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -894,12 +895,12 @@ private:
     bool stop_ = false;
     bool silent_end_ = false; // the main loop's pass was idle and silent: the sequence has ended
     std::optional<PendingLoop> pending_loop_;
-    std::optional<uint32_t> stop_tick_;                       // the end of the pass that stopped the performance
-    MainLoopPasses main_loop_;                                // the main loop's counted passes and marked pass
-    std::optional<double> held_sound_end_;                    // set when the main loop holds a sound (HeldSoundEnd)
-    std::optional<uint32_t> last_draw_;                       // the last tick a track drew a random number in
-    std::array<int, 16> slot_tracks_{};                       // the track recorded in each MIDI track, or -1
-    std::map<uint32_t, uint8_t> tie_velocities_in_;           // an earlier run's TieVelocities
+    std::optional<uint32_t> stop_tick_;             // the end of the pass that stopped the performance
+    MainLoopPasses main_loop_;                      // the main loop's counted passes and marked pass
+    std::optional<double> held_sound_end_;          // set when the main loop holds a sound (HeldSoundEnd)
+    std::optional<uint32_t> last_draw_;             // the last tick a track drew a random number in
+    std::array<int, 16> slot_tracks_{};             // the track recorded in each MIDI track, or -1
+    std::map<uint32_t, uint8_t> tie_velocities_in_; // an earlier run's TieVelocities
     std::map<uint32_t, uint8_t> tie_velocities_;
 };
 
@@ -2125,6 +2126,7 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
             {
                 break;
             }
+
             tr.osc_scale[a[0]] = static_cast<float>(a[1]) / 16383.0f;
             if (tr.osc[a[0]])
             {
@@ -2141,6 +2143,7 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
             {
                 break;
             }
+
             Oscillator osc;
             osc.target = static_cast<uint8_t>(a[0]);
             osc.scale = tr.osc_scale[a[0]];
@@ -2604,6 +2607,7 @@ Outcome Performer::Note1(int t, uint8_t key)
     again.skip_samples = 0;
     again.tied = false;
     again.latest_key = static_cast<uint8_t>(std::clamp(target, 0, 127));
+
     return Outcome::kContinue;
 }
 
@@ -3313,6 +3317,7 @@ void Performer::SkipPrint(int t)
             {
                 break;
             }
+
             args++;
         }
     }
@@ -4375,6 +4380,7 @@ std::optional<double> Performer::HeldSoundEnd(uint32_t start) const
         {
             return std::nullopt;
         }
+
         sounding = true;
     }
     if (!sounding)

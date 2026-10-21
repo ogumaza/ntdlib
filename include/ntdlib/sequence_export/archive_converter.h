@@ -14,14 +14,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"

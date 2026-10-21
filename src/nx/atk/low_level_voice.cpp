@@ -8,6 +8,11 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "ntdlib/nx/atk/hardware.h"
+#include "ntdlib/nx/atk/util.h"
+#include "ntdlib/nx/audio/dsp.h"
+#include "ntdlib/nx/audio/renderer.h"
+
 namespace ntdlib::nx::atk
 {
 namespace

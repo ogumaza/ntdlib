@@ -12,6 +12,8 @@
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sound_build.h"
 
 namespace ntdlib::sequence_export
 {

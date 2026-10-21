@@ -13,8 +13,9 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/sar/formats.h"
 
 namespace
 {

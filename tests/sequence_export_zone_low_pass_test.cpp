@@ -20,13 +20,15 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/sf2/soundfont.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/ax/lpf.h"
 #include "ntdlib/sequence_export/consoles.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/resampling.h"
-#include "seqlib/sf2/soundfont.h"
-#include "xsflib/testing/check.h"
-
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/wave/decode.h"
 #include "sequence_export/sf2_build.h"
 #include "sequence_export/zone_low_pass.h"
 
@@ -238,7 +240,7 @@ std::pair<int, int> CutoffOf(const sf2::Zone& zone)
 void TestZonesTakeTheLowerLowPassAtTheOriginalKey()
 {
     const Settings settings = CafeSettings();
-    const ResamplingRegion region = {60, 1.0f, 32000, 0};
+    const ResamplingRegion kRegion = {60, 1.0f, 32000, 0};
     const ResamplingFilter* above_4_thirds = &settings.resampling->filters[0];
     PresetKey one_pole;
     one_pole.filter = {11000, 0, 160};
@@ -249,11 +251,11 @@ void TestZonesTakeTheLowerLowPassAtTheOriginalKey()
     sf2::Zone kept = SampleZone();
     sf2::Zone other = SampleZone();
 
-    AddZoneLowPass(low, above_4_thirds, FittedCutoff{7000, 0}, region, one_pole, settings);
-    AddZoneLowPass(high, above_4_thirds, FittedCutoff{12000, 0}, region, one_pole, settings);
-    AddZoneLowPass(kept, above_4_thirds, std::nullopt, region, one_pole, settings);
-    AddZoneLowPass(other, above_4_thirds, std::nullopt, region, biquad, settings);
-    const std::vector<ResamplingSpan> spans = ZoneSpans({0, 127}, region, one_pole, settings);
+    AddZoneLowPass(low, above_4_thirds, FittedCutoff{7000, 0}, kRegion, one_pole, settings);
+    AddZoneLowPass(high, above_4_thirds, FittedCutoff{12000, 0}, kRegion, one_pole, settings);
+    AddZoneLowPass(kept, above_4_thirds, std::nullopt, kRegion, one_pole, settings);
+    AddZoneLowPass(other, above_4_thirds, std::nullopt, kRegion, biquad, settings);
+    const std::vector<ResamplingSpan> spans = ZoneSpans({0, 127}, kRegion, one_pole, settings);
 
     XSFLIB_CHECK((CutoffOf(low) == std::pair{7000, -1}));
     XSFLIB_CHECK((CutoffOf(high) == std::pair{5934, 12800}));

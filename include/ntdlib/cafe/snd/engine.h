@@ -3,8 +3,9 @@
 // Archive mode's model of nw::snd for one sound archive. The model runs the sound thread's frame
 // (SoundThread::FrameProcess) and AX's frame callback (HwCallbackProc) around cafe/ax. The model lays the archive's
 // wave archives out in AX's memory, the same way a game's sound heap would hold them. The model plays the archive's
-// sequence sounds. Each function's comment gives the address of the routine it follows in Animal Crossing: amiibo
-// Festival's executable.
+// sequence sounds and wave sounds. A stream sound plays from the bytes of its stream file, which the game keeps beside
+// the archive. The model lays the stream's channels out in AX's memory too. Each function's comment gives the address
+// of the routine it follows in Animal Crossing: amiibo Festival's executable.
 
 #pragma once
 
@@ -12,10 +13,12 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <span>
 #include <utility>
 #include <vector>
 
 #include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/system.h"
 #include "ntdlib/cafe/snd/ax_voice.h"
 #include "ntdlib/cafe/snd/channel.h"
@@ -23,12 +26,16 @@
 #include "ntdlib/cafe/snd/effects.h"
 #include "ntdlib/cafe/snd/renderer.h"
 #include "ntdlib/cafe/snd/sequence.h"
+#include "ntdlib/cafe/snd/sound_players.h"
 #include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/cafe/snd/voice.h"
 #include "ntdlib/nwsnd/archive_files.h"
+#include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/length_hooks.h"
-#include "ntdlib/nwsnd/sequence_players.h"
+#include "ntdlib/nwsnd/sound_players.h"
+#include "ntdlib/nwsnd/voice.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/stream_file.h"
 
 namespace ntdlib::cafe::snd
 {
@@ -74,6 +81,21 @@ public:
     // sequence file isn't in the archive.
     SequenceSoundPlayer* StartSequence(uint32_t index);
 
+    // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
+    // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks
+    // its wave sound file or the file lacks the sound. A missing wave leaves the player nothing to play: it finishes in
+    // its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
+    WaveSoundPlayer* StartWaveSound(uint32_t index);
+
+    // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
+    // names beside the archive. The engine keeps the stream's channels, in AX's memory. Returns the player, or nullptr
+    // if there's no such stream sound or no track plays. Throws xsflib::FormatError for a file that
+    // sar::StreamFile::Read refuses.
+    StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
+
+    // The same for a stream sound of `info`, which the archive needn't hold.
+    StreamSoundPlayer* StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file);
+
     // A frame of 3 ms. AX renders, and AX's frame callback updates nw::snd's AX voices (HwCallbackProc, 0x022A9FD8).
     // Then the sound thread's frame runs (FrameProcess, 0x0229F228).
     void RunFrame();
@@ -86,7 +108,8 @@ public:
     // and none of the voices of its notes reach AX's buses, their releases and sends included. A change takes effect
     // across the next frame (see ax::System::SetVoiceMuted). The mutes aren't part of a snapshot. They stay through a
     // restore. The track's mix from the frames before the snapshot can still reach the output of the first two frames
-    // after the restore (see ax::System::Restore).
+    // after the restore (see ax::System::Restore). A wave sound's channel plays on track 0. A stream's voices take no
+    // mutes and no meters.
     void MuteTrack(int player, int track, bool mute);
     bool IsTrackMuted(int player, int track) const;
 
@@ -102,9 +125,10 @@ public:
     Snapshot Save() const;
 
     // Returns the engine to a snapshot that it saved. The players that started after the snapshot go, and the pointers
-    // that StartSequence gave for them dangle. The other players keep their places. The banks and waves that notes have
-    // read stay read, and stay in AX's memory. Throws std::invalid_argument for a snapshot of another engine, or one
-    // with players that the engine doesn't have. A refused snapshot changes nothing.
+    // that StartSequence, StartWaveSound and StartStreamSound gave for them dangle. The other players keep their
+    // places. The banks and waves that notes have read stay read, and stay in AX's memory. Throws std::invalid_argument
+    // for a snapshot of another engine, or one with players that the engine doesn't have. A refused snapshot changes
+    // nothing.
     void Restore(const Snapshot& snapshot);
 
     // Whether an effect is on an aux bus.
@@ -160,9 +184,12 @@ public:
     // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
     void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
 
+    // Passes the callback of a stream's voice on to the stream's player.
+    void VoiceEvent(const ntdlib::nwsnd::VoiceOwner& owner, ntdlib::nwsnd::VoiceCallbackStatus status);
+
 private:
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
-    using Players = ntdlib::nwsnd::SequencePlayers<SequenceSoundPlayer>;
+    using Players = ntdlib::nwsnd::SoundPlayers<SequenceSoundPlayer, WaveSoundPlayer, StreamSoundPlayer>;
 
     // A second of frames, for EffectsRinging.
     static constexpr int kRingingFrames = 334;
@@ -176,6 +203,9 @@ private:
     // Puts a wave archive's whole file in AX's memory, as the game loads the file into its sound heap. The waves then
     // lie where they lie in the file.
     void MapWaveArchive(ntdlib::nwsnd::LoadedWaveArchive& loaded);
+
+    // Puts `bytes` in AX's memory after the files there, and returns their address.
+    uint32_t Map(std::span<const uint8_t> bytes);
 
     ax::System* system_;
     ax::Memory* memory_;
@@ -196,6 +226,11 @@ private:
     // reads it.
     Files files_;
     uint32_t next_address_ = 0x10000000;
+
+    // The streams that stream sounds play, and the addresses of their channels in AX's memory. They stay while the
+    // engine runs, through a restore too. The engine takes them out of AX's memory when it goes.
+    std::vector<std::unique_ptr<const sar::StreamFile>> streams_;
+    std::vector<uint32_t> stream_addresses_;
 
     // The effects come last. They take their callbacks off AX's buses before the rest goes.
     Effects effects_;

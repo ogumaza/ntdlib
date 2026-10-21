@@ -9,6 +9,9 @@
 #include <limits>
 #include <span>
 
+#include "ntdlib/cafe/ax/cemu_departures.h"
+#include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/resample.h"
 #include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/accumulator.h"

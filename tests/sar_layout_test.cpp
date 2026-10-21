@@ -7,12 +7,12 @@
 // bytes that no command reaches. A third archive's tables take new values. A fourth holds a wave sound beside a
 // sequence sound, for the fields of the sounds' starts. A fifth holds sounds with some of the options and without
 // them, for the places of the values. The files that stay in the bytes become runs of their own, and take new bytes:
-// in the FILE block, in a group, and in both.
+// in the FILE block, in a group, and in both. The last archives come with group files beside them, and the cut takes
+// those too.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -31,18 +31,21 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/testing/sar_files.h"
+#include "ntdlib/testing/sar_tools.h"
 
-using xsflib::testing::failures;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
 
 namespace sar_files = ntdlib::testing::sar_files;
+namespace sar_tools = ntdlib::testing::sar_tools;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::sar::Field;
 using ntdlib::sar::FileCopy;
 using ntdlib::sar::Flavor;
+using ntdlib::sar::GroupFileLayout;
 using ntdlib::sar::Layout;
 using ntdlib::sar::Padding;
 using ntdlib::sar::Piece;
@@ -161,16 +164,7 @@ bool SameCommands(const Layout& cut, const Layout& layout)
 
 bool Refuses(const Layout& layout)
 {
-    try
-    {
-        Join(layout);
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::invalid_argument>([&] { Join(layout); }).empty();
 }
 
 // The bytes of file `id`.
@@ -179,22 +173,6 @@ std::vector<uint8_t> FileOf(const ntdlib::sar::SoundArchive& archive, uint32_t i
     const std::span<const uint8_t> data = archive.FileData(id);
 
     return {data.begin(), data.end()};
-}
-
-// The message of the std::invalid_argument that `call` throws, or nothing when it throws none.
-template <class Call>
-std::string RefusalOf(const Call& call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return "";
 }
 
 // The piece of `layout` that holds file `id` of `archive` as a run of its own, with padding after it. Nothing when no
@@ -403,16 +381,9 @@ void TestStarts(Flavor flavor)
     }
 
     // Pieces that run past the archive's end.
-    bool refused = false;
-    try
-    {
-        ntdlib::sar::Starts(std::span(archive).first(archive.size() - 1), flavor, layout.pieces);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
-    XSFLIB_CHECK(refused);
+    XSFLIB_CHECK(!ErrorOf<std::invalid_argument>(
+                      [&] { ntdlib::sar::Starts(std::span(archive).first(archive.size() - 1), flavor, layout.pieces); })
+                      .empty());
 }
 
 // The fields of the sounds' starts. Song starts at 0 and Entry at 5, each with the option. The other sounds' entries
@@ -433,15 +404,7 @@ void TestStartFields(Flavor flavor)
 
     const std::vector<std::optional<std::size_t>> fields = ntdlib::sar::StartFields(archive, flavor);
     const std::vector<std::optional<std::size_t>> wave_fields = ntdlib::sar::StartFields(waves, flavor);
-    bool refused = false;
-    try
-    {
-        ntdlib::sar::StartFields(archive, other);
-    }
-    catch (const xsflib::FormatError&)
-    {
-        refused = true;
-    }
+    const bool refused = !ErrorOf<xsflib::FormatError>([&] { ntdlib::sar::StartFields(archive, other); }).empty();
 
     // A missing position reads the archive's first bytes, and its check fails.
     const bool big_endian = flavor == Flavor::kCafe;
@@ -656,23 +619,14 @@ void TestValuePlaces(Flavor flavor)
     const std::vector<ntdlib::sar::SoundInfo> after = ntdlib::sar::SoundArchive::Load(written, strict).Sounds();
 
     // The INFO block ends the bytes that the reader reads.
-    const std::string_view magic = "INFO";
-    const auto info = static_cast<std::size_t>(std::search(archive.begin(), archive.end(), magic.begin(), magic.end()) -
-                                               archive.begin());
+    const std::string_view kMagic = "INFO";
+    const auto info = static_cast<std::size_t>(
+        std::search(archive.begin(), archive.end(), kMagic.begin(), kMagic.end()) - archive.begin());
     const std::size_t end = info + xsflib::Reader(archive, flavor == Flavor::kCafe).U32(info + 4);
     const Flavor other = flavor == Flavor::kCafe ? Flavor::kNx : Flavor::kCafe;
     const auto refused = [](std::span<const uint8_t> bytes, Flavor read_as)
     {
-        try
-        {
-            ntdlib::sar::TableValuePlaces(bytes, read_as);
-        }
-        catch (const xsflib::FormatError&)
-        {
-            return true;
-        }
-
-        return false;
+        return !ErrorOf<xsflib::FormatError>([&] { ntdlib::sar::TableValuePlaces(bytes, read_as); }).empty();
     };
 
     const std::vector<ValuePlaces> places = ntdlib::sar::TableValuePlaces(archive, flavor);
@@ -700,30 +654,30 @@ void TestFiles(Flavor flavor)
     const std::vector<uint8_t> archive = Archive(flavor);
     const ntdlib::sar::SoundArchive tables = Read(archive, flavor);
     const Layout layout = Cut(archive, flavor);
-    const std::vector<uint8_t> longer(40, 0x5A);
-    const std::vector<uint8_t> shorter = {7, 7, 7};
+    const std::vector<uint8_t> kLonger(40, 0x5A);
+    const std::vector<uint8_t> kShorter = {7, 7, 7};
     std::vector<uint8_t> short_archive = archive;
     short_archive.resize(short_archive.size() - 0x30);
     const Layout short_layout = Cut(short_archive, flavor);
 
     const std::vector<uint8_t> grown =
-        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, longer), layout.fields);
+        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, kLonger), layout.fields);
     const std::vector<uint8_t> shrunk =
-        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 3, shorter), layout.fields);
+        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 3, kShorter), layout.fields);
     const std::vector<uint8_t> short_grown =
-        ntdlib::sar::Join(flavor, short_layout.sequences, Replace(short_layout, 1, longer), short_layout.fields);
+        ntdlib::sar::Join(flavor, short_layout.sequences, Replace(short_layout, 1, kLonger), short_layout.fields);
     Layout unfollowed = layout;
     unfollowed.fields.clear();
-    const std::string lost = RefusalOf([&] { Replace(unfollowed, 3, shorter); });
+    const std::string lost = ErrorOf<std::invalid_argument>([&] { Replace(unfollowed, 3, kShorter); });
 
     XSFLIB_CHECK(RunOf(archive, flavor, layout, 1) && RunOf(archive, flavor, layout, 3));
     XSFLIB_CHECK(!RunOf(archive, flavor, layout, 4));
     const ntdlib::sar::SoundArchive grown_tables = Read(grown, flavor);
-    XSFLIB_CHECK(grown.size() == archive.size() + Padded(40) - Padded(5) && FileOf(grown_tables, 1) == longer);
+    XSFLIB_CHECK(grown.size() == archive.size() + Padded(40) - Padded(5) && FileOf(grown_tables, 1) == kLonger);
     XSFLIB_CHECK(grown_tables.GroupErrors().empty() && !grown_tables.Truncated());
     const ntdlib::sar::SoundArchive shrunk_tables = Read(shrunk, flavor);
     const std::size_t odd = FileOf(tables, 3).size();
-    XSFLIB_CHECK(shrunk.size() == archive.size() - Padded(odd) + Padded(3) && FileOf(shrunk_tables, 3) == shorter);
+    XSFLIB_CHECK(shrunk.size() == archive.size() - Padded(odd) + Padded(3) && FileOf(shrunk_tables, 3) == kShorter);
     for (const uint32_t id : {0u, 2u, 4u, 5u})
     {
         XSFLIB_CHECK(FileOf(grown_tables, id) == FileOf(tables, id) && FileOf(shrunk_tables, id) == FileOf(tables, id));
@@ -732,7 +686,7 @@ void TestFiles(Flavor flavor)
     const Layout recut = Cut(grown, flavor);
     XSFLIB_CHECK(recut.fields == layout.fields && RunOf(grown, flavor, recut, 1));
     XSFLIB_CHECK(short_grown.size() == short_archive.size() + Padded(40) - Padded(5));
-    XSFLIB_CHECK(FileOf(Read(short_grown, flavor), 1) == longer);
+    XSFLIB_CHECK(FileOf(Read(short_grown, flavor), 1) == kLonger);
 
     // Without the fields, the group's offset points where the shorter archive holds only part of it. The tables no
     // longer list the files in the group.
@@ -744,34 +698,34 @@ void TestFiles(Flavor flavor)
 // run of its own.
 void TestFilesInGroups(Flavor flavor)
 {
-    const std::vector<uint8_t> first = {1, 2, 3, 4, 5};
-    const std::vector<uint8_t> only = {6, 7, 8};
+    const std::vector<uint8_t> kFirst = {1, 2, 3, 4, 5};
+    const std::vector<uint8_t> kOnly = {6, 7, 8};
     sar_files::ArchiveSpec spec;
     spec.sounds = {{.name = "Song", .file = 0}};
     spec.players = {{"PLAYER", 1}};
     spec.groups = {{"GROUP", 2}};
     spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})},
-                  {.bytes = first},
-                  {.bytes = sar_files::Group(flavor, {{1, first}, {3, only}})},
+                  {.bytes = kFirst},
+                  {.bytes = sar_files::Group(flavor, {{1, kFirst}, {3, kOnly}})},
                   {.group_only = true}};
     const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
     const ntdlib::sar::SoundArchive tables = Read(archive, flavor);
     const Layout layout = Cut(archive, flavor);
-    const std::vector<uint8_t> longer(20, 0x5A);
-    const std::vector<uint8_t> longest(50, 0xA5);
+    const std::vector<uint8_t> kLonger(20, 0x5A);
+    const std::vector<uint8_t> kLongest(50, 0xA5);
 
     const ntdlib::sar::SoundArchive both =
-        Read(ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, longer), layout.fields), flavor);
+        Read(ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, kLonger), layout.fields), flavor);
     const ntdlib::sar::SoundArchive grouped =
-        Read(ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 3, longest), layout.fields), flavor);
-    const std::string refusal = RefusalOf([&] { Replace(layout, 2, longer); });
+        Read(ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 3, kLongest), layout.fields), flavor);
+    const std::string refusal = ErrorOf<std::invalid_argument>([&] { Replace(layout, 2, kLonger); });
 
     const std::vector<uint8_t> group = FileOf(both, 2);
-    XSFLIB_CHECK(FileOf(both, 1) == longer && FileOf(both, 3) == only && FileOf(both, 0) == FileOf(tables, 0));
+    XSFLIB_CHECK(FileOf(both, 1) == kLonger && FileOf(both, 3) == kOnly && FileOf(both, 0) == FileOf(tables, 0));
     XSFLIB_CHECK(group.size() == FileOf(tables, 2).size() + Padded(20) - Padded(5));
-    XSFLIB_CHECK(std::ranges::search(group, longer).begin() != group.end());
+    XSFLIB_CHECK(std::ranges::search(group, kLonger).begin() != group.end());
     XSFLIB_CHECK(both.GroupErrors().empty() && grouped.GroupErrors().empty());
-    XSFLIB_CHECK(FileOf(grouped, 3) == longest && FileOf(grouped, 1) == first);
+    XSFLIB_CHECK(FileOf(grouped, 3) == kLongest && FileOf(grouped, 1) == kFirst);
     XSFLIB_CHECK(FileOf(grouped, 2).size() == FileOf(tables, 2).size() + Padded(50) - Padded(3));
     XSFLIB_CHECK(refusal == "a copy of file 2 isn't a piece of its own");
 }
@@ -780,16 +734,16 @@ void TestFilesInGroups(Flavor flavor)
 // first, in the order of their starts, and the one copy of the second. A file that the archive lacks has none.
 void TestFileCopies(Flavor flavor)
 {
-    const std::vector<uint8_t> first = {1, 2, 3, 4, 5};
-    const std::vector<uint8_t> other = {9, 8, 7, 6, 5};
-    const std::vector<uint8_t> only = {6, 7, 8};
+    const std::vector<uint8_t> kFirst = {1, 2, 3, 4, 5};
+    const std::vector<uint8_t> kOtherBytes = {9, 8, 7, 6, 5};
+    const std::vector<uint8_t> kOnly = {6, 7, 8};
     sar_files::ArchiveSpec spec;
     spec.sounds = {{.name = "Song", .file = 0}};
     spec.players = {{"PLAYER", 1}};
     spec.groups = {{"GROUP", 2}};
     spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})},
-                  {.bytes = first},
-                  {.bytes = sar_files::Group(flavor, {{1, other}, {3, only}})},
+                  {.bytes = kFirst},
+                  {.bytes = sar_files::Group(flavor, {{1, kOtherBytes}, {3, kOnly}})},
                   {.group_only = true}};
     const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
     const ntdlib::sar::SoundArchive tables = Read(archive, flavor);
@@ -805,9 +759,9 @@ void TestFileCopies(Flavor flavor)
     XSFLIB_CHECK(copies.size() == 2 && only_copies.size() == 1 && copies_of(7).empty());
     if (copies.size() == 2 && only_copies.size() == 1)
     {
-        XSFLIB_CHECK(copies[0].start == tables.FileOffset(1) && !copies[0].group && copies[0].bytes == first);
-        XSFLIB_CHECK(copies[1].start > copies[0].start && copies[1].group == 2u && copies[1].bytes == other);
-        XSFLIB_CHECK(only_copies[0].group == 2u && only_copies[0].bytes == only);
+        XSFLIB_CHECK(copies[0].start == tables.FileOffset(1) && !copies[0].group && copies[0].bytes == kFirst);
+        XSFLIB_CHECK(copies[1].start > copies[0].start && copies[1].group == 2u && copies[1].bytes == kOtherBytes);
+        XSFLIB_CHECK(only_copies[0].group == 2u && only_copies[0].bytes == kOnly);
     }
 }
 
@@ -851,11 +805,11 @@ void TestFileRefusals(Flavor flavor)
     std::copy_n(archive.begin() + OffsetFieldOf(archive, flavor, 1), 8,
                 shared.begin() + OffsetFieldOf(archive, flavor, 2));
     const Layout shared_layout = Cut(shared, flavor);
-    const std::vector<uint8_t> longer(40, 0x5A);
+    const std::vector<uint8_t> kLonger(40, 0x5A);
 
     const auto refusal = [&](const Layout& cut, uint32_t id)
     {
-        return RefusalOf([&] { Replace(cut, id, longer); });
+        return ErrorOf<std::invalid_argument>([&] { Replace(cut, id, kLonger); });
     };
 
     XSFLIB_CHECK(refusal(layout, 4) == "the archive holds no file 4");
@@ -888,34 +842,304 @@ void TestLastFiles(Flavor flavor)
 
         return Unpadded(sar_files::Archive(flavor, spec), flavor, 1);
     };
-    const std::vector<uint8_t> other = {1, 2, 3, 4, 5};
-    const std::vector<uint8_t> longer(40, 0x5A);
-    const std::vector<uint8_t> shorter = {7, 7, 7};
+    const std::vector<uint8_t> kOtherFile = {1, 2, 3, 4, 5};
+    const std::vector<uint8_t> kLonger(40, 0x5A);
+    const std::vector<uint8_t> kShorter = {7, 7, 7};
     std::vector<uint8_t> longer_song;
     for (int i = 0; i < 21; ++i)
     {
         longer_song.insert(longer_song.end(), {0xC1, 0x50});
     }
     longer_song.push_back(0xFF);
-    const std::vector<uint8_t> other_last = archive(other, kOther, false);
-    const std::vector<uint8_t> song_last = archive(other, kOther, true);
+    const std::vector<uint8_t> other_last = archive(kOtherFile, kOther, false);
+    const std::vector<uint8_t> song_last = archive(kOtherFile, kOther, true);
     const Layout layout = Cut(other_last, flavor);
     Layout song_layout = Cut(song_last, flavor);
 
     const std::vector<uint8_t> grown =
-        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, longer), layout.fields);
+        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, kLonger), layout.fields);
     const std::vector<uint8_t> shrunk =
-        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, shorter), layout.fields);
+        ntdlib::sar::Join(flavor, layout.sequences, Replace(layout, 1, kShorter), layout.fields);
     const std::vector<uint8_t> song_joined = Join(song_layout);
     Insert(song_layout, 0, 1, 20, 0);
     const std::vector<uint8_t> song_grown = Join(song_layout);
 
     XSFLIB_CHECK(Join(layout) == other_last && RunOf(other_last, flavor, layout, 1));
     XSFLIB_CHECK(layout.pieces.back() == Piece{Padding{1}});
-    XSFLIB_CHECK(grown == archive(longer, kOther, false) && shrunk == archive(shorter, kOther, false));
+    XSFLIB_CHECK(grown == archive(kLonger, kOther, false) && shrunk == archive(kShorter, kOther, false));
     XSFLIB_CHECK(song_joined == song_last && (SequencesOfPieces(song_layout) == std::vector<uint32_t>{0}));
     XSFLIB_CHECK(song_layout.pieces.back() == Piece{Padding{1}});
-    XSFLIB_CHECK(song_grown == archive(other, longer_song, true));
+    XSFLIB_CHECK(song_grown == archive(kOtherFile, longer_song, true));
+}
+
+// The sequence of each sequence piece of `pieces`, in order.
+std::vector<uint32_t> SequencesOf(std::span<const Piece> pieces)
+{
+    std::vector<uint32_t> sequences;
+    for (const Piece& piece : pieces)
+    {
+        if (const auto* file = std::get_if<SequencePiece>(&piece))
+        {
+            sequences.push_back(file->sequence);
+        }
+    }
+
+    return sequences;
+}
+
+// An archive with a group that the game keeps beside it, and the group's file. The group's file holds copies of the
+// archive's sequence file and of a file of other bytes, and a file and a sequence file that only it holds.
+struct Beside
+{
+    std::vector<uint8_t> archive;
+    std::vector<std::vector<uint8_t>> group_files;
+};
+
+Beside ArchiveBeside(Flavor flavor, const std::vector<uint8_t>& copy)
+{
+    const std::vector<uint8_t> song = sar_files::Sequence(flavor, kSong, {{"Song", 0}});
+    const std::vector<uint8_t> only_song = sar_files::Sequence(flavor, kOther, {{"Only", 0}});
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Song", .file = 0, .start_offset = 5}, {.name = "Only", .file = 3}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP", ntdlib::sar::kExternalGroupFile}};
+    spec.files = {{.bytes = song}, {.bytes = {1, 2, 3, 4, 5}}, {.group_only = true}, {.group_only = true}};
+
+    return {sar_files::Archive(flavor, spec),
+            {sar_files::Group(flavor, {{0, copy}, {1, {1, 2, 3, 4, 5}}, {2, {6, 7, 8}}, {3, only_song}})}};
+}
+
+// The bytes of `layout`'s group files, joined.
+std::vector<std::vector<uint8_t>> JoinGroupFiles(const Layout& layout)
+{
+    std::vector<std::vector<uint8_t>> joined;
+    for (const GroupFileLayout& group_file : layout.group_files)
+    {
+        joined.push_back(ntdlib::sar::Join(layout.flavor, layout.sequences, group_file.pieces, group_file.fields));
+    }
+
+    return joined;
+}
+
+// The archive that `layout` joins to, read with its group files.
+ntdlib::sar::SoundArchive ReadWithGroupFiles(const Layout& layout)
+{
+    ntdlib::sar::SoundArchive archive = Read(Join(layout), layout.flavor);
+    for (const std::vector<uint8_t>& group_file : JoinGroupFiles(layout))
+    {
+        archive.AddGroupFile(group_file);
+    }
+
+    return archive;
+}
+
+// The cut takes the group's file beside the archive. Its copy of the archive's sequence file becomes a piece of the
+// archive's sequence, and its other files runs of their own. The sequence file that only the group's file holds stays
+// in its bytes. The archive's pieces stay as Cut makes them without the group's file. Each joins to give its bytes
+// back.
+void TestGroupFiles(Flavor flavor)
+{
+    const Beside beside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kSong, {{"Song", 0}}));
+    const Layout layout = ntdlib::sar::Cut(beside.archive, beside.group_files, OptionsFor(flavor));
+    const Layout alone = Cut(beside.archive, flavor);
+
+    XSFLIB_CHECK(layout.pieces == alone.pieces && layout.fields == alone.fields && layout.sequences == alone.sequences);
+    XSFLIB_CHECK(layout.sequences.size() == 1 && layout.group_files.size() == 1);
+    if (layout.group_files.size() != 1)
+    {
+        return;
+    }
+
+    const GroupFileLayout& group_file = layout.group_files[0];
+    XSFLIB_CHECK((SequencesOf(group_file.pieces) == std::vector<uint32_t>{0}));
+    XSFLIB_CHECK(Join(layout) == beside.archive && JoinGroupFiles(layout) == beside.group_files);
+    const auto holds = [&](const std::vector<uint8_t>& bytes)
+    {
+        return std::ranges::find(group_file.pieces, Piece{bytes}) != group_file.pieces.end();
+    };
+    XSFLIB_CHECK(holds({1, 2, 3, 4, 5}) && holds({6, 7, 8}) &&
+                 holds(sar_files::Sequence(flavor, kOther, {{"Only", 0}})));
+    for (const Field& field : group_file.fields)
+    {
+        XSFLIB_CHECK(!field.from.item && !field.to.item);
+    }
+
+    // More commands make the sequence file longer in the archive and in the group's file. The group's tables follow.
+    Layout longer = layout;
+    Insert(longer, 0, 1, 20, 0);
+    const ntdlib::sar::SoundArchive read = ReadWithGroupFiles(longer);
+    const std::vector<FileCopy> copies =
+        ntdlib::sar::FileCopies(flavor, longer.sequences, longer.pieces, longer.fields, longer.group_files, 0);
+    XSFLIB_CHECK(copies.size() == 2 && read.GroupErrors().empty());
+    if (copies.size() == 2)
+    {
+        XSFLIB_CHECK(copies[0].bytes == FileOf(read, 0) && copies[1].bytes == copies[0].bytes);
+        XSFLIB_CHECK(!copies[0].group_file && copies[1].group_file == 0u);
+        XSFLIB_CHECK(copies[0].bytes.size() > FileOf(Read(beside.archive, flavor), 0).size());
+    }
+    XSFLIB_CHECK(FileOf(read, 2) == std::vector<uint8_t>({6, 7, 8}));
+}
+
+// ReplaceFile gives the new bytes to each copy, in the archive and in the group's file. A file that only the group's
+// file holds takes them there, and the archive's pieces stay. FileCopies gives the copies in the group's file after the
+// archive's.
+void TestGroupFileReplacement(Flavor flavor)
+{
+    const Beside beside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kSong, {{"Song", 0}}));
+    const Layout layout = ntdlib::sar::Cut(beside.archive, beside.group_files, OptionsFor(flavor));
+    const std::vector<uint8_t> kLonger(40, 0x5A);
+    const auto replaced = [&](uint32_t file, const std::vector<uint8_t>& bytes)
+    {
+        const ntdlib::sar::ReplacedPieces pieces = ntdlib::sar::ReplaceFile(
+            flavor, layout.sequences, layout.pieces, layout.fields, layout.group_files, file, bytes);
+        Layout with = layout;
+        with.pieces = pieces.pieces;
+        for (std::size_t g = 0; g < with.group_files.size() && g < pieces.group_files.size(); ++g)
+        {
+            with.group_files[g].pieces = pieces.group_files[g];
+        }
+
+        return with;
+    };
+    const auto copies_of = [flavor](const Layout& with, uint32_t file)
+    {
+        return ntdlib::sar::FileCopies(flavor, with.sequences, with.pieces, with.fields, with.group_files, file);
+    };
+
+    const Layout both = replaced(1, kLonger);
+    const Layout only = replaced(2, kLonger);
+    const Layout only_song = replaced(3, kLonger);
+    const std::vector<FileCopy> copies = copies_of(both, 1);
+    const std::vector<FileCopy> only_copies = copies_of(only, 2);
+
+    XSFLIB_CHECK(FileOf(ReadWithGroupFiles(both), 1) == kLonger && FileOf(ReadWithGroupFiles(only), 2) == kLonger);
+    XSFLIB_CHECK(FileOf(ReadWithGroupFiles(only_song), 3) == kLonger);
+    XSFLIB_CHECK(only.pieces == layout.pieces && only_song.pieces == layout.pieces);
+    XSFLIB_CHECK(copies.size() == 2 && only_copies.size() == 1 && copies_of(layout, 9).empty());
+    if (copies.size() == 2 && only_copies.size() == 1)
+    {
+        XSFLIB_CHECK(!copies[0].group_file && copies[0].bytes == kLonger && copies[1].bytes == kLonger);
+        XSFLIB_CHECK(copies[1].group_file == 0u && !copies[1].group);
+        XSFLIB_CHECK(only_copies[0].group_file == 0u && only_copies[0].bytes == kLonger);
+    }
+
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { replaced(9, kLonger); }) == "the archive holds no file 9");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { replaced(0, kLonger); }) ==
+                 "a copy of file 0 isn't a piece of its own");
+    Layout unfollowed = layout;
+    unfollowed.group_files[0].fields.clear();
+    const auto replace = [&]
+    {
+        ntdlib::sar::ReplaceFile(flavor, unfollowed.sequences, unfollowed.pieces, unfollowed.fields,
+                                 unfollowed.group_files, 2, kLonger);
+    };
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(replace) ==
+                 "the tables of group file 0 don't follow the new bytes of file 2");
+}
+
+// A group's file that isn't one of the console's stays one run. A copy with other bytes than the archive's keeps the
+// sequence file in the bytes, in the archive and in the group's file. So does a field of the group's file that points
+// inside its copy. The archive's other files stay runs of their own.
+void TestOtherGroupFiles(Flavor flavor)
+{
+    // The group's file gives file 1 a place 4 bytes into the copy of the sequence file. INFO's second reference leads
+    // to file 1's entry. The entry gives the place 8 bytes in.
+    Beside inside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kSong, {{"Song", 0}}));
+    std::vector<uint8_t>& group = inside.group_files[0];
+    const xsflib::Reader g(group, flavor == Flavor::kCafe);
+    const std::size_t body = g.U32(0x18) + 8;
+    const uint32_t song = g.U32(body + g.U32(body + 8) + 8);
+    uint8_t* field = &group[body + g.U32(body + 16) + 8];
+    flavor == Flavor::kCafe ? xsflib::StoreBe32(field, song + 4) : xsflib::StoreLe32(field, song + 4);
+    const Layout kept_out = ntdlib::sar::Cut(inside.archive, inside.group_files, OptionsFor(flavor));
+
+    XSFLIB_CHECK(kept_out.sequences.empty() && kept_out.pieces.size() > 1);
+    XSFLIB_CHECK(Join(kept_out) == inside.archive && JoinGroupFiles(kept_out) == inside.group_files);
+
+    const Beside beside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kOther, {{"Song", 0}}));
+    const Layout other = ntdlib::sar::Cut(beside.archive, beside.group_files, OptionsFor(flavor));
+    const std::vector<std::vector<uint8_t>> kJunk = {{1, 2, 3}, {}};
+    const Layout one_run = ntdlib::sar::Cut(beside.archive, kJunk, OptionsFor(flavor));
+    const Layout alone = Cut(beside.archive, flavor);
+
+    XSFLIB_CHECK(other.sequences.empty() && SequencesOfPieces(other).empty());
+    XSFLIB_CHECK(Join(other) == beside.archive && JoinGroupFiles(other) == beside.group_files);
+    XSFLIB_CHECK(one_run.pieces == alone.pieces && one_run.fields == alone.fields && one_run.group_files.size() == 2);
+    if (one_run.group_files.size() == 2)
+    {
+        XSFLIB_CHECK((one_run.group_files[0].pieces == std::vector<Piece>{Piece{kJunk[0]}}));
+        XSFLIB_CHECK(one_run.group_files[0].fields.empty() && one_run.group_files[1].pieces.empty());
+    }
+    XSFLIB_CHECK(JoinGroupFiles(one_run) == kJunk);
+
+    // A group's file of another console stays one run too.
+    const Flavor console = flavor == Flavor::kNx ? Flavor::kCafe : Flavor::kNx;
+    const std::vector<std::vector<uint8_t>> foreign = {sar_files::Group(console, {{1, {1, 2, 3, 4, 5}}})};
+    const Layout foreign_run = ntdlib::sar::Cut(beside.archive, foreign, OptionsFor(flavor));
+    XSFLIB_CHECK(foreign_run.group_files.size() == 1 && JoinGroupFiles(foreign_run) == foreign);
+    if (foreign_run.group_files.size() == 1)
+    {
+        XSFLIB_CHECK((foreign_run.group_files[0].pieces == std::vector<Piece>{Piece{foreign[0]}}));
+    }
+}
+
+// A byte other than zero in the padding after the group file's copy of the sequence file keeps the sequence file in the
+// bytes, in the archive and in the group's file. The Switch's groups start each copy on a multiple of 64 bytes, and
+// zeros pad the sequence file of 160 bytes. The Wii U's start each copy on a multiple of 32 bytes.
+void TestGroupFilePadding()
+{
+    const std::vector<uint8_t> song = sar_files::Sequence(Flavor::kNx, kSong, {{"Song", 0}});
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Song", .file = 0}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP", ntdlib::sar::kExternalGroupFile}};
+    spec.files = {{.bytes = song}, {.bytes = {1, 2, 3, 4, 5}}};
+    const std::vector<uint8_t> archive = sar_files::Archive(Flavor::kNx, spec);
+    std::vector<std::vector<uint8_t>> group_files = {
+        sar_tools::Group(Flavor::kNx, {.files = {{0, song}, {1, std::vector<uint8_t>{1, 2, 3, 4, 5}}}})};
+    const Layout zeros = ntdlib::sar::Cut(archive, group_files, OptionsFor(Flavor::kNx));
+    XSFLIB_CHECK(song.size() % 64 == 32 && zeros.group_files.size() == 1);
+    if (zeros.group_files.size() != 1)
+    {
+        return;
+    }
+    XSFLIB_CHECK((SequencesOf(zeros.group_files[0].pieces) == std::vector<uint32_t>{0}));
+
+    const xsflib::Reader g(group_files[0], false);
+    const std::size_t info = g.U32(0x18) + 8;
+    const std::size_t end = g.U32(0x24) + 8 + g.U32(info + g.U32(info + 8) + 8) + song.size();
+    group_files[0].at(end) = 0xFF;
+    const Layout layout = ntdlib::sar::Cut(archive, group_files, OptionsFor(Flavor::kNx));
+    XSFLIB_CHECK(layout.sequences.empty() && SequencesOfPieces(layout).empty() && layout.group_files.size() == 1);
+    if (layout.group_files.size() == 1)
+    {
+        XSFLIB_CHECK(SequencesOf(layout.group_files[0].pieces).empty());
+    }
+    XSFLIB_CHECK(Join(layout) == archive && JoinGroupFiles(layout) == group_files);
+}
+
+// An archive with a group whose file the cut can't read stays one run. So does each group file beside it, and an empty
+// group file gives no pieces.
+void TestOneRun(Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Song", .file = 0}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP", 1}};
+    spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})}, {.bytes = {1, 2, 3, 4, 5}}};
+    const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
+    const std::vector<std::vector<uint8_t>> group_files = {
+        sar_files::Group(flavor, {{0, sar_files::Sequence(flavor, kSong, {{"Song", 0}})}}), {}};
+    const Layout layout = ntdlib::sar::Cut(archive, group_files, OptionsFor(flavor));
+
+    XSFLIB_CHECK((layout.pieces == std::vector<Piece>{Piece{archive}}) && layout.sequences.empty());
+    XSFLIB_CHECK(layout.fields.empty() && layout.group_files.size() == 2);
+    if (layout.group_files.size() == 2)
+    {
+        XSFLIB_CHECK((layout.group_files[0].pieces == std::vector<Piece>{Piece{group_files[0]}}));
+        XSFLIB_CHECK(layout.group_files[0].fields.empty() && layout.group_files[1].pieces.empty());
+    }
+    XSFLIB_CHECK(Join(layout) == archive && JoinGroupFiles(layout) == group_files);
 }
 
 } // namespace
@@ -937,15 +1161,12 @@ int main()
         TestFileRefusals(flavor);
         TestFileCopies(flavor);
         TestLastFiles(flavor);
+        TestGroupFiles(flavor);
+        TestGroupFileReplacement(flavor);
+        TestOtherGroupFiles(flavor);
+        TestOneRun(flavor);
     }
+    TestGroupFilePadding();
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    std::printf("Layout tests passed\n");
-
-    return 0;
+    return xsflib::testing::Summary("Layout");
 }

@@ -16,9 +16,10 @@
 #include <system_error>
 #include <vector>
 
-#include "ntdlib/disc/game.h"
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/disc/game.h"
 
 namespace ntdlib::testing
 {

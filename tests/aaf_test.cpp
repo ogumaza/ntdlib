@@ -17,6 +17,7 @@
 
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/bank.h"
+#include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
 
@@ -148,10 +149,10 @@ void TestSequenceIndex()
                  "the AAF archive's sequence index names a sequence outside the sequence archive");
 
     std::vector<uint8_t> not_index = aaf;
-    const std::size_t index_at = 0x800 + 0x200;
-    not_index[index_at] = 'X';
+    const std::size_t kIndexAt = 0x800 + 0x200;
+    not_index[kIndexAt] = 'X';
     XSFLIB_CHECK(IndexRefusal(not_index, archive) == "the AAF archive's sequence index is damaged");
-    XSFLIB_CHECK(IndexRefusal(std::span(aaf).first(index_at + 0x20 + 0x30), archive) == "the AAF archive is damaged");
+    XSFLIB_CHECK(IndexRefusal(std::span(aaf).first(kIndexAt + 0x20 + 0x30), archive) == "the AAF archive is damaged");
 }
 
 void TestWaveSystems()

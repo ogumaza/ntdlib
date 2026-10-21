@@ -12,15 +12,25 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "seqlib/sf2/presets.h"
 #include "seqlib/sf2/samples.h"
 #include "seqlib/sf2/soundfont.h"
+#include "seqlib/sf2/units.h"
 
 #include "ntdlib/sequence_export/conversion.h"
 #include "ntdlib/sequence_export/jaudio/envelope.h"
+#include "ntdlib/sequence_export/jaudio/instruments.h"
+#include "ntdlib/sequence_export/jaudio/performance.h"
+#include "ntdlib/sequence_export/jaudio/sfz.h"
+#include "ntdlib/sequence_export/jaudio/sound_data.h"
 #include "ntdlib/sequence_export/jaudio/wave.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -32,23 +42,22 @@ namespace
 {
 
 // Build the instrument's global zone. JAudio2 doesn't filter by velocity. The zone starts with seqlib's
-// kNoVelocityFilterFullBend. Those modulators turn the default velocity-to-filter modulators off, and give the pitch
-// wheel its full range.
+// kGlobalZoneModulators. Those modulators turn the default velocity-to-filter modulators off and give the pitch wheel
+// its full range. They also give CC10 the pan range that most synthesizers give it.
 //
 // CC1 holds 128 times the vibrato's depth over kVibratoRangeCents, and the vibrato LFO has the preset's speed and
 // delay. A vibrato that doesn't move (a speed of 0) gets no depth.
 sf2::Zone GlobalZone(const PresetKey& key)
 {
     sf2::Zone global;
-    global.modulators.assign(sf2::kNoVelocityFilterFullBend.begin(), sf2::kNoVelocityFilterFullBend.end());
+    global.modulators.assign(sf2::kGlobalZoneModulators.begin(), sf2::kGlobalZoneModulators.end());
 
     const double hz = kVibratoHz * key.vibrato_rate;
     const auto depth = static_cast<int16_t>(hz > 0.0 ? kVibratoRangeCents : 0.0);
     global.modulators.push_back({sf2::kSrcModWheel, sf2::kVibLfoToPitch, depth, 0});
     if (hz > 0.0)
     {
-        const int freq = std::clamp(static_cast<int>(std::lround(1200.0 * std::log2(hz / 8.176))), -16000, 4500);
-        global.generators.push_back(sf2::Generator::Value(sf2::kFreqVibLfo, freq));
+        global.generators.push_back(sf2::Generator::Value(sf2::kFreqVibLfo, sf2::LfoFrequency(hz)));
         const int delay = ToTimecents(key.vibrato_delay * kSubFrameSeconds * 1000.0, -12000, 5000);
         global.generators.push_back(sf2::Generator::Value(sf2::kDelayVibLfo, delay));
     }
@@ -68,8 +77,8 @@ sf2::Zone RegionZone(const PresetZone& z, double quieter, uint16_t sample, bool 
     values.keys = {z.low_key, z.high_key};
     values.velocities = {z.low_velocity, z.high_velocity};
     values.attenuation = quieter - 10.0 * level_db;
-    // JAudio2's pan law is SoundFont's: the left side plays at the cosine and the right at the sine of a quarter turn
-    // times the pan.
+    // JAudio2's pan law is the sin/cos law of MIDI RP-036. Most SoundFont players pan by it too. The left side plays at
+    // the cosine and the right at the sine of a quarter turn times the pan.
     values.pan = std::clamp(static_cast<int>(std::lround((z.pan - 0.5) * 1000.0)), -500, 500);
     if (e.delay > -12000)
     {

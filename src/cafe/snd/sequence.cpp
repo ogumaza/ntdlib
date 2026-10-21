@@ -7,8 +7,11 @@
 #include "ntdlib/cafe/snd/channel.h"
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/cafe/snd/voice.h"
+#include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
+#include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
+#include "ntdlib/nwsnd/voice.h"
 #include "ntdlib/nwsnd/voice_impl.h"
 
 namespace ntdlib::cafe::snd

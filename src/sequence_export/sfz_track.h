@@ -14,13 +14,14 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/midi/performance_writer.h"
+
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/wave/decode.h"
-#include "seqlib/midi/performance_writer.h"
 
 namespace ntdlib::sequence_export
 {
@@ -55,7 +56,8 @@ private:
     std::vector<SfzSample> samples_;
 };
 
-// The start of a region's line: its sample, keys and velocities, and its pan from -1 (left) to 1 (right).
+// The start of a region's line: its sample, keys and velocities, and its pan from -1 (left) to 1 (right). A range of
+// velocities from 0 starts at 1. A velocity of 0 is a note-off.
 std::string SfzRegionStart(const std::string& sample, std::pair<int, int> keys, std::pair<int, int> velocities,
                            double pan);
 
@@ -63,7 +65,9 @@ std::string SfzRegionStart(const std::string& sample, std::pair<int, int> keys, 
 std::string SfzPitchOpcodes(uint8_t original_key, float tune);
 
 // A region's volume, from its volume over 127, raised by `gain_db`. `silent` gives the lowest volume. No opcode means
-// 0 dB. `lift` raises the volume over 127 by that many centibels, up to full level (PresetKey::lift).
+// 0 dB. `lift` raises the volume over 127 by that many centibels, up to full level (PresetKey::lift). SFZ's
+// documentation gives volume a range up to 6 dB. The volume over 127 gives at most that much. `gain_db` can raise the
+// region above it.
 std::string SfzVolumeOpcode(uint8_t volume, double gain_db, bool silent, int16_t lift = 0);
 
 // A region's amplitude envelope, from its values `env` after the overrides in preset `key`, and the loop of `wave`. A

@@ -9,11 +9,12 @@
 #include <cstdint>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -144,7 +145,7 @@ public:
 
     void ChannelEvent(int, int track, Channel&, Channel::CallbackStatus status)
     {
-        events.push_back({track, status});
+        events_.push_back({track, status});
     }
 
     // A note on track `track`: a channel that plays a wave for ever.
@@ -159,7 +160,7 @@ public:
         return channel;
     }
 
-    std::vector<Event> events;
+    std::vector<Event> events_;
 
 private:
     ChannelManager channels_;
@@ -196,9 +197,9 @@ void TestFrame()
 
     engine.Channels().UpdateAllChannel(engine);
 
-    xsflib::testing::Check(frames == 2 && engine.Channels().ActiveCount() == 0 && engine.events.size() == 1 &&
-                               engine.events[0].track == 1 &&
-                               engine.events[0].status == Channel::CallbackStatus::kStopped,
+    xsflib::testing::Check(frames == 2 && engine.Channels().ActiveCount() == 0 && engine.events_.size() == 1 &&
+                               engine.events_[0].track == 1 &&
+                               engine.events_[0].status == Channel::CallbackStatus::kStopped,
                            "frame: a channel that the policy's frame stops is free");
 }
 

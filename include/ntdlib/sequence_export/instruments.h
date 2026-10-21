@@ -85,8 +85,8 @@ private:
 
     const sar::SoundArchive& archive_;
     sar::Options options_;
-    std::array<std::optional<sar::Bank>, 4> banks_;
-    std::array<std::string, 4> bank_names_;
+    std::array<std::optional<sar::Bank>, sar::kBankSlots> banks_;
+    std::array<std::string, sar::kBankSlots> bank_names_;
     std::map<uint32_t, std::optional<sar::WaveArchive>> wave_archives_; // by wave archive index
     std::map<std::pair<uint32_t, uint32_t>, std::unique_ptr<sar::Pcm>> waves_;
     std::set<std::pair<int, uint32_t>> broken_wave_ids_; // bank slot and wave table index

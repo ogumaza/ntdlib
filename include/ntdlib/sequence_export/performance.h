@@ -11,11 +11,12 @@
 #include <optional>
 #include <vector>
 
+#include "seqlib/midi/performance.h"
+
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/performance_base.h"
 #include "ntdlib/sequence_export/settings.h"
-#include "seqlib/midi/performance.h"
 
 namespace ntdlib::sequence_export
 {

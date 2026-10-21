@@ -2,6 +2,9 @@
 
 #include "ntdlib/flipper/z2_params.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace ntdlib::flipper::z2
 {
 
@@ -25,6 +28,7 @@ std::vector<uint32_t> Profile::Words() const
     words.insert(words.end(), first_scene_waves.begin(), first_scene_waves.end());
     words.push_back(room_wave_count);
     words.insert(words.end(), room_waves.begin(), room_waves.end());
+
     return words;
 }
 

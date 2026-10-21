@@ -496,13 +496,13 @@ private:
     // command's place in the order the player's tracks run them, and whether the command changes the track's sound.
     int RunCommand(Player& player, Engine& engine);
 
-    void InitParam();                                           // 0x022CABAC
-    int Parse(Player& player, Engine& engine);                  // MmlParser::Parse, 0x022CB7C8
+    void InitParam();                          // 0x022CABAC
+    int Parse(Player& player, Engine& engine); // MmlParser::Parse, 0x022CB7C8
 
     // Parse's extended commands, after the byte 0xF0 and the prefixes. `condition` is false after an if (0xA2) whose
     // comparison failed. `arg_type` is the type that a random or variable prefix gives the argument, or kArgNone.
     void ParseExtendedCommand(Player& player, Engine& engine, bool condition, int arg_type);
-    int32_t ReadArg(Player& player, Engine& engine, int type);  // MmlParser::ReadArg, 0x022CB67C
+    int32_t ReadArg(Player& player, Engine& engine, int type); // MmlParser::ReadArg, 0x022CB67C
     void CommandProc(Player& player, Engine& engine, uint32_t command, int32_t arg1,
                      int32_t arg2); // MmlParser::CommandProc, 0x022CBF1C
 

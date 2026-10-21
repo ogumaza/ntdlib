@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "ntdlib/ax/lpf.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/filter.h"

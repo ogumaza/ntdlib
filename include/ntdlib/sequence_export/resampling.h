@@ -47,11 +47,9 @@ namespace ntdlib::sequence_export
 // its wave: the wave's sample rate times the note's pitch ratio.
 struct ResamplingFilter
 {
-    double above = 1.0;         // the rate above which the console plays through the filter
-    double cutoff = 1.0;        // SoundFont: FluidSynth's two-pole low-pass at a resonance of 0
-    bool sfz_two_pole = false;  // SFZ: sfizz's two-pole lpf_2p, or its one-pole lpf_1p
-    double sfz_cutoff = 1.0;    // SFZ: the low-pass's cutoff
-    double sfz_resonance = 0.0; // SFZ: lpf_2p's resonance in dB
+    double above = 1.0;      // the rate above which the console plays through the filter
+    double cutoff = 1.0;     // SoundFont: FluidSynth's two-pole low-pass at a resonance of 0
+    double sfz_cutoff = 1.0; // SFZ: the cutoff of sfizz's one-pole lpf_1p
 };
 
 // A console's resampling filters: the rate in hertz at which the console mixes its voices, and the low-passes for its

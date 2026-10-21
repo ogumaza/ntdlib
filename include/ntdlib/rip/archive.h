@@ -19,10 +19,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sar/sarc.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/rip/length.h"
+
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/sarc.h"
 
 namespace ntdlib::rip
 {
