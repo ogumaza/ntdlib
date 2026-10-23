@@ -180,6 +180,8 @@ struct WaveArchive
 // A region's envelope as MML values: attack, decay, sustain, hold and release.
 struct Adshr
 {
+    friend bool operator==(const Adshr&, const Adshr&) = default;
+
     // Default when a region has no ADSHR: five 127s. nw::snd's BankFile sets them up when it starts. On the 3DS,
     // code.bin 0x4c4edc fills 0x5e9800 with 127s.
     uint8_t attack = 127, decay = 127, sustain = 127, hold = 127, release = 127;
@@ -188,6 +190,8 @@ struct Adshr
 // Wave and playback settings for a key/velocity region.
 struct VelocityRegion
 {
+    friend bool operator==(const VelocityRegion&, const VelocityRegion&) = default;
+
     uint32_t wave_id_index = 0;
     uint8_t original_key = 60;
     uint8_t volume = 127;
@@ -234,6 +238,8 @@ struct Instrument
 // A bank wave reference: wave archive ID and index within it.
 struct WaveId
 {
+    friend bool operator==(const WaveId&, const WaveId&) = default;
+
     uint32_t wave_archive_item = 0; // 0x05xxxxxx item id
     uint32_t index = 0;
 };

@@ -120,7 +120,8 @@ struct Argument
 };
 
 // What the console's bytes held beyond the command's meaning. An encoder that keeps these writes the bytes that it
-// read. A new command leaves them at their defaults, and the encoder writes the console's usual bytes.
+// read. A new command leaves them at their defaults, and the encoder writes the console's usual bytes. An edited value
+// that requires as many bytes as `value_bytes`, or more, takes the bytes that it requires.
 struct Encoding
 {
     friend bool operator==(const Encoding&, const Encoding&) = default;

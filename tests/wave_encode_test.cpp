@@ -30,6 +30,8 @@ using ntdlib::wave::DecodeDspAdpcm;
 using ntdlib::wave::DspAdpcmBytes;
 using ntdlib::wave::DspAdpcmChannel;
 using ntdlib::wave::DspAdpcmSample;
+using ntdlib::wave::DspAdpcmState;
+using ntdlib::wave::DspAdpcmStateAt;
 using ntdlib::wave::DspAdpcmSum;
 using ntdlib::wave::EncodeDspAdpcm;
 
@@ -394,6 +396,39 @@ void TestLoopState()
     XSFLIB_CHECK(past.loop_pred_scale == past.data[past.data.size() - 8]);
 }
 
+// The state at a sample is the state that the encoder gives a loop that starts there. The two samples before the first
+// are the history that the decoder starts from.
+void TestStateAt()
+{
+    const std::vector<int16_t> input = Sine(0.021, 9000.0, 300);
+    for (const DspAdpcmSum sum : kSums)
+    {
+        for (const uint32_t at : {0u, 1u, 2u, 13u, 14u, 15u, 150u, 299u})
+        {
+            const DspAdpcmChannel channel = EncodeDspAdpcm(input, at, sum);
+
+            const DspAdpcmState state = DspAdpcmStateAt(channel.data, at, channel.coefs, 0, 0, sum);
+
+            XSFLIB_CHECK(state.pred_scale == channel.loop_pred_scale);
+            XSFLIB_CHECK(state.yn1 == channel.loop_yn1 && state.yn2 == channel.loop_yn2);
+        }
+    }
+
+    const DspAdpcmChannel channel = EncodeDspAdpcm(input, 0, DspAdpcmSum::kWrap);
+    const std::vector<int16_t> decoded = Decode(channel, 2, DspAdpcmSum::kWrap);
+    const DspAdpcmState start = DspAdpcmStateAt(channel.data, 0, channel.coefs, 100, 200, DspAdpcmSum::kWrap);
+    const DspAdpcmState second = DspAdpcmStateAt(channel.data, 1, channel.coefs, 100, 200, DspAdpcmSum::kWrap);
+    const DspAdpcmState third = DspAdpcmStateAt(channel.data, 2, channel.coefs, 0, 0, DspAdpcmSum::kWrap);
+    XSFLIB_CHECK(start == (DspAdpcmState{channel.data[0], 100, 200}));
+    XSFLIB_CHECK(second.yn2 == 100 && third.yn1 == decoded[1] && third.yn2 == decoded[0]);
+
+    // A sample in the last frame has a state. A sample past it has none.
+    const uint32_t frames = static_cast<uint32_t>(channel.data.size() / 8);
+    const DspAdpcmState last = DspAdpcmStateAt(channel.data, frames * 14 - 1, channel.coefs, 0, 0, DspAdpcmSum::kWrap);
+    XSFLIB_CHECK(last.pred_scale == channel.data[channel.data.size() - 8]);
+    XSFLIB_CHECK(Refuses([&] { DspAdpcmStateAt(channel.data, frames * 14, channel.coefs, 0, 0, DspAdpcmSum::kWrap); }));
+}
+
 void TestAlign()
 {
     const std::vector<int16_t> ramp = Ramp(40);
@@ -437,6 +472,7 @@ int main()
     TestGrowth();
     TestNearest();
     TestLoopState();
+    TestStateAt();
     TestAlign();
 
     return xsflib::testing::Summary("Wave encoder");

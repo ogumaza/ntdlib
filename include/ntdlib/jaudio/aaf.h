@@ -58,7 +58,10 @@ bool IsAaf(std::span<const uint8_t> data);
 // number. That number is the sequence's offset number. The table's header gives each kind of sound a format byte. With
 // bit 0 of the sequences' format, an entry gives the offset number (kAafItemLayout's file). Without it, the offset
 // number is the sequence's index. The Wind Waker's sequences set the bit, and Luigi's Mansion's don't. An effect plays
-// in the effects sequence, and keeps the default source and resource. The table names no sound. Every name is empty.
+// in the effects sequence, and keeps the default source. Its resource is its offset number, by the effects' format in
+// the same way (JAIBasic::getSoundOffsetNumberFromID). The effects sequence's slot reads it to pick the effect. With
+// bit 1 of the effects' format, an effect's pitch is the float at +8 of its entry. The Wind Waker's effects have that
+// bit. The table names no sound. Every name is empty.
 //
 // Throws FormatError if the archive or its sound table is damaged, or if the table lists no sounds.
 std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf);

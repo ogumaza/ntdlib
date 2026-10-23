@@ -217,8 +217,8 @@ void TestLists(Flavor flavor)
 {
     const sar_files::ArchiveSpec spec = MembersSpec(flavor);
     const std::vector<uint8_t> archive = sar_tools::Archive(flavor, spec);
-    const std::vector<GroupMember> members = {{0, kOther}, {1, std::nullopt}, {2, std::nullopt}, {5, kOther}};
-    const std::vector<uint8_t> listed = sar::WithGroupLists(archive, flavor, 0, members);
+    const std::vector<GroupMember> kMembers = {{0, kOther}, {1, std::nullopt}, {2, std::nullopt}, {5, kOther}};
+    const std::vector<uint8_t> listed = sar::WithGroupLists(archive, flavor, 0, kMembers);
     const std::vector<uint8_t> copied = sar::WithGroupLists(archive, flavor, 2, {{{2, kOther}}});
     const auto group = [](uint32_t index)
     {
@@ -230,7 +230,7 @@ void TestLists(Flavor flavor)
     XSFLIB_CHECK(ListOf(listed, flavor, 2).empty());
     XSFLIB_CHECK((ListOf(listed, flavor, 5) == std::vector<uint32_t>{group(0), group(2)}));
     XSFLIB_CHECK((ListOf(copied, flavor, 2) == std::vector<uint32_t>{group(2)}));
-    XSFLIB_CHECK(sar::WithGroupLists(listed, flavor, 0, members) == listed);
+    XSFLIB_CHECK(sar::WithGroupLists(listed, flavor, 0, kMembers) == listed);
 
     // The archive is the one that the tools lay out with the new lists.
     sar_files::ArchiveSpec expected = spec;
@@ -407,13 +407,14 @@ void TestRefusals()
 {
     const std::vector<uint8_t> group = sar_tools::Group(Flavor::kNx, Copies());
     const std::vector<uint8_t> archive = sar_tools::Archive(Flavor::kCtr, MembersSpec(Flavor::kCtr));
-    const std::string message = "a group of the 3DS: only the groups of the Wii U and the Switch are laid out so";
-    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::ReadGroupFile(group, Flavor::kCtr); }) == message);
-    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::GroupWith(group, Flavor::kCtr, {}, {}); }) == message);
-    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::WithGroupLists(archive, Flavor::kCtr, 0, {}); }) == message);
+    const std::string kMessage = "a group of the 3DS: only the groups of the Wii U and the Switch are laid out so";
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::ReadGroupFile(group, Flavor::kCtr); }) == kMessage);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::GroupWith(group, Flavor::kCtr, {}, {}); }) == kMessage);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::WithGroupLists(archive, Flavor::kCtr, 0, {}); }) ==
+                 kMessage);
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::WithGroupMembers(archive, Flavor::kCtr, 0, {}, {}); }) ==
-                 message);
-    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::GroupOfFile(archive, Flavor::kCtr, group); }) == message);
+                 kMessage);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::GroupOfFile(archive, Flavor::kCtr, group); }) == kMessage);
 }
 
 } // namespace

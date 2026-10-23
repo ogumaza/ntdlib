@@ -60,6 +60,13 @@ constexpr float kLfoStep = 32028.5f / kDacRate;
 // looks for a free MIDI channel. A tie on a note whose envelope has fallen that far raises nothing in MIDI.
 constexpr double kInaudibleDb = -40.0;
 
+// The level of a channel on the DSP's automatic mixer, against a channel whose gains updateMixer sets. A JAudio1 track
+// that connects its mix line 0 to 0xffff (TTrack::connectBus) puts the channels that it starts on that mixer.
+// TChannel::updateAutoMixer passes the DSP program the channel's volume at a level of 0x7fff (Driver::getAutoLevel),
+// with its pan, effect send and surround. The DSP program sets the outputs' gains. Such a channel plays at about half
+// the level. The half is an approximation: the performer doesn't model the DSP program's law.
+constexpr float kAutoMixerLevel = 0.5f;
+
 // The game's echo counts as silent once its output falls below this level, in 16-bit samples. The game's output moves
 // in steps of 4. Below 12, it has fallen to 8 or below (-72 dBFS). A sequence that ends sounds on until then.
 constexpr float kEchoAudible = 12.0f;
@@ -365,6 +372,7 @@ struct Channel
     uint32_t wave_length = 0; // for a wave that doesn't loop: its samples
     bool wave_loops = true;
     float level = 0.0f;          // its volume in the last sub-frame
+    bool auto_mixer = false;     // it plays on the DSP's automatic mixer (kAutoMixerLevel)
     float envelope = 0.0f;       // its oscillators' volume in the last sub-frame
     bool envelope_heard = false; // that volume has been above kInaudibleDb
 
@@ -499,6 +507,7 @@ struct Track
     std::array<int, kChildren> children{};
     int slot = -1; // the MIDI track it records into
     std::string name;
+    bool muted = false; // JASTrack::mute's flag (SequenceSound::tracks)
 
     // The reader.
     uint32_t pc = 0;
@@ -553,6 +562,7 @@ struct Track
     uint8_t volume_mode = 0;                  // 0 squares the volume (JAudio2 always does)
     std::array<uint8_t, 3> parent_calc{};     // how the pan, the effect send and the surround take the parent's
     uint8_t open_mode = 0;                    // the opentrack command's mode (TTrack +0x37b)
+    bool auto_mixer = false;                  // its mix line 0 connects to 0xffff: the DSP's automatic mixer
     std::array<uint32_t, 8> intr_addresses{}; // each interrupt's routine
     bool intr_enabled = true;                 // clri enables the interrupts, seti disables them
     int32_t intr_wait = 0;                    // the wait that a running interrupt put aside
@@ -688,6 +698,10 @@ private:
     }
 
     int NewTrack(int parent, int number);
+
+    // True if track `t` or a track above it is muted (JASTrack::isMute, 0x800385ac).
+    bool Muted(int t) const;
+
     void CloseTrack(int t);
     int OpenChild(int t, uint32_t number, uint32_t start);
     void CloseChild(int t, uint32_t number);
@@ -817,6 +831,27 @@ private:
     // True if every open track waits for ever and none of their settings moves.
     bool Steady() const;
 
+    // --- Effects (SequenceSound::effect) ---
+    // The track of the effect's slot, or -1 while it hasn't opened.
+    int EffectSlotTrack() const;
+
+    // Whether track `t` plays the effect, for the loops and the end: a track below the slot's track, or the slot's
+    // track while it runs the effect's routine. Without an effect, every track does.
+    bool InEffect(int t) const;
+
+    // Whether the slot has taken the effect: the library's writes are done, and port 0 no longer holds 1.
+    bool EffectTaken() const;
+
+    // Whether the slot is free again after the effect: port 2 holds 0, and port 0 doesn't hold 1.
+    bool EffectFree() const;
+
+    // Start the effect once its slot's track has opened: write the slot's ports as the game's sound library does.
+    void StartEffect();
+
+    // Write `value` to port `port` of track `t`, as the game's code does (JASystem::TTrack::writePortAppDirect). For
+    // ports 0 and 1, the write raises the track's port interrupt.
+    void WritePortApp(int t, uint32_t port, uint32_t value);
+
     // The time to end at if the main loop, which started at tick `start`, holds a sound unchanged: its pass is longer
     // than kHoldSeconds, nothing has changed for longer than that, and every sounding note is an endless one that its
     // track hasn't released. The performance ends kHoldSeconds after the last change.
@@ -855,6 +890,7 @@ private:
     void Approximate(const std::string& what);
     void RecordTickTime();
     double TrackLevel(int t) const;
+    int ChannelsTrack(int t) const;
     bool AnySounding() const;
     bool TrackSounds(int t) const;
     void Changed(int t);
@@ -900,6 +936,7 @@ private:
     std::optional<double> held_sound_end_;          // set when the main loop holds a sound (HeldSoundEnd)
     std::optional<uint32_t> last_draw_;             // the last tick a track drew a random number in
     std::array<int, 16> slot_tracks_{};             // the track recorded in each MIDI track, or -1
+    int effect_track_ = -1;                         // the track of the effect's slot, once it has opened
     std::map<uint32_t, uint8_t> tie_velocities_in_; // an earlier run's TieVelocities
     std::map<uint32_t, uint8_t> tie_velocities_;
 };
@@ -916,9 +953,33 @@ int Performer::NewTrack(int parent, int number)
     tr.name = parent < 0
                   ? "Root"
                   : (TrackAt(parent).parent < 0 ? "Track " : TrackAt(parent).name + ".") + std::to_string(number);
+
+    // Child `number` of the root's child n opens muted if its bit of SequenceSound::tracks is clear. The game's code
+    // muted it before the sound's first tick, and the first open keeps the mute.
+    const int grandparent = parent < 0 ? -1 : TrackAt(parent).parent;
+    if (grandparent >= 0 && TrackAt(grandparent).parent < 0)
+    {
+        const std::array<int, kChildren>& top = TrackAt(grandparent).children;
+        const auto n = static_cast<std::size_t>(std::find(top.begin(), top.end(), parent) - top.begin());
+        tr.muted = n < top.size() && (sound_.tracks[n] >> number & 1) == 0;
+    }
+
     tracks_.push_back(std::move(tr));
 
     return static_cast<int>(tracks_.size() - 1);
+}
+
+bool Performer::Muted(int t) const
+{
+    for (int u = t; u >= 0; u = TrackAt(u).parent)
+    {
+        if (TrackAt(u).muted)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 int Performer::OpenChild(int t, uint32_t number, uint32_t start)
@@ -1614,16 +1675,21 @@ int Performer::PortTrack(int t, bool child, uint32_t port) const
 void Performer::WritePortOf(int t, int other, uint32_t port, uint32_t value)
 {
     TrackAt(t).last_signal = commands_run_;
-    Track& o = TrackAt(other);
-    o.imported = static_cast<uint16_t>(o.imported | (1u << port));
-    o.ports[port] = static_cast<uint16_t>(value);
+    WritePortApp(other, port, value);
+}
+
+void Performer::WritePortApp(int t, uint32_t port, uint32_t value)
+{
+    Track& tr = TrackAt(t);
+    tr.imported = static_cast<uint16_t>(tr.imported | (1u << port));
+    tr.ports[port] = static_cast<uint16_t>(value);
     if (port == 0)
     {
-        Interrupt(other, sound_.jaudio1 ? kIntr1Port0 : kIntrPort0);
+        Interrupt(t, sound_.jaudio1 ? kIntr1Port0 : kIntrPort0);
     }
     else if (port == 1)
     {
-        Interrupt(other, sound_.jaudio1 ? kIntr1Port1 : kIntrPort1);
+        Interrupt(t, sound_.jaudio1 ? kIntr1Port1 : kIntrPort1);
     }
 }
 
@@ -2255,6 +2321,12 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
 
 void Performer::OnJumpBack(int t, uint32_t target)
 {
+    // An effect's passes count only while its slot plays it. The other slots and the slot's own polling don't count.
+    if (sound_.effect && (!InEffect(t) || !EffectTaken() || EffectFree()))
+    {
+        return;
+    }
+
     // A backward jump to commands the track hasn't run is not a loop; shared code may precede its callers. Also ignore
     // passes without waits, such as polling.
     Track& tr = TrackAt(t);
@@ -2289,7 +2361,8 @@ void Performer::OnJumpBack(int t, uint32_t target)
 
     for (std::size_t i = 0; i < tracks_.size(); i++)
     {
-        if (static_cast<int>(i) != t && (static_cast<int>(i) < t || tr.idle) && (plays_on(i) || changed(i)))
+        if (static_cast<int>(i) != t && InEffect(static_cast<int>(i)) && (static_cast<int>(i) < t || tr.idle) &&
+            (plays_on(i) || changed(i)))
         {
             return;
         }
@@ -2762,6 +2835,17 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         }
         break;
 
+    case 0xdd:
+        // TTrack::connectBus: a mix line of the track's channels and its bus. Mix line 0 at 0xffff puts the channels
+        // that the track starts from then on onto the DSP's automatic mixer. A track opens with the default lines
+        // (TChannelMgr::init). Its children don't take its lines.
+        if (a[0] == 0)
+        {
+            tr.auto_mixer = static_cast<uint16_t>(a[1]) == 0xffff;
+            tr.dirty = true;
+        }
+        break;
+
     case 0xdf:
         // TIntrMgr::setIntr: the interrupt's routine, and the interrupt enabled.
         if (a[0] < 8)
@@ -2909,7 +2993,7 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         return Outcome::kFinish;
 
     default:
-        // Bus connections, filters, the game's settings, pauses and updates.
+        // Filters, the game's settings, pauses and updates.
         break;
     }
 
@@ -3277,6 +3361,10 @@ void Performer::UpdateTrack1(int t)
     if (tr.parent < 0)
     {
         p.volume *= sound_.volume;
+        if (sound_.pitch != 1.0f)
+        {
+            p.bend += std::log2(sound_.pitch);
+        }
     }
     else if (!(tr.open_mode & 1))
     {
@@ -3439,6 +3527,7 @@ std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity,
     ch.wave_loops = pcm->loop;
     ch.wave_length = pcm->Length();
     ch.params = tr.params;
+    ch.auto_mixer = TrackAt(ChannelsTrack(t)).auto_mixer;
     ch.vibrato.SetDelay(tr.vib_delay);
     ch.tremolo.SetDelay(tr.trem_delay);
     ch.vibrato.Set(tr.vib_depth, tr.vib_pitch);
@@ -3489,7 +3578,7 @@ std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity,
 
 void Performer::NoteOn(int t, uint32_t note_id, int key, int velocity)
 {
-    // JASTrack::noteOn: the note id's channel is released for the new one.
+    // JASTrack::noteOn: a muted track starts no note. Otherwise the note id's channel is released for the new one.
     if (note_id == 0 || note_id >= kNoteIds)
     {
         return;
@@ -3497,6 +3586,10 @@ void Performer::NoteOn(int t, uint32_t note_id, int key, int velocity)
 
     key += TransposeTotal(t);
     Changed(t);
+    if (Muted(t))
+    {
+        return;
+    }
     NoteOff(t, note_id, 0);
     const std::optional<std::size_t> c = StartChannel(t, key, velocity, 0);
     TrackAt(t).slots[note_id] = c ? static_cast<int>(*c) : -1;
@@ -3509,7 +3602,8 @@ void Performer::NoteOn(int t, uint32_t note_id, int key, int velocity)
 void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
 {
     // JASTrack::gateOn (0x80037214): a note on slot 0 with a length. Flag 1 sweeps from the latest key to the key over
-    // the length, flag 2 ties the next note to this one, and flag 4 waits for the note to end.
+    // the length, flag 2 ties the next note to this one, and flag 4 waits for the note to end. A muted track releases
+    // the note on slot 0 but starts no new one.
     Changed(t);
     Track& tr = TrackAt(t);
     key += TransposeTotal(t);
@@ -3529,8 +3623,10 @@ void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
     if (!tr.tied)
     {
         NoteOff(t, 0, 0);
-        const std::optional<std::size_t> c = StartChannel(t, from, velocity, timer, sweeps ? sweep : 0.0f,
-                                                          sweeps ? subframes : 0, sweeps || (flags & 2) != 0);
+        const std::optional<std::size_t> c = Muted(t)
+                                                 ? std::nullopt
+                                                 : StartChannel(t, from, velocity, timer, sweeps ? sweep : 0.0f,
+                                                                sweeps ? subframes : 0, sweeps || (flags & 2) != 0);
         TrackAt(t).slots[0] = c ? static_cast<int>(*c) : -1;
         if (c)
         {
@@ -3652,7 +3748,8 @@ float Performer::ChannelVolume(const Channel& ch, float osc_volume) const
     // JASChannel::updateEffectorParam: velocity squared, the instrument's volume, the oscillators, the track's volume
     // and the tremolo.
     const float v = static_cast<float>(ch.velocity) / 127.0f;
-    const float volume = ch.sound.volume * osc_volume * ch.params.volume * (ch.tremolo.Value() + 1.0f) * (v * v);
+    const float volume = ch.sound.volume * osc_volume * ch.params.volume * (ch.tremolo.Value() + 1.0f) * (v * v) *
+                         (ch.auto_mixer ? kAutoMixerLevel : 1.0f);
     return std::max(volume, 0.0f);
 }
 
@@ -4083,10 +4180,23 @@ void Performer::SweepBetweenTicks()
 
 double Performer::TrackLevel(int t) const
 {
-    // CC11 holds the square root of the parents' volumes and the sound's volume. CC11 acts squared.
+    // CC11 holds the square root of the parents' volumes and the sound's volume, and of kAutoMixerLevel for notes on
+    // the DSP's automatic mixer. CC11 acts squared.
     const Track& tr = TrackAt(t);
-    const float above = tr.parent < 0 ? sound_.volume : TrackAt(tr.parent).params.volume;
+    float above = tr.parent < 0 ? sound_.volume : TrackAt(tr.parent).params.volume;
+    if (TrackAt(ChannelsTrack(t)).auto_mixer)
+    {
+        above *= kAutoMixerLevel;
+    }
     return 127.0 * std::sqrt(std::max(static_cast<double>(above), 0.0));
+}
+
+int Performer::ChannelsTrack(int t) const
+{
+    // TTrack::noteOn: a track opened in mode 4 starts its notes on its parent's channels, and takes the parent's mix
+    // lines with them. Any other track starts them on its channels.
+    const Track& tr = TrackAt(t);
+    return tr.open_mode == 4 && tr.parent >= 0 ? tr.parent : t;
 }
 
 void Performer::RecordOutputs(int t)
@@ -4107,7 +4217,11 @@ void Performer::RecordOutputs(int t)
         level *= static_cast<double>(ch.cc11_velocity) / static_cast<double>(ch.midi_velocity);
     }
     recorder_.RaiseLevelPeak(level);
-    const int volume = std::clamp(static_cast<int>(std::lround(127.0 * std::abs(tr.move[0].value))), 0, 127);
+    // CC7 acts squared. The game squares the track's volume in volume mode 0 too. In mode 1, it plays the volume as it
+    // is, and CC7 holds the volume's square root.
+    const double track_volume = std::abs(static_cast<double>(tr.move[0].value));
+    const double cc7 = tr.volume_mode == 0 ? track_volume : std::sqrt(track_volume);
+    const int volume = std::clamp(static_cast<int>(std::lround(127.0 * cc7)), 0, 127);
     const int expression = recorder_.Expression(level);
     const int pan = std::clamp(static_cast<int>(std::lround(127.0 * std::clamp(tr.params.pan, 0.0f, 1.0f))), 0, 127);
     const double vibrato_cents = 1200.0 * std::abs(tr.vib_depth);
@@ -4274,10 +4388,15 @@ bool Performer::AnySounding() const
 
 bool Performer::Steady() const
 {
+    if (sound_.effect && !EffectTaken())
+    {
+        return false;
+    }
+
     for (std::size_t t = 0; t < tracks_.size(); t++)
     {
         const Track& tr = tracks_[t];
-        if (!tr.open)
+        if (!tr.open || !InEffect(static_cast<int>(t)))
         {
             continue;
         }
@@ -4335,20 +4454,100 @@ bool Performer::Quiet(int t) const
 
 bool Performer::Stuck() const
 {
-    if (AnySounding())
+    if (AnySounding() || (sound_.effect && !EffectTaken()))
     {
         return false;
     }
 
     for (std::size_t t = 0; t < tracks_.size(); t++)
     {
-        if (tracks_[t].open && !WaitsForever(static_cast<int>(t)))
+        if (tracks_[t].open && InEffect(static_cast<int>(t)) && !WaitsForever(static_cast<int>(t)))
         {
             return false;
         }
     }
 
     return true;
+}
+
+// --- Effects ---
+int Performer::EffectSlotTrack() const
+{
+    const EffectStart& e = *sound_.effect;
+    const int owner = tracks_.empty() ? -1 : tracks_[0].children[static_cast<std::size_t>(e.slot >> 4)];
+    if (owner < 0 || !TrackAt(owner).open)
+    {
+        return -1;
+    }
+
+    const int slot = TrackAt(owner).children[static_cast<std::size_t>(e.slot & 15)];
+    return slot >= 0 && TrackAt(slot).open ? slot : -1;
+}
+
+bool Performer::InEffect(int t) const
+{
+    if (!sound_.effect)
+    {
+        return true;
+    }
+    if (effect_track_ < 0)
+    {
+        return false;
+    }
+    if (t == effect_track_)
+    {
+        return TrackAt(t).depth > 0;
+    }
+
+    for (int u = TrackAt(t).parent; u >= 0; u = TrackAt(u).parent)
+    {
+        if (u == effect_track_)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool Performer::EffectTaken() const
+{
+    return effect_track_ >= 0 && TrackAt(effect_track_).ports[0] != 1;
+}
+
+bool Performer::EffectFree() const
+{
+    return EffectTaken() && TrackAt(effect_track_).ports[2] == 0;
+}
+
+void Performer::StartEffect()
+{
+    // JAISeMgr::checkPlayingSe: the values that the game's code passed with the effect (setTrackPortData), then the
+    // wait for the distance, the map's information, the effect's number and the request.
+    effect_track_ = EffectSlotTrack();
+    if (effect_track_ < 0)
+    {
+        return;
+    }
+
+    uint16_t map = 0;
+    for (const auto& [port, value] : options_.ports)
+    {
+        const uint32_t p = port & 15u;
+        if (p == 6)
+        {
+            map = value;
+        }
+        else if (p != 0 && p != 3 && p != 4)
+        {
+            WritePortApp(effect_track_, p, value);
+        }
+    }
+
+    WritePortApp(effect_track_, 3, 0);
+    WritePortApp(effect_track_, 6, map);
+    WritePortApp(effect_track_, 4, sound_.effect->number);
+    WritePortApp(effect_track_, 0, 1);
 }
 
 std::optional<double> Performer::HeldSoundEnd(uint32_t start) const
@@ -4588,6 +4787,12 @@ bool Performer::Advance()
             return false;
         }
 
+        // The game starts an effect between two of the effects sequence's ticks, once its slot waits for it.
+        if (sound_.effect && effect_track_ < 0)
+        {
+            StartEffect();
+        }
+
         for (std::size_t t = 0; t < tracks_.size(); t++)
         {
             RecordOutputs(static_cast<int>(t));
@@ -4618,7 +4823,8 @@ Performance Performer::Run()
         }
     }
 
-    // JAISeq starts the sequence on a first track, with the ports the game has set.
+    // JAISeq starts the sequence on a first track, with the ports the game has set. An effect's ports go to its slot
+    // (StartEffect).
     slot_tracks_.fill(-1);
     const int root = NewTrack(-1, 0);
     if (sound_.jaudio1)
@@ -4628,10 +4834,13 @@ Performance Performer::Run()
     Track& tr = TrackAt(root);
     tr.pc = sound_.start;
     tr.open = true;
-    for (const auto& [port, value] : options_.ports)
+    if (!sound_.effect)
     {
-        tr.ports[port & 15] = value;
-        tr.imported = static_cast<uint16_t>(tr.imported | (1u << (port & 15)));
+        for (const auto& [port, value] : options_.ports)
+        {
+            tr.ports[port & 15] = value;
+            tr.imported = static_cast<uint16_t>(tr.imported | (1u << (port & 15)));
+        }
     }
 
     bool finished = false;
@@ -4653,9 +4862,16 @@ Performance Performer::Run()
             }
         }
 
-        // A sequence whose tracks only wait, with nothing sounding, has ended.
-        if (silent_end_ || Stuck())
+        // A sequence whose tracks only wait, with nothing sounding, has ended. So has an effect whose slot is free
+        // again, or one whose slot's track didn't open in the first sub-frame with ticks. Its notes' tails play out.
+        const bool no_slot = sound_.effect && ticked_ && effect_track_ < 0;
+        if (silent_end_ || Stuck() || (sound_.effect && EffectFree()) || no_slot)
         {
+            if (no_slot)
+            {
+                out_.warnings.push_back("the effects sequence opens no track for slot " +
+                                        std::to_string(sound_.effect->slot) + ": the effect plays nothing");
+            }
             finished = true;
             out_.DropLoop();
             break;

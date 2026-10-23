@@ -3,9 +3,9 @@
 // The tables of a sound archive of the 3DS (CSAR), the Wii U or the Switch (FSAR): its STRG and INFO blocks
 // (ntdlib/sar/string_block.h and ntdlib/sar/info_block.h). TablesOf finds them in an archive. WithTables puts new ones
 // in their place. WithNewFile, WithNewExternalFile, WithNewSequenceSound, WithNewWaveSounds, WithNewStreamSound,
-// WithNewBank and WithNewWaveArchive add items through it. WithBankLists gives sequence sounds lists of banks of other
-// lengths. WithFileBytes gives a file of the FILE block other bytes. WithValuePlaces gives sounds' entries the places
-// of optional values that they leave out.
+// WithNewBank, WithNewWaveArchive and WithNewGroup add items through it. WithBankLists gives sequence sounds lists of
+// banks of other lengths. WithFileBytes gives a file of the FILE block other bytes. WithValuePlaces gives sounds'
+// entries the places of optional values that they leave out.
 //
 // NintendoWare's tools lay an archive out as its header, then its STRG, INFO and FILE blocks, in that order and
 // without gaps. The header's table of blocks lists the three. An archive without names lists its STRG block at offset
@@ -37,9 +37,9 @@
 // priorities, a value that a few Switch sounds hold in bit 3, and the offset of the 3D settings. The values of bit 17
 // and of the user's bits 28 to 31 follow. The 3D settings follow the options, and the details follow the 3D settings.
 // The offset of the 3D settings and the reference to the details count from the entry's start. The references in the
-// details count from the details' start. In 274 archives of the three consoles, every sound's entry holds the options
-// of the string index, the pan, the priorities and the 3D settings, and every sequence sound's details hold the options
-// of the start and the channel priority.
+// details count from the details' start. The tools give every sound's entry the options of the string index, the pan,
+// the priorities and the 3D settings. They give every sequence sound's details the options of the start and the
+// channel priority.
 
 #pragma once
 
@@ -110,13 +110,13 @@ struct InnerFile
 };
 
 // `archive`, an archive of `flavor`, in which file `file` of its FILE block holds `bytes`. Unless the file ends the
-// archive, zeros pad it to a multiple of 64 or 32 bytes. The files after it move by whole multiples, and
-// the file table's offsets and size follow. Another file ID that names the same bytes takes them too. A file that
-// fields of the tables lie in, such as a group's file, can take bytes this way. A file whose bytes lie inside the old
-// bytes at an offset that `inner` gives moves to the new offset, and keeps its size. Throws std::invalid_argument for
-// a file past the file table, for one that the FILE block doesn't hold, for an inner file that would run past the new
-// bytes, and for an archive that would pass 4 GB. Throws xsflib::FormatError for a file whose padding holds bytes other
-// than zeros, for a file that another file overlaps otherwise, and the exceptions of WithTables.
+// archive, zeros pad it to a multiple of 64 or 32 bytes. The files after it move by whole multiples, and the file
+// table's offsets and size follow. Another file ID that names the same bytes takes them too. A file that fields of the
+// tables lie in, such as a group's file, can take bytes this way. A file whose bytes lie inside the old bytes at an
+// offset that `inner` gives moves to the new offset, and keeps its size. Throws std::invalid_argument for a file past
+// the file table, for one that the FILE block doesn't hold, for an inner file that would run past the new bytes, and
+// for an archive that would pass 4 GB. Throws xsflib::FormatError for a file whose padding holds bytes other than
+// zeros, for a file that another file overlaps otherwise, and the exceptions of WithTables.
 std::vector<uint8_t> WithFileBytes(std::span<const uint8_t> archive, Flavor flavor, uint32_t file,
                                    std::span<const uint8_t> bytes, std::span<const InnerFile> inner = {});
 
@@ -216,9 +216,9 @@ std::vector<uint8_t> WithValuePlaces(std::span<const uint8_t> archive, Flavor fl
 // A bank to add to an archive: its name, its file and the wave archives that its entry lists.
 struct NewBank
 {
-    std::string name;                    // empty for an archive without a STRG block
-    uint32_t file = 0;                   // the ID of the bank file
-    std::vector<uint32_t> wave_archives; // wave archive item IDs
+    std::string name;                         // empty for an archive without a STRG block
+    uint32_t file = 0;                        // the ID of the bank file
+    std::vector<uint32_t> wave_archives = {}; // wave archive item IDs
 };
 
 // `archive`, an archive of `flavor`, with `bank` at the end of its bank table. The entry is laid out as the tools lay
@@ -248,5 +248,18 @@ struct NewWaveArchive
 // their options another way than the tools, and the exceptions of WithTables.
 std::vector<uint8_t> WithNewWaveArchive(std::span<const uint8_t> archive, Flavor flavor,
                                         const NewWaveArchive& wave_archive);
+
+// `archive`, an archive of the Wii U or the Switch of `flavor`, with a new group named `name` at the end of its group
+// table. The group's file holds no files and lists no items (EmptyGroupFile in ntdlib/sar/groups.h). It goes after the
+// archive's last file, as WithNewFile puts a file there. The FILE block holds it up to the end of its INFX block's
+// entries, and the file table gives it that size (GroupSizeInArchive). Its entry in the file table is laid out as the
+// tools lay out a group's file's: the reference to the location has type 0. The group's entry holds the file, then the
+// options with the string index after the groups' names. Each string index after it moves up by one, and the STRG
+// block's tree takes the name too. In an archive without a STRG block, the group takes the string index all the same,
+// as a new bank does. Throws std::invalid_argument for the 3DS, a name for an archive without a STRG block, no name
+// for an archive with one, a name that the block holds already, and an archive that would pass 4 GB. Throws
+// xsflib::FormatError for entries that lay out their options another way than the tools, and the exceptions of
+// WithTables.
+std::vector<uint8_t> WithNewGroup(std::span<const uint8_t> archive, Flavor flavor, const std::string& name);
 
 } // namespace ntdlib::sar

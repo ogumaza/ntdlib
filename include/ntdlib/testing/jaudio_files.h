@@ -8,6 +8,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -424,13 +425,14 @@ inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files)
     return r.Data();
 }
 
-// A sound of an AAF's sound table: its category (0 to 15 for an effect, 16 for a sequence), its volume, and a
-// sequence's file in the sequence archive.
+// A sound of an AAF's sound table: its category (0 to 15 for an effect, 16 for a sequence), its volume, a sequence's
+// file in the sequence archive, and its pitch. The entry holds the pitch only if it isn't 1.
 struct AafSoundSpec
 {
     uint32_t category = 0;
     uint8_t volume = 127;
     uint16_t file = 0;
+    float pitch = 1.0f;
 };
 
 // A sequence of an AAF's sequence index: its name, and its offset and size in the sequence archive.
@@ -492,6 +494,7 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
 
     // The table's header gives the formats of the effects, the sequences and the streams, then each category's count
     // and first entry. Entries are 16 bytes from +0x50. An entry has a sequence's file at +6 and the volume at +0xc.
+    // A pitch other than 1 goes at +8. Without one, +8 holds 0, and the reader takes a pitch of 1.
     b.resize(std::max(b.size(), kTable + 3));
     b[kTable] = 6;
     b[kTable + 1] = sequence_format;
@@ -507,6 +510,10 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
             {
                 const std::size_t at = kTable + 0x50 + entry++ * 0x10;
                 put16(at + 6, sound.file);
+                if (sound.pitch != 1.0f)
+                {
+                    put32(at + 8, std::bit_cast<uint32_t>(sound.pitch));
+                }
                 b.resize(std::max(b.size(), at + 0x10));
                 b[at + 0xc] = sound.volume;
                 count++;

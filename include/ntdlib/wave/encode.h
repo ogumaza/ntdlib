@@ -48,6 +48,23 @@ std::size_t DspAdpcmBytes(std::size_t samples);
 // hold.
 DspAdpcmChannel EncodeDspAdpcm(std::span<const int16_t> samples, uint32_t loop_start, DspAdpcmSum sum);
 
+// A DSP-ADPCM decoder's state at a sample: the header of the frame that holds it, and the two samples before it.
+struct DspAdpcmState
+{
+    friend bool operator==(const DspAdpcmState&, const DspAdpcmState&) = default;
+
+    uint8_t pred_scale = 0;
+    int16_t yn1 = 0; // the decoded sample before
+    int16_t yn2 = 0; // the decoded sample before that one
+};
+
+// The state of a decoder at sample `at` of a channel of DSP-ADPCM, when it plays `data` from the start. `hist1` and
+// `hist2` are the two samples before the first, and `sum` gives how the decoder adds up. A wave keeps this state for
+// the start of its loop. A decoder that goes back to the loop's start with it plays the loop's samples again as in the
+// first pass. Throws std::invalid_argument for a sample whose frame lies past the end of `data`.
+DspAdpcmState DspAdpcmStateAt(std::span<const uint8_t> data, uint32_t at, std::span<const int16_t, 16> coefs,
+                              int16_t hist1, int16_t hist2, DspAdpcmSum sum);
+
 // Moves the loop's start forward to the start of a frame of 14 samples. Each of `channels` holds the wave's samples up
 // to the end of its loop. The samples from `loop_start` up to the new start repeat after the loop's end, and the loop
 // then plays the same samples. A decoder that goes back to the loop's start then starts at a frame's header. Returns

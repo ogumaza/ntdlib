@@ -269,6 +269,29 @@ std::optional<std::vector<uint32_t>> ListOf(std::span<const uint8_t> entry, bool
 
 } // namespace
 
+std::vector<uint8_t> EmptyGroupFile(Flavor flavor)
+{
+    CheckFlavor(flavor);
+
+    // The header: the magic, the byte order mark, the header's size and the version. Build gives the rest.
+    constexpr uint32_t kVersion = 0x00010000;
+    Out header(flavor == Flavor::kCafe);
+    header.Append(std::span(reinterpret_cast<const uint8_t*>("FGRP"), 4));
+    header.Zeros(kHeaderSize - 4);
+    header.U16(4, 0xFEFF);
+    header.U16(6, static_cast<uint16_t>(kHeaderSize));
+    header.U32(8, kVersion);
+
+    return Build(header.Take(), {}, flavor, true);
+}
+
+std::size_t GroupSizeInArchive(std::span<const uint8_t> group, Flavor flavor)
+{
+    CheckFlavor(flavor);
+
+    return ItemsEnd(group, flavor);
+}
+
 GroupContents ReadGroupFile(std::span<const uint8_t> group, Flavor flavor)
 {
     CheckFlavor(flavor);

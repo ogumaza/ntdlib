@@ -8,7 +8,9 @@
 // each file a list of the groups that hold it. A game keeps some groups in files beside the archive. The group table
 // gives such a group no file. ReadGroupFile reads a group's file, and GroupWith adds files and items to it.
 // WithGroupMembers adds them to a group whose file the archive holds. WithGroupLists writes the groups into the files'
-// lists. GroupOfFile finds the group of a group's file that a game keeps beside an archive.
+// lists. GroupOfFile finds the group of a group's file that a game keeps beside an archive. EmptyGroupFile gives the
+// file of a new group, and WithNewGroup (ntdlib/sar/tables.h) adds the group to an archive. GroupSizeInArchive gives
+// the size of a group's file in the archive's file table.
 //
 // NintendoWare's tools lay a group's file out as a header of 64 bytes, then the INFO, FILE and INFX blocks, in that
 // order and without gaps. INFO holds the count of files and a reference to each file's entry, then the entries. An
@@ -24,6 +26,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -62,6 +65,15 @@ struct GroupContents
     std::vector<GroupMember> files; // in the order of INFO
     std::vector<GroupItem> items;   // in the order of INFX
 };
+
+// A group's file of `flavor` without files or items, in version 1.0.0, laid out as the tools lay a group's file out.
+// Every game of the Wii U and the Switch reads that version. Throws std::invalid_argument for the 3DS.
+std::vector<uint8_t> EmptyGroupFile(Flavor flavor);
+
+// The size that an archive's file table gives `group`, a group's file of `flavor`: the end of its INFX block's
+// entries. The archive's FILE block holds the group's file up to there. Throws std::invalid_argument for the 3DS, and
+// xsflib::FormatError for bytes without an INFX block.
+std::size_t GroupSizeInArchive(std::span<const uint8_t> group, Flavor flavor);
 
 // The contents of `group`, a group's file of `flavor`. A file without an INFX block lists no items. Throws
 // std::invalid_argument for the 3DS. Throws xsflib::FormatError for bytes that aren't a group's file of the console,

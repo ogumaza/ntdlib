@@ -609,13 +609,10 @@ void AppendBits24(std::vector<uint8_t>& out, uint32_t value, bool little_endian)
     out.push_back(little_endian ? high : low);
 }
 
+// Appends `value` as a variable-length number in `bytes` bytes, or in the bytes that it requires where those are more.
 void AppendVariableLength(std::vector<uint8_t>& out, uint32_t value, uint8_t bytes)
 {
-    if (bytes == 0)
-    {
-        bytes = VariableLengthBytes(value);
-    }
-
+    bytes = std::max(bytes, VariableLengthBytes(value));
     for (int i = bytes - 1; i >= 0; --i)
     {
         const auto group = static_cast<uint8_t>(i >= 5 ? 0 : (value >> (7 * i)) & 0x7F);
@@ -796,6 +793,13 @@ void Convert(Command& command, const Grammar& grammar, Conversion convert)
     }
 }
 
+// Whether the bytes of `command` hold its value as a variable-length number, without a random or a variable prefix: a
+// note's length, a wait or a program.
+bool HoldsVariableLength(const Command& command, const Grammar& grammar)
+{
+    return command.value.source == Source::kValue && WidthOf(CodeOf(command), grammar) == Width::kVariableLength;
+}
+
 // Whether the player reads the bytes from `start` to the end of `bytes` as `command`, whose target lies at byte offset
 // `target`. The command's values are the console's.
 bool ReadsBack(std::span<const uint8_t> bytes, std::size_t start, const Command& command, uint32_t target,
@@ -807,6 +811,15 @@ bool ReadsBack(std::span<const uint8_t> bytes, std::size_t start, const Command&
     {
         read.target = command.target;
         read.target_outside = command.target_outside;
+    }
+
+    // A value that requires as many bytes as its padding or more takes the bytes that it requires
+    // (AppendVariableLength). Its bytes then read back without padding.
+    const uint8_t padding = command.encoding.value_bytes;
+    if (read.encoding.value_bytes == 0 && padding != 0 && HoldsVariableLength(command, grammar) &&
+        padding <= VariableLengthBytes(static_cast<uint32_t>(command.value.value)))
+    {
+        read.encoding.value_bytes = padding;
     }
 
     return !r.PastEnd() && r.At() == bytes.size() && read == command;

@@ -18,10 +18,12 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/groups.h"
 #include "ntdlib/sar/info_block.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sar/string_block.h"
 #include "sar/file_bytes.h"
+#include "sar/stream_details.h"
 
 namespace ntdlib::sar
 {
@@ -38,12 +40,7 @@ constexpr uint16_t kExternalFile = 0x220D;  // from a file's entry to its path
 constexpr uint16_t kStreamDetails = 0x2201;
 constexpr uint16_t kWaveSoundDetails = 0x2202;
 constexpr uint16_t kSequenceDetails = 0x2203;
-constexpr uint16_t kTableReference = 0x0101; // a table of references
-constexpr uint16_t kStreamTrack = 0x220E;
-constexpr uint16_t kSends = 0x220F;
-constexpr uint32_t kSendsVersion = 0x00020100; // the first version whose stream sounds hold a pitch and sends
-constexpr uint32_t kNothingVersion =
-    0x00020200;                               // the first version whose stream sounds all hold a reference to nothing
+constexpr uint16_t kTableReference = 0x0101;  // a table of references
 constexpr std::size_t kMaxStreamTracks = 8;   // the tracks of a stream sound that ntdlib's reader reads
 constexpr std::size_t kMaxTrackChannels = 16; // the channels of a stream sound's track that ntdlib's reader reads
 constexpr std::size_t kVersionField = 0x08;
@@ -85,8 +82,12 @@ constexpr std::array<std::size_t, 6> kOptionsAt = {kSoundOptions, 24, 12, 8, 4, 
 constexpr std::size_t kSoundTable = 0;
 constexpr std::size_t kBankTable = 2;
 constexpr std::size_t kWaveArchiveTable = 3;
+constexpr std::size_t kGroupTable = 4;
 
+using detail::kSendsVersion;
 using detail::Out;
+using detail::StreamDetailsOf;
+using detail::StreamHeader;
 
 // A block that the header's table lists: where its entry is in the table, and the block's offset and size.
 struct BlockEntry
@@ -204,14 +205,15 @@ std::vector<uint8_t> WithFileAppended(std::span<const uint8_t> archive, Flavor f
 }
 
 // The entry of an internal file at `offset` from the end of the FILE block's size, of `size` bytes, as the tools write
-// it for `flavor`. The Wii U and the Switch list the groups that hold the file. The list is empty.
-std::vector<uint8_t> InternalFileEntry(Flavor flavor, uint32_t offset, uint32_t size)
+// it for `flavor`. The location's reference has the type `data`: kDataReference, or 0 for a group's file. The Wii U and
+// the Switch list the groups that hold the file. The list is empty.
+std::vector<uint8_t> InternalFileEntry(Flavor flavor, uint32_t offset, uint32_t size, uint16_t data)
 {
     const bool ctr = flavor == Flavor::kCtr;
     Out out(flavor == Flavor::kCafe);
     out.Zeros(ctr ? 24 : 36);
     out.Reference(0, kInternalFile, 12);
-    out.Reference(12, kDataReference, offset);
+    out.Reference(12, data, offset);
     out.U32(20, size);
     if (!ctr)
     {
@@ -401,7 +403,7 @@ void WriteBanks(std::vector<uint8_t>& entry, std::size_t banks, bool big_endian,
 // are laid out another way than the tools lay them out, and std::invalid_argument for a start that the model has no
 // place for.
 std::vector<uint8_t> SequenceSoundEntry(std::span<const uint8_t> model, Flavor flavor, const NewSequenceSound& sound,
-                                        std::optional<uint32_t> string)
+                                        uint32_t string)
 {
     // The model's details, and its list of banks at their end.
     const bool big_endian = flavor == Flavor::kCafe;
@@ -418,7 +420,7 @@ std::vector<uint8_t> SequenceSoundEntry(std::span<const uint8_t> model, Flavor f
     Store32(entry, 0, big_endian, sound.file);
     if (const std::optional<std::size_t> at = StringIndexAt(entry, kSoundOptions, big_endian))
     {
-        Store32(entry, *at, big_endian, string.value_or(kNone));
+        Store32(entry, *at, big_endian, string);
     }
     if (has_start)
     {
@@ -432,7 +434,7 @@ std::vector<uint8_t> SequenceSoundEntry(std::span<const uint8_t> model, Flavor f
 // NewWaveSound describes the new entry. The sound takes string index `string`. Throws xsflib::FormatError for a model
 // whose details are laid out another way than the tools lay them out.
 std::vector<uint8_t> WaveSoundEntry(std::span<const uint8_t> model, Flavor flavor, const NewWaveSound& sound,
-                                    std::optional<uint32_t> string)
+                                    uint32_t string)
 {
     const bool big_endian = flavor == Flavor::kCafe;
     const xsflib::Reader r(model, big_endian);
@@ -465,7 +467,7 @@ std::vector<uint8_t> WaveSoundEntry(std::span<const uint8_t> model, Flavor flavo
     Store32(entry, details, big_endian, sound.index);
     if (const std::optional<std::size_t> at = StringIndexAt(entry, kSoundOptions, big_endian))
     {
-        Store32(entry, *at, big_endian, string.value_or(kNone));
+        Store32(entry, *at, big_endian, string);
     }
 
     return entry;
@@ -564,93 +566,6 @@ bool IsStreamSound(std::span<const uint8_t> entry, bool big_endian)
     return entry.size() >= kSoundDetails + 8 && xsflib::Reader(entry, big_endian).U16(kSoundDetails) == kStreamDetails;
 }
 
-// The fields of a stream sound's details before its table of tracks, as the tools write them in an archive of
-// `version`, with zeros where the tracks that play, the count of channels, the references, the pitch and the sends go.
-std::vector<uint8_t> StreamHeader(uint32_t version, bool big_endian)
-{
-    Out out(big_endian);
-    if (version < kSendsVersion)
-    {
-        out.Zeros(16);
-        return out.Take();
-    }
-
-    out.Zeros(version < kNothingVersion ? 24 : 36);
-    if (version >= kNothingVersion)
-    {
-        out.U32(28, kNone);
-        out.U32(32, kNone);
-    }
-
-    return out.Take();
-}
-
-// Appends sends to `out`: the main send, a send to each aux bus, and a byte of padding.
-void AppendSends(Out& out, uint8_t main, const std::array<uint8_t, 3>& aux)
-{
-    const std::size_t at = out.Zeros(8);
-    out.U8(at, main);
-    for (std::size_t bus = 0; bus < aux.size(); ++bus)
-    {
-        out.U8(at + 1 + bus, aux[bus]);
-    }
-}
-
-// A stream sound's details for `stream`: `header`, the fields before the table of tracks, then the table, each track
-// and the sound's sends, as the tools lay them out (tables.h). `sends` gives whether the version holds the pitch and
-// sends. The references in `header` take their offsets.
-std::vector<uint8_t> StreamDetailsOf(std::span<const uint8_t> header, const StreamSoundInfo& stream, bool sends,
-                                     bool big_endian)
-{
-    Out out(big_endian);
-    out.Append(header);
-    out.U16(0, stream.valid_tracks);
-    out.U16(2, stream.channel_count);
-    const std::size_t table = out.Size();
-    out.Reference(4, kTableReference, static_cast<uint32_t>(table));
-    if (sends)
-    {
-        out.U32(12, std::bit_cast<uint32_t>(stream.pitch));
-    }
-
-    // The table, then each track's info, its channels' indices and its sends.
-    out.Zeros(4 + 8 * stream.tracks.size());
-    out.U32(table, static_cast<uint32_t>(stream.tracks.size()));
-    for (std::size_t t = 0; t < stream.tracks.size(); ++t)
-    {
-        const StreamTrackInfo& track = stream.tracks[t];
-        const std::size_t info = out.Zeros(sends ? 24 : 12);
-        out.Reference(table + 4 + 8 * t, kStreamTrack, static_cast<uint32_t>(info - table));
-        out.U8(info, track.volume);
-        out.U8(info + 1, track.pan);
-        out.U8(info + 2, track.span);
-        out.U8(info + 3, track.flags);
-        const std::size_t indices = out.Zeros(4 + track.channels.size());
-        out.Align(4);
-        out.Reference(info + 4, kListReference, static_cast<uint32_t>(indices - info));
-        out.U32(indices, static_cast<uint32_t>(track.channels.size()));
-        for (std::size_t c = 0; c < track.channels.size(); ++c)
-        {
-            out.U8(indices + 4 + c, track.channels[c]);
-        }
-        if (sends)
-        {
-            out.U8(info + 20, track.low_pass);
-            out.U8(info + 21, track.biquad_type);
-            out.U8(info + 22, track.biquad_value);
-            out.Reference(info + 12, kSends, static_cast<uint32_t>(out.Size() - info));
-            AppendSends(out, track.main_send, track.aux_sends);
-        }
-    }
-    if (sends)
-    {
-        out.Reference(16, kSends, static_cast<uint32_t>(out.Size()));
-        AppendSends(out, stream.main_send, stream.aux_sends);
-    }
-
-    return out.Take();
-}
-
 // Throws std::invalid_argument for the tracks of `stream` that a stream sound can't hold (WithNewStreamSound).
 void CheckStream(const StreamSoundInfo& stream)
 {
@@ -688,6 +603,36 @@ void CheckBanks(const InfoBlock& info, std::span<const uint32_t> banks)
     {
         throw std::invalid_argument("more than four banks, or a bank past the bank table");
     }
+}
+
+// `archive` with `bytes` as a new file after its last one, as WithNewFile adds one, with the type `data` in the
+// reference of the entry's location (InternalFileEntry).
+ArchiveWithFile WithFileAdded(std::span<const uint8_t> archive, Flavor flavor, std::span<const uint8_t> bytes,
+                              uint16_t data)
+{
+    // The file's place: the first multiple of the alignment from the archive's end.
+    const std::size_t alignment = flavor == Flavor::kNx ? 64 : 32;
+    const std::size_t start = (archive.size() + alignment - 1) / alignment * alignment;
+    if (start + bytes.size() > kNone)
+    {
+        throw std::invalid_argument("an archive that would pass 4 GB");
+    }
+
+    // The file's entry, with its offset in the archive as it is. WithTables moves it with the other files.
+    auto [strings, info] = ReadTables(archive, flavor);
+    const std::optional<BlockEntry> files = EntryOf(xsflib::Reader(archive, flavor == Flavor::kCafe), kFileBlock);
+    if (!files || files->offset + kBlockHeaderSize > start)
+    {
+        throw xsflib::FormatError("an archive without a FILE block");
+    }
+    const auto offset = static_cast<uint32_t>(start - files->offset - kBlockHeaderSize);
+    info.files.push_back(InternalFileEntry(flavor, offset, static_cast<uint32_t>(bytes.size()), data));
+
+    ArchiveWithFile result;
+    result.file = static_cast<uint32_t>(info.files.size() - 1);
+    result.archive = WithTables(WithFileAppended(archive, flavor, start, bytes), flavor, strings, std::move(info));
+
+    return result;
 }
 
 } // namespace
@@ -817,29 +762,7 @@ std::vector<uint8_t> WithTables(std::span<const uint8_t> archive, Flavor flavor,
 
 ArchiveWithFile WithNewFile(std::span<const uint8_t> archive, Flavor flavor, std::span<const uint8_t> bytes)
 {
-    // The file's place: the first multiple of the alignment from the archive's end.
-    const std::size_t alignment = flavor == Flavor::kNx ? 64 : 32;
-    const std::size_t start = (archive.size() + alignment - 1) / alignment * alignment;
-    if (start + bytes.size() > kNone)
-    {
-        throw std::invalid_argument("an archive that would pass 4 GB");
-    }
-
-    // The file's entry, with its offset in the archive as it is. WithTables moves it with the other files.
-    auto [strings, info] = ReadTables(archive, flavor);
-    const std::optional<BlockEntry> files = EntryOf(xsflib::Reader(archive, flavor == Flavor::kCafe), kFileBlock);
-    if (!files || files->offset + kBlockHeaderSize > start)
-    {
-        throw xsflib::FormatError("an archive without a FILE block");
-    }
-    const auto offset = static_cast<uint32_t>(start - files->offset - kBlockHeaderSize);
-    info.files.push_back(InternalFileEntry(flavor, offset, static_cast<uint32_t>(bytes.size())));
-
-    ArchiveWithFile result;
-    result.file = static_cast<uint32_t>(info.files.size() - 1);
-    result.archive = WithTables(WithFileAppended(archive, flavor, start, bytes), flavor, strings, std::move(info));
-
-    return result;
+    return WithFileAdded(archive, flavor, bytes, kDataReference);
 }
 
 ArchiveWithFile WithNewExternalFile(std::span<const uint8_t> archive, Flavor flavor, const std::string& path)
@@ -1307,6 +1230,37 @@ std::vector<uint8_t> WithNewWaveArchive(std::span<const uint8_t> archive, Flavor
     info.wave_archives.push_back(entry.Take());
 
     return WithTables(archive, flavor, strings, std::move(info));
+}
+
+std::vector<uint8_t> WithNewGroup(std::span<const uint8_t> archive, Flavor flavor, const std::string& name)
+{
+    // The name first: the file mustn't go in for a group that can't. The FILE block holds a group's file up to the end
+    // of its INFX block's entries.
+    CheckName(ReadTables(archive, flavor).strings, name, true);
+    const std::vector<uint8_t> group = EmptyGroupFile(flavor);
+    const ArchiveWithFile with =
+        WithFileAdded(archive, flavor, std::span(group).first(GroupSizeInArchive(group, flavor)), 0);
+    auto [strings, info] = ReadTables(with.archive, flavor);
+
+    // The entry: the file, then the options with the string index after the groups' names.
+    const uint32_t string = NewStringIndex(info, kGroupTable, NameCount(strings));
+    const std::size_t options = kOptionsAt[kGroupTable];
+    Out entry(flavor == Flavor::kCafe);
+    entry.Zeros(options + 8);
+    entry.U32(0, with.file);
+    entry.U32(options, kNameOption);
+    entry.U32(options + 4, string);
+
+    // The room for the name, and the name.
+    MakeRoomForName(info, string);
+    const auto index = static_cast<uint32_t>(info.groups.size());
+    info.groups.push_back(entry.Take());
+    if (strings)
+    {
+        strings->names.insert(strings->names.begin() + string, ItemName{name, ItemId(kGroupItem, index)});
+    }
+
+    return WithTables(with.archive, flavor, strings, std::move(info));
 }
 
 } // namespace ntdlib::sar

@@ -376,6 +376,24 @@ DspAdpcmChannel EncodeDspAdpcm(std::span<const int16_t> samples, uint32_t loop_s
     return channel;
 }
 
+DspAdpcmState DspAdpcmStateAt(std::span<const uint8_t> data, uint32_t at, std::span<const int16_t, 16> coefs,
+                              int16_t hist1, int16_t hist2, DspAdpcmSum sum)
+{
+    const std::size_t frame = at / kFrameSamples * kFrameBytes;
+    if (frame >= data.size())
+    {
+        throw std::invalid_argument("a sample past the frames of a channel of DSP-ADPCM");
+    }
+
+    const std::vector<int16_t> decoded = DecodeDspAdpcm(data, at, coefs, hist1, hist2, sum);
+    DspAdpcmState state;
+    state.pred_scale = data[frame];
+    state.yn1 = at >= 1 ? decoded[at - 1] : hist1;
+    state.yn2 = at >= 2 ? decoded[at - 2] : at == 1 ? hist1 : hist2;
+
+    return state;
+}
+
 uint32_t AlignDspAdpcmLoop(std::vector<std::vector<int16_t>>& channels, uint32_t loop_start)
 {
     for (const std::vector<int16_t>& channel : channels)

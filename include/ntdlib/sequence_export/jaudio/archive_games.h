@@ -12,6 +12,7 @@
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
+#include "ntdlib/sequence_export/jaudio/game.h"
 #include "ntdlib/sequence_export/jaudio/game_input.h"
 #include "ntdlib/sequence_export/performance.h"
 
@@ -20,14 +21,16 @@ namespace ntdlib::sequence_export::jaudio
 
 // Runs the command line of `archive_converter` with `argc` and `argv` as RunArchiveConverter does, with JAudio games
 // among the inputs (ArchiveProgramGames). A game takes the program's options. Of those beyond the frame's, only
-// --voices applies to its sequences (ArchiveProgramOptions). Returns the exit status for main() to return.
+// --voices applies to its sequences (ArchiveProgramOptions). `game_options` says which sounds of each game to list.
+// Returns the exit status for main() to return.
 template <typename Archive>
-int RunArchiveConverterWithGames(int argc, char** argv, const ArchiveConverter<Archive>& archive_converter)
+int RunArchiveConverterWithGames(int argc, char** argv, const ArchiveConverter<Archive>& archive_converter,
+                                 const GameOptions& game_options = {})
 {
     const Converter<sequence_export::PerformOptions, Archive, sequence_export::Conversion> archives =
         MakeArchiveConverter(archive_converter);
     const GameConverter games = MakeGameConverter(archives.program, archives.version_line,
-                                                  ArchiveProgramOptions(archives.option), archives.usage);
+                                                  ArchiveProgramOptions(archives.option), archives.usage, game_options);
     const auto run = [&archives, &games](const std::vector<std::string>& args)
     {
         return Run(args, archives, ArchiveProgramGames(args, games));

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.11.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.12.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -282,12 +282,18 @@ xsflib_add_project_test(ntdlib nwsnd_archive_files ntdlib::nwsnd_archive)
 # Also the readers and the writers of the sequence files (CSEQ and FSEQ), the wave files (CWAV and FWAV), the wave
 # archives (CWAR and FWAR), the groups' files (FGRP) and the archives' STRG and INFO blocks. WithTables puts new STRG
 # and INFO blocks in an archive. The banks, wave sound files, waves, wave archives and streams of the Wii U become the
-# Switch's, and the Switch's the Wii U's. WithInstruments copies instruments from one bank into another.
-xsflib_add_project_library(ntdlib sar_layout src/sar/bank_edit.cpp src/sar/byte_order.cpp src/sar/groups.cpp
-                           src/sar/info_block.cpp src/sar/layout.cpp src/sar/sequence_file.cpp src/sar/string_block.cpp
-                           src/sar/tables.cpp src/sar/wave_file.cpp)
+# Switch's, and the Switch's the Wii U's. WithInstruments copies instruments from one bank into another. BankFile
+# reads a bank as the values of its instruments and regions, and lays a bank out from them as NintendoWare's tools do.
+# WithWaveSoundValues and WithWaveSoundWave edit a wave sound file's values and waves. ReadArchiveModel reads an archive of the Wii U or the Switch as the fields of its items, and BuildArchive lays an
+# archive out from them as NintendoWare's tools do.
+xsflib_add_project_library(ntdlib sar_layout src/sar/archive_model.cpp src/sar/bank_edit.cpp src/sar/bank_file.cpp
+                           src/sar/byte_order.cpp src/sar/groups.cpp src/sar/info_block.cpp src/sar/layout.cpp
+                           src/sar/sequence_file.cpp src/sar/stream_details.cpp src/sar/string_block.cpp
+                           src/sar/tables.cpp src/sar/wave_file.cpp src/sar/wave_sound_edit.cpp)
 target_link_libraries(ntdlib_sar_layout PUBLIC ntdlib::nwsnd_commands ntdlib::sar)
+xsflib_add_project_test(ntdlib sar_archive_model ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_bank_edit ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib sar_bank_file ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_byte_order ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_groups ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_info_block ntdlib::sar_layout)
@@ -297,6 +303,7 @@ xsflib_add_project_test(ntdlib sar_stream_file ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_string_block ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_tables ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_wave_file ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib sar_wave_sound_edit ntdlib::sar_layout)
 
 # The Switch's audio renderer (nn::audio) with its I3DL2 reverb, and archive mode's model of nn::atk on it: an engine
 # that plays a sound archive's sequences, wave sounds and stream sounds as the Switch does, without the game's code.
@@ -327,6 +334,19 @@ xsflib_add_project_test(ntdlib cafe_snd ntdlib::cafe xsflib::rip)
 if (MSVC AND TARGET ntdlib_cafe_snd_test)
     target_link_options(ntdlib_cafe_snd_test PRIVATE "LINKER:/STACK:8388608")
 endif()
+
+# The length analysis of a sequence sound of the Wii U or the Switch, on the model of the console's sound library, with
+# xsflib's analysis (ntdlib/nwsnd/length_model.h). A program links ntdlib::nx for the Switch's part
+# (ntdlib/nx/atk/length_model.h), or ntdlib::cafe for the Wii U's (ntdlib/cafe/snd/length_model.h).
+add_library(ntdlib_nwsnd_lengths INTERFACE)
+add_library(ntdlib::nwsnd_lengths ALIAS ntdlib_nwsnd_lengths)
+target_include_directories(ntdlib_nwsnd_lengths INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+                                                          $<INSTALL_INTERFACE:include>)
+target_link_libraries(ntdlib_nwsnd_lengths INTERFACE ntdlib::nwsnd xsflib::rip)
+target_compile_features(ntdlib_nwsnd_lengths INTERFACE cxx_std_20)
+set_target_properties(ntdlib_nwsnd_lengths PROPERTIES EXPORT_NAME nwsnd_lengths)
+set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_nwsnd_lengths)
+xsflib_add_project_test(ntdlib nwsnd_length_model ntdlib::nwsnd_lengths ntdlib::nx ntdlib::cafe)
 
 # The archive play test's main, for a test that plays a sound archive's sounds on a model of the sound library
 # (ntdlib/testing/archive_play.h).

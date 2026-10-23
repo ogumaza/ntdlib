@@ -7,11 +7,13 @@
 // 3D settings, then its details. A sequence sound's details hold its start, its channel priority and its banks, and a
 // wave sound's its index and its channel priority. A stream's details are those of sar_files.h's StreamDetails, as FSAR
 // 2.2.0 lays them out, or 12 zero bytes for a spec without them. A file's entry on the Wii U and the Switch lists the
-// groups that its spec names. Each file starts on a multiple of 64 bytes from the archive's start on the Switch, and of
-// 32 bytes on the other consoles. The writers of ntdlib/sar/tables.h take these archives. They refuse those of
-// ntdlib/testing/sar_files.h. Group builds a group's file of the Wii U or the Switch as the tools lay it out
-// (ntdlib/sar/groups.h). WithoutValuePlaces takes optional values out of the sounds' entries of such an archive, for
-// the tests of sar::WithValuePlaces. Bank builds a bank file as the tools lay one out (ntdlib/sar/bank_edit.h).
+// groups that its spec names. The reference to a group's file there has type 0, and the reference to any other file
+// type 0x1F00. The player's settings give the size of a stream's buffer in a byte, and a zero follows it. Each file
+// starts on a multiple of 64 bytes from the archive's start on the Switch, and of 32 bytes on the other consoles. The
+// writers of ntdlib/sar/tables.h take these archives. They refuse those of ntdlib/testing/sar_files.h. Group builds a
+// group's file of the Wii U or the Switch as the tools lay it out (ntdlib/sar/groups.h). WithoutValuePlaces takes
+// optional values out of the sounds' entries of such an archive, for the tests of sar::WithValuePlaces. Bank builds a
+// bank file as the tools lay one out (ntdlib/sar/bank_edit.h).
 
 #pragma once
 
@@ -158,8 +160,10 @@ inline std::vector<uint8_t> PlainEntry(sar::Flavor flavor, const std::vector<uin
     return entry.data;
 }
 
-// The entry of `file`, which starts `offset` bytes after the end of the FILE block's size.
-inline std::vector<uint8_t> FileEntry(sar::Flavor flavor, const sar_files::FileSpec& file, uint32_t offset)
+// The entry of `file`, which starts `offset` bytes after the end of the FILE block's size. `group_file` gives whether
+// the file is a group's file.
+inline std::vector<uint8_t> FileEntry(sar::Flavor flavor, const sar_files::FileSpec& file, uint32_t offset,
+                                      bool group_file)
 {
     sar_files::Bytes entry(flavor == sar::Flavor::kCafe);
     entry.Add(12);
@@ -183,7 +187,7 @@ inline std::vector<uint8_t> FileEntry(sar::Flavor flavor, const sar_files::FileS
     }
     else
     {
-        entry.SizedRef(location, 0x1F00, offset, 0, file.bytes.size());
+        entry.SizedRef(location, group_file ? 0 : 0x1F00, offset, 0, file.bytes.size());
     }
 
     // The groups that hold the file.
@@ -234,7 +238,7 @@ inline std::pair<std::vector<std::size_t>, std::size_t> FilePlaces(sar::Flavor f
 struct GroupSpec
 {
     std::vector<std::pair<uint32_t, std::optional<std::vector<uint8_t>>>> files;
-    std::vector<std::pair<uint32_t, uint32_t>> items;
+    std::vector<std::pair<uint32_t, uint32_t>> items = {};
     bool padded = true; // whether zeros follow INFX up to the alignment
 };
 
@@ -251,8 +255,8 @@ inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
     const std::size_t items = spec.items.size();
 
     // The blocks and the copies, by hand.
-    const std::size_t info = detail::kHeaderSize;
-    const std::size_t file = info + align(8 + 4 + 24 * files, 32);
+    const std::size_t kInfo = detail::kHeaderSize;
+    const std::size_t file = kInfo + align(8 + 4 + 24 * files, 32);
     std::vector<std::size_t> copies;
     std::size_t at = align(file + 8, alignment);
     for (const auto& [id, copy] : spec.files)
@@ -273,7 +277,7 @@ inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
     group.U32(0x0C, static_cast<uint32_t>(end));
     group.U16(0x10, 3);
     const std::size_t blocks[][3] = {
-        {0x7800, info, file - info}, {0x7801, file, infx - file}, {0x7802, infx, end - infx}};
+        {0x7800, kInfo, file - kInfo}, {0x7801, file, infx - file}, {0x7802, infx, end - infx}};
     const char* magics[] = {"INFO", "FILE", "INFX"};
     for (std::size_t i = 0; i < 3; ++i)
     {
@@ -285,11 +289,11 @@ inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
     }
 
     // INFO: each file's entry, with its copy's place in FILE's body, or no place and no size for a link.
-    group.U32(info + 8, static_cast<uint32_t>(files));
+    group.U32(kInfo + 8, static_cast<uint32_t>(files));
     for (std::size_t i = 0; i < files; ++i)
     {
-        const std::size_t entry = info + 12 + 8 * files + 16 * i;
-        group.Ref(info + 12 + 8 * i, 0x7900, entry, info + 8);
+        const std::size_t entry = kInfo + 12 + 8 * files + 16 * i;
+        group.Ref(kInfo + 12 + 8 * i, 0x7900, entry, kInfo + 8);
         group.U32(entry, spec.files[i].first);
         if (const std::optional<std::vector<uint8_t>>& copy = spec.files[i].second)
         {
@@ -364,26 +368,35 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const sar_files::Archive
         options.push_back({1, 0}); // the player's heap
         info.players.push_back(detail::PlainEntry(flavor, {limit}, options));
     }
-    const uint16_t settings[] = {64, 64, 4, 32, 8, 64, 64, 1, 0, 0};
-    for (std::size_t i = 0; i < std::size(settings); ++i)
+    const uint16_t kSettings[] = {64, 64, 4, 32, 8, 64, 64};
+    for (std::size_t i = 0; i < std::size(kSettings); ++i)
     {
         const std::size_t shift = big_endian ? 8 : 0;
-        info.player_settings[2 * i] = static_cast<uint8_t>(settings[i] >> shift);
-        info.player_settings[2 * i + 1] = static_cast<uint8_t>(settings[i] >> (8 - shift));
+        info.player_settings[2 * i] = static_cast<uint8_t>(kSettings[i] >> shift);
+        info.player_settings[2 * i + 1] = static_cast<uint8_t>(kSettings[i] >> (8 - shift));
     }
+    info.player_settings[2 * std::size(kSettings)] = 1; // the size of a stream's buffer
 
     // The file table, once the blocks' sizes give the files' places. The entries' sizes don't depend on the places.
     const std::vector<uint8_t> strings = spec.names ? names.block.Write() : std::vector<uint8_t>();
-    for (const sar_files::FileSpec& file : spec.files)
+    std::vector<bool> group_files(spec.files.size());
+    for (const auto& [name, file] : spec.groups)
     {
-        info.files.push_back(detail::FileEntry(flavor, file, 0));
+        if (file < group_files.size())
+        {
+            group_files[file] = true;
+        }
+    }
+    for (std::size_t i = 0; i < spec.files.size(); ++i)
+    {
+        info.files.push_back(detail::FileEntry(flavor, spec.files[i], 0, group_files[i]));
     }
     const std::size_t block = detail::kHeaderSize + strings.size() + info.Write().size();
     const auto [starts, end] = detail::FilePlaces(flavor, spec, block);
     for (std::size_t i = 0; i < spec.files.size(); ++i)
     {
         const uint32_t offset = starts[i] != 0 ? static_cast<uint32_t>(starts[i] - block - 8) : 0;
-        info.files[i] = detail::FileEntry(flavor, spec.files[i], offset);
+        info.files[i] = detail::FileEntry(flavor, spec.files[i], offset, group_files[i]);
     }
     const std::vector<uint8_t> tables = info.Write();
 

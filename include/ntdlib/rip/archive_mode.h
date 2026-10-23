@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -71,20 +72,75 @@ struct ArchiveRipTool
         return nullptr;
     };
 
-    // The library of a rip, with `tags`. By default it's an archive-mode library (BuildArchiveLibrary).
-    std::function<std::vector<uint8_t>(const Rip&, const xsflib::psf::Tags& tags)> build_library =
-        [](const Rip& to_rip, const xsflib::psf::Tags& tags)
+    // Whether a rip's library holds only the files that its sequences play, and the group files that hold them
+    // (KeepSequenceData). An archive mode's model reads nothing else. A game mode that runs the game's code reads each
+    // file at the place that the archive's file table gives. Its library keeps the archive's layout. Its build_library
+    // can put zeros in place of the files that the sequences don't play (KeepLoadedFiles). By default, every library
+    // holds the whole archive.
+    std::function<bool(const Rip&)> keeps_sequence_data = [](const Rip&)
+    {
+        return false;
+    };
+
+    // The library of a rip that plays the sequences at `sounds`, by their indices in the archive, with `tags`. By
+    // default it's an archive-mode library (BuildArchiveLibrary). The default doesn't use `sounds`.
+    std::function<std::vector<uint8_t>(const Rip&, std::span<const uint32_t> sounds, const xsflib::psf::Tags& tags)>
+        build_library = [](const Rip& to_rip, std::span<const uint32_t>, const xsflib::psf::Tags& tags)
     {
         return BuildArchiveLibrary<Format>(to_rip.archive, to_rip.groups, to_rip.settings, tags);
     };
 };
 
+// Adds `to_rip`'s group files to `archive` when the rip plays with them.
+template <typename Format, typename Rip>
+void AddGroupFiles(const ArchiveRipTool<Format, Rip>& tool, const Rip& to_rip, sar::SoundArchive& archive)
+{
+    if (tool.uses_groups(to_rip))
+    {
+        for (const auto& group : to_rip.groups)
+        {
+            archive.AddGroupFile(group.data);
+        }
+    }
+}
+
+// Cuts `to_rip`'s archive down to the files that `jobs` play, and its group files down to those that hold any of them
+// (KeepSequenceData). `archive` is `to_rip`'s archive, with the group files that the rip plays with. Leaves both
+// whole, after a warning, when those files can't be cut out of the archive.
+template <typename Format, typename Rip>
+void KeepJobsData(const sar::SoundArchive& archive, const std::vector<Job>& jobs, Rip& to_rip)
+{
+    std::vector<uint32_t> sounds;
+    for (const Job& job : jobs)
+    {
+        sounds.push_back(job.index);
+    }
+
+    std::optional<LibraryArchive> kept = KeepSequenceData(archive, sounds);
+    if (!kept)
+    {
+        std::fprintf(stderr,
+                     "warning: the files that the sequences play can't be cut out of %s. The library holds the whole "
+                     "archive\n",
+                     to_rip.archive.path.c_str());
+        return;
+    }
+
+    to_rip.archive.data = std::move(kept->archive);
+    std::vector<typename Format::FileChunk> groups;
+    for (const std::size_t group : kept->group_files)
+    {
+        groups.push_back(std::move(to_rip.groups[group]));
+    }
+    to_rip.groups = std::move(groups);
+}
+
 // Rips one sound archive into `out_dir`, and adds the number of sounds that --only and --bgm picked to `matched`.
 // `names` is the registry of file names for `out_dir`. Returns the number of minis written, or -1 on an error.
 template <typename Format, typename Rip>
 int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::path& out_dir,
-               xsflib::rip::FileNames& names, const std::string& lib_base, const Rip& to_rip,
-               const std::string& game_name, const xsflib::cli::RipOptions& o, std::size_t& matched)
+               xsflib::rip::FileNames& names, const std::string& lib_base, Rip to_rip, const std::string& game_name,
+               const xsflib::cli::RipOptions& o, std::size_t& matched)
 {
     const std::string& path = to_rip.archive.path;
     std::optional<sar::SoundArchive> archive;
@@ -104,13 +160,7 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
                      path.c_str());
     }
 
-    if (tool.uses_groups(to_rip))
-    {
-        for (const auto& group : to_rip.groups)
-        {
-            archive->AddGroupFile(group.data);
-        }
-    }
+    AddGroupFiles(tool, to_rip, *archive);
 
     std::vector<Job> jobs = SelectSounds(*archive, o.only, o.bgm);
     matched += jobs.size();
@@ -126,6 +176,7 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
     if (o.lengths && !complete.empty())
     {
         tool.analyze_lengths(complete, std::move(*archive), to_rip.settings, o.jobs);
+        archive.reset();
         complete = SkipSilent(std::move(complete), skipped);
     }
 
@@ -137,9 +188,28 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
         return 0;
     }
 
+    // An archive mode's library holds only the files that its sequences play. The cut reads the archive again, with the
+    // same group files, when the length analysis took it.
+    if (tool.keeps_sequence_data(to_rip))
+    {
+        if (!archive)
+        {
+            archive = sar::SoundArchive::Load(to_rip.archive.data, tool.sar_options);
+            AddGroupFiles(tool, to_rip, *archive);
+        }
+        KeepJobsData<Format>(*archive, complete, to_rip);
+        archive.reset();
+    }
+
+    std::vector<uint32_t> sounds;
+    for (const Job& job : complete)
+    {
+        sounds.push_back(job.index);
+    }
+
     const xsflib::psf::Tags common = xsflib::cli::RipTags(o, game_name, tool.format, tool.mode(to_rip));
-    const std::string lib_name = names.Library(lib_base);
-    const std::vector<uint8_t> lib = tool.build_library(to_rip, common);
+    const std::vector<uint8_t> lib = tool.build_library(to_rip, sounds, common);
+    const std::string lib_name = names.LibraryIn(out_dir, lib_base, lib);
     std::filesystem::create_directories(out_dir);
     if (!xsflib::rip::WriteFile(out_dir / xsflib::PathFromUtf8(lib_name), lib))
     {
@@ -261,7 +331,7 @@ int RipArchives(const ArchiveRipTool<Format, Rip>& tool, const std::string& inpu
             const int n =
                 RipArchive(tool, archive_dir,
                            xsflib::cli::NamesIn(registries, archive_dir, tool.library_extension, tool.mini_extension),
-                           game_name + " " + folders[a], to_rip, game_name, o, matched);
+                           game_name + " " + folders[a], std::move(to_rip), game_name, o, matched);
             if (n < 0)
             {
                 failed = true;
@@ -371,7 +441,7 @@ int RipLooseArchive(const ArchiveRipTool<Format, Rip>& tool, const std::string& 
     std::fprintf(stderr, "%s", notice.c_str());
     const std::string game_name = o.game_name.empty() ? xsflib::rip::NameOfInput(input) : o.game_name;
     std::size_t matched = 0;
-    const int count = RipArchive(tool, out_dir, names, game_name, to_rip, game_name, o, matched);
+    const int count = RipArchive(tool, out_dir, names, game_name, std::move(to_rip), game_name, o, matched);
     if (count < 0)
     {
         return 1;

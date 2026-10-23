@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: MIT
 
-// Tests the parts of a rip tool that rip sound archives (rip/archive.h): item IDs, and on an archive built with
+// Tests the parts of a rip tool that rip sound archives (rip/archive.h): item IDs, and on archives built with
 // sar_files.h the sounds that --only and --bgm pick, the groups kept outside the archive, by name and in SARC archives,
-// and the data a sound requires.
+// the data a sound requires, and the part of an archive that a library holds.
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <regex>
+#include <set>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/rip/archive.h"
@@ -230,6 +236,619 @@ void TestGroupsInSarcs()
                   std::vector<std::string>{"GROUP_A.bfgrp"}));
 }
 
+// A console's flavor, its name in the checks, and the alignment of the files in its archives' FILE blocks: 64 bytes
+// from the archive's start on the Switch, and 32 bytes on the 3DS and the Wii U.
+struct Console
+{
+    sar::Flavor flavor;
+    const char* name;
+    std::size_t alignment;
+};
+
+constexpr std::array<Console, 3> kConsoles = {
+    {{sar::Flavor::kCtr, "3DS", 32}, {sar::Flavor::kCafe, "Wii U", 32}, {sar::Flavor::kNx, "Switch", 64}}};
+
+sar::Options StrictRules(sar::Flavor flavor)
+{
+    return {flavor, {}, false, sar::Rules::kStopAtFirstProblem};
+}
+
+// `size` bytes that count up from `first`: a file whose bytes the cut copies without reading them.
+std::vector<uint8_t> Filler(std::size_t size, uint8_t first)
+{
+    std::vector<uint8_t> bytes(size);
+    for (std::size_t i = 0; i < size; i++)
+    {
+        bytes[i] = static_cast<uint8_t>(first + i);
+    }
+
+    return bytes;
+}
+
+// A bank whose waves are wave 0 of each of `wave_archives`, by index.
+std::vector<uint8_t> BankOf(sar::Flavor flavor, const std::vector<uint32_t>& wave_archives)
+{
+    sar_files::BankSpec bank;
+    for (const uint32_t wave_archive : wave_archives)
+    {
+        bank.waves.push_back({sar::ItemId(sar::kWaveArchiveItem, wave_archive), 0});
+    }
+
+    return sar_files::Bank(flavor, bank);
+}
+
+// A wave archive of one wave of `size` bytes.
+std::vector<uint8_t> WaveArchiveOf(sar::Flavor flavor, std::size_t size, uint8_t first)
+{
+    return sar_files::WaveArchive(flavor, {Filler(size, first)});
+}
+
+// The 16-bit and 32-bit fields of `bytes`, an archive of `flavor`, in its byte order.
+uint16_t Field16(std::span<const uint8_t> bytes, sar::Flavor flavor, std::size_t at)
+{
+    return flavor == sar::Flavor::kCafe ? xsflib::LoadBe16(&bytes[at]) : xsflib::LoadLe16(&bytes[at]);
+}
+
+uint32_t Field32(std::span<const uint8_t> bytes, sar::Flavor flavor, std::size_t at)
+{
+    return flavor == sar::Flavor::kCafe ? xsflib::LoadBe32(&bytes[at]) : xsflib::LoadLe32(&bytes[at]);
+}
+
+void PutField32(std::span<uint8_t> bytes, sar::Flavor flavor, std::size_t at, uint32_t value)
+{
+    flavor == sar::Flavor::kCafe ? xsflib::StoreBe32(&bytes[at], value) : xsflib::StoreLe32(&bytes[at], value);
+}
+
+// Where the header's table of blocks lists the FILE block, or the end of the table.
+std::size_t FileBlockEntry(std::span<const uint8_t> bytes, sar::Flavor flavor)
+{
+    const std::size_t end = 0x14 + std::size_t{12} * Field16(bytes, flavor, 0x10);
+    std::size_t entry = 0x14;
+    while (entry < end && Field16(bytes, flavor, entry) != 0x2002)
+    {
+        entry += 12;
+    }
+
+    return entry;
+}
+
+// The cut of `archive` for `sounds`, read back with the group files beside the archive that the cut keeps. Their
+// places among the archive's group files go to `group_files`. Nothing if there's no cut.
+std::optional<sar::SoundArchive> CutOf(const sar::SoundArchive& archive, const std::vector<uint32_t>& sounds,
+                                       std::vector<std::size_t>* group_files = nullptr)
+{
+    const std::optional<rip::LibraryArchive> kept = rip::KeepSequenceData(archive, sounds);
+    if (!kept)
+    {
+        return std::nullopt;
+    }
+
+    sar::SoundArchive cut = sar::SoundArchive::Load(kept->archive, archive.ReadOptions());
+    for (const std::size_t group : kept->group_files)
+    {
+        cut.AddGroupFile(archive.GroupFiles()[group]);
+    }
+    if (group_files != nullptr)
+    {
+        *group_files = kept->group_files;
+    }
+
+    return cut;
+}
+
+// Whether `cut` holds the files `kept` with the bytes that `archive` gives them, and no bytes for its other files. The
+// cut's tables have to give the sounds, banks and wave archives that the archive's tables give. The cut's header and
+// FILE block have to give its size. The cut can't be truncated.
+bool HoldsOnly(const sar::SoundArchive& archive, const sar::SoundArchive& cut, const std::set<uint32_t>& kept)
+{
+    bool holds = cut.FileCount() == archive.FileCount() && !cut.Truncated() &&
+                 cut.Sounds().size() == archive.Sounds().size() && cut.Banks().size() == archive.Banks().size() &&
+                 cut.WaveArchives().size() == archive.WaveArchives().size();
+    for (std::size_t i = 0; holds && i < archive.Sounds().size(); i++)
+    {
+        holds = cut.Sounds()[i].name == archive.Sounds()[i].name &&
+                cut.Sounds()[i].file_id == archive.Sounds()[i].file_id &&
+                cut.Sounds()[i].banks == archive.Sounds()[i].banks;
+    }
+    for (uint32_t file = 0; holds && file < archive.FileCount(); file++)
+    {
+        holds = kept.contains(file)
+                    ? !archive.FileData(file).empty() && std::ranges::equal(cut.FileData(file), archive.FileData(file))
+                    : cut.FileData(file).empty();
+    }
+
+    const std::span<const uint8_t> bytes = cut.Bytes();
+    const sar::Flavor flavor = archive.ReadOptions().flavor;
+    const std::size_t entry = FileBlockEntry(bytes, flavor);
+    const std::size_t file_block = Field32(bytes, flavor, entry + 4);
+
+    return holds && Field32(bytes, flavor, 0x0C) == bytes.size() &&
+           Field32(bytes, flavor, entry + 8) == bytes.size() - file_block &&
+           Field32(bytes, flavor, file_block + 4) == bytes.size() - file_block;
+}
+
+// Whether each of `files` starts on a multiple of `alignment` bytes in `cut`.
+bool Aligned(const sar::SoundArchive& cut, const std::set<uint32_t>& files, std::size_t alignment)
+{
+    const auto aligned = [&](uint32_t file)
+    {
+        const std::optional<std::size_t> offset = cut.FileOffset(file);
+        return offset && *offset % alignment == 0;
+    };
+
+    return std::ranges::all_of(files, aligned);
+}
+
+// An archive of three sequences and a wave sound. SEQ_A plays BANK_A. SEQ_B plays BANK_B and has an empty slot. SEQ_C
+// plays BANK_A and BANK_C. BANK_A's waves are in WARC_A, BANK_B's in WARC_A and WARC_B, and BANK_C's in WARC_C. The
+// wave sound's file is file 9.
+std::vector<uint8_t> ThreeSequences(sar::Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {
+        {.name = "SEQ_A", .file = 0, .player = 0, .banks = {0}},
+        {.name = "SEQ_B", .file = 1, .player = 0, .banks = {1, 0xFFFFFFFF}},
+        {.name = "SEQ_C", .file = 2, .player = 0, .banks = {0, 2}},
+        {.name = "WSD_A", .kind = sar_files::SoundSpec::kWaveSound, .file = 9, .player = 0},
+    };
+    spec.banks = {{"BANK_A", 3}, {"BANK_B", 4}, {"BANK_C", 5}};
+    spec.wave_archives = {{"WARC_A", 6}, {"WARC_B", 7}, {"WARC_C", 8}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{sar_files::Sequence(flavor, {0xFF}, {})},
+                  {sar_files::Sequence(flavor, {0x00, 0xFF}, {})},
+                  {sar_files::Sequence(flavor, {0x00, 0x00, 0xFF}, {})},
+                  {BankOf(flavor, {0})},
+                  {BankOf(flavor, {0, 1})},
+                  {BankOf(flavor, {2})},
+                  {WaveArchiveOf(flavor, 100, 1)},
+                  {WaveArchiveOf(flavor, 200, 2)},
+                  {WaveArchiveOf(flavor, 150, 3)},
+                  {Filler(80, 4)}};
+
+    return sar_files::Archive(flavor, spec);
+}
+
+// The cut keeps each sequence's file, the files of its banks and of their wave archives, and nothing else: the wave
+// sound's file goes. A bank or wave archive that two sequences play is kept once. An empty slot keeps nothing. Each
+// kept file starts on the console's alignment.
+void TestKeepSequenceData()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(ThreeSequences(console.flavor), StrictRules(console.flavor));
+        const std::string name = console.name;
+
+        const std::optional<sar::SoundArchive> a = CutOf(archive, {0});
+        const std::optional<sar::SoundArchive> b = CutOf(archive, {1});
+        const std::optional<sar::SoundArchive> a_and_c = CutOf(archive, {2, 0});
+        const std::optional<sar::SoundArchive> all = CutOf(archive, {0, 1, 2});
+
+        Check(a && HoldsOnly(archive, *a, {0, 3, 6}) && Aligned(*a, {0, 3, 6}, console.alignment),
+              name + ": SEQ_A's files");
+        Check(b && HoldsOnly(archive, *b, {1, 4, 6, 7}) && Aligned(*b, {1, 4, 6, 7}, console.alignment),
+              name + ": SEQ_B's files");
+        Check(a_and_c && HoldsOnly(archive, *a_and_c, {0, 2, 3, 5, 6, 8}), name + ": the files of SEQ_A and SEQ_C");
+        Check(all && HoldsOnly(archive, *all, {0, 1, 2, 3, 4, 5, 6, 7, 8}) &&
+                  Aligned(*all, {0, 1, 2, 3, 4, 5, 6, 7, 8}, console.alignment),
+              name + ": the files of every sequence");
+        Check(a && a_and_c && a->Bytes().size() < a_and_c->Bytes().size() &&
+                  a_and_c->Bytes().size() < archive.Bytes().size(),
+              name + ": each cut is smaller");
+    }
+}
+
+// An archive whose BANK_A, file 2, lies only in GROUP_A's file, file 3. SEQ_B's bank, file 5, has a place in the FILE
+// block. GROUP_B's file, file 4, holds a copy of it too.
+std::vector<uint8_t> GroupsInArchive(sar::Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ_A", .file = 0, .player = 0, .banks = {0}},
+                   {.name = "SEQ_B", .file = 1, .player = 0, .banks = {1}}};
+    spec.banks = {{"BANK_A", 2}, {"BANK_B", 5}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP_A", 3}, {"GROUP_B", 4}};
+    spec.files = {{sar_files::Sequence(flavor, {0xFF}, {})},
+                  {sar_files::Sequence(flavor, {0x00, 0xFF}, {})},
+                  {.group_only = true},
+                  {sar_files::Group(flavor, {{2, BankOf(flavor, {})}})},
+                  {sar_files::Group(flavor, {{5, BankOf(flavor, {})}})},
+                  {BankOf(flavor, {})}};
+
+    return sar_files::Archive(flavor, spec);
+}
+
+// A file that only a group's file in the archive holds keeps that whole group's file. A group's file goes when each
+// file that it holds a copy of has a place in the FILE block.
+void TestKeepGroupsInArchive()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(GroupsInArchive(console.flavor), StrictRules(console.flavor));
+        const std::string name = console.name;
+
+        const std::optional<sar::SoundArchive> a = CutOf(archive, {0});
+        const std::optional<sar::SoundArchive> b = CutOf(archive, {1});
+
+        Check(a && HoldsOnly(archive, *a, {0, 2, 3}) && Aligned(*a, {0, 3}, console.alignment),
+              name + ": SEQ_A's bank comes with GROUP_A's file");
+        Check(b && HoldsOnly(archive, *b, {1, 5}), name + ": SEQ_B's bank comes without a group");
+    }
+}
+
+// An archive whose banks lie in the group files beside it: GROUP_A holds BANK_A, file 2, and GROUP_B holds BANK_B, file
+// 3. GROUP_C holds another copy of BANK_A.
+std::vector<uint8_t> GroupsBeside(sar::Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ_A", .file = 0, .player = 0, .banks = {0}},
+                   {.name = "SEQ_B", .file = 1, .player = 0, .banks = {1}}};
+    spec.banks = {{"BANK_A", 2}, {"BANK_B", 3}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP_A", 0xFFFFFFFF}, {"GROUP_B", 0xFFFFFFFF}, {"GROUP_C", 0xFFFFFFFF}};
+    spec.files = {{sar_files::Sequence(flavor, {0xFF}, {})},
+                  {sar_files::Sequence(flavor, {0x00, 0xFF}, {})},
+                  {.group_only = true},
+                  {.group_only = true}};
+
+    return sar_files::Archive(flavor, spec);
+}
+
+// The cut keeps the group files beside the archive that hold the copies that a model reads: for each file, the first
+// group file that holds a copy of it. They keep their order.
+void TestKeepGroupFilesBeside()
+{
+    for (const Console& console : std::span(kConsoles).subspan(1))
+    {
+        sar::SoundArchive archive = sar::SoundArchive::Load(GroupsBeside(console.flavor), StrictRules(console.flavor));
+        archive.AddGroupFile(sar_files::Group(console.flavor, {{2, BankOf(console.flavor, {})}}));
+        archive.AddGroupFile(sar_files::Group(console.flavor, {{3, BankOf(console.flavor, {0})}}));
+        archive.AddGroupFile(sar_files::Group(console.flavor, {{2, BankOf(console.flavor, {0, 0})}}));
+        const std::string name = console.name;
+
+        std::vector<std::size_t> a_groups;
+        std::vector<std::size_t> b_groups;
+        std::vector<std::size_t> both_groups;
+        const std::optional<sar::SoundArchive> a = CutOf(archive, {0}, &a_groups);
+        const std::optional<sar::SoundArchive> b = CutOf(archive, {1}, &b_groups);
+        const std::optional<sar::SoundArchive> both = CutOf(archive, {1, 0}, &both_groups);
+
+        Check(a && HoldsOnly(archive, *a, {0, 2}) && a_groups == std::vector<std::size_t>{0},
+              name + ": SEQ_A's bank comes with GROUP_A");
+        Check(b && HoldsOnly(archive, *b, {1, 3}) && b_groups == std::vector<std::size_t>{1},
+              name + ": SEQ_B's bank comes with GROUP_B");
+        Check(both && HoldsOnly(archive, *both, {0, 1, 2, 3}) && both_groups == std::vector<std::size_t>{0, 1},
+              name + ": both banks come with their groups, in order");
+    }
+}
+
+// Gives file `file` of `bytes`, an archive of `flavor`, the place of its copy in file `group`, a group's file. The
+// file's place then lies inside the group's file. Returns false when the group's file holds no copy of the file, or
+// when the file table's place isn't found.
+bool PlaceInGroup(std::vector<uint8_t>& bytes, sar::Flavor flavor, uint32_t file, uint32_t group)
+{
+    const sar::SoundArchive archive = sar::SoundArchive::Load(bytes, StrictRules(flavor));
+    const std::span<const uint8_t> data = archive.FileData(file);
+    const std::span<const uint8_t> holder = archive.FileData(group);
+    const auto copy = std::ranges::search(holder, data);
+    if (data.empty() || copy.empty())
+    {
+        return false;
+    }
+
+    // The file table holds the place's offset, then its size. The tables lie before the FILE block.
+    const std::size_t file_block = Field32(bytes, flavor, FileBlockEntry(bytes, flavor) + 4);
+    const std::size_t files = file_block + 8;
+    std::array<uint8_t, 8> place{};
+    PutField32(place, flavor, 0, static_cast<uint32_t>(*archive.FileOffset(file) - files));
+    PutField32(place, flavor, 4, static_cast<uint32_t>(data.size()));
+    const std::span<uint8_t> tables = std::span(bytes).first(file_block);
+    const auto at = std::ranges::search(tables, place);
+    if (at.empty())
+    {
+        return false;
+    }
+
+    const auto copy_start = static_cast<std::size_t>(copy.begin() - holder.begin());
+    PutField32(bytes, flavor, static_cast<std::size_t>(at.begin() - tables.begin()),
+               static_cast<uint32_t>(*archive.FileOffset(group) + copy_start - files));
+
+    return true;
+}
+
+// An archive whose BANK_A, file 2, takes the place of its copy in GROUP_A's file, file 3. GROUP_A's file also holds a
+// copy of BANK_B, file 4. BANK_B has no place. BANK_C, file 5, takes the place of that copy too. GROUP_A doesn't list
+// BANK_C, and no sound plays it.
+std::vector<uint8_t> FileInGroup(sar::Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ_A", .file = 0, .player = 0, .banks = {0}},
+                   {.name = "SEQ_B", .file = 1, .player = 0, .banks = {1}}};
+    spec.banks = {{"BANK_A", 2}, {"BANK_B", 4}, {"BANK_C", 5}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP_A", 3}};
+    spec.files = {{sar_files::Sequence(flavor, {0xFF}, {})},
+                  {sar_files::Sequence(flavor, {0x00, 0xFF}, {})},
+                  {BankOf(flavor, {})},
+                  {sar_files::Group(flavor, {{2, BankOf(flavor, {})}, {4, BankOf(flavor, {0})}})},
+                  {.group_only = true},
+                  {BankOf(flavor, {0})}};
+
+    return sar_files::Archive(flavor, spec);
+}
+
+// A file whose place lies inside a group's file keeps only its bytes when the group's file goes. When the group's file
+// stays, every file whose place lies inside it keeps its place there, whether the group lists the file or not.
+void TestKeepFileInGroup()
+{
+    for (const Console& console : kConsoles)
+    {
+        std::vector<uint8_t> bytes = FileInGroup(console.flavor);
+        const std::string name = console.name;
+        if (!Check(PlaceInGroup(bytes, console.flavor, 2, 3) && PlaceInGroup(bytes, console.flavor, 5, 3),
+                   name + ": the places of BANK_A and BANK_C lie in GROUP_A's file"))
+        {
+            continue;
+        }
+
+        const sar::SoundArchive archive = sar::SoundArchive::Load(bytes, StrictRules(console.flavor));
+        const auto in_group = [](const sar::SoundArchive& from)
+        {
+            return from.FileOffset(2) && from.FileOffset(3) ? *from.FileOffset(2) - *from.FileOffset(3) : 0;
+        };
+
+        const std::optional<sar::SoundArchive> a = CutOf(archive, {0});
+        const std::optional<sar::SoundArchive> b = CutOf(archive, {1});
+
+        Check(in_group(archive) > 0, name + ": BANK_A lies inside GROUP_A's file");
+        Check(a && HoldsOnly(archive, *a, {0, 2}) && Aligned(*a, {0, 2}, console.alignment),
+              name + ": BANK_A goes without GROUP_A's file");
+        Check(b && HoldsOnly(archive, *b, {1, 2, 3, 4, 5}) && in_group(*b) == in_group(archive),
+              name + ": BANK_B comes with GROUP_A's file, and BANK_A and BANK_C keep their places inside it");
+        Check(a && b && a->Bytes().size() < b->Bytes().size(), name + ": the cut without the group is smaller");
+    }
+}
+
+// A truncated archive: its last two files, WARC_C and the wave sound's file, end past the archive's end. The cut drops
+// their places. The cut isn't truncated.
+void TestKeepFromTruncatedArchive()
+{
+    for (const Console& console : kConsoles)
+    {
+        std::vector<uint8_t> bytes = ThreeSequences(console.flavor);
+        bytes.resize(bytes.size() - 120);
+        const sar::SoundArchive archive = sar::SoundArchive::Load(bytes, StrictRules(console.flavor));
+        const std::string name = console.name;
+
+        const std::optional<sar::SoundArchive> a = CutOf(archive, {0});
+
+        Check(archive.Truncated() && archive.FileData(8).empty() && archive.FileData(9).empty(),
+              name + ": the archive is truncated");
+        Check(a && HoldsOnly(archive, *a, {0, 3, 6}), name + ": SEQ_A's files from it");
+    }
+}
+
+// An archive whose sequence plays a bank that can't be read: the bank's file holds 64 bytes that count up.
+std::vector<uint8_t> UnreadableBank(sar::Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ", .file = 0, .player = 0, .banks = {0}}};
+    spec.banks = {{"BANK", 1}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{sar_files::Sequence(flavor, {0xFF}, {})}, {Filler(64, 5)}};
+
+    return sar_files::Archive(flavor, spec);
+}
+
+// Without sounds, the cut keeps no file. Its FILE block then ends on the first multiple of the alignment after the
+// block's size. A sound that isn't a sequence, or a bank that can't be read, gives no cut.
+void TestKeepNothing()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(ThreeSequences(console.flavor), StrictRules(console.flavor));
+        const sar::SoundArchive unreadable_bank =
+            sar::SoundArchive::Load(UnreadableBank(console.flavor), StrictRules(console.flavor));
+        const std::string name = console.name;
+
+        const std::optional<sar::SoundArchive> none = CutOf(archive, {});
+
+        Check(none && HoldsOnly(archive, *none, {}) && none->Bytes().size() % console.alignment == 0,
+              name + ": a cut without sounds");
+        Check(!rip::KeepSequenceData(archive, std::vector<uint32_t>{3}), name + ": no cut for a wave sound");
+        Check(!rip::KeepSequenceData(archive, std::vector<uint32_t>{0, 4}), name + ": no cut for a sound past the end");
+        Check(!rip::KeepSequenceData(unreadable_bank, std::vector<uint32_t>{0}),
+              name + ": no cut with a bank that can't be read");
+    }
+}
+
+// Moves the place that the file table gives file `file` of `bytes`, an archive of `flavor`, to `to` bytes from the
+// archive's start. A negative `to` lies before the archive. The tools put every place in the INFO block. Returns false
+// when the file table's place isn't found.
+bool MovePlace(std::vector<uint8_t>& bytes, sar::Flavor flavor, uint32_t file, int64_t to)
+{
+    const sar::SoundArchive archive = sar::SoundArchive::Load(bytes, StrictRules(flavor));
+    const std::size_t file_block = Field32(bytes, flavor, FileBlockEntry(bytes, flavor) + 4);
+    const std::size_t files = file_block + 8;
+
+    // A place holds a reference's type, then the file's offset and its size. A file's entry refers to its place by the
+    // place's offset from the entry. The tables lie before the FILE block.
+    std::array<uint8_t, 8> offset_and_size{};
+    PutField32(offset_and_size, flavor, 0, static_cast<uint32_t>(*archive.FileOffset(file) - files));
+    PutField32(offset_and_size, flavor, 4, static_cast<uint32_t>(archive.FileData(file).size()));
+    const std::span<uint8_t> tables = std::span(bytes).first(file_block);
+    const auto found = std::ranges::search(tables, offset_and_size);
+    if (found.empty())
+    {
+        return false;
+    }
+
+    const auto place = static_cast<std::size_t>(found.begin() - tables.begin()) - 4;
+    for (std::size_t entry = 0; entry + 8 <= place; entry += 4)
+    {
+        if (Field16(bytes, flavor, entry) == 0x220C && entry + Field32(bytes, flavor, entry + 4) == place)
+        {
+            PutField32(bytes, flavor, entry + 4, static_cast<uint32_t>(to - static_cast<int64_t>(entry)));
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// A file table whose place for a file lies past the FILE block's start gives no cut. The cut holds the archive's bytes
+// up to the FILE block's files, then the files it keeps. The place for the wave sound's file would lie past its end.
+void TestKeepRefusesPlaceAmongFiles()
+{
+    for (const Console& console : kConsoles)
+    {
+        std::vector<uint8_t> bytes = ThreeSequences(console.flavor);
+        const std::string name = console.name;
+        const auto at_end = static_cast<int64_t>(bytes.size()) - 12;
+        if (!Check(MovePlace(bytes, console.flavor, 9, at_end),
+                   name + ": the wave sound's file has its place at the end"))
+        {
+            continue;
+        }
+
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(bytes, {console.flavor, {}, false, sar::Rules::kReadPastDamage});
+
+        Check(!rip::KeepSequenceData(archive, std::vector<uint32_t>{0}), name + ": no cut");
+    }
+}
+
+// A file table whose place for a file lies before the archive's start gives no cut either. The place for the wave
+// sound's file starts 4 bytes before the archive. Its offset and its size would be the archive's first 8 bytes, and the
+// cut would write them before its first byte.
+void TestKeepRefusesPlaceBeforeArchive()
+{
+    for (const Console& console : kConsoles)
+    {
+        std::vector<uint8_t> bytes = ThreeSequences(console.flavor);
+        const std::string name = console.name;
+        if (!Check(MovePlace(bytes, console.flavor, 9, -4), name + ": the wave sound's file has its place before it"))
+        {
+            continue;
+        }
+
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(bytes, {console.flavor, {}, false, sar::Rules::kReadPastDamage});
+
+        Check(!rip::KeepSequenceData(archive, std::vector<uint32_t>{0}), name + ": no cut");
+    }
+}
+
+// Whether `copy`, a game mode's copy of `archive` (KeepLoadedFiles with reads that end on multiples of 32 bytes), is
+// the archive with zeros in place of its FILE block's bytes, apart from those of the files `kept`. Each kept file keeps
+// its bytes, rounded out to multiples of 32 bytes from the archive's start. The builder starts each file on a multiple
+// of 32 bytes from the FILE block's files, where the tools start it on one from the archive's start. A kept file's
+// rounded bytes can therefore take in the edge of the next file. The copy has to read back with the archive's sounds
+// and files, and with the bytes of the kept files.
+bool ZerosAllBut(const sar::SoundArchive& archive, const std::vector<uint8_t>& copy, const std::set<uint32_t>& kept)
+{
+    const std::span<const uint8_t> bytes = archive.Bytes();
+    const sar::Flavor flavor = archive.ReadOptions().flavor;
+    const std::size_t entry = FileBlockEntry(bytes, flavor);
+    const std::size_t files = Field32(bytes, flavor, entry + 4) + 8;
+    const std::size_t end = std::min<std::size_t>(files - 8 + Field32(bytes, flavor, entry + 8), bytes.size());
+    std::vector<uint8_t> expected(bytes.begin(), bytes.end());
+    std::fill(expected.begin() + static_cast<std::ptrdiff_t>(files),
+              expected.begin() + static_cast<std::ptrdiff_t>(end), uint8_t{0});
+    for (const uint32_t file : kept)
+    {
+        const std::optional<std::size_t> offset = archive.FileOffset(file);
+        if (!offset)
+        {
+            return false;
+        }
+
+        const std::size_t start = *offset / 32 * 32;
+        const std::size_t stop = std::min((*offset + archive.FileData(file).size() + 31) / 32 * 32, bytes.size());
+        std::copy(bytes.begin() + static_cast<std::ptrdiff_t>(start), bytes.begin() + static_cast<std::ptrdiff_t>(stop),
+                  expected.begin() + static_cast<std::ptrdiff_t>(start));
+    }
+
+    // The zeros in place of the groups' files aren't group files. The copy reads back by the rules that read past
+    // damage.
+    sar::Options past_damage = archive.ReadOptions();
+    past_damage.rules = sar::Rules::kReadPastDamage;
+    const sar::SoundArchive read = sar::SoundArchive::Load(copy, past_damage);
+    bool holds = copy == expected && copy != std::vector<uint8_t>(bytes.begin(), bytes.end()) &&
+                 read.Sounds().size() == archive.Sounds().size() && read.FileCount() == archive.FileCount();
+    for (const uint32_t file : kept)
+    {
+        holds = holds && std::ranges::equal(read.FileData(file), archive.FileData(file));
+    }
+
+    return holds;
+}
+
+// A game mode's copy keeps each sequence's file and the files of its banks and of their wave archives, each up to the
+// first multiple of 32 bytes after its end. It zeros the other files, the wave sound's file among them. A bank or wave
+// archive that two sequences play is kept once. An empty slot keeps nothing.
+void TestKeepLoadedFiles()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(ThreeSequences(console.flavor), StrictRules(console.flavor));
+        const std::string name = console.name;
+        const auto copy = [&archive](const std::vector<uint32_t>& sounds)
+        {
+            return rip::KeepLoadedFiles(archive, sounds, 32);
+        };
+
+        const std::optional<std::vector<uint8_t>> a = copy({0});
+        const std::optional<std::vector<uint8_t>> b = copy({1});
+        const std::optional<std::vector<uint8_t>> a_and_c = copy({2, 0});
+        const std::optional<std::vector<uint8_t>> all = copy({0, 1, 2});
+
+        Check(a && ZerosAllBut(archive, *a, {0, 3, 6}), name + ": SEQ_A's files");
+        Check(b && ZerosAllBut(archive, *b, {1, 4, 6, 7}), name + ": SEQ_B's files");
+        Check(a_and_c && ZerosAllBut(archive, *a_and_c, {0, 2, 3, 5, 6, 8}), name + ": the files of SEQ_A and SEQ_C");
+        Check(all && ZerosAllBut(archive, *all, {0, 1, 2, 3, 4, 5, 6, 7, 8}), name + ": the files of every sequence");
+    }
+}
+
+// A sound that isn't a sequence, a sound past the end, a bank that can't be read, a bank that only a group's file holds
+// and a wave archive past a truncated archive's end each give no copy. A bank with a place of its own gives one, with
+// zeros in place of the groups' files. So does a sequence of a truncated archive whose files lie before its end.
+void TestKeepLoadedFilesRefuses()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::SoundArchive archive =
+            sar::SoundArchive::Load(ThreeSequences(console.flavor), StrictRules(console.flavor));
+        const sar::SoundArchive unreadable_bank =
+            sar::SoundArchive::Load(UnreadableBank(console.flavor), StrictRules(console.flavor));
+        const sar::SoundArchive groups =
+            sar::SoundArchive::Load(GroupsInArchive(console.flavor), StrictRules(console.flavor));
+        std::vector<uint8_t> cut_short = ThreeSequences(console.flavor);
+        cut_short.resize(cut_short.size() - 120);
+        const sar::SoundArchive truncated = sar::SoundArchive::Load(cut_short, StrictRules(console.flavor));
+        const std::string name = console.name;
+        const auto copy = [](const sar::SoundArchive& from, const std::vector<uint32_t>& sounds)
+        {
+            return rip::KeepLoadedFiles(from, sounds, 32);
+        };
+
+        const std::optional<std::vector<uint8_t>> seq_b = copy(groups, {1});
+        const std::optional<std::vector<uint8_t>> seq_a_truncated = copy(truncated, {0});
+
+        Check(!copy(archive, {3}), name + ": no copy for a wave sound");
+        Check(!copy(archive, {0, 4}), name + ": no copy for a sound past the end");
+        Check(!copy(unreadable_bank, {0}), name + ": no copy with a bank that can't be read");
+        Check(!copy(groups, {0}), name + ": no copy with a bank that only a group's file holds");
+        Check(seq_b && ZerosAllBut(groups, *seq_b, {1, 5}), name + ": SEQ_B's files, and zeros for the groups' files");
+        Check(truncated.Truncated() && !copy(truncated, {2}), name + ": no copy with a wave archive past the end");
+        Check(seq_a_truncated && ZerosAllBut(truncated, *seq_a_truncated, {0, 3, 6}),
+              name + ": SEQ_A's files from the truncated archive");
+    }
+}
+
 } // namespace
 
 int main()
@@ -237,6 +856,16 @@ int main()
     TestItems();
     TestArchive();
     TestGroupsInSarcs();
+    TestKeepSequenceData();
+    TestKeepGroupsInArchive();
+    TestKeepGroupFilesBeside();
+    TestKeepFileInGroup();
+    TestKeepFromTruncatedArchive();
+    TestKeepNothing();
+    TestKeepRefusesPlaceAmongFiles();
+    TestKeepRefusesPlaceBeforeArchive();
+    TestKeepLoadedFiles();
+    TestKeepLoadedFilesRefuses();
 
     return xsflib::testing::Summary("rip_archive");
 }

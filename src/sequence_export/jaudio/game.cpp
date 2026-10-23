@@ -8,7 +8,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -62,7 +64,27 @@ GameRules RulesOf(const std::string& archive_sha1)
     // Four Swords Adventures: the SHA-1s of the USA release's and the Japanese release's start-up archives.
     constexpr std::array<std::string_view, 2> kFourSwordsAdventures{"8c55097f2cc9f5800fd8ab96da4e3b09727e0a39",
                                                                     "aab07cea25ba957374524c4f29d36b72e6d36a67"};
+    // The Wind Waker: the SHA-1s of the USA release's start-up archive on the GameCube and in The Wind Waker HD.
+    constexpr std::array<std::string_view, 2> kWindWaker{"65ea70655099a196e0707bf4e4ce61e7818553d9",
+                                                         "c66c0103a5c7c1292b5fc6c3371ed1458035cde7"};
     GameRules rules;
+    if (std::ranges::find(kWindWaker, archive_sha1) != kWindWaker.end())
+    {
+        // JAIZelBasic::init (0x802a9664 in the GameCube's main.dol) gives the eight categories of effects their
+        // volumes, over 127 (JAIBasic::setSeCategoryVolume). The categories hold mostly system sounds (0x70), Link's
+        // voice (0x7f), his movements (0x70), his footsteps (0x68), other characters' voices (0x70) and movements
+        // (0x70), objects (0x68) and the surroundings (0x68).
+        constexpr std::array<uint8_t, 8> kVolumes{0x70, 0x7f, 0x70, 0x68, 0x70, 0x70, 0x68, 0x68};
+        for (std::size_t category = 0; category < kVolumes.size(); category++)
+        {
+            if (kVolumes[category] != 0x7f)
+            {
+                rules.category_volumes[static_cast<uint8_t>(category)] =
+                    static_cast<float>(kVolumes[category]) / 127.0f;
+            }
+        }
+    }
+
     if (std::ranges::find(kFourSwordsAdventures, archive_sha1) != kFourSwordsAdventures.end())
     {
         // The game plays its system sounds, category 0, at a volume of 0.7 in each of its sound modes. The other
@@ -83,12 +105,20 @@ GameRules RulesOf(const std::string& archive_sha1)
         // returns the halfword at 0x80539bd0. The game mixes each voice at twice its samples times the mixer volume in
         // 32768ths.
         rules.echo = EchoLine{64, 0x3fff / 32768.0f, 0x6000 / 32768.0f, 2.0f * 12000.0f / 32768.0f};
+
+        // When the game starts JA_BGM_SELECT (0x0100001a) as its music, the function at 0x80459674 in the USA
+        // release's main.dol calls JASTrack::mute (0x80037f1c) on the children of the piece's track 0 just after
+        // startSound. It mutes all of them but 0.2 and 0.7. 0x80458ff0 does the same. The Japanese release does it
+        // too.
+        TrackMask select = kEveryTrack;
+        select[0] = 1u << 2 | 1u << 7;
+        rules.tracks[0x0100001a] = select;
     }
 
     return rules;
 }
 
-Game Game::FromFolder(const fs::path& baa, const std::string& program)
+Game Game::FromFolder(const fs::path& baa, const std::string& program, const GameOptions& options)
 {
     std::vector<uint8_t> bytes;
     if (!xsflib::ReadFile(baa, bytes))
@@ -97,6 +127,7 @@ Game Game::FromFolder(const fs::path& baa, const std::string& program)
     }
 
     Game game;
+    game.options_ = options;
     game.OpenArchive(std::move(bytes));
 
     // The files in `where` with the extension `extension`, in the order of their names. AppleDouble files don't count.
@@ -173,9 +204,11 @@ Game Game::FromFolder(const fs::path& baa, const std::string& program)
     return game;
 }
 
-std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles> disc, const std::string& program)
+std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles> disc, const std::string& program,
+                                        const GameOptions& options)
 {
     Game game;
+    game.options_ = options;
     game.disc_ = std::move(disc);
 
     // The disc's files in the order of its file table.
@@ -318,10 +351,21 @@ void Game::FindSequences()
     // sequence archive at the start of its file.
     std::vector<bool> played(sequence_files_.size());
     std::map<uint16_t, uint8_t> unnamed; // the volume of the first JAudio1 sound that plays each file
+    const auto effects = std::find_if(sequence_files_.begin(), sequence_files_.end(),
+                                      [&](const ArchiveFile& f) { return jaudio1_ && f.id == effects_file_; });
+    std::vector<SequenceSound> effect_sounds; // they come last, and the other sequences keep their places
     for (const SoundEntry& s : archive_->Sounds())
     {
+        // A JAudio1 game's effects play in its effects sequence.
+        const bool effect = jaudio1_ && (s.Id() & ntdlib::jaudio::kAafTypeMask) == ntdlib::jaudio::kAafEffect;
+        if (effect && options_.jaudio1_effects && effects != sequence_files_.end())
+        {
+            effect_sounds.push_back(EffectSound(s, effects->data));
+            continue;
+        }
+
         // A stream plays an audio file from the disc, not a sequence. A JAudio1 game's effects play in its effects
-        // sequence.
+        // sequence. Without GameOptions::jaudio1_effects, or without that sequence, they're left out here.
         if ((jaudio1_ && s.source != SoundEntry::Source::kArchive) || (!jaudio1_ && LayoutOf(s.type).stream))
         {
             continue;
@@ -335,6 +379,11 @@ void Game::FindSequences()
         seq.default_release = rules_.default_release;
         seq.echo = rules_.echo;
         seq.jaudio1 = jaudio1_;
+        const auto tracks = rules_.tracks.find(s.Id());
+        if (tracks != rules_.tracks.end())
+        {
+            seq.tracks = tracks->second;
+        }
         if (s.source == SoundEntry::Source::kCollection)
         {
             const std::optional<uint32_t> start = archive_->CollectionSequence(s.group, s.resource);
@@ -404,6 +453,54 @@ void Game::FindSequences()
             sequences_.push_back(std::move(seq));
         }
     }
+
+    std::ranges::move(effect_sounds, std::back_inserter(sequences_));
+}
+
+SequenceSound Game::EffectSound(const SoundEntry& s, std::span<const uint8_t> sequence) const
+{
+    // The first slot of the effect's category, with JAudio1's default table of categories: four slots each
+    // (JAInter::Const::sCInfos_0). Only the slot's track plays.
+    constexpr uint32_t kSlotsPerCategory = 4;
+    const uint32_t category = ntdlib::jaudio::AafCategory(s.Id());
+    const auto slot = static_cast<uint8_t>(kSlotsPerCategory * category);
+
+    // The name file gives some effects their IDs without bits 10 and 11. The game keeps such an effect going by
+    // starting it again (kAafToEnd).
+    constexpr uint32_t kLengthBits = 0xc00;
+    SequenceSound seq;
+    auto named = names_.find(s.Id());
+    if (named == names_.end())
+    {
+        named = names_.find(s.Id() & ~kLengthBits);
+    }
+    if (named != names_.end())
+    {
+        seq.name = named->second;
+    }
+    else
+    {
+        std::array<char, 16> name{};
+        std::snprintf(name.data(), name.size(), "se%u-%04u", category, s.Id() & ntdlib::jaudio::kAafIndexMask);
+        seq.name = name.data();
+    }
+
+    seq.data = sequence;
+    seq.volume = static_cast<float>(s.volume) / 127.0f;
+    const auto volume = rules_.category_volumes.find(static_cast<uint8_t>(category));
+    if (volume != rules_.category_volumes.end())
+    {
+        seq.volume *= volume->second;
+    }
+    seq.pitch = s.pitch;
+    seq.default_release = rules_.default_release;
+    seq.echo = rules_.echo;
+    seq.jaudio1 = true;
+    seq.tracks.fill(0);
+    seq.tracks[slot >> 4] = static_cast<uint16_t>(1u << (slot & 15));
+    seq.effect = EffectStart{.slot = slot, .number = static_cast<uint16_t>(s.resource)};
+
+    return seq;
 }
 
 std::optional<std::vector<uint8_t>> Game::ReadWaveArchive(const std::string& name) const

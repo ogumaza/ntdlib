@@ -89,7 +89,8 @@ Conversion GameInput::Convert(std::size_t index, const PerformOptions& perform, 
 }
 
 GameConverter MakeGameConverter(const std::string& program, const std::string& version_line,
-                                OptionHandler<PerformOptions> option, std::function<void()> usage)
+                                OptionHandler<PerformOptions> option, std::function<void()> usage,
+                                const GameOptions& game_options)
 {
     GameConverter converter;
     converter.program = program;
@@ -99,9 +100,9 @@ GameConverter MakeGameConverter(const std::string& program, const std::string& v
     converter.samples_folder = kSfzSamplesFolder;
     converter.usage = std::move(usage);
     converter.option = std::move(option);
-    converter.open = [program](const std::filesystem::path& input, const std::string& name)
+    converter.open = [program, game_options](const std::filesystem::path& input, const std::string& name)
     {
-        return Opened(Game::FromFolder(input, program), name);
+        return Opened(Game::FromFolder(input, program, game_options), name);
     };
     converter.sequences = [](const std::unique_ptr<GameInput>& input)
     {

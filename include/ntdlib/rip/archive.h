@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // The archive mode's parts of rip tools for the Wii U's and the Switch's sound archives: the sounds to rip, the data a
-// sound requires, the groups kept outside an archive, and the libraries and minis a rip writes. A format gives its
-// types through a traits struct (see Format below). The messages are the same for every format. The length analysis and
-// its timing helpers are in xsflib (xsflib/rip/length.h).
+// sound requires, the groups kept outside an archive, the part of an archive that a library holds, and the libraries
+// and minis a rip writes. Rips of the 3DS's sound archives take the part of an archive and the minis from here too. So
+// do the game modes, for the archive that their libraries hold. A format gives its types through a traits struct (see
+// Format below). The messages are the same for every format. The length analysis and its timing helpers are in xsflib
+// (xsflib/rip/length.h).
 
 #pragma once
 
@@ -15,6 +17,7 @@
 #include <functional>
 #include <optional>
 #include <regex>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -168,6 +171,49 @@ std::vector<FileChunk> FindGroups(
 
     return groups;
 }
+
+// The part of a sound archive that a library holds: the archive's bytes, and the group files beside the archive that
+// the library holds too, by their places among the archive's group files (SoundArchive::GroupFiles).
+struct LibraryArchive
+{
+    std::vector<uint8_t> archive;
+    std::vector<std::size_t> group_files;
+};
+
+// The part of `archive` that a library of the sequence sounds `sounds` holds. `archive` holds the group files that the
+// rip plays with. The archive mode's models read only the files that a sequence plays: its sequence file, the files of
+// the banks in its slots, and the files of the wave archives that those banks name. A file that the archive holds only
+// as a copy in a group's file is read from the first group's file that holds it, in the archive or beside it.
+//
+// The library's archive keeps those files, and the group files in the archive that hold the copies that the models
+// read. It drops every other file. The header, the STRG block and the INFO block keep their places and their bytes,
+// but for three things: the archive's size, the FILE block's size and the places that the file table gives. The FILE
+// block holds the kept bytes in the archive's order, laid out as NintendoWare's tools lay out a FILE block
+// (ntdlib/sar/tables.h). A file whose bytes lie inside the kept bytes keeps its place there. A dropped file has no
+// place. The tools write the place of a file that only groups hold the same way. The library keeps the group files
+// beside the archive that hold the copies that the models read, in their order.
+//
+// Each kept file is read back from the library's archive and compared with the file in `archive`. Nothing when the two
+// differ, when a bank can't be read, when one of `sounds` isn't a sequence sound of the archive, when the FILE block
+// doesn't follow the archive's other blocks, or when the file table puts a file's place among the FILE block's files or
+// before the archive's start. The library then holds the whole archive.
+std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive, std::span<const uint32_t> sounds);
+
+// The archive that a game mode's library holds for the sequence sounds `sounds`. The game's sound library reads the
+// archive's header and its INFO block. For each sound that it loads, it then reads the files that the sound plays: the
+// sequence file, the files of the banks in its slots and the files of the wave archives that those banks name. It reads
+// each file at the place that the file table gives. A read ends on a multiple of `read_alignment` bytes from the
+// archive's start. A wave archive whose waves load one by one is read in parts, within the same bytes.
+//
+// The copy keeps the archive's bytes outside the FILE block's files. In the FILE block, it keeps the bytes of each file
+// that the sounds play, rounded out to multiples of `read_alignment` bytes. The block's other bytes are zeros. The copy
+// keeps the archive's size and its layout. The game therefore reads the same bytes in the same places. Each kept file
+// is read back from the copy and compared with the file in `archive`. Nothing when one of `sounds` isn't a sequence
+// sound of the archive, when a bank can't be read, when the FILE block doesn't follow the archive's other blocks, when
+// a file that the sounds play has no bytes of its own in the FILE block, or when a kept file reads back differently.
+// The library then holds the whole archive.
+std::optional<std::vector<uint8_t>> KeepLoadedFiles(const sar::SoundArchive& archive, std::span<const uint32_t> sounds,
+                                                    std::size_t read_alignment);
 
 // A format's traits for the libraries and minis a rip writes:
 //

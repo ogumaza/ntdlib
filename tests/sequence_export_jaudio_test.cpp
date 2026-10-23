@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -833,6 +834,55 @@ void TestDefaultKeepsEveryNote()
           "with --voices 64, six notes are cut as in the game");
 }
 
+// The ticks of the note-ons on `perf`'s MIDI track named `name`.
+std::vector<uint32_t> NoteTicks(const Performance& perf, const std::string& name)
+{
+    std::vector<uint32_t> ticks;
+    for (std::size_t slot = 0; slot < perf.tracks.size() && slot < perf.track_names.size(); slot++)
+    {
+        for (const TrackEvent& e : perf.tracks[slot])
+        {
+            if (perf.track_names[slot] == name && e.kind == EventKind::kNoteOn)
+            {
+                ticks.push_back(e.tick);
+            }
+        }
+    }
+
+    return ticks;
+}
+
+// A game can mute some children of a sound's track 0 before the sound's first tick (SequenceSound::tracks). Track 0
+// opens children 0, 1 and 2. Child 1 opens a child too. Each of the four plays a note at tick 0: child 1 a gate note,
+// the others a note with an ID. With child 1's bit clear, children 0 and 2 play, and child 1 and its child stay silent.
+// Track 0 opens child 1 again at tick 48. The open clears the mute, and both play then. Without a mask, every track
+// plays at tick 0.
+void TestMutedTracks()
+{
+    constexpr uint32_t kNote = kFirstSequence + 0x60;
+    constexpr uint32_t kOpener = kFirstSequence + 0x80;
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.OpenTrack(0, kNote).OpenTrack(1, kOpener).OpenTrack(2, kNote).Wait(48).OpenTrack(1, kOpener).Wait(100).Finish();
+    s.PadTo(kNote).Bank(0).Program(0).NoteOn(60, 1, 100).Wait(24).NoteOff(1).Finish();
+    s.PadTo(kOpener).OpenTrack(0, kNote).Bank(0).Program(0).Gate(64, 0x00, 100, 24).Finish();
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+    SequenceSound masked = game.Sound(0);
+    masked.tracks[0] = 0xffff & ~(1u << 1);
+
+    const Performance every = Perform(game.Sound(0), game.banks, {}, kProgram);
+    const Performance muted = Perform(masked, game.banks, {}, kProgram);
+
+    using Ticks = std::vector<uint32_t>;
+    Check(NoteTicks(every, "Track 0.0") == Ticks{0} && NoteTicks(every, "Track 0.2") == Ticks{0} &&
+              NoteTicks(every, "Track 0.1") == Ticks({0, 48}) && NoteTicks(every, "Track 0.1.0") == Ticks({0, 48}),
+          "without a mask, every track plays at tick 0, and child 1 and its child again at tick 48");
+    Check(NoteTicks(muted, "Track 0.0") == Ticks{0} && NoteTicks(muted, "Track 0.2") == Ticks{0},
+          "the children whose bits are set play");
+    Check(NoteTicks(muted, "Track 0.1") == Ticks{48} && NoteTicks(muted, "Track 0.1.0") == Ticks{48},
+          "child 1 and its child play only once track 0 opens child 1 again");
+}
+
 void TestConversion()
 {
     Sequence s;
@@ -961,23 +1011,27 @@ void TestFolderWithAppleDoubleFiles()
 }
 
 // Both releases of Four Swords Adventures play their system sounds, category 0, at 0.7, and release an oscillator
-// without a release over 0x10. Their echo repeats a sound every 64 sub-frames. Another game's start-up archive gets the
-// defaults.
+// without a release over 0x10. Their echo repeats a sound every 64 sub-frames. JA_BGM_SELECT (0x0100001a) plays only
+// children 2 and 7 of its track 0. Another game's start-up archive gets the defaults.
 void TestGameRules()
 {
     const GameRules usa = RulesOf("8c55097f2cc9f5800fd8ab96da4e3b09727e0a39");
     const GameRules japan = RulesOf("aab07cea25ba957374524c4f29d36b72e6d36a67");
     const GameRules other = RulesOf(std::string(40, '0'));
+    TrackMask select = kEveryTrack;
+    select[0] = 0x0084;
 
     Check(usa.category_volumes == std::map<uint8_t, float>{{0, 0.7f}}, "the USA release plays category 0 at 0.7");
     Check(usa.default_release == 0x10, "the USA release releases a bare oscillator over 0x10");
     Check(usa.echo && usa.echo->delay == 64 && usa.echo->feedback == 0x3fff / 32768.0f && usa.echo->volume == 0.75f &&
               usa.echo->voice_level == 0.732421875f,
           "the USA release's echo has a delay of 64 sub-frames, a filter of 0x3fff and a volume of 0x6000");
+    Check(usa.tracks == std::map<uint32_t, TrackMask>{{0x0100001a, select}},
+          "the USA release plays only children 2 and 7 of JA_BGM_SELECT's track 0");
     Check(japan.category_volumes == usa.category_volumes && japan.default_release == 0x10 && japan.echo &&
-              japan.echo->delay == 64,
+              japan.echo->delay == 64 && japan.tracks == usa.tracks,
           "the Japanese release has the same rules");
-    Check(other.category_volumes.empty() && other.default_release == 0 && !other.echo,
+    Check(other.category_volumes.empty() && other.default_release == 0 && !other.echo && other.tracks.empty(),
           "another game gets the defaults");
 }
 
@@ -1105,6 +1159,69 @@ public:
         return *this;
     }
 
+    // A call to the routine at entry n of the table of 24-bit offsets at `table`, where register `reg` holds n.
+    Sequence1& CallTable(uint32_t reg, uint32_t table)
+    {
+        b_.U8(0xc4).U8(0xc0).U8(reg).U24(table);
+
+        return *this;
+    }
+
+    Sequence1& Return()
+    {
+        b_.U8(0xc6).U8(0);
+
+        return *this;
+    }
+
+    // An entry of a table of offsets.
+    Sequence1& Offset(uint32_t offset)
+    {
+        b_.U24(offset);
+
+        return *this;
+    }
+
+    // Port `port`'s value goes to register `reg`.
+    Sequence1& ReadPort(uint32_t port, uint32_t reg)
+    {
+        b_.U8(0xcb).U8(port).U8(reg);
+
+        return *this;
+    }
+
+    // Register `reg`'s value goes to port `port`.
+    Sequence1& WritePort(uint32_t port, uint32_t reg)
+    {
+        b_.U8(0xcc).U8(port).U8(reg);
+
+        return *this;
+    }
+
+    // Volume mode `mode`: 0 squares the track's volume, and 1 plays it as it is.
+    Sequence1& VolumeMode(uint32_t mode)
+    {
+        b_.U8(0xf3).U8(mode);
+
+        return *this;
+    }
+
+    // The track's volume, in 32767ths.
+    Sequence1& Volume(uint32_t volume)
+    {
+        b_.U8(0x9c).U8(0).U16(volume);
+
+        return *this;
+    }
+
+    // Mix line `line` of the track's channels connects to `bus` (TTrack::connectBus).
+    Sequence1& BusConnect(uint32_t line, uint32_t bus)
+    {
+        b_.U8(0xdd).U8(line).U16(bus);
+
+        return *this;
+    }
+
     Sequence1& Finish()
     {
         b_.U8(0xff);
@@ -1211,9 +1328,222 @@ void TestJAudio1Registers()
     Check(play(9) == std::pair<std::size_t, std::size_t>(2, 0), "5 + 3 isn't 9: the track plays on");
 }
 
+// A track at half the volume. In volume mode 0, the game squares the volume, as CC7 does. In mode 1, the game plays the
+// volume as it is. CC7 then holds the volume's square root.
+void TestJAudio1VolumeMode()
+{
+    const auto cc7 = [](uint32_t mode)
+    {
+        Sequence1 s;
+        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+        s.VolumeMode(mode).Volume(0x4000).Bank(0).Program(0).NoteOn(60, 1, 100).Wait(24).NoteOff(1).Finish();
+        const Performance perf = PerformJAudio1(s.Data());
+
+        int volume = -1;
+        for (const TrackEvent& e : perf.tracks[0])
+        {
+            volume = e.kind == EventKind::kVolume ? e.value : volume;
+        }
+
+        return volume;
+    };
+
+    // 0x4000 is half of 32767. 127 times a half is 64, and 127 times the square root of a half is 90.
+    Check(cc7(0) == 64, "in volume mode 0, CC7 holds the track's volume");
+    Check(cc7(1) == 90, "in volume mode 1, CC7 holds the volume's square root");
+}
+
+// The CC11 values of the MIDI track that plays `key`, in order.
+std::vector<int> ExpressionOf(const Performance& perf, uint32_t key)
+{
+    for (const std::vector<TrackEvent>& track : perf.tracks)
+    {
+        std::vector<int> values;
+        bool plays = false;
+        for (const TrackEvent& e : track)
+        {
+            plays = plays || (e.kind == EventKind::kNoteOn && e.key == key);
+            if (e.kind == EventKind::kExpression)
+            {
+                values.push_back(e.value);
+            }
+        }
+        if (plays)
+        {
+            return values;
+        }
+    }
+
+    return {};
+}
+
+// Track 0 connects its mix line 0 to 0xffff: the DSP's automatic mixer, which plays its notes at half the level. Its
+// child 0 opens with the default lines. Its child 1, opened in mode 4, plays on track 0's channels. Track 1 connects
+// only mix line 1. Track 2 connects line 0 to 0xffff and back to the default, 0x150, before its note.
+void TestJAudio1AutoMixer()
+{
+    constexpr uint32_t kTrack0 = kChild;
+    constexpr uint32_t kTrack1 = kTrack0 + 0x40;
+    constexpr uint32_t kTrack2 = kTrack1 + 0x40;
+    constexpr uint32_t kChild0 = kTrack2 + 0x40;
+    constexpr uint32_t kChild1 = kChild0 + 0x40;
+
+    Sequence1 s;
+    s.OpenTrack(0, kTrack0).OpenTrack(1, kTrack1).OpenTrack(2, kTrack2).Timebase(48).Tempo(120).Wait(200).Finish();
+    s.PadTo(kTrack0);
+    s.BusConnect(0, 0xffff).Bank(0).Program(0).OpenTrack(0, kChild0).OpenTrack(0x20 | 1, kChild1);
+    s.NoteOn(60, 1, 100).Wait(24).NoteOff(1).Finish().PadTo(kTrack1);
+    s.BusConnect(1, 0xffff).Bank(0).Program(0).NoteOn(62, 1, 100).Wait(24).NoteOff(1).Finish().PadTo(kTrack2);
+    s.BusConnect(0, 0xffff).BusConnect(0, 0x150).Bank(0).Program(0).NoteOn(64, 1, 100).Wait(24).NoteOff(1).Finish();
+    s.PadTo(kChild0);
+    s.Bank(0).Program(0).NoteOn(65, 1, 100).Wait(24).NoteOff(1).Finish().PadTo(kChild1);
+    s.Bank(0).Program(0).NoteOn(67, 1, 100).Wait(24).NoteOff(1).Finish();
+
+    const Performance perf = PerformJAudio1(s.Data());
+
+    // CC11 acts squared. Half the level is 127 times the square root of a half: 90.
+    Check(ExpressionOf(perf, 60) == std::vector<int>{90}, "the automatic mixer plays track 0 at half the level");
+    Check(ExpressionOf(perf, 62) == std::vector<int>{127}, "mix line 1 leaves the level alone");
+    Check(ExpressionOf(perf, 64) == std::vector<int>{127}, "back on the default line, the level is whole");
+    Check(ExpressionOf(perf, 65) == std::vector<int>{127}, "a child doesn't take its parent's lines");
+    Check(ExpressionOf(perf, 67) == std::vector<int>{90}, "a child in mode 4 plays on its parent's channels");
+}
+
+// An effects sequence with slots as The Wind Waker's has them. The first track opens track 0, which holds category 0's
+// slots, and waits. That track opens slots 0, 1 and 4 and waits. A slot writes 0 to its ports 0 and 2 and reads port 0
+// each tick. Once port 0 holds 1, the slot writes 2 to ports 0 and 2 and calls the routine of the effect that port 4
+// names. On the routine's return, it writes 0 to port 2 and reads port 0 again. Effect 0 plays key 60 for 24 ticks.
+// Effect 1 plays key 64 for 48 ticks, or key 67 if port 6 holds 7. Effect 2 plays key 72 for 24 ticks of every 48, for
+// ever.
+std::vector<uint8_t> EffectsSequence()
+{
+    constexpr uint32_t kSlots = kChild;
+    constexpr uint32_t kSlot = kSlots + 0x20;
+    constexpr uint32_t kStart = kSlot + 0x20;
+    constexpr uint32_t kRoutines = kStart + 0x20;
+    constexpr uint32_t kEffect0 = kRoutines + 0x10;
+    constexpr uint32_t kEffect1 = kEffect0 + 0x20;
+    constexpr uint32_t kEffect1Port = kEffect1 + 0x20;
+    constexpr uint32_t kEffect2 = kEffect1Port + 0x20;
+
+    Sequence1 s;
+    s.Timebase(48).OpenTrack(0, kSlots).Tempo(120);
+    const uint32_t first = s.Here();
+    s.Wait(255).Jump(0, first).PadTo(kSlots);
+    s.OpenTrack(0, kSlot).OpenTrack(1, kSlot).OpenTrack(4, kSlot);
+    const uint32_t slots = s.Here();
+    s.Wait(255).Jump(0, slots).PadTo(kSlot);
+    s.Register(0, 0, 0).WritePort(0, 0).WritePort(2, 0);
+    const uint32_t poll = s.Here();
+    s.ReadPort(0, 0).Jump(3, kStart).Wait(1).Jump(0, poll).PadTo(kStart);
+    s.Register(0, 0, 2).WritePort(0, 0).WritePort(2, 0).ReadPort(4, 4).CallTable(4, kRoutines);
+    s.Register(0, 0, 0).WritePort(2, 0).Jump(0, poll).PadTo(kRoutines);
+    s.Offset(kEffect0).Offset(kEffect1).Offset(kEffect2).PadTo(kEffect0);
+    s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(24).NoteOff(1).Return().PadTo(kEffect1);
+    s.Bank(0).Program(0).ReadPort(6, 5).Register(3, 5, 7).Jump(1, kEffect1Port);
+    s.NoteOn(64, 1, 100).Wait(48).NoteOff(1).Return().PadTo(kEffect1Port);
+    s.NoteOn(67, 1, 100).Wait(48).NoteOff(1).Return().PadTo(kEffect2);
+    s.Bank(0).Program(0);
+    const uint32_t again = s.Here();
+    s.NoteOn(72, 1, 100).Wait(24).NoteOff(1).Wait(24).Jump(0, again);
+
+    return s.Data();
+}
+
+// Play effect `number` of EffectsSequence in slot `slot`, with `ports` and at `pitch`, as Game lists an effect: only
+// the slot's track plays.
+Performance PerformEffect(uint8_t slot, uint16_t number, const std::map<uint8_t, uint16_t>& ports = {},
+                          float pitch = 1.0f)
+{
+    TestGame game(files::BankV0File(0, 60), {EffectsSequence()});
+    SequenceSound sound = game.Sound(0);
+    sound.jaudio1 = true;
+    sound.pitch = pitch;
+    sound.tracks.fill(0);
+    sound.tracks[slot >> 4] = static_cast<uint16_t>(1u << (slot & 15));
+    sound.effect = EffectStart{slot, number};
+    PerformOptions options;
+    options.ports = ports;
+
+    return Perform(sound, game.banks, options, kProgram);
+}
+
+// The keys of a performance's note-ons, and the ticks of the note-ons and note-offs, over its MIDI tracks.
+std::pair<std::set<uint32_t>, std::vector<uint32_t>> EffectNotes(const Performance& perf)
+{
+    std::set<uint32_t> keys;
+    std::vector<uint32_t> ticks;
+    for (const std::vector<TrackEvent>& track : perf.tracks)
+    {
+        for (const TrackEvent& e : track)
+        {
+            if (e.kind == EventKind::kNoteOn)
+            {
+                keys.insert(e.key);
+            }
+            if (e.kind == EventKind::kNoteOn || e.kind == EventKind::kNoteOff)
+            {
+                ticks.push_back(e.tick);
+            }
+        }
+    }
+    std::ranges::sort(ticks);
+
+    return {keys, ticks};
+}
+
+// The game's sound library starts an effect in its slot (JAISeMgr::checkPlayingSe): it writes the slot's ports 3, 6, 4
+// and 0 once the slot has opened. The slot then plays the effect from the next tick. The performance ends when the slot
+// is free again. The other slots play nothing.
+void TestJAudio1Effects()
+{
+    const Performance first = PerformEffect(0, 0);
+    Check(EffectNotes(first) == std::pair(std::set<uint32_t>{60}, std::vector<uint32_t>{1, 25}),
+          "effect 0 plays key 60 from the tick after the start");
+    Check(!first.loop && first.seconds < 2.0 && first.warnings.empty(), "the effect ends when its slot is free");
+
+    Check(EffectNotes(PerformEffect(1, 1)) == std::pair(std::set<uint32_t>{64}, std::vector<uint32_t>{1, 49}),
+          "effect 1 plays key 64 in slot 1");
+
+    // A value for port 6 stands for the map's information. The library's values for ports 0 and 4 win.
+    Check(EffectNotes(PerformEffect(0, 1, {{6, 7}})).first == std::set<uint32_t>{67}, "port 6 picks effect 1's key 67");
+    Check(EffectNotes(PerformEffect(0, 1, {{0, 5}, {4, 2}})).first == std::set<uint32_t>{64},
+          "the library writes ports 0 and 4");
+
+    // The sound table's pitch moves every note as a bend does: twice the pitch is 12 semitones up.
+    const Performance higher = PerformEffect(0, 0, {}, 2.0f);
+    const auto bent = [&higher]
+    {
+        for (const std::vector<TrackEvent>& track : higher.tracks)
+        {
+            for (const TrackEvent& e : track)
+            {
+                if (e.kind == EventKind::kPitch && std::abs(e.semitones - 12.0) < 1e-4)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    };
+    Check(EffectNotes(higher) == EffectNotes(first) && bent(), "a pitch of 2 bends the effect up an octave");
+
+    // An effect that loops loops. The slots that poll their ports don't count.
+    const Performance looped = PerformEffect(4, 2);
+    Check(EffectNotes(looped).first == std::set<uint32_t>{72} && looped.loop.has_value(), "effect 2 loops in slot 4");
+
+    // Slot 8 would be child 8 of the first track's child 0. The sequence never opens it.
+    const Performance none = PerformEffect(8, 0);
+    Check(EffectNotes(none).first.empty() && none.warnings.size() == 1 &&
+              none.warnings[0] == "the effects sequence opens no track for slot 8: the effect plays nothing",
+          "an effect whose slot never opens plays nothing");
+}
+
 // A JAudio1 game's folder: the start-up archive (test.aaf) and its sequence archive in Seqs. The sound table's first
 // sequence, the effects sequence, plays file 7. The music plays files 3 and 9. Two more sounds play file 3 again at the
-// same volume and file 9 at another volume. File 11 is played by no sound.
+// same volume and file 9 at another volume. File 11 is played by no sound. The table has an effect in category 0 and
+// two in category 2.
 void TestJAudio1Folder()
 {
     namespace fs = std::filesystem;
@@ -1221,13 +1551,16 @@ void TestJAudio1Folder()
         fs::temp_directory_path() / ("sequence_export_jaudio1_test_" + std::to_string(std::random_device{}()));
     fs::create_directories(folder / "Seqs");
     const std::vector<uint8_t> music = Sequence1(0).Tempo(120).Finish().Data();
+    const std::vector<uint8_t> effects = Sequence1(0).Tempo(150).Finish().Data();
     xsflib::WriteFile(
         folder / "test.aaf",
-        files::AafFile({{16, 127, 7}, {16, 100, 3}, {16, 90, 9}, {16, 100, 3}, {16, 60, 9}, {0, 80}}, {"test.aw"}));
+        files::AafFile(
+            {{16, 127, 7}, {16, 100, 3}, {16, 90, 9}, {16, 100, 3}, {16, 60, 9}, {0, 80}, {2, 100}, {2, 90, 0, 1.25f}},
+            {"test.aw"}));
     xsflib::WriteFile(
         folder / "Seqs" / "test.arc",
         files::RarcFile(
-            {{7, "effects.bms", music}, {3, "field.bms", music}, {9, "boss.bms", music}, {11, "unused.bms", music}}));
+            {{7, "effects.bms", effects}, {3, "field.bms", music}, {9, "boss.bms", music}, {11, "unused.bms", music}}));
 
     const auto names = [](const Game& game)
     {
@@ -1249,20 +1582,49 @@ void TestJAudio1Folder()
     Check(plain.Sequences().size() == 4 && std::abs(plain.Sequences()[1].volume - 90.0f / 127.0f) < 1e-6f,
           "a sound plays at the volume of its entry");
 
-    // A name file beside the archive names the sounds by their IDs.
-    std::vector<uint8_t> asn(16 + 20 * 32);
-    xsflib::StoreBe32(asn.data() + 12, 2);
-    const std::string kField = "JA_BGM_FIELD";
-    const std::string kBoss = "JA_BGM_BOSS_2";
-    std::copy(kField.begin(), kField.end(), asn.begin() + 16 + 18 * 32);
-    xsflib::StoreBe32(asn.data() + 16 + 18 * 32 + 28, 0x80000001);
-    std::copy(kBoss.begin(), kBoss.end(), asn.begin() + 16 + 19 * 32);
-    xsflib::StoreBe32(asn.data() + 16 + 19 * 32 + 28, 0x80000004);
+    // With GameOptions::jaudio1_effects, the effects follow in the table's order. Each plays the effects sequence in
+    // the first slot of its category, with four slots to a category. By the effects' format, an effect's number is its
+    // index. The effects take their categories and indexes for names.
+    const Game with_effects = Game::FromFolder(folder / "test.aaf", kProgram, {.jaudio1_effects = true});
+    const std::vector<SequenceSound>& listed = with_effects.Sequences();
+    Check(names(with_effects) ==
+              std::vector<std::string>{"field", "boss", "SOUND_128_0_4", "unused", "se0-0000", "se2-0000", "se2-0001"},
+          "the effects come after the music");
+    if (listed.size() == 7)
+    {
+        TrackMask slot8{};
+        slot8[0] = static_cast<uint16_t>(1u << 8);
+        Check(listed[4].effect && listed[4].effect->slot == 0 && listed[4].effect->number == 0 &&
+                  listed[4].tracks[0] == 1 && std::abs(listed[4].volume - 80.0f / 127.0f) < 1e-6f,
+              "category 0's effect plays in slot 0 at the volume of its entry");
+        Check(listed[6].effect && listed[6].effect->slot == 8 && listed[6].effect->number == 1 &&
+                  listed[6].tracks == slot8 && listed[6].pitch == 1.25f && listed[4].pitch == 1.0f,
+              "category 2's second effect plays number 1 in slot 8 at its pitch, and only that slot's track plays");
+        Check(std::ranges::equal(listed[5].data, effects) && listed[5].start == 0 && !listed[0].effect,
+              "the effects play the effects sequence");
+    }
+
+    // A name file beside the archive names the sounds by their IDs. It gives category 2's second effect the ID without
+    // bit 11 (kAafToEnd).
+    const std::vector<std::pair<std::string, uint32_t>> kNames = {
+        {"JA_BGM_FIELD", 0x80000001}, {"JA_BGM_BOSS_2", 0x80000004}, {"JA_SE_STEP", 0x0800}, {"JA_SE_DOOR", 0x2001}};
+    std::vector<uint8_t> asn(16 + (18 + kNames.size()) * 32);
+    xsflib::StoreBe32(asn.data() + 12, static_cast<uint32_t>(kNames.size()));
+    for (std::size_t i = 0; i < kNames.size(); i++)
+    {
+        const std::size_t record = 16 + (18 + i) * 32;
+        std::ranges::copy(kNames[i].first, asn.begin() + static_cast<std::ptrdiff_t>(record));
+        xsflib::StoreBe32(asn.data() + record + 28, kNames[i].second);
+    }
     xsflib::WriteFile(folder / "test.asn", asn);
 
     const Game named = Game::FromFolder(folder / "test.aaf", kProgram);
     Check(names(named) == std::vector<std::string>{"JA_BGM_FIELD", "boss", "JA_BGM_BOSS_2", "unused"},
           "the name file's names come first");
+    const Game named_effects = Game::FromFolder(folder / "test.aaf", kProgram, {.jaudio1_effects = true});
+    Check(names(named_effects) == std::vector<std::string>{"JA_BGM_FIELD", "boss", "JA_BGM_BOSS_2", "unused",
+                                                           "JA_SE_STEP", "se2-0000", "JA_SE_DOOR"},
+          "the name file names effects by their IDs, with or without bit 11");
 
     std::error_code ignored;
     fs::remove_all(folder, ignored);
@@ -1341,6 +1703,46 @@ void TestGameConverter()
     fs::remove_all(folder, ignored);
 }
 
+// RunArchiveConverterWithGames opens each JAudio game with the game options that the caller gives. Without them, a
+// JAudio1 game's music converts alone. With GameOptions::jaudio1_effects, the game's effects convert too. The game here
+// has its effects sequence (file 7), one piece of music (file 3) and one effect.
+void TestArchiveConverterGameOptions()
+{
+    namespace fs = std::filesystem;
+    namespace frame = ntdlib::sequence_export;
+    const fs::path folder =
+        fs::temp_directory_path() / ("sequence_export_jaudio_options_test_" + std::to_string(std::random_device{}()));
+    fs::create_directories(folder / "Seqs");
+    const std::vector<uint8_t> sequence = Sequence1(0).Tempo(120).Finish().Data();
+    xsflib::WriteFile(folder / "test.aaf", files::AafFile({{16, 127, 7}, {16, 100, 3}, {0, 80}}, {"test.aw"}));
+    xsflib::WriteFile(folder / "Seqs" / "test.arc",
+                      files::RarcFile({{7, "effects.bms", sequence}, {3, "field.bms", sequence}}));
+
+    // Two command lines of a converter of archives, with separate output folders.
+    frame::ArchiveConverter<ntdlib::sar::SoundArchive> archives;
+    archives.program = "xyz2midi";
+    std::string program = "xyz2midi";
+    std::string quiet = "--quiet";
+    std::string output = "--output";
+    std::string plain_folder = (folder / "plain").string();
+    std::string effects_folder = (folder / "effects").string();
+    std::string path = (folder / "test.aaf").string();
+    char* plain_argv[] = {program.data(), quiet.data(), output.data(), plain_folder.data(), path.data(), nullptr};
+    char* effects_argv[] = {program.data(), quiet.data(), output.data(), effects_folder.data(), path.data(), nullptr};
+
+    const int plain = RunArchiveConverterWithGames(5, plain_argv, archives);
+    const int effects = RunArchiveConverterWithGames(5, effects_argv, archives, {.jaudio1_effects = true});
+
+    Check(plain == 0 && fs::exists(folder / "plain" / "field.mid") && !fs::exists(folder / "plain" / "se0-0000.mid"),
+          "without game options, the music converts alone");
+    Check(
+        effects == 0 && fs::exists(folder / "effects" / "field.mid") && fs::exists(folder / "effects" / "se0-0000.mid"),
+        "with jaudio1_effects, the effect converts too");
+
+    std::error_code ignored;
+    fs::remove_all(folder, ignored);
+}
+
 } // namespace
 
 int main()
@@ -1364,6 +1766,7 @@ int main()
     TestTailsKeepTheirSettings();
     TestHeldNoteKeepsItsPart();
     TestDefaultKeepsEveryNote();
+    TestMutedTracks();
     TestConversion();
     TestCutAboveFullLevel();
     TestPitchLimit();
@@ -1373,8 +1776,12 @@ int main()
     TestEchoLengthensTheEnd();
     TestJAudio1Notes();
     TestJAudio1Registers();
+    TestJAudio1Effects();
+    TestJAudio1AutoMixer();
+    TestJAudio1VolumeMode();
     TestJAudio1Folder();
     TestGameConverter();
+    TestArchiveConverterGameOptions();
 
     return xsflib::testing::Summary("sequence_export_jaudio");
 }

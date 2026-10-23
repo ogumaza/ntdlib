@@ -36,10 +36,25 @@ struct GameRules
 
     // The echo that the game's code sets up, or nothing. A sequence that sends to it ends when the echo falls silent.
     std::optional<EchoLine> echo;
+
+    // The tracks that play in the sounds whose tracks the game's code mutes, by the sounds' IDs (SoundEntry::Id). The
+    // other sounds play every track (SequenceSound::tracks).
+    std::map<uint32_t, TrackMask> tracks;
 };
 
 // The rules of the game whose start-up archive has the SHA-1 `archive_sha1`, as 40 lowercase hex digits.
 GameRules RulesOf(const std::string& archive_sha1);
+
+// How to open a game.
+struct GameOptions
+{
+    // List a JAudio1 game's effects too, after the other sequences, in the sound table's order. The other sequences
+    // keep their places. Each effect plays the effects sequence and starts in the first slot of its category
+    // (SequenceSound::effect). JAudio1's default table of categories gives each category four slots, and The Wind Waker
+    // keeps it. An effect takes its name from the name file. Without one, it's named after its category and index, as
+    // "se4-0123". It plays at its volume in the sound table, times its category's volume (GameRules::category_volumes).
+    bool jaudio1_effects = false;
+};
 
 class Game
 {
@@ -48,13 +63,14 @@ public:
     // it, and its wave archives in a Waves folder (JAudio2) or a Banks folder (JAudio1). The reader also looks beside
     // the archive itself. The Wind Waker HD keeps its sequences in a sequence table (.bdt) in Seqs, and its sounds'
     // names in a name file (.asn) beside the archive. `program` is the name that the warnings give the program, such as
-    // "xyz2midi".
-    // Throw FormatError if the archive can't be read.
-    static Game FromFolder(const std::filesystem::path& baa, const std::string& program);
+    // "xyz2midi". `options` says which sounds to list. Throw FormatError if the archive can't be read.
+    static Game FromFolder(const std::filesystem::path& baa, const std::string& program,
+                           const GameOptions& options = {});
 
-    // Open the start-up archive among the files of a disc or a title that `disc` holds, with `program` as for
-    // FromFolder. Return nothing if the disc has none. Throw FormatError if the archive can't be read.
-    static std::optional<Game> FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles> disc, const std::string& program);
+    // Open the start-up archive among the files of a disc or a title that `disc` holds, with `program` and `options`
+    // as for FromFolder. Return nothing if the disc has none. Throw FormatError if the archive can't be read.
+    static std::optional<Game> FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles> disc, const std::string& program,
+                                             const GameOptions& options = {});
 
     const SoundArchive& Archive() const
     {
@@ -70,8 +86,8 @@ public:
 
     // The sequences to convert: the sounds of the sound table that play sequences, in its order, then the files of the
     // sequence archive that no sound plays, named after their files. A JAudio1 game's effects play in its effects
-    // sequence, and the list leaves them and that sequence out. Its sequences take their names from the name file or
-    // their files.
+    // sequence. The list leaves that sequence out. It leaves the effects out too, unless GameOptions::jaudio1_effects
+    // lists them at its end. Its sequences take their names from the name file or their files.
     const std::vector<SequenceSound>& Sequences() const
     {
         return sequences_;
@@ -94,6 +110,9 @@ private:
     // List the sequences once the archive and the sequence archive are read.
     void FindSequences();
 
+    // The sequence of JAudio1 effect `s`, which plays in the effects sequence `sequence` (GameOptions).
+    SequenceSound EffectSound(const SoundEntry& s, std::span<const uint8_t> sequence) const;
+
     // Read a JAudio1 game's name file, `names`, named `file` in the warnings.
     void ReadNames(std::span<const uint8_t> names, const std::string& file);
 
@@ -102,6 +121,7 @@ private:
 
     std::unique_ptr<SoundArchive> archive_;
     GameRules rules_;
+    GameOptions options_;
     bool jaudio1_ = false;
     uint16_t effects_file_ = 0; // a JAudio1 game's effects sequence
     std::vector<uint8_t> sequence_archive_;

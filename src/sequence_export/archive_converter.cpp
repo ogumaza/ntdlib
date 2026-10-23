@@ -111,7 +111,7 @@ int AddGroupFiles(sar::SoundArchive& archive, const fs::path& input, const std::
     {
         std::fprintf(stderr,
                      "warning: %s keeps %zu groups in files of their own, and none of them is beside it (as "
-                     "<group>.bfgrp, or in a userManagementFiles folder)\n",
+                     "<group>.bfgrp, in a userManagementFiles folder or in a .sarc file)\n",
                      name.c_str(), groups.size());
     }
 

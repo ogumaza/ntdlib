@@ -62,9 +62,10 @@ using GameConverter = Converter<PerformOptions, std::unique_ptr<GameInput>, Conv
 
 // The frame's converter of JAudio games for `program`, whose --version prints `version_line`. An input is a start-up
 // archive with its game's other files beside it (Game::FromFolder). `option` reads the program's options beyond the
-// frame's. `usage` prints the program's help.
+// frame's. `usage` prints the program's help. `game_options` says which sounds of each game to list.
 GameConverter MakeGameConverter(const std::string& program, const std::string& version_line,
-                                OptionHandler<PerformOptions> option, std::function<void()> usage);
+                                OptionHandler<PerformOptions> option, std::function<void()> usage,
+                                const GameOptions& game_options = {});
 
 // The options for JAudio games of a program that converts another sound library's archives. `archive_options` reads
 // the program's options beyond the frame's for its archives. A JAudio game takes the same options. Of those, only

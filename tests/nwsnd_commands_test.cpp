@@ -347,6 +347,35 @@ void TestEncode()
     XSFLIB_CHECK(!decoded.opaque && decoded.sequence == sequence);
 }
 
+// The bytes of `sequence` with its first item's value set to `ticks`.
+std::vector<uint8_t> EncodedWithWait(Sequence sequence, int64_t ticks)
+{
+    sequence.items[0].value.value = ticks * kOne;
+
+    return ntdlib::nwsnd::EncodeSequence(sequence, kSwitch).bytes;
+}
+
+// Edits of a wait of 5 in 2 bytes. A value that requires fewer bytes keeps the padding. A value that requires as many
+// bytes as the padding, or more, takes the bytes that it requires.
+void TestEditsOfPaddedWait()
+{
+    const std::vector<uint8_t> kBytes = {0x80, 0x80, 0x05, 0xFF}; // wait 5 in 2 bytes, then end
+    const std::vector<LabelOffset> kLabels = {{"Song", 0}};
+    const Sequence sequence = RoundTrip(kBytes, kLabels, kSwitch);
+
+    const std::vector<uint8_t> kept = EncodedWithWait(sequence, 100);
+    const std::vector<uint8_t> filled = EncodedWithWait(sequence, 200);
+    const std::vector<uint8_t> longer = EncodedWithWait(sequence, 20000);
+    const ntdlib::nwsnd::Decoded read = ntdlib::nwsnd::DecodeSequence(longer, kLabels, kSwitch);
+
+    XSFLIB_CHECK(sequence.items[0].encoding.value_bytes == 2);
+    XSFLIB_CHECK(kept == std::vector<uint8_t>({0x80, 0x80, 0x64, 0xFF}));
+    XSFLIB_CHECK(filled == std::vector<uint8_t>({0x80, 0x81, 0x48, 0xFF}));
+    XSFLIB_CHECK(longer == std::vector<uint8_t>({0x80, 0x81, 0x9C, 0x20, 0xFF}));
+    XSFLIB_CHECK(read.sequence.items.size() == 2 && read.sequence.items[0].kind == Kind::kWait &&
+                 read.sequence.items[0].value.value == 20000 * kOne);
+}
+
 // Whether the encoder refuses `command`.
 bool Refuses(const Command& command)
 {
@@ -391,12 +420,6 @@ void TestRefusals()
     timed.time = Argument{};
     XSFLIB_CHECK(Refuses(timed));
 
-    Command minimal; // a value's bytes are given only where it takes more than it requires
-    minimal.kind = Kind::kWait;
-    minimal.value.value = 5 * kOne;
-    minimal.encoding.value_bytes = 1;
-    XSFLIB_CHECK(Refuses(minimal));
-
     Command volume;
     volume.kind = Kind::kVolume;
     volume.value.value = 127 * kOne;
@@ -423,6 +446,7 @@ int main()
     TestConsoles();
     TestOneCommand();
     TestEncode();
+    TestEditsOfPaddedWait();
     TestRefusals();
 
     return xsflib::testing::Summary("Sequence command");

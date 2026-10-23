@@ -3,6 +3,7 @@
 #include "ntdlib/jaudio/aaf.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -37,11 +38,16 @@ constexpr uint32_t kLastBlockType = 8;
 // sequences' and the streams' entries. Its words from +6 give each of 18 categories its count of sounds and the index
 // of its first entry: 16 categories of effects, then the sequences, then the streams. An entry gives the sound's volume
 // and, with bit 0 of its format, its offset number (for a sequence, its file's number in the sequence archive).
-// Without that bit, the offset number is the sound's index in its category.
+// Without that bit, the offset number is the sound's index in its category. With bit 1, the sound library plays the
+// sound at the pitch that the entry gives at +8 (JAIBasic::setSeExtParameter, 0x80291034 in The Wind Waker's
+// main.dol).
 constexpr std::size_t kTableHeader = 0x50;
 constexpr std::size_t kEntrySize = 0x10;
+constexpr std::size_t kEffectFormat = 0;
 constexpr std::size_t kSequenceFormat = 1;
+constexpr std::size_t kPitch = 8;
 constexpr uint8_t kGivesOffsetNumber = 1;
+constexpr uint8_t kGivesPitch = 2;
 constexpr uint32_t kEffectCategories = 16;
 constexpr uint32_t kSequenceCategory = 16;
 constexpr uint32_t kMaxPerCategory = 0x400;
@@ -204,6 +210,8 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
     const xsflib::Reader r(aaf, true, kAafReaderOptions);
     const std::size_t table = SoundTable(r, FindBlocks(r));
     const bool gives_offset_number = (r.U8(table + kSequenceFormat) & kGivesOffsetNumber) != 0;
+    const bool gives_effect_number = (r.U8(table + kEffectFormat) & kGivesOffsetNumber) != 0;
+    const bool gives_effect_pitch = (r.U8(table + kEffectFormat) & kGivesPitch) != 0;
     std::vector<SoundEntry> sounds;
     for (uint32_t category = 0; category <= kSequenceCategory; category++)
     {
@@ -228,6 +236,13 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
             {
                 sound.source = SoundEntry::Source::kArchive;
                 sound.resource = gives_offset_number ? r.U16(entry + *kAafItemLayout.file) : index;
+            }
+            else
+            {
+                sound.resource = gives_effect_number ? r.U16(entry + *kAafItemLayout.file) : index;
+                // The sound keeps its notes' pitch if the entry's pitch isn't a positive number.
+                const float pitch = gives_effect_pitch ? r.F32(entry + kPitch) : 1.0f;
+                sound.pitch = std::isfinite(pitch) && pitch > 0.0f ? pitch : 1.0f;
             }
 
             sounds.push_back(std::move(sound));

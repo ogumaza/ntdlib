@@ -51,6 +51,9 @@ void TestSounds()
     XSFLIB_CHECK(sounds[2].Id() == 0x5800 && jaudio::AafCategory(sounds[2].Id()) == 5);
     XSFLIB_CHECK(sounds[0].source == jaudio::SoundEntry::Source::kCollection && sounds[0].resource == 0);
     XSFLIB_CHECK(sounds[3].Id() == 0x80000001 && sounds[3].volume == 100 && sounds[3].type == 0x80);
+
+    // An effect's resource is its number in the effects sequence. The effects' format, 6, makes that its index.
+    XSFLIB_CHECK(sounds[1].resource == 1 && sounds[2].resource == 0);
     XSFLIB_CHECK(sounds[3].source == jaudio::SoundEntry::Source::kArchive && sounds[3].resource == 3);
     XSFLIB_CHECK(sounds[4].Id() == 0x80000002 && sounds[4].resource == 9);
     XSFLIB_CHECK(sounds[0].name.empty() && sounds[4].name.empty());
@@ -103,6 +106,24 @@ void TestSequenceFormat()
 
     // Any format with bit 0 gives the entry's file.
     XSFLIB_CHECK(jaudio::AafEffectsSequenceFile(files::AafFile(kSounds, {}, 3)) == 7);
+}
+
+void TestEffectFormat()
+{
+    // With bit 0 of the effects' format, an effect's entry gives its number, as a sequence's entry gives its file. The
+    // effects' format is the first byte of the table's header, at 0x100.
+    std::vector<uint8_t> aaf = files::AafFile({{16, 127, 7}, {0, 80, 12}, {0, 81, 5, 1.5f}}, {});
+    aaf[0x100] |= 1;
+    const std::vector<jaudio::SoundEntry> sounds = jaudio::ReadAafSounds(aaf);
+
+    XSFLIB_CHECK(sounds.size() == 2 && sounds[0].resource == 12 && sounds[1].resource == 5);
+
+    // With bit 1, as in format 6, an effect plays at the pitch of its entry. A pitch of 0 counts as 1. Without the bit,
+    // every effect keeps a pitch of 1.
+    XSFLIB_CHECK(sounds.size() == 2 && sounds[0].pitch == 1.0f && sounds[1].pitch == 1.5f);
+    aaf[0x100] = 4;
+    const std::vector<jaudio::SoundEntry> plain = jaudio::ReadAafSounds(aaf);
+    XSFLIB_CHECK(plain.size() == 2 && plain[1].pitch == 1.0f);
 }
 
 // The sequences of TestSequenceIndex: their names and where they lie in a 0x100-byte archive.
@@ -244,6 +265,7 @@ int main()
     TestDamaged();
     TestEffectsSequence();
     TestSequenceFormat();
+    TestEffectFormat();
     TestSequenceIndex();
     TestWaveSystems();
     TestIsAaf();

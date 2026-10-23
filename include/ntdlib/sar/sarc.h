@@ -29,4 +29,15 @@ struct SarcFile
 // files.
 std::vector<SarcFile> SarcFiles(std::span<const uint8_t> sarc);
 
+// The SARC `sarc` with `data` in place of the data of `old`, a file that SarcFiles(sarc) gave. Every node that gives
+// the old data's place gives the new place. The other files keep their bytes and their places. The blocks before the
+// data stay, apart from the archive's size in the header and those nodes' offsets. The new data takes the old place
+// when it fits before the next file's data. Zeros then fill the rest of the old place. When no file's data follows,
+// the new data takes the old place whatever its size, and the bytes after the old data follow it. Otherwise the new
+// data goes after the last file's data, at an offset with the old offset's alignment, up to 0x2000 bytes. Zeros then
+// fill the old place. Throws std::invalid_argument when `old` isn't the data of one of the SARC's files, and when the
+// new SARC passes 4 GB.
+std::vector<uint8_t> WithSarcFile(std::span<const uint8_t> sarc, std::span<const uint8_t> old,
+                                  std::span<const uint8_t> data);
+
 } // namespace ntdlib::sar

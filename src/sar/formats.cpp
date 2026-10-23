@@ -719,7 +719,7 @@ Wave Wave::Parse(std::span<const uint8_t> file, const Options& options)
             }
             ch.adpcm = info;
         }
-        else if (adpcm_ref.type == 0x0301 && options.flavor == Flavor::kCtr && !strict)
+        else if (adpcm_ref.type == 0x0301 && options.flavor == Flavor::kCtr)
         {
             const std::size_t a = ci + adpcm_ref.offset;
             ImaAdpcmInfo info;

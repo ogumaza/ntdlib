@@ -21,7 +21,9 @@
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/sar/archive_model.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/groups.h"
 #include "ntdlib/sar/info_block.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sar/string_block.h"
@@ -52,6 +54,7 @@ using ntdlib::sar::WithBankLists;
 using ntdlib::sar::WithNewBank;
 using ntdlib::sar::WithNewExternalFile;
 using ntdlib::sar::WithNewFile;
+using ntdlib::sar::WithNewGroup;
 using ntdlib::sar::WithNewSequenceSound;
 using ntdlib::sar::WithNewStreamSound;
 using ntdlib::sar::WithNewWaveArchive;
@@ -1324,6 +1327,79 @@ void TestNewItemRefusals()
     XSFLIB_CHECK(refused_wave_archive({.name = "NEW", .file = 0}, unnamed));
 }
 
+// A new group's file holds no files and lists no items. The archive comes out as sar_tools.h lays out an archive with
+// the group after the others, with names and without. The group's file follows the last file up to the end of its INFX
+// block's entries. The reader and the model read the new group. A file and an item then go into it, and a second new
+// group follows the first.
+void TestNewGroup(Flavor flavor)
+{
+    const sar_tools::GroupSpec empty;
+    XSFLIB_CHECK(ntdlib::sar::EmptyGroupFile(flavor) == sar_tools::Group(flavor, empty));
+    for (const bool names : {true, false})
+    {
+        sar_files::ArchiveSpec spec = ItemsSpec(names);
+        const std::vector<uint8_t> added =
+            WithNewGroup(sar_tools::Archive(flavor, spec), flavor, names ? "GROUP_NEW" : "");
+        spec.files.push_back({sar_tools::GroupInArchive(flavor, empty), "", false});
+        spec.groups.emplace_back("GROUP_NEW", 4);
+        XSFLIB_CHECK(added == sar_tools::Archive(flavor, spec));
+    }
+
+    const std::vector<uint8_t> added = WithNewGroup(sar_tools::Archive(flavor, ItemsSpec(true)), flavor, "GROUP_NEW");
+    const SoundArchive read = Load(added, flavor);
+    XSFLIB_CHECK(read.Groups().size() == 2 && read.FileCount() == 5);
+    if (read.Groups().size() == 2)
+    {
+        XSFLIB_CHECK(read.Groups()[1].name == "GROUP_NEW" && read.Groups()[1].file_id == 4);
+        XSFLIB_CHECK(read.GroupFileIds(1).empty());
+    }
+    XSFLIB_CHECK(ntdlib::sar::ReadGroupFile(read.FileData(4), flavor) == ntdlib::sar::GroupContents{});
+    CheckNames(added, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "BANK_A", "GROUP_A", "GROUP_NEW", "PLAYER_A"});
+    const std::span<const uint8_t> strings = *TablesOf(added, flavor).strings;
+    XSFLIB_CHECK(ntdlib::sar::FindItem(strings, flavor, "GROUP_NEW") == ItemId(ntdlib::sar::kGroupItem, 1));
+    XSFLIB_CHECK(ntdlib::sar::BuildArchive(ntdlib::sar::ReadArchiveModel(added, flavor)) == added);
+
+    // A copy of file 0 and the sound that plays it go into the new group.
+    const std::span<const uint8_t> file = read.FileData(0);
+    const ntdlib::sar::GroupMember member{.file = 0, .copy = std::vector<uint8_t>(file.begin(), file.end())};
+    const ntdlib::sar::GroupItem item{.item = ItemId(ntdlib::sar::kSoundItem, 0)};
+    const std::vector<uint8_t> joined =
+        ntdlib::sar::WithGroupMembers(added, flavor, 1, std::span(&member, 1), std::span(&item, 1));
+    const SoundArchive grown = Load(joined, flavor);
+    const ntdlib::sar::GroupContents contents = ntdlib::sar::ReadGroupFile(grown.FileData(4), flavor);
+    XSFLIB_CHECK(contents.files == std::vector({member}) && contents.items == std::vector({item}));
+    XSFLIB_CHECK(grown.GroupFileIds(1) == std::vector<uint32_t>({0}));
+
+    const std::vector<uint8_t> second = WithNewGroup(joined, flavor, "GROUP_NEW2");
+    const SoundArchive both = Load(second, flavor);
+    XSFLIB_CHECK(both.Groups().size() == 3 && both.FileCount() == 6);
+    if (both.Groups().size() == 3)
+    {
+        XSFLIB_CHECK(both.Groups()[2].name == "GROUP_NEW2" && both.Groups()[2].file_id == 5);
+        XSFLIB_CHECK(both.GroupFileIds(1) == std::vector<uint32_t>({0}) && both.GroupFileIds(2).empty());
+    }
+    CheckNames(second, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "BANK_A", "GROUP_A", "GROUP_NEW", "GROUP_NEW2", "PLAYER_A"});
+}
+
+// A new group refuses the 3DS, a name that is missing or taken, and a name for an archive without names.
+void TestNewGroupRefusals()
+{
+    const auto refused = [](const std::vector<uint8_t>& archive, Flavor flavor, const std::string& name)
+    {
+        return Throws<std::invalid_argument>([&] { WithNewGroup(archive, flavor, name); });
+    };
+    const std::vector<uint8_t> archive = sar_tools::Archive(Flavor::kNx, ItemsSpec(true));
+    const std::vector<uint8_t> unnamed = sar_tools::Archive(Flavor::kNx, ItemsSpec(false));
+    XSFLIB_CHECK(!refused(archive, Flavor::kNx, "GROUP_NEW"));
+    XSFLIB_CHECK(refused(archive, Flavor::kNx, ""));
+    XSFLIB_CHECK(refused(archive, Flavor::kNx, "GROUP_A"));
+    XSFLIB_CHECK(refused(archive, Flavor::kNx, "SEQ_A"));
+    XSFLIB_CHECK(!refused(unnamed, Flavor::kNx, ""));
+    XSFLIB_CHECK(refused(unnamed, Flavor::kNx, "GROUP_NEW"));
+    XSFLIB_CHECK(refused(sar_tools::Archive(Flavor::kCtr, ItemsSpec(true)), Flavor::kCtr, "GROUP_NEW"));
+    XSFLIB_CHECK(Throws<std::invalid_argument>([] { ntdlib::sar::EmptyGroupFile(Flavor::kCtr); }));
+}
+
 // A sequence sound's list of banks takes another length. The list ends the sound's entry, and the entry grows or
 // shrinks with it. The other values, the other sounds and the names stay. The old lists give the archive back.
 void TestBankLists(Flavor flavor)
@@ -1557,6 +1633,10 @@ int main()
         TestNewBank(flavor);
         TestNewWaveArchive(flavor);
         TestNewItemsWithoutNames(flavor);
+        if (flavor != Flavor::kCtr)
+        {
+            TestNewGroup(flavor);
+        }
         TestBankLists(flavor);
         TestValuePlaces(flavor, true);
         TestValuePlaces(flavor, false);
@@ -1566,6 +1646,7 @@ int main()
     TestNewWaveSoundRefusals();
     TestNewStreamSoundRefusals();
     TestNewItemRefusals();
+    TestNewGroupRefusals();
     TestBankListRefusals();
     TestValuePlaceRefusals();
 

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -980,6 +981,75 @@ void TestSarcNamesAreRead()
     }
 }
 
+void TestSarcFilesAreReplaced()
+{
+    // A file's new data takes its place when it fits before the next file's data, or when no data follows. Otherwise it
+    // goes after the last file's data, at its old place's alignment. The header gives the new size, and only the node
+    // of the replaced file changes. Data that isn't one of the SARC's files is refused.
+    namespace sar_files = ntdlib::testing::sar_files;
+    for (const bool big_endian : {true, false})
+    {
+        const std::string order = big_endian ? " (big-endian)" : " (little-endian)";
+        const std::vector<uint8_t> sarc =
+            sar_files::Sarc(big_endian, {{"A.bfgrp", Bytes("first")}, {"B.bfgrp", Bytes("second")}});
+        const std::vector<SarcFile> files = SarcFiles(sarc);
+        const auto size_of = [big_endian](const std::vector<uint8_t>& bytes)
+        {
+            return big_endian ? LoadBe32(&bytes[8]) : LoadLe32(&bytes[8]);
+        };
+        const auto offset_of = [](const std::vector<uint8_t>& bytes, const SarcFile& file)
+        {
+            return static_cast<std::size_t>(file.data.data() - bytes.data());
+        };
+        const std::size_t data = big_endian ? LoadBe32(&sarc[0xC]) : LoadLe32(&sarc[0xC]);
+        const std::size_t first = offset_of(sarc, files[0]);
+        const std::size_t second = offset_of(sarc, files[1]);
+
+        // The last file grows in its place.
+        const std::vector<uint8_t> longer = WithSarcFile(sarc, files[1].data, Bytes("second, and longer"));
+        const std::vector<SarcFile> grown = SarcFiles(longer);
+        Check(grown.size() == 2 && grown[0].name == "A.bfgrp" && Text(grown[0].data) == "first" &&
+                  grown[1].name == "B.bfgrp" && Text(grown[1].data) == "second, and longer" &&
+                  offset_of(longer, grown[1]) == second && longer.size() == second + 18 &&
+                  size_of(longer) == longer.size() && std::equal(sarc.begin(), sarc.begin() + 8, longer.begin()) &&
+                  std::equal(sarc.begin() + 12, sarc.begin() + 0x14 + 0xC + 16 + 12, longer.begin() + 12) &&
+                  std::equal(sarc.begin() + 0x14 + 0xC + 32, sarc.begin() + static_cast<std::ptrdiff_t>(second),
+                             longer.begin() + 0x14 + 0xC + 32),
+              "the last file grows in its place" + order);
+
+        // The first file shrinks in its place, and zeros fill the rest of its place.
+        const std::vector<uint8_t> shorter = WithSarcFile(sarc, files[0].data, Bytes("1st"));
+        const std::vector<SarcFile> shrunk = SarcFiles(shorter);
+        Check(shrunk.size() == 2 && Text(shrunk[0].data) == "1st" && Text(shrunk[1].data) == "second" &&
+                  offset_of(shorter, shrunk[0]) == first && offset_of(shorter, shrunk[1]) == second &&
+                  shorter.size() == sarc.size() && size_of(shorter) == sarc.size() &&
+                  std::all_of(shorter.begin() + static_cast<std::ptrdiff_t>(first + 3),
+                              shorter.begin() + static_cast<std::ptrdiff_t>(second),
+                              [](uint8_t byte) { return byte == 0; }),
+              "a file that shrinks stays in its place" + order);
+
+        // The first file grows past the second file's data, and goes after it.
+        const std::vector<uint8_t> past = WithSarcFile(sarc, files[0].data, std::vector<uint8_t>(100, 0x5A));
+        const std::vector<SarcFile> moved = SarcFiles(past);
+        const std::size_t alignment = std::min<std::size_t>(first & (~first + 1), 0x2000);
+        const std::size_t place = (second + 6 + alignment - 1) / alignment * alignment;
+        Check(moved.size() == 2 && moved[0].name == "A.bfgrp" && moved[0].data.size() == 100 &&
+                  moved[0].data[99] == 0x5A && offset_of(past, moved[0]) == place && Text(moved[1].data) == "second" &&
+                  offset_of(past, moved[1]) == second && past.size() == place + 100 && size_of(past) == past.size() &&
+                  std::all_of(past.begin() + static_cast<std::ptrdiff_t>(first),
+                              past.begin() + static_cast<std::ptrdiff_t>(first + 5),
+                              [](uint8_t byte) { return byte == 0; }) &&
+                  place > data,
+              "a file that outgrows its place goes after the last file" + order);
+
+        // A part of a file and other data are refused.
+        Check(ErrorOf<std::invalid_argument>([&] { WithSarcFile(sarc, files[0].data.first(2), Bytes("x")); }) ==
+                      "the data isn't one of the SARC's files" &&
+                  !ErrorOf<std::invalid_argument>([&] { WithSarcFile(Bytes("not a SARC"), {}, Bytes("x")); }).empty(),
+              "data that isn't a file refused" + order);
+    }
+}
+
 void TestGroupFilesMatchTheirArchive(Flavor flavor, Rules rules)
 {
     // The archive's sequence is file 0, in the archive. Its bank and its wave archive are files 1 and 2. Only the group
@@ -1139,6 +1209,23 @@ void TestImaAdpcmDecodesOnlyOnThe3ds()
     Check(ctr.channels.size() == 1 && ctr.channels[0] == wave::DecodeImaAdpcm(kData, 8, 100, 10),
           "IMA-ADPCM on the 3DS");
     Check(cafe == "unknown wave encoding" && nx == "unknown wave encoding", "IMA-ADPCM on the Wii U and the Switch");
+}
+
+void TestImaAdpcmContextIsReadWithBothRules()
+{
+    // A 3DS wave of IMA-ADPCM gives each channel's first sample and step index: here 100 and 10. kStopAtFirstProblem
+    // reads them too. The decode starts from them.
+    const std::vector<uint8_t> kData = {0x17, 0x9f, 0x40, 0x08};
+    const std::vector<uint8_t> file = CodedWav(FormatOf(Flavor::kCtr), 3, 8, kData, 0x0301, {100, 10});
+
+    const Wave read = Wave::Parse(file, StrictOptionsOf(Flavor::kCtr));
+    const Pcm pcm = DecodeWave(file, StrictOptionsOf(Flavor::kCtr));
+
+    Check(read.channels.size() == 1 && read.channels[0].ima && read.channels[0].ima->sample == 100 &&
+              read.channels[0].ima->step_index == 10,
+          "the IMA-ADPCM context with kStopAtFirstProblem");
+    Check(pcm.channels.size() == 1 && pcm.channels[0] == wave::DecodeImaAdpcm(kData, 8, 100, 10),
+          "IMA-ADPCM from its context with kStopAtFirstProblem");
 }
 
 void TestSarFilesBuildThe3dsFiles()
@@ -1645,9 +1732,11 @@ int main()
     TestArchivesOfOtherConsolesAreRefused();
     TestSarcFilesAreRead();
     TestSarcNamesAreRead();
+    TestSarcFilesAreReplaced();
     TestByteOrderMarksAreRead();
     TestBadWaveNamesItsFormat();
     TestImaAdpcmDecodesOnlyOnThe3ds();
+    TestImaAdpcmContextIsReadWithBothRules();
     TestSarFilesBuildThe3dsFiles();
     TestDspAdpcmSumsAsTheConsoleDoes();
     TestWaveSoundFileOfSharedTablesIsReported();

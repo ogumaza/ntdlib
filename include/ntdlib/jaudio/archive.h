@@ -53,6 +53,9 @@ struct SoundEntry
     Source source = Source::kCollection;
     uint32_t resource = 0; // the collection's sequence, the archive's file id, or the block's ID
 
+    // A factor on the pitch of the sound's notes. Only a JAudio1 effect's entry gives one (ReadAafSounds).
+    float pitch = 1.0f;
+
     // Where the sound's entry starts in the archive. LayoutOf or FirstLayoutOf gives where the entry holds the volume
     // and the file.
     uint32_t offset = 0;
