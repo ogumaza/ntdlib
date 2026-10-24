@@ -28,6 +28,7 @@
 #include "ntdlib/sar/reference.h"
 #include "ntdlib/sar/sequence_file.h"
 #include "ntdlib/sar/tables.h"
+#include "sar/layout_core.h"
 
 namespace ntdlib::sar
 {
@@ -47,44 +48,16 @@ constexpr uint16_t kGroupFileBlock = 0x7801;
 constexpr uint16_t kDataReference = 0x1F00;
 constexpr uint32_t kNone = 0xFFFFFFFF;
 
-// The largest alignment that padding keeps. The Switch's archives align their files to 64 bytes, and those of the 3DS
-// and the Wii U to 32.
+// The largest alignment that padding keeps in the archives of the 3DS, the Wii U and the Switch. The Switch's archives
+// align their files to 64 bytes, and those of the 3DS and the Wii U to 32.
 constexpr std::size_t kMostAlignment = 64;
 
-// A file of the archive, in its FILE block or in a group there: its file ID, where it starts and its size.
-struct Location
-{
-    uint32_t file = 0;
-    std::size_t start = 0;
-    std::size_t size = 0;
-};
-
-// A field of the archive's tables, with positions from the archive's start: the field, and the distance it holds. A
-// size's distance ends where a range that starts at `from` ends. Any other distance ends where something starts.
-struct Distance
-{
-    std::size_t at = 0;
-    std::size_t from = 0;
-    std::size_t to = 0;
-    bool size = false;
-};
-
-// A sequence sound's start in its file's bytecode, and where the archive's tables hold it. A sound without the option
-// starts at 0.
-struct Start
-{
-    uint32_t file = 0;
-    uint32_t offset = 0;
-    std::optional<std::size_t> at = std::nullopt;
-};
-
-// What the cutter reads of an archive's tables.
-struct Structure
-{
-    std::vector<Location> files;
-    std::vector<Distance> distances;
-    std::vector<Start> starts;
-};
+using core::Container;
+using core::Distance;
+using core::Location;
+using core::Source;
+using core::Start;
+using core::Structure;
 
 // A sequence file's commands and version, and the item at each of its sounds' starts.
 struct Decoded
@@ -118,15 +91,63 @@ nwsnd::Grammar GrammarFor(Flavor flavor)
     throw std::invalid_argument("an unknown flavor of sound archive");
 }
 
-// The file of sequence `index`.
-Written WriteFile(const commands::Sequence& sequence, uint32_t version, Flavor flavor, const nwsnd::Grammar& grammar,
-                  std::size_t index)
+// The rules of the archives of `flavor`: CSEQ or FSEQ files, in the console's byte order.
+Container ContainerOf(Flavor flavor)
 {
-    nwsnd::Encoded encoded = nwsnd::EncodeSequence(sequence, grammar);
-    SequenceFile file;
-    file.flavor = flavor;
-    file.version = version;
-    file.data = encoded.bytes;
+    Container container;
+    std::memcpy(container.sequence_magic.data(), flavor == Flavor::kCtr ? "CSEQ" : "FSEQ", 4);
+    container.most_alignment = kMostAlignment;
+    container.big_endian = flavor == Flavor::kCafe;
+    container.grammar = GrammarFor(flavor);
+
+    container.read = [flavor](std::span<const uint8_t> bytes)
+    {
+        const SequenceFile file = SequenceFile::Read(bytes);
+        if (file.flavor != flavor)
+        {
+            throw xsflib::FormatError("a sequence file of another console");
+        }
+
+        core::SequenceParts parts;
+        parts.version = file.version;
+        parts.data = file.data;
+        for (const Sequence::Label& label : file.labels)
+        {
+            parts.labels.push_back({label.name, label.offset});
+        }
+
+        return parts;
+    };
+
+    // The bytecode follows the header of the DATA block. The first entry of the file's table of blocks gives it.
+    container.write = [flavor](const core::SequenceParts& parts)
+    {
+        SequenceFile file;
+        file.flavor = flavor;
+        file.version = parts.version;
+        file.data = parts.data;
+        for (const nwsnd::LabelOffset& label : parts.labels)
+        {
+            file.labels.push_back({label.name, label.offset});
+        }
+
+        core::WrittenFile written;
+        written.bytes = file.Write();
+        written.bytecode = xsflib::Reader(written.bytes, flavor == Flavor::kCafe).U32(0x18) + 8;
+
+        return written;
+    };
+
+    return container;
+}
+
+// The file of sequence `index`.
+Written WriteFile(const commands::Sequence& sequence, uint32_t version, const Container& container, std::size_t index)
+{
+    nwsnd::Encoded encoded = nwsnd::EncodeSequence(sequence, container.grammar);
+    core::SequenceParts parts;
+    parts.version = version;
+    parts.data = encoded.bytes;
     for (const commands::Label& label : sequence.labels)
     {
         if (label.item >= encoded.offsets.size())
@@ -135,24 +156,24 @@ Written WriteFile(const commands::Sequence& sequence, uint32_t version, Flavor f
                                         " is past the end");
         }
 
-        file.labels.push_back({label.name, encoded.offsets[label.item]});
+        parts.labels.push_back({label.name, encoded.offsets[label.item]});
     }
 
-    // The bytecode follows the header of the DATA block. The first entry of the file's table of blocks gives it.
+    core::WrittenFile file = container.write(parts);
     Written written;
-    written.bytes = file.Write();
-    written.bytecode = xsflib::Reader(written.bytes, flavor == Flavor::kCafe).U32(0x18) + 8;
+    written.bytes = std::move(file.bytes);
+    written.bytecode = file.bytecode;
     written.offsets = std::move(encoded.offsets);
 
     return written;
 }
 
 // Whether `decoded` gives `bytes` back, with each start at its offset.
-bool GivesBack(const Decoded& decoded, Flavor flavor, const nwsnd::Grammar& grammar, std::span<const uint8_t> bytes)
+bool GivesBack(const Decoded& decoded, const Container& container, std::span<const uint8_t> bytes)
 {
     try
     {
-        const Written written = WriteFile(decoded.sequence, decoded.version, flavor, grammar, 0);
+        const Written written = WriteFile(decoded.sequence, decoded.version, container, 0);
         for (const auto& [offset, item] : decoded.entries)
         {
             if (item >= written.offsets.size() || written.offsets[item] != offset)
@@ -226,25 +247,14 @@ bool HoldsData(const Decoded& decoded)
 // stays in the bytes: a file laid out otherwise than the writer lays it out, or one that the decoder can't read. So
 // does a file with bytes that no command reaches, but for zeros at its end. The player can still run into such bytes,
 // such as after a return with no call on the stack. Join can't move the offsets that they hold.
-std::optional<Decoded> Decode(std::span<const uint8_t> bytes, const std::set<uint32_t>& starts, Flavor flavor,
-                              const nwsnd::Grammar& grammar)
+std::optional<Decoded> Decode(std::span<const uint8_t> bytes, const std::set<uint32_t>& starts,
+                              const Container& container)
 {
     try
     {
-        const SequenceFile file = SequenceFile::Read(bytes);
-        if (file.flavor != flavor)
-        {
-            return std::nullopt;
-        }
-
-        std::vector<nwsnd::LabelOffset> labels;
-        for (const Sequence::Label& label : file.labels)
-        {
-            labels.push_back({label.name, label.offset});
-        }
-
+        const core::SequenceParts file = container.read(bytes);
         const std::vector<uint32_t> entries(starts.begin(), starts.end());
-        nwsnd::Decoded read = nwsnd::DecodeSequence(file.data, labels, grammar, entries);
+        nwsnd::Decoded read = nwsnd::DecodeSequence(file.data, file.labels, container.grammar, entries);
         Decoded decoded;
         decoded.sequence = std::move(read.sequence);
         decoded.version = file.version;
@@ -264,12 +274,12 @@ std::optional<Decoded> Decode(std::span<const uint8_t> bytes, const std::set<uin
         {
             Decoded trimmed = decoded;
             trimmed.sequence.items.pop_back();
-            if (GivesBack(trimmed, flavor, grammar, bytes))
+            if (GivesBack(trimmed, container, bytes))
             {
                 return trimmed;
             }
         }
-        if (GivesBack(decoded, flavor, grammar, bytes))
+        if (GivesBack(decoded, container, bytes))
         {
             return decoded;
         }
@@ -496,13 +506,6 @@ std::optional<Structure> ReadGroupFileStructure(std::span<const uint8_t> group, 
     }
 }
 
-// A file that a cut takes: the archive, or a group file beside it. Its bytes, and what the cutter reads of its tables.
-struct Source
-{
-    std::span<const uint8_t> bytes;
-    Structure structure;
-};
-
 // Where a copy of a file lies: in which source of a cut, the archive first, and where it starts there.
 struct CopyAt
 {
@@ -527,11 +530,11 @@ struct Family
 
 // The sequence files of `sources`. Copies that share a file ID belong to one family, in the archive and in the group
 // files. Returns each file ID's family.
-std::map<uint32_t, std::size_t> FamiliesOf(std::span<const Source> sources, Flavor flavor,
+std::map<uint32_t, std::size_t> FamiliesOf(std::span<const Source> sources, const Container& container,
                                            std::vector<Family>& families)
 {
     // The sequence files, by where they lie, and the file IDs that name each.
-    const char* magic = flavor == Flavor::kCtr ? "CSEQ" : "FSEQ";
+    const char* magic = container.sequence_magic.data();
     std::map<std::pair<CopyAt, std::size_t>, std::set<uint32_t>> copies;
     for (std::size_t s = 0; s < sources.size(); ++s)
     {
@@ -595,10 +598,10 @@ std::map<uint32_t, std::size_t> FamiliesOf(std::span<const Source> sources, Flav
     return family_of;
 }
 
-// The alignment that every file of the archive keeps, up to kMostAlignment.
-std::size_t AlignmentOf(const Structure& structure)
+// The alignment that every file of the archive keeps, up to `most`.
+std::size_t AlignmentOf(const Structure& structure, std::size_t most)
 {
-    std::size_t alignment = kMostAlignment;
+    std::size_t alignment = most;
     for (const Location& file : structure.files)
     {
         while (file.start % alignment != 0)
@@ -985,98 +988,6 @@ std::vector<Field> FieldsOf(const Structure& structure, const Pieces& placed, st
     return fields;
 }
 
-// Cuts `sources`, the archive and the group files beside it, by their structures: the families of sequence files that
-// decode, the other files that become runs, each with its padding, and the fields. Throws xsflib::FormatError for a
-// field that the pieces can't place.
-Layout CutBy(std::span<const Source> sources, Flavor flavor)
-{
-    // Each family's starts, and its commands when every copy holds the same bytes and they decode.
-    std::vector<Family> families;
-    const std::map<uint32_t, std::size_t> family_of = FamiliesOf(sources, flavor, families);
-    const Structure& archive = sources.front().structure;
-    for (const Start& start : archive.starts)
-    {
-        const auto found = family_of.find(start.file);
-        if (found != family_of.end())
-        {
-            families[found->second].starts.insert(start.offset);
-        }
-    }
-
-    const nwsnd::Grammar grammar = GrammarFor(flavor);
-    for (Family& family : families)
-    {
-        // A sequence file that only group files hold stays in their bytes. The archive's tables hold its sounds'
-        // starts, and no field reaches from the archive into a group file.
-        if (family.size == 0 || family.copies.front().source != 0)
-        {
-            continue;
-        }
-
-        const CopyAt& front = family.copies.front();
-        const std::span<const uint8_t> first = sources[front.source].bytes.subspan(front.start, family.size);
-        auto same = [&](const CopyAt& copy)
-        {
-            return std::ranges::equal(sources[copy.source].bytes.subspan(copy.start, family.size), first);
-        };
-        if (std::ranges::all_of(family.copies, same))
-        {
-            family.decoded = Decode(first, family.starts, flavor, grammar);
-            family.kept = family.decoded.has_value();
-        }
-    }
-
-    std::vector<std::size_t> alignments;
-    for (const Source& source : sources)
-    {
-        alignments.push_back(AlignmentOf(source.structure));
-    }
-    LeaveOut(sources, alignments, families);
-
-    // The archive comes first, and its copies give the families their sequences.
-    Layout layout;
-    layout.flavor = flavor;
-    layout.group_files.resize(sources.size() - 1);
-    for (std::size_t s = 0; s < sources.size(); ++s)
-    {
-        const Source& source = sources[s];
-        std::vector<Piece>& pieces = s == 0 ? layout.pieces : layout.group_files[s - 1].pieces;
-        std::vector<Copy> copies = CopiesOf(families, s, alignments[s], source.bytes.size());
-        AddRuns(source.bytes, source.structure, alignments[s], copies);
-        const Pieces placed(source.bytes, families, std::move(copies), alignments[s], layout.sequences, pieces);
-        std::vector<Field> fields = FieldsOf(source.structure, placed, pieces);
-        if (s > 0)
-        {
-            layout.group_files[s - 1].fields = std::move(fields);
-            continue;
-        }
-
-        layout.fields = std::move(fields);
-
-        // A sound's start counts from the bytecode's first item.
-        for (const Start& start : archive.starts)
-        {
-            const auto found = family_of.find(start.file);
-            if (!start.at || found == family_of.end() || !families[found->second].kept)
-            {
-                continue;
-            }
-
-            const Family& family = families[found->second];
-            const std::optional<Place> at = placed.FieldAt(*start.at);
-            if (!at)
-            {
-                throw xsflib::FormatError("a sound's start that the pieces can't place");
-            }
-
-            layout.fields.push_back({*at, Place{family.piece, 0, true},
-                                     Place{family.piece, family.decoded->entries.at(start.offset), true}});
-        }
-    }
-
-    return layout;
-}
-
 // A piece that Join has laid out: where it starts, its size, and where its items lie.
 struct Laid
 {
@@ -1291,7 +1202,15 @@ Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t
             sources.push_back({group_file, ReadGroupFileStructure(group_file, options.flavor).value_or(Structure{})});
         }
 
-        return CutBy(sources, options.flavor);
+        core::Cutting cut = core::CutBy(sources, ContainerOf(options.flavor));
+        Layout layout;
+        layout.flavor = options.flavor;
+        layout.sequences = std::move(cut.sequences);
+        layout.pieces = std::move(cut.pieces);
+        layout.fields = std::move(cut.fields);
+        layout.group_files = std::move(cut.group_files);
+
+        return layout;
     }
     catch (const xsflib::FormatError&)
     {
@@ -1315,109 +1234,12 @@ Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t
 std::vector<uint8_t> Join(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
                           std::span<const Field> fields)
 {
-    // The pieces, one after another.
-    const nwsnd::Grammar grammar = GrammarFor(flavor);
-    std::vector<uint8_t> bytes;
-    std::vector<Laid> laid;
-    for (const Piece& piece : pieces)
-    {
-        Laid& place = laid.emplace_back(Laid{.start = bytes.size()});
-        if (const auto* run = std::get_if<std::vector<uint8_t>>(&piece))
-        {
-            bytes.insert(bytes.end(), run->begin(), run->end());
-            place.run = true;
-        }
-        else if (const auto* file = std::get_if<SequencePiece>(&piece))
-        {
-            if (file->sequence >= sequences.size())
-            {
-                throw std::invalid_argument("a piece names sequence " + std::to_string(file->sequence) +
-                                            ", and there are " + std::to_string(sequences.size()));
-            }
-
-            const Written written =
-                WriteFile(sequences[file->sequence], file->version, flavor, grammar, file->sequence);
-            for (const uint32_t offset : written.offsets)
-            {
-                place.items.push_back(bytes.size() + written.bytecode + offset);
-            }
-            bytes.insert(bytes.end(), written.bytes.begin(), written.bytes.end());
-        }
-        else
-        {
-            const uint32_t alignment = std::get<Padding>(piece).alignment;
-            if (alignment == 0)
-            {
-                throw std::invalid_argument("padding to a multiple of 0 bytes");
-            }
-
-            bytes.resize(AlignUp(bytes.size(), alignment));
-        }
-        place.size = bytes.size() - place.start;
-    }
-    laid.push_back({.start = bytes.size()});
-
-    // Each field's distance, in the archive's byte order.
-    for (const Field& field : fields)
-    {
-        const std::size_t at = PositionOf(field.at, laid);
-        if (field.at.item || field.at.piece >= pieces.size() || !laid[field.at.piece].run ||
-            field.at.offset + std::size_t{4} > laid[field.at.piece].size)
-        {
-            throw std::invalid_argument("a field lies outside a run of bytes");
-        }
-
-        const std::size_t from = PositionOf(field.from, laid);
-        const std::size_t to = PositionOf(field.to, laid);
-        if (to < from || to - from > 0xFFFFFFFF)
-        {
-            throw std::invalid_argument("a field's distance, from " + std::to_string(from) + " to " +
-                                        std::to_string(to) + ", doesn't fit 32 bits");
-        }
-
-        const auto distance = static_cast<uint32_t>(to - from);
-        flavor == Flavor::kCafe ? xsflib::StoreBe32(&bytes[at], distance) : xsflib::StoreLe32(&bytes[at], distance);
-    }
-
-    return bytes;
+    return core::JoinBy(ContainerOf(flavor), sequences, pieces, fields);
 }
 
 std::vector<std::size_t> Starts(std::span<const uint8_t> archive, Flavor flavor, std::span<const Piece> pieces)
 {
-    // A file's header gives the file's size in its 32 bits at 0x0C.
-    constexpr std::size_t kSizeField = 0x0C;
-    const xsflib::Reader reader(archive, flavor == Flavor::kCafe);
-    std::vector<std::size_t> starts;
-    std::size_t position = 0;
-    for (const Piece& piece : pieces)
-    {
-        starts.push_back(position);
-        if (const auto* run = std::get_if<std::vector<uint8_t>>(&piece))
-        {
-            position += run->size();
-        }
-        else if (std::holds_alternative<SequencePiece>(piece))
-        {
-            if (position + kSizeField + 4 > archive.size())
-            {
-                throw std::invalid_argument("a sequence piece starts past the archive's end");
-            }
-
-            position += reader.U32(position + kSizeField);
-        }
-        else
-        {
-            position = AlignUp(position, std::max<uint32_t>(std::get<Padding>(piece).alignment, 1));
-        }
-
-        if (position > archive.size())
-        {
-            throw std::invalid_argument("a piece runs past the archive's end");
-        }
-    }
-    starts.push_back(position);
-
-    return starts;
+    return core::StartsBy(ContainerOf(flavor), archive, pieces);
 }
 
 std::vector<Piece> ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences,
@@ -1481,7 +1303,6 @@ void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const
                       std::span<const PlayerInfo> players)
 {
     const bool big_endian = flavor == Flavor::kCafe;
-    const bool ctr = flavor == Flavor::kCtr;
     const xsflib::Reader r(archive, big_endian);
     std::vector<Distance> distances;
     const std::map<uint16_t, std::size_t> tables = TablesOf(r, BlockOf(ReadBlocks(r, 0, distances), kInfoBlock) + 8);
@@ -1500,16 +1321,13 @@ void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const
     {
         const SoundInfo& sound = sounds[i];
         const std::size_t p = entries[i];
-        if (!ctr)
-        {
-            put(p + 4, sound.player_id, 0xFFFFFFFF);
-        }
+        put(p + 4, sound.player_id, 0xFFFFFFFF);
         put(p + 8, big_endian ? uint32_t{sound.volume} << 24 : sound.volume, big_endian ? 0xFF000000 : 0xFF);
         if (const std::optional<std::size_t> pan = OptionAt(r, p + 20, 1))
         {
             put(*pan, sound.pan_mode | uint32_t{sound.pan_curve} << 8, 0xFFFF);
         }
-        if (const std::optional<std::size_t> priority = ctr ? std::nullopt : OptionAt(r, p + 20, 2))
+        if (const std::optional<std::size_t> priority = OptionAt(r, p + 20, 2))
         {
             put(*priority, sound.player_priority | uint32_t{sound.actor_player_id} << 8, 0xFFFF);
         }
@@ -1543,14 +1361,11 @@ void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const
         }
     }
 
-    // Each player's sound limit. The reader reads the 3DS's players with its other rules.
-    if (!ctr)
+    // Each player's sound limit.
+    const std::vector<std::size_t> rows = EntriesOf(r, tables, kPlayerTable);
+    for (std::size_t i = 0; i < rows.size() && i < players.size(); ++i)
     {
-        const std::vector<std::size_t> rows = EntriesOf(r, tables, kPlayerTable);
-        for (std::size_t i = 0; i < rows.size() && i < players.size(); ++i)
-        {
-            put(rows[i], players[i].playable_sound_max, 0xFFFFFFFF);
-        }
+        put(rows[i], players[i].playable_sound_max, 0xFFFFFFFF);
     }
 }
 
@@ -1594,7 +1409,7 @@ std::vector<ValuePlaces> TableValuePlaces(std::span<const uint8_t> archive, Flav
     {
         ValuePlaces& place = places.emplace_back();
         place.pan = OptionAt(r, sound + 20, 1).has_value();
-        place.priority = flavor != Flavor::kCtr && OptionAt(r, sound + 20, 2).has_value();
+        place.priority = OptionAt(r, sound + 20, 2).has_value();
         const Reference detail = ReadRef(r, sound + 12);
         if (detail.type == kSequenceSound)
         {
@@ -1604,5 +1419,203 @@ std::vector<ValuePlaces> TableValuePlaces(std::span<const uint8_t> archive, Flav
 
     return places;
 }
+
+namespace core
+{
+
+Cutting CutBy(std::span<const Source> sources, const Container& container)
+{
+    // Each family's starts, and its commands when every copy holds the same bytes and they decode.
+    std::vector<Family> families;
+    const std::map<uint32_t, std::size_t> family_of = FamiliesOf(sources, container, families);
+    const Structure& archive = sources.front().structure;
+    for (const Start& start : archive.starts)
+    {
+        const auto found = family_of.find(start.file);
+        if (found != family_of.end())
+        {
+            families[found->second].starts.insert(start.offset);
+        }
+    }
+
+    for (Family& family : families)
+    {
+        // A sequence file that only group files hold stays in their bytes. The archive's tables hold its sounds'
+        // starts, and no field reaches from the archive into a group file.
+        if (family.size == 0 || family.copies.front().source != 0)
+        {
+            continue;
+        }
+
+        const CopyAt& front = family.copies.front();
+        const std::span<const uint8_t> first = sources[front.source].bytes.subspan(front.start, family.size);
+        auto same = [&](const CopyAt& copy)
+        {
+            return std::ranges::equal(sources[copy.source].bytes.subspan(copy.start, family.size), first);
+        };
+        if (std::ranges::all_of(family.copies, same))
+        {
+            family.decoded = Decode(first, family.starts, container);
+            family.kept = family.decoded.has_value();
+        }
+    }
+
+    std::vector<std::size_t> alignments;
+    for (const Source& source : sources)
+    {
+        alignments.push_back(AlignmentOf(source.structure, container.most_alignment));
+    }
+    LeaveOut(sources, alignments, families);
+
+    // The archive comes first, and its copies give the families their sequences.
+    Cutting cut;
+    cut.group_files.resize(sources.size() - 1);
+    for (std::size_t s = 0; s < sources.size(); ++s)
+    {
+        const Source& source = sources[s];
+        std::vector<Piece>& pieces = s == 0 ? cut.pieces : cut.group_files[s - 1].pieces;
+        std::vector<Copy> copies = CopiesOf(families, s, alignments[s], source.bytes.size());
+        AddRuns(source.bytes, source.structure, alignments[s], copies);
+        const Pieces placed(source.bytes, families, std::move(copies), alignments[s], cut.sequences, pieces);
+        std::vector<Field> fields = FieldsOf(source.structure, placed, pieces);
+        if (s > 0)
+        {
+            cut.group_files[s - 1].fields = std::move(fields);
+            continue;
+        }
+
+        cut.fields = std::move(fields);
+
+        // A sound's start counts from the bytecode's first item.
+        for (const Start& start : archive.starts)
+        {
+            const auto found = family_of.find(start.file);
+            if (!start.at || found == family_of.end() || !families[found->second].kept)
+            {
+                continue;
+            }
+
+            const Family& family = families[found->second];
+            const std::optional<Place> at = placed.FieldAt(*start.at);
+            if (!at)
+            {
+                throw xsflib::FormatError("a sound's start that the pieces can't place");
+            }
+
+            cut.fields.push_back({*at, Place{family.piece, 0, true},
+                                  Place{family.piece, family.decoded->entries.at(start.offset), true}});
+        }
+    }
+
+    return cut;
+}
+
+std::vector<uint8_t> JoinBy(const Container& container, std::span<const commands::Sequence> sequences,
+                            std::span<const Piece> pieces, std::span<const Field> fields)
+{
+    // The pieces, one after another.
+    std::vector<uint8_t> bytes;
+    std::vector<Laid> laid;
+    for (const Piece& piece : pieces)
+    {
+        Laid& place = laid.emplace_back(Laid{.start = bytes.size()});
+        if (const auto* run = std::get_if<std::vector<uint8_t>>(&piece))
+        {
+            bytes.insert(bytes.end(), run->begin(), run->end());
+            place.run = true;
+        }
+        else if (const auto* file = std::get_if<SequencePiece>(&piece))
+        {
+            if (file->sequence >= sequences.size())
+            {
+                throw std::invalid_argument("a piece names sequence " + std::to_string(file->sequence) +
+                                            ", and there are " + std::to_string(sequences.size()));
+            }
+
+            const Written written = WriteFile(sequences[file->sequence], file->version, container, file->sequence);
+            for (const uint32_t offset : written.offsets)
+            {
+                place.items.push_back(bytes.size() + written.bytecode + offset);
+            }
+            bytes.insert(bytes.end(), written.bytes.begin(), written.bytes.end());
+        }
+        else
+        {
+            const uint32_t alignment = std::get<Padding>(piece).alignment;
+            if (alignment == 0)
+            {
+                throw std::invalid_argument("padding to a multiple of 0 bytes");
+            }
+
+            bytes.resize(AlignUp(bytes.size(), alignment));
+        }
+        place.size = bytes.size() - place.start;
+    }
+    laid.push_back({.start = bytes.size()});
+
+    // Each field's distance, in the archive's byte order.
+    for (const Field& field : fields)
+    {
+        const std::size_t at = PositionOf(field.at, laid);
+        if (field.at.item || field.at.piece >= pieces.size() || !laid[field.at.piece].run ||
+            field.at.offset + std::size_t{4} > laid[field.at.piece].size)
+        {
+            throw std::invalid_argument("a field lies outside a run of bytes");
+        }
+
+        const std::size_t from = PositionOf(field.from, laid);
+        const std::size_t to = PositionOf(field.to, laid);
+        if (to < from || to - from > 0xFFFFFFFF)
+        {
+            throw std::invalid_argument("a field's distance, from " + std::to_string(from) + " to " +
+                                        std::to_string(to) + ", doesn't fit 32 bits");
+        }
+
+        const auto distance = static_cast<uint32_t>(to - from);
+        container.big_endian ? xsflib::StoreBe32(&bytes[at], distance) : xsflib::StoreLe32(&bytes[at], distance);
+    }
+
+    return bytes;
+}
+
+std::vector<std::size_t> StartsBy(const Container& container, std::span<const uint8_t> archive,
+                                  std::span<const Piece> pieces)
+{
+    // A sequence file's header gives the file's size.
+    const xsflib::Reader reader(archive, container.big_endian);
+    std::vector<std::size_t> starts;
+    std::size_t position = 0;
+    for (const Piece& piece : pieces)
+    {
+        starts.push_back(position);
+        if (const auto* run = std::get_if<std::vector<uint8_t>>(&piece))
+        {
+            position += run->size();
+        }
+        else if (std::holds_alternative<SequencePiece>(piece))
+        {
+            if (position + container.size_field + 4 > archive.size())
+            {
+                throw std::invalid_argument("a sequence piece starts past the archive's end");
+            }
+
+            position += reader.U32(position + container.size_field);
+        }
+        else
+        {
+            position = AlignUp(position, std::max<uint32_t>(std::get<Padding>(piece).alignment, 1));
+        }
+
+        if (position > archive.size())
+        {
+            throw std::invalid_argument("a piece runs past the archive's end");
+        }
+    }
+    starts.push_back(position);
+
+    return starts;
+}
+
+} // namespace core
 
 } // namespace ntdlib::sar

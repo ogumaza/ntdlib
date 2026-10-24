@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -471,6 +472,32 @@ const Bank::Node* Bank::Choose(const Node& node, int key) const
     }
 }
 
+bool Bank::Plays(uint32_t program) const
+{
+    // Find's walk for every key and velocity at once: each entry of a key table that a key reaches, then each entry
+    // of a velocity table that a velocity reaches.
+    const auto plays = [this](const auto& self, const Node& node, int splits) -> bool
+    {
+        if (node.type == kRegion)
+        {
+            return regions_[node.index].wave_index >= 0;
+        }
+
+        std::set<const Node*> reached;
+        for (int key = 0; splits > 0 && key <= 127; key++)
+        {
+            if (const Node* next = Choose(node, key))
+            {
+                reached.insert(next);
+            }
+        }
+
+        return std::ranges::any_of(reached, [&](const Node* next) { return self(self, *next, splits - 1); });
+    };
+
+    return program < instruments_.size() && plays(plays, instruments_[program], 2);
+}
+
 const Region* Bank::Find(uint32_t program, int key, int velocity) const
 {
     if (program >= instruments_.size())
@@ -506,6 +533,158 @@ Wave Bank::ReadWave(std::size_t index, std::span<const uint8_t> wave_data) const
     if (index >= wave_infos_.size())
     {
         throw xsflib::FormatError("no wave " + std::to_string(index) + " (the bank has " +
+                                  std::to_string(wave_infos_.size()) + ")");
+    }
+
+    return Wave::ParseInfo(MakeReader(file_, options_), wave_infos_[index], wave_data, options_);
+}
+
+WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const ReadOptions& options)
+{
+    const xsflib::Reader r = MakeReader(file, options);
+    WaveSoundFile wsd;
+    wsd.file_ = file;
+    wsd.options_ = options;
+    const uint16_t version = CheckHeader(r, "RWSD", options);
+    wsd.version_ = version;
+    const uint32_t data = r.U32(0x10);
+    if (!IsMagic(r, data, "DATA", options))
+    {
+        throw xsflib::FormatError(Short(options) ? "no DATA block" : "an RWSD file has no DATA block");
+    }
+
+    // The DATA block: a count, then a reference to each wave sound. Every reference in the block counts from the
+    // count's place. A wave sound refers to its settings, its tracks and its table of notes.
+    const std::size_t base = data + 8;
+    const auto follow = [&](std::size_t ref_at)
+    {
+        const Reference ref = ReadRef(r, ref_at);
+        if (!ref.IsOffset())
+        {
+            throw xsflib::FormatError(Short(options) ? "a wave sound reference isn't an offset"
+                                                     : "a wave sound of an RWSD file refers to nothing");
+        }
+
+        return base + ref.offset;
+    };
+    const uint32_t count = r.U32(base);
+    if (Short(options) && count > file.size())
+    {
+        throw xsflib::FormatError("invalid wave sound table");
+    }
+
+    int32_t highest_wave = -1;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        // WsdFileReader::ReadWaveSoundInfo (0x8004f2ec): version 1.1 adds the pitch, the pan and the surround pan, and
+        // version 1.2 the sends. The builds from 2008 read the sends from every later version too.
+        const std::size_t sound_at = follow(base + 4 + i * std::size_t{8});
+        const std::size_t info = follow(sound_at);
+        WaveSound sound;
+        if (version >= 0x0101)
+        {
+            sound.pitch = r.F32(info);
+            sound.pan = r.U8(info + 4);
+            sound.surround_pan = r.U8(info + 5);
+        }
+        if (version >= 0x0102)
+        {
+            for (std::size_t bus = 0; bus < sound.fx_sends.size(); bus++)
+            {
+                sound.fx_sends[bus] = r.U8(info + 6 + bus);
+            }
+            sound.main_send = r.U8(info + 9);
+        }
+
+        // ReadWaveSoundNoteInfo (0x8004f40c): version 1.1 adds the note's pan, surround pan and pitch. The builds from
+        // 2008 also read a hold (Mario Kart Wii, 0x800adac0).
+        const std::size_t notes = follow(sound_at + 0x10);
+        const uint32_t note_count = r.U32(notes);
+        if (Short(options) && note_count > file.size())
+        {
+            throw xsflib::FormatError("invalid note table");
+        }
+        for (uint32_t j = 0; j < note_count; j++)
+        {
+            const std::size_t at = follow(notes + 4 + j * std::size_t{8});
+            Note note;
+            note.wave_index = r.S32(at);
+            note.attack = r.U8(at + 4);
+            note.decay = r.U8(at + 5);
+            note.sustain = r.U8(at + 6);
+            note.release = r.U8(at + 7);
+            note.hold = r.U8(at + 8);
+            note.original_key = r.U8(at + 0xC);
+            note.volume = r.U8(at + 0xD);
+            if (version >= 0x0101)
+            {
+                note.pan = r.U8(at + 0xE);
+                note.surround_pan = r.U8(at + 0xF);
+                note.pitch = r.F32(at + 0x10);
+            }
+            highest_wave = std::max(highest_wave, note.wave_index);
+            sound.notes.push_back(note);
+        }
+
+        wsd.sounds_.push_back(std::move(sound));
+    }
+
+    // The WAVE block holds an offset to each wave info from the block's start (ReadWaveParam, 0x8004f51c). From version
+    // 1.1, a count comes first. Version 1.0's offsets follow the block's header. The notes then give how many there
+    // are. A file without the block has an RWAR for its wave data.
+    const uint32_t wave = r.U32(0x18);
+    if (wave != 0 && IsMagic(r, wave, "WAVE", options))
+    {
+        wsd.wave_block_ = wave;
+        std::size_t table = wave + std::size_t{8};
+        std::size_t waves = highest_wave >= 0 ? static_cast<std::size_t>(highest_wave) + 1 : 0;
+        if (version >= 0x0101)
+        {
+            waves = r.U32(wave + 8);
+            table += 4;
+        }
+        if (Short(options) && waves > file.size())
+        {
+            throw xsflib::FormatError("invalid wave table");
+        }
+
+        for (std::size_t i = 0; i < waves; i++)
+        {
+            wsd.wave_infos_.push_back(wave + std::size_t{r.U32(table + i * 4)});
+        }
+    }
+
+    return wsd;
+}
+
+WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, std::span<const uint8_t> wave_data,
+                                   const ReadOptions& options)
+{
+    // The waves come from the WAVE block, over the raw samples, or else from the RWAR that is a later file's wave data.
+    WaveSoundFile wsd = Parse(file, options);
+    if (wsd.HasWaveBlock())
+    {
+        for (std::size_t i = 0; i < wsd.wave_infos_.size(); i++)
+        {
+            wsd.waves_.push_back(wsd.ReadWave(i, wave_data));
+        }
+    }
+    else if (!wave_data.empty())
+    {
+        for (const std::span<const uint8_t> rwav : WaveArchive::Parse(wave_data, options).waves)
+        {
+            wsd.waves_.push_back(Wave::ParseFile(rwav, options));
+        }
+    }
+
+    return wsd;
+}
+
+Wave WaveSoundFile::ReadWave(std::size_t index, std::span<const uint8_t> wave_data) const
+{
+    if (index >= wave_infos_.size())
+    {
+        throw xsflib::FormatError("no wave " + std::to_string(index) + " (the wave sound file has " +
                                   std::to_string(wave_infos_.size()) + ")");
     }
 

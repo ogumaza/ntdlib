@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Checks LoadSetArchive (ntdlib/sar/set_archive.h) in both byte orders: an archive with a group file that the set holds
-// beside it, a set without the archive, and a set without the group file.
+// beside it, a set without the archive, and a set without the group file. Also a 3DS archive and its group file from a
+// const set.
 
 #include <algorithm>
 #include <cstdint>
@@ -30,6 +31,18 @@ namespace sar_files = ntdlib::testing::sar_files;
 struct Set
 {
     std::vector<uint8_t>* File(const std::string& path)
+    {
+        const auto it = files.find(path);
+        return it == files.end() ? nullptr : &it->second;
+    }
+
+    std::map<std::string, std::vector<uint8_t>> files;
+};
+
+// A set that a player reads without changing it: File gives its files as const.
+struct ConstSet
+{
+    const std::vector<uint8_t>* File(const std::string& path) const
     {
         const auto it = files.find(path);
         return it == files.end() ? nullptr : &it->second;
@@ -98,12 +111,36 @@ void TestLoad(bool big_endian)
           order + "a set without the group file");
 }
 
+// A const set keeps its files' bytes, and the archive takes copies of them.
+void TestLoadFromConstSet()
+{
+    namespace sar = ntdlib::sar;
+    sar_files::ArchiveSpec spec;
+    spec.files = {{Bytes("a file the archive holds"), "", false}, {{}, "", true}};
+    spec.groups = {{"GROUP_TEST", sar::kExternalGroupFile}};
+    const std::vector<uint8_t> archive_bytes = sar_files::Archive(sar::Flavor::kCtr, spec);
+    const std::vector<uint8_t> group_bytes =
+        sar_files::Group(sar::Flavor::kCtr, {{1, Bytes("a file only the group holds")}});
+    const ConstSet set{{{"Sound.bcsar", archive_bytes}, {"GROUP_TEST.bcgrp", group_bytes}}};
+    const sar::Options kOptions{sar::Flavor::kCtr, {}, false, sar::Rules::kStopAtFirstProblem};
+
+    std::optional<SoundArchive> archive;
+    const std::optional<std::string> loaded =
+        LoadSetArchive(set, "Sound.bcsar", {"GROUP_TEST.bcgrp"}, kOptions, archive);
+    Check(!loaded && archive && StartsWith(archive->FileData(0), Bytes("a file the archive holds")) &&
+              StartsWith(archive->FileData(1), Bytes("a file only the group holds")),
+          "3DS: the archive with its group file, from a const set");
+    Check(set.files.at("Sound.bcsar") == archive_bytes && set.files.at("GROUP_TEST.bcgrp") == group_bytes,
+          "3DS: a const set keeps its files' bytes");
+}
+
 } // namespace
 
 int main()
 {
     TestLoad(true);
     TestLoad(false);
+    TestLoadFromConstSet();
 
     return xsflib::testing::Summary("sar_set_archive");
 }

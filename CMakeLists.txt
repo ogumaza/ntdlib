@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 1.12.0 LANGUAGES C CXX)
+project(ntdlib VERSION 1.13.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -70,11 +70,20 @@ xsflib_add_project_test(ntdlib fused ntdlib::common)
 xsflib_add_project_test(ntdlib dol ntdlib::common)
 
 # The decoders of raw sample data (DSP-ADPCM, IMA-ADPCM, AFC, PCM8 and PCM16), the decoding of a sound archive's wave
-# to PCM, and the encoder of DSP-ADPCM.
-xsflib_add_project_library(ntdlib wave src/wave/adpcm.cpp src/wave/decode.cpp src/wave/encode.cpp src/wave/pcm.cpp)
+# to PCM, the encoders of DSP-ADPCM and IMA-ADPCM, and a band-limited interpolator for sample-rate conversion.
+xsflib_add_project_library(ntdlib wave src/wave/adpcm.cpp src/wave/decode.cpp src/wave/encode.cpp
+                           src/wave/encode_ima.cpp src/wave/pcm.cpp src/wave/sinc.cpp)
 target_link_libraries(ntdlib_wave PRIVATE xsflib::common)
 xsflib_add_project_test(ntdlib wave ntdlib::wave)
 xsflib_add_project_test(ntdlib wave_encode ntdlib::wave)
+xsflib_add_project_test(ntdlib wave_encode_ima ntdlib::wave)
+xsflib_add_project_test(ntdlib wave_sinc ntdlib::wave)
+
+# The 3DS's effects on the aux buses, as the ARM11 runs them: the reverb and the delay of nw::snd and nn::snd, and the
+# single-precision arithmetic of their setup.
+xsflib_add_project_library(ntdlib ctr_fx src/ctr_fx/effects.cpp src/ctr_fx/vfp.cpp)
+xsflib_add_project_test(ntdlib ctr_fx ntdlib::ctr_fx)
+xsflib_add_project_test(ntdlib ctr_fx_vfp ntdlib::ctr_fx)
 
 # The readers of JAudio2's sound data: the start-up archive (BAA) with its sound table, sequence collection, wave
 # systems and banks, and RARC archives. The readers of JAudio1's start-up archive (AAF). And the length analysis of a
@@ -108,7 +117,7 @@ endif()
 
 # The readers of NintendoWare for Revolution's sound archives for the Wii (RSAR), with their files and the decoding of
 # their waves.
-xsflib_add_project_library(ntdlib rsar src/rsar/formats.cpp src/rsar/decode.cpp)
+xsflib_add_project_library(ntdlib rsar src/rsar/formats.cpp src/rsar/decode.cpp src/rsar/tables.cpp)
 target_link_libraries(ntdlib_rsar PUBLIC ntdlib::common ntdlib::wave)
 xsflib_add_project_test(ntdlib rsar ntdlib::rsar)
 
@@ -247,9 +256,11 @@ xsflib_add_project_library(ntdlib commands src/commands/sequence.cpp src/command
 
 # The model of NintendoWare's sound libraries (nw::snd in NintendoWare for Cafe, nn::atk on the Switch, the 3DS's
 # nw::snd and the Wii's NW4R SND): their tables, each console's arithmetic, the envelope and the LFO, and the sequence
-# player as a template on a policy.
-xsflib_add_project_library(ntdlib nwsnd src/nwsnd/envelope.cpp src/nwsnd/util.cpp)
-target_link_libraries(ntdlib_nwsnd PUBLIC ntdlib::common)
+# player as a template on a policy. The player reads its commands through the decoder of the bytecode, in the form of
+# ntdlib::commands. The encoder and the units of each console's values come with the decoder.
+xsflib_add_project_library(ntdlib nwsnd src/nwsnd/commands.cpp src/nwsnd/envelope.cpp src/nwsnd/units.cpp
+                           src/nwsnd/util.cpp)
+target_link_libraries(ntdlib_nwsnd PUBLIC ntdlib::commands ntdlib::common)
 xsflib_add_project_test(ntdlib nwsnd ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_sequence ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_voice ntdlib::nwsnd)
@@ -258,9 +269,12 @@ xsflib_add_project_test(ntdlib nwsnd_ctr ntdlib::nwsnd)
 xsflib_add_project_test(ntdlib nwsnd_revolution ntdlib::nwsnd)
 
 # The decoder and the encoder of the bytecode of NintendoWare's sequences, in the form of ntdlib::commands, and the
-# units of each console's values. It's a separate target. A program can use ntdlib::nwsnd without it.
-xsflib_add_project_library(ntdlib nwsnd_commands src/nwsnd/commands.cpp src/nwsnd/units.cpp)
-target_link_libraries(ntdlib_nwsnd_commands PUBLIC ntdlib::commands ntdlib::nwsnd)
+# units of each console's values. ntdlib::nwsnd holds them, and the target names them for the programs that link it.
+add_library(ntdlib_nwsnd_commands INTERFACE)
+add_library(ntdlib::nwsnd_commands ALIAS ntdlib_nwsnd_commands)
+target_link_libraries(ntdlib_nwsnd_commands INTERFACE ntdlib::nwsnd)
+set_target_properties(ntdlib_nwsnd_commands PROPERTIES EXPORT_NAME nwsnd_commands)
+set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_nwsnd_commands)
 xsflib_add_project_test(ntdlib nwsnd_commands ntdlib::nwsnd_commands)
 xsflib_add_project_test(ntdlib nwsnd_units ntdlib::nwsnd_commands)
 
@@ -305,6 +319,13 @@ xsflib_add_project_test(ntdlib sar_tables ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_wave_file ntdlib::sar_layout)
 xsflib_add_project_test(ntdlib sar_wave_sound_edit ntdlib::sar_layout)
 
+# A sound archive of the Wii (RSAR) cut into pieces for an editor, and joined again, by the rules of sar_layout: its
+# sequence files (RSEQ), decoded into commands, and the runs of bytes between them. Also the reader and the writer of
+# the sequence files.
+xsflib_add_project_library(ntdlib rsar_layout src/rsar/layout.cpp src/rsar/sequence_file.cpp)
+target_link_libraries(ntdlib_rsar_layout PUBLIC ntdlib::rsar ntdlib::sar_layout)
+xsflib_add_project_test(ntdlib rsar_layout ntdlib::rsar_layout)
+
 # The Switch's audio renderer (nn::audio) with its I3DL2 reverb, and archive mode's model of nn::atk on it: an engine
 # that plays a sound archive's sequences, wave sounds and stream sounds as the Switch does, without the game's code.
 xsflib_add_project_library(ntdlib nx src/nx/audio/dsp.cpp src/nx/audio/i3dl2.cpp src/nx/audio/renderer.cpp
@@ -313,8 +334,36 @@ xsflib_add_project_library(ntdlib nx src/nx/audio/dsp.cpp src/nx/audio/i3dl2.cpp
                            src/nx/atk/voice_renderer.cpp)
 target_link_libraries(ntdlib_nx PUBLIC ntdlib::nwsnd_archive PRIVATE ntdlib::common ntdlib::wave)
 xsflib_add_project_test(ntdlib nx_audio ntdlib::nx)
+xsflib_add_project_test(ntdlib nx_audio_enhanced ntdlib::nx)
+xsflib_add_project_test(ntdlib nx_audio_without_mixing ntdlib::nx)
 xsflib_add_project_test(ntdlib nx_atk ntdlib::nx)
 xsflib_add_project_test(ntdlib nx_atk_engine ntdlib::nx)
+
+# The Wii's effects for AX's aux buses (AXFX), from the RVL SDK. Each model follows the games' code operation for
+# operation, in single-precision floats where the code uses them.
+xsflib_add_project_library(ntdlib rvl_axfx src/rvl/axfx/chorus.cpp src/rvl/axfx/delay.cpp src/rvl/axfx/reverb_hi.cpp
+                           src/rvl/axfx/reverb_std.cpp)
+target_link_libraries(ntdlib_rvl_axfx PRIVATE ntdlib::common)
+xsflib_add_project_test(ntdlib rvl_axfx ntdlib::rvl_axfx)
+
+# The CPU side of the Wii's AX, from the RVL SDK: the voices and their priorities, the copy of the voices' parameter
+# blocks into main memory each frame, the depop block, the command list that controls what the microcode mixes, and
+# the mail exchange with the microcode on the DSP. A model of the microcode of December 2006 runs a frame's command
+# list without the DSP.
+xsflib_add_project_library(ntdlib rvl_ax src/rvl/ax/dsp_link.cpp src/rvl/ax/pb.cpp src/rvl/ax/render.cpp
+                           src/rvl/ax/system.cpp src/rvl/ax/voice.cpp)
+target_link_libraries(ntdlib_rvl_ax PUBLIC ntdlib::ax ntdlib::dsp ntdlib::rvl_axfx PRIVATE ntdlib::common
+                                                                                         ntdlib::flipper)
+xsflib_add_project_test(ntdlib rvl_ax ntdlib::rvl_ax)
+xsflib_add_project_test(ntdlib rvl_render ntdlib::rvl_ax)
+
+# NW4R SND's engine on the Wii's AX: archive mode's model, which plays a sound archive's sequences and wave sounds as
+# the Wii does.
+xsflib_add_project_library(ntdlib rvl_snd src/rvl/snd/driver.cpp src/rvl/snd/effects.cpp src/rvl/snd/engine.cpp
+                           src/rvl/snd/sequence.cpp src/rvl/snd/wave_sound.cpp)
+target_link_libraries(ntdlib_rvl_snd PUBLIC ntdlib::rvl_ax ntdlib::rvl_axfx ntdlib::nwsnd ntdlib::rsar PRIVATE
+                                                                                                   ntdlib::common)
+xsflib_add_project_test(ntdlib rvl_snd ntdlib::rvl_snd)
 
 # The Wii U's AX, the system library's effects for AX's aux buses (AXFX), and archive mode's model of nw::snd on them:
 # an engine that plays a sound archive's sequences, wave sounds and stream sounds as the Wii U does, without the game's
@@ -325,8 +374,10 @@ xsflib_add_project_library(ntdlib cafe src/cafe/ax/render.cpp src/cafe/ax/resamp
                            src/cafe/snd/effects.cpp src/cafe/snd/engine.cpp src/cafe/snd/renderer.cpp
                            src/cafe/snd/sequence.cpp src/cafe/snd/sound_players.cpp)
 target_link_libraries(ntdlib_cafe PUBLIC ntdlib::ax ntdlib::dsp ntdlib::nwsnd_archive PRIVATE ntdlib::common
-                                                                                              xsflib::rip)
+                                                                                              ntdlib::wave xsflib::rip)
 xsflib_add_project_test(ntdlib cafe_ax ntdlib::cafe)
+xsflib_add_project_test(ntdlib cafe_ax_enhanced ntdlib::cafe)
+xsflib_add_project_test(ntdlib cafe_ax_without_mixing ntdlib::cafe)
 xsflib_add_project_test(ntdlib cafe_snd ntdlib::cafe xsflib::rip)
 # An archive model holds the AX system by value, and a snapshot of one is nearly as large. The compiler inlines the
 # tests into main. main's frame then takes most of a megabyte. A Windows program's main thread gets 1 MB of stack,
@@ -335,9 +386,13 @@ if (MSVC AND TARGET ntdlib_cafe_snd_test)
     target_link_options(ntdlib_cafe_snd_test PRIVATE "LINKER:/STACK:8388608")
 endif()
 
-# The length analysis of a sequence sound of the Wii U or the Switch, on the model of the console's sound library, with
-# xsflib's analysis (ntdlib/nwsnd/length_model.h). A program links ntdlib::nx for the Switch's part
-# (ntdlib/nx/atk/length_model.h), or ntdlib::cafe for the Wii U's (ntdlib/cafe/snd/length_model.h).
+# The 3DS's DSP in Teakra and archive mode's model on it (cmake/NtdlibCtr.cmake).
+include(cmake/NtdlibCtr.cmake)
+
+# The length analysis of a sequence sound of the 3DS, the Wii U or the Switch, on the model of the console's sound
+# library, with xsflib's analysis (ntdlib/nwsnd/length_model.h). A program links ntdlib::nx for the Switch's part
+# (ntdlib/nx/atk/length_model.h), ntdlib::cafe for the Wii U's (ntdlib/cafe/snd/length_model.h), or ntdlib::ctr for
+# the 3DS's (ntdlib/ctr/snd/length_model.h).
 add_library(ntdlib_nwsnd_lengths INTERFACE)
 add_library(ntdlib::nwsnd_lengths ALIAS ntdlib_nwsnd_lengths)
 target_include_directories(ntdlib_nwsnd_lengths INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -347,6 +402,9 @@ target_compile_features(ntdlib_nwsnd_lengths INTERFACE cxx_std_20)
 set_target_properties(ntdlib_nwsnd_lengths PROPERTIES EXPORT_NAME nwsnd_lengths)
 set_property(GLOBAL APPEND PROPERTY NTDLIB_INSTALLED_TARGETS ntdlib_nwsnd_lengths)
 xsflib_add_project_test(ntdlib nwsnd_length_model ntdlib::nwsnd_lengths ntdlib::nx ntdlib::cafe)
+if (TARGET ntdlib_ctr)
+    xsflib_add_project_test(ntdlib ctr_length_model ntdlib::nwsnd_lengths ntdlib::ctr)
+endif()
 
 # The archive play test's main, for a test that plays a sound archive's sounds on a model of the sound library
 # (ntdlib/testing/archive_play.h).

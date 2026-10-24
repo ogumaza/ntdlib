@@ -9,6 +9,7 @@
 // key, tuning, volume, pan, envelope and loop. Track overrides apply to the envelope. Presets used by MIDI channel 10
 // also get a copy in bank 128. Synths take drum instruments from there.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -17,11 +18,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "seqlib/loop.h"
-#include "seqlib/midi/performance_writer.h"
-#include "seqlib/sf2/presets.h"
-#include "seqlib/sf2/soundfont.h"
 
 #include "ntdlib/rsar/decode.h"
 #include "ntdlib/rsar/formats.h"
@@ -33,6 +29,11 @@
 #include "ntdlib/sequence_export/rsar_instruments.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
+#include "seqlib/loop.h"
+#include "seqlib/midi/performance_writer.h"
+#include "seqlib/sf2/presets.h"
+#include "seqlib/sf2/soundfont.h"
+
 #include "sequence_export/sf2_build.h"
 #include "sequence_export/wii_pan.h"
 #include "sequence_export/zone_low_pass.h"
@@ -235,6 +236,71 @@ Conversion ConvertTogether(const rsar::SoundArchive& archive, std::span<const ui
     }
 
     return ConvertPerformance(std::move(performance), banks, name, source, settings, program);
+}
+
+BankConversion ConvertBank(const rsar::SoundArchive& archive, std::size_t bank, uint8_t pan_mode,
+                           const Settings& settings, const std::string& program)
+{
+    if (bank >= archive.Banks().size())
+    {
+        throw std::out_of_range("the archive has no bank " + std::to_string(bank));
+    }
+
+    // The programs that play a region, and the loudest of their regions.
+    RsarBankSet banks(archive, static_cast<uint32_t>(bank), settings);
+    std::vector<uint32_t> programs;
+    int loudest = 0;
+    if (const rsar::Bank* parsed = banks.GetBank())
+    {
+        for (uint32_t p = 0; p < parsed->InstrumentCount(); p++)
+        {
+            const std::vector<RsarPlayedRanges> played = RegionRanges(*parsed, p);
+            if (!played.empty())
+            {
+                programs.push_back(p);
+            }
+            for (const RsarPlayedRanges& ranges : played)
+            {
+                loudest = std::max(loudest, static_cast<int>(ranges.region->volume));
+            }
+        }
+    }
+
+    // Region volumes can reach 255, but SoundFont zones can't amplify their samples. Above 127, every zone takes the
+    // attenuation that keeps the loudest region at full level, as in a sequence's SoundFont (SoundFontCut).
+    BankConversion c;
+    const double quieter = RegionVolumeCut(loudest);
+    if (quieter > 0.0)
+    {
+        c.warnings.push_back(RegionVolumeCutText(quieter));
+    }
+
+    // Each instrument becomes a preset at its program, with a track's starting settings. Those set no filter. The
+    // presets therefore need no performance for the fit of their low-passes (ZoneLowPass). The performer plays a
+    // sound's stereo waves the same way (Performance::balance).
+    const bool balance = pan_mode == 1 && !settings.wii_build.October2006();
+    const bool since_march_2008 = settings.wii_build.SinceMarch2008();
+    const Performance kNone;
+    const auto build = [&](std::span<const uint32_t> run)
+    {
+        SoundFontBuilder builder(banks, quieter, balance, since_march_2008, kNone, settings);
+        for (const uint32_t p : run)
+        {
+            builder.Add(p, StartingPresetKey(p, settings), "Program " + std::to_string(p));
+        }
+
+        return builder;
+    };
+    SoundFontBuilder whole = build(programs);
+    const std::string& name = banks.BankName();
+    c.sound_fonts = BankSoundFonts(
+        whole.Result(), programs, [&](std::span<const uint32_t> run) { return std::move(build(run).Result()); }, name,
+        program);
+    c.sfz = BuildBankSfz(programs, banks, name, balance, settings, program);
+    c.warnings.insert(c.warnings.end(), whole.Warnings().begin(), whole.Warnings().end());
+    c.warnings.insert(c.warnings.end(), banks.Errors().begin(), banks.Errors().end());
+
+    return c;
 }
 
 } // namespace ntdlib::sequence_export

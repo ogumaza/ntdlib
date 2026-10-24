@@ -164,8 +164,8 @@ std::vector<FileChunk> FindGroups(
     {
         for (const std::string& name : missing)
         {
-            std::fprintf(stderr, "warning: group %s is kept outside the archive, and %s.bfgrp isn't there\n",
-                         name.c_str(), name.c_str());
+            std::fprintf(stderr, "warning: group %s is kept outside the archive, and %s isn't there\n", name.c_str(),
+                         sar::GroupFileName(name, options.flavor).c_str());
         }
     }
 
@@ -198,6 +198,24 @@ struct LibraryArchive
 // doesn't follow the archive's other blocks, or when the file table puts a file's place among the FILE block's files or
 // before the archive's start. The library then holds the whole archive.
 std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive, std::span<const uint32_t> sounds);
+
+// The group files beside the archive that `library` holds, cut down to the copies that the models read. `library` is
+// KeepSequenceData's part of `archive` for the sequence sounds `sounds`. A cut group file keeps its header, its INFO
+// block and the blocks after its FILE block, such as INFX, with their bytes. Its FILE block holds the copies that the
+// models read, in the group file's order. Each starts on a multiple of 32 bytes from the file's start, or of 64 bytes
+// on the Switch, as KeepSequenceData lays out the archive's files. The FILE block ends on such a multiple. The first
+// item of each kept copy gives the copy's new place. Every other item with a copy becomes a link to the archive's file,
+// as NintendoWare's tools write a link: a reference of type 0, with 0xFFFFFFFF for its offset and the size. The blocks
+// after the FILE block follow it. The header and the table of blocks give the new sizes and places.
+//
+// The cut group files come in the order of `library.group_files`. Each kept file is read back from the library's
+// archive with them, and compared with the file in `archive`. Nothing when the two differ, when a bank can't be read,
+// when one of `sounds` isn't a sequence sound of the archive, when a copy that the models read isn't an item's copy, or
+// when a group file's blocks don't lie as the tools lay them out: the INFO block and any other before the FILE block,
+// and the rest after it. The library then holds the whole group files.
+std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::SoundArchive& archive,
+                                                                 const LibraryArchive& library,
+                                                                 std::span<const uint32_t> sounds);
 
 // The archive that a game mode's library holds for the sequence sounds `sounds`. The game's sound library reads the
 // archive's header and its INFO block. For each sound that it loads, it then reads the files that the sound plays: the

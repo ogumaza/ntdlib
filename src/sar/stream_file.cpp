@@ -45,15 +45,66 @@ constexpr uint32_t kBlockBytes = 0x2000;
 
 // The settings: the encoding, the loop, the counts, the rate, the loop's start, the samples, the blocks' sizes and
 // samples, the seek's sizes, the reference to the samples, and the regions' size and reference. From version
-// 0x00040000 on, the loop's original start and end follow them.
+// 0x00040000 on, the loop's original start and end follow them. The 3DS's settings of version 0x02000000 end before
+// the regions' size.
 constexpr std::size_t kSettingsSize = 0x44;
+constexpr std::size_t kSettingsWithoutRegions = 0x38;
 constexpr std::size_t kOriginalLoopSize = 8;
 constexpr std::size_t kDspAdpcmInfoSize = 46;
 constexpr uint32_t kRegionInfoSize = 0x100;
 
-// The versions that the writer lays out.
+// The versions that the writer lays out: the Wii U's and the Switch's, then the 3DS's.
 constexpr uint32_t kOldestVersion = 0x00030000;
 constexpr uint32_t kOriginalLoopVersion = 0x00040000;
+constexpr uint32_t kCtrOldestVersion = 0x02000000;
+constexpr uint32_t kCtrRegionsVersion = 0x02010000;
+constexpr uint32_t kCtrOriginalLoopVersion = 0x02030000;
+constexpr uint32_t kCtrNewestVersion = 0x02030100;
+
+// The samples past a loop's end that the 3DS's tools encode, and those past the end of a stream without a loop in
+// version 0x02000000. That version's count of the last block's samples leaves out the last 127.
+constexpr uint32_t kCtrPastLoopEnd = 128;
+constexpr uint32_t kCtrPastEnd = 1;
+constexpr uint32_t kCtrUncounted = 127;
+
+// The layout of a version's settings: their size, and whether they hold the regions' size and reference and the
+// loop's original start and end.
+struct Layout
+{
+    std::size_t settings = kSettingsSize;
+    bool regions = true;
+    bool original_loop = true;
+};
+
+// The layout of version `version` of `flavor`'s files. Throws std::invalid_argument for a version that the writer has
+// no layout for.
+Layout LayoutOf(Flavor flavor, uint32_t version)
+{
+    if (flavor == Flavor::kCtr)
+    {
+        switch (version)
+        {
+        case kCtrOldestVersion:
+            return {kSettingsWithoutRegions, false, false};
+        case kCtrRegionsVersion:
+            return {kSettingsSize, true, false};
+        case kCtrOriginalLoopVersion:
+        case kCtrNewestVersion:
+            return {kSettingsSize, true, true};
+        default:
+            throw std::invalid_argument(
+                "a stream of the 3DS of version 0x02000000, 0x02010000, 0x02030000 or 0x02030100: the writer has no "
+                "layout for another");
+        }
+    }
+    if (version != kOldestVersion && version != kOriginalLoopVersion)
+    {
+        throw std::invalid_argument(
+            "a stream of version 0x00030000 or 0x00040000: the writer has no layout for another");
+    }
+
+    return {kSettingsSize, true, version == kOriginalLoopVersion};
+}
 
 using detail::Out;
 
@@ -160,6 +211,68 @@ uint32_t LastPieceSize(const StreamFile& stream)
     return Aligned(stream.LastBlockSize());
 }
 
+// The samples of the last block up to the stream's end, the uncounted ones included.
+uint32_t LastSamples(const StreamFile& stream)
+{
+    const uint32_t blocks = stream.BlockCount();
+    return blocks == 0 ? 0 : stream.sample_count - (blocks - 1) * stream.block_samples;
+}
+
+// The samples past the end that the last block holds: as many as it has room for.
+uint32_t PastEndInBlock(const StreamFile& stream)
+{
+    return std::min(stream.samples_past_end,
+                    stream.block_samples - std::min(stream.block_samples, LastSamples(stream)));
+}
+
+// The bytes of each channel's pieces in DATA, the piece after the last block included.
+std::size_t PiecesSize(const StreamFile& stream)
+{
+    const uint32_t blocks = stream.BlockCount();
+    return blocks == 0 ? 0
+                       : std::size_t{blocks - 1} * stream.BlockSize() + LastPieceSize(stream) + stream.OverflowSize();
+}
+
+// The samples past the end that the last block holds, from its size. The 3DS's tools encode 128 after a loop, so a
+// count of 128 comes first when it gives the size. Otherwise the fewest that give it. Throws xsflib::FormatError for a
+// size that no count gives.
+uint32_t PastEndOfSize(WaveEncoding encoding, uint32_t last_samples, uint32_t room, uint32_t size)
+{
+    if (kCtrPastLoopEnd <= room && BytesOf(encoding, last_samples + kCtrPastLoopEnd) == size)
+    {
+        return kCtrPastLoopEnd;
+    }
+    for (uint32_t past = 0; past <= room; ++past)
+    {
+        if (BytesOf(encoding, last_samples + past) == size)
+        {
+            return past;
+        }
+    }
+
+    throw xsflib::FormatError("a stream whose blocks don't add up to its samples");
+}
+
+// The samples in a piece of `size` bytes after a full last block that holds `in_block` samples past the end. The
+// 3DS's tools encode 128 past the end in all, so the rest of them come first when they fill the piece. Otherwise the
+// fewest that fill it. Returns nothing for a size that no count fills.
+std::optional<uint32_t> OverflowOfSize(WaveEncoding encoding, uint32_t in_block, std::size_t size)
+{
+    if (in_block < kCtrPastLoopEnd && Aligned(BytesOf(encoding, kCtrPastLoopEnd - in_block)) == size)
+    {
+        return kCtrPastLoopEnd - in_block;
+    }
+    for (uint32_t samples = 1; BytesOf(encoding, samples) <= size; ++samples)
+    {
+        if (Aligned(BytesOf(encoding, samples)) == size)
+        {
+            return samples;
+        }
+    }
+
+    return std::nullopt;
+}
+
 // The header of a file with three blocks: its magic, its byte order mark, its size, its version and the table of
 // blocks, padded. SetBlock fills the table, and the caller sets the file's size.
 void AppendHeader(Out& out, const char* magic, uint32_t version)
@@ -251,13 +364,24 @@ uint32_t StreamFile::BlockCount() const
 
 uint32_t StreamFile::LastBlockSamples() const
 {
-    const uint32_t blocks = BlockCount();
-    return blocks == 0 ? 0 : sample_count - (blocks - 1) * block_samples;
+    const uint32_t last = LastSamples(*this);
+    return last - std::min(last, uncounted_samples);
 }
 
 uint32_t StreamFile::LastBlockSize() const
 {
-    return BytesOf(encoding, LastBlockSamples());
+    return BytesOf(encoding, LastSamples(*this) + PastEndInBlock(*this));
+}
+
+uint32_t StreamFile::OverflowSamples() const
+{
+    return samples_past_end - PastEndInBlock(*this);
+}
+
+uint32_t StreamFile::OverflowSize() const
+{
+    const uint32_t overflow = OverflowSamples();
+    return overflow == 0 ? 0 : Aligned(BytesOf(encoding, overflow));
 }
 
 StreamFile StreamFile::Read(std::span<const uint8_t> file)
@@ -316,11 +440,16 @@ StreamFile StreamFile::Read(std::span<const uint8_t> file)
         s.original_loop_start = s.loop_start;
         s.original_loop_end = s.sample_count;
     }
-    if (block_count != s.BlockCount() || block_size != s.BlockSize() || last_samples != s.LastBlockSamples() ||
-        last_size != s.LastBlockSize() || seek_entry != 4)
+    // The last block's samples that its count leaves out, and the samples past the end that the block holds.
+    const uint32_t counted = LastSamples(s);
+    if (s.block_samples == 0 || block_count != s.BlockCount() || block_size != s.BlockSize() ||
+        last_samples > counted || seek_entry != 4)
     {
         throw xsflib::FormatError("a stream whose blocks don't add up to its samples");
     }
+    s.uncounted_samples = counted - last_samples;
+    const uint32_t room = s.block_samples - counted;
+    s.samples_past_end = PastEndOfSize(s.encoding, counted, room, last_size);
     if (tracks)
     {
         s.tracks = ReadTracks(r, *tracks);
@@ -339,7 +468,27 @@ StreamFile StreamFile::Read(std::span<const uint8_t> file)
         throw xsflib::FormatError("a stream whose blocks don't add up to its samples");
     }
     const std::size_t all = (block_count - 1) * stride + last * channel_count;
-    if (samples + all > data + data_size || seek + 8 + std::size_t{block_count} * channel_count * 4 > seek + seek_size)
+    if (samples + all > data + data_size)
+    {
+        throw xsflib::FormatError("a stream whose blocks run past DATA or SEEK");
+    }
+
+    // A full last block leaves the rest of the samples past the end to a piece of each channel after it, and SEEK holds
+    // an entry for each piece.
+    std::size_t overflow = 0;
+    const std::size_t rest = data + data_size - (samples + all);
+    if (rest != 0 && rest % (std::size_t{channel_count} * kAlignment) == 0 &&
+        BytesOf(s.encoding, counted + room) == last_size)
+    {
+        const std::optional<uint32_t> more = OverflowOfSize(s.encoding, room, rest / channel_count);
+        if (more)
+        {
+            overflow = rest / channel_count;
+            s.samples_past_end = room + *more;
+        }
+    }
+    const std::size_t entries = std::size_t{block_count} + (overflow != 0 ? 1 : 0);
+    if (seek + 8 + entries * channel_count * 4 > seek + seek_size)
     {
         throw xsflib::FormatError("a stream whose blocks run past DATA or SEEK");
     }
@@ -359,16 +508,24 @@ StreamFile StreamFile::Read(std::span<const uint8_t> file)
             throw xsflib::FormatError("a DSP-ADPCM channel without its DSP-ADPCM info");
         }
 
-        channel.samples.reserve((block_count - 1) * piece + last);
+        channel.samples.reserve((block_count - 1) * piece + last + overflow);
         for (uint32_t b = 0; b < block_count; ++b)
         {
             const bool final = b + 1 == block_count;
             const std::span<const uint8_t> bytes =
                 r.Sub(samples + b * stride + c * (final ? last : piece), final ? last : piece);
             channel.samples.insert(channel.samples.end(), bytes.begin(), bytes.end());
+        }
+        if (overflow != 0)
+        {
+            const std::span<const uint8_t> bytes = r.Sub(samples + all + c * overflow, overflow);
+            channel.samples.insert(channel.samples.end(), bytes.begin(), bytes.end());
+        }
 
-            // SEEK holds its samples little-endian in both byte orders.
-            const std::size_t entry = seek + 8 + (std::size_t{b} * channel_count + c) * 4;
+        // SEEK holds its samples little-endian in both byte orders.
+        for (std::size_t b = 0; b < entries; ++b)
+        {
+            const std::size_t entry = seek + 8 + (b * channel_count + c) * 4;
             channel.history.push_back({static_cast<int16_t>(xsflib::LoadLe16(&file[entry])),
                                        static_cast<int16_t>(xsflib::LoadLe16(&file[entry + 2]))});
         }
@@ -383,17 +540,19 @@ std::vector<uint8_t> StreamFile::Write() const
     {
         throw std::invalid_argument("a stream of PCM or DSP-ADPCM");
     }
-    if (version != kOldestVersion && version != kOriginalLoopVersion)
-    {
-        throw std::invalid_argument("a stream of version 0x00030000 or 0x00040000: the writer knows no other layout");
-    }
+    const Layout layout = LayoutOf(flavor, version);
     if (channels.empty() || channels.size() > std::numeric_limits<uint8_t>::max() || sample_count == 0 ||
         block_samples != StreamBlockSamples(encoding))
     {
         throw std::invalid_argument("a stream with channels, samples and blocks of 8 KiB");
     }
+    if (uncounted_samples >= LastSamples(*this))
+    {
+        throw std::invalid_argument("a stream whose last block's count leaves out all of its samples");
+    }
     const uint32_t blocks = BlockCount();
-    const std::size_t pieces = std::size_t{blocks - 1} * BlockSize() + LastPieceSize(*this);
+    const std::size_t pieces = PiecesSize(*this);
+    const std::size_t entries = std::size_t{blocks} + (OverflowSize() != 0 ? 1 : 0);
     for (const Channel& channel : channels)
     {
         if (channel.adpcm.has_value() != (encoding == WaveEncoding::kDspAdpcm))
@@ -401,7 +560,7 @@ std::vector<uint8_t> StreamFile::Write() const
             throw std::invalid_argument(
                 "a DSP-ADPCM info for each channel of a DSP-ADPCM stream, and for no PCM channel");
         }
-        if (channel.samples.size() != pieces || channel.history.size() != blocks)
+        if (channel.samples.size() != pieces || channel.history.size() != entries)
         {
             throw std::invalid_argument("a stream whose channels' samples or history don't fit its settings");
         }
@@ -423,8 +582,7 @@ std::vector<uint8_t> StreamFile::Write() const
     // INFO: the three references, the settings, the tracks, the channels' table and infos, then the DSP-ADPCM infos.
     const std::size_t info = StartBlock(out, "INFO");
     const std::size_t base = out.Zeros(3 * 8);
-    const bool original_loop = version == kOriginalLoopVersion;
-    const std::size_t settings = out.Zeros(kSettingsSize + (original_loop ? kOriginalLoopSize : 0));
+    const std::size_t settings = out.Zeros(layout.settings + (layout.original_loop ? kOriginalLoopSize : 0));
     out.Reference(base, kSettingsReference, static_cast<uint32_t>(settings - base));
     out.U8(settings, static_cast<uint8_t>(encoding));
     out.U8(settings + 1, loop ? 1 : 0);
@@ -441,43 +599,49 @@ std::vector<uint8_t> StreamFile::Write() const
     out.U32(settings + 40, 4);
     out.U32(settings + 44, block_samples);
     out.Reference(settings + 48, kDataReference, kAlignment - 8);
-    out.U16(settings + 56, kRegionInfoSize);
-    out.Reference(settings + 60, 0, kNoOffset);
-    if (original_loop)
+    if (layout.regions)
     {
-        out.U32(settings + kSettingsSize, original_loop_start);
-        out.U32(settings + kSettingsSize + 4, original_loop_end);
+        out.U16(settings + 56, kRegionInfoSize);
+        out.Reference(settings + 60, 0, kNoOffset);
+    }
+    if (layout.original_loop)
+    {
+        out.U32(settings + layout.settings, original_loop_start);
+        out.U32(settings + layout.settings + 4, original_loop_end);
     }
 
+    // The tables of tracks and of channels come first, then each track's info with its channels, as the 3DS's tools
+    // lay them out.
+    std::optional<std::size_t> track_table;
     if (tracks)
     {
-        const std::size_t table = out.Zeros(4 + tracks->size() * 8);
-        out.Reference(base + 8, kTableReference, static_cast<uint32_t>(table - base));
-        out.U32(table, static_cast<uint32_t>(tracks->size()));
-        for (std::size_t i = 0; i < tracks->size(); ++i)
-        {
-            const Track& track = (*tracks)[i];
-            const std::size_t at = out.Zeros(12);
-            out.Reference(table + 4 + i * 8, kTrackInfoReference, static_cast<uint32_t>(at - table));
-            out.U8(at, track.volume);
-            out.U8(at + 1, track.pan);
-            out.U8(at + 2, track.span);
-            out.U8(at + 3, track.flags);
-            const std::size_t indices = out.Zeros(4);
-            out.Reference(at + 4, kChannelIndexReference, static_cast<uint32_t>(indices - at));
-            out.U32(indices, static_cast<uint32_t>(track.channels.size()));
-            out.Append(track.channels);
-            out.Align(4);
-        }
+        track_table = out.Zeros(4 + tracks->size() * 8);
+        out.Reference(base + 8, kTableReference, static_cast<uint32_t>(*track_table - base));
+        out.U32(*track_table, static_cast<uint32_t>(tracks->size()));
     }
     else
     {
         out.Reference(base + 8, 0, kNoOffset);
     }
-
     const std::size_t table = out.Zeros(4 + channels.size() * 8);
     out.Reference(base + 16, kTableReference, static_cast<uint32_t>(table - base));
     out.U32(table, static_cast<uint32_t>(channels.size()));
+    for (std::size_t i = 0; track_table && i < tracks->size(); ++i)
+    {
+        const Track& track = (*tracks)[i];
+        const std::size_t at = out.Zeros(12);
+        out.Reference(*track_table + 4 + i * 8, kTrackInfoReference, static_cast<uint32_t>(at - *track_table));
+        out.U8(at, track.volume);
+        out.U8(at + 1, track.pan);
+        out.U8(at + 2, track.span);
+        out.U8(at + 3, track.flags);
+        const std::size_t indices = out.Zeros(4);
+        out.Reference(at + 4, kChannelIndexReference, static_cast<uint32_t>(indices - at));
+        out.U32(indices, static_cast<uint32_t>(track.channels.size()));
+        out.Append(track.channels);
+        out.Align(4);
+    }
+
     std::vector<std::size_t> infos;
     for (std::size_t i = 0; i < channels.size(); ++i)
     {
@@ -508,10 +672,11 @@ std::vector<uint8_t> StreamFile::Write() const
     }
     SetBlock(out, 0, kInfoBlock, info);
 
-    // SEEK: the two samples before each block of each channel, little-endian.
+    // SEEK: the two samples before each block of each channel, and before each piece after the last block,
+    // little-endian.
     const std::size_t seek = StartBlock(out, "SEEK");
-    std::vector<uint8_t> history(std::size_t{blocks} * channels.size() * 4);
-    for (uint32_t b = 0; b < blocks; ++b)
+    std::vector<uint8_t> history(entries * channels.size() * 4);
+    for (std::size_t b = 0; b < entries; ++b)
     {
         for (std::size_t c = 0; c < channels.size(); ++c)
         {
@@ -523,7 +688,7 @@ std::vector<uint8_t> StreamFile::Write() const
     out.Append(history);
     SetBlock(out, 1, kSeekBlock, seek);
 
-    // DATA: each block's pieces, from 32 bytes after the block's start.
+    // DATA: each block's pieces, from 32 bytes after the block's start, then the pieces after the last block.
     const std::size_t data = StartBlock(out, "DATA");
     out.Align(kAlignment);
     const std::size_t piece = BlockSize();
@@ -535,6 +700,11 @@ std::vector<uint8_t> StreamFile::Write() const
         {
             out.Append(std::span(channel.samples).subspan(b * piece, final ? last : piece));
         }
+    }
+    const std::size_t overflow = OverflowSize();
+    for (const Channel& channel : channels)
+    {
+        out.Append(std::span(channel.samples).subspan(pieces - overflow, overflow));
     }
     SetBlock(out, 2, kDataBlock, data);
     out.U32(0x0C, static_cast<uint32_t>(out.Size()));
@@ -592,6 +762,34 @@ wave::Pcm DecodeStream(const StreamFile& stream)
     return pcm;
 }
 
+StreamFile WithoutSamplesPastEnd(const StreamFile& stream)
+{
+    StreamFile s = stream;
+    s.samples_past_end = 0;
+    s.uncounted_samples = 0;
+    const uint32_t blocks = s.BlockCount();
+    if (blocks == 0)
+    {
+        return s;
+    }
+
+    // The bytes up to the end of the last sample's frame or sample stay.
+    std::size_t kept = BytesOf(s.encoding, LastSamples(s));
+    if (s.encoding == WaveEncoding::kDspAdpcm)
+    {
+        kept = (kept + 7) / 8 * 8;
+    }
+    kept += std::size_t{blocks - 1} * s.BlockSize();
+    for (StreamFile::Channel& channel : s.channels)
+    {
+        channel.samples.resize(std::min(channel.samples.size(), kept));
+        channel.samples.resize(PiecesSize(s), 0);
+        channel.history.resize(blocks);
+    }
+
+    return s;
+}
+
 StreamFile MakeStream(Flavor flavor, uint32_t version, WaveEncoding encoding, uint32_t sample_rate,
                       std::span<const std::vector<int16_t>> channels, std::optional<uint32_t> loop_start)
 {
@@ -629,7 +827,12 @@ StreamFile MakeStream(Flavor flavor, uint32_t version, WaveEncoding encoding, ui
     s.original_loop_end = static_cast<uint32_t>(std::min<std::size_t>(length, std::numeric_limits<uint32_t>::max()));
     if (loop_start)
     {
-        const uint64_t moved = (uint64_t{*loop_start} + s.block_samples - 1) / s.block_samples * s.block_samples;
+        // The 3DS's tools move a loop's start to the start of the block after the one that holds it. A loop from the
+        // first sample then starts at the second block. The other consoles' tools move it to the first block's start
+        // at or after it.
+        const uint64_t block = s.block_samples;
+        const uint64_t moved = flavor == Flavor::kCtr ? (uint64_t{*loop_start} / block + 1) * block
+                                                      : (uint64_t{*loop_start} + block - 1) / block * block;
         for (std::vector<int16_t>& channel : samples)
         {
             for (uint64_t i = *loop_start; i < moved; ++i)
@@ -650,9 +853,32 @@ StreamFile MakeStream(Flavor flavor, uint32_t version, WaveEncoding encoding, ui
     }
     s.sample_count = static_cast<uint32_t>(samples.front().size());
 
-    // Each channel's samples, padded to the last block's piece, and the samples before each block.
+    // The samples past the end that the 3DS's tools encode: the loop's first samples, or a sample of 0 after a stream
+    // without a loop in version 0x02000000. That version's count of the last block's samples leaves out the last 127.
+    if (flavor == Flavor::kCtr && s.loop)
+    {
+        s.samples_past_end = kCtrPastLoopEnd;
+    }
+    else if (flavor == Flavor::kCtr && version == kCtrOldestVersion)
+    {
+        s.samples_past_end = kCtrPastEnd;
+        s.uncounted_samples = std::min(kCtrUncounted, LastSamples(s) - 1);
+    }
+    for (std::vector<int16_t>& channel : samples)
+    {
+        for (uint32_t i = 0; i < s.samples_past_end; ++i)
+        {
+            const int16_t sample =
+                s.loop ? channel[s.loop_start + i % (s.sample_count - s.loop_start)] : int16_t{0};
+            channel.push_back(sample);
+        }
+    }
+
+    // Each channel's samples, padded to the last block's piece, and the samples before each block and before the piece
+    // after the last block.
     const uint32_t blocks = s.BlockCount();
-    const std::size_t pieces = std::size_t{blocks - 1} * s.BlockSize() + LastPieceSize(s);
+    const std::size_t pieces = PiecesSize(s);
+    const std::size_t entries = std::size_t{blocks} + (s.OverflowSize() != 0 ? 1 : 0);
     const wave::DspAdpcmSum sum = flavor == Flavor::kCtr ? wave::DspAdpcmSum::kWide : wave::DspAdpcmSum::kWrap;
     for (const std::vector<int16_t>& input : samples)
     {
@@ -679,9 +905,9 @@ StreamFile MakeStream(Flavor flavor, uint32_t version, WaveEncoding encoding, ui
             }
         }
         channel.samples.resize(pieces);
-        for (uint32_t b = 0; b < blocks; ++b)
+        for (std::size_t b = 0; b < entries; ++b)
         {
-            const std::size_t first = std::size_t{b} * s.block_samples;
+            const std::size_t first = b * s.block_samples;
             channel.history.push_back(
                 {first >= 1 ? input[first - 1] : int16_t{0}, first >= 2 ? input[first - 2] : int16_t{0}});
         }

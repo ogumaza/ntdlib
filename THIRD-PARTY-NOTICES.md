@@ -2,7 +2,8 @@
 
 ntdlib is under the MIT licence (`LICENSE`). One file is the exception: `src/disc/cp932.h` contains data from Unicode
 and is under the Unicode License v3 (see "Data from Unicode" below). The libraries that ntdlib uses have the following
-licences. None of their code is stored here.
+licences. Teakra's code is stored in `externals/teakra`, under its MIT licence. None of the others' code is stored
+here.
 
 | Component | Licence | Use in ntdlib |
 |---|---|---|
@@ -12,9 +13,12 @@ licences. None of their code is stored here.
 | [liblzma](https://tukaani.org/xz/) from XZ Utils | 0BSD | LZMA and LZMA2 in WIA and RVZ disc images (`NTDLIB_DISC`), through `xsflib::lzma`. The installed copy is used if there is one. Otherwise v5.8.1 is downloaded when configuring. |
 | [bzip2](https://sourceware.org/bzip2/), Copyright (C) 1996-2019 Julian R Seward | bzip2 (BSD-style) | bzip2 in WIA and RVZ disc images (`NTDLIB_DISC`), through `xsflib::bzip2`. The installed copy is used if there is one. Otherwise 1.0.8 is downloaded when configuring. |
 | seqlib | MIT | MIDI, SoundFont 2 and SFZ files in `ntdlib::sequence_export` (`NTDLIB_SEQUENCE_EXPORT`). The project that uses ntdlib supplies it. |
+| [Teakra](https://github.com/wwylele/teakra), Copyright (c) 2018 Weiyi Wang | MIT (`externals/teakra/LICENSE`) | The 3DS's DSP in `ntdlib::ctr` (`NTDLIB_CTR`). In `externals/teakra`: upstream commit 3d697a1 with changes, offered under Teakra's MIT licence. |
+| [Catch2](https://github.com/catchorg/Catch2) v2.13.8, Copyright (c) 2022 Two Blue Cubes Ltd | BSL-1.0 | Teakra's unit tests use it (`externals/teakra/externals/catch`). ntdlib doesn't build those tests, and no library of ntdlib contains Catch2. |
 
 Binary distributions must include ntdlib's MIT notice and xsflib's MIT notice. They must also include the Unicode
-License v3's notice when `ntdlib::disc` is linked in, and the Zstandard notice when Zstandard is linked in. Shipping
+License v3's notice when `ntdlib::disc` is linked in, Teakra's MIT notice when `ntdlib::ctr` is linked in, and the
+Zstandard notice when Zstandard is linked in. Shipping
 ntdlib's `LICENSE`, xsflib's `LICENSE` and this file does that. The licence texts are at the end of this file. The
 licences of zlib, liblzma and bzip2 require no notice in binaries. A program that links `ntdlib::sequence_export`
 also includes seqlib's MIT notice.
@@ -46,6 +50,13 @@ them. The notice is at the end of this file. `src/disc/cp932.h` has the SPDX ide
   (GPL-3.0) are references for how the Wii U's AX behaves (`ntdlib::cafe`). No code is taken from them. Where the model
   follows their behaviour, the code was written from a description of that behaviour. The writer hadn't read their
   source for that part. The renderer follows the DSP microcode that the system's sound library uploads.
+- [Azahar](https://github.com/azahar-emu/azahar) (GPL-2.0-or-later) is the reference for how the 3DS's DSP interface
+  behaves (`ntdlib::ctr`). No code is taken from it. The glue between Teakra and the ARM11's side was written from a
+  description of that behaviour, from 3dbrew and from Teakra's source. The writer hadn't read Azahar's source for that
+  part. The models of nn::snd and nw::snd follow the sound libraries' code in a game's executable. The model of the
+  DSP's audio firmware (`ctr/dsp/firmware_model.h`) follows the firmware's code in a game's `dspaudio.cdc`, read in a
+  disassembly. Azahar's model of the firmware wasn't read.
+- [3dbrew](https://www.3dbrew.org) documents the 3DS's DSP firmware format and its DSP interface.
 - [Wiimm's ISO Tools](https://wit.wiimm.de) document the WDF and CISO formats.
 - YAGCD (Yet Another GameCube Documentation) documents the GameCube's hardware and disc format. WiiBrew documents the
   Wii disc's layout, and the TMD, U8 archives, banner and NAND Boot Program of the Wii's titles. GBATEK documents the CX
@@ -57,7 +68,8 @@ them. The notice is at the end of this file. `src/disc/cp932.h` has the SPDX ide
 ## Console data
 
 Nothing in ntdlib licenses game data. Rips contain a game's code or sound archive. These belong to their copyright
-holders.
+holders. ntdlib holds no DSP firmware of the 3DS. `ntdlib::ctr` plays on the model of the firmware, which requires
+none. Teakra runs a firmware that the program supplies, such as a game's `dspaudio.cdc`.
 
 `include/ntdlib/nwsnd/tables.h` holds the numeric tables of NintendoWare's sound libraries: powers of two, decibel
 levels, envelope attack multipliers, pan curves, low-pass cutoffs, biquad filter coefficients and sines. The models use
@@ -73,9 +85,69 @@ and gains of its high-quality reverb. The models use the library's exact values 
 `include/ntdlib/dsp/coef_rom.h` holds the DSP's coefficient ROM. Every GameCube and Wii has the same ROM. The ROM holds
 4-tap filters: 128 phases for each of three cutoffs. DSP programs that resample, such as the SDK's AX, read them. The
 DSP uses the exact values to reproduce the console's output. The Wii U's DSP is taken to share the ROM's filters
-(`ntdlib::cafe`).
+(`ntdlib::cafe`). The 3DS's DSP audio firmware holds the same filters for its polyphase resampler. The model of the
+firmware takes them from the ROM's first 0x600 words.
+
+`src/ctr/dsp/firmware_audio.cpp` and `src/ctr/dsp/firmware_audio.h` hold a few of the 3DS's DSP audio firmware's
+constants: the factors of the DSP-ADPCM decoder's nibbles, the limiter's constants, the mix's first pointers to its
+channels, the addresses of the structures that the firmware shares with the ARM11, and the steps of its ramps of the
+gains and of the declick. The model uses the firmware's exact values to reproduce its output.
 
 ## Licence texts
+
+### Teakra
+
+```
+MIT License
+
+Copyright (c) 2018 Weiyi Wang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Catch2
+
+```
+Boost Software License - Version 1.0 - August 17th, 2003
+
+Permission is hereby granted, free of charge, to any person or organization
+obtaining a copy of the software and accompanying documentation covered by
+this license (the "Software") to use, reproduce, display, distribute,
+execute, and transmit the Software, and to prepare derivative works of the
+Software, and to permit third-parties to whom the Software is furnished to
+do so, all subject to the following:
+
+The copyright notices in the Software and this entire statement, including
+the above license grant, this restriction and the following disclaimer,
+must be included in all copies of the Software, in whole or in part, and
+all derivative works of the Software, unless such copies or derivative
+works are solely in the form of machine-executable object code generated by
+a source language processor.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
+SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
+FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
 
 ### Zstandard
 

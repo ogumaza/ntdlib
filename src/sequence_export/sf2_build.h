@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "seqlib/loop.h"
 #include "seqlib/sf2/soundfont.h"
 
+#include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/resampling.h"
@@ -129,6 +131,15 @@ std::string RegionVolumeCutText(double quieter);
 // every zone takes the same attenuation. That keeps the zones' relative levels, and `perf` notes the approximation. SFZ
 // keeps the original volumes.
 double SoundFontCut(Performance& perf, const RegionVolumeFunction& volume_of);
+
+// The SoundFonts of a bank's instruments at `programs`, in order (ConvertBank). `whole` holds every instrument. One
+// SoundFont holds them all, unless they exceed the format's 65,535 zones, generators or modulators. Then the SoundFont
+// that `part` builds of each run of programs that fits takes the run. An instrument past the limits by itself takes a
+// run of its own, and the writer refuses it. Each SoundFont's title is the bank's `name`, with the run's programs when
+// there are several. `program` names the converter in each SoundFont's comment.
+std::vector<BankSoundFont> BankSoundFonts(seqlib::sf2::SoundFont& whole, std::span<const uint32_t> programs,
+                                          const std::function<seqlib::sf2::SoundFont(std::span<const uint32_t>)>& part,
+                                          const std::string& name, const std::string& program);
 
 // A sequence's SoundFont, the samples that its presets share, and the warnings. A bank model's builder adds each
 // preset's instrument from its bank (convert.cpp and convert_rsar.cpp).

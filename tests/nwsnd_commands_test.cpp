@@ -315,6 +315,39 @@ void TestOneCommand()
     XSFLIB_CHECK(!ntdlib::nwsnd::DecodeCommand(kBytes, 15, kSwitch));
 }
 
+// The player's read of a command: the console's values, the opcode, and the offset after the command. Each byte past
+// the end reads as an end (0xFF), as the player reads it, and the offset after stops one past the end.
+void TestPlayedCommand()
+{
+    const std::vector<uint8_t> kBytes = {
+        0xA2, 0xA3, 0xC1, 0x40, 0x30, 0x00, // if: volume 64 over 48 ticks
+        0xF0, 0xE0, 0x34, 0x12,             // the user procedure 0x1234
+        0xA0, 0xC3, 0xFE, 0xFF, 0x02, 0x00, // transpose by a random value from -2 to 2
+        0x80, 0x81,                         // a wait whose length runs past the end
+    };
+    using ntdlib::nwsnd::ReadPlayedCommand;
+    const ntdlib::nwsnd::PlayedCommand volume = ReadPlayedCommand(kBytes, 0, kSwitch);
+    XSFLIB_CHECK(volume.code == 0xC1 && volume.next == 6 && volume.command.kind == Kind::kVolume);
+    XSFLIB_CHECK(volume.command.conditional && IsArgument(volume.command.value, Source::kValue, 64));
+    XSFLIB_CHECK(volume.command.time && IsArgument(*volume.command.time, Source::kValue, 48));
+
+    const ntdlib::nwsnd::PlayedCommand procedure = ReadPlayedCommand(kBytes, 6, kSwitch);
+    XSFLIB_CHECK(procedure.code == 0xF0E0 && procedure.next == 10);
+    XSFLIB_CHECK(IsArgument(procedure.command.value, Source::kValue, 0x1234));
+
+    const ntdlib::nwsnd::PlayedCommand transpose = ReadPlayedCommand(kBytes, 10, kSwitch);
+    XSFLIB_CHECK(transpose.code == 0xC3 && transpose.next == 16);
+    XSFLIB_CHECK(transpose.command.value.source == Source::kRandom && transpose.command.value.value == -2 &&
+                 transpose.command.value.high == 2);
+
+    // The wait's length reads 0x01, then an end's byte 0xFF past the end: (0x01 << 7) | 0x7F.
+    const ntdlib::nwsnd::PlayedCommand wait = ReadPlayedCommand(kBytes, 16, kSwitch);
+    XSFLIB_CHECK(wait.code == 0x80 && wait.next == 19 && IsArgument(wait.command.value, Source::kValue, 0xFF));
+    const ntdlib::nwsnd::PlayedCommand end = ReadPlayedCommand(kBytes, 19, kSwitch);
+    XSFLIB_CHECK(end.code == 0xFF && end.next == 19 && end.command.kind == Kind::kEnd);
+    XSFLIB_CHECK(ReadPlayedCommand(kBytes, 0xFFFFFF, kSwitch).next == 19);
+}
+
 // A sequence made without bytes: the encoder writes the usual bytes, and puts each target's offset in.
 void TestEncode()
 {
@@ -445,6 +478,7 @@ int main()
     TestOpaque();
     TestConsoles();
     TestOneCommand();
+    TestPlayedCommand();
     TestEncode();
     TestEditsOfPaddedWait();
     TestRefusals();

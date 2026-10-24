@@ -1631,14 +1631,18 @@ void TestJAudio1Folder()
 }
 
 // A SoundFont whose loudest zone plays above full level takes one attenuation in every zone, and the conversion records
-// it. Zones at full level take none.
+// it from 0.5 cB, the least that the report shows as 0.1 dB. Zones at full level take none.
 void TestCutAboveFullLevel()
 {
     Conversion loud;
     Conversion full;
+    Conversion least;
+    Conversion hair;
 
     const double quieter = ntdlib::sequence_export::CutAboveFullLevel(loud, 2.0);
     const double none = ntdlib::sequence_export::CutAboveFullLevel(full, 1.0);
+    const double least_cut = ntdlib::sequence_export::CutAboveFullLevel(least, std::pow(10.0, 0.6 / 200.0));
+    const double hair_cut = ntdlib::sequence_export::CutAboveFullLevel(hair, std::pow(10.0, 0.4 / 200.0));
 
     Check(std::fabs(quieter - 200.0 * std::log10(2.0)) < 1e-9, "twice full level takes 6 dB");
     Check(loud.performance.approximations.size() == 1 &&
@@ -1646,6 +1650,12 @@ void TestCutAboveFullLevel()
                   "instrument volume above full level (SoundFont attenuated by 6.0 dB; SFZ keeps the level)",
           "and the conversion records it");
     Check(none == 0.0 && full.performance.approximations.empty(), "full level takes none");
+    Check(std::fabs(least_cut - 0.6) < 1e-9 && least.performance.approximations.size() == 1 &&
+              least.performance.approximations.begin()->first ==
+                  "instrument volume above full level (SoundFont attenuated by 0.1 dB; SFZ keeps the level)",
+          "a cut of 0.6 cB is recorded as 0.1 dB");
+    Check(std::fabs(hair_cut - 0.4) < 1e-9 && hair.performance.approximations.empty(),
+          "a cut of 0.4 cB, which the report would show as 0.0 dB, applies but isn't recorded");
 }
 
 // The frame's converter of JAudio games opens a start-up archive with its game's files, lists the sequences and

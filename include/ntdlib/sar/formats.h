@@ -61,13 +61,14 @@ constexpr uint32_t ItemId(uint32_t type, uint32_t index)
     return type << 24 | index;
 }
 
-// The name of group `name`'s file: the group's name and ".bfgrp".
+// The name of group `name`'s file on the Wii U and the Switch: the group's name and ".bfgrp". The overload with a
+// flavor, after Flavor, gives the 3DS's name too.
 inline std::string GroupFileName(const std::string& name)
 {
     return name + ".bfgrp";
 }
 
-// Whether a file named `file_name` holds group `name`: GroupFileName(name), in any case.
+// Whether a file named `file_name` holds group `name` on the Wii U and the Switch: GroupFileName(name), in any case.
 inline bool IsGroupFileName(const std::string& file_name, const std::string& name)
 {
     return xsflib::AsciiLower(file_name) == xsflib::AsciiLower(GroupFileName(name));
@@ -93,6 +94,20 @@ enum class Flavor
     kCafe, // the Wii U: FSAR, FSEQ, FBNK, FWAR, FWAV and FGRP files, big-endian
     kNx,   // the Switch: the Wii U's formats, little-endian
 };
+
+// The name of the file of group `name` in an archive of `flavor`: the group's name and ".bcgrp" on the 3DS, or
+// ".bfgrp" on the Wii U and the Switch.
+inline std::string GroupFileName(const std::string& name, Flavor flavor)
+{
+    return name + (flavor == Flavor::kCtr ? ".bcgrp" : ".bfgrp");
+}
+
+// Whether a file named `file_name` holds group `name` of an archive of `flavor`: GroupFileName(name, flavor), in any
+// case.
+inline bool IsGroupFileName(const std::string& file_name, const std::string& name, Flavor flavor)
+{
+    return xsflib::AsciiLower(file_name) == xsflib::AsciiLower(GroupFileName(name, flavor));
+}
 
 // The rules that the readers follow. kReadPastDamage reads on past damage and reports it. kStopAtFirstProblem stops at
 // the first problem. Its messages depend on the flavor: the 3DS's messages for kCtr, and the messages of the Wii U and
@@ -273,9 +288,9 @@ struct WaveSoundFile
 
     // A wave sound: its pan, its surround pan, its pitch, its sends, its filters and its envelope, its tracks of note
     // events and its notes. A note's `wave_id_index` is an index into WaveSoundFile::waves. The sends are a main send
-    // and a send to each aux bus, A to C. A low-pass value of 64 filters nothing. The reader reads the surround pan,
-    // the sends and the filters on the Wii U and the Switch only, and the filters only from version 1.1.0 of the file
-    // on, as the sound libraries there read them.
+    // and a send to each aux bus, A to C. A low-pass value of 64 filters nothing. The reader reads the filters on the
+    // Wii U and the Switch only, from version 1.1.0 of the file on, as the sound libraries there read them. On the
+    // 3DS, it reads the sends to buses A and B only, as the 3DS's library does.
     struct WaveSound
     {
         uint8_t pan = 64;
@@ -343,9 +358,10 @@ struct StreamTrackInfo
     uint8_t biquad_value = 0;
 };
 
-// A stream sound's details on the Wii U and the Switch: the tracks that play when the sound starts, a bit each, the
-// number of the stream's channels, and the tracks. From FSAR 2.1.0 on, the archive also gives the sound's pitch and
-// its sends. The readers read at most 8 tracks, and 16 channels of a track.
+// A stream sound's details: the tracks that play when the sound starts, a bit each, the number of the stream's
+// channels, and the tracks. From FSAR 2.1.0 on, the archive also gives the sound's pitch and its sends. A 3DS archive
+// gives the tracks from CSAR 2.3.0.0 on, and the pitch and the sends from 2.3.2.0 on. Before 2.3.0.0, the stream file
+// holds the tracks. The readers read at most 8 tracks, and 16 channels of a track.
 struct StreamSoundInfo
 {
     friend bool operator==(const StreamSoundInfo&, const StreamSoundInfo&) = default;
@@ -369,7 +385,7 @@ struct SoundInfo
     uint8_t pan_curve = 0; // nw::snd curve: 0 is the default square-root law
     SoundType type = SoundType::kUnknown;
 
-    // Read with kStopAtFirstProblem on the Wii U and the Switch.
+    // Read with kStopAtFirstProblem.
     uint32_t player_id = 0; // 0x04xxxxxx item ID
     uint8_t player_priority = 64;
     uint8_t actor_player_id = 0;
@@ -377,7 +393,7 @@ struct SoundInfo
     // Wave sounds only: the sound's place among the wave sounds of its wave sound file (WaveSoundFile::sounds).
     uint32_t wave_sound_index = 0;
 
-    // Stream sounds of the Wii U and the Switch only.
+    // Stream sounds only.
     StreamSoundInfo stream;
 
     // Sequence sounds only.
@@ -385,8 +401,8 @@ struct SoundInfo
     uint32_t allocate_track_flags = 1;
     uint32_t start_offset = 0;
 
-    // Sequence sounds, and wave sounds of the Wii U and the Switch. A sequence adds the channels' priority to each
-    // track's priority. A wave sound's channel takes it plus 64, the priority of a track that sets none.
+    // Sequence sounds and wave sounds. A sequence adds the channels' priority to each track's priority. A wave sound's
+    // channel takes it plus 64, the priority of a track that sets none.
     uint8_t channel_priority = 64;
     bool release_priority_fix = false; // a released channel keeps its priority
 };
@@ -405,8 +421,7 @@ struct WaveArchiveInfo
     uint32_t file_id = 0;
 };
 
-// A sound player's name and how many sounds it plays at once. Read with kStopAtFirstProblem on the Wii U and the
-// Switch.
+// A sound player's name and how many sounds it plays at once. Read with kStopAtFirstProblem.
 struct PlayerInfo
 {
     std::string name;
@@ -473,13 +488,13 @@ public:
         return wave_archives_;
     }
 
-    // The sound players. Read with kStopAtFirstProblem on the Wii U and the Switch.
+    // The sound players. Read with kStopAtFirstProblem.
     const std::vector<PlayerInfo>& Players() const
     {
         return players_;
     }
 
-    // The groups. Read with kStopAtFirstProblem on the Wii U and the Switch.
+    // The groups. Read with kStopAtFirstProblem.
     const std::vector<GroupInfo>& Groups() const
     {
         return groups_;
@@ -514,13 +529,17 @@ public:
     }
 
     // Adds an external group's file (see ExternalGroups). The files it holds that the archive lacks can be read with
-    // FileData afterwards. Throws FormatError if `bytes` isn't a group file.
+    // FileData afterwards. Throws FormatError if `bytes` isn't a group file. With kStopAtFirstProblem, it reads the
+    // file as the console's player does. The 3DS's player reads each item's file ID first. It reads an item's bytes
+    // only when the archive lacks that file. The players of the Wii U and the Switch read the group file's whole table
+    // first.
     void AddGroupFile(std::vector<uint8_t> bytes);
 
-    // Whether `bytes` is a group file of this archive, read as AddGroupFile reads it. A game can keep another archive's
-    // group files in the same folder. Every file of the group must have an ID in the archive's file table. A file whose
-    // ID the archive's tables give a sequence sound, a wave sound, a bank or a wave archive must be a file of that
-    // kind. At least one file must be such a file.
+    // Whether `bytes` is a group file of this archive, read by the archive's rules. With kStopAtFirstProblem, it reads
+    // the bytes of every copy that the group file holds, on the 3DS too. A game can keep another archive's group files
+    // in the same folder. Every file of the group must have an ID in the archive's file table. A file whose ID the
+    // archive's tables give a sequence sound, a wave sound, a bank or a wave archive must be a file of that kind. At
+    // least one file must be such a file.
     bool MatchesGroupFile(std::span<const uint8_t> bytes) const;
 
     // The group files that AddGroupFile took, in the order it took them. A program can keep them with the archive.
@@ -536,8 +555,7 @@ public:
     // for an external file, for a file in a group file added, or for a file absent from all readable groups.
     std::optional<std::size_t> FileOffset(uint32_t file_id) const;
 
-    // The path that the file table gives an external file, such as a stream's, on the Wii U and the Switch. Empty for
-    // a file in the archive.
+    // The path that the file table gives an external file, such as a stream's. Empty for a file in the archive.
     std::string ExternalPath(uint32_t file_id) const;
 
     // True if any part of the file extends past the archive. For files stored only in groups, true if no readable group

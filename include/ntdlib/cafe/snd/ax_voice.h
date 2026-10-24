@@ -4,6 +4,9 @@
 // buffers on it. Each frame, the voice turns the parameters that the layers above compute into the AX calls that set
 // them. The AX calls ramp the volumes across the frame. Each function's comment gives the address of the routine it
 // follows in Animal Crossing: amiibo Festival's executable. The Wii Remote's speakers aren't modelled.
+//
+// On AX in the enhanced mixing mode (ax::System::InitEnhanced), the voices work out their ratios for 48 kHz, and give
+// AX each new volume without a delta. AX then ramps the volumes itself.
 
 #pragma once
 
@@ -13,6 +16,7 @@
 #include <functional>
 #include <list>
 #include <utility>
+#include <vector>
 
 #include "ntdlib/cafe/ax/memory.h"
 #include "ntdlib/cafe/ax/pb.h"
@@ -201,10 +205,11 @@ class AxVoices
 {
 public:
     // A copy of the voices and the list between frames. The voices point into the AxVoices that saved them, and into
-    // the buffers of the renderer above them.
+    // the buffers of the renderer above them. The copy holds the voices from the first that has been allocated on.
     struct Snapshot
     {
-        std::array<AxVoice, ax::kVoiceCount> voices;
+        int first_allocated = 0;
+        std::vector<AxVoice> voices;
         std::list<AxVoice*> priority_list;
     };
 
@@ -245,6 +250,12 @@ public:
     // 0x0229EB84). AX then takes the lowest first.
     void UpdatePriorityList();
 
+    // Whether AX runs in the enhanced mixing mode.
+    bool Enhanced() const
+    {
+        return enhanced_;
+    }
+
     // A snapshot can only go back into the AxVoices that saved it. Each voice goes back into its place, and the
     // pointers to the voices stay valid.
     Snapshot Save() const;
@@ -256,8 +267,14 @@ private:
     void AppendToList(AxVoice& voice);  // 0x022A2B94
     void EraseFromList(AxVoice& voice); // 0x02298B90
 
+    // An AxVoice as the AxVoices start it.
+    AxVoice Fresh();
+
     ax::System* system_;
-    std::array<AxVoice, ax::kVoiceCount> voices_;
+    const ax::Memory* memory_;
+    bool enhanced_;
+    std::vector<AxVoice> voices_;       // one for each of AX's voices
+    int first_allocated_;               // the voices before it haven't been allocated
     std::list<AxVoice*> priority_list_; // lowest first, and the newest last among equals
 };
 

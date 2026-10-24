@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,8 @@
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
 
+#include "ntdlib/sequence_export/conversion.h"
+#include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/performance.h"
@@ -371,6 +374,105 @@ double SoundFontCut(Performance& perf, const RegionVolumeFunction& volume_of)
     }
 
     return quieter;
+}
+
+namespace
+{
+
+// The SoundFont format numbers the zones, generators and modulators of its instruments and of its presets with 16
+// bits. A file holds at most 65,535 of each.
+constexpr std::size_t kSoundFontLimit = 0xffff;
+
+// The zones of some of a SoundFont's instruments or presets, with their generators and modulators.
+struct ZoneCount
+{
+    std::size_t zones = 0;
+    std::size_t generators = 0;
+    std::size_t modulators = 0;
+};
+
+// Adds `zones` to `count`. Returns whether the count stays within the format's limits.
+bool AddZones(ZoneCount& count, const std::vector<sf2::Zone>& zones)
+{
+    count.zones += zones.size();
+    for (const sf2::Zone& zone : zones)
+    {
+        count.generators += zone.generators.size();
+        count.modulators += zone.modulators.size();
+    }
+
+    return count.zones <= kSoundFontLimit && count.generators <= kSoundFontLimit && count.modulators <= kSoundFontLimit;
+}
+
+// Splits the presets of `sf` into runs that each fit in a SoundFont. Preset k plays instrument k. Returns the index
+// after each run's last preset. A preset whose instrument exceeds the limits by itself takes a run of its own. The
+// SoundFont's writer then refuses it.
+std::vector<std::size_t> SoundFontRuns(const sf2::SoundFont& sf)
+{
+    std::vector<std::size_t> ends;
+    std::size_t start = 0;
+    ZoneCount instruments;
+    ZoneCount presets;
+    for (std::size_t k = 0; k < sf.presets.size(); k++)
+    {
+        ZoneCount more_instruments = instruments;
+        ZoneCount more_presets = presets;
+        const bool instruments_fit = AddZones(more_instruments, sf.instruments[k].zones);
+        const bool presets_fit = AddZones(more_presets, sf.presets[k].zones);
+        if ((!instruments_fit || !presets_fit) && k > start)
+        {
+            ends.push_back(k);
+            start = k;
+            more_instruments = {};
+            more_presets = {};
+            AddZones(more_instruments, sf.instruments[k].zones);
+            AddZones(more_presets, sf.presets[k].zones);
+        }
+        instruments = more_instruments;
+        presets = more_presets;
+    }
+    ends.push_back(sf.presets.size());
+
+    return ends;
+}
+
+} // namespace
+
+std::vector<BankSoundFont> BankSoundFonts(sf2::SoundFont& whole, std::span<const uint32_t> programs,
+                                          const std::function<sf2::SoundFont(std::span<const uint32_t>)>& part,
+                                          const std::string& name, const std::string& program)
+{
+    std::vector<BankSoundFont> sound_fonts;
+    const std::vector<std::size_t> ends = SoundFontRuns(whole);
+    std::size_t begin = 0;
+    for (const std::size_t end : ends)
+    {
+        BankSoundFont& sound_font = sound_fonts.emplace_back();
+        std::string title = name;
+        if (end > begin)
+        {
+            sound_font.first = programs[begin];
+            sound_font.last = programs[end - 1];
+        }
+        if (ends.size() > 1)
+        {
+            title += ", programs " + std::to_string(sound_font.first) + " to " + std::to_string(sound_font.last);
+        }
+
+        const std::string comment = "Converted by " + program + " from bank " + title + ".";
+        if (ends.size() == 1)
+        {
+            WriteSoundFont(sound_font, whole, title, comment, program);
+        }
+        else
+        {
+            sf2::SoundFont run = part(programs.subspan(begin, end - begin));
+            WriteSoundFont(sound_font, run, title, comment, program);
+        }
+        begin = end;
+    }
+
+    return sound_fonts;
 }
 
 const std::vector<uint16_t>& SoundFontParts::Samples(std::pair<uint32_t, uint32_t> key, uint8_t root_key,

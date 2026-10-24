@@ -125,8 +125,9 @@ axfx::DelayExp::Params DelayParams(std::span<const uint32_t> words)
 Effects::Effects(ax::System& system, const std::vector<EffectSetup>& setups, const std::array<OutputMode, 2>& modes)
     : system_(&system)
 {
-    // AXGetInputSamplesPerSec: 32,000 or 48,000, a frame's samples in 3 ms.
-    const auto rate = static_cast<uint32_t>(system.SamplesPerFrame() * 1000 / 3);
+    // AXGetInputSamplesPerSec: 32,000 or 48,000, a frame's samples in 3 ms. In the enhanced mode, the aux buses run at
+    // 32 kHz.
+    const auto rate = static_cast<uint32_t>(system.AuxSamplesPerFrame() * 1000 / 3);
     for (const EffectSetup& setup : setups)
     {
         if (setup.device > kEffectDeviceDrc || setup.bus > 2 || setup.params.size() < EffectParamWords(setup.type))

@@ -3,11 +3,13 @@
 // nw::snd's MultiVoices on AX in NintendoWare for Cafe: the renderer that ntdlib's model of the MultiVoices plays on
 // (see ntdlib/nwsnd/voice.h). The renderer gives each wave channel's voice an AxVoice, lays a wave's buffers out in
 // AX's memory, and works out each voice's mix and filters for the TV and the GamePad. Each function's comment gives the
-// address of the routine it follows in Animal Crossing: amiibo Festival's executable.
+// address of the routine it follows in Animal Crossing: amiibo Festival's executable. On AX in the enhanced mixing
+// mode, the biquad presets take the coefficients of the same filters made for 48 kHz.
 
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -68,9 +70,9 @@ public:
     void CalcLpf(MultiVoice& voice) const;          // 0x0229CEF0
     void CalcBiquadFilter(MultiVoice& voice) const; // 0x0229CFBC
 
-    // A copy of the MultiVoices' buffers between frames. The buffers point into the renderer that saved them. A
-    // snapshot can only go back there. Each buffer goes back into its place, and the pointers to the buffers stay
-    // valid.
+    // A copy of the MultiVoices' buffers between frames, up to the last MultiVoice that has had a wave. The buffers
+    // point into the renderer that saved them. A snapshot can only go back there. Each buffer goes back into its place,
+    // and the pointers to the buffers stay valid.
     struct Snapshot;
 
     Snapshot Save() const;
@@ -107,6 +109,7 @@ private:
     AxVoices* ax_;
     const HardwareSettings* hardware_;
     std::vector<Buffers> buffers_;
+    std::size_t used_ = 0; // the buffers up to the last that has had a wave
 };
 
 struct AxRenderer::Snapshot

@@ -2,7 +2,7 @@
 
 // Tests the parts of a rip tool that rip sound archives (rip/archive.h): item IDs, and on archives built with
 // sar_files.h the sounds that --only and --bgm pick, the groups kept outside the archive, by name and in SARC archives,
-// the data a sound requires, and the part of an archive that a library holds.
+// the data a sound requires, and the part of an archive and of its group files that a library holds.
 
 #include <algorithm>
 #include <array>
@@ -136,6 +136,15 @@ void TestArchive()
     XSFLIB_CHECK(!rip::IsGroupFileName("GROUP_OUTSIDE_2.bfgrp", "GROUP_OUTSIDE"));
     XSFLIB_CHECK(!rip::IsGroupFileName("GROUP_OUTSIDE.bfgrp.bak", "GROUP_OUTSIDE"));
     XSFLIB_CHECK(!rip::IsGroupFileName("GROUP_OUTSIDE.bfsar", "GROUP_OUTSIDE"));
+
+    // On the 3DS, a group's file has the group's name and ".bcgrp".
+    XSFLIB_CHECK(sar::GroupFileName("GROUP_OUTSIDE", sar::Flavor::kCtr) == "GROUP_OUTSIDE.bcgrp");
+    XSFLIB_CHECK(sar::GroupFileName("GROUP_OUTSIDE", sar::Flavor::kCafe) == "GROUP_OUTSIDE.bfgrp");
+    XSFLIB_CHECK(sar::GroupFileName("GROUP_OUTSIDE", sar::Flavor::kNx) == "GROUP_OUTSIDE.bfgrp");
+    XSFLIB_CHECK(rip::IsGroupFileName("group_outside.BCGRP", "GROUP_OUTSIDE", sar::Flavor::kCtr));
+    XSFLIB_CHECK(!rip::IsGroupFileName("GROUP_OUTSIDE.bfgrp", "GROUP_OUTSIDE", sar::Flavor::kCtr));
+    XSFLIB_CHECK(rip::IsGroupFileName("GROUP_OUTSIDE.bfgrp", "GROUP_OUTSIDE", sar::Flavor::kNx));
+    XSFLIB_CHECK(!rip::IsGroupFileName("GROUP_OUTSIDE.bcgrp", "GROUP_OUTSIDE", sar::Flavor::kCafe));
 
     // The groups that a rip looks for beside the archive.
     const auto find_outside = [](const std::string& name)
@@ -499,7 +508,7 @@ std::vector<uint8_t> GroupsBeside(sar::Flavor flavor)
 // group file that holds a copy of it. They keep their order.
 void TestKeepGroupFilesBeside()
 {
-    for (const Console& console : std::span(kConsoles).subspan(1))
+    for (const Console& console : kConsoles)
     {
         sar::SoundArchive archive = sar::SoundArchive::Load(GroupsBeside(console.flavor), StrictRules(console.flavor));
         archive.AddGroupFile(sar_files::Group(console.flavor, {{2, BankOf(console.flavor, {})}}));
@@ -849,6 +858,252 @@ void TestKeepLoadedFilesRefuses()
     }
 }
 
+// An archive whose files all lie in two group files beside it. GROUP_COMMON holds SEQ_A's file 0, BANK_A's file 2,
+// WARC_A's file 4 and the wave sound's file 5 (CommonGroup). GROUP_STAGE holds another copy of the wave sound's file,
+// SEQ_B's file 1, BANK_B's file 3 and another copy of SEQ_A's file (StageGroup). BANK_A's wave lies in WARC_A.
+std::vector<uint8_t> CopiesBeside(sar::Flavor flavor)
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ_A", .file = 0, .player = 0, .banks = {0}},
+                   {.name = "SEQ_B", .file = 1, .player = 0, .banks = {1}},
+                   {.name = "WSD_A", .kind = sar_files::SoundSpec::kWaveSound, .file = 5, .player = 0}};
+    spec.banks = {{"BANK_A", 2}, {"BANK_B", 3}};
+    spec.wave_archives = {{"WARC_A", 4}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP_COMMON", sar::kExternalGroupFile}, {"GROUP_STAGE", sar::kExternalGroupFile}};
+    spec.files = std::vector<sar_files::FileSpec>(6, {.group_only = true});
+
+    return sar_files::Archive(flavor, spec);
+}
+
+void PutField16(std::span<uint8_t> bytes, sar::Flavor flavor, std::size_t at, uint16_t value)
+{
+    flavor == sar::Flavor::kCafe ? xsflib::StoreBe16(&bytes[at], value) : xsflib::StoreLe16(&bytes[at], value);
+}
+
+// The place and the size of the block of type `type` that the table of blocks of `bytes`, a file of `flavor`, lists,
+// or nothing.
+std::optional<std::pair<std::size_t, std::size_t>> BlockIn(std::span<const uint8_t> bytes, sar::Flavor flavor,
+                                                           uint16_t type)
+{
+    for (std::size_t entry = 0x14; entry < 0x14 + std::size_t{12} * Field16(bytes, flavor, 0x10); entry += 12)
+    {
+        if (Field16(bytes, flavor, entry) == type)
+        {
+            return std::pair<std::size_t, std::size_t>{Field32(bytes, flavor, entry + 4),
+                                                       Field32(bytes, flavor, entry + 8)};
+        }
+    }
+
+    return std::nullopt;
+}
+
+// `group`, a group file of `flavor`, with an INFX block after its FILE block, as the tools write one. The builder
+// leaves room in the header for a third block's entry.
+std::vector<uint8_t> WithInfx(std::vector<uint8_t> group, sar::Flavor flavor)
+{
+    const std::size_t start = group.size();
+    const std::vector<uint8_t> magic = Bytes("INFX");
+    group.insert(group.end(), magic.begin(), magic.end());
+    group.resize(start + 24);
+    PutField32(group, flavor, start + 4, 24);
+    PutField32(group, flavor, start + 8, 1);
+    PutField32(group, flavor, start + 16, sar::ItemId(sar::kSoundItem, 0));
+    PutField16(group, flavor, 0x10, 3);
+    PutField16(group, flavor, 0x2C, 0x7802);
+    PutField32(group, flavor, 0x30, static_cast<uint32_t>(start));
+    PutField32(group, flavor, 0x34, 24);
+    PutField32(group, flavor, 0x0C, static_cast<uint32_t>(group.size()));
+
+    return group;
+}
+
+std::vector<uint8_t> CommonGroup(sar::Flavor flavor)
+{
+    return WithInfx(sar_files::Group(flavor, {{0, sar_files::Sequence(flavor, {0xFF}, {})},
+                                              {2, BankOf(flavor, {0})},
+                                              {4, WaveArchiveOf(flavor, 300, 5)},
+                                              {5, Filler(900, 6)}}),
+                    flavor);
+}
+
+std::vector<uint8_t> StageGroup(sar::Flavor flavor)
+{
+    return sar_files::Group(flavor, {{5, Filler(900, 7)},
+                                     {1, sar_files::Sequence(flavor, {0x00, 0xFF}, {})},
+                                     {3, BankOf(flavor, {})},
+                                     {0, sar_files::Sequence(flavor, {0xFF}, {})}});
+}
+
+// An item of a group file: its file ID, the type of its reference, and the offset and the size that it gives.
+struct GroupItem
+{
+    friend bool operator==(const GroupItem&, const GroupItem&) = default;
+
+    uint32_t file = 0;
+    uint16_t type = 0;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+};
+
+// The items of `group`, a group file of `flavor`.
+std::vector<GroupItem> ItemsOf(std::span<const uint8_t> group, sar::Flavor flavor)
+{
+    const std::size_t table = BlockIn(group, flavor, 0x7800).value().first + 8;
+    std::vector<GroupItem> items;
+    for (uint32_t i = 0; i < Field32(group, flavor, table); i++)
+    {
+        const std::size_t item = table + Field32(group, flavor, table + 4 + i * 8 + 4);
+        items.push_back({Field32(group, flavor, item), Field16(group, flavor, item + 4),
+                         Field32(group, flavor, item + 8), Field32(group, flavor, item + 12)});
+    }
+
+    return items;
+}
+
+// Whether `cut`, a cut of `group` (a group file of `flavor`), keeps the copies of the files `kept` and links the rest.
+// Each kept copy keeps its bytes and starts on a multiple of `alignment` bytes. The header and the FILE block give the
+// new sizes. The blocks after the FILE block follow it with their bytes.
+bool KeepsCopies(std::span<const uint8_t> group, std::span<const uint8_t> cut, sar::Flavor flavor,
+                 const std::set<uint32_t>& kept, std::size_t alignment)
+{
+    const auto file_block = BlockIn(cut, flavor, 0x7801);
+    const auto whole_file_block = BlockIn(group, flavor, 0x7801);
+    if (!file_block || !whole_file_block || ItemsOf(cut, flavor).size() != ItemsOf(group, flavor).size())
+    {
+        return false;
+    }
+
+    const std::size_t data = file_block->first + 8;
+    const std::size_t file_end = file_block->first + file_block->second;
+    bool keeps = Field32(cut, flavor, 0x0C) == cut.size() &&
+                 Field32(cut, flavor, file_block->first + 4) == file_block->second && file_end % alignment == 0 &&
+                 cut.size() < group.size();
+    const std::vector<GroupItem> items = ItemsOf(cut, flavor);
+    const std::vector<GroupItem> whole_items = ItemsOf(group, flavor);
+    for (std::size_t i = 0; keeps && i < items.size(); i++)
+    {
+        const GroupItem& item = items[i];
+        const GroupItem& whole = whole_items[i];
+        if (!kept.contains(item.file) ||
+            std::ranges::any_of(std::span(whole_items).first(i),
+                                [&](const GroupItem& before) { return before.file == item.file; }))
+        {
+            keeps = item == GroupItem{whole.file, 0, 0xFFFFFFFF, 0xFFFFFFFF};
+            continue;
+        }
+
+        keeps = item.type == 0x1F00 && item.size == whole.size && (data + item.offset) % alignment == 0 &&
+                data + item.offset + item.size <= file_end &&
+                std::ranges::equal(cut.subspan(data + item.offset, item.size),
+                                   group.subspan(whole_file_block->first + 8 + whole.offset, whole.size));
+    }
+
+    // The blocks after the FILE block keep their bytes.
+    const auto infx = BlockIn(group, flavor, 0x7802);
+    const auto cut_infx = BlockIn(cut, flavor, 0x7802);
+    return keeps && (!infx || (cut_infx && cut_infx->first == file_end && cut_infx->second == infx->second &&
+                               std::ranges::equal(cut.subspan(cut_infx->first, cut_infx->second),
+                                                  group.subspan(infx->first, infx->second))));
+}
+
+// The cut of `archive` for `sounds`, with the cut of the group files beside it that the cut keeps.
+struct CutWithGroups
+{
+    rip::LibraryArchive library;
+    std::vector<std::vector<uint8_t>> groups;
+};
+
+std::optional<CutWithGroups> CutWithGroupsOf(const sar::SoundArchive& archive, const std::vector<uint32_t>& sounds)
+{
+    std::optional<rip::LibraryArchive> library = rip::KeepSequenceData(archive, sounds);
+    std::optional<std::vector<std::vector<uint8_t>>> groups =
+        library ? rip::KeepGroupCopies(archive, *library, sounds) : std::nullopt;
+    if (!groups)
+    {
+        return std::nullopt;
+    }
+
+    return CutWithGroups{std::move(*library), std::move(*groups)};
+}
+
+// Whether `cut` reads back with the bytes that `archive` gives the files `kept`, and no bytes for its other files.
+bool ReadsBack(const sar::SoundArchive& archive, const CutWithGroups& cut, const std::set<uint32_t>& kept)
+{
+    sar::SoundArchive read = sar::SoundArchive::Load(cut.library.archive, archive.ReadOptions());
+    for (const std::vector<uint8_t>& group : cut.groups)
+    {
+        read.AddGroupFile(group);
+    }
+
+    bool holds = read.FileCount() == archive.FileCount();
+    for (uint32_t file = 0; holds && file < archive.FileCount(); file++)
+    {
+        holds = kept.contains(file) ? std::ranges::equal(read.FileData(file), archive.FileData(file))
+                                    : read.FileData(file).empty();
+    }
+
+    return holds;
+}
+
+// A 3DS archive lists its groups. A rip finds the groups kept outside it by their names.
+void TestGroupsOfThe3ds()
+{
+    const sar::Options options = StrictRules(sar::Flavor::kCtr);
+    const sar::SoundArchive archive = sar::SoundArchive::Load(CopiesBeside(sar::Flavor::kCtr), options);
+    XSFLIB_CHECK((rip::ExternalGroups(archive) == std::vector<std::string>{"GROUP_COMMON", "GROUP_STAGE"}));
+
+    const auto find = [](const std::string& name)
+    {
+        return std::optional<Chunk>(Chunk{sar::GroupFileName(name, sar::Flavor::kCtr), {}});
+    };
+    XSFLIB_CHECK((Paths(rip::FindGroups<Chunk>(CopiesBeside(sar::Flavor::kCtr), find, options)) ==
+                  std::vector<std::string>{"GROUP_COMMON.bcgrp", "GROUP_STAGE.bcgrp"}));
+}
+
+// The group files that a library holds keep the copies that a model reads: for each file, the first copy among the
+// group files. Every other copy becomes a link to the archive's file, and the INFX block follows the FILE block. Each
+// cut reads back with the library's archive.
+void TestKeepGroupCopies()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::Flavor flavor = console.flavor;
+        sar::SoundArchive archive = sar::SoundArchive::Load(CopiesBeside(flavor), StrictRules(flavor));
+        archive.AddGroupFile(CommonGroup(flavor));
+        archive.AddGroupFile(StageGroup(flavor));
+        const std::string name = console.name;
+
+        const std::optional<CutWithGroups> a = CutWithGroupsOf(archive, {0});
+        const std::optional<CutWithGroups> b = CutWithGroupsOf(archive, {1});
+        const std::optional<CutWithGroups> both = CutWithGroupsOf(archive, {1, 0});
+
+        Check(a && a->library.group_files == std::vector<std::size_t>{0} &&
+                  KeepsCopies(CommonGroup(flavor), a->groups.at(0), flavor, {0, 2, 4}, console.alignment) &&
+                  ReadsBack(archive, *a, {0, 2, 4}),
+              name + ": SEQ_A's files come from GROUP_COMMON, without the wave sound's");
+        Check(b && b->library.group_files == std::vector<std::size_t>{1} &&
+                  KeepsCopies(StageGroup(flavor), b->groups.at(0), flavor, {1, 3}, console.alignment) &&
+                  ReadsBack(archive, *b, {1, 3}),
+              name + ": SEQ_B's files come from GROUP_STAGE, without the other copies");
+        Check(both && both->library.group_files == std::vector<std::size_t>{0, 1} &&
+                  KeepsCopies(CommonGroup(flavor), both->groups.at(0), flavor, {0, 2, 4}, console.alignment) &&
+                  KeepsCopies(StageGroup(flavor), both->groups.at(1), flavor, {1, 3}, console.alignment) &&
+                  ReadsBack(archive, *both, {0, 1, 2, 3, 4}),
+              name + ": both sequences' files, each from the first group file that holds it");
+
+        // A block that overlaps the FILE block gives no cut.
+        std::vector<uint8_t> overlapping = CommonGroup(flavor);
+        PutField32(overlapping, flavor, 0x30, BlockIn(overlapping, flavor, 0x7801).value().first + 8);
+        sar::SoundArchive with_overlap = sar::SoundArchive::Load(CopiesBeside(flavor), StrictRules(flavor));
+        with_overlap.AddGroupFile(overlapping);
+        const std::optional<rip::LibraryArchive> library =
+            rip::KeepSequenceData(with_overlap, std::vector<uint32_t>{0});
+        Check(library && !rip::KeepGroupCopies(with_overlap, *library, std::vector<uint32_t>{0}),
+              name + ": no cut of a group file whose INFX block overlaps its FILE block");
+    }
+}
+
 } // namespace
 
 int main()
@@ -866,6 +1121,8 @@ int main()
     TestKeepRefusesPlaceBeforeArchive();
     TestKeepLoadedFiles();
     TestKeepLoadedFilesRefuses();
+    TestGroupsOfThe3ds();
+    TestKeepGroupCopies();
 
     return xsflib::testing::Summary("rip_archive");
 }

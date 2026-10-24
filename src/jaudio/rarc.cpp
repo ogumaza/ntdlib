@@ -17,13 +17,16 @@
 namespace ntdlib::jaudio
 {
 
+using detail::HasTag;
+using detail::IsBigEndian;
 using detail::kReaderOptions;
 
 namespace
 {
 
 // A file entry's size. An entry holds the file's id at +0, its kind at +4, its name's offset among the strings at +6,
-// and its data's offset and size at +8 and +12. Bit 1 of the kind marks a folder.
+// and its data's offset and size at +8 and +12. Bit 1 of the kind marks a folder. A little-endian archive stores the
+// kind and the name's offset as one 32-bit word: the kind in its top byte, and the offset in its low half.
 constexpr uint32_t kEntrySize = 20;
 
 // The places that an RARC archive's header gives. Offsets in the info block count from its start at 0x20, and file
@@ -38,7 +41,7 @@ struct RarcHeader
 
 RarcHeader ReadHeader(const xsflib::Reader& r)
 {
-    if (r.Size() < 0x40 || !r.Magic(0, "RARC"))
+    if (r.Size() < 0x40 || !HasTag(r, 0, "RARC"))
     {
         throw xsflib::FormatError("not an RARC archive");
     }
@@ -51,7 +54,13 @@ RarcHeader ReadHeader(const xsflib::Reader& r)
 
 bool IsFolder(const xsflib::Reader& r, std::size_t entry)
 {
-    return (r.U8(entry + 4) & 0x02) != 0;
+    return (r.U8(entry + (r.BigEndian() ? 4 : 7)) & 0x02) != 0;
+}
+
+// The offset of an entry's name among the strings.
+uint16_t NameOffset(const xsflib::Reader& r, std::size_t entry)
+{
+    return r.U16(entry + (r.BigEndian() ? 6 : 4));
 }
 
 // The place of entry `index` of a sequence table. The entries start at 0x20. Each holds a sequence's offset, then its
@@ -65,7 +74,7 @@ std::size_t TableEntry(std::size_t index)
 
 std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc)
 {
-    const xsflib::Reader r(rarc, true, kReaderOptions);
+    const xsflib::Reader r(rarc, IsBigEndian(rarc, "RARC"), kReaderOptions);
     const RarcHeader header = ReadHeader(r);
     std::vector<ArchiveFile> files;
     for (uint32_t i = 0; i < header.entries; i++)
@@ -78,7 +87,7 @@ std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc)
 
         ArchiveFile file;
         file.id = r.U16(entry);
-        file.name = r.CString(header.strings + r.U16(entry + 6), 0x100);
+        file.name = r.CString(header.strings + NameOffset(r, entry), 0x100);
         file.data = r.Sub(header.data + r.U32(entry + 8), r.U32(entry + 12));
         files.push_back(std::move(file));
     }

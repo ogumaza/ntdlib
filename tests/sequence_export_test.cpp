@@ -44,6 +44,7 @@
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/testing/length_cases.h"
@@ -1198,6 +1199,87 @@ void TestHeldNoteHoldsUntilStopped()
 
     XSFLIB_CHECK(held.holds && !held.truncated && held.seconds >= 10.0 && held.seconds < 10.1);
     XSFLIB_CHECK(!played.holds && played.seconds > 99.0);
+}
+
+// Performs `commands` as PerformOnBank does. The console's settings apply, with `sends` and `reverb_moves_loops`.
+Performance PerformWithSends(const std::vector<uint8_t>& commands, Sends sends, bool reverb_moves_loops)
+{
+    Settings settings = console->settings;
+    settings.sends = sends;
+    settings.reverb_moves_loops = reverb_moves_loops;
+
+    std::vector<ArchiveFile> files(3);
+    files[0].data = Fseq(commands);
+    files[1].data = OneRegionFbnk({{0x05000000, 0}});
+    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
+    const SoundArchive archive = SoundArchive::Load(
+        Fsar(files, {.sequences = {{.banks = {0x03000000}}}, .banks = {1}, .wave_archives = {2}}), settings.archive);
+    BankSet banks(archive, archive.Sounds()[0], settings);
+    return ntdlib::sequence_export::Perform(archive, 0, banks, {}, settings);
+}
+
+// Whether `a` and `b` end at the same point and have the same events apart from CC91.
+bool SameEndAndEventsApartFromCc91(const Performance& a, const Performance& b)
+{
+    const auto same = [](const TrackEvent& x, const TrackEvent& y)
+    {
+        return x.tick == y.tick && x.kind == y.kind && x.key == y.key && x.value == y.value && x.preset == y.preset &&
+               x.semitones == y.semitones && x.note == y.note && x.part == y.part && x.after == y.after;
+    };
+    const auto is_reverb = [](const TrackEvent& e)
+    {
+        return e.kind == EventKind::kReverb;
+    };
+    for (std::size_t t = 0; t < a.tracks.size(); t++)
+    {
+        std::vector<TrackEvent> x = a.tracks[t];
+        std::vector<TrackEvent> y = b.tracks[t];
+        std::erase_if(x, is_reverb);
+        std::erase_if(y, is_reverb);
+        if (!std::ranges::equal(x, y, same))
+        {
+            return false;
+        }
+    }
+
+    return a.end_tick == b.end_tick && a.seconds == b.seconds && a.holds == b.holds &&
+           a.loop.has_value() == b.loop.has_value();
+}
+
+void TestReverbOutOfTheSearchesMovesNoEnd()
+{
+    // Each sequence changes send A after the last change of anything else. The first plays key 60 for 48 ticks (0.5 s).
+    // It sets send A to 64 at tick 432 (4.5 s). The second turns tie on and holds key 60 for 2400 ticks (25 s). It sets
+    // send A to 64 and jumps back to the note. That sound holds forever.
+    //
+    // With Settings::reverb_moves_loops, the change of CC91 counts. The first performance then ends at the change. The
+    // second holds for 10 s after the change. It ends at 35 s. Without the setting, the conversion with send A as CC91
+    // ends where the conversion without sends ends. The two have the same events apart from CC91. No CC91 lies after
+    // the end.
+    struct Case
+    {
+        std::vector<uint8_t> commands;
+        bool holds = false;
+        double counted_end = 0; // the end in seconds with Settings::reverb_moves_loops
+    };
+    const std::vector<Case> cases = {
+        {{0x3c, 0x64, 0x30, 0x80, 0x83, 0x00, 0xd9, 0x40, 0x80, 0x30, 0xff}, false, 4.5},
+        {Code({0xc8, 0x01, 0x3c, 0x64, 0x92, 0x60, 0xd9, 0x40, 0x89, U24(0x000002)}), true, 35.0},
+    };
+    for (const Case& c : cases)
+    {
+        const Performance none = PerformWithSends(c.commands, Sends::kNone, true);
+        const Performance counted = PerformWithSends(c.commands, Sends::kReverb, true);
+        const Performance left_out = PerformWithSends(c.commands, Sends::kReverb, false);
+
+        XSFLIB_CHECK(counted.holds == c.holds && std::fabs(counted.seconds - c.counted_end) < 0.02);
+        XSFLIB_CHECK(left_out.holds == c.holds && SameEndAndEventsApartFromCc91(left_out, none));
+        for (const std::vector<TrackEvent>& events : left_out.tracks)
+        {
+            XSFLIB_CHECK(std::ranges::none_of(events, [&](const TrackEvent& e)
+                                              { return e.kind == EventKind::kReverb && e.tick > left_out.end_tick; }));
+        }
+    }
 }
 
 void TestNegativeWaitBlocksTheTrackForEver()
@@ -3293,6 +3375,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestTimedSweepMovesEveryFrame,
     TestTimedSweepGoesOnAfterItsTrackCloses,
     TestHeldNoteHoldsUntilStopped,
+    TestReverbOutOfTheSearchesMovesNoEnd,
     TestLfoSetAfterANoteInItsTickReachesItsPreset,
     TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
     TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,

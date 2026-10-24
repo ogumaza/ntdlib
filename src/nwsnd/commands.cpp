@@ -477,8 +477,9 @@ Argument ReadArgument(Reader& r, Width width, Source source, Command& command)
 }
 
 // Reads one command as the player parses it: an if prefix, a time prefix, a random or a variable prefix, the opcode
-// and its arguments. A jump's, a call's or a track start's target is a byte offset.
-Command ParseCommand(Reader& r, const Grammar& grammar)
+// and its arguments. A jump's, a call's or a track start's target is a byte offset. `opcode` takes the command's code:
+// a note's key, an opcode, or 0xF000 plus the byte after 0xF0.
+Command ParseCommand(Reader& r, const Grammar& grammar, uint32_t& opcode)
 {
     Command command;
     uint32_t code = r.Byte();
@@ -588,6 +589,7 @@ Command ParseCommand(Reader& r, const Grammar& grammar)
         command.value.value = static_cast<int8_t>(command.value.value);
     }
 
+    opcode = code;
     return command;
 }
 
@@ -806,7 +808,8 @@ bool ReadsBack(std::span<const uint8_t> bytes, std::size_t start, const Command&
                const Grammar& grammar)
 {
     Reader r(bytes, start, grammar.little_endian);
-    Command read = ParseCommand(r, grammar);
+    uint32_t opcode = 0;
+    Command read = ParseCommand(r, grammar, opcode);
     if (commands::HasTarget(read.kind) && read.target == target)
     {
         read.target = command.target;
@@ -853,7 +856,8 @@ std::optional<Read> ReadAt(std::span<const uint8_t> data, uint32_t at, const Gra
 {
     Reader r(data, at, grammar.little_endian);
     Read read;
-    read.command = ParseCommand(r, grammar);
+    uint32_t opcode = 0;
+    read.command = ParseCommand(r, grammar, opcode);
     if (r.PastEnd())
     {
         return std::nullopt;
@@ -1135,6 +1139,18 @@ std::optional<DecodedCommand> DecodeCommand(std::span<const uint8_t> data, uint3
     }
 
     return DecodedCommand{read->command, read->size};
+}
+
+PlayedCommand ReadPlayedCommand(std::span<const uint8_t> data, uint32_t at, const Grammar& grammar)
+{
+    Reader r(data, at, grammar.little_endian);
+    PlayedCommand played;
+    uint32_t opcode = 0;
+    played.command = ParseCommand(r, grammar, opcode);
+    played.code = static_cast<uint16_t>(opcode);
+    played.next = static_cast<uint32_t>(std::min(r.At(), data.size() + 1));
+
+    return played;
 }
 
 bool FallsThrough(const commands::Command& command, const Grammar& grammar)

@@ -109,8 +109,12 @@ private:
     LowLevelVoiceAllocator* allocator_;
     const HardwareSettings* hardware_;
     std::vector<Buffers> buffers_;
+
+    // The places up to the last whose buffers have been queued. The buffers past it have never changed.
+    int mark_ = 0;
 };
 
+// The buffers go up to the mark.
 struct VoiceRenderer::Snapshot
 {
     const VoiceRenderer* owner = nullptr;

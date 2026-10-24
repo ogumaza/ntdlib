@@ -42,6 +42,9 @@ public:
     // Reads the bank of `sound` with rsar's default options. `settings` adds nothing yet.
     RsarBankSet(const rsar::SoundArchive& archive, const rsar::SoundInfo& sound, const Settings& settings);
 
+    // Reads bank `bank` of the archive's banks the same way.
+    RsarBankSet(const rsar::SoundArchive& archive, uint32_t bank, const Settings& settings);
+
     // Returns the bank, or nullptr if it can't be read.
     const rsar::Bank* GetBank() const
     {

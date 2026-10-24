@@ -212,7 +212,7 @@ struct PerformOptions
     // The sound's effect sends on buses A, B and C, from 0 to 1. A game's code sets them through the sound's handle
     // (BasicSound::SetFxSend). Each adds to every track's send on its bus. A voice holds the sum between 0 and 1. CC91
     // takes the sum on bus A, and on the Wii, CC93 takes the sum on bus B. On the Switch, the sends on buses B and C
-    // add to the dry level (Sends::kReverbDry). The 3DS's conversion leaves the sends out (Sends::kNone).
+    // add to the dry level (Sends::kReverbDry). By default, the 3DS's conversion leaves the sends out (Sends::kNone).
     std::array<float, 3> fx_sends = {};
 };
 

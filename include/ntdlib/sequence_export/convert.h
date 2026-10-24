@@ -83,4 +83,11 @@ struct BankConversion
 BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings,
                            const std::string& program);
 
+// The same for bank `bank` of the Wii's RSAR format, by the rules of NW4R SND's build `settings.wii_build`. The
+// programs are those that play a region at some key and velocity (rsar::Bank::Plays). Stereo waves play as in a sound
+// of pan mode `pan_mode` (rsar::SoundInfo::pan_mode): in balance mode for 1, unless the build is of October 2006. That
+// build has only dual mode.
+BankConversion ConvertBank(const rsar::SoundArchive& archive, std::size_t bank, uint8_t pan_mode,
+                           const Settings& settings, const std::string& program);
+
 } // namespace ntdlib::sequence_export

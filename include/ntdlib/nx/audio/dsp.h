@@ -81,6 +81,9 @@ int32_t DecodePcmFloat(int16_t* out, const DecodeArg& arg);
 void Resample(int32_t* out, const int16_t* in, int32_t ratio, int32_t& fraction, int count, SrcQuality quality,
               bool converting);
 
+// Advances `fraction` as Resample does for `count` outputs, without them.
+void SkipResample(int32_t ratio, int32_t& fraction, int count, SrcQuality quality);
+
 // A biquad filter's state in floating point: the last two inputs and the last two outputs.
 struct BiquadFilterState
 {

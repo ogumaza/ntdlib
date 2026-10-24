@@ -3,7 +3,9 @@
 // Builds small JAudio2 files for tests, in the layout of Four Swords Adventures' files: wave systems (WSYS) with their
 // AW file, banks (IBNK) of both versions, sound tables with their names (BST and BSTN), sequence archives (RARC) and
 // start-up archives (BAA). It also builds JAudio1's start-up archive (AAF), in The Wind Waker's layout, and writes a
-// small JAudio2 game's files. The GameCube's formats are big-endian.
+// small JAudio2 game's files. The GameCube's formats are big-endian. The builders with a `big_endian` parameter also
+// build the little-endian files of the Switch's releases of GameCube and Wii games, such as Super Mario Galaxy's: each
+// field in the width that the release stores it in, and each tag reversed.
 
 #pragma once
 
@@ -21,19 +23,114 @@
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 
-#include "ntdlib/testing/big_endian_bytes.h"
-
 namespace ntdlib::testing::jaudio_files
 {
 
-// The builder of the files below.
-using Bytes = BigEndianBytes;
+// The builder of the files below: values appended in turn, and stores over the bytes already added. A little-endian
+// file stores each value of more than a byte in reverse order, and each tag as a 32-bit word, its characters reversed.
+class Bytes
+{
+public:
+    explicit Bytes(bool big_endian = true) : big_endian_(big_endian)
+    {
+    }
+
+    std::size_t Size() const
+    {
+        return data_.size();
+    }
+
+    Bytes& U8(uint32_t v)
+    {
+        data_.push_back(static_cast<uint8_t>(v));
+
+        return *this;
+    }
+
+    Bytes& U16(uint32_t v)
+    {
+        return big_endian_ ? U8(v >> 8).U8(v) : U8(v).U8(v >> 8);
+    }
+
+    Bytes& U24(uint32_t v)
+    {
+        return big_endian_ ? U8(v >> 16).U8(v >> 8).U8(v) : U8(v).U8(v >> 8).U8(v >> 16);
+    }
+
+    Bytes& U32(uint32_t v)
+    {
+        return big_endian_ ? U16(v >> 16).U16(v) : U16(v).U16(v >> 16);
+    }
+
+    Bytes& F32(float v)
+    {
+        return U32(std::bit_cast<uint32_t>(v));
+    }
+
+    Bytes& Tag(const char* tag)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            U8(static_cast<uint8_t>(tag[big_endian_ ? i : 3 - i]));
+        }
+
+        return *this;
+    }
+
+    Bytes& Append(const std::vector<uint8_t>& more)
+    {
+        data_.insert(data_.end(), more.begin(), more.end());
+
+        return *this;
+    }
+
+    Bytes& PadTo(std::size_t size)
+    {
+        data_.resize(std::max(data_.size(), size));
+
+        return *this;
+    }
+
+    // Each stores `v` at `at`, over bytes already added.
+    void Put8(std::size_t at, uint32_t v)
+    {
+        data_[at] = static_cast<uint8_t>(v);
+    }
+
+    void Put16(std::size_t at, uint32_t v)
+    {
+        big_endian_ ? xsflib::StoreBe16(data_.data() + at, static_cast<uint16_t>(v))
+                    : xsflib::StoreLe16(data_.data() + at, static_cast<uint16_t>(v));
+    }
+
+    void Put24(std::size_t at, uint32_t v)
+    {
+        Put8(at + (big_endian_ ? 0 : 2), v >> 16);
+        Put8(at + 1, v >> 8);
+        Put8(at + (big_endian_ ? 2 : 0), v);
+    }
+
+    void Put32(std::size_t at, uint32_t v)
+    {
+        big_endian_ ? xsflib::StoreBe32(data_.data() + at, v) : xsflib::StoreLe32(data_.data() + at, v);
+    }
+
+    const std::vector<uint8_t>& Data() const
+    {
+        return data_;
+    }
+
+private:
+    bool big_endian_;
+    std::vector<uint8_t> data_;
+};
 
 // A wave system with one wave archive, `archive_name`, of `waves` PCM16 waves of 64 samples each at 32000 Hz, key 60.
 // The first loops over its last 32 samples. The archive's name has at most 111 characters.
-inline std::vector<uint8_t> WaveSystemFile(uint32_t id, int waves, const std::string& archive_name = "test.aw")
+inline std::vector<uint8_t> WaveSystemFile(uint32_t id, int waves, const std::string& archive_name = "test.aw",
+                                           bool big_endian = true)
 {
-    Bytes w;
+    Bytes w(big_endian);
     w.Tag("WSYS").U32(0).U32(id).U32(0).U32(0x20).U32(0); // size, id, table size, WINF, WBCT (set below)
     w.PadTo(0x20);
 
@@ -133,10 +230,10 @@ inline std::vector<uint8_t> BankV0File(uint32_t number, int16_t release)
 
 // A version 1 bank whose program 0 plays wave 0 with a random pitch effect, whose key region ends at key 64, and whose
 // second velocity region plays wave 1 above velocity 63. Its envelope rises over `attack` units, then falls to silence
-// over `decay` units and holds there. The release takes 30 units.
-inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t decay)
+// over `decay` units and holds there. The release takes 30 units. The key region's high key is the top byte of a word.
+inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t decay, bool big_endian = true)
 {
-    Bytes b;
+    Bytes b(big_endian);
     b.Tag("IBNK").U32(0).U32(number).U32(1).PadTo(0x20);
 
     b.Tag("ENVT").U32(30);
@@ -153,7 +250,7 @@ inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t 
     const std::size_t inst = b.Size() + 8;
     b.Tag("INST").U32(0); // size set below
     b.Tag("Inst").U32(1).U32(0).U32(1).U32(static_cast<uint32_t>(rand)).U32(1);
-    b.U8(64).U8(0).U16(0).U32(2);
+    b.U32(64u << 24).U32(2);
     b.U8(63).U8(0).U16(0).U32(0).F32(1.0f).F32(1.0f);
     b.U8(127).U8(0).U16(0).U32(1).F32(1.0f).F32(1.0f);
     b.F32(1.0f).F32(1.0f);
@@ -199,11 +296,14 @@ struct SoundTableBlocks
 
 // A sound table of `sections`, and its name table. Each sound's entry is 12 bytes. A type with bit 0x40 set has the
 // later layout: the volume at +1 and the sequence archive's file at +2. Any other type has the earlier one: the volume
-// at +2 and the file at +8. With `first_layouts`, every entry has the first layouts: the volume at +8 and no file.
-inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, bool first_layouts = false)
+// at +2 and the file in the low half of the word at +8. With `first_layouts`, every entry has the first layouts: the
+// volume at +8 and no file. A group gives each sound's type in a byte and its entry's offset in the 24 bits after it.
+// Each file number is a 16-bit field.
+inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, bool first_layouts = false,
+                                   bool big_endian = true)
 {
     // The table: the root lists the sections, each section its groups, each group its sounds.
-    Bytes t;
+    Bytes t(big_endian);
     t.Tag("BST ").U32(0).U32(0).U32(0x10); // the root at 0x10
     const std::size_t root = t.Size();
     t.U32(static_cast<uint32_t>(sections.size()));
@@ -235,7 +335,8 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, boo
 
             for (std::size_t i = 0; i < sounds.size(); i++)
             {
-                t.Put32(group + 8 + 4 * i, uint32_t{sounds[i].type} << 24 | static_cast<uint32_t>(t.Size()));
+                t.Put8(group + 8 + 4 * i, sounds[i].type);
+                t.Put24(group + 9 + 4 * i, static_cast<uint32_t>(t.Size()));
                 if (first_layouts)
                 {
                     t.U32(0).U32(0).U8(sounds[i].volume).U8(0).U16(0);
@@ -246,14 +347,14 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, boo
                 }
                 else
                 {
-                    t.U8(0).U8(0).U8(sounds[i].volume).U8(0).U32(0).U32(sounds[i].file);
+                    t.U8(0).U8(0).U8(sounds[i].volume).U8(0).U32(0).U16(0).U16(sounds[i].file);
                 }
             }
         }
     }
 
     // The names: the same tree, with a name before each section's and group's list. Strings follow the tree.
-    Bytes n;
+    Bytes n(big_endian);
     std::vector<std::pair<std::size_t, std::string>> strings; // where each string's offset goes, and the string
     n.Tag("BSTN").U32(0).U32(0).U32(0x10);
     const std::size_t names_root = n.Size();
@@ -305,13 +406,14 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, boo
 }
 
 // A start-up archive with one wave system (number 0) of two waves, `bank` played with it, a sequence collection of one
-// category that holds `sequences`, and the sound table `sounds` if it has a table.
+// category that holds `sequences`, and the sound table `sounds` if it has a table. A little-endian archive takes a
+// little-endian bank and table.
 inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
                                            const std::vector<std::vector<uint8_t>>& sequences,
-                                           const SoundTableBlocks& sounds = {})
+                                           const SoundTableBlocks& sounds = {}, bool big_endian = true)
 {
-    const std::vector<uint8_t> ws = WaveSystemFile(0, 2);
-    Bytes sc;
+    const std::vector<uint8_t> ws = WaveSystemFile(0, 2, "test.aw", big_endian);
+    Bytes sc(big_endian);
     sc.U8('S').U8('C').U16(1).U32(0).U32(12);
     sc.U32(static_cast<uint32_t>(sequences.size()));
     std::size_t at = 12 + 4 + 4 * sequences.size();
@@ -330,7 +432,7 @@ inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
 
     // The command list, then the blocks.
     const bool table = !sounds.table.empty();
-    Bytes a;
+    Bytes a(big_endian);
     a.Tag("AA_<");
     const std::size_t list_size = 4 + 16 + 12 + 12 + (table ? 24 : 0) + 4;
     const auto ws_at = static_cast<uint32_t>(list_size);
@@ -358,7 +460,8 @@ inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
     return a.Data();
 }
 
-// The AW file of WaveSystemFile: wave i is 64 samples of a square wave of period 16 at i * 128 bytes.
+// The AW file of WaveSystemFile: wave i is 64 samples of a square wave of period 16 at i * 128 bytes. The samples are
+// big-endian in either byte order of the other files.
 inline std::vector<uint8_t> AwFile()
 {
     Bytes aw;
@@ -382,8 +485,9 @@ struct RarcFileSpec
 };
 
 // An RARC archive of `files`, after one folder entry. The info block starts at 0x20. The block's offsets and the data's
-// offsets count from there.
-inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files)
+// offsets count from there. An entry's kind and its name's offset are one word: the kind in the top byte, and the
+// offset in the low half.
+inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, bool big_endian = true)
 {
     // The strings: the folder's name, then the name of each file.
     std::vector<uint8_t> strings = {'.', 0};
@@ -400,16 +504,16 @@ inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files)
     const std::size_t strings_at = kEntryTable + 20 * entry_count;
     const std::size_t data_at = (strings_at + strings.size() + 31) & ~std::size_t{31};
 
-    Bytes r;
+    Bytes r(big_endian);
     r.Tag("RARC").U32(0).U32(0x20).U32(static_cast<uint32_t>(data_at)).PadTo(0x28);
     r.U32(static_cast<uint32_t>(entry_count)).U32(static_cast<uint32_t>(kEntryTable)).U32(0);
     r.U32(static_cast<uint32_t>(strings_at)).PadTo(0x20 + kEntryTable);
-    r.U16(0xffff).U16(0).U8(0x02).U8(0).U16(0).U32(0).U32(0).U32(0); // the folder
+    r.U16(0xffff).U16(0).U32(0x02u << 24).U32(0).U32(0).U32(0); // the folder
 
     std::size_t at = 0;
     for (std::size_t i = 0; i < files.size(); i++)
     {
-        r.U16(files[i].id).U16(0).U8(0x01).U8(0).U16(name_offsets[i]);
+        r.U16(files[i].id).U16(0).U32(0x01u << 24 | name_offsets[i]);
         r.U32(static_cast<uint32_t>(at)).U32(static_cast<uint32_t>(files[i].data.size())).U32(0);
         at += files[i].data.size();
     }

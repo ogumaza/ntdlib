@@ -510,8 +510,7 @@ void TestBytes(Flavor flavor)
 
 // The tables' values change where the reader reads them. Sound "Song" holds every option, with bytes beside the values
 // and a release priority fix of 2. Sound "Plain" holds none and lists no banks: its options and banks stay as the
-// reader gives them. The 3DS's reader reads no player, player priority, actor player or players. Writing the first
-// values back gives the archive back.
+// reader gives them. Writing the first values back gives the archive back.
 void TestTableValues(Flavor flavor)
 {
     sar_files::ArchiveSpec spec;
@@ -548,11 +547,7 @@ void TestTableValues(Flavor flavor)
     plain.player_priority = 99;
     plain.channel_priority = 1;
     plain.banks = {0x03000000};
-    const bool ctr = flavor == Flavor::kCtr;
-    if (!ctr)
-    {
-        players[1].playable_sound_max = 7;
-    }
+    players[1].playable_sound_max = 7;
 
     std::vector<uint8_t> written = archive;
     ntdlib::sar::WriteTableValues(written, flavor, before.Sounds(), before.Players());
@@ -568,10 +563,9 @@ void TestTableValues(Flavor flavor)
     XSFLIB_CHECK(s.volume == 90 && s.pan_mode == 1 && s.pan_curve == 2 && s.allocate_track_flags == 3);
     XSFLIB_CHECK((s.banks == std::vector<uint32_t>{0x03000001, 0xFFFFFFFF}));
     XSFLIB_CHECK(s.channel_priority == 80 && s.release_priority_fix && s.start_offset == 0);
-    XSFLIB_CHECK(s.player_id == (ctr ? 0 : 0x04000001u) && s.player_priority == (ctr ? 64 : 70));
-    XSFLIB_CHECK(s.actor_player_id == (ctr ? 0 : 1));
+    XSFLIB_CHECK(s.player_id == 0x04000001u && s.player_priority == 70 && s.actor_player_id == 1);
     XSFLIB_CHECK(p.volume == 50 && p.player_priority == 64 && p.channel_priority == 64 && p.banks.empty());
-    XSFLIB_CHECK(after.Players().size() == (ctr ? 0u : 2u) && (ctr || after.Players()[1].playable_sound_max == 7));
+    XSFLIB_CHECK(after.Players().size() == 2u && after.Players()[1].playable_sound_max == 7);
 
     // A release priority fix turned off writes 0 into its byte. The byte above it keeps its value.
     song.release_priority_fix = false;
@@ -632,9 +626,8 @@ void TestValuePlaces(Flavor flavor)
     const std::vector<ValuePlaces> places = ntdlib::sar::TableValuePlaces(archive, flavor);
     const std::vector<ValuePlaces> head = ntdlib::sar::TableValuePlaces(std::span(archive).first(end), flavor);
 
-    const bool ctr = flavor == Flavor::kCtr;
     const std::vector<ValuePlaces> expected = {
-        {true, !ctr, true}, {false, false, false}, {true, false, false}, {false, !ctr, false}};
+        {true, true, true}, {false, false, false}, {true, false, false}, {false, true, false}};
     XSFLIB_CHECK(places == expected && head == places && after.size() == places.size());
     for (std::size_t i = 0; i < places.size() && i < after.size(); ++i)
     {

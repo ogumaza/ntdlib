@@ -96,8 +96,7 @@ std::vector<int16_t> DecodeImaAdpcm(std::span<const uint8_t> data, uint32_t samp
 {
     std::vector<int16_t> out;
     out.reserve(std::min<std::size_t>(samples, data.size() * 2));
-    int predictor = sample;
-    int step_index = std::min<int>(index, 88);
+    ImaAdpcmState state{sample, index};
     for (uint32_t i = 0; i < samples; i++)
     {
         const std::size_t byte = i / 2;
@@ -106,32 +105,38 @@ std::vector<int16_t> DecodeImaAdpcm(std::span<const uint8_t> data, uint32_t samp
             break;
         }
 
-        const int nibble = (i & 1) ? (data[byte] >> 4) : (data[byte] & 0x0f); // low nibble first
-        const int step = kImaStep[step_index];
-        int diff = step >> 3;
-        if (nibble & 1)
-        {
-            diff += step >> 2;
-        }
-        if (nibble & 2)
-        {
-            diff += step >> 1;
-        }
-        if (nibble & 4)
-        {
-            diff += step;
-        }
-        if (nibble & 8)
-        {
-            diff = -diff;
-        }
-
-        predictor = std::clamp(predictor + diff, -32768, 32767);
-        step_index = std::clamp(step_index + kImaIndex[nibble], 0, 88);
-        out.push_back(static_cast<int16_t>(predictor));
+        const uint8_t nibble = (i & 1) ? (data[byte] >> 4) : (data[byte] & 0x0f); // low nibble first
+        state = ImaAdpcmNext(state, nibble);
+        out.push_back(state.sample);
     }
 
     return out;
+}
+
+ImaAdpcmState ImaAdpcmNext(ImaAdpcmState state, uint8_t nibble)
+{
+    const int index = std::min<int>(state.index, 88);
+    const int step = kImaStep[index];
+    int diff = step >> 3;
+    if (nibble & 1)
+    {
+        diff += step >> 2;
+    }
+    if (nibble & 2)
+    {
+        diff += step >> 1;
+    }
+    if (nibble & 4)
+    {
+        diff += step;
+    }
+    if (nibble & 8)
+    {
+        diff = -diff;
+    }
+
+    return {static_cast<int16_t>(std::clamp(state.sample + diff, -32768, 32767)),
+            static_cast<uint8_t>(std::clamp(index + kImaIndex[nibble & 0x0f], 0, 88))};
 }
 
 std::vector<int16_t> DecodeAfc(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2)

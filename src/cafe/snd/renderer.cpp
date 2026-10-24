@@ -115,6 +115,7 @@ void AxRenderer::AppendWave(VoiceId place, std::span<Voice> voices, const WaveIn
 {
     // Notes always start at the wave's start. A start offset would have CalcOffsetAdpcmParam decode up to it.
     Buffers& buffers = buffers_[static_cast<std::size_t>(place)];
+    used_ = std::max(used_, static_cast<std::size_t>(place) + 1);
     buffers.last = nullptr;
     const bool adpcm = wave.format == SampleFormat::kDspAdpcm;
     const uint32_t loop_start_bytes = FrameToByte(wave.loop_start, wave.format);
@@ -184,12 +185,19 @@ bool AxRenderer::IsPlayFinished(VoiceId place) const
 
 AxRenderer::Snapshot AxRenderer::Save() const
 {
-    return {buffers_};
+    return {{buffers_.begin(), buffers_.begin() + static_cast<std::ptrdiff_t>(used_)}};
 }
 
 void AxRenderer::Restore(const Snapshot& snapshot)
 {
+    // The buffers past the snapshot's last go back to how they started. A later snapshot restored after an earlier one
+    // can hold more buffers than the renderer has used. None then goes back.
     std::copy(snapshot.buffers.begin(), snapshot.buffers.end(), buffers_.begin());
+    for (std::size_t place = snapshot.buffers.size(); place < used_; ++place)
+    {
+        buffers_[place] = Buffers{};
+    }
+    used_ = snapshot.buffers.size();
 }
 
 void AxRenderer::CalcMix(MultiVoice& voice) const
@@ -230,11 +238,18 @@ void AxRenderer::CalcBiquadFilter(MultiVoice& voice) const
 {
     // Voice::SetBiquadFilter (0x0229CF84): turning the filter off leaves its coefficients. A value above 0 takes the
     // preset's coefficients (ntdlib's BiquadPresetCoefficients). Types 1 to 5 are the presets. A game registers any
-    // other types. Here those types turn the filter off.
-    const int16_t* coefs = voice.BiquadValue() > 0.0f
-                               ? ntdlib::nwsnd::BiquadPresetCoefficients<ntdlib::nwsnd::CafePolicy>(voice.BiquadType(),
-                                                                                                    voice.BiquadValue())
-                               : nullptr;
+    // other types. Here those types turn the filter off. In the enhanced mode, the row of the preset's table takes its
+    // coefficients from the same filter made for 48 kHz. The two tables have the same rows.
+    const int type = voice.BiquadType();
+    const int row = voice.BiquadValue() > 0.0f
+                        ? ntdlib::nwsnd::BiquadPresetRow<ntdlib::nwsnd::CafePolicy>(type, voice.BiquadValue())
+                        : -1;
+    const int16_t* coefs = nullptr;
+    if (row >= 0)
+    {
+        const int preset = ax_->Enhanced() ? type + 5 : type;
+        coefs = ntdlib::nwsnd::kBiquadPresets[preset - 1].rows[static_cast<std::size_t>(row)];
+    }
     for (Voice& each : voice.Voices())
     {
         each.param.biquad_on = coefs != nullptr;

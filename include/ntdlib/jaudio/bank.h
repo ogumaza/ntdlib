@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // JAudio2's instrument banks (IBNK) of both versions: version 0 (The Wind Waker's layout) and version 1 (Twilight
-// Princess's layout), with their instruments, drum sets, oscillators and effects.
+// Princess's layout), with their instruments, drum sets, oscillators and effects. A bank of version 1 can also be
+// little-endian. The Switch's releases of Wii games store their banks that way. The tag is then "KNBI", and each field
+// is little-endian in the width of its type. A key region's high key is the top byte of a 32-bit word there. The other
+// bytes of the bank's records, such as a velocity region's high velocity, keep their places.
 
 #pragma once
 
@@ -114,7 +117,8 @@ struct DrumSet
 struct Bank
 {
     // Reads the bank at the start of `file`. `file` can go on past the bank: a version 1 bank's chunks can end past its
-    // size. The bank plays the waves of wave system `wave_system`.
+    // size. The bank plays the waves of wave system `wave_system`. Throws FormatError if the bank is damaged or of an
+    // unknown version. It also throws for a little-endian bank of version 0: the reader has no layout for one.
     static Bank Parse(std::span<const uint8_t> file, uint32_t wave_system);
 
     uint32_t number = 0;      // the number a sequence selects the bank by

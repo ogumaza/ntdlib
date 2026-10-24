@@ -72,7 +72,9 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/commands/sequence.h"
 #include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/envelope.h"
 
 namespace ntdlib::nwsnd
@@ -435,16 +437,6 @@ public:
 private:
     friend class SequenceSoundPlayer<Policy>;
 
-    enum ArgType
-    {
-        kArgNone = 0,
-        kArgU8 = 1,
-        kArgS16 = 2,
-        kArgVmidi = 3,
-        kArgRandom = 4,
-        kArgVariable = 5,
-    };
-
     // The settings of an LFO that commands change (see SetLfo).
     enum class LfoSetting
     {
@@ -496,13 +488,20 @@ private:
     // command's place in the order the player's tracks run them, and whether the command changes the track's sound.
     int RunCommand(Player& player, Engine& engine);
 
-    void InitParam();                          // 0x022CABAC
-    int Parse(Player& player, Engine& engine); // MmlParser::Parse, 0x022CB7C8
+    void InitParam(); // 0x022CABAC
 
-    // Parse's extended commands, after the byte 0xF0 and the prefixes. `condition` is false after an if (0xA2) whose
-    // comparison failed. `arg_type` is the type that a random or variable prefix gives the argument, or kArgNone.
-    void ParseExtendedCommand(Player& player, Engine& engine, bool condition, int arg_type);
-    int32_t ReadArg(Player& player, Engine& engine, int type); // MmlParser::ReadArg, 0x022CB67C
+    // Runs the command at the track's offset (MmlParser::Parse, 0x022CB7C8). The decoder's ReadPlayedCommand
+    // (commands.h) reads it as the game's parser does.
+    int Parse(Player& player, Engine& engine);
+
+    // Parse's extended commands (0xF000 plus the byte after 0xF0). `condition` is false after an if (0xA2) whose
+    // comparison failed.
+    void RunExtended(Player& player, Engine& engine, const PlayedCommand& played, bool condition);
+
+    // The value of a command's argument as the game's parser reads it (MmlParser::ReadArg, 0x022CB67C): the value
+    // itself, a value that the player's generator draws, or the value of a variable. Parse takes the values in the
+    // order of the command's bytes.
+    int32_t ArgumentValue(Player& player, Engine& engine, const commands::Argument& argument);
     void CommandProc(Player& player, Engine& engine, uint32_t command, int32_t arg1,
                      int32_t arg2); // MmlParser::CommandProc, 0x022CBF1C
 
@@ -530,15 +529,10 @@ private:
     void StopAllChannel(Player& player, Engine& engine);                 // 0x022CAAA4
     void SetMute(Player& player, Engine& engine, int mode);              // 0x022CB34C
     void OnChannelEvent(Engine& engine, Channel& channel);               // ChannelCallbackFunc, 0x022CB06C
-    uint8_t ReadByte();
 
     // A channel of the track stopped at once and freed, or released. Each calls the engine's hook, OnStop or OnRelease.
     void StopChannel(Player& player, Engine& engine, Channel& channel);
     void ReleaseChannel(Player& player, Engine& engine, Channel& channel);
-
-    // A 16-bit argument, and a 24-bit offset, in the console's byte order.
-    uint32_t Read16();
-    uint32_t ReadOffset();
 
     // The track's newest channel, and the one after `channel`, or nullptr.
     Channel* First(Engine& engine) const;
@@ -773,6 +767,7 @@ public:
     void SetBuild(const typename Policy::Build& build)
     {
         build_ = build;
+        grammar_ = GrammarOf<Policy>(build);
     }
 
     // Sets variable `index` to `value`. A game can do that through the sound's handle, before the sequence starts or
@@ -945,7 +940,8 @@ private:
     uint16_t tempo_ = 120;              // +0x1AE
     MoveValue<uint8_t> main_volume_;    // +0x1B0
     typename Policy::Build build_{};    // the library's build if its commands depend on it
-    uint32_t tick_count_ = 0;           // +0x228
+    Grammar grammar_ = GrammarOf<Policy>(); // the rules by which the tracks read the build's commands
+    uint32_t tick_count_ = 0;               // +0x228
 
     // What a rip tool's length analysis follows while the engine follows loops: the commands that the tracks have run,
     // when a track last changed the sound (ChangedAt), and the player's and the global variables that a track has read,

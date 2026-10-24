@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// The length analysis's cases for a rip tool of the Wii U's or the Switch's sound archives: sequences that each take
-// one of the analysis's paths, an archive that holds them in either byte order, and the timing that the analysis gives
-// each one. A rip tool's test measures every case on its model of the sound library, and CheckCases checks the timings.
-// The timings hold for sound frames of 3 ms and of 5 ms.
+// The length analysis's cases for a rip tool of the 3DS's, the Wii U's or the Switch's sound archives: sequences that
+// each take one of the analysis's paths, an archive that holds them in either byte order, and the timing that the
+// analysis gives each one. A rip tool's test measures every case on its model of the sound library, and CheckCases
+// checks the timings. The timings hold for sound frames of 3 to 5 ms.
 //
 // Every sequence starts with timebase 48 and tempo 120: 48 ticks take 500 ms. Program 0 plays a wave of 1 s that ends,
 // and program 1 a wave of 0.1 s that loops. Both have the fastest attack, decay and release, a sustain at full volume
@@ -182,7 +182,8 @@ private:
 // allocates, and the timing that the analysis gives it. The length lies from min_ms to max_ms, or equals the length of
 // case `same_length_as` when that's 0 or more. Where others_min_ms is set, an analysis that waits for the loops of the
 // tracks other than the main track (a model with xsflib's OthersLooped) gives a length from others_min_ms to
-// others_max_ms instead.
+// others_max_ms instead. Where tie_min_ms is set, the 3DS gives a length from tie_min_ms to tie_max_ms instead. Its
+// ties give their channels the velocity's volume without the region's.
 struct Case
 {
     const char* name;
@@ -197,6 +198,8 @@ struct Case
     int same_length_as = -1;
     long long others_min_ms = -1;
     long long others_max_ms = -1;
+    long long tie_min_ms = -1;
+    long long tie_max_ms = -1;
 };
 
 // Every case, by its sound's index in the archive. The comment on each case says what its sequence does, then why the
@@ -255,14 +258,15 @@ inline const std::vector<Case>& Cases()
 
         // Track 0 polls as in SEQ_POLL_MUSIC. Track 1 ties a note of a tick on program 1 to itself over and over. The
         // note sounds on, and no track changes anything after the first ticks. The tied note's wave of 0.1 s loops
-        // twice.
+        // twice. On the 3DS, the first tie changes the note's volume: the channel loses the region's volume. The tie's
+        // pass is then a second loop, two ticks in.
         {"SEQ_POLL_HOLD",
          [](Code& c)
          {
              c.OpenTrack(1, 27).CompareEqual(0, 1).If().Jump(26).Wait(1).Jump(10).End();
              c.Program(1).Tie(true).Note(60, 127, 1).Jump(31).End();
          },
-         0, 127, 3, 190, 260, 10000},
+         0, 127, 3, 190, 260, 10000, false, -1, -1, -1, 20, 30},
 
         // Track 0 polls as in SEQ_POLL_MUSIC. Track 1 plays a note of 12 ticks, rests for 48 ticks, plays the note
         // again and ends. The second note ends at 750 ms, and 500 ms of tail follow. Track 0's polls during the rest
@@ -325,9 +329,11 @@ inline const std::vector<Case>& Cases()
 
         // Ties notes of 36 ticks on program 0 to one another over and over (from 10). The wave ends after 1 s, during
         // the third pass, and the next pass starts a new note at 1,125 ms. A track whose passes play notes isn't stuck.
-        // That pass is the first loop. The pass that starts the note again at 2,250 ms is the second.
+        // That pass is the first loop. The pass that starts the note again at 2,250 ms is the second. On the 3DS, the
+        // first tie after each new note changes the note's volume. The tie's pass, which ends at 750 ms, is then the
+        // first loop, and the pass of the new note at 1,125 ms the second.
         {"SEQ_RESTART", [](Code& c) { c.Tie(true).Note(60, 127, 36).Note(60, 127, 36).Jump(10).End(); }, 0, 127, 1,
-         2620, 2640, 10000},
+         2620, 2640, 10000, false, -1, -1, -1, 1495, 1510},
 
         // Plays a note of 48 ticks on program 1 without waiting for it, then waits a tick and jumps back, over and over
         // (from 12). The note runs out at 500 ms, and 500 ms of tail follow. Its track polls, but isn't settled while
@@ -488,6 +494,13 @@ inline const std::vector<Case>& Cases()
     return kCases;
 }
 
+// Whether the sequence player of the console of `flavor` reads a command's arguments big-endian: the 3DS's and the Wii
+// U's do, and the Switch's doesn't.
+inline bool BigEndianArguments(sar::Flavor flavor)
+{
+    return flavor != sar::Flavor::kNx;
+}
+
 // The sequence of case `index` in the byte order.
 inline std::vector<uint8_t> Bytecode(std::size_t index, bool big_endian)
 {
@@ -497,12 +510,13 @@ inline std::vector<uint8_t> Bytecode(std::size_t index, bool big_endian)
     return code.Bytes();
 }
 
-// The archive that holds every case, big-endian for the Wii U or little-endian for the Switch. Its sound table lists
-// the cases in order, and nothing more.
-inline std::vector<uint8_t> Archive(bool big_endian)
+// The archive that holds every case, for the console of `flavor`: big-endian for the Wii U, and little-endian for the
+// 3DS and the Switch. Its sound table lists the cases in order, and nothing more.
+inline std::vector<uint8_t> Archive(sar::Flavor flavor)
 {
     // A wave of 1 s that ends, and one of 0.1 s that loops. Program 0 plays the wave that ends, and program 1 the one
     // that loops.
+    const bool big_endian = sar_files::detail::BigEndian(flavor);
     const sar_files::WaveSpec once = sar_files::ConstantWave(big_endian);
     sar_files::WaveSpec looping = sar_files::ConstantWave(big_endian, 3200);
     looping.loop = true;
@@ -512,9 +526,8 @@ inline std::vector<uint8_t> Archive(bool big_endian)
     spec.wave_archives = {{"WARC", 1}};
     spec.players = {{"PLAYER", 1}};
     spec.files = {
-        {sar_files::Bank(big_endian, sar_files::OneRegionBank(2)), "", false},
-        {sar_files::WaveArchive(big_endian, {sar_files::Wave(big_endian, once), sar_files::Wave(big_endian, looping)}),
-         "", false}};
+        {sar_files::Bank(flavor, sar_files::OneRegionBank(2)), "", false},
+        {sar_files::WaveArchive(flavor, {sar_files::Wave(flavor, once), sar_files::Wave(flavor, looping)}), "", false}};
 
     for (std::size_t i = 0; i < Cases().size(); ++i)
     {
@@ -527,17 +540,25 @@ inline std::vector<uint8_t> Archive(bool big_endian)
         sound.file = static_cast<uint32_t>(spec.files.size());
         sound.start_offset = item.start;
         spec.sounds.push_back(sound);
-        spec.files.push_back({sar_files::Sequence(big_endian, Bytecode(i, big_endian), {{"Start", 0}}), "", false});
+        spec.files.push_back(
+            {sar_files::Sequence(flavor, Bytecode(i, BigEndianArguments(flavor)), {{"Start", 0}}), "", false});
     }
 
-    return sar_files::Archive(big_endian, spec);
+    return sar_files::Archive(flavor, spec);
+}
+
+// The archive for the Wii U, or for the Switch.
+inline std::vector<uint8_t> Archive(bool big_endian)
+{
+    return Archive(sar_files::detail::FlavorOf(big_endian));
 }
 
 // Checks every case's timing. `analyze(index)` gives the timing of the archive's sound `index` (with length_ms, fade_ms
 // and silent), or nothing. A sound past the last case has no timing. `waits_for_others` says whether the analysis waits
-// for the other tracks' loops (see Case).
+// for the other tracks' loops, and `ties_lose_region_volume` whether a tie gives its channel the velocity's volume
+// without the region's (see Case).
 template <typename Analyze>
-void CheckCases(const Analyze& analyze, bool waits_for_others = false)
+void CheckCases(const Analyze& analyze, bool waits_for_others = false, bool ties_lose_region_volume = false)
 {
     for (std::size_t i = 0; i < Cases().size(); ++i)
     {
@@ -555,6 +576,11 @@ void CheckCases(const Analyze& analyze, bool waits_for_others = false)
         {
             min_ms = item.others_min_ms;
             max_ms = item.others_max_ms;
+        }
+        if (ties_lose_region_volume && item.tie_min_ms >= 0)
+        {
+            min_ms = item.tie_min_ms;
+            max_ms = item.tie_max_ms;
         }
 
         if (item.same_length_as >= 0)

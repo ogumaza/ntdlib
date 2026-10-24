@@ -75,6 +75,7 @@ void VoiceRenderer::SetParam(int renderer, const VoiceParam& param)
 void VoiceRenderer::AppendWave(VoiceId place, std::span<Voice> voices, const WaveInfo& wave)
 {
     Buffers& buffers = buffers_[static_cast<std::size_t>(place)];
+    mark_ = std::max(mark_, static_cast<int>(place) + 1);
     buffers.last = nullptr;
     const bool adpcm = wave.format == SampleFormat::kDspAdpcm;
     for (std::size_t c = 0; c < voices.size(); ++c)
@@ -183,7 +184,7 @@ void VoiceRenderer::CalcBiquadFilter(MultiVoice& voice) const
 
 VoiceRenderer::Snapshot VoiceRenderer::Save() const
 {
-    return {this, buffers_};
+    return {this, {buffers_.begin(), buffers_.begin() + static_cast<std::ptrdiff_t>(mark_)}};
 }
 
 void VoiceRenderer::Restore(const Snapshot& snapshot)
@@ -193,7 +194,14 @@ void VoiceRenderer::Restore(const Snapshot& snapshot)
         throw std::invalid_argument("a snapshot of another voice renderer");
     }
 
+    // The buffers past the snapshot's mark go back to how they started.
+    const std::size_t mark = snapshot.buffers.size();
     std::copy(snapshot.buffers.begin(), snapshot.buffers.end(), buffers_.begin());
+    for (std::size_t place = mark; place < static_cast<std::size_t>(mark_); ++place)
+    {
+        buffers_[place] = Buffers{};
+    }
+    mark_ = static_cast<int>(mark);
 }
 
 VoiceRenderer::Gains VoiceRenderer::CalcMixVolume(const MultiVoice& voice, int channel) const

@@ -23,7 +23,10 @@ namespace ntdlib::jaudio
 namespace
 {
 
+using detail::HasTag;
+using detail::IsBigEndian;
 using detail::kReaderOptions;
+using detail::TagAt;
 
 // Drum sets of a version 0 bank are programs from 0xe4 on.
 constexpr uint32_t kFirstDrumProgram = 0xe4;
@@ -157,8 +160,8 @@ Instrument ReadInstrumentV0(const xsflib::Reader& r, uint32_t at, const Oscillat
 // Reads a version 0 drum set at `at`. A drum set of the second kind (PER2) adds a pan and a release for each key.
 DrumSet ReadDrumSetV0(const xsflib::Reader& r, uint32_t at)
 {
-    const bool per2 = r.Magic(at, "PER2");
-    if (!per2 && !r.Magic(at, "PERC"))
+    const bool per2 = HasTag(r, at, "PER2");
+    if (!per2 && !HasTag(r, at, "PERC"))
     {
         throw xsflib::FormatError("bank has a drum set of unknown kind");
     }
@@ -205,7 +208,7 @@ DrumSet ReadDrumSetV0(const xsflib::Reader& r, uint32_t at)
 // oscillators between instruments by offset.
 void ParseVersion0(const xsflib::Reader& r, Bank& bank)
 {
-    if (!r.Magic(kBankChunk, "BANK"))
+    if (!HasTag(r, kBankChunk, "BANK"))
     {
         throw xsflib::FormatError("bank has no BANK chunk");
     }
@@ -242,11 +245,11 @@ void ParseVersion0(const xsflib::Reader& r, Bank& bank)
 // Reads a version 1 effect: a 'Rand' or 'Sens' object at `offset` from the bank's start.
 InstEffect ReadEffectV1(const xsflib::Reader& r, std::size_t offset)
 {
-    if (r.Magic(offset, "Rand"))
+    if (HasTag(r, offset, "Rand"))
     {
         return RandomEffect(r.U8(offset + 4), r.F32(offset + 8), r.F32(offset + 12));
     }
-    if (r.Magic(offset, "Sens"))
+    if (HasTag(r, offset, "Sens"))
     {
         return SenseEffect(r.U8(offset + 4), r.U8(offset + 5), r.U8(offset + 6), r.F32(offset + 8), r.F32(offset + 12));
     }
@@ -258,7 +261,7 @@ InstEffect ReadEffectV1(const xsflib::Reader& r, std::size_t offset)
 // `envelopes`.
 Oscillator ReadOscillatorV1(const xsflib::Reader& r, std::size_t at, std::size_t envelopes)
 {
-    if (!r.Magic(at, "Osci"))
+    if (!HasTag(r, at, "Osci"))
     {
         throw xsflib::FormatError("bank has a damaged oscillator");
     }
@@ -275,7 +278,8 @@ Oscillator ReadOscillatorV1(const xsflib::Reader& r, std::size_t at, std::size_t
     return osc;
 }
 
-// Reads a version 1 instrument whose tag ("Inst") is at `at`. The bank has `oscillators` oscillators.
+// Reads a version 1 instrument whose tag ("Inst") is at `at`. The bank has `oscillators` oscillators. A key region
+// starts with its high key in a byte. A little-endian bank stores that byte as the top byte of a 32-bit word.
 Instrument ReadInstrumentV1(const xsflib::Reader& r, std::size_t at, std::size_t oscillators)
 {
     Instrument inst;
@@ -305,7 +309,7 @@ Instrument ReadInstrumentV1(const xsflib::Reader& r, std::size_t at, std::size_t
     for (uint32_t k = 0; k < keys; k++)
     {
         KeyRegion region;
-        region.high_key = r.U8(at);
+        region.high_key = r.U8(r.BigEndian() ? at : at + 3);
         const uint32_t velocities = r.U32(at + 4);
         at += 8;
         for (uint32_t v = 0; v < velocities; v++, at += 16)
@@ -333,7 +337,7 @@ DrumSet ReadDrumSetV1(const xsflib::Reader& r, std::size_t at)
         {
             continue;
         }
-        if (!r.Magic(pmap, "Pmap"))
+        if (!HasTag(r, pmap, "Pmap"))
         {
             throw xsflib::FormatError("drum set has a damaged key");
         }
@@ -368,16 +372,15 @@ DrumSet ReadDrumSetV1(const xsflib::Reader& r, std::size_t at)
 // list of instruments and drum sets (LIST), with the effects and drum maps they point to (Twilight Princess's layout,
 // with Four Swords Adventures' effects). Each chunk starts inside the bank's size. A chunk's data can end past it. The
 // game reads each chunk whole.
-void ParseVersion1(std::span<const uint8_t> file, std::size_t size, Bank& bank)
+void ParseVersion1(std::span<const uint8_t> file, std::size_t size, bool big_endian, Bank& bank)
 {
-    const xsflib::Reader in_bank(file.first(size), true, kReaderOptions);
+    const xsflib::Reader in_bank(file.first(size), big_endian, kReaderOptions);
     std::map<std::string, std::pair<std::size_t, uint32_t>> chunks; // tag: data offset and size
     std::size_t end = size;
     for (std::size_t at = 0x20; at + 8 <= size;)
     {
         const uint32_t chunk_size = in_bank.U32(at + 4);
-        const std::string tag(reinterpret_cast<const char*>(in_bank.Sub(at, 4).data()), 4);
-        chunks.try_emplace(tag, at + 8, chunk_size);
+        chunks.try_emplace(TagAt(in_bank, at), at + 8, chunk_size);
         end = std::max<std::size_t>(end, at + 8 + chunk_size);
         at = (at + 0xb + chunk_size) & ~std::size_t{3};
     }
@@ -391,7 +394,7 @@ void ParseVersion1(std::span<const uint8_t> file, std::size_t size, Bank& bank)
     }
 
     // The chunks' data, to the end of the last chunk.
-    const xsflib::Reader r(file.first(std::min(file.size(), end)), true, kReaderOptions);
+    const xsflib::Reader r(file.first(std::min(file.size(), end)), big_endian, kReaderOptions);
     const std::size_t envelopes = chunks["ENVT"].first;
     const std::size_t osct = chunks["OSCT"].first;
     const uint32_t oscillators = r.U32(osct);
@@ -410,11 +413,11 @@ void ParseVersion1(std::span<const uint8_t> file, std::size_t size, Bank& bank)
             continue;
         }
 
-        if (r.Magic(at, "Inst"))
+        if (HasTag(r, at, "Inst"))
         {
             bank.programs[program] = ReadInstrumentV1(r, at, bank.oscillators.size());
         }
-        else if (r.Magic(at, "Perc"))
+        else if (HasTag(r, at, "Perc"))
         {
             bank.programs[program] = ReadDrumSetV1(r, at);
         }
@@ -429,8 +432,8 @@ void ParseVersion1(std::span<const uint8_t> file, std::size_t size, Bank& bank)
 
 Bank Bank::Parse(std::span<const uint8_t> file, uint32_t wave_system)
 {
-    const xsflib::Reader r(file, true, kReaderOptions);
-    if (!r.Magic(0, "IBNK"))
+    const xsflib::Reader r(file, IsBigEndian(file, "IBNK"), kReaderOptions);
+    if (!HasTag(r, 0, "IBNK"))
     {
         throw xsflib::FormatError("bank has no IBNK header");
     }
@@ -440,13 +443,18 @@ Bank Bank::Parse(std::span<const uint8_t> file, uint32_t wave_system)
     bank.version = r.U32(12);
     bank.wave_system = wave_system;
     const std::size_t size = std::min<std::size_t>(file.size(), r.U32(4));
+    if (bank.version == 0 && !r.BigEndian())
+    {
+        throw xsflib::FormatError("the reader has no layout for a little-endian bank of version 0");
+    }
+
     switch (bank.version)
     {
     case 0:
         ParseVersion0(xsflib::Reader(file.first(size), true, kReaderOptions), bank);
         break;
     case 1:
-        ParseVersion1(file, size, bank);
+        ParseVersion1(file, size, r.BigEndian(), bank);
         break;
     default:
         throw xsflib::FormatError("bank of unknown version " + std::to_string(bank.version));

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-// The length analysis of a sequence sound of an archive of the Wii U or the Switch, on ntdlib's model of the console's
-// sound library: xsflib's analysis (xsflib/rip/length.h) with a model that counts each track's passes. A console's
-// struct gives the type of the console's model and what differs between the consoles: the frame's length, the output,
-// the voices, and whether the effects still ring. The Switch's struct is ntdlib::nx::atk::LengthConsole
-// (ntdlib/nx/atk/length_model.h), and the Wii U's is ntdlib::cafe::snd::LengthConsole (ntdlib/cafe/snd/length_model.h).
+// The length analysis of a sequence sound of an archive of the 3DS, the Wii U or the Switch, on ntdlib's model of the
+// console's sound library: xsflib's analysis (xsflib/rip/length.h) with a model that counts each track's passes. A
+// console's struct gives the type of the console's model and what differs between the consoles: the frame's length,
+// the output, the voices, and whether the effects still ring. The Switch's struct is ntdlib::nx::atk::LengthConsole
+// (ntdlib/nx/atk/length_model.h), the Wii U's is ntdlib::cafe::snd::LengthConsole (ntdlib/cafe/snd/length_model.h), and
+// the 3DS's is ntdlib::ctr::snd::LengthConsole (ntdlib/ctr/snd/length_model.h).
 // The engines' hooks for the analysis are in length_hooks.h.
 
 #pragma once

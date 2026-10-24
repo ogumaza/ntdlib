@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // A builder of big-endian files for tests, such as the GameCube's: values appended in turn, and stores over the bytes
-// already added. jaudio_files.h builds JAudio's files with it.
+// already added.
 
 #pragma once
 

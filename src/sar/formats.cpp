@@ -11,6 +11,7 @@
 #include <cstring>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
@@ -437,8 +438,9 @@ void ReadStreamDetails(const xsflib::Reader& r, std::size_t q, uint32_t version,
     }
 }
 
-// The type of the sound at the INFO entry at `p`, and the details of that type, from the entry's reference `detail`. A
-// stream sound's details are read only in FSAR archives, of version `version`.
+// The type of the sound at the INFO entry at `p`, and the details of that type, from the entry's reference `detail`,
+// in an archive of version `version`. A 3DS stream sound's details take the layout of FSAR 2.0.0, without sends, and
+// from CSAR 2.3.2.0 on that of FSAR 2.2.0. Before CSAR 2.3.0.0 they hold no table of tracks.
 void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& detail, bool ctr, uint32_t version,
                       SoundInfo& s)
 {
@@ -446,28 +448,23 @@ void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& d
     {
     case 0x2201:
         s.type = SoundType::kStream;
-        if (!ctr)
-        {
-            ReadStreamDetails(r, p + detail.offset, version, s.stream);
-        }
+        ReadStreamDetails(r, p + detail.offset, !ctr ? version : version >= 0x02030200 ? 0x00020200 : 0x00020000,
+                          s.stream);
         break;
 
     case 0x2202:
         {
-            // The wave sound's details start with its index in its wave sound file and its tracks. On the Wii U and the
-            // Switch, the options that follow give the channel's priority and the release priority fix
-            // (SoundArchiveFile::WaveSoundInfo's GetChannelPriority and GetIsReleasePriorityFix).
+            // The wave sound's details start with its index in its wave sound file and its tracks. The options that
+            // follow give the channel's priority and the release priority fix (SoundArchiveFile::WaveSoundInfo's
+            // GetChannelPriority and GetIsReleasePriorityFix). The 3DS's details hold them the same way.
             s.type = SoundType::kWaveSound;
             const std::size_t q = p + detail.offset;
             s.wave_sound_index = r.U32(q);
-            if (!ctr)
+            const OptionParams so = OptionParams::Read(r, q + 8);
+            if (so.values[0])
             {
-                const OptionParams so = OptionParams::Read(r, q + 8);
-                if (so.values[0])
-                {
-                    s.channel_priority = static_cast<uint8_t>(*so.values[0]);
-                    s.release_priority_fix = ((*so.values[0] >> 8) & 0xff) != 0;
-                }
+                s.channel_priority = static_cast<uint8_t>(*so.values[0]);
+                s.release_priority_fix = ((*so.values[0] >> 8) & 0xff) != 0;
             }
             break;
         }
@@ -634,8 +631,8 @@ std::vector<std::tuple<uint32_t, uint64_t, uint32_t>> GroupItems(const xsflib::R
 
 // The files that group file `file` embeds, read as kStopAtFirstProblem reads them on the Wii U and the Switch: each
 // one's file ID, and its bytes within the group file. An item whose bytes lie past the group file's end throws.
-// AddGroupFile and MatchesGroupFile read a 3DS group file this way too. ReadTablesStrictly walks the 3DS's groups as
-// its player does.
+// MatchesGroupFile reads a 3DS group file this way too. ReadTablesStrictly and AddGroupFile walk the 3DS's group files
+// as its player does (WalkCtrGroup).
 std::vector<std::pair<uint32_t, std::span<const uint8_t>>> GroupItemsStrictly(std::span<const uint8_t> file,
                                                                               const Options& options)
 {
@@ -661,6 +658,29 @@ std::vector<std::pair<uint32_t, std::span<const uint8_t>>> GroupItemsStrictly(st
     }
 
     return out;
+}
+
+// Walks group file `file` as the 3DS's player does with kStopAtFirstProblem. It reads each item's file ID first. For an
+// item whose copy the group file holds, it reads the copy's bytes only when `wants` takes the file ID, and passes the
+// ID and the bytes to `take`. A copy whose bytes lie past the group file's end throws.
+template <typename Wants, typename Take>
+void WalkCtrGroup(std::span<const uint8_t> file, const Options& options, const Wants& wants, const Take& take)
+{
+    const xsflib::Reader g = OpenFile(file, "GRP", options);
+    const Blocks blocks = BlockTable(g);
+    const auto items = static_cast<uint32_t>(BlockOf(blocks, 0x7800, "INFO", "a group (CGRP)", options).first + 8);
+    const auto data = static_cast<uint32_t>(BlockOf(blocks, 0x7801, "FILE", "a group (CGRP)", options).first + 8);
+    const uint32_t n = g.U32(items);
+    for (uint32_t i = 0; i < n; i++)
+    {
+        const std::size_t e = items + ReadRef(g, items + 4 + i * 8).offset;
+        const uint32_t file_id = g.U32(e);
+        const Reference where = ReadRef(g, e + 4);
+        if (where.type == 0x1F00 && wants(file_id))
+        {
+            take(file_id, g.Sub(data + where.offset, g.U32(e + 12)));
+        }
+    }
 }
 
 } // namespace
@@ -941,9 +961,11 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
     // in the ninth, and the offset of a reference to the envelope in the tenth. The sends hold the main send, the
     // number of aux sends and the aux sends. The Wii U's and the Switch's readers read up to 3 aux sends, and the
     // filters from version 1.1.0 on (WaveSoundFileReader, 0x022B95E4 in Animal Crossing: amiibo Festival and 0xc285d0
-    // in WarioWare: Get It Together!'s main).
+    // in WarioWare: Get It Together!'s main). The 3DS's reader reads up to 2 aux sends, and no filters
+    // (ReadWaveSoundInfo, 0x48f1ec in Pokémon X's code.bin).
     const bool ctr = options.flavor == Flavor::kCtr;
     const bool filters = !ctr && r.U32(0x08) >= 0x00010100;
+    const std::size_t most_aux_sends = ctr ? 2 : 3;
     for (const std::size_t sound_at : table(*sound_table))
     {
         WaveSound sound;
@@ -952,10 +974,7 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
         if (opt.values[0])
         {
             sound.pan = static_cast<uint8_t>(*opt.values[0]);
-            if (!ctr)
-            {
-                sound.span = static_cast<uint8_t>(*opt.values[0] >> 8);
-            }
+            sound.span = static_cast<uint8_t>(*opt.values[0] >> 8);
         }
         if (opt.values[1])
         {
@@ -967,11 +986,11 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
             sound.biquad_type = static_cast<uint8_t>(*opt.values[2] >> 8);
             sound.biquad_value = static_cast<uint8_t>(*opt.values[2] >> 16);
         }
-        if (opt.values[8] && !ctr)
+        if (opt.values[8])
         {
             const std::size_t sends = settings + *opt.values[8];
             sound.main_send = r.U8(sends);
-            const std::size_t count = std::min<std::size_t>(r.U8(sends + 1), sound.aux_sends.size());
+            const std::size_t count = std::min<std::size_t>(r.U8(sends + 1), most_aux_sends);
             for (std::size_t bus = 0; bus < count; ++bus)
             {
                 sound.aux_sends[bus] = r.U8(sends + 2 + bus);
@@ -1181,7 +1200,7 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
                 f.missing = !f.internal;
             }
         }
-        else if (loc.type == 0x220D && options_.flavor != Flavor::kCtr)
+        else if (loc.type == 0x220D)
         {
             f.external_path = r.CString(p + loc.offset, 0x400);
         }
@@ -1367,10 +1386,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
         SoundInfo s;
         s.name = name_of(ItemId(kSoundItem, i));
         s.file_id = r.U32(p);
-        if (!ctr)
-        {
-            s.player_id = r.U32(p + 4);
-        }
+        s.player_id = r.U32(p + 4);
         s.volume = r.U8(p + 8);
         const Reference detail = ReadRef(r, p + 12);
         const OptionParams opt = OptionParams::Read(r, p + 20);
@@ -1380,7 +1396,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
             s.pan_curve = static_cast<uint8_t>(*opt.values[1] >> 8);
         }
 
-        if (!ctr && opt.values[2])
+        if (opt.values[2])
         {
             s.player_priority = static_cast<uint8_t>(*opt.values[2]);
             s.actor_player_id = static_cast<uint8_t>(*opt.values[2] >> 8);
@@ -1411,14 +1427,14 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
     };
     for_each(0x2104, read_sound_group);
 
+    const auto read_player = [&](uint32_t i, std::size_t p)
+    {
+        players_.push_back({name_of(ItemId(kPlayerItem, i)), r.U32(p)});
+    };
+    for_each(0x2102, read_player);
+
     if (!ctr)
     {
-        const auto read_player = [&](uint32_t i, std::size_t p)
-        {
-            players_.push_back({name_of(ItemId(kPlayerItem, i)), r.U32(p)});
-        };
-        for_each(0x2102, read_player);
-
         const auto list_group = [&](uint32_t i, std::size_t p)
         {
             groups_.push_back({name_of(ItemId(kGroupItem, i)), r.U32(p)});
@@ -1426,8 +1442,8 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
         for_each(0x2105, list_group);
     }
 
-    // Files can be in the FILE block (0x220C), or external (0x220D, a path that the Wii U's and the Switch's players
-    // read). A file past the archive's end means a truncated archive.
+    // Files can be in the FILE block (0x220C), or external (0x220D, a path that the players read). A file past the
+    // archive's end means a truncated archive.
     const auto read_file = [&](uint32_t, std::size_t p)
     {
         FileEntry f;
@@ -1451,7 +1467,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
                 }
             }
         }
-        else if (loc.type == 0x220D && !ctr)
+        else if (loc.type == 0x220D)
         {
             f.external_path = r.CString(p + loc.offset, 0x400);
         }
@@ -1482,33 +1498,26 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
         }
     };
 
-    // The 3DS's player reads each item's file ID first, and the bytes of the items it takes.
+    // The 3DS's player reads each item's file ID first, and the bytes of the copies of the files that the archive
+    // lacks.
     const auto take_ctr_copies = [&](std::span<const uint8_t> group)
     {
-        const xsflib::Reader g = OpenFile(group, "GRP", options_);
-        const Blocks group_blocks = BlockTable(g);
-        const auto items =
-            static_cast<uint32_t>(BlockOf(group_blocks, 0x7800, "INFO", "a group (CGRP)", options_).first + 8);
-        const auto data =
-            static_cast<uint32_t>(BlockOf(group_blocks, 0x7801, "FILE", "a group (CGRP)", options_).first + 8);
-        const uint32_t n = g.U32(items);
-        for (uint32_t i = 0; i < n; i++)
+        const auto lacks = [&](uint32_t file_id)
         {
-            const std::size_t e = items + ReadRef(g, items + 4 + i * 8).offset;
-            const uint32_t file_id = g.U32(e);
-            const Reference where = ReadRef(g, e + 4);
-            if (where.type != 0x1F00 || file_id >= files_.size() || files_[file_id].internal)
-            {
-                continue; // not embedded, or the archive holds it already
-            }
-
-            take_copy(file_id, g.Sub(data + where.offset, g.U32(e + 12)));
-        }
+            return file_id < files_.size() && !files_[file_id].internal;
+        };
+        WalkCtrGroup(group, options_, lacks, take_copy);
     };
 
-    const auto read_group = [&](uint32_t, std::size_t p)
+    // The Wii U's and the Switch's groups are listed before the files. The 3DS's are listed here.
+    const auto read_group = [&](uint32_t i, std::size_t p)
     {
         const uint32_t group_file = r.U32(p);
+        if (ctr)
+        {
+            groups_.push_back({name_of(ItemId(kGroupItem, i)), group_file});
+        }
+
         if (group_file >= files_.size() || !files_[group_file].internal)
         {
             return; // no group file, or one outside the archive
@@ -1533,8 +1542,27 @@ void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes)
     // kStopAtFirstProblem takes a group file's copy of every file that the archive lacks.
     if (options_.rules == Rules::kStopAtFirstProblem)
     {
-        // Moving a vector keeps its buffer. Afterwards, the items' spans point into the archive's copy of the file.
-        const auto items = GroupItemsStrictly(bytes, options_);
+        // Moving a vector keeps its buffer. Afterwards, the items' spans point into the archive's copy of the file. On
+        // the 3DS, the first copy of a file that the archive lacks is the only one whose bytes are read.
+        std::vector<std::pair<uint32_t, std::span<const uint8_t>>> items;
+        if (options_.flavor == Flavor::kCtr)
+        {
+            std::set<uint32_t> taken;
+            const auto lacks = [&](uint32_t file_id)
+            {
+                return file_id < files_.size() && !files_[file_id].internal && !taken.contains(file_id);
+            };
+            const auto take = [&](uint32_t file_id, std::span<const uint8_t> copy)
+            {
+                items.push_back({file_id, copy});
+                taken.insert(file_id);
+            };
+            WalkCtrGroup(bytes, options_, lacks, take);
+        }
+        else
+        {
+            items = GroupItemsStrictly(bytes, options_);
+        }
         group_files_.push_back(std::move(bytes));
         const std::vector<uint8_t>& file = group_files_.back();
         const uint32_t source = static_cast<uint32_t>(group_files_.size());

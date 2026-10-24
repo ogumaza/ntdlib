@@ -91,6 +91,12 @@ struct Settings
 
     Sends sends = Sends::kReverb;
 
+    // The searches for the main loop and for the end count each change of a setting. A change of CC91 counts there too
+    // (W, S, 3, R). False leaves CC91 out of both searches. The changes of CC91 after the end are left out. A
+    // conversion with Sends::kReverb then has the loops and the end of a conversion with Sends::kNone. The other sends
+    // also write CC93 or CC11 (Sends). Their changes still count.
+    bool reverb_moves_loops = true;
+
     // Surround pan (0xd7) moves (R). The others approximate it as omitted.
     bool surround_pan = false;
 

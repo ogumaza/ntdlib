@@ -485,7 +485,8 @@ bool Refuses(snd::ArchiveModel& model, const snd::ArchiveModel::Snapshot& snapsh
 
 // After a restore, a model renders what it rendered after the snapshot the first time, sample for sample, and does so
 // again from the same snapshot. A player started after the snapshot goes, and so do its notes. A snapshot taken before
-// the sound starts holds the start that waits.
+// the sound starts holds the start that waits. A later snapshot restored straight after the earliest renders the same
+// samples again too.
 void TestSnapshotRenders()
 {
     const ntdlib::sar::SoundArchive archive = LoopingArchive();
@@ -505,11 +506,15 @@ void TestSnapshotRenders()
     const std::vector<int16_t> third = RunFrames(model, 1000);
     model.Restore(at_start);
     const std::vector<int16_t> again = RunFrames(model, 300);
+    model.Restore(at_start);
+    model.Restore(later);
+    const std::vector<int16_t> fourth = RunFrames(model, 1000);
 
     XSFLIB_CHECK(voices > 0 && Sounds(first));
     XSFLIB_CHECK(second == first);
     XSFLIB_CHECK(third == first);
     XSFLIB_CHECK(again == opening);
+    XSFLIB_CHECK(fourth == first);
 }
 
 // From frame 240 to 440, a snapshot taken at every other frame and restored two frames later renders those two frames

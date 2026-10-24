@@ -15,6 +15,7 @@
 #include "ntdlib/cafe/ax/resample.h"
 #include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/accumulator.h"
+#include "ntdlib/wave/sinc.h"
 
 namespace ntdlib::cafe::ax
 {
@@ -108,18 +109,23 @@ private:
 
 // The frame's samples at the renderer's rate. The ratio advances a 16.16 position. Each output sample comes from the
 // last four samples (see resample.h). The block keeps them oldest first. `cemu` can make the interpolation Cemu's
-// (cemu_departures.h).
-void Fetch(Pb& pb, Accelerator& accelerator, const CemuDepartures& cemu, std::span<int16_t> out)
+// (cemu_departures.h). Without `out`, the voice reads the same samples and keeps the same last four, without outputs.
+void Fetch(Pb& pb, Accelerator& accelerator, const CemuDepartures& cemu, std::size_t samples, int16_t* out)
 {
     if (pb.src_mode == SrcMode::kNone)
     {
-        for (int16_t& x : out)
+        std::array<int16_t, 4> last = pb.src.last;
+        for (std::size_t i = 0; i < samples; ++i)
         {
-            x = accelerator.Next();
+            last[i & 3] = accelerator.Next();
+            if (out != nullptr)
+            {
+                out[i] = last[i & 3];
+            }
         }
         for (std::size_t i = 0; i < 4; ++i)
         {
-            pb.src.last[i] = out[out.size() - 4 + i];
+            pb.src.last[i] = last[(samples + i) & 3];
         }
 
         return;
@@ -130,7 +136,7 @@ void Fetch(Pb& pb, Accelerator& accelerator, const CemuDepartures& cemu, std::sp
     std::array<int16_t, 4> last = pb.src.last;
     std::size_t oldest = 0;
     uint32_t position = pb.src.frac;
-    for (int16_t& x : out)
+    for (std::size_t i = 0; i < samples; ++i)
     {
         position += pb.src.ratio;
         for (uint32_t n = position >> 16; n > 0; --n)
@@ -140,9 +146,12 @@ void Fetch(Pb& pb, Accelerator& accelerator, const CemuDepartures& cemu, std::sp
         }
         position &= 0xFFFF;
 
-        const std::array<int16_t, 4> ordered = {last[oldest], last[(oldest + 1) & 3], last[(oldest + 2) & 3],
-                                                last[(oldest + 3) & 3]};
-        x = Resample(mode, pb.four_tap_filter, ordered, position, newest);
+        if (out != nullptr)
+        {
+            const std::array<int16_t, 4> ordered = {last[oldest], last[(oldest + 1) & 3], last[(oldest + 2) & 3],
+                                                    last[(oldest + 3) & 3]};
+            out[i] = Resample(mode, pb.four_tap_filter, ordered, position, newest);
+        }
     }
 
     pb.src.frac = static_cast<uint16_t>(position);
@@ -278,6 +287,110 @@ std::array<uint16_t, kMaxSamplesPerFrame> Ramp(uint16_t from, uint16_t to, std::
     return gains;
 }
 
+// The enhanced mode's frame: 144 samples at 48 kHz.
+constexpr int kEnhancedSamples = kSamplesPerFrame48k;
+
+// The most samples that an enhanced frame reads: a ratio of 8 for each output.
+constexpr int kEnhancedMostReads = 8 * kEnhancedSamples;
+
+// Where each output of an enhanced frame lies among the voice's samples: after `reads[i]` of the frame's samples,
+// `behind` samples behind the newest, and `fractions[i]` 65536ths of the way to the next. `step` is the samples that an
+// output moves by, for the interpolator's kernel.
+struct Places
+{
+    std::array<int32_t, kEnhancedSamples> reads{};
+    std::array<uint32_t, kEnhancedSamples> fractions{};
+    int behind = 0;
+    double step = 0.0;
+};
+
+// The places of a frame. The 4-tap filters and linear interpolation step as the console steps: the ratio advances the
+// block's position, and each whole sample is a read. The position moves on in the block. Without a conversion, an
+// output moves two thirds of a sample from the newest, and a frame reads 96 samples.
+Places PlacesOf(Pb& pb)
+{
+    Places places;
+    if (pb.src_mode == SrcMode::kNone)
+    {
+        constexpr std::array<uint32_t, 3> kThirds = {0, 21845, 43691};
+        for (int i = 0; i < kEnhancedSamples; ++i)
+        {
+            places.reads[static_cast<std::size_t>(i)] = 1 + 2 * i / 3;
+            places.fractions[static_cast<std::size_t>(i)] = kThirds[static_cast<std::size_t>(2 * i % 3)];
+        }
+        places.step = 2.0 / 3.0;
+
+        return places;
+    }
+
+    uint32_t position = pb.src.frac;
+    int32_t reads = 0;
+    for (std::size_t i = 0; i < places.reads.size(); ++i)
+    {
+        position += pb.src.ratio;
+        reads += static_cast<int32_t>(position >> 16);
+        position &= 0xFFFF;
+        places.reads[i] = reads;
+        places.fractions[i] = position;
+    }
+    pb.src.frac = static_cast<uint16_t>(position);
+    places.behind = pb.src_mode == SrcMode::kLinear ? 3 : 2;
+    places.step = static_cast<double>(pb.src.ratio) / 65536.0;
+
+    return places;
+}
+
+// A gain that goes from `from` to `to` across an enhanced frame: sample i takes from + i * ((to - from) / 144).
+float RampAt(float from, float step, int i)
+{
+    return from + static_cast<float>(i) * step;
+}
+
+float StepOf(float from, float to)
+{
+    return (to - from) / static_cast<float>(kEnhancedSamples);
+}
+
+// Adds an enhanced frame's samples into one bus channel at a gain that ramps from `from` to `to`, and at the host's
+// gains, if any. A meter's channel, if any, takes the same products.
+void MixEnhanced(std::span<const float> samples, float from, float to, FloatBuses::Channel& bus,
+                 const std::array<float, kEnhancedSamples>* host, FloatBuses::Channel* meter)
+{
+    if (from == 0.0f && to == 0.0f)
+    {
+        return;
+    }
+
+    const float step = StepOf(from, to);
+    for (int i = 0; i < kEnhancedSamples; ++i)
+    {
+        const auto at = static_cast<std::size_t>(i);
+        float product = samples[at] * RampAt(from, step, i);
+        if (host != nullptr)
+        {
+            product = product * (*host)[at];
+        }
+        bus[at] += product;
+        if (meter != nullptr)
+        {
+            (*meter)[at] += product;
+        }
+    }
+}
+
+// A mix's gain at the end of an enhanced frame. A volume that moves steps as the console steps it (Mix). A channel
+// that the mask leaves out has none.
+float MixGainAfter(VolumeRamp& mix, int bits)
+{
+    if (bits == 3)
+    {
+        mix.volume =
+            static_cast<uint16_t>(mix.volume + std::size_t{kEnhancedSamples} * static_cast<uint16_t>(mix.delta));
+    }
+
+    return bits != 0 ? static_cast<float>(mix.volume) / 32768.0f : 0.0f;
+}
+
 } // namespace
 
 void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const CemuDepartures& cemu,
@@ -291,7 +404,7 @@ void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const 
     std::array<int16_t, kMaxSamplesPerFrame> buffer;
     const std::span<int16_t> x(buffer.data(), static_cast<std::size_t>(samples));
     Accelerator accelerator(pb, memory, cemu.loop_keeps_history);
-    Fetch(pb, accelerator, cemu, x);
+    Fetch(pb, accelerator, cemu, x.size(), x.data());
     accelerator.Store();
     ApplyEnvelope(pb.ve, x);
     ApplyLpf(pb.lpf, x);
@@ -337,6 +450,67 @@ void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const 
     }
 }
 
+void AdvanceVoice(Pb& pb, const Memory& memory, int samples, const CemuDepartures& cemu)
+{
+    if (pb.state != VoiceState::kRun)
+    {
+        return;
+    }
+
+    // A filter in fixed point never quite forgets what it took in: two runs whose states differ can keep a difference
+    // of a few steps for good. A voice with a filter on therefore runs its samples through its envelope and its
+    // filters. RenderVoice does the same, and mixes them too.
+    Accelerator accelerator(pb, memory, cemu.loop_keeps_history);
+    if (pb.lpf.on != 0 || pb.biquad.on != 0)
+    {
+        std::array<int16_t, kMaxSamplesPerFrame> buffer;
+        const std::span<int16_t> x(buffer.data(), static_cast<std::size_t>(samples));
+        Fetch(pb, accelerator, cemu, x.size(), x.data());
+        accelerator.Store();
+        ApplyEnvelope(pb.ve, x);
+        ApplyLpf(pb.lpf, x);
+        ApplyBiquad(pb.biquad, x);
+    }
+    else
+    {
+        Fetch(pb, accelerator, cemu, static_cast<std::size_t>(samples), nullptr);
+        accelerator.Store();
+
+        // The envelope's volume after the frame: the volume that ApplyEnvelope leaves.
+        const auto delta = static_cast<uint16_t>(pb.ve.delta);
+        const auto step = static_cast<int16_t>(static_cast<uint16_t>(2 * delta));
+        pb.ve.volume =
+            static_cast<uint16_t>(pb.ve.volume + static_cast<uint32_t>(static_cast<int32_t>(samples / 2) * step));
+    }
+
+    // The mixes' volumes after the frame: the volumes that Mix leaves.
+    const auto after = [samples](VolumeRamp& mix, int bits)
+    {
+        if (bits == 3)
+        {
+            mix.volume = static_cast<uint16_t>(mix.volume +
+                                               static_cast<std::size_t>(samples) * static_cast<uint16_t>(mix.delta));
+        }
+    };
+    for (int bus = 0; bus < kBusCount; ++bus)
+    {
+        for (int channel = 0; channel < kTvChannels; ++channel)
+        {
+            after(pb.tv_mix[channel][bus], (pb.tv_mask[bus] >> (2 * channel)) & 3);
+        }
+    }
+    for (int drc = 0; drc < kDrcCount; ++drc)
+    {
+        for (int bus = 0; bus < kBusCount; ++bus)
+        {
+            for (int channel = 0; channel < kDrcChannels; ++channel)
+            {
+                after(pb.drc_mix[drc][channel][bus], (pb.drc_mask[drc][bus] >> (2 * channel)) & 3);
+            }
+        }
+    }
+}
+
 int32_t ReturnAux(std::span<const int32_t> returned, uint16_t from, uint16_t to, std::span<int32_t> main)
 {
     const auto gains = Ramp(from, to, main.size());
@@ -358,6 +532,215 @@ void OutputBus(std::span<const int32_t> bus, uint16_t from, uint16_t to, std::sp
     {
         out[i] = Store32(Wrap40(((int64_t{bus[i]} * gains[i]) >> 15) * 256));
     }
+}
+
+void RenderVoiceEnhanced(Pb& pb, EnhancedVoice& voice, const Memory& memory, FloatBuses& buses, const HostMix& host)
+{
+    if (pb.state != VoiceState::kRun)
+    {
+        return;
+    }
+
+    // The interpolator's inputs: the samples read before, the frame's samples, then the samples after them from a copy
+    // of the accelerator. Each output's kernel takes `half` inputs on each side of its place.
+    constexpr int kHistory = EnhancedVoice::kHistory;
+    const Places places = PlacesOf(pb);
+    const wave::SincKernel& kernel = wave::SincKernel::ForStep(places.step);
+    const int half = kernel.HalfWidth();
+    const int32_t reads = places.reads.back();
+    const int ahead = half - places.behind;
+    std::array<float, kHistory + kEnhancedMostReads + wave::SincKernel::kMaxHalfWidth> input{};
+    std::copy(voice.history.begin(), voice.history.end(), input.begin());
+    Accelerator accelerator(pb, memory, false);
+    for (int32_t k = 0; k < reads; ++k)
+    {
+        input[static_cast<std::size_t>(kHistory + k)] = accelerator.Next();
+    }
+    accelerator.Store();
+    if (pb.state == VoiceState::kRun)
+    {
+        Pb copy = pb;
+        Accelerator later(copy, memory, false);
+        for (int k = 0; k < ahead; ++k)
+        {
+            input[static_cast<std::size_t>(kHistory + reads + k)] = later.Next();
+        }
+    }
+
+    // The block keeps the last four samples read, and the voice the samples for the next frame.
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        pb.src.last[i] = static_cast<int16_t>(input[static_cast<std::size_t>(kHistory + reads - 4) + i]);
+    }
+    for (std::size_t i = 0; i < voice.history.size(); ++i)
+    {
+        voice.history[i] = static_cast<int16_t>(input[static_cast<std::size_t>(reads) + i]);
+    }
+
+    // Each output at its place. The kernel's first input lies half - 1 samples before the output's left neighbour.
+    std::array<float, kEnhancedSamples> x{};
+    for (std::size_t i = 0; i < x.size(); ++i)
+    {
+        const int32_t first = kHistory + places.reads[i] - places.behind - half;
+        x[i] = kernel.At(&input[static_cast<std::size_t>(first)], places.fractions[i]);
+    }
+
+    // The envelope, from the gain that the last frame reached to the block's volume after the frame.
+    const auto delta = static_cast<uint16_t>(pb.ve.delta);
+    const auto ve_step = static_cast<int16_t>(static_cast<uint16_t>(2 * delta));
+    pb.ve.volume = static_cast<uint16_t>(pb.ve.volume +
+                                         static_cast<uint32_t>(static_cast<int32_t>(kEnhancedSamples / 2) * ve_step));
+    const float ve_to = static_cast<float>(pb.ve.volume) / 32768.0f;
+    const float ve_from = voice.starts ? ve_to : voice.ve;
+    const float ve_by = StepOf(ve_from, ve_to);
+    for (int i = 0; i < kEnhancedSamples; ++i)
+    {
+        x[static_cast<std::size_t>(i)] = x[static_cast<std::size_t>(i)] * RampAt(ve_from, ve_by, i);
+    }
+    voice.ve = ve_to;
+
+    // The low-pass, then the biquad.
+    if (pb.lpf.on != 0)
+    {
+        const float a0 = static_cast<float>(static_cast<uint16_t>(pb.lpf.a0)) / 32768.0f;
+        const float b0 = static_cast<float>(pb.lpf.b0) / 32768.0f;
+        float y = voice.lpf;
+        for (float& sample : x)
+        {
+            y = a0 * sample + b0 * y;
+            sample = y;
+        }
+        voice.lpf = y;
+    }
+    if (pb.biquad.on != 0)
+    {
+        const float b0 = static_cast<float>(pb.biquad.b0) / 16384.0f;
+        const float b1 = static_cast<float>(pb.biquad.b1) / 16384.0f;
+        const float b2 = static_cast<float>(pb.biquad.b2) / 16384.0f;
+        const float a1 = static_cast<float>(pb.biquad.a1) / 16384.0f;
+        const float a2 = static_cast<float>(pb.biquad.a2) / 16384.0f;
+        auto& [x1, x2, y1, y2] = voice.biquad;
+        for (float& sample : x)
+        {
+            const float y = b0 * sample + b1 * x1 + b2 * x2 + a1 * y1 + a2 * y2;
+            x2 = x1;
+            x1 = sample;
+            y2 = y1;
+            y1 = y;
+            sample = y;
+        }
+    }
+
+    // The host's mute: from its gain at the start of the frame to its gain at the end, by equal steps.
+    std::array<float, kEnhancedSamples> host_gains{};
+    const bool scaled = host.was_muted || host.muted;
+    if (scaled)
+    {
+        const float from = host.was_muted ? 0.0f : 1.0f;
+        const float to = host.muted ? 0.0f : 1.0f;
+        for (int i = 0; i < kEnhancedSamples; ++i)
+        {
+            host_gains[static_cast<std::size_t>(i)] =
+                from + (to - from) * static_cast<float>(i + 1) / static_cast<float>(kEnhancedSamples);
+        }
+    }
+    const std::array<float, kEnhancedSamples>* gains = scaled ? &host_gains : nullptr;
+
+    // Into each bus and channel, from the gain that the last frame reached. The TV's main bus also feeds the host's
+    // meter, front left and right.
+    for (int bus = 0; bus < kBusCount; ++bus)
+    {
+        for (int channel = 0; channel < kTvChannels; ++channel)
+        {
+            const int bits = (pb.tv_mask[bus] >> (2 * channel)) & 3;
+            float& last = voice.tv[static_cast<std::size_t>(channel)][static_cast<std::size_t>(bus)];
+            const float to = MixGainAfter(pb.tv_mix[channel][bus], bits);
+            const float from = voice.starts ? to : last;
+            last = to;
+            FloatBuses::Channel* meter = bus == 0 && channel < 2 && host.float_meter != nullptr
+                                             ? &(*host.float_meter)[static_cast<std::size_t>(channel)]
+                                             : nullptr;
+            MixEnhanced(x, from, to, buses.tv[bus][channel], gains, meter);
+        }
+    }
+    for (int drc = 0; drc < kDrcCount; ++drc)
+    {
+        for (int bus = 0; bus < kBusCount; ++bus)
+        {
+            for (int channel = 0; channel < kDrcChannels; ++channel)
+            {
+                const int bits = (pb.drc_mask[drc][bus] >> (2 * channel)) & 3;
+                float& last = voice.drc[static_cast<std::size_t>(drc)][static_cast<std::size_t>(channel)]
+                                       [static_cast<std::size_t>(bus)];
+                const float to = MixGainAfter(pb.drc_mix[drc][channel][bus], bits);
+                const float from = voice.starts ? to : last;
+                last = to;
+                MixEnhanced(x, from, to, buses.drc[drc][bus][channel], gains, nullptr);
+            }
+        }
+    }
+
+    voice.starts = false;
+}
+
+void AdvanceVoiceEnhanced(Pb& pb, EnhancedVoice& voice, const Memory& memory)
+{
+    if (pb.state != VoiceState::kRun)
+    {
+        return;
+    }
+
+    // The frame's reads. The block keeps the last four samples read, and the voice the samples for the next frame.
+    constexpr int kHistory = EnhancedVoice::kHistory;
+    const Places places = PlacesOf(pb);
+    const int32_t reads = places.reads.back();
+    std::array<int16_t, kHistory + kEnhancedMostReads> input; // the first kHistory + reads
+    std::copy(voice.history.begin(), voice.history.end(), input.begin());
+    Accelerator accelerator(pb, memory, false);
+    for (int32_t k = 0; k < reads; ++k)
+    {
+        input[static_cast<std::size_t>(kHistory + k)] = accelerator.Next();
+    }
+    accelerator.Store();
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        pb.src.last[i] = input[static_cast<std::size_t>(kHistory + reads - 4) + i];
+    }
+    std::copy_n(input.begin() + reads, voice.history.size(), voice.history.begin());
+
+    // The gains that the envelope and the mixes reach.
+    const auto delta = static_cast<uint16_t>(pb.ve.delta);
+    const auto ve_step = static_cast<int16_t>(static_cast<uint16_t>(2 * delta));
+    pb.ve.volume = static_cast<uint16_t>(pb.ve.volume +
+                                         static_cast<uint32_t>(static_cast<int32_t>(kEnhancedSamples / 2) * ve_step));
+    voice.ve = static_cast<float>(pb.ve.volume) / 32768.0f;
+    for (int bus = 0; bus < kBusCount; ++bus)
+    {
+        for (int channel = 0; channel < kTvChannels; ++channel)
+        {
+            voice.tv[static_cast<std::size_t>(channel)][static_cast<std::size_t>(bus)] =
+                MixGainAfter(pb.tv_mix[channel][bus], (pb.tv_mask[bus] >> (2 * channel)) & 3);
+        }
+    }
+    for (int drc = 0; drc < kDrcCount; ++drc)
+    {
+        for (int bus = 0; bus < kBusCount; ++bus)
+        {
+            for (int channel = 0; channel < kDrcChannels; ++channel)
+            {
+                voice.drc[static_cast<std::size_t>(drc)][static_cast<std::size_t>(channel)]
+                         [static_cast<std::size_t>(bus)] =
+                    MixGainAfter(pb.drc_mix[drc][channel][bus], (pb.drc_mask[drc][bus] >> (2 * channel)) & 3);
+            }
+        }
+    }
+    voice.starts = false;
+}
+
+void ResetHistory(EnhancedVoice& voice, const std::array<int16_t, 4>& last)
+{
+    voice.history.fill(0);
+    std::copy(last.begin(), last.end(), voice.history.end() - 4);
 }
 
 } // namespace ntdlib::cafe::ax

@@ -40,6 +40,9 @@
 namespace ntdlib::cafe::snd
 {
 
+// The voices that the sound system can grow to in the enhanced mixing mode.
+inline constexpr int kEnhancedVoiceCount = 1024;
+
 struct EngineOptions
 {
     // nw::snd's voice and channel count, the .data word at 0x101AA478. The count is 96 unless the game sets another
@@ -58,6 +61,12 @@ struct EngineOptions
     // The effects that the game has on its aux buses when the sound starts (see Effects), in the order that it
     // appended them.
     std::vector<EffectSetup> effects;
+
+    // The enhanced mixing mode. AX runs in its enhanced mode with kEnhancedVoiceCount voices (see ax::System), in
+    // place of the renderer that renderer_48k and upsample_after_final_mix choose. When every voice is in use, the
+    // sound system takes another in place of a drop, up to kEnhancedVoiceCount voices. Off, the model follows the
+    // console to the bit.
+    bool enhanced = false;
 };
 
 class Engine : public ntdlib::nwsnd::LengthHooks
@@ -238,6 +247,10 @@ private:
 
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track
     int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
+
+    // SetHostMixes's mute and meter of each AX voice.
+    std::vector<bool> host_muted_;
+    std::vector<int> host_meters_;
 };
 
 // The AX voices with the MultiVoices' buffers, the MultiVoices, the channels, the players and the starts that wait,
@@ -267,7 +280,8 @@ struct ArchiveModel
         Engine::Snapshot engine;
     };
 
-    // AX's output: 144 stereo samples at 48 kHz in each frame of 3 ms.
+    // AX's output: 144 stereo samples at 48 kHz in each frame of 3 ms. In the enhanced mode, the system's OutputFloat
+    // gives them in floating point too.
     static constexpr int32_t kSampleRate = 48000;
     static constexpr int32_t kFrameSamples = ax::kOutputSamplesPerFrame;
 

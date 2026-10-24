@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -24,6 +25,7 @@
 #include "ntdlib/cafe/ax/render.h"
 #include "ntdlib/cafe/ax/voice.h"
 #include "ntdlib/fused.h"
+#include "ntdlib/wave/sinc.h"
 
 namespace ntdlib::cafe::ax
 {
@@ -34,6 +36,43 @@ int16_t ClampToInt16(int32_t x)
 {
     return static_cast<int16_t>(std::clamp(x, -32768, 32767));
 }
+
+// The enhanced mode's rounding of a float to a 32-bit sample: to the nearest integer, halves away from zero, held to 32
+// bits.
+int32_t RoundToInt32(float x)
+{
+    return static_cast<int32_t>(std::clamp(std::round(static_cast<double>(x)), -2147483648.0, 2147483647.0));
+}
+
+// A float on the scale of 16-bit samples, rounded the same way and held to 16 bits.
+int16_t RoundToInt16(float x)
+{
+    return static_cast<int16_t>(std::clamp(std::round(static_cast<double>(x)), -32768.0, 32767.0));
+}
+
+bool IsSilent(float sample)
+{
+    return sample == 0.0f;
+}
+
+// A peak of floats as a meter gives it: the magnitude, truncated and held to 32 bits.
+int32_t PeakOf(float magnitude)
+{
+    return static_cast<int32_t>(std::min(static_cast<double>(magnitude), 2147483647.0));
+}
+
+// The enhanced mode's aux buses (see System): the 48 kHz frame, the 32 kHz frame, the sends and the returns that each
+// channel keeps, the place of the input's first 32 kHz sample in the sends, and the place of the first return in the
+// effect's output.
+constexpr int kSendSamples = kSamplesPerFrame48k;
+constexpr int kAuxSamples = kSamplesPerFrame32k;
+constexpr std::size_t kSendHistory = 3 * kSendSamples;
+constexpr std::size_t kReturnHistory = 2 * kAuxSamples;
+constexpr int kFirstSend = kSendSamples + 48;
+constexpr int kFirstReturn = kAuxSamples - 32;
+
+// The fractions of a third and of two thirds of a sample, in 65536ths.
+constexpr std::array<uint32_t, 3> kThirds = {0, 21845, 43691};
 
 // The renderer's addresses keep 29 bits of the byte address: 29 for PCM8's bytes, 28 for PCM16's words and 30 for
 // ADPCM's nibbles.
@@ -88,19 +127,45 @@ System::System(const Memory& memory) : memory_(&memory)
 
 void System::Init(Library library, bool renderer_48k)
 {
+    Start(library, renderer_48k, kVoiceCount, false);
+}
+
+void System::InitEnhanced(int voice_count)
+{
+    Start(Library::kSndCore2, true, voice_count, true);
+}
+
+std::span<const float> System::OutputFloat() const
+{
+    return enhanced_ != nullptr ? std::span<const float>(enhanced_->output) : std::span<const float>();
+}
+
+void System::Start(Library library, bool renderer_48k, int voice_count, bool enhanced)
+{
     library_ = library;
     samples_per_frame_ = library == Library::kSndCore2 && renderer_48k ? kSamplesPerFrame48k : kSamplesPerFrame32k;
     in_frame_ = false;
+    silent_ = false;
     frame_ = 0;
     default_mixer_select_ = 1;
     user_count_ = 0;
 
-    // Every voice free, in index order. The first voice acquired is then voice 95.
-    allocation_ = ntdlib::ax::Voices(kVoiceCount);
-    for (int i = 0; i < kVoiceCount; ++i)
+    // Every voice free, in index order. The first voice acquired is then the last one, voice 95 of the console's 96.
+    const auto count = static_cast<std::size_t>(std::max(voice_count, 1));
+    allocation_ = ntdlib::ax::Voices(static_cast<int>(count));
+    voices_.assign(count, Voice{});
+    for (std::size_t i = 0; i < count; ++i)
     {
-        voices_[i] = Voice{};
         voices_[i].index = static_cast<uint32_t>(i);
+    }
+    first_taken_ = static_cast<uint32_t>(count);
+    host_.assign(count, HostVoice{});
+    enhanced_.reset();
+    if (enhanced)
+    {
+        enhanced_ = std::make_unique<EnhancedState>();
+        enhanced_->voices.assign(count, EnhancedVoice{});
+        enhanced_->meter_sums.assign(meter_sums_.size(), {});
     }
 
     frame_callback_ = {};
@@ -157,6 +222,11 @@ Voice* System::AcquireVoice(uint32_t priority, Voice::Callback callback, uint32_
     voice->context = context;
     ResetVoice(*voice);
     host_[taken->voice] = HostVoice{};
+    first_taken_ = std::min(first_taken_, taken->voice);
+    if (enhanced_ != nullptr)
+    {
+        enhanced_->voices[taken->voice].starts = true;
+    }
 
     return voice;
 }
@@ -625,6 +695,8 @@ int System::RegisterAuxCallback(Device device, uint32_t index, int bus, AuxCallb
         {
             std::fill(buffer.begin(), buffer.end(), 0);
         }
+        aux->sends.clear();
+        aux->returns.clear();
     }
 
     return 0;
@@ -748,27 +820,66 @@ void System::RenderFrame()
     {
         render_observer_(order_);
     }
+    if (!mixing_)
+    {
+        AdvanceWithoutMixing();
+        return;
+    }
+    silent_ = false;
 
     // The host's mutes and meters take part in the voices' mixes.
-    buses_ = {};
-    for (std::array<Buses::Channel, 2>& sums : meter_sums_)
+    if (enhanced_ != nullptr)
     {
-        sums = {};
+        EnhancedState& enhanced = *enhanced_;
+        enhanced.buses = {};
+        for (std::array<FloatBuses::Channel, 2>& sums : enhanced.meter_sums)
+        {
+            sums = {};
+        }
+        for (auto voice = order_.rbegin(); voice != order_.rend(); ++voice)
+        {
+            Voice& each = **voice;
+            RenderVoiceEnhanced(each.renderer, enhanced.voices[each.index], *memory_, enhanced.buses,
+                                TakeHostMix(each));
+        }
     }
-    for (auto voice = order_.rbegin(); voice != order_.rend(); ++voice)
+    else
     {
-        RenderVoice((*voice)->renderer, *memory_, n, buses_, cemu_, TakeHostMix(**voice));
+        buses_ = {};
+        for (std::array<Buses::Channel, 2>& sums : meter_sums_)
+        {
+            sums = {};
+        }
+        for (auto voice = order_.rbegin(); voice != order_.rend(); ++voice)
+        {
+            RenderVoice((*voice)->renderer, *memory_, n, buses_, cemu_, TakeHostMix(**voice));
+        }
     }
     mutes_at_once_ = false;
     MeasureMeters(n);
 
     // The aux buses go out and come back. Then the game's callbacks run.
-    main_ = buses_;
-    ReturnAux(frame_);
+    if (enhanced_ != nullptr)
+    {
+        enhanced_->main = enhanced_->buses;
+        ReturnAuxEnhanced(frame_);
+    }
+    else
+    {
+        main_ = buses_;
+        ReturnAux(frame_);
+    }
     RunAuxCallbacks(frame_);
     if (frame_callback_)
     {
         frame_callback_();
+    }
+    if (enhanced_ != nullptr)
+    {
+        FinalMixStageEnhanced();
+        ++frame_;
+        in_frame_ = false;
+        return;
     }
 
     // Each device's main bus becomes the device's output at unity volume.
@@ -801,6 +912,66 @@ void System::RenderFrame()
     in_frame_ = false;
 }
 
+void System::AdvanceWithoutMixing()
+{
+    // The voices move on in the same order. Each takes its host's mute as in a mixed frame.
+    for (auto voice = order_.rbegin(); voice != order_.rend(); ++voice)
+    {
+        Voice& each = **voice;
+        TakeHostMix(each);
+        if (enhanced_ != nullptr)
+        {
+            AdvanceVoiceEnhanced(each.renderer, enhanced_->voices[each.index], *memory_);
+        }
+        else
+        {
+            AdvanceVoice(each.renderer, *memory_, samples_per_frame_, cemu_);
+        }
+    }
+    mutes_at_once_ = false;
+
+    // The frame's buses, output and meters are silent. The buses and the output stay so through the frames that follow
+    // without mixing. Each aux bus with a callback takes its return volume as the DSP's.
+    if (!silent_)
+    {
+        buses_ = {};
+        main_ = {};
+        output_ = {};
+        output48_ = {};
+        stereo_ = {};
+        if (enhanced_ != nullptr)
+        {
+            enhanced_->buses = {};
+            enhanced_->main = {};
+            enhanced_->output = {};
+        }
+        silent_ = true;
+    }
+    for (std::array<int32_t, 2>& peaks : meter_peaks_)
+    {
+        peaks = {0, 0};
+    }
+    for (std::size_t device = 0; device < aux_.size(); ++device)
+    {
+        for (std::size_t bus = 0; bus < 3; ++bus)
+        {
+            aux_peaks_[device][bus] = {0, 0};
+            AuxBus& aux = aux_[device][bus];
+            if (aux.callback)
+            {
+                aux.dsp_return_volume = aux.return_volume;
+            }
+        }
+    }
+
+    if (frame_callback_)
+    {
+        frame_callback_();
+    }
+    ++frame_;
+    in_frame_ = false;
+}
+
 void System::SetVoiceMuted(const Voice& voice, bool muted)
 {
     host_[voice.index].muted = muted;
@@ -811,6 +982,10 @@ void System::SetMeters(int count)
     const auto meters = static_cast<std::size_t>(std::max(count, 0));
     meter_sums_.assign(meters, {});
     meter_peaks_.assign(meters, {0, 0});
+    if (enhanced_ != nullptr)
+    {
+        enhanced_->meter_sums.assign(meters, {});
+    }
 }
 
 void System::SetVoiceMeter(const Voice& voice, int meter)
@@ -854,7 +1029,15 @@ HostMix System::TakeHostMix(const Voice& voice)
     mix.muted = host.muted;
     if (host.meter >= 0 && static_cast<std::size_t>(host.meter) < meter_sums_.size())
     {
-        mix.meter = &meter_sums_[static_cast<std::size_t>(host.meter)];
+        const auto meter = static_cast<std::size_t>(host.meter);
+        if (enhanced_ != nullptr)
+        {
+            mix.float_meter = &enhanced_->meter_sums[meter];
+        }
+        else
+        {
+            mix.meter = &meter_sums_[meter];
+        }
     }
     host.was_muted = host.muted;
     host.rendered = true;
@@ -868,6 +1051,17 @@ void System::MeasureMeters(int samples)
     {
         for (std::size_t channel = 0; channel < 2; ++channel)
         {
+            if (enhanced_ != nullptr)
+            {
+                float peak = 0.0f;
+                for (const float sum : enhanced_->meter_sums[meter][channel])
+                {
+                    peak = std::max(peak, std::fabs(sum));
+                }
+                meter_peaks_[meter][channel] = PeakOf(peak);
+                continue;
+            }
+
             int64_t peak = 0;
             const Buses::Channel& sums = meter_sums_[meter][channel];
             for (int i = 0; i < samples; ++i)
@@ -882,7 +1076,15 @@ void System::MeasureMeters(int samples)
 
 System::Snapshot System::Save() const
 {
-    return {this, frame_, user_count_, voices_, allocation_, aux_, mixers_};
+    const auto first = static_cast<std::ptrdiff_t>(first_taken_);
+    Snapshot snapshot{this, frame_,      user_count_, first_taken_, {voices_.begin() + first, voices_.end()},
+                      {},   allocation_, aux_,        mixers_};
+    if (enhanced_ != nullptr)
+    {
+        snapshot.enhanced.assign(enhanced_->voices.begin() + first, enhanced_->voices.end());
+    }
+
+    return snapshot;
 }
 
 void System::Restore(const Snapshot& snapshot)
@@ -894,8 +1096,25 @@ void System::Restore(const Snapshot& snapshot)
 
     frame_ = snapshot.frame;
     user_count_ = snapshot.user_count;
-    voices_ = snapshot.voices;
     allocation_ = snapshot.allocation;
+
+    // The voices taken first since the snapshot go back to how Init left them. The others take the snapshot's copies.
+    for (uint32_t index = first_taken_; index < snapshot.first_taken; ++index)
+    {
+        voices_[index] = Voice{};
+        voices_[index].index = index;
+        if (enhanced_ != nullptr)
+        {
+            enhanced_->voices[index] = EnhancedVoice{};
+        }
+    }
+    const auto first = static_cast<std::ptrdiff_t>(snapshot.first_taken);
+    std::copy(snapshot.voices.begin(), snapshot.voices.end(), voices_.begin() + first);
+    if (enhanced_ != nullptr)
+    {
+        std::copy(snapshot.enhanced.begin(), snapshot.enhanced.end(), enhanced_->voices.begin() + first);
+    }
+    first_taken_ = snapshot.first_taken;
 
     // The buses and the final mix stages take back their state, and keep their callbacks.
     for (std::size_t device = 0; device < aux_.size(); ++device)
@@ -907,6 +1126,8 @@ void System::Restore(const Snapshot& snapshot)
             aux.return_volume = saved.return_volume;
             aux.dsp_return_volume = saved.dsp_return_volume;
             aux.buffers = saved.buffers;
+            aux.sends = saved.sends;
+            aux.returns = saved.returns;
         }
     }
     for (std::size_t i = 0; i < mixers_.size(); ++i)
@@ -986,6 +1207,13 @@ void System::Sync(Voice& voice)
     if (voice.is_protected)
     {
         return;
+    }
+
+    // In the enhanced mode, a voice that the game starts takes its gains at once.
+    if (enhanced_ != nullptr && (bits & sync::kState) && renderer.state != VoiceState::kRun &&
+        game.state == VoiceState::kRun)
+    {
+        enhanced_->voices[voice.index].starts = true;
     }
 
     // The game's changes reach the renderer's copy. Where two bits cover the same fields, one of them wins: the bit of
@@ -1091,6 +1319,26 @@ void System::Sync(Voice& voice)
         renderer.biquad = game.biquad;
     }
 
+    // In the enhanced mode, a new SRC, low-pass or biquad sets the past values that the voice keeps in that mode.
+    if (enhanced_ != nullptr)
+    {
+        EnhancedVoice& enhanced = enhanced_->voices[voice.index];
+        if (bits & sync::kSrc)
+        {
+            ResetHistory(enhanced, renderer.src.last);
+        }
+        if ((bits & sync::kLpf) && !(bits & sync::kLpfCoefs))
+        {
+            enhanced.lpf = static_cast<float>(renderer.lpf.yn1);
+        }
+        if ((bits & sync::kBiquad) && !(bits & sync::kBiquadCoefs))
+        {
+            const Biquad& biquad = renderer.biquad;
+            enhanced.biquad = {static_cast<float>(biquad.xn1), static_cast<float>(biquad.xn2),
+                               static_cast<float>(biquad.yn1), static_cast<float>(biquad.yn2)};
+        }
+    }
+
     voice.sync = 0;
 }
 
@@ -1153,6 +1401,102 @@ void System::ReturnAux(int frame)
     }
 }
 
+void System::ReturnAuxEnhanced(int frame)
+{
+    // Each aux bus that has a callback takes the frame's sends. The 32 kHz frame before this one goes to the buffer
+    // that the callbacks process in this frame. The buffer that they processed a frame ago holds the effect's output of
+    // the 32 kHz frame before that. That output goes back to 48 kHz into the main bus. The sends keep the frames F - 2
+    // to F at 48 kHz, and the returns the 32 kHz frames F - 3 and F - 2.
+    const wave::SincKernel& down = wave::SincKernel::ForStep(1.5);
+    const wave::SincKernel& up = wave::SincKernel::ForStep(2.0 / 3.0);
+    EnhancedState& enhanced = *enhanced_;
+    for (std::size_t device = 0; device < aux_.size(); ++device)
+    {
+        const int channels = device == 0 ? kTvChannels : kDrcChannels;
+        for (int bus = 0; bus < 3; ++bus)
+        {
+            AuxBus& aux = aux_[device][static_cast<std::size_t>(bus)];
+            std::array<int32_t, 2>& peaks = aux_peaks_[device][static_cast<std::size_t>(bus)];
+            peaks = {0, 0};
+            if (!aux.callback)
+            {
+                continue;
+            }
+
+            const auto count = static_cast<std::size_t>(channels);
+            if (aux.sends.empty())
+            {
+                aux.sends.assign(count * kSendHistory, 0.0f);
+                aux.returns.assign(count * kReturnHistory, 0.0f);
+            }
+            std::vector<int32_t>& input = aux.buffers[static_cast<std::size_t>((frame + 2) % 3)];
+            const std::vector<int32_t>& output = aux.buffers[static_cast<std::size_t>((frame + 1) % 3)];
+            const float from = static_cast<float>(aux.dsp_return_volume) / 32768.0f;
+            const float to = static_cast<float>(aux.return_volume) / 32768.0f;
+            for (int channel = 0; channel < channels; ++channel)
+            {
+                const auto c = static_cast<std::size_t>(channel);
+                const FloatBuses::Channel& sent = device == 0 ? enhanced.buses.tv[1 + bus][channel]
+                                                              : enhanced.buses.drc[device - 1][1 + bus][channel];
+                FloatBuses::Channel& main =
+                    device == 0 ? enhanced.main.tv[0][channel] : enhanced.main.drc[device - 1][0][channel];
+                float* sends = aux.sends.data() + c * kSendHistory;
+                float* returns = aux.returns.data() + c * kReturnHistory;
+                const std::size_t at = c * kMaxSamplesPerFrame;
+
+                // The frame's sends, and the 32 kHz frame before this one for the callbacks. The interpolator's window
+                // lies inside the sends that the bus keeps. When they are all 0, so is the frame.
+                std::copy(sends + kSendSamples, sends + kSendHistory, sends);
+                std::copy_n(sent.begin(), kSendSamples, sends + 2 * kSendSamples);
+                if (std::all_of(sends, sends + kSendHistory, IsSilent))
+                {
+                    std::fill_n(input.begin() + static_cast<std::ptrdiff_t>(at), kAuxSamples, 0);
+                }
+                else
+                {
+                    for (int k = 0; k < kAuxSamples; ++k)
+                    {
+                        const int place = kFirstSend + 3 * k / 2;
+                        const uint32_t fraction = 3 * k % 2 == 0 ? 0 : 0x8000;
+                        const float sample = down.At(sends + place - down.HalfWidth() + 1, fraction);
+                        input[at + static_cast<std::size_t>(k)] = RoundToInt32(sample);
+                    }
+                }
+
+                // The effect's output of the frame before, back at 48 kHz, at the return volume. Returns that are all 0
+                // add nothing.
+                std::copy(returns + kAuxSamples, returns + kReturnHistory, returns);
+                for (int k = 0; k < kAuxSamples; ++k)
+                {
+                    returns[kAuxSamples + k] = static_cast<float>(output[at + static_cast<std::size_t>(k)]);
+                }
+                if (std::all_of(returns, returns + kReturnHistory, IsSilent))
+                {
+                    continue;
+                }
+
+                float peak = 0.0f;
+                for (int i = 0; i < kSendSamples; ++i)
+                {
+                    const int place = kFirstReturn + 2 * i / 3;
+                    const float wet =
+                        up.At(returns + place - up.HalfWidth() + 1, kThirds[static_cast<std::size_t>(2 * i % 3)]);
+                    const float gain =
+                        from + (to - from) * static_cast<float>(i + 1) / static_cast<float>(kSendSamples);
+                    const float added = wet * gain;
+                    main[static_cast<std::size_t>(i)] += added;
+                    peak = std::max(peak, std::fabs(added));
+                }
+                if (channel < 2)
+                {
+                    peaks[c] = PeakOf(peak);
+                }
+            }
+            aux.dsp_return_volume = aux.return_volume;
+        }
+    }
+}
+
 void System::RunAuxCallbacks(int frame)
 {
     // Each callback processes what the voices sent its bus in the last frame: TV A, B, C, then each GamePad's buses.
@@ -1173,7 +1517,7 @@ void System::RunAuxCallbacks(int frame)
                 channel_buffers[channel] = buffer.data() + static_cast<std::size_t>(channel) * kMaxSamplesPerFrame;
             }
             aux.callback(std::span<int32_t* const>(channel_buffers.data(), static_cast<std::size_t>(channels)),
-                         static_cast<uint32_t>(samples_per_frame_));
+                         static_cast<uint32_t>(AuxSamplesPerFrame()));
         }
     }
 }
@@ -1239,6 +1583,68 @@ void System::FinalMixStage()
                   std::span<Samples* const>(out.data() + static_cast<std::size_t>(device) * mixer.channels,
                                             static_cast<std::size_t>(mixer.channels)));
         }
+    }
+}
+
+void System::FinalMixStageEnhanced()
+{
+    // Each device's main bus, without an upsampler. A final-mix callback takes the channels as 32-bit samples.
+    EnhancedState& enhanced = *enhanced_;
+    for (std::size_t m = 0; m < mixers_.size(); ++m)
+    {
+        Mixer& mixer = mixers_[m];
+        std::array<FloatBuses::Channel*, kTvChannels + kDrcCount * kDrcChannels> channels{};
+        const std::size_t count = static_cast<std::size_t>(mixer.channels) * mixer.devices;
+        for (std::size_t c = 0; c < count; ++c)
+        {
+            channels[c] = m == 0 ? &enhanced.main.tv[0][c] : &enhanced.main.drc[c / kDrcChannels][0][c % kDrcChannels];
+        }
+
+        uint16_t channels_out = static_cast<uint16_t>(mixer.channels);
+        if (mixer.callback)
+        {
+            std::array<Samples, kTvChannels + kDrcCount * kDrcChannels> samples{};
+            std::array<int32_t*, kTvChannels + kDrcCount * kDrcChannels> pointers{};
+            for (std::size_t c = 0; c < count; ++c)
+            {
+                for (std::size_t i = 0; i < samples[c].size(); ++i)
+                {
+                    samples[c][i] = RoundToInt32((*channels[c])[i]);
+                }
+                pointers[c] = samples[c].data();
+            }
+            FinalMix final_mix{std::span<int32_t* const>(pointers.data(), count), static_cast<uint16_t>(mixer.channels),
+                               static_cast<uint16_t>(kOutputSamplesPerFrame), static_cast<uint16_t>(mixer.devices),
+                               static_cast<uint16_t>(mixer.channels)};
+            mixer.callback(final_mix);
+            channels_out = final_mix.channels_out;
+            for (std::size_t c = 0; c < count; ++c)
+            {
+                for (std::size_t i = 0; i < samples[c].size(); ++i)
+                {
+                    (*channels[c])[i] = static_cast<float>(samples[c][i]);
+                }
+            }
+        }
+
+        for (int device = 0; device < mixer.devices; ++device)
+        {
+            RemixEnhanced(mixer, channels_out,
+                          std::span<FloatBuses::Channel* const>(
+                              channels.data() + static_cast<std::size_t>(device) * mixer.channels,
+                              static_cast<std::size_t>(mixer.channels)));
+        }
+    }
+
+    // The TV's stereo output.
+    for (std::size_t i = 0; i < kOutputSamplesPerFrame; ++i)
+    {
+        const float left = enhanced.main.tv[0][0][i];
+        const float right = enhanced.main.tv[0][1][i];
+        enhanced.output[2 * i] = left / 32768.0f;
+        enhanced.output[2 * i + 1] = right / 32768.0f;
+        stereo_[2 * i] = RoundToInt16(left);
+        stereo_[2 * i + 1] = RoundToInt16(right);
     }
 }
 
@@ -1346,6 +1752,43 @@ void System::Remix(const Mixer& mixer, uint16_t channels_in, std::span<Samples* 
                 sum += static_cast<uint32_t>(ntdlib::PowerPcToInt32(in[k] * matrix->weights[j * matrix->in + k]));
             }
             (*channels[j])[i] = static_cast<int32_t>(sum);
+        }
+    }
+}
+
+void System::RemixEnhanced(const Mixer& mixer, uint16_t channels_in, std::span<FloatBuses::Channel* const> channels)
+{
+    // Remix's matrix, in floating point: each output is the sum of the inputs' weighted values.
+    constexpr uint32_t kDeviceChannels = 2;
+    const RemixMatrix* matrix = nullptr;
+    for (const RemixMatrix& candidate : mixer.matrices)
+    {
+        if (candidate.in == channels_in && candidate.out == kDeviceChannels && candidate.in <= channels.size())
+        {
+            matrix = &candidate;
+            break;
+        }
+    }
+    if (!matrix)
+    {
+        return;
+    }
+
+    for (std::size_t i = 0; i < kOutputSamplesPerFrame; ++i)
+    {
+        std::array<float, kTvChannels> in{};
+        for (uint32_t k = 0; k < matrix->in; ++k)
+        {
+            in[k] = (*channels[k])[i];
+        }
+        for (uint32_t j = 0; j < matrix->out; ++j)
+        {
+            float sum = 0.0f;
+            for (uint32_t k = 0; k < matrix->in; ++k)
+            {
+                sum += in[k] * matrix->weights[j * matrix->in + k];
+            }
+            (*channels[j])[i] = sum;
         }
     }
 }

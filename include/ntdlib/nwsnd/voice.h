@@ -276,7 +276,8 @@ private:
 // equals, and the others in a queue. The queue starts with every MultiVoice, from the first up. A freed MultiVoice
 // joins the end of the queue. The MultiVoice keeps its settings until the queue hands it out again. The model adds each
 // MultiVoice the first time the queue hands it out. A deque holds the MultiVoices. A MultiVoice keeps its address while
-// the deque grows.
+// the deque grows. In the enhanced mixing mode, the number can grow: when every MultiVoice is in use, the queue takes
+// the next one in place of a drop.
 template <typename Policy>
 class MultiVoiceManager
 {
@@ -285,8 +286,8 @@ public:
     using Console = typename Policy::Console;
 
     // `count` is nw::snd's voice count, the .data word at 0x101AA478 (96 unless the game changes it before the sound
-    // system starts).
-    explicit MultiVoiceManager(int count);
+    // system starts). Above `count`, `most` is the number that the queue can grow to.
+    explicit MultiVoiceManager(int count, int most = 0);
 
     // The place of a MultiVoice for `channels` channels, or kNoVoice (AllocVoice, 0x022AAC0C). When every MultiVoice is
     // in use, the lowest one of a lower or equal priority is dropped. nn::atk drops the lowest ones that make room for
@@ -347,7 +348,8 @@ private:
         return unused_ >= count_ && free_.empty();
     }
 
-    int count_;                             // the MultiVoices in the queue at the start
+    int count_;                             // the MultiVoices in the queue at the start, and those it has grown by
+    int most_;                              // the number that the queue can grow to
     int unused_ = 0;                        // the first MultiVoice that the queue hasn't handed out
     std::deque<MultiVoice<Policy>> voices_; // from the first up, each MultiVoice that the queue has tried to hand out
     std::list<VoiceId> active_;

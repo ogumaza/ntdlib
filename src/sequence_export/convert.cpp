@@ -133,63 +133,6 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));
 }
 
-// The SoundFont format numbers the zones, generators and modulators of its instruments and of its presets with 16
-// bits. A file holds at most 65,535 of each.
-constexpr std::size_t kSoundFontLimit = 0xffff;
-
-// The zones of some of a SoundFont's instruments or presets, with their generators and modulators.
-struct ZoneCount
-{
-    std::size_t zones = 0;
-    std::size_t generators = 0;
-    std::size_t modulators = 0;
-};
-
-// Adds `zones` to `count`. Returns whether the count stays within the format's limits.
-bool AddZones(ZoneCount& count, const std::vector<sf2::Zone>& zones)
-{
-    count.zones += zones.size();
-    for (const sf2::Zone& zone : zones)
-    {
-        count.generators += zone.generators.size();
-        count.modulators += zone.modulators.size();
-    }
-
-    return count.zones <= kSoundFontLimit && count.generators <= kSoundFontLimit && count.modulators <= kSoundFontLimit;
-}
-
-// Splits the presets of `sf` into runs that each fit in a SoundFont. Preset k plays instrument k. Returns the index
-// after each run's last preset. A preset whose instrument exceeds the limits by itself takes a run of its own. The
-// SoundFont's writer then refuses it.
-std::vector<std::size_t> SoundFontRuns(const sf2::SoundFont& sf)
-{
-    std::vector<std::size_t> ends;
-    std::size_t start = 0;
-    ZoneCount instruments;
-    ZoneCount presets;
-    for (std::size_t k = 0; k < sf.presets.size(); k++)
-    {
-        ZoneCount more_instruments = instruments;
-        ZoneCount more_presets = presets;
-        const bool instruments_fit = AddZones(more_instruments, sf.instruments[k].zones);
-        const bool presets_fit = AddZones(more_presets, sf.presets[k].zones);
-        if ((!instruments_fit || !presets_fit) && k > start)
-        {
-            ends.push_back(k);
-            start = k;
-            more_instruments = {};
-            more_presets = {};
-            AddZones(more_instruments, sf.instruments[k].zones);
-            AddZones(more_presets, sf.presets[k].zones);
-        }
-        instruments = more_instruments;
-        presets = more_presets;
-    }
-    ends.push_back(sf.presets.size());
-
-    return ends;
-}
-
 } // namespace
 
 Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
@@ -286,39 +229,10 @@ BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, c
         return builder;
     };
     SoundFontBuilder whole = build(programs);
-
-    // Instruments past the format's limits go into a SoundFont for each run of programs that fits. Each SoundFont's
-    // name gives its programs.
     const std::string& name = banks.BankName(0);
-    const std::vector<std::size_t> ends = SoundFontRuns(whole.Result());
-    std::size_t begin = 0;
-    for (const std::size_t end : ends)
-    {
-        BankSoundFont& sound_font = c.sound_fonts.emplace_back();
-        std::string title = name;
-        if (end > begin)
-        {
-            sound_font.first = programs[begin];
-            sound_font.last = programs[end - 1];
-        }
-        if (ends.size() > 1)
-        {
-            title += ", programs " + std::to_string(sound_font.first) + " to " + std::to_string(sound_font.last);
-        }
-
-        const std::string comment = "Converted by " + program + " from bank " + title + ".";
-        if (ends.size() == 1)
-        {
-            WriteSoundFont(sound_font, whole.Result(), title, comment, program);
-        }
-        else
-        {
-            SoundFontBuilder part = build(std::span(programs).subspan(begin, end - begin));
-            WriteSoundFont(sound_font, part.Result(), title, comment, program);
-        }
-        begin = end;
-    }
-
+    c.sound_fonts = BankSoundFonts(
+        whole.Result(), programs, [&](std::span<const uint32_t> run) { return std::move(build(run).Result()); }, name,
+        program);
     c.sfz = BuildBankSfz(programs, banks, name, settings, program);
     c.warnings.insert(c.warnings.end(), whole.Warnings().begin(), whole.Warnings().end());
     c.warnings.insert(c.warnings.end(), banks.Errors().begin(), banks.Errors().end());

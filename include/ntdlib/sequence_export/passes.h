@@ -66,6 +66,9 @@ struct LoopRules
     // Whether the settings that RestoreAtLoopStart sends again go after the presets at the loop's first tick, rather
     // than ahead of them.
     bool preset_with_settings = false;
+
+    // The settings that RepeatsAsTheGame leaves out when it compares a repeat with the game's next pass.
+    std::vector<EventKind> ignored = {};
 };
 
 // The settings of each track's parts after the commands of `tick`, from `perf`'s events.

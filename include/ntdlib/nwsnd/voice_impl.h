@@ -543,7 +543,7 @@ void MultiVoice<Policy>::CalcVe(Engine& engine)
 // ----------------------------------------------------------------------------------------------- MultiVoiceManager
 
 template <typename Policy>
-MultiVoiceManager<Policy>::MultiVoiceManager(int count) : count_(count)
+MultiVoiceManager<Policy>::MultiVoiceManager(int count, int most) : count_(count), most_(most)
 {
 }
 
@@ -556,6 +556,10 @@ VoiceId MultiVoiceManager<Policy>::AllocVoice(Engine& engine, int channels, uint
 template <typename Policy>
 VoiceId MultiVoiceManager<Policy>::AllocVoice(Engine& engine, int channels, uint32_t priority, VoiceOwner owner)
 {
+    if (QueueEmpty() && count_ < most_)
+    {
+        ++count_;
+    }
     if constexpr (Console::kDropVoicesForChannels)
     {
         if (QueueEmpty() && !DropLowestPriorityVoices(engine, channels, priority))

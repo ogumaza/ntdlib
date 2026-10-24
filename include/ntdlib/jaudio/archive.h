@@ -8,6 +8,13 @@
 // it (rarc.h). Mario Kart: Double Dash!! (2003), the earliest game known to use JAudio2, keeps its music in sequence
 // blocks of the start-up archive instead ("bms "). Its sound table's entries have the first layouts (see
 // FirstLayoutOf).
+//
+// The readers also read a little-endian archive, one that starts with "<_AA". The Switch's releases of Wii games, such
+// as Super Mario Galaxy, store their archives that way. Each field is then little-endian in the width of its type, and
+// each tag is a 32-bit word with its characters reversed. A group of the sound table gives each sound's type in a byte
+// and its entry's offset in the 24 bits after it. The entry's file number is a 16-bit field. The sequence collection
+// keeps "SC" in its first two bytes, and its sequences are the same bytes in either order. Bank::Parse and
+// ReadWaveSystem read the archive's banks and wave systems in the order of their tags.
 
 #pragma once
 

@@ -62,7 +62,9 @@ struct WaveSystem
     std::vector<WaveGroup> groups; // in the order of the system's WINF block
 };
 
-// Reads the wave system in `file`. Banks name the system by `number`. Throws FormatError if it's damaged.
+// Reads the wave system in `file`. Banks name the system by `number`. A system whose tag is "SYSW" is little-endian.
+// Each of its fields is then stored in the width of its type. The Switch's releases of GameCube and Wii games store
+// their wave systems that way. Throws FormatError if it's damaged.
 WaveSystem ReadWaveSystem(std::span<const uint8_t> file, uint32_t number);
 
 // A wave that a sound plays: the number of its wave system, and its id.

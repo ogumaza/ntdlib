@@ -50,7 +50,7 @@ struct WaveBufferInfo
     const void* tag = nullptr;
 };
 
-// The renderer's settings (nn::audio::AudioRendererParameter).
+// The renderer's settings (nn::audio::AudioRendererParameter), and the mixing mode, which nn::audio lacks.
 struct RendererParameter
 {
     int32_t sample_rate = 48000;
@@ -58,6 +58,9 @@ struct RendererParameter
     int32_t mix_buffer_count = 1;
     int32_t sub_mix_count = 0;
     int32_t voice_count = 1;
+
+    // The enhanced mixing mode (see Renderer). Off, the renderer follows the console to the bit.
+    bool enhanced = false;
 };
 
 // Sees each call that the client makes on a renderer once the renderer has taken it: the arguments the client passed,
@@ -107,6 +110,34 @@ public:
     virtual void RenderFrame() = 0;
 };
 
+// In the enhanced mixing mode, the renderer keeps the console's voices, buffers, steps, gains and effects, and lifts
+// the limits of its arithmetic:
+//
+// - A voice decodes as DecodeFromWaveBuffersEnhanced decodes it: the console's steps, with the band-limited
+//   interpolator in place of the console's filters.
+// - The voices, the mixes and the depop work in single-precision floating point, on the scale of 16-bit samples. A
+//   biquad filters the voice's samples in floating point without the conversions around it. Nothing holds a sum to 32
+//   bits.
+// - The volume of a voice and each of its mix volumes ramp across the frame from their values in the last frame: sample
+//   i takes from + i * ((to - from) / n) of a frame of n samples. Every channel of a voice ramps from the last frame's
+//   volume.
+// - A voice that stops leaves the last product of each of its mix ramps to its destination's depop. Each sample, the
+//   depop multiplies by 31,529 / 32,768 at 48 kHz, or 30,923 / 32,768 at another rate, and adds to its buffer. A
+//   depop below 2^-16 at the end of a frame becomes 0.
+// - An aux effect's send ring takes each sample rounded to the nearest integer, halves away from zero, held to 32
+//   bits. Its return ring's samples come back as they are.
+// - DeviceOutputFloat gives the output divided by 32,768, without a limit. DeviceOutput gives it rounded to 16 bits
+//   and held there.
+//
+// Each operation takes its operands in a fixed order, and every platform gives the same samples.
+//
+// A frame without mixing (SetMixing) moves every voice on through its wave buffers as a mixed frame does, in either
+// mode. The voices' decoders, histories, buffers, counts of played samples and volumes end the frame as a mixed frame
+// leaves them. Nothing is converted, filtered or mixed, the effects don't run, and the output and the meters are
+// silent. The biquads' states, the effects' states and the aux rings stay as they were. The depop fades as in a mixed
+// frame. The voices' last samples become 0. A voice that stops before a mixed frame has given them again leaves the
+// depop nothing. Once the frames mix again, a biquad's state takes a moment to settle, and the effects lack the tails
+// of what they missed. A host runs such frames to reach a place in a sound quickly.
 class Renderer
 {
 public:
@@ -233,12 +264,32 @@ public:
     // A frame: the update, then the command list's generation and processing.
     void RenderFrame();
 
+    // Whether the frames mix (see the class's comment). They mix unless the host turns the mixing off. A snapshot
+    // doesn't hold the setting.
+    void SetMixing(bool mixing)
+    {
+        mixing_ = mixing;
+    }
+
+    bool Mixing() const
+    {
+        return mixing_;
+    }
+
     // The device sink's last frame: its channels interleaved, held to 16 bits.
     std::span<const int16_t> DeviceOutput() const
     {
         return output_;
     }
 
+    // In the enhanced mode, the device sink's last frame in floating point: its channels interleaved, with full scale
+    // at 1.0. Empty in the console's mode.
+    std::span<const float> DeviceOutputFloat() const
+    {
+        return float_output_;
+    }
+
+    // A snapshot holds the voices and the channel resources up to the last that the renderer has used.
     Snapshot Save() const;
 
     // Returns the renderer to a snapshot that it saved. The wave buffers in a snapshot point into the renderer. Each
@@ -264,6 +315,14 @@ private:
         std::array<float, kMaxMixBuffers> previous_mix{};
         VoiceState dsp;
         VoiceState reported;
+    };
+
+    // A channel resource's state in the enhanced mode: its past samples, and the last product of each mix ramp, for
+    // the depop.
+    struct EnhancedChannel
+    {
+        std::array<float, kWideHistory> history{};
+        std::array<float, kMaxMixBuffers> last{};
     };
 
     // A voice slot: what the client keeps, and the renderer's copy and state.
@@ -382,15 +441,24 @@ private:
 
     void Update();
     void Generate();
+    void GenerateWithoutMixing();
     void LayOutMixes();
     void RenderVoice(Voice& voice);
+    void RenderVoiceEnhanced(Voice& voice, const Mix* destination);
+    void AdvanceVoice(Voice& voice, const Mix* destination);
     void AddToMeter(const Voice::Server& server, int buffer, const int32_t* work, int32_t start, int32_t end);
+    void AddToMeterEnhanced(const Voice::Server& server, int buffer, const float* work, float start, float end);
     void RenderSubMix(int id);
     void RenderFinalMix();
     void MeasureMix(int id);
     void Depop(const Mix& mix);
     void RenderEffects(const Mix& mix);
     int32_t* Buffer(int index);
+    float* FloatBuffer(int index);
+
+    // The meters' peaks from their sums, and the device sink's output.
+    void MeasureMeters();
+    void Output();
 
     RendererParameter parameter_;
     std::vector<Voice> voices_;
@@ -405,6 +473,7 @@ private:
     std::vector<int16_t> output_;
     RendererObserver* observer_ = nullptr;
     bool mutes_at_once_ = false; // a restore came after the last frame
+    bool mixing_ = true;
 
     // The host's meters (SetMeters): their number, their mix and the channel of each of its buffers, then each
     // channel's sum in the frame and its peak.
@@ -417,8 +486,25 @@ private:
 
     // The host's peaks of the mixes' buffers (MeterMix), by mix and buffer. A mix without them has none.
     std::vector<std::vector<int32_t>> mix_peaks_;
+
+    // The voice slots and the channel resources up to the last that a voice has taken. A voice takes the first free
+    // slot and resources. Those past the marks have never changed.
+    int voice_mark_ = 0;
+    int resource_mark_ = 0;
+
+    // The enhanced mode's state: each channel resource's, the mix buffers with a working buffer for each channel a
+    // voice may have, the depop, the meters' sums and the output. Then room for a batch's input. Each is empty in the
+    // console's mode.
+    std::vector<EnhancedChannel> enhanced_;
+    std::vector<float> float_buffers_;
+    std::vector<float> float_depop_;
+    std::vector<float> float_meter_sums_;
+    std::vector<float> float_output_;
+    std::vector<int16_t> decoded_;
+    std::vector<float> input_;
 };
 
+// The voices and the channel resources go up to the marks.
 struct Renderer::Snapshot
 {
     const Renderer* owner = nullptr;
@@ -432,6 +518,9 @@ struct Renderer::Snapshot
     std::vector<int32_t> buffers;
     std::vector<int32_t> depop;
     std::vector<int16_t> output;
+    std::vector<EnhancedChannel> enhanced;
+    std::vector<float> float_depop;
+    std::vector<float> float_output;
 };
 
 } // namespace ntdlib::nx::audio

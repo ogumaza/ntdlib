@@ -260,6 +260,39 @@ void TestGroupFilesInSarcs()
           "no SARC read once every group is found");
 }
 
+void TestGroupFilesOfThe3ds()
+{
+    // A 3DS archive with a group kept outside it, which holds its bank, file 1. A file of the group under the Wii U's
+    // name isn't taken. The 3DS's name is.
+    namespace sar_files = ntdlib::testing::sar_files;
+    constexpr ntdlib::sar::Flavor kCtr = ntdlib::sar::Flavor::kCtr;
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ", .file = 0, .banks = {0}}};
+    spec.banks = {{"BANK_A", 1}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP_A", 0xFFFFFFFF}};
+    spec.files = {{sar_files::Sequence(kCtr, {0xff}, {}), "", false}, {{}, "", true}};
+    const TempFolder folder("sequence_export_frame_test");
+    const fs::path input = folder.Write("Sound.bcsar", sar_files::Archive(kCtr, spec));
+    const auto load = [&input]
+    {
+        ntdlib::sar::Options options;
+        options.flavor = kCtr;
+        return ntdlib::sar::SoundArchive::Load(*ReadFile(input), options);
+    };
+
+    folder.Write("GROUP_A.bfgrp", sar_files::Group(kCtr, {{1, Bytes("CBNK under the Wii U's name")}}));
+    ntdlib::sar::SoundArchive other = load();
+    Check(AddGroupFiles(other, input, "Sound.bcsar") == 0 && other.FileData(1).empty(),
+          "a 3DS group's file under the Wii U's name is left out");
+
+    folder.Write("GROUP_A.bcgrp", sar_files::Group(kCtr, {{1, Bytes("CBNK A by name")}}));
+    ntdlib::sar::SoundArchive named = load();
+    Check(AddGroupFiles(named, input, "Sound.bcsar") == 1 &&
+              std::string(named.FileData(1).begin(), named.FileData(1).end()) == "CBNK A by name",
+          "a 3DS group's file is found as <group>.bcgrp");
+}
+
 void TestOptions()
 {
     const std::vector<std::string> kArgs = {"fake",   "--output", "out",   "--only", "BGM",    "--loops", "0",
@@ -502,6 +535,7 @@ int main()
     TestText();
     TestFiles();
     TestGroupFilesInSarcs();
+    TestGroupFilesOfThe3ds();
     TestOptions();
     TestVoicesOption();
     TestArchiveOptions();

@@ -7,9 +7,10 @@
 // to 32 bytes.
 //
 // INFO holds three references: to the stream's settings, to a table of references to the tracks' infos, and to a table
-// of references to the channels' infos. The settings follow, then the tables. A file without tracks gives the tracks'
-// table type 0 and offset -1. A channel's info holds a reference to its DSP-ADPCM info. The DSP-ADPCM infos follow, 46
-// bytes each, one after another.
+// of references to the channels' infos. The settings follow, then the two tables. A file without tracks gives the
+// tracks' table type 0 and offset -1. Each track's info follows the tables, with the table of its channels after it.
+// The channels' infos follow the tracks'. A channel's info holds a reference to its DSP-ADPCM info. The DSP-ADPCM infos
+// follow, 46 bytes each, one after another.
 //
 // DATA holds the samples in blocks. Each block holds a piece of each channel, in the channels' order: the block's size
 // for each block but the last, and the last block's size rounded up to 32 bytes for the last. The samples start 32
@@ -23,10 +24,21 @@
 //
 // The tools move a loop's start forward to the start of a block. The samples from the loop's old start up to its new
 // start follow the loop's old end, and the stream ends there. The loop then plays the same samples. The settings keep
-// the loop's original start and end.
+// the loop's original start and end. The 3DS's tools move a loop from the first sample to the second block.
 //
 // Version 0x00030000 lays a file out the same way, without the loop's original start and end at the settings' end. The
 // tables after the settings start 8 bytes earlier. Many games of the Wii U read stream files only up to that version.
+//
+// The 3DS's files take versions 0x02000000, 0x02010000, 0x02030000 and 0x02030100. The settings of 0x02000000 end
+// after the reference to the samples, without the regions' size and reference. 0x02010000 lays the settings out as
+// 0x00030000 does, and 0x02030000 and 0x02030100 as 0x00040000 does. A track's span and flags are zeros there.
+//
+// The 3DS's tools encode samples past a stream's end. After a loop, the loop's first 128 samples follow the end. The
+// last block's size in the settings counts the bytes up to the last of them that the block holds. A last block without
+// room for them all ends full, and DATA holds the rest after it: a piece for each channel, in the channels' order, each
+// one padded to 32 bytes. SEEK then holds one more entry for each channel, for the samples before those pieces. A file
+// of version 0x02000000 holds one sample past the end of a stream without a loop. Its last block's count of samples
+// leaves out the last 127.
 
 #pragma once
 
@@ -59,8 +71,9 @@ struct StreamFile
     };
 
     // A channel: its pieces of DATA one after another, in the stream's encoding and the file's byte order, and a
-    // DSP-ADPCM channel's info. The last piece holds the bytes up to the last block's size rounded up to 32. `history`
-    // holds SEEK's two samples before each block: the sample just before it, then the one before that.
+    // DSP-ADPCM channel's info. The last block's piece holds the bytes up to the last block's size rounded up to 32. A
+    // piece of the samples past the end that the last block has no room for follows it. `history` holds SEEK's two
+    // samples before each block, and before that piece: the sample just before it, then the one before that.
     struct Channel
     {
         friend bool operator==(const Channel&, const Channel&) = default;
@@ -77,9 +90,10 @@ struct StreamFile
     // past DATA or SEEK. A file laid out another way reads too, and Write() then gives other bytes.
     static StreamFile Read(std::span<const uint8_t> file);
 
-    // The file's bytes, in the layout of `version`. Throws std::invalid_argument for a version other than 0x00030000
-    // and 0x00040000, an IMA-ADPCM stream, a DSP-ADPCM channel without its info, a PCM channel with one, channels whose
-    // samples or history don't fit the settings, and a track that plays a channel that the stream lacks.
+    // The file's bytes, in the layout of `version`. Throws std::invalid_argument for a version of another layout than
+    // those above, an IMA-ADPCM stream, a DSP-ADPCM channel without its info, a PCM channel with one, channels whose
+    // samples or history don't fit the settings, more uncounted samples than the last block holds, and a track that
+    // plays a channel that the stream lacks.
     std::vector<uint8_t> Write() const;
 
     // The bytes of each channel's piece of every block but the last.
@@ -88,11 +102,19 @@ struct StreamFile
     // The number of blocks.
     uint32_t BlockCount() const;
 
-    // The samples in the last block of each channel.
+    // The samples in the last block of each channel, as the settings count them.
     uint32_t LastBlockSamples() const;
 
-    // The bytes of each channel's piece of the last block, up to the last sample's nibble or byte.
+    // The bytes of each channel's piece of the last block, up to the nibble or byte of the last sample that the block
+    // holds. The samples past the end that the block holds count too.
     uint32_t LastBlockSize() const;
+
+    // The samples past the end that the last block has no room for.
+    uint32_t OverflowSamples() const;
+
+    // The bytes of each channel's piece of the samples past the end that the last block has no room for, padded to 32
+    // bytes, or 0.
+    uint32_t OverflowSize() const;
 
     Flavor flavor = Flavor::kNx;
     uint32_t version = 0x00040000;
@@ -112,6 +134,11 @@ struct StreamFile
     uint32_t original_loop_start = 0;
     uint32_t original_loop_end = 0;
 
+    // The samples that the file holds past the stream's last sample, and the samples at the end of the last block that
+    // the settings' count of its samples leaves out. Only the 3DS's files hold either (see above).
+    uint32_t samples_past_end = 0;
+    uint32_t uncounted_samples = 0;
+
     std::optional<std::vector<Track>> tracks; // nothing when the file holds no table of tracks
     std::vector<Channel> channels;
 };
@@ -125,12 +152,19 @@ uint32_t StreamBlockSamples(WaveEncoding encoding);
 // info and a channel shorter than its samples.
 wave::Pcm DecodeStream(const StreamFile& stream);
 
-// A stream of `flavor` and version `version` that holds `channels`, each one's samples at `sample_rate`, in
-// `encoding`: DSP-ADPCM or 16-bit PCM. A loop from `loop_start` to the end of the samples moves forward to the start of
-// a block, as the tools move it. The samples from its start up to its new start then follow the samples. DSP-ADPCM
-// takes the encoder of wave/encode.h, with the sums of `flavor`'s decoder. SEEK takes the samples before each block.
-// Throws std::invalid_argument for another encoding, no channels, channels of different lengths, no samples, a loop
-// start past the end of the samples, and more samples than the file's 32-bit sizes hold.
+// `stream` without its samples past the end, as the tools of the Wii U and the Switch lay a stream out. The bytes
+// after the frame or the sample that holds the last sample become zeros, and the last block's count counts every
+// sample.
+StreamFile WithoutSamplesPastEnd(const StreamFile& stream);
+
+// A stream of `flavor` and version `version` that holds `channels`, each one's samples at `sample_rate`, in `encoding`:
+// DSP-ADPCM or 16-bit PCM. A loop from `loop_start` to the end of the samples moves forward to the start of a block, as
+// the tools move it: on the 3DS to the start of the block after the one that holds it, and on the other consoles to the
+// first block's start at or after it. The samples from its start up to its new start then follow the samples. A stream
+// of the 3DS holds the samples past its end that the 3DS's tools encode. DSP-ADPCM takes the encoder of wave/encode.h,
+// with the sums of `flavor`'s decoder. SEEK takes the samples before each block. Throws std::invalid_argument for
+// another encoding, no channels, channels of different lengths, no samples, a loop start past the end of the samples,
+// and more samples than the file's 32-bit sizes hold.
 StreamFile MakeStream(Flavor flavor, uint32_t version, WaveEncoding encoding, uint32_t sample_rate,
                       std::span<const std::vector<int16_t>> channels, std::optional<uint32_t> loop_start);
 

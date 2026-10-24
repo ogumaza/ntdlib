@@ -76,12 +76,13 @@ int AddGroupFiles(sar::SoundArchive& archive, const fs::path& input, const std::
         return 0;
     }
 
+    const sar::Flavor flavor = archive.ReadOptions().flavor;
     int found = 0;
     for (const std::string& group : groups)
     {
         for (const fs::path& folder : {input.parent_path(), input.parent_path() / "userManagementFiles"})
         {
-            const fs::path path = folder / PathFromUtf8(sar::GroupFileName(seqlib::SafeFileName(group)));
+            const fs::path path = folder / PathFromUtf8(sar::GroupFileName(seqlib::SafeFileName(group), flavor));
             std::optional<std::vector<uint8_t>> bytes = ReadFile(path);
             if (!bytes)
             {
@@ -110,9 +111,9 @@ int AddGroupFiles(sar::SoundArchive& archive, const fs::path& input, const std::
     if (found == 0)
     {
         std::fprintf(stderr,
-                     "warning: %s keeps %zu groups in files of their own, and none of them is beside it (as "
-                     "<group>.bfgrp, in a userManagementFiles folder or in a .sarc file)\n",
-                     name.c_str(), groups.size());
+                     "warning: %s keeps %zu groups in files of their own, and none of them is beside it (as %s, in a "
+                     "userManagementFiles folder or in a .sarc file)\n",
+                     name.c_str(), groups.size(), sar::GroupFileName("<group>", flavor).c_str());
     }
 
     return found;

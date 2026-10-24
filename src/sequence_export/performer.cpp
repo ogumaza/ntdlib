@@ -137,8 +137,15 @@ using nwsnd::kTrackCount;
 constexpr uint8_t kPartCount = 16;
 
 // The rules of the main loop's passes that this performer plays by (passes.h). A track's first part starts with the SFZ
-// low-pass and biquad off. A preset at the loop's first tick doesn't count among the settings there.
+// low-pass and biquad off. A preset at the loop's first tick doesn't count among the settings there. Without
+// Settings::reverb_moves_loops, the comparison of passes leaves CC91 out.
 const LoopRules kLoopRules{{kSfzLowPassEvent, kSfzBiquadEvent}, false};
+const LoopRules kLoopRulesWithoutReverb{{kSfzLowPassEvent, kSfzBiquadEvent}, false, {EventKind::kReverb}};
+
+const LoopRules& LoopRulesOf(const Settings& settings)
+{
+    return settings.reverb_moves_loops ? kLoopRules : kLoopRulesWithoutReverb;
+}
 
 // A linear ramp over a number of ticks (nw::snd MoveValue).
 class MoveValue
@@ -1023,7 +1030,8 @@ public:
     bool SendSetting(Performer& engine, int t, EventKind kind, int value, int part = -1);
 
     // Updates Track::last_change for an event of `kind` that track `t` records. UpdateOutputs handles the three values
-    // that can differ between passes: the expression, the filter and the pitch.
+    // that can differ between passes: the expression, the filter and the pitch. CC91 counts only with
+    // Settings::reverb_moves_loops.
     void NoteChange(Performer& engine, int t, EventKind kind);
 
     // The pitch MIDI gives part `part` of track `t` in sound frame `frame`, in semitones. On the part the track plays
@@ -1685,6 +1693,10 @@ private:
     // them. The sound then holds forever. As with Steady, the performance ends kHoldSeconds after the last change.
     std::optional<double> HeldSoundEnd(uint32_t start) const;
 
+    // The tick of the last change that HeldSoundEnd and EndPerformance count: the last MIDI event or tempo change.
+    // Without Settings::reverb_moves_loops, a change of CC91 doesn't count.
+    uint32_t LastChangeTick() const;
+
     // True if the marked main loop sounds nothing once the notes before it have ended. No note starts from the loop's
     // start on. No channel has a MIDI note any more. Each channel has ended or ends without the game. Release tails and
     // fades may still play. The game keeps such a sound in silence until it stops the sound, or until a poll leaves the
@@ -1929,7 +1941,8 @@ bool MidiRecorder::SendSetting(Performer& engine, int t, EventKind kind, int val
 
 void MidiRecorder::NoteChange(Performer& engine, int t, EventKind kind)
 {
-    if (kind != EventKind::kExpression && kind != kFilterEvent && kind != EventKind::kPitch)
+    const bool counts = kind != EventKind::kReverb || engine.settings_.reverb_moves_loops;
+    if (counts && kind != EventKind::kExpression && kind != kFilterEvent && kind != EventKind::kPitch)
     {
         engine.tracks_[t].last_change = engine.tick_;
     }
@@ -4049,8 +4062,8 @@ std::optional<double> Performer::HeldSoundEnd(uint32_t start) const
         return std::nullopt;
     }
 
-    // Find the last change: the last MIDI event or tempo change.
-    const uint32_t last = midi_.out_.LastEventTick();
+    // The last change has to lie more than kHoldSeconds back.
+    const uint32_t last = LastChangeTick();
     if (now_ms_ - tick_ms_[last] <= kHoldSeconds * 1000.0)
     {
         return std::nullopt;
@@ -4089,6 +4102,31 @@ std::optional<double> Performer::HeldSoundEnd(uint32_t start) const
     }
 
     return tick_ms_[last] + kHoldSeconds * 1000.0;
+}
+
+uint32_t Performer::LastChangeTick() const
+{
+    if (settings_.reverb_moves_loops)
+    {
+        return midi_.out_.LastEventTick();
+    }
+
+    // The last tempo change, and each track's last event that isn't CC91.
+    const auto is_change = [](const TrackEvent& e)
+    {
+        return e.kind != EventKind::kReverb;
+    };
+    uint32_t last = midi_.out_.tempo.empty() ? 0 : midi_.out_.tempo.back().tick;
+    for (const std::vector<TrackEvent>& events : midi_.out_.tracks)
+    {
+        const auto change = std::find_if(events.rbegin(), events.rend(), is_change);
+        if (change != events.rend())
+        {
+            last = std::max(last, change->tick);
+        }
+    }
+
+    return last;
 }
 
 bool Performer::SilentLoop() const
@@ -5128,7 +5166,7 @@ Performance Performer::Run()
     EndPerformance(finished);
     if (midi_.out_.loop)
     {
-        RestoreAtLoopStart(midi_.out_, midi_.rec_.PartSwitches(), next_pass, kLoopRules);
+        RestoreAtLoopStart(midi_.out_, midi_.rec_.PartSwitches(), next_pass, LoopRulesOf(settings_));
     }
 
     midi_.out_.approximations = midi_.rec_.Approximations();
@@ -5254,7 +5292,7 @@ Performer::PassStart Performer::NextPassStart(int t, uint32_t target) const
 
 bool Performer::RepeatsAsTheGame(uint32_t start, uint32_t end) const
 {
-    return sequence_export::RepeatsAsTheGame(midi_.out_, midi_.rec_.PartSwitches(), start, end, kLoopRules);
+    return sequence_export::RepeatsAsTheGame(midi_.out_, midi_.rec_.PartSwitches(), start, end, LoopRulesOf(settings_));
 }
 
 bool Performer::MarkSteadyPass(int t, uint32_t target)
@@ -5436,14 +5474,29 @@ void Performer::EndPerformance(bool finished)
             std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
         }
 
-        const uint32_t last_event = midi_.out_.LastEventTick();
-        midi_.out_.end_tick = std::max(last_event, MsToTick(sound_end_ms_));
-        midi_.out_.seconds = std::max(sound_end_ms_, tick_ms_[last_event]) / 1000.0;
+        const uint32_t last_change = LastChangeTick();
+        midi_.out_.end_tick = std::max(last_change, MsToTick(sound_end_ms_));
+        midi_.out_.seconds = std::max(sound_end_ms_, tick_ms_[last_change]) / 1000.0;
     }
     else
     {
         midi_.out_.end_tick = tick_;
         midi_.out_.seconds = now_ms_ / 1000.0;
+    }
+
+    // Without Settings::reverb_moves_loops, a change of CC91 doesn't move the end. A MIDI track ends after its last
+    // event. The changes of CC91 after the end are therefore dropped. Nothing sounds there.
+    if (!settings_.reverb_moves_loops)
+    {
+        const uint32_t end = midi_.out_.end_tick;
+        const auto after_end = [end](const TrackEvent& e)
+        {
+            return e.kind == EventKind::kReverb && e.tick > end;
+        };
+        for (std::vector<TrackEvent>& events : midi_.out_.tracks)
+        {
+            std::erase_if(events, after_end);
+        }
     }
 }
 

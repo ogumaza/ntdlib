@@ -666,6 +666,9 @@ void TestGroupsListTheFilesTheyLoad(Flavor flavor)
         SoundArchive::Load(Archive(f, GroupTestFiles(f), {.groups = {1, 2, 0xffffffff}}), StrictOptionsOf(flavor));
 
     const std::string on = " (" + NameOf(flavor) + ")";
+    Check(a.Groups().size() == 3 && a.Groups()[0].file_id == 1 && a.Groups()[1].file_id == 2 &&
+              a.Groups()[2].file_id == ntdlib::sar::kExternalGroupFile,
+          "the groups" + on);
     Check(a.GroupFileIds(0) == std::vector<uint32_t>{3, 0} && a.GroupFileIds(1) == std::vector<uint32_t>{3, 4},
           "the files that each group loads" + on);
     Check(a.GroupFileIds(2).empty() && a.GroupFileIds(3).empty(), "a group kept outside, and no group" + on);
@@ -911,6 +914,43 @@ void TestGroupFilesBesideTheArchiveAreAdded(Flavor flavor)
           "its file once added" + on);
     Check(archive.GroupFiles() == std::vector<std::vector<uint8_t>>{group}, "the group file kept" + on);
     Check(std::ranges::equal(archive.Bytes(), bytes), "the archive's bytes kept" + on);
+}
+
+void TestStrictRulesAddGroupFilesAsThePlayerReadsThem(Flavor flavor)
+{
+    // The archive holds file 1, and only GROUP_SE's file holds file 0. The game keeps the group outside the archive.
+    // The group file holds two copies of file 0, then a copy of file 1. It gives the second copy of file 0 and the copy
+    // of file 1 sizes that run past its end. The 3DS's player reads the bytes of a copy only when the archive lacks the
+    // file. It takes the first copy of file 0 and skips the others. The players of the Wii U and the Switch read every
+    // copy first, and refuse the group file.
+    const Format f = FormatOf(flavor);
+    std::vector<ArchiveFile> files(2);
+    files[0].place = ArchiveFile::kNullLocation;
+    files[1].data = Bytes("stored");
+    const std::vector<uint8_t> bytes = Archive(f, files, {.groups = {0xffffffff}, .names = {{0x06000000, "GROUP_SE"}}});
+    SoundArchive archive = SoundArchive::Load(bytes, StrictOptionsOf(flavor));
+
+    // The items follow the INFO block's size, the count and the three references. An item's size is its fourth word.
+    std::vector<uint8_t> group = Group(f, {{0, "first copy"}, {0, "second copy"}, {1, "copy of file 1"}}, {});
+    for (const std::size_t item : {std::size_t{1}, std::size_t{2}})
+    {
+        const std::size_t at = 0x40 + 8 + 4 + 3 * 8 + item * 16 + 12;
+        const uint32_t kSize = 0x1000;
+        for (std::size_t i = 0; i < 4; i++)
+        {
+            group[at + i] = static_cast<uint8_t>(f.big_endian ? kSize >> (24 - 8 * i) : kSize >> (8 * i));
+        }
+    }
+    const std::string refused = ErrorOf([&] { archive.AddGroupFile(group); });
+
+    const std::string on = " (" + NameOf(flavor) + ")";
+    Check(archive.Groups().size() == 1 && archive.Groups()[0].name == "GROUP_SE" &&
+              archive.Groups()[0].file_id == ntdlib::sar::kExternalGroupFile,
+          "the group kept outside, with the rules that stop at the first problem" + on);
+    Check(flavor == Flavor::kCtr ? refused.empty() && Text(archive.FileData(0)) == "first copy"
+                                 : !refused.empty() && archive.FileData(0).empty(),
+          "copies whose bytes run past their group file's end" + on);
+    Check(Text(archive.FileData(1)) == "stored", "the archive's copy of file 1" + on);
 }
 
 void TestSarcFilesAreRead()
@@ -1284,8 +1324,8 @@ void TestSarFilesBuildThe3dsFiles()
 void TestWaveSoundFilesAreRead(Flavor flavor)
 {
     // Two wave sounds: one with its settings, and one without them whose second track has no events. The archive gives
-    // each sound's place in the file, in both rules, and the channel priority of one. The 3DS's readers read neither
-    // the surround pan, the filters and the sends, nor a wave sound's channel priority.
+    // each sound's place in the file, in both rules, and the channel priority of one. The 3DS's readers read no
+    // filters, and only the sends to buses A and B.
     namespace sar_files = ntdlib::testing::sar_files;
     sar_files::Region pitched;
     pitched.wave = 1;
@@ -1333,11 +1373,9 @@ void TestWaveSoundFilesAreRead(Flavor flavor)
         Check(archive->Sounds().size() == 2 && archive->Sounds()[0].type == SoundType::kWaveSound &&
                   archive->Sounds()[0].wave_sound_index == 1 && archive->Sounds()[1].wave_sound_index == 0,
               console + ": the wave sounds' places in their file");
-        const bool ctr = flavor == Flavor::kCtr;
         Check(archive->Sounds().size() == 2 && archive->Sounds()[0].channel_priority == 64 &&
-                  !archive->Sounds()[0].release_priority_fix &&
-                  archive->Sounds()[1].channel_priority == (ctr ? 64 : 48) &&
-                  archive->Sounds()[1].release_priority_fix == !ctr,
+                  !archive->Sounds()[0].release_priority_fix && archive->Sounds()[1].channel_priority == 48 &&
+                  archive->Sounds()[1].release_priority_fix,
               console + ": the wave sounds' channel priorities");
     }
     Check(read.waves.size() == 2 && read.waves[0].wave_archive_item == 0x05000000 && read.waves[0].index == 3 &&
@@ -1352,10 +1390,10 @@ void TestWaveSoundFilesAreRead(Flavor flavor)
                   a.adshr.hold == 4 && a.adshr.release == 5,
               console + ": a wave sound's settings");
         const bool ctr = flavor == Flavor::kCtr;
-        Check(ctr ? a.span == 0 && a.low_pass == 64 && a.biquad_type == 0 && a.main_send == 127 &&
-                        a.aux_sends == std::array<uint8_t, 3>{}
-                  : a.span == 70 && a.low_pass == 50 && a.biquad_type == 2 && a.biquad_value == 90 &&
-                        a.main_send == 100 && a.aux_sends == std::array<uint8_t, 3>{30, 40, 50},
+        Check(a.span == 70 && a.main_send == 100 &&
+                  (ctr ? a.low_pass == 64 && a.biquad_type == 0 && a.aux_sends == std::array<uint8_t, 3>{30, 40, 0}
+                       : a.low_pass == 50 && a.biquad_type == 2 && a.biquad_value == 90 &&
+                             a.aux_sends == std::array<uint8_t, 3>{30, 40, 50}),
               console + ": a wave sound's surround pan, filters and sends");
         Check(a.tracks.size() == 1 && a.tracks[0].size() == 1 && a.tracks[0][0].note == 0 && a.notes.size() == 1 &&
                   a.notes[0].wave_id_index == 1 && a.notes[0].original_key == 72,
@@ -1713,6 +1751,8 @@ int main()
         TestNamesHaveNoControlCharacters(flavor);
         TestBankOfSharedRegionsIsReported(flavor);
         TestGroupFilesBesideTheArchiveAreAdded(flavor);
+        TestStrictRulesAddGroupFilesAsThePlayerReadsThem(flavor);
+        TestGroupsListTheFilesTheyLoad(flavor);
         TestGroupFilesMatchTheirArchive(flavor, Rules::kReadPastDamage);
         TestGroupFilesMatchTheirArchive(flavor, Rules::kStopAtFirstProblem);
         TestPcm16WaveDecodes(flavor);
@@ -1726,9 +1766,6 @@ int main()
         TestWaveSoundFilesAreRead(flavor);
     }
 
-    // Only the Wii U's and the Switch's readers list the groups.
-    TestGroupsListTheFilesTheyLoad(Flavor::kCafe);
-    TestGroupsListTheFilesTheyLoad(Flavor::kNx);
     TestArchivesOfOtherConsolesAreRefused();
     TestSarcFilesAreRead();
     TestSarcNamesAreRead();

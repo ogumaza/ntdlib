@@ -4,16 +4,17 @@
 // ntdlib/testing/sar_files.h. The header takes 64 bytes. The STRG, INFO and FILE blocks follow it without gaps. The
 // STRG block lists the names in the order of the INFO block's tables, and an item without a name has none. Each entry
 // of the INFO block holds what the tools write. A sound's entry holds its string index, its pan, its priorities and its
-// 3D settings, then its details. A sequence sound's details hold its start, its channel priority and its banks, and a
-// wave sound's its index and its channel priority. A stream's details are those of sar_files.h's StreamDetails, as FSAR
-// 2.2.0 lays them out, or 12 zero bytes for a spec without them. A file's entry on the Wii U and the Switch lists the
-// groups that its spec names. The reference to a group's file there has type 0, and the reference to any other file
-// type 0x1F00. The player's settings give the size of a stream's buffer in a byte, and a zero follows it. Each file
-// starts on a multiple of 64 bytes from the archive's start on the Switch, and of 32 bytes on the other consoles. The
-// writers of ntdlib/sar/tables.h take these archives. They refuse those of ntdlib/testing/sar_files.h. Group builds a
-// group's file of the Wii U or the Switch as the tools lay it out (ntdlib/sar/groups.h). WithoutValuePlaces takes
-// optional values out of the sounds' entries of such an archive, for the tests of sar::WithValuePlaces. Bank builds a
-// bank file as the tools lay one out (ntdlib/sar/bank_edit.h).
+// 3D settings, then its details. A sequence sound and a wave sound hold a 32-bit value between the two. A sequence
+// sound's details hold its start, its channel priority and its banks. A wave sound's details hold its index and its
+// channel priority. A stream's details are those of sar_files.h's StreamDetails, as FSAR 2.2.0 lays them out, or 12
+// zero bytes for a spec without them. A file's entry on the Wii U and the Switch lists the groups that its spec names.
+// The reference to a group's file there has type 0, and the reference to any other file type 0x1F00. The player's
+// settings give the size of a stream's buffer in a byte, and a zero follows it. Each file starts on a multiple of 64
+// bytes from the archive's start on the Switch, and of 32 bytes on the other consoles. The writers of
+// ntdlib/sar/tables.h take these archives. They refuse those of ntdlib/testing/sar_files.h. Group builds a group's file
+// as the tools lay it out (ntdlib/sar/groups.h). WithoutValuePlaces takes optional values out of the sounds' entries of
+// such an archive, for the tests of sar::WithValuePlaces. Bank builds a bank file as the tools lay one out
+// (ntdlib/sar/bank_edit.h).
 
 #pragma once
 
@@ -82,13 +83,14 @@ inline std::vector<uint8_t> SoundEntry(sar::Flavor flavor, const sar_files::Soun
     entry.U32(4, sar::ItemId(sar::kPlayerItem, sound.player));
     entry.U8(8, sound.volume);
 
-    // The options: the string index, the pan, the priorities and the offset of the 3D settings, which follow them.
+    // The options: the string index, the pan, the priorities and the offset of the 3D settings, which follow them. A
+    // sequence sound and a wave sound hold a 32-bit value of 0 after the 3D settings. A stream sound holds none.
     std::vector<std::pair<int, uint32_t>> values = names.Option(sound.name, sar::kSoundItem, index);
     values.push_back({1, sound.pan.value_or(0)});
     values.push_back({2, sound.priority.value_or(64)});
     values.push_back({8, 0});
     const std::size_t options = entry.Options(values);
-    const std::size_t settings = entry.Add(20);
+    const std::size_t settings = entry.Add(sound.kind == sar_files::SoundSpec::kStream ? 16 : 20);
     entry.U32(options + 4 * values.size(), static_cast<uint32_t>(settings));
     entry.U32(settings, 0xF);
     entry.U32(settings + 4, 0x3F000000); // a decay ratio of 0.5
@@ -233,53 +235,69 @@ inline std::pair<std::vector<std::size_t>, std::size_t> FilePlaces(sar::Flavor f
 
 } // namespace detail
 
-// A group's file of the Wii U or the Switch: the files that it holds, each with the bytes of its copy or as a link, and
-// the items that it lists, each with the bits of the parts that the group loads.
+// A group's file: the files that it holds, each with the bytes of its copy or as a link, and the items that it lists,
+// each with the bits of the parts that the group loads. A group's file of the 3DS takes the version `ctr_version`:
+// 1.0.0.0, which holds no INFX block and lists no items, or 1.1.0.0, which holds INFX. Without INFX, the spec's items
+// stay out.
 struct GroupSpec
 {
     std::vector<std::pair<uint32_t, std::optional<std::vector<uint8_t>>>> files;
     std::vector<std::pair<uint32_t, uint32_t>> items = {};
     bool padded = true; // whether zeros follow INFX up to the alignment
+    uint32_t ctr_version = 0x01000000;
 };
 
-// The group's file of `spec`, laid out as the tools lay it out: a header of 64 bytes, INFO padded to 32 bytes, FILE
-// with each copy on a multiple of 64 bytes on the Switch and of 32 on the Wii U, then INFX.
-inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
+namespace detail
 {
+
+// The group's file of `spec`, laid out as the tools lay it out: a header of 64 bytes, INFO padded to 32 bytes, FILE
+// with each copy on a multiple of 64 bytes on the Switch and of 32 on the other consoles, then INFX. Without INFX, FILE
+// ends on a multiple of 32 bytes. The second value is the size that an archive's file table gives the file: the end of
+// INFX's entries, or without INFX the end of the last copy, or the file's size without copies.
+inline std::pair<std::vector<uint8_t>, std::size_t> GroupAndSize(sar::Flavor flavor, const GroupSpec& spec)
+{
+    const bool ctr = flavor == sar::Flavor::kCtr;
+    const bool has_items = !ctr || spec.ctr_version >= 0x01010000;
     const std::size_t alignment = flavor == sar::Flavor::kNx ? 64 : 32;
     const auto align = [](std::size_t at, std::size_t to)
     {
         return (at + to - 1) / to * to;
     };
     const std::size_t files = spec.files.size();
-    const std::size_t items = spec.items.size();
+    const std::size_t items = has_items ? spec.items.size() : 0;
 
     // The blocks and the copies, by hand.
-    const std::size_t kInfo = detail::kHeaderSize;
+    const std::size_t kInfo = kHeaderSize;
     const std::size_t file = kInfo + align(8 + 4 + 24 * files, 32);
     std::vector<std::size_t> copies;
+    std::optional<std::size_t> copies_end;
     std::size_t at = align(file + 8, alignment);
     for (const auto& [id, copy] : spec.files)
     {
         copies.push_back(copy ? at : 0);
+        if (copy)
+        {
+            copies_end = at + copy->size();
+        }
         at = copy ? align(at + copy->size(), alignment) : at;
     }
     const std::size_t infx = at;
     const std::size_t entries_end = infx + 8 + 4 + 16 * items;
-    const std::size_t end = spec.padded ? align(entries_end, alignment) : entries_end;
+    const std::size_t end = !has_items ? infx : spec.padded ? align(entries_end, alignment) : entries_end;
 
     sar_files::Bytes group(flavor == sar::Flavor::kCafe);
     group.Add(end);
-    std::memcpy(group.data.data(), "FGRP", 4);
+    std::memcpy(group.data.data(), ctr ? "CGRP" : "FGRP", 4);
     group.U16(4, 0xFEFF);
-    group.U16(6, static_cast<uint16_t>(detail::kHeaderSize));
-    group.U32(8, 0x00010000);
+    group.U16(6, static_cast<uint16_t>(kHeaderSize));
+    group.U32(8, ctr ? spec.ctr_version : 0x00010000);
     group.U32(0x0C, static_cast<uint32_t>(end));
-    group.U16(0x10, 3);
+    const std::size_t block_count = has_items ? 3 : 2;
+    group.U16(0x10, static_cast<uint16_t>(block_count));
     const std::size_t blocks[][3] = {
         {0x7800, kInfo, file - kInfo}, {0x7801, file, infx - file}, {0x7802, infx, end - infx}};
     const char* magics[] = {"INFO", "FILE", "INFX"};
-    for (std::size_t i = 0; i < 3; ++i)
+    for (std::size_t i = 0; i < block_count; ++i)
     {
         group.U16(0x14 + 12 * i, static_cast<uint16_t>(blocks[i][0]));
         group.U32(0x18 + 12 * i, static_cast<uint32_t>(blocks[i][1]));
@@ -303,8 +321,12 @@ inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
         else
         {
             group.NullRef(entry + 4, 0);
-            group.U32(entry + 12, detail::kNone);
+            group.U32(entry + 12, kNone);
         }
+    }
+    if (!has_items)
+    {
+        return {group.data, copies_end.value_or(end)};
     }
 
     // INFX: each item's entry.
@@ -317,16 +339,23 @@ inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
         group.U32(entry + 4, spec.items[i].second);
     }
 
-    return group.data;
+    return {group.data, entries_end};
 }
 
-// The bytes of a group's file as an archive's FILE block holds them: up to the end of INFX's entries. The zeros after
-// them pad the file to the next file.
+} // namespace detail
+
+// The group's file of `spec`, laid out as the tools lay it out (detail::GroupAndSize).
+inline std::vector<uint8_t> Group(sar::Flavor flavor, const GroupSpec& spec)
+{
+    return detail::GroupAndSize(flavor, spec).first;
+}
+
+// The bytes of a group's file as an archive's FILE block holds them: up to the end of INFX's entries, or without INFX
+// up to the end of the last copy. The zeros after them pad the file to the next file.
 inline std::vector<uint8_t> GroupInArchive(sar::Flavor flavor, const GroupSpec& spec)
 {
-    std::vector<uint8_t> group = Group(flavor, spec);
-    const std::size_t infx = xsflib::Reader(group, flavor == sar::Flavor::kCafe).U32(0x30); // INFX's offset
-    group.resize(infx + 8 + 4 + 16 * spec.items.size());
+    auto [group, size] = detail::GroupAndSize(flavor, spec);
+    group.resize(size);
 
     return group;
 }

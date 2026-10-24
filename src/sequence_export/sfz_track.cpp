@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/file_name.h"
 #include "seqlib/loop.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/units.h"
@@ -26,6 +27,7 @@
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
@@ -394,6 +396,24 @@ std::string InstrumentFile(const PresetKey& key, const std::string& name, const 
     s += "\n" + LfoOpcodes(key, settings) + "<group>\n" + regions(key, 0.0, 1);
 
     return s;
+}
+
+std::vector<SfzFile> BankFiles(const std::vector<uint32_t>& programs, const std::string& title,
+                               const Settings& settings, const std::string& program,
+                               const PresetRegionsFunction& regions)
+{
+    std::vector<SfzFile> files;
+    const std::size_t digits = programs.empty() ? 1 : std::to_string(programs.back()).size();
+    for (const uint32_t p : programs)
+    {
+        const PresetKey key = StartingPresetKey(p, settings);
+        std::string number = std::to_string(p);
+        number.insert(0, digits - number.size(), '0');
+        files.push_back({seqlib::SafeFileName(title) + "_" + number + ".sfz",
+                         InstrumentFile(key, "Program " + std::to_string(p), title, settings, program, regions)});
+    }
+
+    return files;
 }
 
 } // namespace ntdlib::sequence_export

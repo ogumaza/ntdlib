@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the files of one console as files of the other (ntdlib/sar/byte_order.h). The builders of sar_files.h write
-// each bank and wave sound file in both byte orders from one spec. A file of one order has to become the file of the
-// other, byte for byte. The readers of formats.h read the files back.
+// Tests of the files of one console as files of another (ntdlib/sar/byte_order.h). The builders of sar_files.h write
+// each bank and wave sound file for each of the three consoles from one spec. A file of one console has to become the
+// file of another, byte for byte, but for the version. The readers of formats.h read the files back.
 
 #include <algorithm>
 #include <array>
@@ -33,10 +33,15 @@ using ntdlib::sar::Flavor;
 using ntdlib::sar::WaveArchiveFile;
 using ntdlib::sar::WaveEncoding;
 using ntdlib::sar::WaveFile;
+using ntdlib::sar::WithConsole;
 using ntdlib::sar::WithOtherByteOrder;
 
 constexpr uint32_t kBankVersion = 0x00010000;
 constexpr uint32_t kWaveSoundVersion = 0x00010100;
+
+// The versions that sar_files.h gives the 3DS's banks and wave sound files.
+constexpr uint32_t kCtrBankVersion = 0x01000100;
+constexpr uint32_t kCtrWaveSoundVersion = 0x01000000;
 
 template <typename Error, typename Call>
 bool Throws(Call call)
@@ -304,6 +309,41 @@ void TestNoRegionWithOffset()
     XSFLIB_CHECK(to_switch == pointing(Flavor::kNx));
 }
 
+// A bank file and a wave sound file of the 3DS become the Wii U's and the Switch's, byte for byte but for the version,
+// and the other way round. The magic takes the console's letter, and the fields its byte order.
+void TestConsoles()
+{
+    const Flavor consoles[] = {Flavor::kCtr, Flavor::kCafe, Flavor::kNx};
+    const auto bank = [](Flavor flavor)
+    {
+        return sar_files::Bank(flavor, Spec());
+    };
+    const auto wave_sound = [](Flavor flavor)
+    {
+        return sar_files::WaveSoundFile(flavor, WaveSoundSpec());
+    };
+
+    for (const Flavor from : consoles)
+    {
+        for (const Flavor to : consoles)
+        {
+            const uint32_t bank_version = to == Flavor::kCtr ? kCtrBankVersion : kBankVersion;
+            const uint32_t wave_sound_version = to == Flavor::kCtr ? kCtrWaveSoundVersion : kWaveSoundVersion;
+            XSFLIB_CHECK(WithConsole(bank(from), to, bank_version) == bank(to));
+            XSFLIB_CHECK(WithConsole(wave_sound(from), to, wave_sound_version) == wave_sound(to));
+        }
+    }
+    const ntdlib::sar::Bank read = ntdlib::sar::Bank::Parse(
+        WithConsole(bank(Flavor::kCafe), Flavor::kCtr, kCtrBankVersion), Options(Flavor::kCtr));
+    XSFLIB_CHECK(read.instruments.size() == 3 && read.instruments[0]->Find(60, 50)->original_key == 61);
+
+    // A big-endian file of the 3DS doesn't exist. WithOtherByteOrder takes only the Wii U's and the Switch's files.
+    std::vector<uint8_t> big = bank(Flavor::kCafe);
+    big[0] = 'C';
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithConsole(big, Flavor::kNx, kBankVersion); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithOtherByteOrder(bank(Flavor::kCtr), kBankVersion); }));
+}
+
 // What the walk refuses: a 3DS file, another kind of file, an option that it doesn't know, a byte that no structure
 // holds, and structures that overlap.
 void TestRefusals()
@@ -435,9 +475,44 @@ void TestWaveArchive()
         XSFLIB_CHECK(converted.waves[i] == expected.Write());
     }
     XSFLIB_CHECK(WaveFile::Read(converted.waves[0]).channels[0].samples == std::vector<uint8_t>({2, 1, 4, 3}));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { ConvertWaveArchive(archive, Flavor::kCtr, 1, 1); }));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(
-        [&] { ConvertWave(WaveFile::Read(sar_files::Wave(Flavor::kCtr, pcm)), Flavor::kNx, 0x00010200); }));
+
+    // A wave archive of the 3DS and back, laid out as WaveFile writes a wave. 16-bit PCM is little-endian on the 3DS
+    // too.
+    const WaveArchiveFile ctr = ConvertWaveArchive(archive, Flavor::kCtr, 0x01000000, 0x02010000);
+    const WaveArchiveFile back = ConvertWaveArchive(WaveArchiveFile::Read(ctr.Write()), Flavor::kCafe, 0x00010000,
+                                                    WaveFile::Read(waves[0]).version);
+    XSFLIB_CHECK(ctr.flavor == Flavor::kCtr && WaveFile::Read(ctr.waves[0]).flavor == Flavor::kCtr);
+    XSFLIB_CHECK(WaveFile::Read(ctr.waves[0]).channels[0].samples == std::vector<uint8_t>({2, 1, 4, 3}));
+    for (std::size_t i = 0; i < 2; ++i)
+    {
+        const WaveFile wave = WaveFile::Read(waves[i]);
+        XSFLIB_CHECK(back.waves[i] == ConvertWave(wave, Flavor::kCafe, wave.version).Write());
+    }
+}
+
+// The loop's original start follows each console's versions: 2.1.1.0 on the 3DS, and 1.2.0 on the Wii U and the
+// Switch.
+void TestCtrWave()
+{
+    WaveFile wave;
+    wave.flavor = Flavor::kCtr;
+    wave.version = 0x02010000;
+    wave.encoding = WaveEncoding::kPcm16;
+    wave.loop = true;
+    wave.loop_start = 1;
+    wave.loop_end = 3;
+    wave.channels = {{{0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, std::nullopt}};
+
+    const WaveFile to_switch = ConvertWave(wave, Flavor::kNx, 0x00010200);
+    const WaveFile to_wii_u = ConvertWave(wave, Flavor::kCafe, 0x00010100);
+    const WaveFile newer = ConvertWave(to_switch, Flavor::kCtr, 0x02010100);
+    const WaveFile older = ConvertWave(to_switch, Flavor::kCtr, 0x02010000);
+
+    XSFLIB_CHECK(to_switch.original_loop_start == 1 && to_switch.channels[0].samples == wave.channels[0].samples);
+    XSFLIB_CHECK(to_wii_u.original_loop_start == 0);
+    XSFLIB_CHECK(to_wii_u.channels[0].samples == std::vector<uint8_t>({0x34, 0x12, 0x78, 0x56, 0xBC, 0x9A}));
+    XSFLIB_CHECK(newer.original_loop_start == 1 && older.original_loop_start == 0);
+    XSFLIB_CHECK(WaveFile::Read(newer.Write()).flavor == Flavor::kCtr);
 }
 
 } // namespace
@@ -450,10 +525,12 @@ int main()
     TestSharedVelocityTable();
     TestNoRegionWithOffset();
     TestWaveSoundFile();
+    TestConsoles();
     TestRefusals();
     TestPcmWave();
     TestAdpcmWave();
     TestWaveArchive();
+    TestCtrWave();
 
     return xsflib::testing::Summary("Byte order");
 }

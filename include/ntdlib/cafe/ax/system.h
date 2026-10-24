@@ -8,6 +8,34 @@
 // remix matrices. The conversion uses the system library's FIR filter, or linear interpolation where the game selects
 // it. On the console, all of this but the rendering is PowerPC code in the system library. The aux buses come back two
 // frames after the voices sent them. That delay comes from the rotation of the library's buffers.
+//
+// In the enhanced mixing mode (InitEnhanced), the voices render at 48 kHz in floating point (see render.h). The buses
+// hold floats, and the rest of the frame follows these rules:
+//
+// - The aux buses' effects run at 32 kHz, in frames of 96 samples, as on the console. Sample k of an aux bus's input
+//   at 32 kHz takes the bus's sends at 48 kHz at place 1.5 * (k + 32), through the band-limited interpolator
+//   (wave::SincKernel), rounded to the nearest integer, halves away from zero, and held to 32 bits. Sample k of the
+//   effect's output goes back to 48 kHz through the interpolator at place 1.5 * (k + 32) + 288. The return thus
+//   reaches the main bus two frames after the voices sent it, as on the console. Its volume ramps across the frame in
+//   equal steps, and the last sample takes the new volume. A channel whose sends of the last three frames are all 0
+//   gives the effect zeros. A channel whose returns of the last two frames are all 0 adds nothing.
+// - There is no upsampler. A final-mix callback takes the devices' channels rounded as the aux buses' are, and gives
+//   them back as they are. A remix matrix works in floating point.
+// - OutputFloat gives the TV's stereo output divided by 32,768, without a limit. Output gives it rounded to 16 bits and
+//   held there.
+// - The host's meters and the aux buses' peaks measure the floats.
+//
+// A frame without mixing (SetMixing) moves every voice on through its samples as a mixed frame does, in either mode.
+// The voices' accelerators, positions and last samples, and their envelopes' and mixes' volumes, end the frame as a
+// mixed frame leaves them. The aux buses' return volumes move on too, and the frame callbacks run. Nothing is mixed,
+// the aux callbacks don't run, and the buses, the output and the meters are silent. In the console's mode, a voice with
+// its low-pass or its biquad on runs its samples through them. A filter in fixed point can keep a difference of a few
+// steps for good, such as 7 in a Wii U game's sound effect that held one note for 15 s. The other voices' samples
+// aren't interpolated or filtered. In the enhanced mode, no voice's samples are, and the filters' states in floating
+// point stay as they were. The aux buses' buffers and the upsamplers' histories stay as they were too. Once the frames
+// mix again, an enhanced voice's filter takes a moment to settle. The first frames return what the aux buses held
+// before, and the first frame goes to 48 kHz from the upsamplers' histories of before. The effects lack the tails of
+// what they missed. A host runs such frames to reach a place in a sound quickly.
 
 #pragma once
 
@@ -15,6 +43,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -76,6 +105,15 @@ public:
     // AXInit, or AXInitWithParams with the 48 kHz renderer.
     void Init(Library library, bool renderer_48k = false);
 
+    // AXInitWithParams with the 48 kHz renderer, in the enhanced mixing mode, with `voice_count` voices. The library is
+    // sndcore2.
+    void InitEnhanced(int voice_count);
+
+    bool Enhanced() const
+    {
+        return enhanced_ != nullptr;
+    }
+
     // The library that Init started.
     Library LinkedLibrary() const
     {
@@ -85,6 +123,12 @@ public:
     int SamplesPerFrame() const
     {
         return samples_per_frame_;
+    }
+
+    // The samples of an aux bus's frame, which its callbacks take: the renderer's frame, or 96 in the enhanced mode.
+    int AuxSamplesPerFrame() const
+    {
+        return enhanced_ != nullptr ? kSamplesPerFrame32k : samples_per_frame_;
     }
 
     // Makes AX do what Cemu does where Cemu departs from the console (cemu_departures.h). Init keeps the switches.
@@ -164,7 +208,7 @@ public:
     }
 
     // Every voice, by its index.
-    const std::array<Voice, kVoiceCount>& Voices() const
+    std::span<const Voice> Voices() const
     {
         return voices_;
     }
@@ -224,6 +268,18 @@ public:
     // Generates the next frame.
     void RenderFrame();
 
+    // Whether the frames mix (see the file's comment). They mix unless the host turns the mixing off. A snapshot
+    // doesn't hold the setting.
+    void SetMixing(bool mixing)
+    {
+        mixing_ = mixing;
+    }
+
+    bool Mixing() const
+    {
+        return mixing_;
+    }
+
     // The last frame at each stage: the voices' mix and the main buses after the aux returns (s32, 16-bit scale); each
     // device's output at the renderer's rate (s32, 24-bit scale) and at 48 kHz after the final mix stage (s32, 16-bit
     // scale, not yet clamped); and the TV's stereo output, 144 interleaved pairs of 16-bit samples.
@@ -262,6 +318,9 @@ public:
         return stereo_;
     }
 
+    // In the enhanced mode, the TV's stereo output: 144 interleaved pairs, divided by 32,768. Empty otherwise.
+    std::span<const float> OutputFloat() const;
+
     // A host's mute of a voice. AX has no such call. A muted voice plays on as before, and its mix into every bus of
     // every device is silent. A change ramps the voice's mix to or from silence across the next frame. A voice that
     // AcquireVoice gives out starts unmuted. Its first frame takes its mute at once, and so does every voice in the
@@ -285,8 +344,9 @@ public:
     std::array<int32_t, 2> AuxReturnPeaks(Device device, uint32_t index, int bus) const;
 
     // A copy of AX's state between frames: the voices with both copies of their blocks, the allocation, the aux buses'
-    // buffers and return volumes, and the final mix stages with the upsamplers' histories. The last frame's buses and
-    // output aren't part of it.
+    // buffers and return volumes, and the final mix stages with the upsamplers' histories. In the enhanced mode, it
+    // also holds the voices' and the aux buses' state in that mode. It holds the voices from the first that has been
+    // taken on: AX takes the free voices from the last down. The last frame's buses and output aren't part of it.
     struct Snapshot;
 
     Snapshot Save() const;
@@ -301,13 +361,16 @@ private:
     using Samples = std::array<int32_t, kOutputSamplesPerFrame>;
 
     // An aux bus: its callback, its return volume and the three buffers it rotates through. Each buffer holds the
-    // channels' samples one channel after another.
+    // channels' samples one channel after another. In the enhanced mode, a bus with a callback also keeps each
+    // channel's sends of the last three frames at 48 kHz, and the effect's output of the last two frames at 32 kHz.
     struct AuxBus
     {
         AuxCallback callback;
         uint16_t return_volume = kUnityVolume;
         uint16_t dsp_return_volume = kUnityVolume; // the return volume the DSP used last
         std::array<std::vector<int32_t>, 3> buffers;
+        std::vector<float> sends;
+        std::vector<float> returns;
     };
 
     struct RemixMatrix
@@ -351,6 +414,18 @@ private:
         int meter = -1;
     };
 
+    // The enhanced mode's state: each voice's, the frame's buses and main buses, the meters' sums and the output.
+    struct EnhancedState
+    {
+        std::vector<EnhancedVoice> voices;
+        FloatBuses buses{};
+        FloatBuses main{};
+        std::vector<std::array<FloatBuses::Channel, 2>> meter_sums;
+        std::array<float, 2 * kOutputSamplesPerFrame> output{};
+    };
+
+    void Start(Library library, bool renderer_48k, int voice_count, bool enhanced);
+
     // The host's part in the voice's next frame. The voice's mute then holds as its last frame's.
     HostMix TakeHostMix(const Voice& voice);
 
@@ -365,24 +440,33 @@ private:
     // The mixer of the TV or the GamePads, or nullptr for any other device.
     Mixer* MixerOf(Device device);
 
+    // The rest of a frame without mixing, after the voices have taken their changes.
+    void AdvanceWithoutMixing();
+
     void ReturnAux(int frame);
+    void ReturnAuxEnhanced(int frame);
     void RunAuxCallbacks(int frame);
     void FinalMixStage();
+    void FinalMixStageEnhanced();
     void Upsample(Mixer& mixer, std::size_t channel, std::span<const int32_t> in, std::span<int32_t> out,
                   bool shift) const;
     static void UpsampleLinear(std::span<const int32_t> in, std::span<int32_t> out, int32_t& history, bool shift);
     static void UpsampleFir(std::span<const int32_t> in, std::span<int32_t> out, FirHistory& history, bool shift);
     static void Remix(const Mixer& mixer, uint16_t channels_in, std::span<Samples* const> channels);
+    static void RemixEnhanced(const Mixer& mixer, uint16_t channels_in, std::span<FloatBuses::Channel* const> channels);
 
     const Memory* memory_;
     CemuDepartures cemu_;
     Library library_ = Library::kSndCore;
     int samples_per_frame_ = kSamplesPerFrame32k;
     bool in_frame_ = false;
+    bool mixing_ = true;
+    bool silent_ = false; // a frame without mixing has cleared the buses and the output
     int frame_ = 0;
     uint32_t default_mixer_select_ = 1;
 
-    std::array<Voice, kVoiceCount> voices_;
+    std::vector<Voice> voices_;
+    uint32_t first_taken_ = 0;      // the first voice that has been taken: the voices before it are as Init left them
     std::vector<Voice*> order_;     // the voices the frame renders, last first
     ntdlib::ax::Voices allocation_; // the free stack, and each priority's voices
     uint32_t user_count_ = 0;
@@ -400,13 +484,15 @@ private:
 
     // The host's mutes and meters (SetVoiceMuted, SetMeters and SetVoiceMeter). Each meter has the sums of its left and
     // right in the frame, and their peaks.
-    std::array<HostVoice, kVoiceCount> host_{};
+    std::vector<HostVoice> host_;
     bool mutes_at_once_ = false; // the first frame after a restore
     std::vector<std::array<Buses::Channel, 2>> meter_sums_;
     std::vector<std::array<int32_t, 2>> meter_peaks_;
 
     // The peaks of the left and right of each aux bus's return in the last frame (AuxReturnPeaks), by device and bus.
     std::array<std::array<std::array<int32_t, 2>, 3>, 1 + kDrcCount> aux_peaks_{};
+
+    std::unique_ptr<EnhancedState> enhanced_; // in the enhanced mode
 };
 
 struct System::Snapshot
@@ -414,7 +500,9 @@ struct System::Snapshot
     const System* owner = nullptr;
     int frame = 0;
     uint32_t user_count = 0;
-    std::array<Voice, kVoiceCount> voices;
+    uint32_t first_taken = 0;
+    std::vector<Voice> voices;           // from the first that has been taken on
+    std::vector<EnhancedVoice> enhanced; // the same voices' state in the enhanced mode
     ntdlib::ax::Voices allocation;
     std::array<std::array<AuxBus, 3>, 1 + kDrcCount> aux;
     std::array<Mixer, 2> mixers;

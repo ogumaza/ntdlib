@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "ntdlib/nx/audio/dsp.h"
 
@@ -73,7 +74,33 @@ struct DecodeFromWaveBuffersArgs
 // Decodes and converts `count` samples of one channel into `out` (nn::audio::DecodeFromWaveBuffers, 0x6eda0). The
 // buffers play in turn from the current one. A buffer that ends is consumed unless it loops. A looping buffer plays its
 // loop range until the loops are done. When no buffer is left, the rest of the input is zeros, and the frame stops
-// there. The state is the channel's processing state.
+// there. The state is the channel's processing state. With `out` null, the channel moves on in the same way without
+// the conversion.
 void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args);
+
+// The samples before a batch's input that the enhanced decoding keeps for each channel. The interpolator's widest
+// kernel takes 128 samples on each side of a position, and a position lies up to 5 samples behind the batch's input.
+inline constexpr int kWideHistory = 132;
+
+// What the enhanced decoding takes beside the arguments: the channel's past samples, and room for a batch's input. The
+// past samples start at zero for a new channel.
+struct EnhancedDecodeBuffers
+{
+    std::span<float, kWideHistory> history;
+    std::vector<int16_t>* decoded = nullptr;
+    std::vector<float>* input = nullptr;
+};
+
+// The enhanced mixing mode's decoding: `count` samples of one channel into `out`, on the scale of 16-bit samples. The
+// channel takes the same steps through its buffers as DecodeFromWaveBuffers takes, with the same ratio and batches.
+// It consumes the same buffers, goes round the same loops and leaves the same state. Each output comes from the
+// band-limited interpolator (ntdlib/wave/sinc.h) for the step's ratio, between the same two input samples and at the
+// same fraction as the console's filter of the voice's quality: 3 samples behind the batch's input at medium quality,
+// 5 at high quality and 4 at low quality. The interpolator also takes the samples that follow the batch's input. They
+// come from a copy of the state, through the buffers that the channel has in this frame, and zeros past them. The
+// next batch decodes them again. Nothing happens for a frame that DecodeFromWaveBuffers leaves alone, and `out` keeps
+// what it held. With `out` null, the channel moves on in the same way without the outputs and the samples after them.
+void DecodeFromWaveBuffersEnhanced(const DecodeFromWaveBuffersArgs& args, const EnhancedDecodeBuffers& buffers,
+                                   float* out);
 
 } // namespace ntdlib::nx::audio

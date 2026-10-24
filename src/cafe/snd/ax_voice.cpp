@@ -22,9 +22,11 @@ namespace ntdlib::cafe::snd
 namespace
 {
 
-// nw::snd is set up for AX's 32 kHz renderer: frames of 96 samples (set when the sound system starts, 0x0229B284).
+// nw::snd is set up for AX's 32 kHz renderer: frames of 96 samples (set when the sound system starts, 0x0229B284). In
+// the enhanced mode, AX renders at 48 kHz.
 constexpr int32_t kSamplesPerFrame = 96;
 constexpr float kOutputRate = 32000.0f;
+constexpr float kEnhancedOutputRate = 48000.0f;
 
 // AX's sample format for each of nw::snd's formats (the table at 0x10092BAC).
 ax::SampleFormat AxFormat(SampleFormat format)
@@ -73,6 +75,19 @@ bool UpdateDelta(uint16_t target, ax::VolumeRamp& ramp)
     return true;
 }
 
+// The enhanced mode's UpdateDelta: a volume that changes goes to its target without a delta. AX ramps it.
+bool UpdateTarget(uint16_t target, ax::VolumeRamp& ramp)
+{
+    if (ramp.delta == 0 && ramp.volume == target)
+    {
+        return false;
+    }
+
+    ramp = {target, 0};
+
+    return true;
+}
+
 // A device's mixes from an OutputMix (CalcSetupTvMix, 0x022A3120, and CalcSetupDrcMix, 0x022A3400): each channel's
 // buses at their volumes. There are no ramps.
 void SetupMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int channels)
@@ -87,8 +102,9 @@ void SetupMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int 
 }
 
 // Ramps a device's mixes to an OutputMix's volumes (CalcUpdateTvMix, 0x022A3F40, and CalcUpdateDrcMix, 0x022A43CC). The
-// channels from `first_silent` on ramp to 0. Returns whether any changed.
-bool UpdateMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int channels, int first_silent)
+// channels from `first_silent` on ramp to 0. Returns whether any changed. In the enhanced mode, AX ramps them.
+bool UpdateMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int channels, int first_silent,
+               bool enhanced)
 {
     bool changed = false;
     for (int channel = 0; channel < channels; ++channel)
@@ -96,7 +112,7 @@ bool UpdateMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int
         for (int bus = 0; bus < ax::kBusCount; ++bus)
         {
             const uint16_t target = channel < first_silent ? VolumeU16(send[bus][channel]) : 0;
-            changed |= UpdateDelta(target, mix[channel][bus]);
+            changed |= enhanced ? UpdateTarget(target, mix[channel][bus]) : UpdateDelta(target, mix[channel][bus]);
         }
     }
 
@@ -278,7 +294,7 @@ void AxVoice::UpdateVe(bool setup)
         return;
     }
 
-    if (UpdateDelta(volume, ve_))
+    if (owner_->enhanced_ ? UpdateTarget(volume, ve_) : UpdateDelta(volume, ve_))
     {
         system_->SetVoiceVe(*ax_voice_, ve_);
     }
@@ -287,7 +303,8 @@ void AxVoice::UpdateVe(bool setup)
 void AxVoice::UpdateSrc(bool setup)
 {
     // The ratio of the sample's rate to the renderer's rate, times the pitch.
-    const float ratio = param_.pitch * static_cast<float>(sample_rate_) / kOutputRate;
+    const float ratio =
+        param_.pitch * static_cast<float>(sample_rate_) / (owner_->enhanced_ ? kEnhancedOutputRate : kOutputRate);
     if (!setup)
     {
         if (ratio != ratio_)
@@ -325,7 +342,7 @@ void AxVoice::UpdateSrc(bool setup)
 void AxVoice::UpdateTvMix(OutputMode mode)
 {
     const bool surround = mode == OutputMode::kSurround;
-    if (UpdateMix(tv_mix_, param_.tv, ax::kTvChannels, surround ? ax::kTvChannels : 2))
+    if (UpdateMix(tv_mix_, param_.tv, ax::kTvChannels, surround ? ax::kTvChannels : 2, owner_->enhanced_))
     {
         system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kTv, 0, tv_mix_);
     }
@@ -335,7 +352,7 @@ void AxVoice::UpdateDrcMix(OutputMode mode)
 {
     // The first GamePad's front channels, and its rear ones in surround. The rear channels ramp to 0 in stereo.
     const bool surround = mode == OutputMode::kSurround;
-    if (UpdateMix(drc_mix_, param_.drc, ax::kDrcChannels, surround ? ax::kDrcChannels : 2))
+    if (UpdateMix(drc_mix_, param_.drc, ax::kDrcChannels, surround ? ax::kDrcChannels : 2, owner_->enhanced_))
     {
         system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kDrc, 0, drc_mix_);
     }
@@ -552,14 +569,27 @@ void AxVoice::UpdateState(const std::array<OutputMode, 2>& modes)
     UpdatePlayPosition();
 }
 
-AxVoices::AxVoices(ax::System& system, const ax::Memory& memory) : system_(&system)
+AxVoices::AxVoices(ax::System& system, const ax::Memory& memory)
+    : system_(&system),
+      memory_(&memory),
+      enhanced_(system.Enhanced()),
+      first_allocated_(static_cast<int>(system.Voices().size()))
 {
-    for (AxVoice& voice : voices_)
+    voices_.reserve(system.Voices().size());
+    for (std::size_t i = 0; i < system.Voices().size(); ++i)
     {
-        voice.system_ = system_;
-        voice.memory_ = &memory;
-        voice.owner_ = this;
+        voices_.push_back(Fresh());
     }
+}
+
+AxVoice AxVoices::Fresh()
+{
+    AxVoice voice;
+    voice.system_ = system_;
+    voice.memory_ = memory_;
+    voice.owner_ = this;
+
+    return voice;
 }
 
 AxVoice* AxVoices::AllocVoice(uint32_t priority, AxVoice::DisposeCallback dispose)
@@ -582,6 +612,7 @@ AxVoice* AxVoices::AllocVoice(uint32_t priority, AxVoice::DisposeCallback dispos
     }
 
     AxVoice& voice = voices_[ax_voice->index];
+    first_allocated_ = std::min(first_allocated_, static_cast<int>(ax_voice->index));
     voice.Finalize();
     voice.Initialize(ax_voice);
     voice.dispose_ = std::move(dispose);
@@ -631,12 +662,18 @@ void AxVoices::UpdatePriorityList()
 
 AxVoices::Snapshot AxVoices::Save() const
 {
-    return {voices_, priority_list_};
+    return {first_allocated_, {voices_.begin() + first_allocated_, voices_.end()}, priority_list_};
 }
 
 void AxVoices::Restore(const Snapshot& snapshot)
 {
-    voices_ = snapshot.voices;
+    // The voices allocated first since the snapshot go back to how they started.
+    for (int index = first_allocated_; index < snapshot.first_allocated; ++index)
+    {
+        voices_[static_cast<std::size_t>(index)] = Fresh();
+    }
+    std::copy(snapshot.voices.begin(), snapshot.voices.end(), voices_.begin() + snapshot.first_allocated);
+    first_allocated_ = snapshot.first_allocated;
     priority_list_ = snapshot.priority_list;
 }
 

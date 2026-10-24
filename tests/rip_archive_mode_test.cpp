@@ -3,8 +3,8 @@
 // Tests the archive mode of rip tools (rip/archive_mode.h) with a made-up rip format, on archives built with
 // sar_files.h in a temporary folder: the search for a loose archive's group files past an entry whose type can't be
 // read, the line for a loose archive without sequences, a game's rip that goes on past an archive whose rip throws,
-// the files that a library holds, a second rip into the folder of the first, and the lines of --list for a game's
-// archives.
+// the files that a library holds, a second rip into the folder of the first, the lines of --list for a game's
+// archives, and the warning for a group file that isn't there.
 
 #ifdef _WIN32
 #include <io.h>
@@ -617,6 +617,44 @@ void TestListArchives()
           "the lines of a game's archives: " + lines);
 }
 
+// The warning for a group that isn't found names the group's file as the archive's console names it: .bfgrp on the Wii
+// U and the Switch, and .bcgrp on the 3DS.
+void TestMissingGroupFileNames()
+{
+    const auto warning = [](sar::Flavor flavor)
+    {
+        sar_files::ArchiveSpec spec;
+        spec.sounds = {{.name = "SEQ", .file = 0, .player = 0, .banks = {0}}};
+        spec.banks = {{"BANK_A", 1}};
+        spec.players = {{"PLAYER", 1}};
+        spec.groups = {{"GROUP_A", sar::kExternalGroupFile}};
+        spec.files = {{sar_files::Sequence(flavor, {0xFF}, {}), "", false}, {{}, "", true}};
+        const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
+        const auto find = [](const std::string&)
+        {
+            return std::optional<TestFormat::FileChunk>();
+        };
+        const sar::Options options{flavor, {}, false, sar::Rules::kStopAtFirstProblem};
+        std::vector<TestFormat::FileChunk> found;
+        const auto search = [&]
+        {
+            found = rip::FindGroups<TestFormat::FileChunk>(archive, find, options);
+        };
+        const std::string text = OutputOf(stderr, search);
+
+        return found.empty() ? text : "a group found";
+    };
+
+    const std::string wii_u = warning(sar::Flavor::kCafe);
+    const std::string nx = warning(sar::Flavor::kNx);
+    const std::string ctr = warning(sar::Flavor::kCtr);
+    Check(wii_u == "warning: group GROUP_A is kept outside the archive, and GROUP_A.bfgrp isn't there\n",
+          "the Wii U's group file: " + wii_u);
+    Check(nx == wii_u, "the Switch's group file: " + nx);
+    Check(ctr == "warning: group GROUP_A is kept outside the archive, and GROUP_A.bcgrp isn't there\n",
+          "the 3DS's group file: " + ctr);
+}
+
 } // namespace
 
 int main()
@@ -630,6 +668,7 @@ int main()
     TestSecondRipKeepsFirstLibrary();
     TestWholeArchiveWhenFilesCantBeCut();
     TestListArchives();
+    TestMissingGroupFileNames();
 
     return xsflib::testing::Summary("rip_archive_mode");
 }

@@ -97,11 +97,11 @@ Archive LoadArchive(std::vector<uint8_t> bytes, const std::string& name, const S
     return archive;
 }
 
-// Adds the files of `archive`'s external groups, found beside `input` as <group>.bfgrp or in a userManagementFiles
-// folder there. While a group is still missing, adds the archive's group files in the .sarc files beside `input` too
-// (see SoundArchive::MatchesGroupFile). Warns about a file that isn't a group file, and when no group's file is found.
-// `name` names the archive in the warnings. AddGroupFiles has to run before the archive's banks are read. Returns how
-// many group files it added.
+// Adds the files of `archive`'s external groups, found beside `input` as <group>.bcgrp on the 3DS or <group>.bfgrp on
+// the Wii U and the Switch (sar::GroupFileName), or in a userManagementFiles folder there. While a group is still
+// missing, adds the archive's group files in the .sarc files beside `input` too (see SoundArchive::MatchesGroupFile).
+// Warns about a file that isn't a group file, and when no group's file is found. `name` names the archive in the
+// warnings. AddGroupFiles has to run before the archive's banks are read. Returns how many group files it added.
 int AddGroupFiles(sar::SoundArchive& archive, const std::filesystem::path& input, const std::string& name);
 
 // Reads the sound archive at `input`, named `name`, with `settings`, and prints its warnings (LoadArchive). With

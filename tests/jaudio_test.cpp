@@ -2,11 +2,14 @@
 
 // Tests of the JAudio2 readers on files built here (ntdlib/testing/jaudio_files.h): the wave systems, the banks of both
 // versions, the sound table with its names, the sequence collection, RARC archives, and the readers' messages, by the
-// defaults and by strict rules.
+// defaults and by strict rules. The readers read the little-endian files of the Switch's releases as they read the
+// big-endian ones.
 
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -704,6 +707,296 @@ void TestStrictMessages()
           "the default message for a damaged wave system");
 }
 
+// The text of every field that the readers give for a sound, a wave system or a bank, to compare what two files give.
+std::string Describe(const jaudio::SoundEntry& s)
+{
+    return "sound " + std::to_string(s.Id()) + " " + s.name + " " + std::to_string(s.type) + " " +
+           std::to_string(s.volume) + " " + std::to_string(s.stream) + " " + s.section_name + " " + s.group_name + " " +
+           std::to_string(static_cast<int>(s.source)) + " " + std::to_string(s.resource) + " " +
+           std::to_string(std::bit_cast<uint32_t>(s.pitch)) + " " + std::to_string(s.offset) + "\n";
+}
+
+std::string Describe(const jaudio::WaveSystem& ws)
+{
+    std::string text = "system " + std::to_string(ws.number) + "\n";
+    for (const jaudio::WaveGroup& group : ws.groups)
+    {
+        text += " group " + group.archive;
+        for (const uint16_t id : group.waves)
+        {
+            text += " " + std::to_string(id);
+        }
+        text += "\n";
+    }
+
+    for (const auto& [id, w] : ws.waves)
+    {
+        text += " wave " + std::to_string(id) + " " + std::to_string(static_cast<int>(w.format)) + " " +
+                std::to_string(w.base_key) + " " + std::to_string(std::bit_cast<uint32_t>(w.sample_rate)) + " " +
+                std::to_string(w.offset) + " " + std::to_string(w.size) + " " + std::to_string(w.loop) + " " +
+                std::to_string(w.loop_start) + " " + std::to_string(w.loop_end) + " " + std::to_string(w.sample_count) +
+                " " + std::to_string(w.loop_last) + " " + std::to_string(w.loop_penult) + " " + w.archive + "\n";
+    }
+
+    return text;
+}
+
+std::string Describe(const std::vector<jaudio::OscPoint>& points)
+{
+    std::string text;
+    for (const jaudio::OscPoint& p : points)
+    {
+        text += " " + std::to_string(p.mode) + "," + std::to_string(p.time) + "," + std::to_string(p.value);
+    }
+
+    return text + "\n";
+}
+
+std::string Describe(const std::vector<jaudio::InstEffect>& effects)
+{
+    std::string text;
+    for (const jaudio::InstEffect& e : effects)
+    {
+        text += " effect " + std::to_string(static_cast<int>(e.kind)) + " " + std::to_string(e.target) + " " +
+                std::to_string(std::bit_cast<uint32_t>(e.base)) + " " +
+                std::to_string(std::bit_cast<uint32_t>(e.width)) + " " + std::to_string(e.trigger) + " " +
+                std::to_string(e.center) + " " + std::to_string(std::bit_cast<uint32_t>(e.low)) + " " +
+                std::to_string(std::bit_cast<uint32_t>(e.high)) + "\n";
+    }
+
+    return text;
+}
+
+std::string Describe(const std::vector<jaudio::VelocityRegion>& velocities)
+{
+    std::string text;
+    for (const jaudio::VelocityRegion& v : velocities)
+    {
+        text += "  velocity " + std::to_string(v.high_velocity) + " " + std::to_string(v.wave_id) + " " +
+                std::to_string(std::bit_cast<uint32_t>(v.volume)) + " " +
+                std::to_string(std::bit_cast<uint32_t>(v.pitch)) + "\n";
+    }
+
+    return text;
+}
+
+std::string Describe(const jaudio::Bank& bank)
+{
+    std::string text = "bank " + std::to_string(bank.number) + " " + std::to_string(bank.wave_system) + " " +
+                       std::to_string(bank.version) + "\n";
+    for (const jaudio::Oscillator& o : bank.oscillators)
+    {
+        text += " oscillator " + std::to_string(o.target) + " " + std::to_string(std::bit_cast<uint32_t>(o.rate)) +
+                " " + std::to_string(o.release_is_attack) + " " + std::to_string(std::bit_cast<uint32_t>(o.scale)) +
+                " " + std::to_string(std::bit_cast<uint32_t>(o.vertex)) + Describe(o.attack) + Describe(o.release);
+    }
+
+    for (const auto& [number, program] : bank.programs)
+    {
+        if (const auto* inst = std::get_if<jaudio::Instrument>(&program))
+        {
+            text += " instrument " + std::to_string(number) + " " +
+                    std::to_string(std::bit_cast<uint32_t>(inst->volume)) + " " +
+                    std::to_string(std::bit_cast<uint32_t>(inst->pitch)) + "\n";
+            for (const std::size_t o : inst->oscillators)
+            {
+                text += " uses " + std::to_string(o) + "\n";
+            }
+            text += Describe(inst->effects);
+            for (const jaudio::KeyRegion& key : inst->keys)
+            {
+                text += " key " + std::to_string(key.high_key) + "\n" + Describe(key.velocities);
+            }
+            continue;
+        }
+
+        text += " drums " + std::to_string(number) + "\n";
+        const jaudio::DrumSet& drums = std::get<jaudio::DrumSet>(program);
+        for (std::size_t key = 0; key < drums.keys.size(); key++)
+        {
+            if (const std::optional<jaudio::Drum>& d = drums.keys[key])
+            {
+                text += " drum " + std::to_string(key) + " " + std::to_string(std::bit_cast<uint32_t>(d->volume)) +
+                        " " + std::to_string(std::bit_cast<uint32_t>(d->pitch)) + " " +
+                        std::to_string(std::bit_cast<uint32_t>(d->pan)) + " " + std::to_string(d->release) + "\n" +
+                        Describe(d->effects) + Describe(d->velocities);
+            }
+        }
+    }
+
+    return text;
+}
+
+// Everything that Parse gives for a start-up archive: its sounds, its wave systems and banks of numbers below 0x100,
+// its collection's sequences and its warnings.
+std::string Describe(const jaudio::SoundArchive& archive)
+{
+    std::string text;
+    for (const jaudio::SoundEntry& sound : archive.Sounds())
+    {
+        text += Describe(sound);
+    }
+
+    for (uint32_t number = 0; number < 0x100; number++)
+    {
+        if (const jaudio::WaveSystem* ws = archive.FindWaveSystem(number))
+        {
+            text += Describe(*ws);
+        }
+        if (const jaudio::Bank* bank = archive.FindBank(number))
+        {
+            text += Describe(*bank);
+        }
+    }
+
+    for (uint32_t category = 0; category < 0x100; category++)
+    {
+        for (uint32_t index = 0; archive.CollectionSequence(category, index); index++)
+        {
+            const std::span<const uint8_t> collection = archive.Collection();
+            const uint32_t at = *archive.CollectionSequence(category, index);
+            text += "sequence " + std::to_string(category) + " " + std::to_string(index) + " " +
+                    std::to_string(at < collection.size() ? collection[at] : 0) + "\n";
+        }
+    }
+
+    for (const std::string& warning : archive.Warnings())
+    {
+        text += "warning " + warning + "\n";
+    }
+
+    return text;
+}
+
+// The sounds of a table with both layouts of entries, and the names of its sections and groups.
+files::SoundTableBlocks BothLayouts(bool big_endian)
+{
+    return files::SoundTable(
+        {
+            {"SE", {{"SYSTEM", {{0x10, 100, 0, "SE_A"}, {0x41, 90, 0, "SE_B"}}}}},
+            {"BGM", {{"FIELD", {{0x11, 80, 7, "BGM_OLD"}, {0x62, 70, 0x123, "BGM_NEW"}}}}},
+        },
+        false, big_endian);
+}
+
+// A little-endian start-up archive gives what the big-endian one gives, by every reader.
+void TestLittleEndianArchive()
+{
+    const std::vector<std::vector<uint8_t>> kSequences = {{0xff}, {0xfe, 0xff}};
+    const std::vector<uint8_t> be =
+        files::StartUpArchive(files::BankV1File(129, 0, 600), kSequences, BothLayouts(true));
+    const std::vector<uint8_t> le =
+        files::StartUpArchive(files::BankV1File(129, 0, 600, false), kSequences, BothLayouts(false), false);
+
+    const std::string from_be = Describe(jaudio::SoundArchive::Parse(be));
+    const std::string from_le = Describe(jaudio::SoundArchive::Parse(le));
+
+    Check(le != be && le.size() == be.size() && le[0] == '<' && le[3] == 'A', "the archive is little-endian");
+    Check(from_be.find("sound 16777217 BGM_NEW") != std::string::npos && from_be.find("key 64") != std::string::npos,
+          "the big-endian archive's sounds and bank: " + from_be);
+    Check(from_le == from_be, "the little-endian archive gives the same sounds, wave system, bank and sequences");
+
+    const auto sounds = [](const std::vector<uint8_t>& baa, const jaudio::BaaOptions& options)
+    {
+        std::string text;
+        for (const jaudio::SoundEntry& sound : jaudio::ReadSounds(baa, options))
+        {
+            text += Describe(sound);
+        }
+
+        return text;
+    };
+    jaudio::BaaOptions strict;
+    strict.check_magic = true;
+    strict.skip_empty = true;
+    strict.cap_counts = true;
+    strict.check_name_counts = true;
+    strict.names_inside = true;
+    strict.section_names = true;
+    Check(sounds(le, {}) == sounds(be, {}) && sounds(le, strict) == sounds(be, strict) &&
+              sounds(be, strict).find("SYSTEM") != std::string::npos,
+          "ReadSounds reads both archives alike, by the defaults and by strict rules");
+    Check(jaudio::WaveArchiveNames(le) == std::vector<std::string>{"test.aw"} &&
+              jaudio::WaveArchiveNames(le, strict) == jaudio::WaveArchiveNames(be, strict),
+          "WaveArchiveNames reads the little-endian wave system");
+    const std::vector<jaudio::WaveSystem> systems = jaudio::ReadWaveSystems(le);
+    Check(systems.size() == 1 && Describe(systems[0]) == Describe(jaudio::ReadWaveSystems(be).at(0)),
+          "ReadWaveSystems reads the little-endian wave system");
+}
+
+// A little-endian RARC archive, plain and compressed with Yaz0, gives the files of the big-endian one.
+void TestLittleEndianRarc()
+{
+    const std::vector<files::RarcFileSpec> kFiles = {{3, "a.bms", {1, 2, 3}}, {9, "long_name.bms", {4, 5, 6, 7, 8}}};
+    const std::vector<uint8_t> be = files::RarcFile(kFiles);
+    const std::vector<uint8_t> le = files::RarcFile(kFiles, false);
+
+    const auto text = [](std::span<const uint8_t> rarc)
+    {
+        std::string out;
+        for (const jaudio::ArchiveFile& file : jaudio::ReadRarc(rarc))
+        {
+            out += std::to_string(file.id) + " " + file.name + " " + Text(file.data) + "\n";
+        }
+
+        return out;
+    };
+
+    Check(le != be && le[0] == 'C' && le[3] == 'R', "the archive is little-endian");
+    Check(text(le) == text(be) && jaudio::ReadRarc(le).size() == 2, "the little-endian archive gives the same files");
+    Check(text(jaudio::DecodeYaz0(LiteralYaz0(le))) == text(be), "so does the archive compressed with Yaz0");
+}
+
+// A little-endian bank of version 1 gives what the big-endian one gives, with its tags in either order. A
+// little-endian bank of version 0 isn't read.
+void TestLittleEndianBanks()
+{
+    const std::vector<uint8_t> be = files::BankV1File(129, 0, 600);
+    const std::vector<uint8_t> le = files::BankV1File(129, 0, 600, false);
+    const std::string from_be = Describe(jaudio::Bank::Parse(be, 4));
+
+    Check(le != be && Describe(jaudio::Bank::Parse(le, 4)) == from_be, "the little-endian bank of version 1");
+
+    // The bank with its oscillator's tag in the big-endian order.
+    std::vector<uint8_t> kept = le;
+    const std::size_t osci = std::string(kept.begin(), kept.end()).find("icsO");
+    Check(osci != std::string::npos, "the little-endian bank has its oscillator");
+    if (osci != std::string::npos)
+    {
+        kept[osci] = 'O';
+        kept[osci + 1] = 's';
+        kept[osci + 2] = 'c';
+        kept[osci + 3] = 'i';
+        Check(Describe(jaudio::Bank::Parse(kept, 4)) == from_be, "a little-endian bank's tag can keep its order");
+    }
+
+    // A version 0 bank with a little-endian header.
+    std::vector<uint8_t> v0 = files::BankV0File(7, 100);
+    const uint32_t size = xsflib::LoadBe32(v0.data() + 4);
+    v0[0] = 'K';
+    v0[1] = 'N';
+    v0[2] = 'B';
+    v0[3] = 'I';
+    xsflib::StoreLe32(v0.data() + 4, size);
+    xsflib::StoreLe32(v0.data() + 8, 7);
+    Check(ErrorOf([&] { jaudio::Bank::Parse(v0, 0); }) ==
+              "the reader has no layout for a little-endian bank of version 0",
+          "a little-endian bank of version 0");
+}
+
+// A little-endian wave system gives what the big-endian one gives.
+void TestLittleEndianWaveSystem()
+{
+    const std::vector<uint8_t> be = files::WaveSystemFile(5, 3, "other.aw");
+    const std::vector<uint8_t> le = files::WaveSystemFile(5, 3, "other.aw", false);
+
+    const std::string from_be = Describe(jaudio::ReadWaveSystem(be, 5));
+
+    Check(le != be && le[0] == 'S' && le[3] == 'W', "the wave system is little-endian");
+    Check(from_be.find("group other.aw 0 1 2") != std::string::npos, "the big-endian wave system: " + from_be);
+    Check(Describe(jaudio::ReadWaveSystem(le, 5)) == from_be, "the little-endian wave system");
+}
+
 } // namespace
 
 int main()
@@ -723,6 +1016,10 @@ int main()
     TestLightReaders();
     TestStrictRules();
     TestStrictMessages();
+    TestLittleEndianArchive();
+    TestLittleEndianRarc();
+    TestLittleEndianBanks();
+    TestLittleEndianWaveSystem();
 
     return xsflib::testing::Summary("jaudio");
 }

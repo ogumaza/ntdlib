@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 
-// NintendoWare for Revolution (NW4R) sound format readers: BRSAR archives and their RSEQ, RBNK, RWAR and RWAV files.
-// Layouts follow NW4R SND's readers as linked into Wii Sports (2007), with the fields that the formats' later versions
-// add. The parsed data points into the source bytes. The source bytes must outlive it.
+// NintendoWare for Revolution (NW4R) sound format readers: BRSAR archives and their RSEQ, RBNK, RWSD, RWAR and RWAV
+// files. Layouts follow NW4R SND's readers as linked into Wii Sports (2007), with the fields that the formats' later
+// versions add. The parsed data points into the source bytes. The source bytes must outlive it.
 //
-// Archives come in two generations, and so do their banks. In RSAR 1.1, a bank (RBNK 1.1) describes its waves in a WAVE
-// block, and its wave data is the raw samples. From RSAR 1.4, a bank (RBNK 1.2) may instead have no WAVE block and an
-// RWAR of RWAV files for its wave data. A group holds each file with its wave data. A game loads them together.
+// Archives come in two generations, and so do their banks and wave sound files. In RSAR 1.1, a bank (RBNK 1.1)
+// describes its waves in a WAVE block, and its wave data is the raw samples. From RSAR 1.4, a bank (RBNK 1.2) may
+// instead have no WAVE block and an RWAR of RWAV files for its wave data. A wave sound file (RWSD) has a WAVE block up
+// to version 1.2, and an RWAR for its wave data from version 1.3. A group holds each file with its wave data. A game
+// loads them together.
 
 #pragma once
 
@@ -169,6 +171,9 @@ public:
     // region. Any other type of reference, a key outside a table and a negative wave index play nothing.
     const Region* Find(uint32_t program, int key, int velocity) const;
 
+    // Whether Find gives a region for `program` at some key and velocity of 0 to 127.
+    bool Plays(uint32_t program) const;
+
     // True for a bank whose second block is a WAVE block. Version 1.1 banks have one. The WAVE block describes the
     // bank's waves.
     bool HasWaveBlock() const
@@ -223,6 +228,92 @@ private:
     std::vector<Region> regions_;
     bool wave_block_ = false;
     std::vector<std::size_t> wave_infos_; // offsets of a version 1.1 bank's wave infos
+    std::vector<Wave> waves_;
+};
+
+// RWSD: a file of wave sounds, as NW4R SND's WsdFileReader reads it (main.dol 0x8004f270 to 0x8004f5b8). Each wave
+// sound has its settings, tracks of note events and a table of notes. NW4R SND plays the first note of a wave sound and
+// reads none of the tracks. The reader leaves the tracks out. Up to version 1.2, a WAVE block describes the waves, and
+// the file's wave data holds the raw samples. Version 1.3 has no WAVE block. Its wave data is an RWAR. Only the builds
+// of NW4R SND from 2008 read version 1.3 (Mario Kart Wii's main.dol, 0x800ad910 and 0x800adbe0).
+class WaveSoundFile
+{
+public:
+    // A note (WsdFile::NoteInfo): the wave that it plays and its envelope, with the key, volume, pan and pitch that the
+    // file gives it.
+    struct Note
+    {
+        int32_t wave_index = 0; // into the file's waves
+        uint8_t attack = 127, decay = 127, sustain = 127, release = 127;
+        uint8_t hold = 0; // only the builds from 2008 read it
+        uint8_t original_key = 60;
+        uint8_t volume = 127;
+        uint8_t pan = 64;         // from version 1.1
+        uint8_t surround_pan = 0; // from version 1.1
+        float pitch = 1.0f;       // from version 1.1
+    };
+
+    // A wave sound's settings (WsdFile::WsdInfo) and its notes.
+    struct WaveSound
+    {
+        float pitch = 1.0f;                // from version 1.1
+        uint8_t pan = 64;                  // from version 1.1
+        uint8_t surround_pan = 0;          // from version 1.1
+        std::array<uint8_t, 3> fx_sends{}; // the sends to aux buses A to C, from version 1.2
+        uint8_t main_send = 127;           // from version 1.2
+        std::vector<Note> notes;
+    };
+
+    // Reads a wave sound file's wave sounds. For a file with a WAVE block, also reads where the block describes the
+    // waves. `file` has to outlive the object.
+    static WaveSoundFile Parse(std::span<const uint8_t> file, const ReadOptions& options = {});
+
+    // Reads a wave sound file and all its waves from `wave_data`: the raw samples for a file with a WAVE block, or else
+    // an RWAR. `file` and `wave_data` have to outlive the object.
+    static WaveSoundFile Parse(std::span<const uint8_t> file, std::span<const uint8_t> wave_data,
+                               const ReadOptions& options = {});
+
+    // The file's version, such as 0x0102 for RWSD 1.2.
+    uint16_t Version() const
+    {
+        return version_;
+    }
+
+    const std::vector<WaveSound>& Sounds() const
+    {
+        return sounds_;
+    }
+
+    // True for a file with a WAVE block. The files up to version 1.2 have one.
+    bool HasWaveBlock() const
+    {
+        return wave_block_ != 0;
+    }
+
+    // The waves that the WAVE block describes. Version 1.0's block gives no count. Its waves then run up to the
+    // highest wave index of a note.
+    std::size_t WaveInfoCount() const
+    {
+        return wave_infos_.size();
+    }
+
+    // Reads wave `index` of a file with a WAVE block. The file's samples are in `wave_data`. Throws FormatError if the
+    // wave can't be read.
+    Wave ReadWave(std::size_t index, std::span<const uint8_t> wave_data) const;
+
+    // The waves that Parse read with the file's wave data.
+    const std::vector<Wave>& Waves() const
+    {
+        return waves_;
+    }
+
+private:
+    std::span<const uint8_t> file_;
+    ReadOptions options_;
+    uint16_t version_ = 0;
+    std::vector<WaveSound> sounds_;
+    std::size_t wave_block_ = 0;          // the WAVE block's offset, or 0
+    std::vector<std::size_t> wave_infos_; // the offsets of the WAVE block's wave infos
     std::vector<Wave> waves_;
 };
 

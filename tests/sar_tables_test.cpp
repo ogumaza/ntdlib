@@ -692,7 +692,7 @@ void TestNewSequenceSound(Flavor flavor)
         XSFLIB_CHECK(read.Sounds()[4].name == "SEQ_NEW2" && SameValues(read.Sounds()[4], expected));
     }
     XSFLIB_CHECK(read.Banks().size() == 1 && read.Banks()[0].name == "BANK_A");
-    XSFLIB_CHECK(flavor == Flavor::kCtr || (read.Players().size() == 1 && read.Players()[0].name == "PLAYER_A"));
+    XSFLIB_CHECK(read.Players().size() == 1 && read.Players()[0].name == "PLAYER_A");
     XSFLIB_CHECK(std::ranges::equal(read.FileData(with.file), before.FileData(0)));
     CheckNames(second, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "SEQ_NEW", "SEQ_NEW2", "BANK_A", "GROUP_A", "PLAYER_A"});
     const std::span<const uint8_t> strings = *TablesOf(second, flavor).strings;
@@ -813,12 +813,6 @@ void TestNewWaveSounds(Flavor flavor)
         expected.banks = {};
         expected.allocate_track_flags = kPlain.allocate_track_flags;
         expected.start_offset = kPlain.start_offset;
-        if (flavor == Flavor::kCtr)
-        {
-            // ntdlib reads no wave sound's channel priority on the 3DS.
-            expected.channel_priority = kPlain.channel_priority;
-            expected.release_priority_fix = kPlain.release_priority_fix;
-        }
         XSFLIB_CHECK(read.Sounds()[4].name == "WSD_NEW2" && SameValues(read.Sounds()[4], expected));
     }
     CheckNames(added, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "WSD_NEW", "WSD_NEW2", "BANK_A", "GROUP_A", "PLAYER_A"});
@@ -1042,6 +1036,166 @@ void TestNewStreamSoundVersions(Flavor flavor)
     }
 }
 
+// A stream sound's details without what an archive of the 3DS or the Wii U of `version` holds of them. Before CSAR
+// 2.3.0.0, the 3DS's details hold the tracks that play and the count of channels alone. CSAR 2.3.0.0 and FSAR 2.0.0
+// hold no pitch and no sends.
+ntdlib::sar::StreamSoundInfo AsHeld(ntdlib::sar::StreamSoundInfo stream, Flavor flavor, uint32_t version)
+{
+    const ntdlib::sar::StreamSoundInfo kPlain;
+    const ntdlib::sar::StreamTrackInfo kPlainTrack;
+    if (flavor == Flavor::kCtr && version < 0x02030000)
+    {
+        stream.tracks.clear();
+    }
+    if (flavor == Flavor::kCtr ? version < 0x02030200 : version < 0x00020100)
+    {
+        stream.pitch = kPlain.pitch;
+        stream.main_send = kPlain.main_send;
+        stream.aux_sends = kPlain.aux_sends;
+        for (ntdlib::sar::StreamTrackInfo& track : stream.tracks)
+        {
+            track.main_send = kPlainTrack.main_send;
+            track.aux_sends = kPlainTrack.aux_sends;
+            track.low_pass = kPlainTrack.low_pass;
+            track.biquad_type = kPlainTrack.biquad_type;
+            track.biquad_value = kPlainTrack.biquad_value;
+        }
+    }
+
+    return stream;
+}
+
+// A new stream sound in an archive that the tools laid out reads back through the archive's model, in each version
+// that kCases lists. The model compares each entry with the tools' layout. The new sound holds its model's values
+// and its new details. A copy of a sequence sound or a wave sound leaves out the value after the model's 3D settings.
+// In a 3DS archive of CSAR 2.0.0.0, a stream sound holds that value too, and the copy keeps the model's. A copy of a
+// stream sound with an extension and a prefetch file refers to neither. The archive's other sounds stay as they were.
+void TestNewStreamSoundModels()
+{
+    using ntdlib::sar::SoundModel;
+    using ntdlib::sar::SoundType;
+    using ntdlib::sar::StreamFields;
+    const ntdlib::sar::StreamExtension kExtension{.stream_type = 0x102, .loop_start = 7, .loop_end = 900};
+    struct Case
+    {
+        Flavor flavor;
+        uint32_t version;
+    };
+    const Case kCases[] = {{Flavor::kCafe, 0x00020000}, {Flavor::kCafe, 0x00020100}, {Flavor::kCafe, 0x00020200},
+                           {Flavor::kNx, 0x00020500},   {Flavor::kCtr, 0x02000000},  {Flavor::kCtr, 0x02020000},
+                           {Flavor::kCtr, 0x02030000},  {Flavor::kCtr, 0x02030200}};
+    for (const Case& c : kCases)
+    {
+        const bool ctr = c.flavor == Flavor::kCtr;
+        const bool counts = ctr && c.version < 0x02030000;
+        const bool fields = ctr ? c.version >= 0x02030200 : c.version >= 0x00020200;
+        const bool reference = !ctr && c.version == 0x00020100;
+
+        SoundModel sequence;
+        sequence.name = "SEQ_A";
+        sequence.volume = 100;
+        sequence.pan_mode = 1;
+        sequence.player_priority = 70;
+        sequence.single_play = 0x00010005;
+        sequence.settings_3d = {.flags = 3, .decay_ratio = 0.25f, .decay_curve = 2, .doppler_factor = 3};
+        sequence.user_options = {0x1234, std::nullopt, std::nullopt, std::nullopt};
+        sequence.after_3d = 7;
+        sequence.banks = {ItemId(ntdlib::sar::kBankItem, 0)};
+        sequence.channel_priority = 80;
+        SoundModel wave;
+        wave.name = "WSD_B";
+        wave.type = SoundType::kWaveSound;
+        wave.file_id = 1;
+        wave.volume = 80;
+        wave.after_3d = 6;
+        wave.wave_sound_index = 2;
+        SoundModel stream;
+        stream.name = "STRM_C";
+        stream.type = SoundType::kStream;
+        stream.file_id = 2;
+        stream.volume = 90;
+        stream.stream = AsHeld(StreamDetails(), c.flavor, c.version);
+        stream.stream_fields = fields      ? StreamFields::kPrefetch
+                               : reference ? StreamFields::kExtension
+                                           : StreamFields::kNone;
+        if (fields || reference)
+        {
+            stream.stream_extension = kExtension;
+        }
+        if (fields)
+        {
+            stream.prefetch_file_id = 3;
+        }
+        if (ctr && c.version == 0x02000000)
+        {
+            stream.after_3d = 5;
+        }
+        if (ctr && c.version == 0x02030000)
+        {
+            stream.stream_options = 0b111;
+            stream.stream_extension = kExtension;
+        }
+
+        // The builder takes no wave sound of CSAR 2.2.0.0 or 2.3.0.0.
+        ntdlib::sar::ArchiveModel model;
+        model.flavor = c.flavor;
+        model.version = c.version;
+        model.sounds = {sequence, stream};
+        if (!ctr || c.version == 0x02000000 || c.version >= 0x02030200)
+        {
+            model.sounds.push_back(wave);
+        }
+        model.banks = {{.name = "BANK_A", .file_id = 0}};
+        model.files = {{.bytes = std::vector<uint8_t>(40, 0xF0)},
+                       {.bytes = std::vector<uint8_t>(24, 0xF1)},
+                       {.place = ntdlib::sar::FilePlace::kPath, .path = "stream/STRM_C.bcstm"},
+                       {.place = ntdlib::sar::FilePlace::kPath, .path = "stream/STRM_C.bcstp"}};
+        const ntdlib::sar::ArchiveWithFile with =
+            WithNewExternalFile(ntdlib::sar::BuildArchive(model), c.flavor, "stream/STRM_NEW.bcstm");
+        ntdlib::sar::StreamSoundInfo details = StreamDetails();
+        if (counts)
+        {
+            details.tracks.clear();
+        }
+
+        for (uint32_t m = 0; m < model.sounds.size(); ++m)
+        {
+            const NewStreamSound sound{.model = m, .name = "STRM_NEW", .file = with.file, .stream = details};
+            const std::vector<uint8_t> added = WithNewStreamSound(with.archive, c.flavor, sound);
+            ntdlib::sar::ArchiveModel read;
+            const std::string error = ErrorOf([&] { read = ntdlib::sar::ReadArchiveModel(added, c.flavor); });
+            XSFLIB_CHECK(error.empty() && read.sounds.size() == model.sounds.size() + 1);
+            if (!error.empty() || read.sounds.size() != model.sounds.size() + 1)
+            {
+                continue;
+            }
+            for (std::size_t i = 0; i < model.sounds.size(); ++i)
+            {
+                XSFLIB_CHECK(read.sounds[i] == model.sounds[i]);
+            }
+
+            const SoundModel& source = model.sounds[m];
+            const bool stream_model = source.type == SoundType::kStream;
+            SoundModel expected;
+            expected.name = "STRM_NEW";
+            expected.type = SoundType::kStream;
+            expected.file_id = with.file;
+            expected.volume = source.volume;
+            expected.pan_mode = source.pan_mode;
+            expected.player_priority = source.player_priority;
+            expected.single_play = source.single_play;
+            expected.settings_3d = source.settings_3d;
+            expected.user_options = source.user_options;
+            expected.after_3d = ctr && c.version == 0x02000000 ? source.after_3d : 0;
+            expected.stream = AsHeld(details, c.flavor, c.version);
+            expected.stream_fields = fields                      ? StreamFields::kPrefetch
+                                     : reference && stream_model ? StreamFields::kExtension
+                                                                 : StreamFields::kNone;
+            XSFLIB_CHECK(read.sounds.back() == expected);
+        }
+    }
+}
+
 void TestNewStreamSoundRefusals()
 {
     const Flavor kFlavor = Flavor::kNx;
@@ -1087,8 +1241,23 @@ void TestNewStreamSoundRefusals()
     XSFLIB_CHECK(refuses(other));
     other.stream.tracks[1].channels.resize(16);
     XSFLIB_CHECK(!refuses(other));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(
-        [&] { WithNewStreamSound(sar_tools::Archive(Flavor::kCtr, ItemsSpec(true)), Flavor::kCtr, sound); }));
+
+    // The 3DS's archives of versions whose stream sounds ntdlib doesn't lay out, and tracks in an archive of the 3DS
+    // whose stream sounds hold none.
+    std::vector<uint8_t> ctr = sar_tools::Archive(Flavor::kCtr, ItemsSpec(true));
+    XSFLIB_CHECK(!Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, sound); }));
+    for (const uint32_t version : {0x02010000u, 0x02030100u})
+    {
+        Store(ctr, 8, Flavor::kCtr, version, 4);
+        XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, sound); }));
+    }
+    Store(ctr, 8, Flavor::kCtr, 0x02020000, 4);
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, sound); }));
+    other = sound;
+    other.stream.tracks.clear();
+    XSFLIB_CHECK(!Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, other); }));
+    other.stream.valid_tracks = 0x100;
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, other); }));
 }
 
 // In an archive without names, the entries keep their string indices. The new sounds take the ones after the sounds',
@@ -1112,6 +1281,53 @@ void TestNewWaveSoundsWithoutNames(Flavor flavor)
         {ItemId(ntdlib::sar::kSoundItem, 4), 4}, {ItemId(ntdlib::sar::kBankItem, 0), 5},
         {ItemId(ntdlib::sar::kGroupItem, 0), 6}, {ItemId(ntdlib::sar::kPlayerItem, 0), 7}};
     XSFLIB_CHECK(StringIndices(added, flavor) == expected);
+}
+
+// A wave sound that copies a sequence sound in a 3DS archive of CSAR 2.0.0.0 holds the sends that the tools write
+// there after its details' options, at the offset that option 8 gives. The archive's model then reads it. In 2.3.1.0,
+// the details hold no sends.
+void TestNewCtrWaveSounds()
+{
+    constexpr Flavor kCtr = Flavor::kCtr;
+    for (const uint32_t version : {0x02000000u, 0x02030100u})
+    {
+        ntdlib::sar::SoundModel sequence;
+        sequence.name = "SEQ_A";
+        sequence.channel_priority = 70;
+        ntdlib::sar::SoundModel wave;
+        wave.name = "WSD_B";
+        wave.type = ntdlib::sar::SoundType::kWaveSound;
+        wave.file_id = 1;
+        ntdlib::sar::ArchiveModel model;
+        model.flavor = kCtr;
+        model.version = version;
+        model.sounds = {sequence, wave};
+        model.files = {{.bytes = std::vector<uint8_t>(40, 0xF0)}, {.bytes = std::vector<uint8_t>(24, 0xF1)}};
+        const std::vector<NewWaveSound> kSounds = {{.model = 0, .name = "WSD_NEW", .file = 1, .index = 2},
+                                                   {.model = 1, .name = "WSD_COPY", .file = 1, .index = 3}};
+
+        const std::vector<uint8_t> added = WithNewWaveSounds(ntdlib::sar::BuildArchive(model), kCtr, kSounds);
+
+        const ntdlib::sar::ArchiveModel read = ntdlib::sar::ReadArchiveModel(added, kCtr);
+        XSFLIB_CHECK(read.sounds.size() == 4);
+        if (read.sounds.size() == 4)
+        {
+            XSFLIB_CHECK(read.sounds[2].type == ntdlib::sar::SoundType::kWaveSound &&
+                         read.sounds[2].wave_sound_index == 2 && read.sounds[2].channel_priority == 70);
+            XSFLIB_CHECK(read.sounds[3].name == "WSD_COPY" && read.sounds[3].wave_sound_index == 3);
+        }
+        const std::vector<uint8_t> entry = InfoBlock::Read(TablesOf(added, kCtr).info, kCtr).sounds.at(2);
+        const std::size_t details = Load32(entry, 16, kCtr);
+        if (version == 0x02000000)
+        {
+            XSFLIB_CHECK(Load32(entry, details + 8, kCtr) == 0x101 && Load32(entry, details + 16, kCtr) == 20);
+            XSFLIB_CHECK(entry.size() == details + 28 && entry[details + 20] == 0x7F && entry[details + 21] == 2);
+        }
+        else
+        {
+            XSFLIB_CHECK(Load32(entry, details + 8, kCtr) == 1 && entry.size() == details + 16);
+        }
+    }
 }
 
 void TestNewWaveSoundRefusals()
@@ -1330,7 +1546,8 @@ void TestNewItemRefusals()
 // A new group's file holds no files and lists no items. The archive comes out as sar_tools.h lays out an archive with
 // the group after the others, with names and without. The group's file follows the last file up to the end of its INFX
 // block's entries. The reader and the model read the new group. A file and an item then go into it, and a second new
-// group follows the first.
+// group follows the first. On the 3DS, the group's file takes version 1.0.0.0, which lists no items, and the model
+// form takes no archive.
 void TestNewGroup(Flavor flavor)
 {
     const sar_tools::GroupSpec empty;
@@ -1357,7 +1574,10 @@ void TestNewGroup(Flavor flavor)
     CheckNames(added, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "BANK_A", "GROUP_A", "GROUP_NEW", "PLAYER_A"});
     const std::span<const uint8_t> strings = *TablesOf(added, flavor).strings;
     XSFLIB_CHECK(ntdlib::sar::FindItem(strings, flavor, "GROUP_NEW") == ItemId(ntdlib::sar::kGroupItem, 1));
-    XSFLIB_CHECK(ntdlib::sar::BuildArchive(ntdlib::sar::ReadArchiveModel(added, flavor)) == added);
+    if (flavor != Flavor::kCtr)
+    {
+        XSFLIB_CHECK(ntdlib::sar::BuildArchive(ntdlib::sar::ReadArchiveModel(added, flavor)) == added);
+    }
 
     // A copy of file 0 and the sound that plays it go into the new group.
     const std::span<const uint8_t> file = read.FileData(0);
@@ -1367,7 +1587,9 @@ void TestNewGroup(Flavor flavor)
         ntdlib::sar::WithGroupMembers(added, flavor, 1, std::span(&member, 1), std::span(&item, 1));
     const SoundArchive grown = Load(joined, flavor);
     const ntdlib::sar::GroupContents contents = ntdlib::sar::ReadGroupFile(grown.FileData(4), flavor);
-    XSFLIB_CHECK(contents.files == std::vector({member}) && contents.items == std::vector({item}));
+    XSFLIB_CHECK(contents.files == std::vector({member}));
+    XSFLIB_CHECK(contents.items ==
+                 (flavor == Flavor::kCtr ? std::vector<ntdlib::sar::GroupItem>{} : std::vector({item})));
     XSFLIB_CHECK(grown.GroupFileIds(1) == std::vector<uint32_t>({0}));
 
     const std::vector<uint8_t> second = WithNewGroup(joined, flavor, "GROUP_NEW2");
@@ -1381,7 +1603,24 @@ void TestNewGroup(Flavor flavor)
     CheckNames(second, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "BANK_A", "GROUP_A", "GROUP_NEW", "GROUP_NEW2", "PLAYER_A"});
 }
 
-// A new group refuses the 3DS, a name that is missing or taken, and a name for an archive without names.
+// On the 3DS, a new group's file takes the highest version of the archive's groups' files: 1.1.0.0, which lists items,
+// beside 1.0.0.0.
+void TestNewCtrGroup()
+{
+    const sar_tools::GroupSpec kNewer = {.files = {{0, std::nullopt}}, .ctr_version = 0x01010000};
+    const sar_tools::GroupSpec kOlder = {.files = {{1, std::nullopt}}, .ctr_version = 0x01000000};
+    sar_files::ArchiveSpec spec = ItemsSpec(true);
+    spec.files.push_back({sar_tools::GroupInArchive(Flavor::kCtr, kNewer), "", false});
+    spec.files.push_back({sar_tools::GroupInArchive(Flavor::kCtr, kOlder), "", false});
+    spec.groups.emplace_back("GROUP_NEWER", 4);
+    spec.groups.emplace_back("GROUP_OLDER", 5);
+    const std::vector<uint8_t> added = WithNewGroup(sar_tools::Archive(Flavor::kCtr, spec), Flavor::kCtr, "GROUP_NEW");
+    spec.files.push_back({sar_tools::GroupInArchive(Flavor::kCtr, {.ctr_version = 0x01010000}), "", false});
+    spec.groups.emplace_back("GROUP_NEW", 6);
+    XSFLIB_CHECK(added == sar_tools::Archive(Flavor::kCtr, spec));
+}
+
+// A new group refuses a name that is missing or taken, and a name for an archive without names.
 void TestNewGroupRefusals()
 {
     const auto refused = [](const std::vector<uint8_t>& archive, Flavor flavor, const std::string& name)
@@ -1396,8 +1635,6 @@ void TestNewGroupRefusals()
     XSFLIB_CHECK(refused(archive, Flavor::kNx, "SEQ_A"));
     XSFLIB_CHECK(!refused(unnamed, Flavor::kNx, ""));
     XSFLIB_CHECK(refused(unnamed, Flavor::kNx, "GROUP_NEW"));
-    XSFLIB_CHECK(refused(sar_tools::Archive(Flavor::kCtr, ItemsSpec(true)), Flavor::kCtr, "GROUP_NEW"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([] { ntdlib::sar::EmptyGroupFile(Flavor::kCtr); }));
 }
 
 // A sequence sound's list of banks takes another length. The list ends the sound's entry, and the entry grows or
@@ -1447,13 +1684,11 @@ void TestBankListRefusals()
     XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithBankLists(longer, kFlavor, {{0, {bank}}}); }));
 }
 
-// The places of each sound's optional values in the archive of the tests of new items, in `flavor`: the pan and the
-// priorities of every sound, and the channel priority of the sequence sounds. ntdlib reads no 3DS sound's priorities.
-std::map<uint32_t, ValuePlaces> AllPlaces(Flavor flavor)
+// The places of each sound's optional values in the archive of the tests of new items: the pan and the priorities of
+// every sound, and the channel priority of the sequence sounds.
+std::map<uint32_t, ValuePlaces> AllPlaces()
 {
-    const bool priority = flavor != Flavor::kCtr;
-
-    return {{0, {true, priority, true}}, {1, {true, priority, true}}, {2, {true, priority, false}}};
+    return {{0, {true, true, true}}, {1, {true, true, true}}, {2, {true, true, false}}};
 }
 
 // The places of optional values. The sounds lose the options of their pan, their priorities and their channel
@@ -1463,7 +1698,7 @@ std::map<uint32_t, ValuePlaces> AllPlaces(Flavor flavor)
 void TestValuePlaces(Flavor flavor, bool names)
 {
     const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(names));
-    const std::map<uint32_t, ValuePlaces> places = AllPlaces(flavor);
+    const std::map<uint32_t, ValuePlaces> places = AllPlaces();
     const std::vector<uint8_t> bare = sar_tools::WithoutValuePlaces(archive, flavor, places);
     const std::vector<uint8_t> placed = WithValuePlaces(bare, flavor, places);
 
@@ -1481,10 +1716,8 @@ void TestValuePlaces(Flavor flavor, bool names)
 
         return sizes;
     };
-    const std::size_t priority = flavor == Flavor::kCtr ? 0 : 4;
     const std::vector<std::size_t> full = entries(archive);
-    XSFLIB_CHECK(entries(bare) ==
-                 std::vector<std::size_t>({full[0] - 8 - priority, full[1] - 8 - priority, full[2] - 4 - priority}));
+    XSFLIB_CHECK(entries(bare) == std::vector<std::size_t>({full[0] - 12, full[1] - 12, full[2] - 8}));
     XSFLIB_CHECK(TableValuePlaces(bare, flavor) == std::vector<ValuePlaces>(3));
     XSFLIB_CHECK(a.pan_mode == 0 && a.pan_curve == 0 && a.channel_priority == 64 && !a.release_priority_fix);
     XSFLIB_CHECK(a.player_priority == 64 && a.actor_player_id == 0 && a.start_offset == 5);
@@ -1515,11 +1748,6 @@ void TestValuePlaces(Flavor flavor, bool names)
     const std::vector<ValuePlaces> kEach = {{true, false, false}, {false, true, false}, {false, false, true}};
     for (const ValuePlaces& one : kEach)
     {
-        if (one.priority && flavor == Flavor::kCtr)
-        {
-            continue;
-        }
-
         const std::vector<uint8_t> partly = WithValuePlaces(bare, flavor, {{0, one}});
         const std::vector<ValuePlaces> held = TableValuePlaces(partly, flavor);
         XSFLIB_CHECK(held[0] == one && held[1] == ValuePlaces() && held[2] == ValuePlaces());
@@ -1528,22 +1756,22 @@ void TestValuePlaces(Flavor flavor, bool names)
     }
 }
 
-// WithValuePlaces refuses a sound past the table, a channel priority of a wave sound, a 3DS sound's priorities, an
-// unknown option, and details that don't follow the options.
+// WithValuePlaces refuses a sound past the table, a channel priority of a wave sound, an unknown option, and details
+// that don't follow the options.
 void TestValuePlaceRefusals()
 {
     for (const Flavor flavor : kFlavors)
     {
         const std::vector<uint8_t> archive = sar_tools::Archive(flavor, ItemsSpec(true));
-        const std::vector<uint8_t> bare = sar_tools::WithoutValuePlaces(archive, flavor, AllPlaces(flavor));
+        const std::vector<uint8_t> bare = sar_tools::WithoutValuePlaces(archive, flavor, AllPlaces());
         const auto refused = [&](uint32_t sound, const ValuePlaces& places)
         {
             return Throws<std::invalid_argument>([&] { WithValuePlaces(bare, flavor, {{sound, places}}); });
         };
         XSFLIB_CHECK(!refused(0, {true, false, true}) && !refused(2, {true, false, false}));
+        XSFLIB_CHECK(!refused(0, {false, true, false}));
         XSFLIB_CHECK(refused(3, {true, false, false}));
         XSFLIB_CHECK(refused(2, {false, false, true}));
-        XSFLIB_CHECK(refused(0, {false, true, false}) == (flavor == Flavor::kCtr));
     }
 
     // Sound 0's entry with an option of bit 4, with its details at its start, and with an option of bit 2 in its
@@ -1602,7 +1830,7 @@ void TestValuePlaceRefusals()
 
     // An archive cut short comes back as it is when its entries hold the places.
     const std::vector<uint8_t> cut(archive.begin(), archive.end() - 4);
-    XSFLIB_CHECK(WithValuePlaces(cut, kFlavor, AllPlaces(kFlavor)) == cut);
+    XSFLIB_CHECK(WithValuePlaces(cut, kFlavor, AllPlaces()) == cut);
 }
 
 } // namespace
@@ -1633,10 +1861,7 @@ int main()
         TestNewBank(flavor);
         TestNewWaveArchive(flavor);
         TestNewItemsWithoutNames(flavor);
-        if (flavor != Flavor::kCtr)
-        {
-            TestNewGroup(flavor);
-        }
+        TestNewGroup(flavor);
         TestBankLists(flavor);
         TestValuePlaces(flavor, true);
         TestValuePlaces(flavor, false);
@@ -1644,8 +1869,11 @@ int main()
     TestRefusals();
     TestNewSoundRefusals();
     TestNewWaveSoundRefusals();
+    TestNewCtrWaveSounds();
+    TestNewStreamSoundModels();
     TestNewStreamSoundRefusals();
     TestNewItemRefusals();
+    TestNewCtrGroup();
     TestNewGroupRefusals();
     TestBankListRefusals();
     TestValuePlaceRefusals();

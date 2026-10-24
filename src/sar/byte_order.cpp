@@ -10,7 +10,6 @@
 #include <set>
 #include <span>
 #include <stdexcept>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -45,23 +44,25 @@ constexpr int kSendsOption = 8;
 constexpr int kEnvelopeOption = 9;
 constexpr std::size_t kEnvelopeBytes = 5;
 
-// The first version of a wave file that holds the loop's original start.
+// The first version of a wave file that holds the loop's original start: 2.1.1.0 on the 3DS, and 1.2.0 on the Wii U and
+// the Switch.
+constexpr uint32_t kCtrOriginalLoopStartVersion = 0x02010100;
 constexpr uint32_t kOriginalLoopStartVersion = 0x00010200;
 
 constexpr std::size_t kDspAdpcmFrameBytes = 8;
 constexpr std::size_t kDspAdpcmFrameSamples = 14;
 
-// A file's bytes in the other byte order. Each field that the walk reads goes into the copy in the other order. The
-// walk marks the bytes of each field. A field that overlaps another field throws, and so does a byte that no field
-// holds and that isn't zero.
+// A file's bytes in a byte order: the file's or the other. Each field that the walk reads goes into the copy in that
+// order. The walk marks the bytes of each field. A field that overlaps another field throws, and so does a byte that no
+// field holds and that isn't zero.
 class Swap
 {
 public:
-    Swap(std::span<const uint8_t> file, bool big_endian)
+    Swap(std::span<const uint8_t> file, bool big_endian, bool out_big_endian)
         : in_(file, big_endian),
           out_(file.begin(), file.end()),
           fields_(file.size(), Field::kNone),
-          big_endian_(big_endian)
+          out_big_endian_(out_big_endian)
     {
     }
 
@@ -77,7 +78,7 @@ public:
     {
         const uint16_t value = in_.U16(at);
         Mark(at, 2);
-        big_endian_ ? xsflib::StoreLe16(&out_[at], value) : xsflib::StoreBe16(&out_[at], value);
+        out_big_endian_ ? xsflib::StoreBe16(&out_[at], value) : xsflib::StoreLe16(&out_[at], value);
 
         return value;
     }
@@ -86,7 +87,7 @@ public:
     {
         const uint32_t value = in_.U32(at);
         Mark(at, 4);
-        big_endian_ ? xsflib::StoreLe32(&out_[at], value) : xsflib::StoreBe32(&out_[at], value);
+        out_big_endian_ ? xsflib::StoreBe32(&out_[at], value) : xsflib::StoreLe32(&out_[at], value);
 
         return value;
     }
@@ -123,7 +124,7 @@ public:
                 throw xsflib::FormatError(message);
             }
         }
-        big_endian_ ? xsflib::StoreLe32(&out_[8], version) : xsflib::StoreBe32(&out_[8], version);
+        out_big_endian_ ? xsflib::StoreBe32(&out_[8], version) : xsflib::StoreLe32(&out_[8], version);
 
         return std::move(out_);
     }
@@ -176,7 +177,7 @@ private:
     xsflib::Reader in_;
     std::vector<uint8_t> out_;
     std::vector<Field> fields_;
-    bool big_endian_ = false;
+    bool out_big_endian_ = false;
     std::set<std::pair<int, std::size_t>> walked_;
 };
 
@@ -487,35 +488,36 @@ std::size_t SampleBytes(WaveEncoding encoding, uint32_t count)
     }
 }
 
-// Throws std::invalid_argument for `what`, a wave or a wave archive, when it or the flavor that it goes to is the
-// 3DS's.
-void CheckFlavors(Flavor from, Flavor to, const char* what)
+// Whether a wave file of `flavor` and `version` holds the loop's original start.
+bool HoldsOriginalLoopStart(Flavor flavor, uint32_t version)
 {
-    if (from == Flavor::kCtr || to == Flavor::kCtr)
-    {
-        throw std::invalid_argument(std::string(what) + " of the Wii U or the Switch");
-    }
+    return version >= (flavor == Flavor::kCtr ? kCtrOriginalLoopStartVersion : kOriginalLoopStartVersion);
 }
 
 } // namespace
 
-std::vector<uint8_t> WithOtherByteOrder(std::span<const uint8_t> file, uint32_t version)
+std::vector<uint8_t> WithConsole(std::span<const uint8_t> file, Flavor flavor, uint32_t version)
 {
-    // The kind of file, from its magic, and its byte order.
-    const bool bank = file.size() >= 4 && std::memcmp(file.data(), "FBNK", 4) == 0;
-    const bool wave_sound = file.size() >= 4 && std::memcmp(file.data(), "FWSD", 4) == 0;
+    // The kind of file, from its magic, and its byte order. The 3DS's files are little-endian.
+    const bool letter = file.size() >= 4 && (file[0] == 'C' || file[0] == 'F');
+    const bool bank = letter && std::memcmp(file.data() + 1, "BNK", 3) == 0;
+    const bool wave_sound = letter && std::memcmp(file.data() + 1, "WSD", 3) == 0;
     if (!bank && !wave_sound)
     {
-        throw xsflib::FormatError("not a bank file (FBNK) or a wave sound file (FWSD)");
+        throw xsflib::FormatError("not a bank file (CBNK or FBNK) or a wave sound file (CWSD or FWSD)");
     }
     if (file.size() < 0x14 || !((file[4] == 0xFE && file[5] == 0xFF) || (file[4] == 0xFF && file[5] == 0xFE)))
     {
         throw xsflib::FormatError("a file without a byte order mark");
     }
+    if (file[0] == 'C' && file[4] == 0xFE)
+    {
+        throw xsflib::FormatError("a big-endian file of the 3DS");
+    }
 
     // The header: the magic, the byte order mark, the header's size, the version, the file's size and the number of
-    // blocks.
-    Swap swap(file, file[4] == 0xFE);
+    // blocks. The magic takes the letter of `flavor`'s files.
+    Swap swap(file, file[4] == 0xFE, flavor == Flavor::kCafe);
     swap.Bytes(0, 4);
     swap.U16(4);
     swap.U16(6);
@@ -548,23 +550,33 @@ std::vector<uint8_t> WithOtherByteOrder(std::span<const uint8_t> file, uint32_t 
 
     // The block's structures.
     bank ? WalkBank(swap, *info) : WalkWaveSoundFile(swap, *info);
+    std::vector<uint8_t> converted = swap.Take(version);
+    converted[0] = flavor == Flavor::kCtr ? 'C' : 'F';
 
-    return swap.Take(version);
+    return converted;
+}
+
+std::vector<uint8_t> WithOtherByteOrder(std::span<const uint8_t> file, uint32_t version)
+{
+    if (file.size() >= 6 && file[0] == 'C')
+    {
+        throw xsflib::FormatError("a file of the 3DS");
+    }
+
+    return WithConsole(file, file.size() >= 6 && file[4] == 0xFE ? Flavor::kNx : Flavor::kCafe, version);
 }
 
 WaveFile ConvertWave(const WaveFile& wave, Flavor flavor, uint32_t version)
 {
-    CheckFlavors(wave.flavor, flavor, "a wave");
-
     // The settings, and the loop's original start for the version.
     WaveFile converted = wave;
     converted.flavor = flavor;
     converted.version = version;
-    if (version < kOriginalLoopStartVersion)
+    if (!HoldsOriginalLoopStart(flavor, version))
     {
         converted.original_loop_start = 0;
     }
-    else if (wave.version < kOriginalLoopStartVersion)
+    else if (!HoldsOriginalLoopStart(wave.flavor, wave.version))
     {
         converted.original_loop_start = wave.loop ? wave.loop_start : 0;
     }
@@ -590,11 +602,17 @@ WaveFile ConvertWave(const WaveFile& wave, Flavor flavor, uint32_t version)
 
 StreamFile ConvertStream(const StreamFile& stream, Flavor flavor, uint32_t version)
 {
-    CheckFlavors(stream.flavor, flavor, "a stream");
-
-    StreamFile converted = stream;
+    StreamFile converted = flavor == stream.flavor ? stream : WithoutSamplesPastEnd(stream);
     converted.flavor = flavor;
     converted.version = version;
+    if (flavor == Flavor::kCtr && converted.tracks)
+    {
+        for (StreamFile::Track& track : *converted.tracks)
+        {
+            track.span = 0;
+            track.flags = 0;
+        }
+    }
     const bool other_order =
         stream.encoding == WaveEncoding::kPcm16 && (stream.flavor == Flavor::kCafe) != (flavor == Flavor::kCafe);
     for (StreamFile::Channel& channel : converted.channels)
@@ -611,8 +629,6 @@ StreamFile ConvertStream(const StreamFile& stream, Flavor flavor, uint32_t versi
 WaveArchiveFile ConvertWaveArchive(const WaveArchiveFile& archive, Flavor flavor, uint32_t version,
                                    uint32_t wave_version)
 {
-    CheckFlavors(archive.flavor, flavor, "a wave archive");
-
     WaveArchiveFile converted;
     converted.flavor = flavor;
     converted.version = version;

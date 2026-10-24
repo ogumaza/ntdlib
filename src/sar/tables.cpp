@@ -46,6 +46,20 @@ constexpr std::size_t kMaxTrackChannels = 16; // the channels of a stream sound'
 constexpr std::size_t kVersionField = 0x08;
 constexpr uint32_t kSequencePriority = 2;  // the option of a sequence sound's details that gives its channel priority
 constexpr uint32_t kWaveSoundPriority = 1; // the option of a wave sound's details that gives its channel priority
+
+// The option of a wave sound's details in a 3DS archive of CSAR 2.0.0.0 that gives the offset of its sends, and the
+// sends that the tools write there: 127 to the main bus, a count of 2 aux buses, and 0 to each.
+constexpr uint32_t kCtrFirstVersion = 0x02000000;
+constexpr uint32_t kCtrWaveSends = 1u << 8;
+constexpr std::array<uint8_t, 8> kCtrWaveSoundSends = {0x7F, 0x02, 0, 0, 0, 0, 0, 0};
+
+// The other versions of a 3DS archive whose stream sounds WithNewStreamSound lays out. Before 2.3.0.0, a stream sound's
+// details hold the tracks that play and the count of channels alone. 2.3.0.0 adds a table of tracks without sends,
+// after a field of options. From 2.3.2.0 on, the details take the layout of FSAR 2.2.0.
+constexpr uint32_t kCtrCountsVersion = 0x02020000;
+constexpr uint32_t kCtrTracksVersion = 0x02030000;
+constexpr uint32_t kCtrFieldsVersion = 0x02030200;
+
 constexpr uint32_t kNone = 0xFFFFFFFF;
 constexpr std::size_t kHeaderSizeField = 0x06;
 constexpr std::size_t kSizeField = 0x0C; // the archive's size
@@ -56,6 +70,7 @@ constexpr std::size_t kBlockHeaderSize = 8; // a block's magic and size
 constexpr std::size_t kSoundOptions = 20;   // where a sound's entry holds its options
 constexpr std::size_t kSoundDetails = 12;   // where a sound's entry refers to its details
 constexpr uint32_t kNameOption = 1;         // the option that gives the string index
+constexpr std::size_t kSettingsSize = 16;   // a sound's 3D settings
 
 // The options of a sound's entry that give its pan and its priorities, and the one that gives the offset of its 3D
 // settings.
@@ -84,6 +99,7 @@ constexpr std::size_t kBankTable = 2;
 constexpr std::size_t kWaveArchiveTable = 3;
 constexpr std::size_t kGroupTable = 4;
 
+using detail::kNothingVersion;
 using detail::kSendsVersion;
 using detail::Out;
 using detail::StreamDetailsOf;
@@ -430,11 +446,11 @@ std::vector<uint8_t> SequenceSoundEntry(std::span<const uint8_t> model, Flavor f
     return entry;
 }
 
-// The entry of `sound` in an archive of `flavor`, from `model`, the entry of a wave sound or of a sequence sound.
-// NewWaveSound describes the new entry. The sound takes string index `string`. Throws xsflib::FormatError for a model
-// whose details are laid out another way than the tools lay them out.
-std::vector<uint8_t> WaveSoundEntry(std::span<const uint8_t> model, Flavor flavor, const NewWaveSound& sound,
-                                    uint32_t string)
+// The entry of `sound` in an archive of `flavor` and `version`, from `model`, the entry of a wave sound or of a
+// sequence sound. NewWaveSound describes the new entry. The sound takes string index `string`. Throws
+// xsflib::FormatError for a model whose details are laid out another way than the tools lay them out.
+std::vector<uint8_t> WaveSoundEntry(std::span<const uint8_t> model, Flavor flavor, uint32_t version,
+                                    const NewWaveSound& sound, uint32_t string)
 {
     const bool big_endian = flavor == Flavor::kCafe;
     const xsflib::Reader r(model, big_endian);
@@ -451,11 +467,17 @@ std::vector<uint8_t> WaveSoundEntry(std::span<const uint8_t> model, Flavor flavo
             throw OtherLayout("a sequence sound's details without its channel priority");
         }
         const uint32_t priority = r.U32(details + 16 + ((options & 1) != 0 ? 4 : 0));
-        entry.resize(details + 16);
+        const bool sends = flavor == Flavor::kCtr && version == kCtrFirstVersion;
+        entry.resize(details + (sends ? 28 : 16));
         Store16(entry, kSoundDetails, big_endian, kWaveSoundDetails);
         Store32(entry, details + 4, big_endian, 1);
-        Store32(entry, details + 8, big_endian, kWaveSoundPriority);
+        Store32(entry, details + 8, big_endian, kWaveSoundPriority | (sends ? kCtrWaveSends : 0));
         Store32(entry, details + 12, big_endian, priority);
+        if (sends)
+        {
+            Store32(entry, details + 16, big_endian, 20);
+            std::ranges::copy(kCtrWaveSoundSends, entry.begin() + static_cast<std::ptrdiff_t>(details + 20));
+        }
     }
     else if (details + 4 > model.size())
     {
@@ -592,6 +614,108 @@ void CheckStream(const StreamSoundInfo& stream)
     }
 }
 
+// Throws std::invalid_argument for the tracks of `stream` in an archive of the 3DS before 2.3.0.0: any track, and a
+// bit of the tracks that play past 8 tracks. The stream file holds the tracks there (WithNewStreamSound).
+void CheckCounts(const StreamSoundInfo& stream)
+{
+    if (!stream.tracks.empty())
+    {
+        throw std::invalid_argument("tracks in an archive of the 3DS whose stream sounds hold none");
+    }
+    if ((stream.valid_tracks >> kMaxStreamTracks) != 0)
+    {
+        throw std::invalid_argument("a bit of the tracks that play past 8 tracks");
+    }
+}
+
+// Where a stream sound's details start in a copy of `entry`, a sound's entry: after its 3D settings, or after the
+// values of its options without them. The tools write a 32-bit value between the 3D settings and the details of a
+// sequence sound or a wave sound, but none for a stream sound. Throws xsflib::FormatError for an entry that ends
+// before them, and for 3D settings that don't follow the options.
+std::size_t StreamDetailsStart(std::span<const uint8_t> entry, bool big_endian)
+{
+    if (entry.size() < kSoundOptions + 4)
+    {
+        throw OtherLayout("a sound's entry that ends before its options");
+    }
+    const xsflib::Reader r(entry, big_endian);
+    const uint32_t bits = r.U32(kSoundOptions);
+    const std::size_t end = kSoundOptions + 4 + 4 * static_cast<std::size_t>(std::popcount(bits));
+    if (end > entry.size())
+    {
+        throw OtherLayout("a sound's entry that ends before the values of its options");
+    }
+    if ((bits & kSettingsOption) == 0)
+    {
+        return end;
+    }
+    const std::size_t settings = r.U32(OptionPlace(entry, kSoundOptions, kSettingsOption, big_endian));
+    if (settings < end || settings + kSettingsSize > entry.size())
+    {
+        throw OtherLayout("a sound's 3D settings that don't follow its options");
+    }
+
+    return settings + kSettingsSize;
+}
+
+// A new stream sound's details for `stream` in an archive of `flavor` and `version`, from `model`, the entry of the
+// sound that it copies. A stream sound model keeps the fields of its details before its table of tracks. The reference
+// after the sends then leads to no extension, and the sound has no prefetch file: both describe the model's stream,
+// such as the loop of a stream that the stream file doesn't give. A model of another kind takes the version's fields.
+// Throws xsflib::FormatError for a stream sound model whose details hold no table of tracks or end before their pitch
+// and sends.
+std::vector<uint8_t> NewStreamDetails(std::span<const uint8_t> model, Flavor flavor, uint32_t version,
+                                      const StreamSoundInfo& stream)
+{
+    const bool big_endian = flavor == Flavor::kCafe;
+    if (flavor == Flavor::kCtr && version < kCtrTracksVersion)
+    {
+        Out out(false);
+        out.Zeros(8);
+        out.U16(0, stream.valid_tracks);
+        out.U16(2, stream.channel_count);
+        return out.Take();
+    }
+    if (flavor == Flavor::kCtr && version < kCtrFieldsVersion)
+    {
+        // The field of options holds no value of an extension.
+        Out out(false);
+        out.Zeros(16);
+        return StreamDetailsOf(out.Take(), stream, false, flavor);
+    }
+
+    const uint32_t layout = flavor == Flavor::kCtr ? kNothingVersion : version;
+    const bool sends = layout >= kSendsVersion;
+    std::vector<uint8_t> header = StreamHeader(layout, big_endian);
+    if (IsStreamSound(model, big_endian))
+    {
+        const xsflib::Reader r(model, big_endian);
+        const std::size_t details = r.U32(kSoundDetails + 4);
+        if (details + 12 > model.size() || r.U16(details + 4) != kTableReference ||
+            details + std::size_t{r.U32(details + 8)} > model.size())
+        {
+            throw OtherLayout("a stream sound's details without a table of tracks in its entry");
+        }
+        header.assign(model.begin() + static_cast<std::ptrdiff_t>(details),
+                      model.begin() + static_cast<std::ptrdiff_t>(details + r.U32(details + 8)));
+        if (sends && header.size() >= 32)
+        {
+            Store32(header, 24, big_endian, 0);
+            Store32(header, 28, big_endian, kNone);
+        }
+        if (sends && header.size() >= 36)
+        {
+            Store32(header, 32, big_endian, kNone);
+        }
+    }
+    if (header.size() < (sends ? 24 : 12))
+    {
+        throw OtherLayout("a stream sound's details that end before their pitch and sends");
+    }
+
+    return StreamDetailsOf(header, stream, sends, flavor);
+}
+
 // Throws std::invalid_argument for more than four banks, or for a bank past the bank table of `info`.
 void CheckBanks(const InfoBlock& info, std::span<const uint32_t> banks)
 {
@@ -603,6 +727,43 @@ void CheckBanks(const InfoBlock& info, std::span<const uint32_t> banks)
     {
         throw std::invalid_argument("more than four banks, or a bank past the bank table");
     }
+}
+
+// The highest version of the groups' files that the FILE block of `archive` holds, or nothing without one. `info` is
+// the archive's INFO block.
+std::optional<uint32_t> GroupFileVersion(std::span<const uint8_t> archive, Flavor flavor, const InfoBlock& info)
+{
+    const bool big_endian = flavor == Flavor::kCafe;
+    const xsflib::Reader r(archive, big_endian);
+    const std::optional<BlockEntry> files = EntryOf(r, kFileBlock);
+    if (!files)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<uint32_t> highest;
+    for (const std::vector<uint8_t>& group : info.groups)
+    {
+        const uint32_t file = xsflib::Reader(group, big_endian).U32(0);
+        if (file >= info.files.size())
+        {
+            continue;
+        }
+        const xsflib::Reader entry(info.files[file], big_endian);
+        if (entry.U16(0) != kInternalFile)
+        {
+            continue;
+        }
+        const std::size_t location = entry.U32(4);
+        const uint32_t offset = entry.U32(location + 4);
+        const std::size_t at = std::size_t{files->offset} + kBlockHeaderSize + offset;
+        if (offset != kNone && at + kVersionField + 4 <= archive.size())
+        {
+            highest = std::max(highest.value_or(0), r.U32(at + kVersionField));
+        }
+    }
+
+    return highest;
 }
 
 // `archive` with `bytes` as a new file after its last one, as WithNewFile adds one, with the type `data` in the
@@ -968,6 +1129,7 @@ std::vector<uint8_t> WithNewWaveSounds(std::span<const uint8_t> archive, Flavor 
 {
     const bool big_endian = flavor == Flavor::kCafe;
     auto [strings, info] = ReadTables(archive, flavor);
+    const uint32_t version = xsflib::Reader(archive, big_endian).U32(kVersionField);
     const std::size_t count = info.sounds.size();
     for (const NewWaveSound& sound : sounds)
     {
@@ -993,7 +1155,7 @@ std::vector<uint8_t> WithNewWaveSounds(std::span<const uint8_t> archive, Flavor 
 
         // The entry, the room for the name after the sounds' names, and the name.
         const uint32_t string = NewStringIndex(info, kSoundTable, NameCount(strings));
-        std::vector<uint8_t> entry = WaveSoundEntry(model, flavor, sound, string);
+        std::vector<uint8_t> entry = WaveSoundEntry(model, flavor, version, sound, string);
         MakeRoomForName(info, string);
         const auto index = static_cast<uint32_t>(info.sounds.size());
         info.sounds.push_back(std::move(entry));
@@ -1008,12 +1170,15 @@ std::vector<uint8_t> WithNewWaveSounds(std::span<const uint8_t> archive, Flavor 
 
 std::vector<uint8_t> WithNewStreamSound(std::span<const uint8_t> archive, Flavor flavor, const NewStreamSound& sound)
 {
-    if (flavor == Flavor::kCtr)
-    {
-        throw std::invalid_argument("an archive of the 3DS");
-    }
     const bool big_endian = flavor == Flavor::kCafe;
+    const bool ctr = flavor == Flavor::kCtr;
     auto [strings, info] = ReadTables(archive, flavor);
+    const uint32_t version = xsflib::Reader(archive, big_endian).U32(kVersionField);
+    if (ctr && version != kCtrFirstVersion && version != kCtrCountsVersion && version != kCtrTracksVersion &&
+        version < kCtrFieldsVersion)
+    {
+        throw std::invalid_argument("an archive of the 3DS of a version whose stream sounds ntdlib doesn't lay out");
+    }
 
     // The sound's model, file, tracks and name.
     if (sound.model >= info.sounds.size())
@@ -1025,46 +1190,40 @@ std::vector<uint8_t> WithNewStreamSound(std::span<const uint8_t> archive, Flavor
     {
         throw std::invalid_argument("a file past the file table");
     }
-    CheckStream(sound.stream);
+    if (ctr && version < kCtrTracksVersion)
+    {
+        CheckCounts(sound.stream);
+    }
+    else
+    {
+        CheckStream(sound.stream);
+    }
     CheckName(strings, sound.name, true);
     if (strings && !StringIndexAt(model, kSoundOptions, big_endian))
     {
         throw OtherLayout("a model without a string index in an archive with names");
     }
 
-    // A stream sound model keeps the fields of its details before its table. Another model takes the version's.
+    // The new details start after the model's 3D settings. In a 3DS archive of 2.0.0.0, a stream sound holds the value
+    // after them that every sound holds there, and the copy keeps the model's.
     const xsflib::Reader r(model, big_endian);
     if (model.size() < kSoundDetails + 8)
     {
         throw OtherLayout("a sound's entry that ends before its details");
     }
     const std::size_t details = r.U32(kSoundDetails + 4);
-    const uint32_t version = xsflib::Reader(archive, big_endian).U32(kVersionField);
-    std::vector<uint8_t> header;
-    if (IsStreamSound(model, big_endian))
+    const std::size_t start = StreamDetailsStart(model, big_endian) + (ctr && version == kCtrFirstVersion ? 4 : 0);
+    if (start > details || details > model.size())
     {
-        if (details + 12 > model.size() || r.U16(details + 4) != kTableReference ||
-            details + std::size_t{r.U32(details + 8)} > model.size())
-        {
-            throw OtherLayout("a stream sound's details without a table of tracks in its entry");
-        }
-        header.assign(model.begin() + static_cast<std::ptrdiff_t>(details),
-                      model.begin() + static_cast<std::ptrdiff_t>(details + r.U32(details + 8)));
-    }
-    else
-    {
-        header = StreamHeader(version, big_endian);
-    }
-    if (details > model.size() || header.size() < (version < kSendsVersion ? 12 : 24))
-    {
-        throw OtherLayout("a stream sound's details that end before their pitch and sends");
+        throw OtherLayout("a sound's details that start before the end of its 3D settings");
     }
 
-    // The entry: the model's fields before its details, then the new details.
-    std::vector<uint8_t> entry(model.begin(), model.begin() + static_cast<std::ptrdiff_t>(details));
-    const std::vector<uint8_t> stream = StreamDetailsOf(header, sound.stream, version >= kSendsVersion, big_endian);
+    // The entry: the model's fields up to the new details, then the details.
+    std::vector<uint8_t> entry(model.begin(), model.begin() + static_cast<std::ptrdiff_t>(start));
+    const std::vector<uint8_t> stream = NewStreamDetails(model, flavor, version, sound.stream);
     entry.insert(entry.end(), stream.begin(), stream.end());
     Store16(entry, kSoundDetails, big_endian, kStreamDetails);
+    Store32(entry, kSoundDetails + 4, big_endian, static_cast<uint32_t>(start));
     Store32(entry, 0, big_endian, sound.file);
     const uint32_t string = NewStringIndex(info, kSoundTable, NameCount(strings));
     if (const std::optional<std::size_t> at = StringIndexAt(entry, kSoundOptions, big_endian))
@@ -1124,10 +1283,6 @@ std::vector<uint8_t> WithValuePlaces(std::span<const uint8_t> archive, Flavor fl
         if (wanted.channel && !IsSequenceSound(entry, big_endian))
         {
             throw std::invalid_argument("a channel priority of a sound that isn't a sequence sound");
-        }
-        if (wanted.priority && flavor == Flavor::kCtr)
-        {
-            throw std::invalid_argument("the priorities of a 3DS sound");
         }
 
         const std::size_t size = entry.size();
@@ -1234,10 +1389,17 @@ std::vector<uint8_t> WithNewWaveArchive(std::span<const uint8_t> archive, Flavor
 
 std::vector<uint8_t> WithNewGroup(std::span<const uint8_t> archive, Flavor flavor, const std::string& name)
 {
-    // The name first: the file mustn't go in for a group that can't. The FILE block holds a group's file up to the end
-    // of its INFX block's entries.
-    CheckName(ReadTables(archive, flavor).strings, name, true);
-    const std::vector<uint8_t> group = EmptyGroupFile(flavor);
+    // The name first: the file mustn't go in for a group that can't. On the 3DS, the group's file takes the version of
+    // the archive's groups' files. The FILE block holds a group's file up to the end of its INFX block's entries, or
+    // whole in a version without INFX.
+    const ReadBlocks tables = ReadTables(archive, flavor);
+    CheckName(tables.strings, name, true);
+    std::optional<uint32_t> version;
+    if (flavor == Flavor::kCtr)
+    {
+        version = GroupFileVersion(archive, flavor, tables.info);
+    }
+    const std::vector<uint8_t> group = EmptyGroupFile(flavor, version);
     const ArchiveWithFile with =
         WithFileAdded(archive, flavor, std::span(group).first(GroupSizeInArchive(group, flavor)), 0);
     auto [strings, info] = ReadTables(with.archive, flavor);

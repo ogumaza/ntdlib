@@ -40,6 +40,9 @@
 namespace ntdlib::nx::atk
 {
 
+// The voices that the sound system can grow to in the enhanced mixing mode.
+inline constexpr int kEnhancedVoiceCount = 1024;
+
 struct EngineOptions
 {
     // The sound system's voice count (SoundSystemParam's +0x58): 96 unless the game changes it before its sound system
@@ -49,6 +52,11 @@ struct EngineOptions
 
     // The I3DL2 reverb a scene of the reference game puts on each of the aux buses A to C, if any (I3dl2AuxEffect).
     std::array<std::optional<audio::I3dl2ReverbParameterSet>, 3> aux_reverbs;
+
+    // The enhanced mixing mode. The renderer runs in its enhanced mode (see audio::Renderer). When every voice is in
+    // use, the sound system takes another in place of a drop, up to kEnhancedVoiceCount voices. Off, the model follows
+    // the console to the bit.
+    bool enhanced = false;
 };
 
 class Engine : public ntdlib::nwsnd::LengthHooks

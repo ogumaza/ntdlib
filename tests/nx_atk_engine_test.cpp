@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Checks the model of nn::atk's voices, channels and sequence player on the model of the renderer, without game data: a
-// low-level voice on the renderer, its queue of wave buffers, and small archives that play notes through the engine.
+// low-level voice on the renderer, its queue of wave buffers, and small archives that play notes through the engine,
+// in the console's mode and in the enhanced mixing mode.
 
 #include <algorithm>
 #include <array>
@@ -1115,6 +1116,120 @@ void TestSnapshotPlayersOfOtherKinds()
     XSFLIB_CHECK(Sounds(first) && second == first);
 }
 
+// Options of the enhanced mixing mode, with the reverb of the reference game's stages on aux bus A.
+atk::EngineOptions EnhancedOptions()
+{
+    atk::EngineOptions options = StageReverbOptions();
+    options.enhanced = true;
+
+    return options;
+}
+
+// The output in floating point of the model's next `frames` frames.
+std::vector<float> RunFloatFrames(atk::ArchiveModel& model, int frames)
+{
+    std::vector<float> output;
+    for (int i = 0; i < frames; ++i)
+    {
+        model.engine->RunFrame();
+        const std::span<const float> frame = model.renderer.DeviceOutputFloat();
+        output.insert(output.end(), frame.begin(), frame.end());
+    }
+
+    return output;
+}
+
+void TestEnhancedVoices()
+{
+    // 120 notes start in the same tick. The console's 96 voices take 96 of them. In the enhanced mode, the sound system
+    // takes a voice for each: 120 channels, MultiVoices and low-level voices.
+    std::vector<uint8_t> bytecode = {0xB0, 48, 0xE1, 120, 0x00, 0xC7, 0x00};
+    for (int note = 0; note < 120; ++note)
+    {
+        bytecode.insert(bytecode.end(), {60, 100, 96});
+    }
+    bytecode.insert(bytecode.end(), {0x80, 96, 0xFF});
+    const ntdlib::sar::SoundArchive archive = ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, bytecode, {ConstantPcmWave(kBigEndian, 48000)}), kSarOptions);
+    const auto counts = [&](const atk::EngineOptions& options)
+    {
+        atk::ArchiveModel model(archive, options);
+        model.engine->StartSequence(0);
+        RunFrames(model, 4);
+        atk::Engine& engine = *model.engine;
+
+        return std::array<int, 3>{engine.Channels().ActiveCount(), engine.Voices().ActiveCount(),
+                                  engine.LowLevelVoices().AllocatedCount()};
+    };
+
+    const std::array<int, 3> console = counts({});
+    const std::array<int, 3> enhanced = counts(EnhancedOptions());
+
+    XSFLIB_CHECK(console[0] <= 96 && console[1] <= 96 && console[2] <= 96);
+    XSFLIB_CHECK(enhanced[0] == 120 && enhanced[1] == 120 && enhanced[2] == 120);
+}
+
+void TestEnhancedAuxSend()
+{
+    // In the enhanced mode too, a note sent only to aux bus A, with no effect on it, reaches the output as a note sent
+    // only to the main bus does.
+    const std::vector<uint8_t> kMain = {0xB0, 48, 0xE1, 120, 0x00, 60, 127, 24, 0xFF};
+    const std::vector<uint8_t> kAux = {0xB0, 48, 0xE1, 120, 0x00, 0xDB, 0, 0xD9, 127, 60, 127, 24, 0xFF};
+    atk::EngineOptions options;
+    options.enhanced = true;
+    const auto render = [&](const std::vector<uint8_t>& bytecode)
+    {
+        const ntdlib::sar::SoundArchive archive = ntdlib::sar::SoundArchive::Load(
+            ProgramArchive(kBigEndian, bytecode, {ConstantPcmWave(kBigEndian, 48000)}), kSarOptions);
+        atk::ArchiveModel model(archive, options);
+        model.engine->StartSequence(0);
+
+        return RunFloatFrames(model, 20);
+    };
+
+    const std::vector<float> through_main = render(kMain);
+    const std::vector<float> through_aux = render(kAux);
+
+    XSFLIB_CHECK(std::any_of(through_main.begin(), through_main.end(), [](float s) { return s != 0.0f; }));
+    XSFLIB_CHECK(through_aux == through_main);
+}
+
+void TestEnhancedSnapshots()
+{
+    // In the enhanced mode, a restore renders the same samples again, in floating point. A snapshot restored two frames
+    // after each other frame renders those two frames again.
+    const ntdlib::sar::SoundArchive archive = LoopingArchive();
+    atk::ArchiveModel model(archive, EnhancedOptions());
+    model.engine->StartSequence(0);
+    const atk::ArchiveModel::Snapshot at_start = model.Save();
+    const std::vector<float> opening = RunFloatFrames(model, 200);
+    const atk::ArchiveModel::Snapshot later = model.Save();
+    const std::vector<float> first = RunFloatFrames(model, 600);
+    model.engine->StartSequence(0);
+    RunFloatFrames(model, 100);
+
+    model.Restore(later);
+    const std::vector<float> second = RunFloatFrames(model, 600);
+    model.Restore(at_start);
+    const std::vector<float> again = RunFloatFrames(model, 200);
+    int mismatches = 0;
+    for (int frame = 0; frame < 100; ++frame)
+    {
+        const atk::ArchiveModel::Snapshot each = model.Save();
+        const std::vector<float> ahead = RunFloatFrames(model, 2);
+        model.Restore(each);
+        if (RunFloatFrames(model, 2) != ahead)
+        {
+            ++mismatches;
+        }
+    }
+
+    XSFLIB_CHECK(std::any_of(first.begin(), first.end(), [](float s) { return s != 0.0f; }));
+    XSFLIB_CHECK(second == first);
+    XSFLIB_CHECK(again == opening);
+    Check(mismatches == 0, std::to_string(mismatches) + " of 100 snapshots render other frames when restored");
+}
+
 } // namespace
 
 int main()
@@ -1143,6 +1258,9 @@ int main()
     TestStreamTracks();
     TestStreamSnapshot();
     TestSnapshotPlayersOfOtherKinds();
+    TestEnhancedVoices();
+    TestEnhancedAuxSend();
+    TestEnhancedSnapshots();
 
     return xsflib::testing::Summary("nx_atk_engine");
 }

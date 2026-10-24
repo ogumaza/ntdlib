@@ -342,6 +342,7 @@ LowLevelVoice* LowLevelVoiceAllocator::AllocVoice()
     LowLevelVoice* voice = list_[static_cast<std::size_t>(count_)];
     places_[static_cast<std::size_t>(voice - voices_.data())] = count_;
     ++count_;
+    mark_ = std::max(mark_, count_);
     voice->play_position_ = 0;
     voice->receiver_ = nullptr;
     voice->allocated_ = true;
@@ -453,7 +454,13 @@ void LowLevelVoiceAllocator::UpdateAllVoice(OutputMode mode)
 
 LowLevelVoiceAllocator::Snapshot LowLevelVoiceAllocator::Save() const
 {
-    return {this, voices_, list_, places_, count_};
+    const auto mark = static_cast<std::ptrdiff_t>(mark_);
+
+    return {this,
+            {voices_.begin(), voices_.begin() + mark},
+            {list_.begin(), list_.begin() + mark},
+            {places_.begin(), places_.begin() + mark},
+            count_};
 }
 
 void LowLevelVoiceAllocator::Restore(const Snapshot& snapshot)
@@ -463,10 +470,20 @@ void LowLevelVoiceAllocator::Restore(const Snapshot& snapshot)
         throw std::invalid_argument("a snapshot of another allocator of low-level voices");
     }
 
+    // The voices past the snapshot's mark go back to how they started.
+    const std::size_t mark = snapshot.voices.size();
     std::copy(snapshot.voices.begin(), snapshot.voices.end(), voices_.begin());
-    list_ = snapshot.list;
-    places_ = snapshot.places;
+    std::copy(snapshot.list.begin(), snapshot.list.end(), list_.begin());
+    std::copy(snapshot.places.begin(), snapshot.places.end(), places_.begin());
+    for (std::size_t i = mark; i < static_cast<std::size_t>(mark_); ++i)
+    {
+        voices_[i] = LowLevelVoice{};
+        voices_[i].owner_ = this;
+        list_[i] = &voices_[i];
+        places_[i] = -1;
+    }
     count_ = snapshot.count;
+    mark_ = static_cast<int>(mark);
 }
 
 } // namespace ntdlib::nx::atk

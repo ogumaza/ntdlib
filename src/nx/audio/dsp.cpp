@@ -269,6 +269,20 @@ void Resample(int32_t* out, const int16_t* in, int32_t ratio, int32_t& fraction,
     }
 }
 
+void SkipResample(int32_t ratio, int32_t& fraction, int count, SrcQuality quality)
+{
+    // Each quality keeps the low 15 bits of the fraction plus the steps. Its sums wrap at 32 bits, a multiple of 2^15.
+    // One sum therefore gives the same bits.
+    switch (quality)
+    {
+    case SrcQuality::kMedium:
+    case SrcQuality::kHigh:
+    case SrcQuality::kLow:
+        fraction = WrapAdd(fraction, WrapMul(count, ratio)) & 0x7FFF;
+        break;
+    }
+}
+
 void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>& b, const std::array<int16_t, 2>& a,
                        BiquadFilterState& state, int count)
 {

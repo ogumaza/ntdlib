@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// A sound archive of the Wii U or the Switch (FSAR) as the fields of its items, and a builder that lays such an archive
-// out as NintendoWare's tools do. ReadArchiveModel reads every field of an archive that the tools laid out.
-// BuildArchive gives that archive back byte for byte from its model. It builds an archive from a model made from
+// A sound archive of the 3DS (CSAR), the Wii U or the Switch (FSAR) as the fields of its items, and a builder that lays
+// such an archive out as NintendoWare's tools do. ReadArchiveModel reads every field of an archive that the tools laid
+// out. BuildArchive gives that archive back byte for byte from its model. It builds an archive from a model made from
 // nothing the same way.
 //
 // The tools lay an archive out as follows. The header takes 64 bytes. It lists the STRG, INFO and FILE blocks, in that
@@ -11,19 +11,23 @@
 // its name's place there. An item without a name has no string index. INFO holds the tables (ntdlib/sar/info_block.h).
 // STRG and INFO end on multiples of 32 bytes. FILE holds the files with bytes of their own in the order of their IDs.
 // The first one starts at the first multiple of the files' alignment after the block's size: 64 bytes from the
-// archive's start on the Switch, and 32 on the Wii U. Each next file starts at the first multiple after the end of
-// the file before it. Zeros fill the gaps. The block ends at the end of its last file, or at the first multiple after
-// the block's size when it holds no file. A file whose copy a group's file holds can take the copy's place in the
+// archive's start on the Switch, and 32 on the 3DS and the Wii U. Each next file starts at the first multiple after the
+// end of the file before it. Zeros fill the gaps. The block ends at the end of its last file, or at the first multiple
+// after the block's size when it holds no file. A file whose copy a group's file holds can take the copy's place in the
 // FILE block (ntdlib/sar/groups.h). It then has no bytes of its own. A file that only the group files beside the
-// archive hold has no place. A file beside the archive, such as a stream, has a path. The file table gives each
-// file's place and size with a reference. The reference of a group's file has type 0, and every other one type 0x1F00.
+// archive hold has no place. A file beside the archive, such as a stream, has a path. The file table gives each file's
+// place and size with a reference. The reference of a group's file has type 0, and every other one type 0x1F00. A
+// file's entry on the 3DS holds no list of groups. There, the entry of a file without a place follows the archive's
+// version.
 //
 // A sound's entry holds its file, its player, its volume and its remote filter, then its options: its string index,
 // its pan, its priorities, its single play, the offset of its 3D settings, option 17 and the user's parameters, in the
 // order of their bits. Its 3D settings follow. Sequence sounds and wave sounds hold one more 32-bit value after them.
 // The details follow last: a sequence sound's list of banks, its tracks, its start and its channel priority, a wave
-// sound's index and its channel priority, or a stream sound's tracks and sends (ntdlib/sar/tables.h). The other tables'
-// entries hold their file IDs and lists as the tools write them.
+// sound's index and its channel priority, or a stream sound's tracks and sends (ntdlib/sar/tables.h). On the 3DS, the
+// details follow the archive's version. A wave sound of 2.0.0.0 holds sends after them, and a stream sound of 2.0.0.0
+// holds a value after its 3D settings. The other tables' entries hold their file IDs and lists as the tools write
+// them.
 
 #pragma once
 
@@ -92,7 +96,8 @@ struct SoundModel
     Sound3dModel settings_3d;
     std::optional<uint32_t> option_17;                   // the value of option 17
     std::array<std::optional<uint32_t>, 4> user_options; // the values of options 28 to 31, the user's parameters
-    uint32_t after_3d = 0; // the value after the 3D settings of a sequence sound or a wave sound
+    // The value after the 3D settings of a sequence sound, a wave sound, or a stream sound of a 3DS archive of 2.0.0.0.
+    uint32_t after_3d = 0;
 
     // Sequence sounds.
     std::vector<uint32_t> banks; // bank item IDs, or kNoItem for an empty slot
@@ -109,8 +114,12 @@ struct SoundModel
     // Stream sounds.
     StreamSoundInfo stream;
     StreamFields stream_fields = StreamFields::kPrefetch;
-    std::optional<StreamExtension> stream_extension; // with kExtension or kPrefetch
+    std::optional<StreamExtension> stream_extension; // with kExtension or kPrefetch, or with stream_options
     uint32_t prefetch_file_id = kNoItem; // with kPrefetch: the ID of the stream's prefetch file, or kNoItem for none
+
+    // A stream sound of a 3DS archive of 2.3.0.0: the values of the extension that its details hold as options, a bit
+    // each, from bit 0 for the type of the stream. Without one, the sound has no extension.
+    uint8_t stream_options = 0;
 };
 
 // A sound group: sounds with consecutive IDs, and the files that they play. A wave sound set lists the wave archives
@@ -205,13 +214,13 @@ struct FileModel
     std::vector<uint32_t> groups = {}; // the item IDs of the groups that hold the file, in the list's order
 };
 
-// A sound archive of the Wii U or the Switch.
+// A sound archive of the 3DS, the Wii U or the Switch.
 struct ArchiveModel
 {
     friend bool operator==(const ArchiveModel&, const ArchiveModel&) = default;
 
     Flavor flavor = Flavor::kNx;
-    uint32_t version = 0x00020500; // FSAR's version: 0x00020200 for 2.2.0
+    uint32_t version = 0x00020500; // FSAR's version, such as 0x00020200 for 2.2.0, or CSAR's, such as 0x02000000
     PlayerSettings player_settings;
     std::vector<SoundModel> sounds;
     std::vector<SoundGroupModel> sound_groups;
@@ -223,14 +232,17 @@ struct ArchiveModel
 };
 
 // The model of `archive`, an archive of `flavor` that NintendoWare's tools laid out. BuildArchive gives `archive` back
-// byte for byte from it. Throws std::invalid_argument for the 3DS. Throws xsflib::FormatError for bytes that aren't an
-// archive of the console, for options and fields that the model doesn't hold, and for an archive laid out another way.
+// byte for byte from it. Throws xsflib::FormatError for bytes that aren't an archive of the console, for options and
+// fields that the model doesn't hold, and for an archive laid out another way, such as an archive without names or a
+// 3DS archive with a sound or a file whose layout in the archive's version the model doesn't know.
 ArchiveModel ReadArchiveModel(std::span<const uint8_t> archive, Flavor flavor);
 
-// The archive of `model`, laid out as NintendoWare's tools lay an archive out. Throws std::invalid_argument for the
-// 3DS, a sound of an unknown kind, fields after a stream sound's sends in a version before 2.1.0, a stream sound's
-// extension without a reference to it, a file of kCopy whose group's file the FILE block doesn't hold or doesn't hold a
-// copy of the file in, an archive past 4 GB, and the names that StringBlock::Write refuses, such as two names alike.
+// The archive of `model`, laid out as NintendoWare's tools lay an archive out. Throws std::invalid_argument for a sound
+// of an unknown kind, fields after a stream sound's sends in a version before 2.1.0, a stream sound's extension without
+// a reference to it, a 3DS stream sound's options, tracks or extension in a version without them, a 3DS stream sound,
+// wave sound or file without a place in a version whose layout the model doesn't know, a file of kCopy whose group's
+// file the FILE block doesn't hold or doesn't hold a copy of the file in, an archive past 4 GB, and the names that
+// StringBlock::Write refuses, such as two names alike.
 std::vector<uint8_t> BuildArchive(const ArchiveModel& model);
 
 } // namespace ntdlib::sar

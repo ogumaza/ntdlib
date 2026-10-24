@@ -21,7 +21,9 @@ struct ArchiveFile
     std::span<const uint8_t> data;
 };
 
-// Reads the files of an RARC archive. The spans point into `rarc`. Throws FormatError if it isn't one.
+// Reads the files of an RARC archive. The spans point into `rarc`. An archive that starts with "CRAR" is little-endian.
+// The Switch's releases of GameCube and Wii games store their archives that way. Throws FormatError if it isn't an
+// archive.
 std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc);
 
 // Whether `data` is compressed with Yaz0: whether it starts with "Yaz0".
@@ -37,8 +39,8 @@ std::span<const uint8_t> DecodeIfYaz0(std::span<const uint8_t> data, std::vector
 // A sequence archive with the sequences of another release's sequence table. The table is a 32-bit count, zeros up to
 // 0x20, and then a 32-bit offset and size for each sequence. The result is `rarc` with each file's data replaced by the
 // table's entry whose index is the file's id. Each file keeps its entry: its id, its name and its flags. Each file's
-// data starts on a 32-byte boundary. A Yaz0 archive is decoded first. Throws FormatError if either is damaged, or if a
-// file's id is past the table's end.
+// data starts on a 32-byte boundary. A Yaz0 archive is decoded first. The archive and the table are big-endian. Throws
+// FormatError if either is damaged, or if a file's id is past the table's end.
 std::vector<uint8_t> RepackSequenceTable(std::span<const uint8_t> rarc, std::span<const uint8_t> table);
 
 // The sequences of a sequence table (see RepackSequenceTable), as ReadRarc gives a RARC's files: each entry's index as

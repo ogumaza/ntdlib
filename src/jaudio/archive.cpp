@@ -26,7 +26,10 @@ namespace ntdlib::jaudio
 namespace
 {
 
+using detail::HasTag;
+using detail::IsBigEndian;
 using detail::kReaderOptions;
+using detail::TagAt;
 
 // The reader settings for `options`: the module's settings, with the options' message for a read past the end.
 xsflib::ReaderOptions ReaderOptionsOf(const BaaOptions& options)
@@ -73,14 +76,14 @@ std::optional<std::size_t> ArgumentBytes(const std::string& tag)
 template <typename Visit>
 void WalkCommands(const xsflib::Reader& r, const BaaOptions& options, const Visit& visit)
 {
-    if (r.Size() < options.min_size || !r.Magic(0, "AA_<"))
+    if (r.Size() < options.min_size || !HasTag(r, 0, "AA_<"))
     {
         throw xsflib::FormatError(options.not_an_archive);
     }
 
     for (std::size_t at = 4;;)
     {
-        const std::string tag(reinterpret_cast<const char*>(r.Sub(at, 4).data()), 4);
+        const std::string tag = TagAt(r, at);
         at += 4;
         if (tag == ">_AA")
         {
@@ -147,8 +150,9 @@ uint32_t Capped(uint32_t count, uint32_t cap, const BaaOptions& options)
 
 // The sounds of the sound table that `table` starts with, and their names from the name table that `names` starts with.
 // The table starts at `table_offset` in the archive. The table lists its sections, each section its groups, and each
-// group its sounds. A sound's word holds its type in the top byte and the offset of its entry below. The name table has
-// the same shape, with a name before each section's and group's list.
+// group its sounds. A sound's word holds its type in the top byte and the offset of its entry below. A little-endian
+// table stores the type's byte first, then the offset in 24 bits. The name table has the same shape, with a name before
+// each section's and group's list.
 std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t table_offset,
                                        const std::optional<xsflib::Reader>& names, const BaaOptions& options)
 {
@@ -174,7 +178,7 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
         return names->U32(*list + first + 4 * i);
     };
 
-    if (options.check_magic && !table.Magic(0, "BST "))
+    if (options.check_magic && !HasTag(table, 0, "BST "))
     {
         throw xsflib::FormatError(options.table_damaged);
     }
@@ -183,7 +187,7 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
     std::optional<uint32_t> names_root;
     if (names)
     {
-        if (options.check_magic && !names->Magic(0, "BSTN"))
+        if (options.check_magic && !HasTag(*names, 0, "BSTN"))
         {
             throw xsflib::FormatError(options.table_damaged);
         }
@@ -220,7 +224,7 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
             for (uint32_t i = 0; i < items; i++)
             {
                 const uint32_t word = table.U32(group + 8 + 4 * i);
-                const uint32_t entry = word & 0xffffff;
+                const uint32_t entry = table.BigEndian() ? word & 0xffffff : word >> 8;
                 if (options.skip_empty && entry == 0)
                 {
                     continue;
@@ -228,7 +232,7 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
 
                 SoundEntry sound;
                 sound.offset = table_offset + entry;
-                sound.type = static_cast<uint8_t>(word >> 24);
+                sound.type = static_cast<uint8_t>(table.BigEndian() ? word >> 24 : word);
                 sound.section = static_cast<uint8_t>(s);
                 sound.group = static_cast<uint8_t>(g);
                 sound.index = static_cast<uint16_t>(i);
@@ -245,13 +249,15 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
                 sound.group_name = group_name;
 
                 // A sound of a type that plays a file of the sequence archive names the file in the low half of the
-                // word that ends with the file's number. A sound of the first layouts' type 0x20 plays the sequence
-                // block with the sound's ID. The others play the collection's sequence at their place in their group.
-                // The group is their category in the collection.
+                // word that ends with the file's number. In a little-endian table, the number is a 16-bit field in the
+                // word's high half. A sound of the first layouts' type 0x20 plays the sequence block with the sound's
+                // ID. The others play the collection's sequence at their place in their group. The group is their
+                // category in the collection.
                 if (options.sources && layout.file)
                 {
                     sound.source = SoundEntry::Source::kArchive;
-                    sound.resource = table.U32(entry + *layout.file - 2) & 0xffff;
+                    const uint32_t file_word = table.U32(entry + *layout.file - 2);
+                    sound.resource = table.BigEndian() ? file_word & 0xffff : file_word >> 16;
                 }
                 else if (options.sources && layout.block)
                 {
@@ -277,7 +283,7 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
 std::vector<SoundEntry> ReadSounds(std::span<const uint8_t> baa, const BaaOptions& options)
 {
     const xsflib::ReaderOptions reader_options = ReaderOptionsOf(options);
-    const xsflib::Reader r(baa, true, reader_options);
+    const xsflib::Reader r(baa, IsBigEndian(baa, "AA_<"), reader_options);
 
     // The walk records each table's start, and without tables_reach_end its block. The tables are read once the walk is
     // over.
@@ -303,22 +309,22 @@ std::vector<SoundEntry> ReadSounds(std::span<const uint8_t> baa, const BaaOption
     {
         if (table_start && *table_start)
         {
-            table.emplace(ToEnd(r, *table_start), true, reader_options);
+            table.emplace(ToEnd(r, *table_start), r.BigEndian(), reader_options);
         }
         if (names_start && *names_start)
         {
-            names.emplace(ToEnd(r, *names_start), true, reader_options);
+            names.emplace(ToEnd(r, *names_start), r.BigEndian(), reader_options);
         }
     }
     else
     {
         if (!table_block.empty())
         {
-            table.emplace(table_block, true, reader_options);
+            table.emplace(table_block, r.BigEndian(), reader_options);
         }
         if (!names_block.empty())
         {
-            names.emplace(names_block, true, reader_options);
+            names.emplace(names_block, r.BigEndian(), reader_options);
         }
     }
 
@@ -344,7 +350,7 @@ std::vector<SoundEntry> ReadSounds(std::span<const uint8_t> baa, const BaaOption
 std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const BaaOptions& options)
 {
     const xsflib::ReaderOptions reader_options = ReaderOptionsOf(options);
-    const xsflib::Reader r(baa, true, reader_options);
+    const xsflib::Reader r(baa, IsBigEndian(baa, "AA_<"), reader_options);
     std::vector<uint32_t> systems;
     const auto find_systems = [&](const std::string& tag, std::size_t at)
     {
@@ -360,14 +366,15 @@ std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const Ba
     std::vector<std::string> names;
     for (const uint32_t offset : systems)
     {
-        const xsflib::Reader ws(WaveSystemData(r, offset, options), true, reader_options);
-        if (!ws.Magic(0, "WSYS"))
+        const std::span<const uint8_t> data = WaveSystemData(r, offset, options);
+        const xsflib::Reader ws(data, IsBigEndian(data, "WSYS"), reader_options);
+        if (!HasTag(ws, 0, "WSYS"))
         {
             throw xsflib::FormatError(options.wave_system_damaged);
         }
 
         const uint32_t info = ws.U32(0x10);
-        if (!ws.Magic(info, "WINF"))
+        if (!HasTag(ws, info, "WINF"))
         {
             throw xsflib::FormatError(options.wave_system_damaged);
         }
@@ -395,7 +402,7 @@ std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const Ba
 std::vector<WaveSystem> ReadWaveSystems(std::span<const uint8_t> baa, const BaaOptions& options)
 {
     const xsflib::ReaderOptions reader_options = ReaderOptionsOf(options);
-    const xsflib::Reader r(baa, true, reader_options);
+    const xsflib::Reader r(baa, IsBigEndian(baa, "AA_<"), reader_options);
     std::vector<std::pair<uint32_t, uint32_t>> commands; // each wave system's number and offset
     const auto find_systems = [&](const std::string& tag, std::size_t at)
     {
@@ -437,7 +444,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
     SoundArchive archive;
     archive.data_ = std::move(baa);
     const BaaOptions kOptions;
-    const xsflib::Reader r(archive.data_, true, kReaderOptions);
+    const xsflib::Reader r(archive.data_, IsBigEndian(archive.data_, "AA_<"), kReaderOptions);
 
     // Each command's arguments are offsets into the archive. A wave system is read as the walk reaches it.
     std::span<const uint8_t> bst, bstn;
@@ -493,7 +500,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
     // The sequence collection: "SC", a category count, its size, then each category's table of sequence offsets.
     if (archive.collection_size_ > 0)
     {
-        const xsflib::Reader sc(archive.Collection(), true, kReaderOptions);
+        const xsflib::Reader sc(archive.Collection(), r.BigEndian(), kReaderOptions);
         if (sc.U8(0) != 'S' || sc.U8(1) != 'C')
         {
             throw xsflib::FormatError("archive's sequence collection has no SC header");
@@ -516,8 +523,10 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
     if (!bst.empty())
     {
         const std::optional<xsflib::Reader> names =
-            bstn.empty() ? std::nullopt : std::optional<xsflib::Reader>(xsflib::Reader(bstn, true, kReaderOptions));
-        archive.sounds_ = ReadSoundTable(xsflib::Reader(bst, true, kReaderOptions), bst_offset, names, kOptions);
+            bstn.empty() ? std::nullopt
+                         : std::optional<xsflib::Reader>(xsflib::Reader(bstn, r.BigEndian(), kReaderOptions));
+        archive.sounds_ =
+            ReadSoundTable(xsflib::Reader(bst, r.BigEndian(), kReaderOptions), bst_offset, names, kOptions);
     }
 
     return archive;

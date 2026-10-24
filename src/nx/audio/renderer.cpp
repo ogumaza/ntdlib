@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -29,6 +30,11 @@ constexpr int kGainBits = 23;
 constexpr int32_t kDepopDecay48k = 31529;
 constexpr int32_t kDepopDecay = 30923;
 
+// The enhanced mode's depop: its decay a sample at 48 kHz and at any other rate, and the value below which it ends.
+constexpr float kFloatDepopDecay48k = 31529.0f / 32768.0f;
+constexpr float kFloatDepopDecay = 30923.0f / 32768.0f;
+constexpr float kFloatDepopFloor = 1.0f / 65536.0f;
+
 // The step of a ramp across a frame: the difference of the gains, which wraps, over the sample count.
 int32_t RampStep(int32_t from, int32_t to, int count)
 {
@@ -43,6 +49,53 @@ int64_t AdpcmBytes(int32_t sample)
     return 8 * frame + (in_frame == 0 ? 0 : in_frame / 2 + 1 + in_frame % 2);
 }
 
+// The enhanced mode's ramp across a frame: out[i] = in[i] * (from + i * step), with the step that reaches `to` after
+// `count` samples. Returns the last product.
+float Ramp(float* out, const float* in, float from, float to, int count)
+{
+    const float step = (to - from) / static_cast<float>(count);
+    float last = 0.0f;
+    for (int i = 0; i < count; ++i)
+    {
+        last = in[i] * (from + static_cast<float>(i) * step);
+        out[i] = last;
+    }
+
+    return last;
+}
+
+// The same ramp added to `out`. Returns the last product.
+float MixRamp(float* out, const float* in, float from, float to, int count)
+{
+    const float step = (to - from) / static_cast<float>(count);
+    float last = 0.0f;
+    for (int i = 0; i < count; ++i)
+    {
+        last = in[i] * (from + static_cast<float>(i) * step);
+        out[i] += last;
+    }
+
+    return last;
+}
+
+// A sample of the enhanced mode for an aux's send ring: to the nearest integer, halves away from zero, held to 32 bits.
+int32_t RingSample(float x)
+{
+    return static_cast<int32_t>(std::clamp(std::round(static_cast<double>(x)), -2147483648.0, 2147483647.0));
+}
+
+// The largest magnitude of `count` samples, held to 32 bits.
+int32_t PeakOf(const float* samples, std::size_t count)
+{
+    float peak = 0.0f;
+    for (std::size_t t = 0; t < count; ++t)
+    {
+        peak = std::max(peak, std::fabs(samples[t]));
+    }
+
+    return static_cast<int32_t>(std::min(peak, 2147483520.0f));
+}
+
 } // namespace
 
 Renderer::Renderer(const RendererParameter& parameter)
@@ -55,6 +108,12 @@ Renderer::Renderer(const RendererParameter& parameter)
       depop_(static_cast<std::size_t>(parameter.mix_buffer_count))
 {
     mixes_[kFinalMix].sample_rate = parameter.sample_rate;
+    if (parameter.enhanced)
+    {
+        enhanced_.resize(resources_.size());
+        float_buffers_.resize(buffers_.size());
+        float_depop_.resize(depop_.size());
+    }
 }
 
 void Renderer::SetObserver(RendererObserver* observer)
@@ -154,9 +213,11 @@ int Renderer::TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat
         resource.in_use = true;
         resource.client_mix = {};
         voice.resources[static_cast<std::size_t>(c)] = free[static_cast<std::size_t>(c)];
+        resource_mark_ = std::max(resource_mark_, free[static_cast<std::size_t>(c)] + 1);
     }
 
     const int index = static_cast<int>(slot - voices_.begin());
+    voice_mark_ = std::max(voice_mark_, index + 1);
     Insert(index);
 
     return index;
@@ -287,6 +348,10 @@ void Renderer::SetMeters(int count, int mix, std::span<const int> channels)
     const std::size_t sums = static_cast<std::size_t>(meter_count_) * static_cast<std::size_t>(meter_channel_count_);
     meter_sums_.assign(sums * static_cast<std::size_t>(parameter_.sample_count), 0);
     meter_peaks_.assign(sums, 0);
+    if (parameter_.enhanced)
+    {
+        float_meter_sums_.assign(meter_sums_.size(), 0.0f);
+    }
 }
 
 void Renderer::SetVoiceMeter(int voice, int meter)
@@ -503,6 +568,10 @@ void Renderer::AddDeviceSink(std::span<const int> inputs)
 {
     sinks_.assign(inputs.begin(), inputs.end());
     output_.assign(static_cast<std::size_t>(parameter_.sample_count) * sinks_.size(), 0);
+    if (parameter_.enhanced)
+    {
+        float_output_.assign(output_.size(), 0.0f);
+    }
     if (observer_ != nullptr)
     {
         observer_->AddDeviceSink(inputs);
@@ -666,6 +735,13 @@ void Renderer::MeasureMix(int id)
     std::vector<int32_t>& peaks = mix_peaks_[static_cast<std::size_t>(id)];
     for (int b = 0; b < mix.buffer_count && b < static_cast<int>(peaks.size()); ++b)
     {
+        if (parameter_.enhanced)
+        {
+            peaks[static_cast<std::size_t>(b)] =
+                PeakOf(FloatBuffer(mix.offset + b), static_cast<std::size_t>(parameter_.sample_count));
+            continue;
+        }
+
         const int32_t* samples = Buffer(mix.offset + b);
         int64_t peak = 0;
         for (int t = 0; t < parameter_.sample_count; ++t)
@@ -683,6 +759,11 @@ int32_t* Renderer::Buffer(int index)
     return buffers_.data() + static_cast<std::size_t>(index) * static_cast<std::size_t>(parameter_.sample_count);
 }
 
+float* Renderer::FloatBuffer(int index)
+{
+    return float_buffers_.data() + static_cast<std::size_t>(index) * static_cast<std::size_t>(parameter_.sample_count);
+}
+
 void Renderer::RenderFrame()
 {
     Update();
@@ -695,7 +776,26 @@ void Renderer::RenderFrame()
 
 Renderer::Snapshot Renderer::Save() const
 {
-    return {this, voices_, resources_, order_, mixes_, auxes_, mixes_changed_, sinks_, buffers_, depop_, output_};
+    Snapshot snapshot;
+    snapshot.owner = this;
+    snapshot.voices.assign(voices_.begin(), voices_.begin() + voice_mark_);
+    snapshot.resources.assign(resources_.begin(), resources_.begin() + resource_mark_);
+    snapshot.order = order_;
+    snapshot.mixes = mixes_;
+    snapshot.auxes = auxes_;
+    snapshot.mixes_changed = mixes_changed_;
+    snapshot.sinks = sinks_;
+    snapshot.buffers = buffers_;
+    snapshot.depop = depop_;
+    snapshot.output = output_;
+    if (parameter_.enhanced)
+    {
+        snapshot.enhanced.assign(enhanced_.begin(), enhanced_.begin() + resource_mark_);
+        snapshot.float_depop = float_depop_;
+        snapshot.float_output = float_output_;
+    }
+
+    return snapshot;
 }
 
 void Renderer::Restore(const Snapshot& snapshot)
@@ -705,9 +805,32 @@ void Renderer::Restore(const Snapshot& snapshot)
         throw std::invalid_argument("a snapshot of another renderer");
     }
 
-    // The voices keep their places. Their wave buffers' contexts point into them.
+    // The voices keep their places. Their wave buffers' contexts point into them. Those past the snapshot's marks go
+    // back to how they started.
+    const auto voices = snapshot.voices.size();
+    const auto resources = snapshot.resources.size();
     std::copy(snapshot.voices.begin(), snapshot.voices.end(), voices_.begin());
-    resources_ = snapshot.resources;
+    for (std::size_t slot = voices; slot < static_cast<std::size_t>(voice_mark_); ++slot)
+    {
+        voices_[slot] = Voice{};
+    }
+    std::copy(snapshot.resources.begin(), snapshot.resources.end(), resources_.begin());
+    for (std::size_t r = resources; r < static_cast<std::size_t>(resource_mark_); ++r)
+    {
+        resources_[r] = ChannelResource{};
+    }
+    if (parameter_.enhanced)
+    {
+        std::copy(snapshot.enhanced.begin(), snapshot.enhanced.end(), enhanced_.begin());
+        for (std::size_t r = resources; r < static_cast<std::size_t>(resource_mark_); ++r)
+        {
+            enhanced_[r] = EnhancedChannel{};
+        }
+        float_depop_ = snapshot.float_depop;
+        float_output_ = snapshot.float_output;
+    }
+    voice_mark_ = static_cast<int>(voices);
+    resource_mark_ = static_cast<int>(resources);
     order_ = snapshot.order;
     mixes_ = snapshot.mixes;
     auxes_ = snapshot.auxes;
@@ -823,6 +946,10 @@ void Renderer::Update()
             for (int c = 0; server.muted && c < voice.channel_count; ++c)
             {
                 Resource(voice, c).dsp.last_samples = {};
+                if (parameter_.enhanced)
+                {
+                    enhanced_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])].last = {};
+                }
             }
         }
 
@@ -902,8 +1029,15 @@ void Renderer::Generate()
     {
         LayOutMixes();
     }
+    if (!mixing_)
+    {
+        GenerateWithoutMixing();
+        return;
+    }
     std::fill(buffers_.begin(), buffers_.end(), 0);
     std::fill(meter_sums_.begin(), meter_sums_.end(), 0);
+    std::fill(float_buffers_.begin(), float_buffers_.end(), 0.0f);
+    std::fill(float_meter_sums_.begin(), float_meter_sums_.end(), 0.0f);
 
     // The voices, the least important first, and among equals the oldest first.
     std::vector<int> sorted;
@@ -931,18 +1065,7 @@ void Renderer::Generate()
         RenderVoice(At(index));
     }
 
-    // The peaks of the meters' sums.
-    const auto count = static_cast<std::size_t>(parameter_.sample_count);
-    for (std::size_t i = 0; i < meter_peaks_.size(); ++i)
-    {
-        int64_t peak = 0;
-        for (std::size_t t = 0; t < count; ++t)
-        {
-            const int64_t x = meter_sums_[i * count + t];
-            peak = std::max(peak, x < 0 ? -x : x);
-        }
-        meter_peaks_[i] = static_cast<int32_t>(std::min<int64_t>(peak, std::numeric_limits<int32_t>::max()));
-    }
+    MeasureMeters();
 
     // The sub-mixes in their order, then the final mix and the sink.
     std::vector<int> mix_order;
@@ -963,11 +1086,80 @@ void Renderer::Generate()
         RenderSubMix(id);
     }
     RenderFinalMix();
+    Output();
+}
 
+// A frame without mixing (see the class's comment): each voice moves on, each mix's depop fades, and the meters and the
+// output are silent. Nothing reads the mix buffers until a mixed frame clears them.
+void Renderer::GenerateWithoutMixing()
+{
+    for (Voice& voice : voices_)
+    {
+        if (voice.server.in_use)
+        {
+            RenderVoice(voice);
+        }
+    }
+
+    for (const Mix& mix : mixes_)
+    {
+        if (mix.in_use)
+        {
+            Depop(mix);
+        }
+    }
+
+    std::fill(meter_peaks_.begin(), meter_peaks_.end(), 0);
+    for (std::vector<int32_t>& peaks : mix_peaks_)
+    {
+        std::fill(peaks.begin(), peaks.end(), 0);
+    }
+    std::fill(output_.begin(), output_.end(), 0);
+    std::fill(float_output_.begin(), float_output_.end(), 0.0f);
+}
+
+// The peaks of the meters' sums.
+void Renderer::MeasureMeters()
+{
+    const auto count = static_cast<std::size_t>(parameter_.sample_count);
+    for (std::size_t i = 0; i < meter_peaks_.size(); ++i)
+    {
+        if (parameter_.enhanced)
+        {
+            meter_peaks_[i] = PeakOf(&float_meter_sums_[i * count], count);
+            continue;
+        }
+
+        int64_t peak = 0;
+        for (std::size_t t = 0; t < count; ++t)
+        {
+            const int64_t x = meter_sums_[i * count + t];
+            peak = std::max(peak, x < 0 ? -x : x);
+        }
+        meter_peaks_[i] = static_cast<int32_t>(std::min<int64_t>(peak, std::numeric_limits<int32_t>::max()));
+    }
+}
+
+// The device sink's channels, interleaved: held to 16 bits, and in the enhanced mode in floating point too.
+void Renderer::Output()
+{
     const Mix& final_mix = mixes_[kFinalMix];
     const std::size_t channels = sinks_.size();
     for (std::size_t k = 0; k < channels; ++k)
     {
+        if (parameter_.enhanced)
+        {
+            const float* samples = FloatBuffer(final_mix.offset + sinks_[k]);
+            for (int t = 0; t < parameter_.sample_count; ++t)
+            {
+                const float x = samples[t];
+                const std::size_t at = static_cast<std::size_t>(t) * channels + k;
+                float_output_[at] = x * (1.0f / 32768.0f);
+                output_[at] = static_cast<int16_t>(std::clamp(RingSample(x), -32768, 32767));
+            }
+            continue;
+        }
+
         const int32_t* samples = Buffer(final_mix.offset + sinks_[k]);
         for (int t = 0; t < parameter_.sample_count; ++t)
         {
@@ -1009,6 +1201,10 @@ void Renderer::RenderVoice(Voice& voice)
             ChannelResource& resource = Resource(voice, c);
             resource.dsp = VoiceState{};
             resource.previous_mix = resource.mix;
+            if (parameter_.enhanced)
+            {
+                enhanced_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])] = EnhancedChannel{};
+            }
         }
         server.previous_volume = server.volume;
         server.previous_muted = server.muted;
@@ -1061,6 +1257,10 @@ void Renderer::RenderVoice(Voice& voice)
                 s.adpcm = {};
                 s.fraction = 0;
                 s.history = {};
+                if (parameter_.enhanced)
+                {
+                    enhanced_[static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)])].history = {};
+                }
             }
             server.state = 1;
         }
@@ -1076,6 +1276,18 @@ void Renderer::RenderVoice(Voice& voice)
     }
 
     const Mix* destination = MixInUse(server.mix);
+    if (!mixing_)
+    {
+        AdvanceVoice(voice, destination);
+        return;
+    }
+
+    if (parameter_.enhanced)
+    {
+        RenderVoiceEnhanced(voice, destination);
+        return;
+    }
+
     const int count = parameter_.sample_count;
     for (int c = 0; c < channels; ++c)
     {
@@ -1181,6 +1393,82 @@ void Renderer::RenderVoice(Voice& voice)
     }
 }
 
+// A voice's frame without mixing (see the class's comment). Its channels move on through their buffers, and the
+// voice's values for the next frame are those that a mixed frame leaves. A filter that comes on still starts from a
+// cleared state. The voice's last products are 0, and a voice that stops leaves the depop nothing.
+void Renderer::AdvanceVoice(Voice& voice, const Mix* destination)
+{
+    Voice::Server& server = voice.server;
+    for (int c = 0; c < server.channel_count; ++c)
+    {
+        const auto r = static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)]);
+        ChannelResource& resource = resources_[r];
+        VoiceState& s = resource.dsp;
+        s.last_samples = {};
+        if (parameter_.enhanced)
+        {
+            enhanced_[r].last = {};
+        }
+        if (server.stopping)
+        {
+            continue;
+        }
+
+        DecodeFromWaveBuffersArgs args;
+        args.format = server.format;
+        args.state = &s;
+        args.buffers = &server.buffers;
+        args.channel = c;
+        args.channel_count = server.channel_count;
+        args.quality = server.quality;
+        args.pitch = ToFixed(server.pitch, 15);
+        args.source_rate = server.sample_rate;
+        args.target_rate = parameter_.sample_rate;
+        args.count = parameter_.sample_count;
+        args.coefficients = &voice.coefficients;
+        if (parameter_.enhanced)
+        {
+            DecodeFromWaveBuffersEnhanced(args, {enhanced_[r].history, &decoded_, &input_}, nullptr);
+        }
+        else
+        {
+            DecodeFromWaveBuffers(args);
+        }
+        if (destination == nullptr)
+        {
+            continue;
+        }
+
+        for (std::size_t i = 0; i < 2; ++i)
+        {
+            if (server.biquads[i].enabled && !server.biquads_were_enabled[i])
+            {
+                s.biquads[i] = {};
+            }
+        }
+        resource.previous_mix = resource.mix;
+
+        // In the console's mode, the voice takes its values for the next frame with each channel.
+        if (!parameter_.enhanced)
+        {
+            server.previous_volume = server.volume;
+            server.previous_muted = server.muted;
+            server.biquads_were_enabled = {server.biquads[0].enabled, server.biquads[1].enabled};
+        }
+    }
+
+    if (server.stopping)
+    {
+        server.previous_volume = 0.0f;
+    }
+    else if (destination != nullptr && parameter_.enhanced)
+    {
+        server.previous_volume = server.volume;
+        server.previous_muted = server.muted;
+        server.biquads_were_enabled = {server.biquads[0].enabled, server.biquads[1].enabled};
+    }
+}
+
 // A metered voice's output to buffer `buffer` of the metered mix goes to its meter's channel too, at the same gains.
 void Renderer::AddToMeter(const Voice::Server& server, int buffer, const int32_t* work, int32_t start, int32_t end)
 {
@@ -1197,9 +1485,144 @@ void Renderer::AddToMeter(const Voice::Server& server, int buffer, const int32_t
                  kGainBits);
 }
 
+// The enhanced mode's processing of a voice that renders (see the class's comment).
+void Renderer::RenderVoiceEnhanced(Voice& voice, const Mix* destination)
+{
+    Voice::Server& server = voice.server;
+    const int count = parameter_.sample_count;
+    const float last_volume = server.previous_muted ? 0.0f : server.previous_volume;
+    const float volume = server.muted ? 0.0f : server.volume;
+    for (int c = 0; c < server.channel_count; ++c)
+    {
+        const auto r = static_cast<std::size_t>(voice.resources[static_cast<std::size_t>(c)]);
+        ChannelResource& resource = resources_[r];
+        VoiceState& s = resource.dsp;
+        EnhancedChannel& channel = enhanced_[r];
+        float* work = FloatBuffer(parameter_.mix_buffer_count + c);
+
+        // A voice that stops leaves its last products to fade out.
+        if (server.stopping)
+        {
+            for (int b = 0; destination != nullptr && b < destination->buffer_count; ++b)
+            {
+                float& last = channel.last[static_cast<std::size_t>(b)];
+                float_depop_[static_cast<std::size_t>(destination->offset + b)] += last;
+                last = 0.0f;
+            }
+            continue;
+        }
+
+        // The data source.
+        DecodeFromWaveBuffersArgs args;
+        args.format = server.format;
+        args.state = &s;
+        args.buffers = &server.buffers;
+        args.channel = c;
+        args.channel_count = server.channel_count;
+        args.quality = server.quality;
+        args.pitch = ToFixed(server.pitch, 15);
+        args.source_rate = server.sample_rate;
+        args.target_rate = parameter_.sample_rate;
+        args.count = count;
+        args.coefficients = &voice.coefficients;
+        DecodeFromWaveBuffersEnhanced(args, {channel.history, &decoded_, &input_}, work);
+        if (destination == nullptr)
+        {
+            continue;
+        }
+
+        // The biquads, a filter's state cleared when it comes on.
+        for (std::size_t i = 0; i < 2; ++i)
+        {
+            const BiquadFilterParameter& filter = server.biquads[i];
+            if (!filter.enabled)
+            {
+                continue;
+            }
+
+            if (!server.biquads_were_enabled[i])
+            {
+                s.biquads[i] = {};
+            }
+            ApplyBiquadFilter(work, work, filter.b, filter.a, s.biquads[i], count);
+        }
+
+        // The volume, then each mix volume, from the last frame's. A buffer that the voice doesn't reach keeps no last
+        // product.
+        Ramp(work, work, last_volume, volume, count);
+        for (int b = 0; b < destination->buffer_count; ++b)
+        {
+            const float before = resource.previous_mix[static_cast<std::size_t>(b)];
+            const float now = resource.mix[static_cast<std::size_t>(b)];
+            float& last = channel.last[static_cast<std::size_t>(b)];
+            if (before == 0.0f && now == 0.0f)
+            {
+                last = 0.0f;
+                continue;
+            }
+
+            last = MixRamp(FloatBuffer(destination->offset + b), work, before, now, count);
+            AddToMeterEnhanced(server, b, work, before, now);
+        }
+        resource.previous_mix = resource.mix;
+    }
+
+    // The voice's values for the next frame.
+    if (server.stopping)
+    {
+        server.previous_volume = 0.0f;
+    }
+    else if (destination != nullptr)
+    {
+        server.previous_volume = server.volume;
+        server.previous_muted = server.muted;
+        server.biquads_were_enabled = {server.biquads[0].enabled, server.biquads[1].enabled};
+    }
+}
+
+// The enhanced mode's AddToMeter.
+void Renderer::AddToMeterEnhanced(const Voice::Server& server, int buffer, const float* work, float start, float end)
+{
+    if (server.meter < 0 || server.meter >= meter_count_ || server.mix != meter_mix_ ||
+        buffer >= static_cast<int>(meter_channels_.size()) || meter_channels_[static_cast<std::size_t>(buffer)] < 0)
+    {
+        return;
+    }
+
+    const int count = parameter_.sample_count;
+    const std::size_t sum = static_cast<std::size_t>(server.meter) * static_cast<std::size_t>(meter_channel_count_) +
+                            static_cast<std::size_t>(meter_channels_[static_cast<std::size_t>(buffer)]);
+    MixRamp(&float_meter_sums_[sum * static_cast<std::size_t>(count)], work, start, end, count);
+}
+
 // The depop of a mix's buffers: each buffer's step fades out across the frames.
 void Renderer::Depop(const Mix& mix)
 {
+    if (parameter_.enhanced)
+    {
+        const float decay = mix.sample_rate == 48000 ? kFloatDepopDecay48k : kFloatDepopDecay;
+        for (int b = 0; b < mix.buffer_count; ++b)
+        {
+            float& depop = float_depop_[static_cast<std::size_t>(mix.offset + b)];
+            if (depop == 0.0f)
+            {
+                continue;
+            }
+
+            float* samples = FloatBuffer(mix.offset + b);
+            for (int t = 0; t < parameter_.sample_count; ++t)
+            {
+                depop *= decay;
+                samples[t] += depop;
+            }
+            if (std::fabs(depop) < kFloatDepopFloor)
+            {
+                depop = 0.0f;
+            }
+        }
+        return;
+    }
+
     const int32_t decay = mix.sample_rate == 48000 ? kDepopDecay48k : kDepopDecay;
     for (int b = 0; b < mix.buffer_count; ++b)
     {
@@ -1219,6 +1642,7 @@ void Renderer::Depop(const Mix& mix)
 void Renderer::RenderEffects(const Mix& mix)
 {
     const auto count = static_cast<uint32_t>(parameter_.sample_count);
+    const bool enhanced = parameter_.enhanced;
     for (const int id : mix.effects)
     {
         Aux& aux = auxes_[static_cast<std::size_t>(id)];
@@ -1229,11 +1653,15 @@ void Renderer::RenderEffects(const Mix& mix)
             aux.receive_read = 0;
             for (std::size_t k = 0; k < channels; ++k)
             {
-                const int32_t* in = Buffer(mix.offset + aux.server_inputs[k]);
-                int32_t* out = Buffer(mix.offset + aux.server_outputs[k]);
-                if (in != out)
+                const int input = mix.offset + aux.server_inputs[k];
+                const int output = mix.offset + aux.server_outputs[k];
+                if (input != output && enhanced)
                 {
-                    std::copy(in, in + count, out);
+                    std::copy(FloatBuffer(input), FloatBuffer(input) + count, FloatBuffer(output));
+                }
+                else if (input != output)
+                {
+                    std::copy(Buffer(input), Buffer(input) + count, Buffer(output));
                 }
             }
             continue;
@@ -1243,20 +1671,29 @@ void Renderer::RenderEffects(const Mix& mix)
         for (std::size_t k = 0; k < channels && ring != 0; ++k)
         {
             const uint32_t offset = static_cast<uint32_t>(k) * count;
-            const int32_t* in = Buffer(mix.offset + aux.server_inputs[k]);
+            const int input = mix.offset + aux.server_inputs[k];
+            const int output = mix.offset + aux.server_outputs[k];
             if (aux.send_write + offset <= ring)
             {
                 for (uint32_t t = 0; t < count; ++t)
                 {
-                    aux.send[(aux.send_write + offset + t) % ring] = in[t];
+                    aux.send[(aux.send_write + offset + t) % ring] =
+                        enhanced ? RingSample(FloatBuffer(input)[t]) : Buffer(input)[t];
                 }
             }
-            int32_t* out = Buffer(mix.offset + aux.server_outputs[k]);
             if (aux.receive_read + offset <= ring)
             {
                 for (uint32_t t = 0; t < count; ++t)
                 {
-                    out[t] = aux.receive[(aux.receive_read + offset + t) % ring];
+                    const int32_t x = aux.receive[(aux.receive_read + offset + t) % ring];
+                    if (enhanced)
+                    {
+                        FloatBuffer(output)[t] = static_cast<float>(x);
+                    }
+                    else
+                    {
+                        Buffer(output)[t] = x;
+                    }
                 }
             }
         }
@@ -1287,7 +1724,16 @@ void Renderer::RenderSubMix(int id)
         for (int j = 0; j < destination->buffer_count; ++j)
         {
             const float gain = mix.volume * mix.mix_volumes[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
-            if (gain != 0.0f)
+            if (gain != 0.0f && parameter_.enhanced)
+            {
+                float* out = FloatBuffer(destination->offset + j);
+                const float* in = FloatBuffer(mix.offset + i);
+                for (int t = 0; t < parameter_.sample_count; ++t)
+                {
+                    out[t] += in[t] * gain;
+                }
+            }
+            else if (gain != 0.0f)
             {
                 ApplyMix(Buffer(destination->offset + j), Buffer(mix.offset + i), ToFixed(gain, kGainBits),
                          parameter_.sample_count, kGainBits);
@@ -1307,6 +1753,19 @@ void Renderer::RenderFinalMix()
     Depop(mix);
     RenderEffects(mix);
     MeasureMix(kFinalMix);
+    if (parameter_.enhanced)
+    {
+        for (int b = 0; b < mix.buffer_count; ++b)
+        {
+            float* samples = FloatBuffer(mix.offset + b);
+            for (int t = 0; t < parameter_.sample_count; ++t)
+            {
+                samples[t] *= mix.volume;
+            }
+        }
+        return;
+    }
+
     const int32_t gain = ToFixed(mix.volume, kGainBits);
     for (int b = 0; b < mix.buffer_count; ++b)
     {

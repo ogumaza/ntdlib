@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the model of a sound archive of the Wii U or the Switch and of its builder (ntdlib/sar/archive_model.h), in
-// each console's byte order. The tests build archives from models made from nothing. The bytes that they expect follow
-// from the layout that the header describes, worked out by hand. Each archive has to read back as its model, and
-// ntdlib's reader has to read the model's values in it. An archive of ntdlib/testing/sar_tools.h has to read as a
-// model and come back byte for byte.
+// Tests of the model of a sound archive of the 3DS, the Wii U or the Switch and of its builder
+// (ntdlib/sar/archive_model.h), in each console's byte order. The tests build archives from models made from nothing.
+// The bytes that they expect follow from the layout that the header describes, worked out by hand. Each archive has to
+// read back as its model, and ntdlib's reader has to read the model's values in it. An archive of
+// ntdlib/testing/sar_tools.h has to read as a model and come back byte for byte.
 
 #include <algorithm>
 #include <array>
@@ -94,9 +94,13 @@ bool Throws(Call call)
     return !ErrorOf<Error>(call).empty();
 }
 
-// The version of the tests' archives: FSAR 2.2.0 on the Wii U, and 2.5.0 on the Switch.
+// The version of the tests' archives: CSAR 2.0.0.0 on the 3DS, FSAR 2.2.0 on the Wii U, and 2.5.0 on the Switch.
 uint32_t VersionOf(Flavor flavor)
 {
+    if (flavor == Flavor::kCtr)
+    {
+        return 0x02000000;
+    }
     return flavor == Flavor::kNx ? 0x00020500 : 0x00020200;
 }
 
@@ -174,16 +178,21 @@ std::vector<uint8_t> SequenceSoundEntry(Flavor flavor)
 
 // A file's entry: a reference to the location 12 bytes on, no options, then the location and a reference to the list
 // of the groups that hold the file. The location holds a reference of `type` with the offset after the FILE block's
-// size, and the size.
+// size, and the size. The 3DS's entries end with the location.
 std::vector<uint8_t> FileEntry(Flavor flavor, uint16_t type, uint32_t offset, uint32_t size,
                                const std::vector<uint32_t>& groups = {})
 {
-    sar_files::Bytes entry = Entry(flavor, 36 + 4 * groups.size());
+    const bool ctr = flavor == Flavor::kCtr;
+    sar_files::Bytes entry = Entry(flavor, ctr ? 24 : 36 + 4 * groups.size());
     entry.U16(0, 0x220C);
     entry.U32(4, 12);
     entry.U16(12, type);
     entry.U32(16, offset);
     entry.U32(20, size);
+    if (ctr)
+    {
+        return entry.data;
+    }
     entry.U16(24, 0x0100);
     entry.U32(28, 20);
     entry.U32(32, static_cast<uint32_t>(groups.size()));
@@ -218,7 +227,7 @@ std::vector<uint8_t> Header(Flavor flavor, uint32_t version, std::size_t end, st
                             std::size_t block)
 {
     sar_files::Bytes header = Entry(flavor, 64);
-    std::memcpy(header.data.data(), "FSAR", 4);
+    std::memcpy(header.data.data(), flavor == Flavor::kCtr ? "CSAR" : "FSAR", 4);
     header.U16(4, 0xFEFF);
     header.U16(6, 64);
     header.U32(8, version);
@@ -794,12 +803,12 @@ void TestStreamVersions(Flavor flavor)
         bool extension;
         std::size_t table;
     };
-    const Case cases[] = {
+    const Case kCases[] = {
         {0x00020000, StreamFields::kNone, false, 16},      {0x00020100, StreamFields::kNone, false, 24},
         {0x00020100, StreamFields::kExtension, false, 32}, {0x00020100, StreamFields::kExtension, true, 32},
         {0x00020200, StreamFields::kPrefetch, false, 36},  {0x00020200, StreamFields::kPrefetch, true, 36},
         {0x00020500, StreamFields::kPrefetch, true, 36}};
-    for (const Case& c : cases)
+    for (const Case& c : kCases)
     {
         SoundModel sound;
         sound.name = "STRM_A";
@@ -857,7 +866,7 @@ void TestStreamVersions(Flavor flavor)
 
 // An archive of ntdlib/testing/sar_tools.h reads as a model, and comes back byte for byte. Its entries hold what the
 // tools write. Its group GROUP_B's file holds a copy of file 0, and the file table gives the group's file a reference
-// of type 0. The archive holds no stream sound: sar_tools.h gives a stream sound 4 more bytes after its 3D settings.
+// of type 0. Its stream sound plays the file outside the archive.
 void TestToolsArchive(Flavor flavor)
 {
     sar_files::SoundSpec a;
@@ -878,9 +887,14 @@ void TestToolsArchive(Flavor flavor)
     c.kind = sar_files::SoundSpec::kWaveSound;
     c.file = 1;
     c.wave_sound_index = 2;
+    sar_files::SoundSpec d;
+    d.name = "STRM_D";
+    d.kind = sar_files::SoundSpec::kStream;
+    d.file = 4;
+    d.stream = StreamDetails();
 
     sar_files::ArchiveSpec spec;
-    spec.sounds = {a, b, c};
+    spec.sounds = {a, b, c, d};
     spec.banks = {{"BANK_A", 2}};
     spec.wave_archives = {{"", 3}};
     spec.groups = {{"GROUP_A", sar::kExternalGroupFile}, {"GROUP_B", 5}};
@@ -906,8 +920,8 @@ void TestToolsArchive(Flavor flavor)
     const std::vector<uint8_t> archive = sar_tools::Archive(flavor, spec);
     const ArchiveModel model = sar::ReadArchiveModel(archive, flavor);
     XSFLIB_CHECK(sar::BuildArchive(model) == archive);
-    XSFLIB_CHECK(model.version == 0x00020200 && model.sounds.size() == 3 && model.files.size() == 6);
-    if (model.sounds.size() != 3 || model.files.size() != 6)
+    XSFLIB_CHECK(model.version == 0x00020200 && model.sounds.size() == 4 && model.files.size() == 6);
+    if (model.sounds.size() != 4 || model.files.size() != 6)
     {
         return;
     }
@@ -920,6 +934,10 @@ void TestToolsArchive(Flavor flavor)
     XSFLIB_CHECK(model.sounds[1].banks == std::vector<uint32_t>({ItemId(sar::kBankItem, 0), kNone}));
     XSFLIB_CHECK(model.sounds[2].type == sar::SoundType::kWaveSound && model.sounds[2].wave_sound_index == 2 &&
                  model.sounds[2].file_id == 1);
+    XSFLIB_CHECK(model.sounds[3].type == sar::SoundType::kStream && model.sounds[3].file_id == 4 &&
+                 model.sounds[3].stream == StreamDetails() &&
+                 model.sounds[3].stream_fields == StreamFields::kPrefetch && !model.sounds[3].stream_extension &&
+                 model.sounds[3].prefetch_file_id == sar::kNoItem);
     XSFLIB_CHECK(model.banks == std::vector<sar::BankModel>({{.name = "BANK_A", .file_id = 2}}));
     XSFLIB_CHECK(model.wave_archives == std::vector<sar::WaveArchiveModel>({{.file_id = 3}}));
     XSFLIB_CHECK(model.groups == std::vector<sar::GroupModel>({{.name = "GROUP_A", .file_id = sar::kExternalGroupFile},
@@ -934,18 +952,306 @@ void TestToolsArchive(Flavor flavor)
     XSFLIB_CHECK(model.files[0].groups == std::vector<uint32_t>({ItemId(sar::kGroupItem, 1)}));
 }
 
+// The 3DS's versions of CSAR, with a sound of each kind and a file of each place where the model knows the version's
+// layout of them. Each sound below holds a name, a pan, priorities and its 3D settings at 40. Its details start at 56,
+// or at 60 after the value that follows the 3D settings. A wave sound of 2.0.0.0 holds sends after its details'
+// options, at the offset of option 8. From 2.3.1.0 on, it holds none. A stream sound of 2.0.0.0 holds the value after
+// its 3D settings too. Before 2.3.0.0, its details hold the tracks that play and the count of channels alone. 2.3.0.0
+// adds the table of tracks after options that hold the extension's values. From 2.3.2.0 on, the details take the
+// layout of FSAR 2.2.0 with sends of 4 bytes. A file's entry lists no groups. A file without a place has an entry that
+// refers to nothing before 2.3.0.0, and an internal file's entry whose place refers to nothing from 2.3.2.0 on. The
+// builder refuses a sound or a file whose layout in the version the model doesn't know, and the reader refuses an
+// archive that holds one.
+void TestCtrVersions()
+{
+    constexpr Flavor kCtr = Flavor::kCtr;
+    struct Case
+    {
+        uint32_t version;
+        bool wave_sounds;
+        bool stream_sounds;
+        bool without_place;
+    };
+    const Case kCases[] = {{0x02000000, true, true, true},
+                           {0x02020000, false, true, true},
+                           {0x02030000, false, true, false},
+                           {0x02030100, true, false, false},
+                           {0x02030200, true, true, true}};
+    std::vector<uint8_t> first;
+    for (const Case& c : kCases)
+    {
+        SoundModel wave;
+        wave.name = "WSD_B";
+        wave.type = sar::SoundType::kWaveSound;
+        wave.file_id = 2;
+        wave.after_3d = 6;
+        wave.wave_sound_index = 3;
+        wave.channel_priority = 70;
+
+        SoundModel stream;
+        stream.name = "STRM_C";
+        stream.type = sar::SoundType::kStream;
+        stream.file_id = 3;
+        stream.stream_fields = StreamFields::kNone;
+        if (c.version < 0x02030000)
+        {
+            stream.after_3d = c.version == 0x02000000 ? 5 : 0;
+            stream.stream.valid_tracks = 3;
+            stream.stream.channel_count = 4;
+        }
+        else if (c.version == 0x02030000)
+        {
+            stream.stream = MonoStream();
+            stream.stream_options = 0b101;
+            stream.stream_extension = sar::StreamExtension{.stream_type = 1, .loop_end = 900};
+        }
+        else
+        {
+            stream.stream = StreamDetails();
+            stream.stream_fields = StreamFields::kPrefetch;
+            stream.stream_extension = sar::StreamExtension{.stream_type = 2, .loop_start = 7, .loop_end = 900};
+        }
+
+        ArchiveModel model;
+        model.flavor = kCtr;
+        model.version = c.version;
+        model.sounds = {SequenceSound()};
+        model.banks = {{.name = "BANK_A", .file_id = 1}};
+        model.files = {{.bytes = std::vector<uint8_t>(40, 0xF0)},
+                       {.bytes = std::vector<uint8_t>(24, 0xF1)},
+                       {.bytes = std::vector<uint8_t>(16, 0xF2)},
+                       {.place = FilePlace::kPath, .path = "stream/STRM_C.bcstm"}};
+        const sar::FileModel kWithoutPlace = {.place = FilePlace::kGroupsOnly};
+        const auto refused = [&model](auto change)
+        {
+            ArchiveModel changed = model;
+            change(changed);
+            return Throws<std::invalid_argument>([&] { sar::BuildArchive(changed); });
+        };
+        XSFLIB_CHECK(c.wave_sounds || refused([&](ArchiveModel& changed) { changed.sounds.push_back(wave); }));
+        XSFLIB_CHECK(c.stream_sounds || refused([&](ArchiveModel& changed) { changed.sounds.push_back(stream); }));
+        XSFLIB_CHECK(c.without_place ||
+                     refused([&](ArchiveModel& changed) { changed.files.push_back(kWithoutPlace); }));
+        if (c.wave_sounds)
+        {
+            model.sounds.push_back(wave);
+        }
+        if (c.stream_sounds)
+        {
+            model.sounds.push_back(stream);
+        }
+        if (c.without_place)
+        {
+            model.files.push_back(kWithoutPlace);
+        }
+
+        const std::vector<uint8_t> archive = sar::BuildArchive(model);
+        XSFLIB_CHECK(sar::ReadArchiveModel(archive, kCtr) == model);
+        if (c.version == 0x02000000)
+        {
+            first = archive;
+        }
+        const sar::SoundArchive read = Load(archive, kCtr);
+        const sar::SoundArchive lenient = sar::SoundArchive::Load(archive, sar::Options{.flavor = kCtr});
+        XSFLIB_CHECK(read.ExternalPath(3) == "stream/STRM_C.bcstm" && read.ExternalPath(0).empty());
+        XSFLIB_CHECK(lenient.ExternalPath(3) == "stream/STRM_C.bcstm");
+        XSFLIB_CHECK(read.Sounds().size() == model.sounds.size());
+        for (std::size_t i = 0; i < read.Sounds().size() && i < model.sounds.size(); ++i)
+        {
+            XSFLIB_CHECK(read.Sounds()[i].type == model.sounds[i].type &&
+                         read.Sounds()[i].file_id == model.sounds[i].file_id);
+        }
+        XSFLIB_CHECK(std::ranges::equal(read.FileData(0), model.files[0].bytes));
+        const InfoBlock info = InfoOf(archive, kCtr);
+        XSFLIB_CHECK(info.files.at(0).size() == 24 && Load16(info.files[0], 12, kCtr) == 0x1F00);
+
+        if (c.wave_sounds)
+        {
+            const std::vector<uint8_t>& entry = info.sounds.at(1);
+            const std::size_t details = Load32(entry, 16, kCtr);
+            XSFLIB_CHECK(details == 60 && Load32(entry, 56, kCtr) == 6 && Load32(entry, details, kCtr) == 3);
+            XSFLIB_CHECK(Load32(entry, details + 12, kCtr) == 70);
+            if (c.version == 0x02000000)
+            {
+                const uint8_t kSends[] = {0x7F, 2, 0, 0, 0, 0, 0, 0};
+                XSFLIB_CHECK(Load32(entry, details + 8, kCtr) == 0x101 && Load32(entry, details + 16, kCtr) == 20);
+                XSFLIB_CHECK(entry.size() == details + 28 &&
+                             std::ranges::equal(std::span(entry).subspan(details + 20), kSends));
+            }
+            else
+            {
+                XSFLIB_CHECK(Load32(entry, details + 8, kCtr) == 1 && entry.size() == details + 16);
+            }
+        }
+
+        if (c.stream_sounds)
+        {
+            const std::vector<uint8_t>& entry = info.sounds.at(c.wave_sounds ? 2 : 1);
+            const std::size_t details = Load32(entry, 16, kCtr);
+            XSFLIB_CHECK(details == (c.version == 0x02000000 ? 60u : 56u));
+            if (c.version == 0x02000000)
+            {
+                XSFLIB_CHECK(Load32(entry, 56, kCtr) == 5);
+            }
+            if (c.version < 0x02030000)
+            {
+                XSFLIB_CHECK(entry.size() == details + 8 && Load16(entry, details, kCtr) == 3 &&
+                             Load16(entry, details + 2, kCtr) == 4);
+            }
+            else if (c.version == 0x02030000)
+            {
+                // The options at 12 hold the type of the stream and the loop's end. The table follows at 24. Its
+                // track's info takes 12 bytes, without sends.
+                XSFLIB_CHECK(Load32(entry, details + 8, kCtr) == 24 && Load32(entry, details + 12, kCtr) == 0b101);
+                XSFLIB_CHECK(Load32(entry, details + 16, kCtr) == 1 && Load32(entry, details + 20, kCtr) == 900);
+                XSFLIB_CHECK(Load32(entry, details + 24, kCtr) == 1 && Load32(entry, details + 32, kCtr) == 12);
+                XSFLIB_CHECK(entry.size() == details + 24 + 12 + 12 + 8);
+            }
+            else
+            {
+                // The table follows the prefetch file at 36. The track's info starts 12 bytes later, and its channels'
+                // indices take 8 bytes after it. Its sends follow at 80, the sound's at 84 and the extension at 88.
+                XSFLIB_CHECK(Load32(entry, details + 8, kCtr) == 36 && Load32(entry, details + 32, kCtr) == kNone);
+                XSFLIB_CHECK(Load32(entry, details + 48 + 16, kCtr) == 32 && Load32(entry, details + 20, kCtr) == 84);
+                XSFLIB_CHECK(Load32(entry, details + 28, kCtr) == 88 && entry.size() == details + 100);
+                const uint8_t kSends[] = {110, 1, 2, 3, 120, 10, 20, 30};
+                XSFLIB_CHECK(std::ranges::equal(std::span(entry).subspan(details + 80, 8), kSends));
+            }
+        }
+
+        if (c.without_place)
+        {
+            const std::vector<uint8_t>& entry = info.files.at(4);
+            if (c.version < 0x02030000)
+            {
+                XSFLIB_CHECK(entry.size() == 12 && Load16(entry, 0, kCtr) == 0 && Load32(entry, 4, kCtr) == kNone &&
+                             Load32(entry, 8, kCtr) == 0);
+            }
+            else
+            {
+                XSFLIB_CHECK(entry.size() == 24 && Load16(entry, 0, kCtr) == 0x220C && Load32(entry, 4, kCtr) == 12 &&
+                             Load16(entry, 12, kCtr) == 0 && Load32(entry, 16, kCtr) == kNone &&
+                             Load32(entry, 20, kCtr) == kNone);
+            }
+            XSFLIB_CHECK(read.FileData(4).empty());
+        }
+    }
+
+    // Stream sounds that the builder refuses: tracks or options in a version without them, options without an
+    // extension or with an unknown bit, fields after the sends before 2.3.2.0, and a version whose layout the model
+    // doesn't know. The model doesn't know a wave sound of that version either.
+    const auto refused = [](uint32_t version, auto change)
+    {
+        SoundModel sound;
+        sound.type = sar::SoundType::kStream;
+        sound.stream_fields = StreamFields::kNone;
+        if (version == 0x02030000)
+        {
+            sound.stream = MonoStream();
+        }
+        change(sound);
+        ArchiveModel model;
+        model.flavor = kCtr;
+        model.version = version;
+        model.sounds = {sound};
+        model.files = {{.place = FilePlace::kPath, .path = "stream/STRM.bcstm"}};
+        return Throws<std::invalid_argument>([&] { sar::BuildArchive(model); });
+    };
+    XSFLIB_CHECK(!refused(0x02000000, [](SoundModel&) {}) && !refused(0x02030000, [](SoundModel&) {}));
+    XSFLIB_CHECK(refused(0x02000000, [](SoundModel& sound) { sound.stream = MonoStream(); }));
+    XSFLIB_CHECK(refused(0x02020000, [](SoundModel& sound) { sound.stream_extension.emplace(); }));
+    XSFLIB_CHECK(refused(0x02020000, [](SoundModel& sound) { sound.stream_options = 1; }));
+    XSFLIB_CHECK(refused(0x02030000, [](SoundModel& sound) { sound.stream_options = 1; }));
+    XSFLIB_CHECK(refused(0x02030000,
+                         [](SoundModel& sound)
+                         {
+                             sound.stream_options = 8;
+                             sound.stream_extension.emplace();
+                         }));
+    XSFLIB_CHECK(refused(0x02030200,
+                         [](SoundModel& sound)
+                         {
+                             sound.stream_options = 1;
+                             sound.stream_extension.emplace();
+                         }));
+    XSFLIB_CHECK(refused(0x02020000, [](SoundModel& sound) { sound.stream_fields = StreamFields::kExtension; }));
+    XSFLIB_CHECK(refused(0x02010000, [](SoundModel&) {}));
+    XSFLIB_CHECK(refused(0x02010000, [](SoundModel& sound) { sound.type = sar::SoundType::kWaveSound; }));
+
+    // The reader refuses the archive of 2.0.0.0 as an archive of 2.2.0.0: the model doesn't know the wave sounds of
+    // 2.2.0.0.
+    first.at(8 + 2) = 0x02;
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sar::ReadArchiveModel(first, kCtr); }) ==
+                 "an archive laid out another way: a wave sound of a version of the 3DS whose layout the model "
+                 "doesn't know");
+}
+
+// An archive of the 3DS from ntdlib/testing/sar_tools.h reads as a model, and comes back byte for byte. sar_tools.h
+// lays it out as CSAR 2.3.0.0. Its group's file holds a copy of file 0, and the file table gives the group's file a
+// reference of type 0. The 3DS's file entries list no groups.
+void TestCtrToolsArchive()
+{
+    constexpr Flavor kCtr = Flavor::kCtr;
+    sar_files::SoundSpec a;
+    a.name = "SEQ_A";
+    a.volume = 90;
+    a.banks = {0};
+    a.start_offset = 5;
+    sar_files::SoundSpec b;
+    b.name = "SEQ_B";
+    b.banks = {0, kNone};
+    b.start_offset = 9;
+
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {a, b};
+    spec.banks = {{"BANK_A", 1}};
+    spec.wave_archives = {{"", 2}};
+    spec.groups = {{"GROUP_A", 4}};
+    spec.players = {{"PLAYER_A", 4}};
+    for (uint8_t i = 0; i < 3; ++i)
+    {
+        sar_files::FileSpec file;
+        file.bytes.assign(40u - 8u * i, static_cast<uint8_t>(0xF0 + i));
+        spec.files.push_back(file);
+    }
+    spec.files[0].groups = {0};
+    sar_files::FileSpec outside;
+    outside.external = "stream/STRM.bcstm";
+    sar_files::FileSpec group;
+    group.bytes = sar_tools::GroupInArchive(kCtr, {.files = {{0, spec.files[0].bytes}}});
+    spec.files.push_back(outside);
+    spec.files.push_back(group);
+
+    const std::vector<uint8_t> archive = sar_tools::Archive(kCtr, spec);
+    const ArchiveModel model = sar::ReadArchiveModel(archive, kCtr);
+    XSFLIB_CHECK(sar::BuildArchive(model) == archive);
+    XSFLIB_CHECK(model.version == 0x02030000 && model.sounds.size() == 2 && model.files.size() == 5);
+    if (model.sounds.size() != 2 || model.files.size() != 5)
+    {
+        return;
+    }
+    XSFLIB_CHECK(model.sounds[0].name == "SEQ_A" && model.sounds[0].volume == 90 && model.sounds[0].start_offset == 5);
+    XSFLIB_CHECK(model.sounds[1].banks == std::vector<uint32_t>({ItemId(sar::kBankItem, 0), kNone}));
+    XSFLIB_CHECK(model.groups == std::vector<sar::GroupModel>({{.name = "GROUP_A", .file_id = 4}}));
+    XSFLIB_CHECK(model.files[0].place == FilePlace::kBytes && model.files[0].bytes == spec.files[0].bytes &&
+                 model.files[0].groups.empty());
+    XSFLIB_CHECK(model.files[3].place == FilePlace::kPath && model.files[3].path == "stream/STRM.bcstm");
+    XSFLIB_CHECK(model.files[4].place == FilePlace::kBytes && model.files[4].bytes == spec.files[4].bytes);
+}
+
 void TestRefusals()
 {
-    // The 3DS's archives.
+    // An archive of the Switch is an archive of neither the 3DS nor the Wii U.
     const std::vector<uint8_t> good = sar::BuildArchive(EveryItem(Flavor::kNx));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { sar::ReadArchiveModel(good, Flavor::kCtr); }));
-    ArchiveModel ctr = EveryItem(Flavor::kNx);
-    ctr.flavor = Flavor::kCtr;
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { sar::BuildArchive(ctr); }));
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sar::ReadArchiveModel(good, Flavor::kCtr); }) ==
+                 "not a sound archive of the console (CSAR)");
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sar::ReadArchiveModel(good, Flavor::kCafe); }) ==
+                 "not a sound archive of the console (FSAR)");
 
     // Models that the builder refuses: a sound of an unknown kind, fields after the sends in a version without sends,
-    // an extension without a reference to it, copies in a group past the table, in a group beside the archive, in a
-    // file that isn't a group's file and in a group's file without the copy or cut short, and two names alike.
+    // an extension without a reference to it, the options of a 3DS stream sound, copies in a group past the table, in
+    // a group beside the archive, in a file that isn't a group's file and in a group's file without the copy or cut
+    // short, and two names alike.
     const auto refused = [](auto change)
     {
         ArchiveModel model = EveryItem(Flavor::kNx);
@@ -955,6 +1261,7 @@ void TestRefusals()
     XSFLIB_CHECK(refused([](ArchiveModel& model) { model.sounds[1].type = sar::SoundType::kUnknown; }));
     XSFLIB_CHECK(refused([](ArchiveModel& model) { model.version = 0x00020000; }));
     XSFLIB_CHECK(refused([](ArchiveModel& model) { model.sounds[3].stream_fields = StreamFields::kNone; }));
+    XSFLIB_CHECK(refused([](ArchiveModel& model) { model.sounds[3].stream_options = 1; }));
     XSFLIB_CHECK(refused([](ArchiveModel& model) { model.files[3].copy_group = 2; }));
     XSFLIB_CHECK(refused([](ArchiveModel& model) { model.files[3].copy_group = 1; }));
     XSFLIB_CHECK(refused([](ArchiveModel& model) { model.groups[0].file_id = 7; }));
@@ -1024,8 +1331,12 @@ int main()
                                             TestRead(flavor);
                                             TestStreamVersions(flavor);
                                         }
+                                        TestEmpty(Flavor::kCtr);
+                                        TestLayout(Flavor::kCtr);
+                                        TestCtrVersions();
                                         TestToolsArchive(Flavor::kNx);
                                         TestToolsArchive(Flavor::kCafe);
+                                        TestCtrToolsArchive();
                                         TestRefusals();
                                     });
 }

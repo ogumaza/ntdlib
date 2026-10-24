@@ -37,6 +37,7 @@ constexpr int kFiltersBit = 2;
 constexpr int kSendsBit = 8;
 constexpr int kEnvelopeBit = 9;
 constexpr std::size_t kMostAuxSends = 3;
+constexpr std::size_t kMostCtrAuxSends = 2;
 
 // A wave sound file's places.
 struct Places
@@ -51,10 +52,6 @@ struct Places
 // Checks `file` and finds its places.
 Places Open(std::span<const uint8_t> file, Flavor flavor)
 {
-    if (flavor == Flavor::kCtr)
-    {
-        throw std::invalid_argument("a wave sound file of the 3DS");
-    }
     Options options;
     options.flavor = flavor;
     options.rules = Rules::kStopAtFirstProblem;
@@ -137,15 +134,18 @@ WaveSoundPlaces WaveSoundValuePlaces(std::span<const uint8_t> file, Flavor flavo
     const xsflib::Reader r(file, flavor == Flavor::kCafe);
     const std::size_t settings = SettingsOf(r, places, sound);
 
+    // The 3DS's reader reads no filters, and 2 aux sends at most (WaveSoundFile::Parse).
     WaveSoundPlaces result;
+    const bool ctr = flavor == Flavor::kCtr;
     result.pan = ValueOf(r, settings, kPanBit) != 0;
     result.pitch = ValueOf(r, settings, kPitchBit) != 0;
-    result.filters = ValueOf(r, settings, kFiltersBit) != 0 && r.U32(0x08) >= kFiltersVersion;
+    result.filters = !ctr && ValueOf(r, settings, kFiltersBit) != 0 && r.U32(0x08) >= kFiltersVersion;
     result.envelope = ValueOf(r, settings, kEnvelopeBit) != 0;
     if (const std::size_t at = ValueOf(r, settings, kSendsBit); at != 0)
     {
         result.sends = true;
-        result.aux_sends = static_cast<uint8_t>(std::min<std::size_t>(r.U8(settings + r.U32(at) + 1), kMostAuxSends));
+        const std::size_t most = ctr ? kMostCtrAuxSends : kMostAuxSends;
+        result.aux_sends = static_cast<uint8_t>(std::min<std::size_t>(r.U8(settings + r.U32(at) + 1), most));
     }
 
     return result;
@@ -167,7 +167,8 @@ std::vector<uint8_t> WithWaveSoundValues(std::span<const uint8_t> file, Flavor f
     if (has.pan)
     {
         const std::size_t at = ValueOf(r, settings, kPanBit);
-        Store32(bytes, at, (r.U32(at) & 0xFFFF0000u) | values.pan | uint32_t{values.span} << 8, big_endian);
+        const uint32_t kept = r.U32(at) & 0xFFFF0000u;
+        Store32(bytes, at, kept | values.pan | uint32_t{values.span} << 8, big_endian);
     }
     else
     {

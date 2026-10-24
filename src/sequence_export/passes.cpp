@@ -279,7 +279,10 @@ bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<P
             {
                 for (const auto& [kind, e] : *list)
                 {
-                    kinds.insert(kind);
+                    if (std::ranges::find(rules.ignored, kind) == rules.ignored.end())
+                    {
+                        kinds.insert(kind);
+                    }
                 }
             }
 

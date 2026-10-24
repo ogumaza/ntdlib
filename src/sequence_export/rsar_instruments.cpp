@@ -112,17 +112,22 @@ std::vector<RsarPlayedRanges> RegionRanges(const Bank& bank, uint32_t program)
     return out;
 }
 
-RsarBankSet::RsarBankSet(const SoundArchive& archive, const SoundInfo& sound, const Settings&)
-    : archive_(archive), bank_index_(sound.bank)
+RsarBankSet::RsarBankSet(const SoundArchive& archive, const SoundInfo& sound, const Settings& settings)
+    : RsarBankSet(archive, sound.bank, settings)
 {
-    if (sound.bank >= archive_.Banks().size())
+}
+
+RsarBankSet::RsarBankSet(const SoundArchive& archive, uint32_t bank, const Settings&)
+    : archive_(archive), bank_index_(bank)
+{
+    if (bank >= archive_.Banks().size())
     {
-        errors_.push_back("bank " + std::to_string(sound.bank) + " doesn't exist (the archive has " +
+        errors_.push_back("bank " + std::to_string(bank) + " doesn't exist (the archive has " +
                           std::to_string(archive_.Banks().size()) + ")");
         return;
     }
 
-    const BankInfo& info = archive_.Banks()[sound.bank];
+    const BankInfo& info = archive_.Banks()[bank];
     bank_name_ = info.name;
     const auto data = archive_.FileData(info.file_id);
     if (data.empty())

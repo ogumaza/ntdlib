@@ -54,15 +54,20 @@ void WriteSoundFont(Conversion& c, seqlib::sf2::SoundFont& sf, const std::string
 
 // The attenuation in centibels that every zone of a sequence's SoundFont takes when its loudest zone plays at
 // `loudest`, an amplitude where 1 is full level. SoundFont zones can't amplify their samples. The same attenuation in
-// every zone keeps their balance. Where the zones take one, `c.performance` records the approximation. The SFZ files
-// keep the levels. A zone at full level or below takes none.
+// every zone keeps their balance. Where the zones take 0.5 cB or more, `c.performance` records the approximation. The
+// report gives the attenuation in tenths of a decibel. A smaller one would read 0.0 dB. The SFZ files keep the levels.
+// A zone at full level or below takes none.
 template <typename Conversion>
 double CutAboveFullLevel(Conversion& c, double loudest)
 {
+    constexpr double kLeastReportedCut = 0.5;
     double quieter = 0.0;
     if (loudest > 1.0)
     {
         quieter = 200.0 * std::log10(loudest);
+    }
+    if (quieter >= kLeastReportedCut)
+    {
         char what[160];
         std::snprintf(what, sizeof(what),
                       "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",

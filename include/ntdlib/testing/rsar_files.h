@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 // Builders of small NW4R sound files for the tests: banks of both generations with instruments that exercise every way
-// that a bank selects a region, wave data and an RWAR for them, a sequence, an archive holding a sequence sound with
-// its sequence and bank in a group, and an archive with only its tables of sounds and players.
+// that a bank selects a region, wave data and an RWAR for them, a sequence, wave sound files of both generations, an
+// archive holding a sequence sound with its sequence and bank in a group, an archive holding wave sounds with their
+// file in a group, and an archive with only its tables of sounds and players.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -206,9 +208,9 @@ inline Bytes MakeRwav(uint16_t pred_scale, bool loop = true, uint16_t sample_rat
     return file;
 }
 
-// An RWAV of `channels` channels of big-endian PCM16 at 32000 Hz that doesn't loop. Each channel holds `samples`. The
-// wave's header gives `length` samples.
-inline Bytes MakePcm16Rwav(uint32_t length, const std::vector<int16_t>& samples, int channels = 1)
+// An RWAV of `channels` channels of big-endian PCM16 at 32000 Hz. Each channel holds `samples`. The wave's header gives
+// `length` samples. A wave that loops does so from its start.
+inline Bytes MakePcm16Rwav(uint32_t length, const std::vector<int16_t>& samples, int channels = 1, bool loop = false)
 {
     Bytes file = Header("RWAV", 0x0102, 2);
     const size_t info = Block(file, "INFO", 0);
@@ -217,6 +219,7 @@ inline Bytes MakePcm16Rwav(uint32_t length, const std::vector<int16_t>& samples,
     const size_t payload = Grow(file, first_channel + 0x1C * static_cast<size_t>(channels));
 
     file[payload] = 1;
+    file[payload + 1] = loop ? 1 : 0;
     file[payload + 2] = static_cast<uint8_t>(channels);
     xsflib::StoreBe16(&file[payload + 4], 32000);
     xsflib::StoreBe32(&file[payload + 0xC], length - 1);
@@ -243,18 +246,18 @@ inline Bytes MakePcm16Rwav(uint32_t length, const std::vector<int16_t>& samples,
     return file;
 }
 
-// An RWAR of two RWAVs at `sample_rate` Hz.
-inline Bytes MakeRwar(bool loop = true, uint16_t sample_rate = 32000)
+// An RWAR of `waves`, each an RWAV.
+inline Bytes MakeRwarOf(const std::vector<Bytes>& waves)
 {
     Bytes file = Header("RWAR", 0x0100, 2);
     const size_t table = Block(file, "TABL", 0);
-    xsflib::StoreBe32(&file[Grow(file, 4)], 2);
-    const size_t entries = Grow(file, 24);
+    xsflib::StoreBe32(&file[Grow(file, 4)], static_cast<uint32_t>(waves.size()));
+    const size_t entries = Grow(file, waves.size() * 12);
     EndBlock(file, table, 0);
     const size_t data = Block(file, "DATA", 1);
-    for (int i = 0; i < 2; ++i)
+    for (size_t i = 0; i < waves.size(); ++i)
     {
-        const Bytes rwav = MakeRwav(static_cast<uint16_t>(0x31 + i), loop, sample_rate);
+        const Bytes& rwav = waves[i];
         const size_t at = Grow(file, rwav.size());
         std::memcpy(&file[at], rwav.data(), rwav.size());
         PutRef(file, entries + i * 12, 0, static_cast<uint32_t>(at - data));
@@ -266,11 +269,129 @@ inline Bytes MakeRwar(bool loop = true, uint16_t sample_rate = 32000)
     return file;
 }
 
+// An RWAR of two RWAVs at `sample_rate` Hz.
+inline Bytes MakeRwar(bool loop = true, uint16_t sample_rate = 32000)
+{
+    return MakeRwarOf({MakeRwav(0x31, loop, sample_rate), MakeRwav(0x32, loop, sample_rate)});
+}
+
 // A version 1.2 bank without a WAVE block. MakeRwar builds its waves.
 inline Bytes MakeNewBank()
 {
     Bytes file = Header("RBNK", 0x0102, 1);
     PutInstruments(file);
+
+    return file;
+}
+
+// A note of a wave sound for MakeWaveSoundFile, with the fields of the file's note info.
+struct WaveSoundNote
+{
+    int32_t wave = 0;
+    uint8_t attack = 127;
+    uint8_t decay = 127;
+    uint8_t sustain = 127;
+    uint8_t release = 127;
+    uint8_t hold = 0;
+    uint8_t original_key = 60;
+    uint8_t volume = 127;
+    uint8_t pan = 64;
+    uint8_t surround_pan = 0;
+    float pitch = 1.0f;
+};
+
+// A wave sound for MakeWaveSoundFile, with the fields of the file's wave sound info and its notes.
+struct WaveSoundSpec
+{
+    float pitch = 1.0f;
+    uint8_t pan = 64;
+    uint8_t surround_pan = 0;
+    uint8_t fx_sends[3] = {0, 0, 0};
+    uint8_t main_send = 127;
+    std::vector<WaveSoundNote> notes;
+};
+
+// An RWSD file of `version` that holds `sounds`. Every field goes in, whatever the version reads. The DATA block's
+// references count from its count. Each wave sound refers to its settings, an empty table of tracks and its table of
+// notes. Up to version 1.2, a WAVE block describes `waves` waves of one ADPCM channel each over MakeOldWaveData's raw
+// samples. Wave i starts at 0x40 times i there. The WAVE block of version 1.0 gives no count. From version 1.3, the
+// file has no WAVE block. Its wave data is then an RWAR.
+inline Bytes MakeWaveSoundFile(uint16_t version, const std::vector<WaveSoundSpec>& sounds, uint32_t waves = 2)
+{
+    const auto put_float = [](Bytes& file, size_t at, float value)
+    {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        xsflib::StoreBe32(&file[at], bits);
+    };
+
+    const bool wave_block = version <= 0x0102;
+    Bytes file = Header("RWSD", version, wave_block ? 2 : 1);
+    const size_t data = Block(file, "DATA", 0);
+    const size_t base = file.size();
+    xsflib::StoreBe32(&file[Grow(file, 4)], static_cast<uint32_t>(sounds.size()));
+    const size_t refs = Grow(file, sounds.size() * 8);
+    for (size_t i = 0; i < sounds.size(); ++i)
+    {
+        const WaveSoundSpec& sound = sounds[i];
+        const size_t wsd = Grow(file, 0x18);
+        PutRef(file, refs + i * 8, 0, static_cast<uint32_t>(wsd - base));
+
+        const size_t info = Grow(file, 0x20);
+        put_float(file, info, sound.pitch);
+        file[info + 4] = sound.pan;
+        file[info + 5] = sound.surround_pan;
+        std::memcpy(&file[info + 6], sound.fx_sends, 3);
+        file[info + 9] = sound.main_send;
+        PutRef(file, wsd, 0, static_cast<uint32_t>(info - base));
+
+        const size_t tracks = Grow(file, 4);
+        PutRef(file, wsd + 8, 0, static_cast<uint32_t>(tracks - base));
+
+        const size_t notes = Grow(file, 4 + sound.notes.size() * 8);
+        xsflib::StoreBe32(&file[notes], static_cast<uint32_t>(sound.notes.size()));
+        PutRef(file, wsd + 0x10, 0, static_cast<uint32_t>(notes - base));
+        for (size_t j = 0; j < sound.notes.size(); ++j)
+        {
+            const WaveSoundNote& note = sound.notes[j];
+            const size_t at = Grow(file, 0x20);
+            xsflib::StoreBe32(&file[at], static_cast<uint32_t>(note.wave));
+            file[at + 4] = note.attack;
+            file[at + 5] = note.decay;
+            file[at + 6] = note.sustain;
+            file[at + 7] = note.release;
+            file[at + 8] = note.hold;
+            file[at + 0xC] = note.original_key;
+            file[at + 0xD] = note.volume;
+            file[at + 0xE] = note.pan;
+            file[at + 0xF] = note.surround_pan;
+            put_float(file, at + 0x10, note.pitch);
+            PutRef(file, notes + 4 + j * 8, 0, static_cast<uint32_t>(at - base));
+        }
+    }
+
+    EndBlock(file, data, 0);
+    if (!wave_block)
+    {
+        return file;
+    }
+
+    // The WAVE block: the count from version 1.1, then the offset of each wave info from the block's start.
+    const size_t block = Block(file, "WAVE", 1);
+    if (version >= 0x0101)
+    {
+        xsflib::StoreBe32(&file[Grow(file, 4)], waves);
+    }
+
+    const size_t offsets = Grow(file, waves * size_t{4});
+    for (uint32_t i = 0; i < waves; ++i)
+    {
+        const size_t info = Grow(file, 0x6C);
+        PutWaveInfo(file, info, i * 0x40, static_cast<uint16_t>(0x21 + i));
+        xsflib::StoreBe32(&file[offsets + i * 4], static_cast<uint32_t>(info - block));
+    }
+
+    EndBlock(file, block, 1);
 
     return file;
 }
@@ -420,6 +541,101 @@ inline Bytes MakeArchive(const Bytes& sequence, uint32_t offset, uint32_t alloca
     xsflib::StoreBe32(&file[item[1] + 4], static_cast<uint32_t>(sequence.size()));
     xsflib::StoreBe32(&file[item[1] + 8], static_cast<uint32_t>(bank_file.size()));
     xsflib::StoreBe32(&file[item[1] + 0x10], static_cast<uint32_t>(rwar.size()));
+    EndBlock(file, data, 2);
+
+    return file;
+}
+
+// A wave sound's entry for MakeWaveSoundArchive: its volume, its index in the file, its channel priority, its release
+// priority fix, and its pan mode and curve.
+struct ArchiveWaveSound
+{
+    uint8_t volume = 127;
+    int32_t index = 0;
+    uint8_t channel_priority = 64;
+    bool release_priority_fix = false;
+    uint8_t pan_mode = 0;
+    uint8_t pan_curve = 0;
+};
+
+// An archive of version 1.4 with `sounds`, each a wave sound of the RWSD file `wave_sounds`, named WSD_0, WSD_1 and on
+// in SYMB. The file and its wave data `wave_data` are in one group. The archive has no banks and no players.
+inline Bytes MakeWaveSoundArchive(const Bytes& wave_sounds, const Bytes& wave_data,
+                                  const std::vector<ArchiveWaveSound>& sounds)
+{
+    Bytes file = Header("RSAR", 0x0104, 3, 0x40);
+    std::vector<std::string> names;
+    for (size_t i = 0; i < sounds.size(); ++i)
+    {
+        names.push_back("WSD_" + std::to_string(i));
+    }
+
+    std::vector<const char*> strings;
+    for (const std::string& name : names)
+    {
+        strings.push_back(name.c_str());
+    }
+
+    PutSymbols(file, strings);
+
+    // INFO: the tables of sounds, files and groups, with an empty one of banks. Each sound's details hold its index in
+    // the file, its tracks, its channel priority and its release priority fix.
+    const size_t info = Block(file, "INFO", 1);
+    const size_t base = file.size();
+    const size_t tables = Grow(file, 0x30);
+
+    const size_t sound_refs = InfoTable(file, tables, base, sounds.size());
+    for (size_t i = 0; i < sounds.size(); ++i)
+    {
+        const ArchiveWaveSound& entry = sounds[i];
+        const size_t sound = Grow(file, 0x2C);
+        PutRef(file, sound_refs + i * 8, 0, static_cast<uint32_t>(sound - base));
+        xsflib::StoreBe32(&file[sound], static_cast<uint32_t>(i));
+        file[sound + 0x14] = entry.volume;
+        file[sound + 0x15] = 64;
+        file[sound + 0x16] = 3;
+        file[sound + 0x28] = entry.pan_mode;
+        file[sound + 0x29] = entry.pan_curve;
+        const size_t detail = Grow(file, 0x10);
+        PutRef(file, sound + 0x18, 3, static_cast<uint32_t>(detail - base));
+        xsflib::StoreBe32(&file[detail], static_cast<uint32_t>(entry.index));
+        xsflib::StoreBe32(&file[detail + 4], 1);
+        file[detail + 8] = entry.channel_priority;
+        file[detail + 9] = entry.release_priority_fix ? 1 : 0;
+    }
+
+    InfoTable(file, tables + 8, base, 0);
+
+    // The file's entry holds a table of its positions: item 0 of group 0.
+    const size_t files = InfoTable(file, tables + 0x18, base, 1);
+    const size_t entry = Grow(file, 0x1C);
+    PutRef(file, files, 0, static_cast<uint32_t>(entry - base));
+    const size_t positions = InfoTable(file, entry + 0x14, base, 1);
+    const size_t position = Grow(file, 8);
+    PutRef(file, positions, 0, static_cast<uint32_t>(position - base));
+
+    const size_t groups = InfoTable(file, tables + 0x20, base, 1);
+    const size_t group = Grow(file, 0x28);
+    PutRef(file, groups, 0, static_cast<uint32_t>(group - base));
+    const size_t items = InfoTable(file, group + 0x20, base, 1);
+    const size_t item = Grow(file, 0x18);
+    PutRef(file, items, 0, static_cast<uint32_t>(item - base));
+
+    EndBlock(file, info, 1);
+
+    // FILE: the group's file, then its wave data. The block's header takes 0x20 bytes.
+    const size_t data = Block(file, "FILE", 2);
+    Grow(file, 0x18);
+    const size_t group_files = file.size();
+    file.insert(file.end(), wave_sounds.begin(), wave_sounds.end());
+    const size_t group_waves = file.size();
+    file.insert(file.end(), wave_data.begin(), wave_data.end());
+    xsflib::StoreBe32(&file[group + 0x10], static_cast<uint32_t>(group_files));
+    xsflib::StoreBe32(&file[group + 0x14], static_cast<uint32_t>(wave_sounds.size()));
+    xsflib::StoreBe32(&file[group + 0x18], static_cast<uint32_t>(group_waves));
+    xsflib::StoreBe32(&file[group + 0x1C], static_cast<uint32_t>(wave_data.size()));
+    xsflib::StoreBe32(&file[item + 8], static_cast<uint32_t>(wave_sounds.size()));
+    xsflib::StoreBe32(&file[item + 0x10], static_cast<uint32_t>(wave_data.size()));
     EndBlock(file, data, 2);
 
     return file;

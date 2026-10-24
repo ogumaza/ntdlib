@@ -51,4 +51,9 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
 SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, BankSet& banks, const std::string& title,
                             const Settings& settings, const std::string& program);
 
+// The same for the bank of `banks`, of the Wii's RSAR format. `balance` plays stereo waves in balance pan mode. From
+// the build of March 2008 on (settings.wii_build), the regions take their holds and note-off types.
+SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, RsarBankSet& banks, const std::string& title,
+                            bool balance, const Settings& settings, const std::string& program);
+
 } // namespace ntdlib::sequence_export

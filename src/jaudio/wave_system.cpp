@@ -18,14 +18,17 @@
 namespace ntdlib::jaudio
 {
 
+using detail::HasTag;
+using detail::IsBigEndian;
 using detail::kReaderOptions;
 
 // Reads a wave system: its archives (WINF) and the wave ids that its scenes give their waves (WBCT). JAudio2 gives each
-// wave the id in the low half of its scene's entry (JASWSParser).
+// wave the id in the low half of its scene's entry (JASWSParser). A little-endian system stores the entry as a 32-bit
+// word too.
 WaveSystem ReadWaveSystem(std::span<const uint8_t> file, uint32_t number)
 {
-    const xsflib::Reader r(file, true, kReaderOptions);
-    if (!r.Magic(0, "WSYS"))
+    const xsflib::Reader r(file, IsBigEndian(file, "WSYS"), kReaderOptions);
+    if (!HasTag(r, 0, "WSYS"))
     {
         throw xsflib::FormatError("wave system has no WSYS header");
     }

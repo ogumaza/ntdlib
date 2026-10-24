@@ -192,11 +192,10 @@ std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequen
 // where SoundArchive reads it with Rules::kStopAtFirstProblem. Sound i takes the values of `sounds[i]`: its player,
 // volume, pan mode and curve, player priority and actor player, and for a sequence sound its banks, its tracks' flags,
 // its channel priority and its release priority fix. Player i takes the sound limit of `players[i]`. A value that the
-// tables don't hold stays as it is: an option that a sound leaves out, and a bank past the sound's list of banks. So do
-// a 3DS sound's player, player priority and actor player. The reader doesn't read those. The names, the files, the
-// kinds and the starts stay too. Bytes that the reader doesn't read keep theirs. A release priority fix that stays on
-// keeps its byte. WithValuePlaces and WithBankLists (ntdlib/sar/tables.h) give the entries places for the options and
-// the banks first. Throws xsflib::FormatError if the tables can't be read.
+// tables don't hold stays as it is: an option that a sound leaves out, and a bank past the sound's list of banks. The
+// names, the files, the kinds and the starts stay too. Bytes that the reader doesn't read keep theirs. A release
+// priority fix that stays on keeps its byte. WithValuePlaces and WithBankLists (ntdlib/sar/tables.h) give the entries
+// places for the options and the banks first. Throws xsflib::FormatError if the tables can't be read.
 void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const SoundInfo> sounds,
                       std::span<const PlayerInfo> players);
 
@@ -214,8 +213,7 @@ struct ValuePlaces
 };
 
 // Which optional values the tables of `archive`, an archive of `flavor`, hold for each sound of the sound table, in
-// order. The reader reads only the archive's header and its INFO block. `archive` can end after the block. On the 3DS,
-// no sound has a place for a priority: the reader reads no 3DS sound's player priority or actor player. Throws
+// order. The reader reads only the archive's header and its INFO block. `archive` can end after the block. Throws
 // xsflib::FormatError if the tables can't be read.
 std::vector<ValuePlaces> TableValuePlaces(std::span<const uint8_t> archive, Flavor flavor);
 

@@ -96,6 +96,19 @@ std::vector<int16_t> DecodeDspAdpcm(std::span<const uint8_t> data, uint32_t samp
 // step index `index`. An index past 88 counts as 88.
 std::vector<int16_t> DecodeImaAdpcm(std::span<const uint8_t> data, uint32_t samples, int16_t sample, uint8_t index);
 
+// An IMA-ADPCM decoder's state between two samples: the last sample, and the index into the table of steps.
+struct ImaAdpcmState
+{
+    friend bool operator==(const ImaAdpcmState&, const ImaAdpcmState&) = default;
+
+    int16_t sample = 0;
+    uint8_t index = 0;
+};
+
+// The decoder's state after the nibble `nibble` (0 to 15) from `state`. Its sample is the decoded sample. An index past
+// 88 counts as 88. DecodeImaAdpcm decodes each nibble this way.
+ImaAdpcmState ImaAdpcmNext(ImaAdpcmState state, uint8_t nibble);
+
 // Decodes up to `samples` samples of the GameCube's 4-bit ADPCM (AFC): 9-byte frames of 16 samples, the high nibble of
 // each byte first. `hist1` and `hist2` are the two samples before the first. A frame that the data cuts short isn't
 // decoded.

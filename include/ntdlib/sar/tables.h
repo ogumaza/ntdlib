@@ -157,10 +157,11 @@ struct NewWaveSound
 // model's: its player, volume, pan, priorities and 3D settings, and the options that ntdlib doesn't read. It takes the
 // new sound's string index, file and index. A wave sound model's details stay as they are otherwise. A sequence sound
 // model's details give way to a wave sound's. They hold what the tools write: the index, a count of 1 track, and
-// options with the model's channel priority. The new names go in after the sounds' names, in order, and each string
-// index after them moves up. The STRG block's tree takes the names too. Throws std::invalid_argument for a model past
-// the sound table or of another kind, a file past the file table, a name for an archive without a STRG block, no name
-// for an archive with one, and a name that the block holds already. Throws xsflib::FormatError for entries that lay out
+// options with the model's channel priority. In a 3DS archive of CSAR 2.0.0.0, the options also give the offset of the
+// sends that the tools write after them. The new names go in after the sounds' names, in order, and each string index
+// after them moves up. The STRG block's tree takes the names too. Throws std::invalid_argument for a model past the
+// sound table or of another kind, a file past the file table, a name for an archive without a STRG block, no name for
+// an archive with one, and a name that the block holds already. Throws xsflib::FormatError for entries that lay out
 // their options or the model's details another way than the tools, and the exceptions of WithTables.
 std::vector<uint8_t> WithNewWaveSounds(std::span<const uint8_t> archive, Flavor flavor,
                                        std::span<const NewWaveSound> sounds);
@@ -176,16 +177,24 @@ struct NewStreamSound
 
 // `archive`, an archive of `flavor`, with `sound` at the end of its sound table. The new entry copies the model's: its
 // player, volume, pan, priorities and 3D settings, and the options that ntdlib doesn't read. It takes the new sound's
-// string index and file, and stream details for `sound.stream`, laid out as the tools lay them out in an archive of
-// the archive's version. A stream sound model keeps the fields of its details before its table of tracks. A model of
-// another kind takes those of the version: from 2.2.0 on, the reference to nothing and the word of ones. Before 2.1.0,
-// the details hold no pitch and no sends. The new name goes in after the sounds' names, and each string index after it
-// moves up by one. The STRG block's tree takes the name too. Throws std::invalid_argument for an archive of the 3DS, a
-// model past the sound table, a file past the file table, more than 8 tracks, a track that plays no channel, more than
-// 16 or a channel past the count of channels, a bit of the tracks that play past the tracks, a name for an archive
-// without a STRG block, no name for an archive with one, and a name that the block holds already. ntdlib's reader
-// reads 8 tracks of a stream sound, and 16 channels of a track. Throws xsflib::FormatError for entries that lay out
-// their options or the model's details another way than the tools, and the exceptions of WithTables.
+// string index and file, and stream details for `sound.stream`, laid out as the tools lay them out in an archive of the
+// archive's version. The details follow the 3D settings. A sequence sound or a wave sound holds a 32-bit value between
+// the two, and the copy leaves the model's out. In a 3DS archive of CSAR 2.0.0.0, a stream sound holds the value too,
+// and the copy keeps the model's. A stream sound model keeps the fields of its details before its table of tracks. The
+// reference after the sends then leads to no extension, and the sound names no prefetch file: both describe the model's
+// stream. A model of another kind takes the fields of the version: from 2.2.0 on, the reference to nothing and the word
+// of ones. Before 2.1.0, the details hold no pitch and no sends. In a 3DS archive before CSAR 2.3.0.0, the details hold
+// the tracks that play and the count of channels alone. The stream file holds the tracks there. CSAR 2.3.0.0 lays the
+// details out as FSAR 2.0.0 does, after a field of options without values. From CSAR 2.3.2.0 on, the details take the
+// layout of FSAR 2.2.0, with sends of 4 bytes. The new name goes in after the sounds' names, and each string index
+// after it moves up by one. The STRG block's tree takes the name too. Throws std::invalid_argument for a 3DS archive
+// before CSAR 2.3.2.0 of a version other than 2.0.0.0, 2.2.0.0 and 2.3.0.0, a model past the sound table, a file past
+// the file table, more than 8 tracks, a track that plays no channel, more than 16 or a channel past the count of
+// channels, a bit of the tracks that play past the tracks, any track in a 3DS archive before CSAR 2.3.0.0 or a bit past
+// 8 tracks there, a name for an archive without a STRG block, no name for an archive with one, and a name that the
+// block holds already. ntdlib's reader reads 8 tracks of a stream sound, and 16 channels of a track. Throws
+// xsflib::FormatError for entries that lay out their options, their 3D settings or the model's details another way than
+// the tools, and the exceptions of WithTables.
 std::vector<uint8_t> WithNewStreamSound(std::span<const uint8_t> archive, Flavor flavor, const NewStreamSound& sound);
 
 // `archive`, an archive of `flavor`, whose sequence sounds hold the lists of banks in `banks`, by the sounds' places in
@@ -206,10 +215,9 @@ std::vector<uint8_t> WithBankLists(std::span<const uint8_t> archive, Flavor flav
 // mode and a pan curve of 0, a player priority of 64 and an actor player of 0, and a channel priority of 64 without the
 // release priority fix. The archive therefore reads as before, and WriteTableValues can then write the new values. An
 // entry that holds an option keeps it, and an option that `places` leaves out stays as it is. Without a new option,
-// the archive comes back as it is. Throws std::invalid_argument for a sound past the sound table, a channel priority of
-// a sound that isn't a sequence sound, and the priorities of a 3DS sound. The reader reads no priorities on the 3DS.
-// Throws xsflib::FormatError for an entry that the tools don't lay out so, such as one with an unknown option, and the
-// exceptions of WithTables.
+// the archive comes back as it is. Throws std::invalid_argument for a sound past the sound table and a channel priority
+// of a sound that isn't a sequence sound. Throws xsflib::FormatError for an entry that the tools don't lay out so, such
+// as one with an unknown option, and the exceptions of WithTables.
 std::vector<uint8_t> WithValuePlaces(std::span<const uint8_t> archive, Flavor flavor,
                                      const std::map<uint32_t, ValuePlaces>& places);
 
@@ -249,15 +257,16 @@ struct NewWaveArchive
 std::vector<uint8_t> WithNewWaveArchive(std::span<const uint8_t> archive, Flavor flavor,
                                         const NewWaveArchive& wave_archive);
 
-// `archive`, an archive of the Wii U or the Switch of `flavor`, with a new group named `name` at the end of its group
-// table. The group's file holds no files and lists no items (EmptyGroupFile in ntdlib/sar/groups.h). It goes after the
-// archive's last file, as WithNewFile puts a file there. The FILE block holds it up to the end of its INFX block's
-// entries, and the file table gives it that size (GroupSizeInArchive). Its entry in the file table is laid out as the
-// tools lay out a group's file's: the reference to the location has type 0. The group's entry holds the file, then the
-// options with the string index after the groups' names. Each string index after it moves up by one, and the STRG
-// block's tree takes the name too. In an archive without a STRG block, the group takes the string index all the same,
-// as a new bank does. Throws std::invalid_argument for the 3DS, a name for an archive without a STRG block, no name
-// for an archive with one, a name that the block holds already, and an archive that would pass 4 GB. Throws
+// `archive`, an archive of `flavor`, with a new group named `name` at the end of its group table. The group's file
+// holds no files and lists no items (EmptyGroupFile in ntdlib/sar/groups.h). On the 3DS, it takes the highest version
+// of the groups' files that the archive holds, or 1.0.0.0 without one. It goes after the archive's last file, as
+// WithNewFile puts a file there. The FILE block holds it up to the end of its INFX block's entries, or whole in a
+// version without INFX, and the file table gives it that size (GroupSizeInArchive). Its entry in the file table is
+// laid out as the tools lay out a group's file's: the reference to the location has type 0. The group's entry holds
+// the file, then the options with the string index after the groups' names. Each string index after it moves up by
+// one, and the STRG block's tree takes the name too. In an archive without a STRG block, the group takes the string
+// index all the same, as a new bank does. Throws std::invalid_argument for a name for an archive without a STRG block,
+// no name for an archive with one, a name that the block holds already, and an archive that would pass 4 GB. Throws
 // xsflib::FormatError for entries that lay out their options another way than the tools, and the exceptions of
 // WithTables.
 std::vector<uint8_t> WithNewGroup(std::span<const uint8_t> archive, Flavor flavor, const std::string& name);

@@ -17,7 +17,9 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/commands/sequence.h"
 #include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/util.h"
@@ -411,19 +413,6 @@ int SequenceTrack<Policy>::ParseCommands(Player& player, Engine& engine)
 }
 
 template <typename Policy>
-uint8_t SequenceTrack<Policy>::ReadByte()
-{
-    if (current_ >= data_.size())
-    {
-        // Past the bytecode's end: as if it ended there.
-        current_ = static_cast<uint32_t>(data_.size()) + 1;
-        return 0xFF;
-    }
-
-    return data_[current_++];
-}
-
-template <typename Policy>
 int16_t* SequenceTrack<Policy>::Variable(Player& player, Engine& engine, int index)
 {
     if (index < 0x20)
@@ -439,78 +428,25 @@ int16_t* SequenceTrack<Policy>::Variable(Player& player, Engine& engine, int ind
 }
 
 template <typename Policy>
-uint32_t SequenceTrack<Policy>::Read16()
+int32_t SequenceTrack<Policy>::ArgumentValue(Player& player, Engine& engine, const commands::Argument& argument)
 {
-    if constexpr (Policy::kLittleEndianArguments)
+    switch (argument.source)
     {
-        const uint32_t low = ReadByte();
-        const uint32_t high = ReadByte();
-        return ((high << 8) & 0xFFFF) | low;
-    }
-    else
-    {
-        const uint32_t high = ReadByte();
-        const uint32_t low = ReadByte();
-        return ((high << 8) & 0xFFFF) | low;
-    }
-}
+    case commands::Source::kValue:
+        return static_cast<int32_t>(argument.value);
 
-template <typename Policy>
-uint32_t SequenceTrack<Policy>::ReadOffset()
-{
-    if constexpr (Policy::kLittleEndianArguments)
-    {
-        const uint32_t low = ReadByte();
-        const uint32_t middle = ReadByte();
-        const uint32_t high = ReadByte();
-        return low | (middle << 8) | (high << 16);
-    }
-    else
-    {
-        uint32_t offset = ReadByte();
-        offset = (offset << 8) | ReadByte();
-        offset = (offset << 8) | ReadByte();
-        return offset;
-    }
-}
-
-template <typename Policy>
-int32_t SequenceTrack<Policy>::ReadArg(Player& player, Engine& engine, int type)
-{
-    switch (type)
-    {
-    case kArgU8:
-        return ReadByte();
-
-    case kArgS16:
-        // Not sign-extended: each command takes the type it requires.
-        return static_cast<int32_t>(Read16());
-
-    case kArgVmidi:
+    case commands::Source::kRandom:
         {
-            uint32_t value = 0;
-            uint8_t byte;
-            do
-            {
-                byte = ReadByte();
-                value = (byte & 0x7F) | (value << 7);
-            } while ((byte & 0x80) && current_ <= data_.size());
-
-            return static_cast<int32_t>(value);
-        }
-
-    case kArgRandom:
-        {
-            const int32_t low = static_cast<int16_t>(Read16());
-            const int32_t high = static_cast<int16_t>(Read16());
+            const auto low = static_cast<int32_t>(argument.value);
+            const auto high = static_cast<int32_t>(argument.high);
             const uint32_t random = DrawRandom(player, engine);
             const int32_t product = static_cast<int32_t>(static_cast<uint32_t>((high - low) + 1) * random);
             return low + (product >> 16);
         }
 
-    case kArgVariable:
+    case commands::Source::kVariable:
         {
-            const int index = ReadByte();
+            const auto index = static_cast<int>(argument.value);
             MarkRead(player, index);
             if constexpr (requires { engine.OnVariableRead(player, index_, index); })
             {
@@ -520,10 +456,9 @@ int32_t SequenceTrack<Policy>::ReadArg(Player& player, Engine& engine, int type)
             const int16_t* variable = Variable(player, engine, index);
             return variable ? *variable : 0;
         }
-
-    default:
-        return 0;
     }
+
+    return 0;
 }
 
 template <typename Policy>
@@ -606,58 +541,32 @@ template <typename Policy>
 int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
 {
     // Returns 1 at the bytecode's end (FF).
-    int arg_type = kArgNone;
-    int time_type = kArgNone;
-    bool condition = true;
     held_wait_ = false;
     const uint32_t start = current_;
-    uint32_t command = ReadByte();
-    conditional_ = command == 0xA2;
+    const PlayedCommand played = ReadPlayedCommand(data_, current_, player.grammar_);
+    const commands::Command& read = played.command;
+    current_ = played.next;
+    conditional_ = read.conditional;
+    bool condition = true;
     if (conditional_) // if
     {
         conditional_at_ = player.commands_run_;
-        command = ReadByte();
         condition = cmp_flag_;
     }
 
-    // A time prefix (0xA3 a 16-bit time, 0xA4 a random one, 0xA5 a variable), in a build of the library that has them.
-    // Without them, 0xA3 to 0xA5 are commands that do nothing.
-    constexpr int kTimeTypes[] = {kArgS16, kArgRandom, kArgVariable};
-    if (command >= 0xA3 && command <= 0xA5 && Policy::HasCommand(player.build_, command))
-    {
-        time_type = kTimeTypes[command - 0xA3];
-        command = ReadByte();
-    }
-
-    // A variable prefix after a random one applies too where the prefixes chain (Policy::kArgPrefixesChain), and the
-    // argument comes from the variable. Elsewhere that 0xA1 is a command that does nothing.
-    if (command == 0xA0) // random
-    {
-        command = ReadByte();
-        arg_type = kArgRandom;
-    }
-    if (command == 0xA1 && (arg_type == kArgNone || Policy::kArgPrefixesChain)) // variable
-    {
-        command = ReadByte();
-        arg_type = kArgVariable;
-    }
-
+    // The command after its prefixes: a note's key, an opcode, or 0xF0 before an extended command's byte.
+    const uint32_t code = played.code;
+    const uint32_t command = code > 0xFF ? 0xF0 : code;
     if constexpr (requires { engine.OnCommandStart(player, index_, start, command, conditional_); })
     {
         engine.OnCommandStart(player, index_, start, command, conditional_);
     }
 
-    // A random or variable prefix gives the argument's type. Without one, each command reads the type it takes.
-    const auto read_arg = [&](int type)
-    {
-        return ReadArg(player, engine, arg_type != kArgNone ? arg_type : type);
-    };
-
-    if ((command & 0x80) == 0)
+    if (command < 0x80)
     {
         // A note: the command is the key, and the velocity and the length follow.
-        const uint8_t velocity = ReadByte();
-        const int32_t length = read_arg(kArgVmidi);
+        const auto velocity = static_cast<uint8_t>(read.velocity);
+        const int32_t length = ArgumentValue(player, engine, read.value);
         if (!condition)
         {
             return 0;
@@ -696,7 +605,7 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
         {
         case 0x80: // wait
             {
-                const int32_t wait = read_arg(kArgVmidi);
+                const int32_t wait = ArgumentValue(player, engine, read.value);
                 if (condition)
                 {
                     wait_ = wait;
@@ -707,7 +616,7 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
 
         case 0x81: // program
             {
-                const int32_t program = read_arg(kArgVmidi);
+                const int32_t program = ArgumentValue(player, engine, read.value);
                 if (condition)
                 {
                     CommandProc(player, engine, command, program, 0);
@@ -717,28 +626,21 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
             }
 
         case 0x88: // open a track
+            if (condition)
             {
-                const uint32_t track = ReadByte();
-                const uint32_t offset = ReadOffset();
-                if (condition)
-                {
-                    CommandProc(player, engine, command, static_cast<int32_t>(track), static_cast<int32_t>(offset));
-                }
-
-                return 0;
+                CommandProc(player, engine, command, read.index, static_cast<int32_t>(read.target));
             }
+
+            return 0;
 
         case 0x89: // jump
         case 0x8A: // call
+            if (condition)
             {
-                const uint32_t offset = ReadOffset();
-                if (condition)
-                {
-                    CommandProc(player, engine, command, static_cast<int32_t>(offset), 0);
-                }
-
-                return 0;
+                CommandProc(player, engine, command, static_cast<int32_t>(read.target), 0);
             }
+
+            return 0;
 
         default:
             return 0;
@@ -756,13 +658,9 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
     case 0xC0:
     case 0xD0:
         {
-            const uint32_t value = static_cast<uint32_t>(read_arg(kArgU8)) & 0xFF;
-            int32_t time = 0;
-            if (time_type != kArgNone)
-            {
-                time = ReadArg(player, engine, time_type);
-            }
-
+            // A time prefix gives a time after the value.
+            const uint32_t value = static_cast<uint32_t>(ArgumentValue(player, engine, read.value)) & 0xFF;
+            const int32_t time = read.time ? ArgumentValue(player, engine, *read.time) : 0;
             if (!condition)
             {
                 return 0;
@@ -776,7 +674,7 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
 
     case 0xE0:
         {
-            const int32_t value = static_cast<int16_t>(read_arg(kArgS16));
+            const int32_t value = static_cast<int16_t>(ArgumentValue(player, engine, read.value));
             if (condition)
             {
                 CommandProc(player, engine, command, value, 0);
@@ -788,14 +686,12 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
     case 0xF0:
         if (command == 0xF0)
         {
-            ParseExtendedCommand(player, engine, condition, arg_type);
+            RunExtended(player, engine, played, condition);
             return 0;
         }
 
         if (command == 0xFE) // the tracks to allocate: the sound's setup reads them
         {
-            ReadByte();
-            ReadByte();
             return 0;
         }
 
@@ -817,27 +713,21 @@ int SequenceTrack<Policy>::Parse(Player& player, Engine& engine)
 }
 
 template <typename Policy>
-void SequenceTrack<Policy>::ParseExtendedCommand(Player& player, Engine& engine, bool condition, int arg_type)
+void SequenceTrack<Policy>::RunExtended(Player& player, Engine& engine, const PlayedCommand& played, bool condition)
 {
     // A random or variable prefix gives the argument's type, as in Parse. Without one, the commands that take an
-    // argument read a 16-bit one.
-    const auto read_arg = [&]
-    {
-        return ReadArg(player, engine, arg_type != kArgNone ? arg_type : kArgS16);
-    };
-
-    const uint32_t sub = ReadByte();
-    const uint32_t command = 0xF000 + sub;
-    switch (sub & 0xF0)
+    // argument take a 16-bit one.
+    const commands::Command& read = played.command;
+    const uint32_t command = played.code;
+    switch (command & 0xF0)
     {
     case 0x80:
     case 0x90:
         {
-            const uint32_t variable = ReadByte();
-            const int32_t value = static_cast<int16_t>(read_arg());
+            const int32_t value = static_cast<int16_t>(ArgumentValue(player, engine, read.value));
             if (condition)
             {
-                CommandProc(player, engine, command, static_cast<int32_t>(variable), value);
+                CommandProc(player, engine, command, read.index, value);
             }
 
             return;
@@ -852,10 +742,9 @@ void SequenceTrack<Policy>::ParseExtendedCommand(Player& player, Engine& engine,
                 return;
             }
 
-            const uint32_t value = ReadByte();
             if (condition)
             {
-                CommandProc(player, engine, command, static_cast<int32_t>(value), 0);
+                CommandProc(player, engine, command, static_cast<int32_t>(read.value.value), 0);
             }
 
             return;
@@ -863,7 +752,7 @@ void SequenceTrack<Policy>::ParseExtendedCommand(Player& player, Engine& engine,
 
     case 0xE0:
         {
-            const int32_t value = static_cast<uint16_t>(read_arg());
+            const int32_t value = static_cast<uint16_t>(ArgumentValue(player, engine, read.value));
             if (condition)
             {
                 CommandProc(player, engine, command, value, 0);

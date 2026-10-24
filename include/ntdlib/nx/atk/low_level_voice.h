@@ -181,7 +181,8 @@ private:
 class LowLevelVoiceAllocator
 {
 public:
-    // A copy of the voices and the list between frames, for a snapshot of the model.
+    // A copy of the voices and the list between frames, for a snapshot of the model: the voices and the list's places
+    // up to the most voices that have been allocated at once.
     struct Snapshot
     {
         const LowLevelVoiceAllocator* owner = nullptr;
@@ -252,6 +253,9 @@ private:
     std::vector<LowLevelVoice*> list_; // the allocated voices first
     std::vector<int> places_;          // each voice's place in the list while it's allocated, or -1
     int count_ = 0;                    // +0x10
+
+    // The most voices allocated at once. The voices and the list's places past it have never changed.
+    int mark_ = 0;
 };
 
 } // namespace ntdlib::nx::atk

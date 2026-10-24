@@ -38,6 +38,12 @@ namespace
 // How the engine reads the archive's files: the Switch's flavour, with the rules that stop at the first problem.
 const sar::Options kSarOptions{sar::Flavor::kNx, {}, false, sar::Rules::kStopAtFirstProblem};
 
+// The voices that the pools hold: in the enhanced mode, those that the sound system can grow to.
+int PoolSize(const EngineOptions& options)
+{
+    return options.enhanced ? std::max(options.voice_count, kEnhancedVoiceCount) : options.voice_count;
+}
+
 // The renderer nn::atk opens (HardwareManager::Initialize, 0xc05340): 5 ms frames at 48 kHz, one sub-mix, 30 mix
 // buffers (24 for the sub-mix and 6 for the final mix), and a voice for each of the sound system's voices.
 audio::RendererParameter RendererParameterFor(const EngineOptions& options)
@@ -47,7 +53,8 @@ audio::RendererParameter RendererParameterFor(const EngineOptions& options)
     parameter.sample_count = ArchiveModel::kFrameSamples;
     parameter.mix_buffer_count = 30;
     parameter.sub_mix_count = 1;
-    parameter.voice_count = options.voice_count;
+    parameter.voice_count = PoolSize(options);
+    parameter.enhanced = options.enhanced;
 
     return parameter;
 }
@@ -60,10 +67,10 @@ Engine::Engine(audio::Renderer& renderer, const sar::SoundArchive& archive, cons
       archive_(&archive),
       receiver_(&receiver),
       options_(options),
-      allocator_(renderer, options_.hardware, options.voice_count),
-      voice_renderer_(allocator_, options_.hardware, options.voice_count),
-      voices_(options.voice_count),
-      channels_(options.voice_count),
+      allocator_(renderer, options_.hardware, PoolSize(options)),
+      voice_renderer_(allocator_, options_.hardware, PoolSize(options)),
+      voices_(options.voice_count, PoolSize(options)),
+      channels_(PoolSize(options)),
       files_(archive, kSarOptions)
 {
     global_vars_.fill(-1);

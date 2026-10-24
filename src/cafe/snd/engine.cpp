@@ -17,7 +17,6 @@
 #include "xsflib/rip/length.h"
 
 #include "ntdlib/cafe/ax/memory.h"
-#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/system.h"
 #include "ntdlib/cafe/ax/voice.h"
 #include "ntdlib/cafe/snd/channel.h"
@@ -42,6 +41,12 @@ namespace
 // readers take either byte order, by each file's byte order mark.
 const sar::Options kSarOptions{sar::Flavor::kCafe, {}, false, sar::Rules::kStopAtFirstProblem};
 
+// The voices that the pools hold: in the enhanced mode, those that the sound system can grow to.
+int PoolSize(const EngineOptions& options)
+{
+    return options.enhanced ? std::max(options.voice_count, kEnhancedVoiceCount) : options.voice_count;
+}
+
 } // namespace
 
 Engine::Engine(ax::System& system, ax::Memory& memory, const sar::SoundArchive& archive, EngineOptions options)
@@ -50,9 +55,9 @@ Engine::Engine(ax::System& system, ax::Memory& memory, const sar::SoundArchive& 
       archive_(&archive),
       options_(options),
       ax_voices_(system, memory),
-      renderer_(ax_voices_, options_.hardware, options.voice_count),
-      voices_(options.voice_count),
-      channels_(options.voice_count),
+      renderer_(ax_voices_, options_.hardware, PoolSize(options)),
+      voices_(options.voice_count, PoolSize(options)),
+      channels_(PoolSize(options)),
       files_(archive, kSarOptions, [this](ntdlib::nwsnd::LoadedWaveArchive& loaded) { MapWaveArchive(loaded); }),
       effects_(system, options_.effects, options_.hardware.output_mode)
 {
@@ -295,9 +300,11 @@ void Engine::SetHostMixes()
 {
     // The AX voices of each channel, by their indices: the mute of the channel's track, and its meter if the metered
     // player plays it. A channel's MultiVoice plays each of its wave's channels on an AX voice.
-    std::array<bool, ax::kVoiceCount> muted{};
-    std::array<int, ax::kVoiceCount> meters{};
-    meters.fill(-1);
+    const std::span<const ax::Voice> all = system_->Voices();
+    std::vector<bool>& muted = host_muted_;
+    std::vector<int>& meters = host_meters_;
+    muted.assign(all.size(), false);
+    meters.assign(all.size(), -1);
     for (const auto place : channels_.InUse())
     {
         const Channel& channel = channels_.At(place);
@@ -320,7 +327,6 @@ void Engine::SetHostMixes()
     }
 
     // Every AX voice, those of no channel included.
-    const std::array<ax::Voice, ax::kVoiceCount>& all = system_->Voices();
     for (std::size_t i = 0; i < all.size(); ++i)
     {
         system_->SetVoiceMuted(all[i], muted[i]);
@@ -368,7 +374,14 @@ void Engine::Restore(const Snapshot& snapshot)
 
 ArchiveModel::ArchiveModel(const sar::SoundArchive& archive, EngineOptions options)
 {
-    system.Init(ax::System::Library::kSndCore2, options.renderer_48k);
+    if (options.enhanced)
+    {
+        system.InitEnhanced(PoolSize(options));
+    }
+    else
+    {
+        system.Init(ax::System::Library::kSndCore2, options.renderer_48k);
+    }
     system.SetDeviceUpsampleStage(ax::System::Device::kTv, options.upsample_after_final_mix);
     system.SetDeviceUpsampleStage(ax::System::Device::kDrc, options.upsample_after_final_mix);
     engine = std::make_unique<Engine>(system, memory, archive, options);

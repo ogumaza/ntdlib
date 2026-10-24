@@ -3,7 +3,8 @@
 // Tests of the reader and the writer of stream files (ntdlib/sar/stream_file.h), in each flavor's format: the formats
 // of the 3DS, the Wii U and the Switch. The offsets and sizes that the tests expect follow from the layout that the
 // header describes. A stereo stream of the Wii U without tracks lays out INFO as the tools lay it out: the settings at
-// 0x60, the table of channels at 0xAC, the channels' infos at 0xC0 and the DSP-ADPCM infos at 0xD0.
+// 0x60, the table of channels at 0xAC, the channels' infos at 0xC0 and the DSP-ADPCM infos at 0xD0. The 3DS's samples
+// past the end follow the rules that the header gives for the 3DS's tools.
 
 #include <algorithm>
 #include <array>
@@ -33,6 +34,12 @@ using ntdlib::sar::WaveEncoding;
 using xsflib::testing::ErrorOf;
 
 constexpr Flavor kFlavors[] = {Flavor::kCtr, Flavor::kCafe, Flavor::kNx};
+
+// The newest version of a flavor's streams that the writer lays out.
+uint32_t Newest(Flavor flavor)
+{
+    return flavor == Flavor::kCtr ? 0x02030100 : 0x00040000;
+}
 
 // `count` samples of a tone, a different one for each channel.
 std::vector<int16_t> Tone(std::size_t count, int channel)
@@ -140,7 +147,7 @@ void TestVersion3(Flavor flavor)
 void TestPcmStream(Flavor flavor)
 {
     const std::vector<std::vector<int16_t>> input = {Tone(5000, 2)};
-    const StreamFile stream = ntdlib::sar::MakeStream(flavor, 0x00040000, WaveEncoding::kPcm16, 32000, input, {});
+    const StreamFile stream = ntdlib::sar::MakeStream(flavor, Newest(flavor), WaveEncoding::kPcm16, 32000, input, {});
     XSFLIB_CHECK(!stream.loop && stream.loop_start == 0 && stream.sample_count == 5000);
     XSFLIB_CHECK(stream.original_loop_start == 0 && stream.original_loop_end == 5000);
     XSFLIB_CHECK(stream.block_samples == 4096 && stream.BlockCount() == 2 && stream.LastBlockSize() == 1808);
@@ -155,7 +162,7 @@ void TestPcmStream(Flavor flavor)
     XSFLIB_CHECK(read == stream && read.Write() == file && ntdlib::sar::DecodeStream(read).channels[0] == input[0]);
 
     // With a loop from sample 100, the loop moves to 4,096, and the samples from 100 up to 4,096 follow the end.
-    const StreamFile looped = ntdlib::sar::MakeStream(flavor, 0x00040000, WaveEncoding::kPcm16, 32000, input, 100);
+    const StreamFile looped = ntdlib::sar::MakeStream(flavor, Newest(flavor), WaveEncoding::kPcm16, 32000, input, 100);
     std::vector<int16_t> expected = input[0];
     expected.insert(expected.end(), input[0].begin() + 100, input[0].begin() + 4096);
     XSFLIB_CHECK(looped.loop_start == 4096 && looped.sample_count == 8996 && looped.original_loop_end == 5000);
@@ -164,22 +171,137 @@ void TestPcmStream(Flavor flavor)
     // A last frame of DSP-ADPCM with an odd number of samples takes its header and a byte for each two of them, the
     // last byte half used: 1,009 samples take 72 frames and 2 bytes.
     const std::vector<std::vector<int16_t>> odd = {Tone(1009, 0)};
-    XSFLIB_CHECK(ntdlib::sar::MakeStream(flavor, 0x00040000, WaveEncoding::kDspAdpcm, 32000, odd, {}).LastBlockSize() ==
-                 578);
+    XSFLIB_CHECK(ntdlib::sar::MakeStream(flavor, Newest(flavor), WaveEncoding::kDspAdpcm, 32000, odd, {})
+                     .LastBlockSize() == 578);
 }
 
 // A stream's tracks: each one's volume, pan, span, flags and channels read back.
 void TestTracks(Flavor flavor)
 {
     const std::vector<std::vector<int16_t>> input = {Tone(300, 0), Tone(300, 1), Tone(300, 2)};
-    StreamFile stream = ntdlib::sar::MakeStream(flavor, 0x00040000, WaveEncoding::kDspAdpcm, 48000, input, {});
+    StreamFile stream = ntdlib::sar::MakeStream(flavor, Newest(flavor), WaveEncoding::kDspAdpcm, 48000, input, {});
     stream.tracks = std::vector<StreamFile::Track>{{100, 20, 3, 1, {0, 1}}, {127, 64, 0, 0, {2}}};
     const std::vector<uint8_t> file = stream.Write();
     const StreamFile read = StreamFile::Read(file);
     XSFLIB_CHECK(read.tracks == stream.tracks && read == stream && read.Write() == file);
 
+    // The table of channels follows the table of tracks, and the first track's info follows both.
+    const xsflib::Reader r(file, flavor == Flavor::kCafe);
+    XSFLIB_CHECK(r.U32(0x5C) == r.U32(0x54) + 4 + 2 * 8 && r.U32(0x48 + r.U32(0x54) + 8) == 4 + 2 * 8 + 4 + 3 * 8);
+
     stream.tracks->back().channels = {3};
     XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { stream.Write(); }).empty());
+}
+
+// The 16-bit sample at sample `index` of a channel's bytes, little-endian.
+int16_t SampleAt(const StreamFile::Channel& channel, std::size_t index)
+{
+    return static_cast<int16_t>(xsflib::LoadLe16(&channel.samples[index * 2]));
+}
+
+// A looped stereo 16-bit PCM stream of the 3DS of 5,000 samples, with a loop from sample 100. The loop moves to 4,096,
+// and the stream ends 804 samples into its third block. The loop's first 128 samples follow the end in the last block.
+// The last block's size counts 932 samples: 1,864 bytes, 1,888 with the padding. SEEK holds an entry for each block.
+void TestCtrPastEnd()
+{
+    const std::vector<std::vector<int16_t>> input = {Tone(5000, 0), Tone(5000, 1)};
+    const StreamFile stream =
+        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02030100, WaveEncoding::kPcm16, 32000, input, 100);
+    XSFLIB_CHECK(stream.loop_start == 4096 && stream.sample_count == 8996 && stream.samples_past_end == 128);
+    XSFLIB_CHECK(stream.uncounted_samples == 0 && stream.BlockCount() == 3 && stream.LastBlockSamples() == 804);
+    XSFLIB_CHECK(stream.LastBlockSize() == 1864 && stream.OverflowSamples() == 0 && stream.OverflowSize() == 0);
+    for (int c = 0; c < 2; ++c)
+    {
+        const StreamFile::Channel& channel = stream.channels[c];
+        XSFLIB_CHECK(channel.samples.size() == 2 * 0x2000 + 1888 && channel.history.size() == 3);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < 128; ++i)
+        {
+            differ += SampleAt(channel, 8996 + i) == input[c][4096 + i] ? 0 : 1;
+        }
+        XSFLIB_CHECK(differ == 0 && SampleAt(channel, 8996 + 128) == 0);
+    }
+
+    const std::vector<uint8_t> file = stream.Write();
+    const xsflib::Reader r(file, false);
+    XSFLIB_CHECK(r.Magic(0, "CSTM") && r.U32(8) == 0x02030100 && r.U32(0x7C) == 1864 && r.U32(0x80) == 804);
+    XSFLIB_CHECK(r.U32(0x84) == 1888 && r.U32(0xA4) == 100 && r.U32(0xA8) == 5000);
+    const StreamFile read = StreamFile::Read(file);
+    XSFLIB_CHECK(read == stream && read.Write() == file);
+    XSFLIB_CHECK(ntdlib::sar::DecodeStream(read).channels[1].size() == 8996);
+
+    // DSP-ADPCM takes the same layout. The last block's size counts the bytes up to the 128th sample past the end.
+    const std::vector<std::vector<int16_t>> longer = {Tone(20000, 0), Tone(20000, 1)};
+    const StreamFile adpcm =
+        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02030100, WaveEncoding::kDspAdpcm, 32000, longer, 100);
+    XSFLIB_CHECK(adpcm.loop_start == 14336 && adpcm.samples_past_end == 128 && adpcm.LastBlockSamples() == 5564);
+    XSFLIB_CHECK(adpcm.LastBlockSize() == 3253 && StreamFile::Read(adpcm.Write()) == adpcm);
+}
+
+// A looped stereo 16-bit PCM stream of the 3DS of 8,142 samples whose loop starts at its first sample. The loop moves
+// to the second block: the samples up to 4,096 follow the end, and the stream ends 4,046 samples into its third block.
+// The last block has room for 50 of the 128 samples past the end. The block ends full, and a piece of each channel
+// after it holds the other 78: 156 bytes, 160 with the padding. SEEK holds an entry for each piece.
+void TestCtrOverflow()
+{
+    const std::vector<std::vector<int16_t>> input = {Tone(8142, 0), Tone(8142, 1)};
+    const StreamFile stream = ntdlib::sar::MakeStream(Flavor::kCtr, 0x02030100, WaveEncoding::kPcm16, 32000, input, 0);
+    XSFLIB_CHECK(stream.loop_start == 4096 && stream.sample_count == 12238 && stream.LastBlockSamples() == 4046);
+    XSFLIB_CHECK(stream.original_loop_start == 0 && stream.original_loop_end == 8142);
+    XSFLIB_CHECK(stream.LastBlockSize() == 0x2000 && stream.OverflowSamples() == 78 && stream.OverflowSize() == 160);
+    for (int c = 0; c < 2; ++c)
+    {
+        const StreamFile::Channel& channel = stream.channels[c];
+        XSFLIB_CHECK(channel.samples.size() == 3 * 0x2000 + 160 && channel.history.size() == 4);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < 128; ++i)
+        {
+            differ += SampleAt(channel, 12238 + i) == input[c][4096 + i] ? 0 : 1;
+        }
+        XSFLIB_CHECK(differ == 0 && channel.history[3] == (std::array<int16_t, 2>{input[c][4145], input[c][4144]}));
+    }
+
+    // DATA holds the three blocks' pieces, then each channel's piece after the last block. SEEK holds 4 entries for
+    // each channel.
+    const std::vector<uint8_t> file = stream.Write();
+    const xsflib::Reader r(file, false);
+    const std::size_t data = r.U32(0x30);
+    XSFLIB_CHECK(r.U32(0x34) == 0x20 + 6 * 0x2000 + 2 * 160);
+    XSFLIB_CHECK(static_cast<int16_t>(r.U16(data + 0x20 + 6 * 0x2000)) == input[0][4146]);
+    XSFLIB_CHECK(static_cast<int16_t>(r.U16(data + 0x20 + 6 * 0x2000 + 160)) == input[1][4146]);
+    XSFLIB_CHECK(static_cast<int16_t>(r.U16(r.U32(0x24) + 8 + 7 * 4)) == input[1][4145]);
+    const StreamFile read = StreamFile::Read(file);
+    XSFLIB_CHECK(read == stream && read.Write() == file);
+}
+
+// The 3DS's oldest version: settings of 0x38 bytes, without the regions. A stream without a loop holds a sample of 0
+// past its end, and its last block's count leaves out the last 127 samples. A last block of fewer samples counts one.
+void TestCtrOldest()
+{
+    const std::vector<std::vector<int16_t>> input = {Tone(20000, 0)};
+    const StreamFile stream =
+        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kDspAdpcm, 32000, input, {});
+    XSFLIB_CHECK(stream.samples_past_end == 1 && stream.uncounted_samples == 127);
+    XSFLIB_CHECK(stream.LastBlockSamples() == 5664 - 127 && stream.LastBlockSize() == 3238);
+    const std::vector<uint8_t> file = stream.Write();
+    const xsflib::Reader r(file, false);
+    XSFLIB_CHECK(r.U32(8) == 0x02000000 && r.U32(0x54) == 0xFFFFFFFF && r.U32(0x5C) == 0x18 + 0x38);
+    XSFLIB_CHECK(r.U32(0x80) == 5664 - 127 && r.U32(0x98) == 1);
+    const StreamFile read = StreamFile::Read(file);
+    XSFLIB_CHECK(read.Write() == file && ntdlib::sar::DecodeStream(read).channels[0].size() == 20000);
+    XSFLIB_CHECK(read.original_loop_start == 0 && read.original_loop_end == 20000);
+
+    const std::vector<std::vector<int16_t>> short_last = {Tone(3 * 4096 + 60, 0)};
+    const StreamFile one =
+        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kPcm16, 32000, short_last, {});
+    XSFLIB_CHECK(one.BlockCount() == 4 && one.uncounted_samples == 59 && one.LastBlockSamples() == 1);
+    XSFLIB_CHECK(StreamFile::Read(one.Write()).Write() == one.Write());
+
+    // A looped stream takes the loop's first samples past its end in this version too.
+    const StreamFile looped =
+        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kPcm16, 32000, input, 0);
+    XSFLIB_CHECK(looped.samples_past_end == 128 && looped.uncounted_samples == 0);
+    XSFLIB_CHECK(StreamFile::Read(looped.Write()).Write() == looped.Write());
 }
 
 // Whether `make` throws an exception of type E.
@@ -190,7 +312,8 @@ bool Throws(Make make)
 }
 
 // A stream of the Wii U becomes the Switch's stream of the same samples, and the Switch's the Wii U's: 16-bit PCM
-// takes the other byte order, and the rest stays. The 3DS's streams don't convert.
+// takes the other byte order, and the rest stays. A stream of the 3DS loses its samples past the end on the way to the
+// other consoles, and holds none when it comes back.
 void TestConversions()
 {
     const std::vector<std::vector<int16_t>> input = {Tone(9000, 0), Tone(9000, 1)};
@@ -204,8 +327,32 @@ void TestConversions()
         XSFLIB_CHECK(ntdlib::sar::ConvertStream(nx, Flavor::kCafe, 0x00030000).Write() == old.Write());
     }
 
-    const StreamFile ctr = ntdlib::sar::MakeStream(Flavor::kCtr, 0x00040000, WaveEncoding::kPcm16, 32000, input, {});
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { ntdlib::sar::ConvertStream(ctr, Flavor::kNx, 0x00040000); }));
+    // 16-bit PCM of the 3DS: the samples up to the end stay, and zeros follow them.
+    const StreamFile ctr = ntdlib::sar::MakeStream(Flavor::kCtr, 0x02030100, WaveEncoding::kPcm16, 32000, input, 50);
+    const StreamFile nx = ntdlib::sar::MakeStream(Flavor::kNx, 0x00040000, WaveEncoding::kPcm16, 32000, input, 50);
+    XSFLIB_CHECK(ctr.samples_past_end == 128 && ntdlib::sar::ConvertStream(ctr, Flavor::kNx, 0x00040000) == nx);
+    const StreamFile back = ntdlib::sar::ConvertStream(nx, Flavor::kCtr, 0x02030100);
+    XSFLIB_CHECK(back == ntdlib::sar::WithoutSamplesPastEnd(ctr) && back.samples_past_end == 0);
+    XSFLIB_CHECK(StreamFile::Read(back.Write()) == back);
+
+    // DSP-ADPCM keeps the frame of the last sample whole, and zeros follow it.
+    const StreamFile adpcm =
+        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kDspAdpcm, 32000, input, {});
+    const StreamFile cafe = ntdlib::sar::ConvertStream(adpcm, Flavor::kCafe, 0x00030000);
+    XSFLIB_CHECK(cafe.uncounted_samples == 0 && cafe.LastBlockSamples() == 9000 && cafe.LastBlockSize() == 5143);
+    XSFLIB_CHECK(std::equal(cafe.channels[0].samples.begin(), cafe.channels[0].samples.begin() + 5144,
+                            adpcm.channels[0].samples.begin()));
+    XSFLIB_CHECK(std::all_of(cafe.channels[0].samples.begin() + 5144, cafe.channels[0].samples.end(),
+                             [](uint8_t b) { return b == 0; }));
+    const StreamFile cafe_read = StreamFile::Read(cafe.Write());
+    XSFLIB_CHECK(ntdlib::sar::DecodeStream(cafe_read).channels == ntdlib::sar::DecodeStream(adpcm).channels);
+
+    // A track of the 3DS has no span or flags.
+    StreamFile tracked = nx;
+    tracked.tracks = std::vector<StreamFile::Track>{{100, 20, 3, 1, {0, 1}}};
+    const StreamFile ctr_tracked = ntdlib::sar::ConvertStream(tracked, Flavor::kCtr, 0x02010000);
+    XSFLIB_CHECK(ctr_tracked.tracks->front() == (StreamFile::Track{100, 20, 0, 0, {0, 1}}));
+    XSFLIB_CHECK(StreamFile::Read(ctr_tracked.Write()).Write() == ctr_tracked.Write());
 }
 
 // The reader refuses other files and settings that don't add up. The writer and MakeStream refuse what the format
@@ -236,6 +383,17 @@ void TestRefusals()
     XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
     wrong.version = 0x00020000;
     XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
+    wrong.version = 0x02030100;
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
+    wrong.flavor = Flavor::kCtr;
+    XSFLIB_CHECK(StreamFile::Read(wrong.Write()).flavor == Flavor::kCtr);
+    wrong.version = 0x02020000;
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
+    wrong.version = 0x00040000;
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
+    wrong = stream;
+    wrong.uncounted_samples = 1000;
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
     wrong = stream;
     wrong.channels[0].adpcm.reset();
     XSFLIB_CHECK(Throws<std::invalid_argument>([&] { wrong.Write(); }));
@@ -264,11 +422,17 @@ int main()
 {
     for (const Flavor flavor : kFlavors)
     {
-        TestDspAdpcmStream(flavor);
-        TestVersion3(flavor);
+        if (flavor != Flavor::kCtr)
+        {
+            TestDspAdpcmStream(flavor);
+            TestVersion3(flavor);
+        }
         TestPcmStream(flavor);
         TestTracks(flavor);
     }
+    TestCtrPastEnd();
+    TestCtrOverflow();
+    TestCtrOldest();
     TestConversions();
     TestRefusals();
 

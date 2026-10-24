@@ -91,4 +91,21 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
     return out;
 }
 
+SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, RsarBankSet& banks, const std::string& title,
+                            bool balance, const Settings& settings, const std::string& program)
+{
+    SfzSampleSet samples;
+    const bool since_march_2008 = settings.wii_build.SinceMarch2008();
+    auto regions = [&](const PresetKey& key, double gain_db, int resampling_slot)
+    {
+        return PresetRegions(key, banks, samples, gain_db, resampling_slot, balance, since_march_2008, settings);
+    };
+
+    SfzInstruments out;
+    out.files = BankFiles(programs, title, settings, program, regions);
+    out.samples = samples.Take();
+
+    return out;
+}
+
 } // namespace ntdlib::sequence_export

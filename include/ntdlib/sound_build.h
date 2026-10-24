@@ -64,6 +64,8 @@ AxBuild IdentifyBuild(const Microcode& microcode);
 // microcode identifies the build (IdentifyBuild). Where that build differs, the models check October2006.
 struct SndBuild
 {
+    friend bool operator==(const SndBuild&, const SndBuild&) = default;
+
     bool October2006() const
     {
         return october_2006;

@@ -48,15 +48,24 @@ constexpr std::size_t kFileEntrySize = 16; // an entry of INFO
 constexpr std::size_t kItemEntrySize = 8;  // an entry of INFX
 constexpr std::size_t kReferenceSize = 8;
 
+// The versions of a group's file: 1.0.0 on the Wii U and the Switch, with INFX. On the 3DS, 1.0.0.0 without INFX, and
+// 1.1.0.0 with it.
+constexpr uint32_t kGroupVersion = 0x00010000;
+constexpr uint32_t kCtrGroupVersion = 0x01000000;
+constexpr uint32_t kCtrItemsVersion = 0x01010000;
+
 using detail::Out;
 
-// Throws std::invalid_argument for the 3DS. Its groups are laid out another way.
-void CheckFlavor(Flavor flavor)
+// The magic of a group's file of `flavor`.
+const char* MagicOf(Flavor flavor)
 {
-    if (flavor == Flavor::kCtr)
-    {
-        throw std::invalid_argument("a group of the 3DS: only the groups of the Wii U and the Switch are laid out so");
-    }
+    return flavor == Flavor::kCtr ? "CGRP" : "FGRP";
+}
+
+// Whether a group's file of `flavor` and `version` holds an INFX block.
+bool HasItems(Flavor flavor, uint32_t version)
+{
+    return flavor != Flavor::kCtr || version >= kCtrItemsVersion;
 }
 
 // The alignment of the copies in a group's file and of the group's end: that of an archive's files.
@@ -73,11 +82,11 @@ struct GroupBlocks
     std::optional<std::pair<std::size_t, std::size_t>> items; // INFX
 };
 
-// The blocks of the group's file that `r` reads, from the header's table. Throws xsflib::FormatError for bytes that
-// aren't a group's file of the console, and for one without INFO or FILE.
-GroupBlocks BlocksOf(const xsflib::Reader& r)
+// The blocks of the group's file of `flavor` that `r` reads, from the header's table. Throws xsflib::FormatError for
+// bytes that aren't a group's file of the console, and for one without INFO or FILE.
+GroupBlocks BlocksOf(const xsflib::Reader& r, Flavor flavor)
 {
-    if (!r.Magic(0, "FGRP") || r.U16(4) != 0xFEFF)
+    if (!r.Magic(0, MagicOf(flavor)) || r.U16(4) != 0xFEFF)
     {
         throw xsflib::FormatError("bytes that aren't a group's file of the console");
     }
@@ -145,9 +154,10 @@ std::vector<CopyEntry> EntriesOf(const xsflib::Reader& r, const GroupBlocks& blo
 }
 
 // The group's file that holds `contents`, laid out as the tools lay it out after `header`, the header's 64 bytes. Zeros
-// pad INFX when `padded` says so.
+// pad INFX when `padded` says so. A file of a version without INFX lists no items.
 std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents& contents, Flavor flavor, bool padded)
 {
+    const bool has_items = HasItems(flavor, xsflib::Reader(header, flavor == Flavor::kCafe).U32(8));
     const std::size_t alignment = AlignmentOf(flavor);
     Out out(flavor == Flavor::kCafe);
     out.Append(header);
@@ -188,6 +198,23 @@ std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents&
     }
     out.Align(alignment);
     out.U32(file + 4, static_cast<uint32_t>(out.Size() - file));
+    if (!has_items)
+    {
+        out.U32(kSizeField, static_cast<uint32_t>(out.Size()));
+        out.U16(kBlockCount, 2);
+        const std::size_t blocks[][2] = {{kGroupInfoBlock, info}, {kGroupFileBlock, file}};
+        const std::size_t sizes[] = {file - info, out.Size() - file};
+        for (std::size_t i = 0; i < 2; ++i)
+        {
+            const std::size_t entry = kBlockTable + kBlockEntrySize * i;
+            out.U16(entry, static_cast<uint16_t>(blocks[i][0]));
+            out.U16(entry + 2, 0);
+            out.U32(entry + 4, static_cast<uint32_t>(blocks[i][1]));
+            out.U32(entry + 8, static_cast<uint32_t>(sizes[i]));
+        }
+
+        return out.Take();
+    }
 
     // INFX: the count, a reference to each entry, then the entries.
     const std::size_t items = contents.items.size();
@@ -226,11 +253,25 @@ std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents&
     return out.Take();
 }
 
-// Where INFX's entries end in `group`, a group's file laid out as the tools lay it out.
+// Where INFX's entries end in `group`, a group's file laid out as the tools lay it out. In a version without INFX, the
+// end of the last copy, or the file's end without copies: the zeros after the last copy pad the file.
 std::size_t ItemsEnd(std::span<const uint8_t> group, Flavor flavor)
 {
     const xsflib::Reader r(group, flavor == Flavor::kCafe);
-    const GroupBlocks blocks = BlocksOf(r);
+    const GroupBlocks blocks = BlocksOf(r, flavor);
+    if (!HasItems(flavor, r.U32(8)) && !blocks.items)
+    {
+        std::optional<std::size_t> end;
+        for (const CopyEntry& entry : EntriesOf(r, blocks))
+        {
+            if (entry.place)
+            {
+                end = std::max(end.value_or(0), *entry.place + entry.size);
+            }
+        }
+
+        return end.value_or(r.U32(kSizeField));
+    }
     if (!blocks.items)
     {
         throw xsflib::FormatError("a group's file without an INFX block");
@@ -269,34 +310,28 @@ std::optional<std::vector<uint32_t>> ListOf(std::span<const uint8_t> entry, bool
 
 } // namespace
 
-std::vector<uint8_t> EmptyGroupFile(Flavor flavor)
+std::vector<uint8_t> EmptyGroupFile(Flavor flavor, std::optional<uint32_t> version)
 {
-    CheckFlavor(flavor);
-
     // The header: the magic, the byte order mark, the header's size and the version. Build gives the rest.
-    constexpr uint32_t kVersion = 0x00010000;
     Out header(flavor == Flavor::kCafe);
-    header.Append(std::span(reinterpret_cast<const uint8_t*>("FGRP"), 4));
+    header.Append(std::span(reinterpret_cast<const uint8_t*>(MagicOf(flavor)), 4));
     header.Zeros(kHeaderSize - 4);
     header.U16(4, 0xFEFF);
     header.U16(6, static_cast<uint16_t>(kHeaderSize));
-    header.U32(8, kVersion);
+    header.U32(8, version.value_or(flavor == Flavor::kCtr ? kCtrGroupVersion : kGroupVersion));
 
     return Build(header.Take(), {}, flavor, true);
 }
 
 std::size_t GroupSizeInArchive(std::span<const uint8_t> group, Flavor flavor)
 {
-    CheckFlavor(flavor);
-
     return ItemsEnd(group, flavor);
 }
 
 GroupContents ReadGroupFile(std::span<const uint8_t> group, Flavor flavor)
 {
-    CheckFlavor(flavor);
     const xsflib::Reader r(group, flavor == Flavor::kCafe);
-    const GroupBlocks blocks = BlocksOf(r);
+    const GroupBlocks blocks = BlocksOf(r, flavor);
 
     // INFO's entries give each file's ID, and the copy's place and size. A link has no place.
     GroupContents contents;
@@ -332,13 +367,13 @@ std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, st
     // INFX starts on a multiple of 32 bytes, and its entries never end on one.
     GroupContents contents = ReadGroupFile(group, flavor);
     const xsflib::Reader r(group, flavor == Flavor::kCafe);
-    const GroupBlocks blocks = BlocksOf(r);
-    if (!blocks.items || group.size() < kHeaderSize)
+    const GroupBlocks blocks = BlocksOf(r, flavor);
+    const bool has_items = HasItems(flavor, r.U32(8));
+    if ((has_items && !blocks.items) || group.size() < kHeaderSize)
     {
         throw xsflib::FormatError("a group's file laid out another way than the tools lay it out: it lacks INFX");
     }
-    const std::size_t end = blocks.items->first + blocks.items->second;
-    const bool padded = end != ItemsEnd(group, flavor);
+    const bool padded = has_items && blocks.items->first + blocks.items->second != ItemsEnd(group, flavor);
     const std::span<const uint8_t> header = group.first(kHeaderSize);
     if (!std::ranges::equal(Build(header, contents, flavor, padded), group))
     {
@@ -386,7 +421,10 @@ std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, st
             throw std::invalid_argument("the group lists item " + std::to_string(item.item) + " already");
         }
 
-        contents.items.push_back(item);
+        if (has_items)
+        {
+            contents.items.push_back(item);
+        }
     }
 
     return Build(header, contents, flavor, padded);
@@ -395,7 +433,6 @@ std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, st
 std::vector<uint8_t> WithGroupLists(std::span<const uint8_t> archive, Flavor flavor, uint32_t group,
                                     std::span<const GroupMember> files)
 {
-    CheckFlavor(flavor);
     const bool big_endian = flavor == Flavor::kCafe;
     const Tables tables = TablesOf(archive, flavor);
     std::optional<StringBlock> strings;
@@ -407,6 +444,20 @@ std::vector<uint8_t> WithGroupLists(std::span<const uint8_t> archive, Flavor fla
     if (group >= info.groups.size())
     {
         throw std::invalid_argument("the archive holds no group " + std::to_string(group));
+    }
+
+    // The 3DS's file table holds no lists.
+    if (flavor == Flavor::kCtr)
+    {
+        for (const GroupMember& member : files)
+        {
+            if (member.file >= info.files.size())
+            {
+                throw std::invalid_argument("the archive holds no file " + std::to_string(member.file));
+            }
+        }
+
+        return std::vector<uint8_t>(archive.begin(), archive.end());
     }
 
     // A link to a wave archive's file leaves the file's list as it is.
@@ -467,7 +518,6 @@ std::vector<uint8_t> WithGroupLists(std::span<const uint8_t> archive, Flavor fla
 std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor flavor, uint32_t group,
                                       std::span<const GroupMember> files, std::span<const GroupItem> items)
 {
-    CheckFlavor(flavor);
     const bool big_endian = flavor == Flavor::kCafe;
     const InfoBlock info = InfoBlock::Read(TablesOf(archive, flavor).info, flavor);
     const std::string name = "group " + std::to_string(group);
@@ -519,8 +569,8 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
         return std::pair<std::size_t, std::size_t>{*body + offset, entry.U32(location + 8)};
     };
 
-    // The group's file: the header gives its size, and the file table the end of INFX's entries. A group's file that
-    // ends the archive ends without the zeros that pad INFX.
+    // The group's file: the header gives its size, and the file table the end of INFX's entries, or the end of the last
+    // copy without INFX. A group's file that ends the archive ends without the zeros that pad it.
     const std::optional<std::pair<std::size_t, std::size_t>> place = location_of(file);
     if (!place)
     {
@@ -534,7 +584,7 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
     if (place->second != ItemsEnd(old, flavor))
     {
         throw xsflib::FormatError("an archive whose file table gives the file of " + name +
-                                  " another size than the end of its INFX block's entries");
+                                  " another size than the tools give it");
     }
 
     // The game loads a linked file from the archive.
@@ -552,8 +602,8 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
     const std::vector<uint8_t> grown = GroupWith(old, flavor, files, items);
     const xsflib::Reader old_reader(old, big_endian);
     const xsflib::Reader grown_reader(grown, big_endian);
-    const std::vector<CopyEntry> from = EntriesOf(old_reader, BlocksOf(old_reader));
-    const std::vector<CopyEntry> to = EntriesOf(grown_reader, BlocksOf(grown_reader));
+    const std::vector<CopyEntry> from = EntriesOf(old_reader, BlocksOf(old_reader, flavor));
+    const std::vector<CopyEntry> to = EntriesOf(grown_reader, BlocksOf(grown_reader, flavor));
     std::vector<InnerFile> inner;
     for (std::size_t k = 0; k < from.size() && k < to.size(); ++k)
     {
@@ -571,7 +621,12 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
 std::optional<uint32_t> GroupOfFile(std::span<const uint8_t> archive, Flavor flavor,
                                     std::span<const uint8_t> group_file)
 {
-    CheckFlavor(flavor);
+    // The 3DS's file table holds no lists to find the group by.
+    if (flavor == Flavor::kCtr)
+    {
+        return std::nullopt;
+    }
+
     GroupContents contents;
     try
     {

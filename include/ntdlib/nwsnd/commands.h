@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // NintendoWare's sequence bytecode in the common form of `ntdlib::commands`, for the Wii, the 3DS, the Wii U and the
-// Switch. The decoder reads each command as the console's sequence player parses it. It starts at the labels and at the
-// sounds' starts, and follows every jump, call and track start. In the bytes that the player never reaches, it reads
-// the runs of commands that end cleanly. The other bytes stay as data. The encoder writes the items back, and gives
-// the same bytes for a sequence that the decoder read.
+// Switch. The console's sequence player (sequence.h) reads each command through ReadPlayedCommand, and the decoder
+// reads the commands the same way. The decoder starts at the labels and at the sounds' starts, and follows every jump,
+// call and track start. In the bytes that the player never reaches, it reads the runs of commands that end cleanly. The
+// other bytes stay as data. The encoder writes the items back, and gives the same bytes for a sequence that the decoder
+// read.
 
 #pragma once
 
@@ -79,6 +80,19 @@ struct DecodedCommand
 // Reads the command at byte offset `at` of `data` as the console's sequence player parses it. Returns nothing when the
 // command runs past the end of `data`.
 std::optional<DecodedCommand> DecodeCommand(std::span<const uint8_t> data, uint32_t at, const Grammar& grammar);
+
+// A command as the console's sequence player reads it. Its values are the console's, not the units of units.h, and a
+// jump's, a call's or a track start's target is a byte offset into the bytecode. The player reads an end (0xFF) at each
+// byte past the bytecode's end.
+struct PlayedCommand
+{
+    commands::Command command;
+    uint16_t code = 0; // a note's key, an opcode, or 0xF000 plus the byte after 0xF0
+    uint32_t next = 0; // the offset after the command, at most one past the bytecode's end
+};
+
+// Reads the command at byte offset `at` of `data` as the console's sequence player reads it, past the end too.
+PlayedCommand ReadPlayedCommand(std::span<const uint8_t> data, uint32_t at, const Grammar& grammar);
 
 // Whether a track goes on to the next command after `command`. An unconditional jump, return or end ends it, and so
 // does a conditional end where the grammar's ends ignore the condition.

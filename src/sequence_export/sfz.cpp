@@ -20,13 +20,11 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/file_name.h"
 #include "seqlib/midi/performance_writer.h"
 
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
-#include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "sequence_export/sfz_track.h"
@@ -138,17 +136,8 @@ SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, BankSet& bank
         return PresetRegions(key, banks, samples, gain_db, resampling_slot, settings);
     };
 
-    // Each file's name pads its program to the digits of the last program.
     SfzInstruments out;
-    const std::size_t digits = programs.empty() ? 1 : std::to_string(programs.back()).size();
-    for (const uint32_t p : programs)
-    {
-        const PresetKey key = StartingPresetKey(p, settings);
-        std::string number = std::to_string(p);
-        number.insert(0, digits - number.size(), '0');
-        out.files.push_back({seqlib::SafeFileName(title) + "_" + number + ".sfz",
-                             InstrumentFile(key, "Program " + std::to_string(p), title, settings, program, regions)});
-    }
+    out.files = BankFiles(programs, title, settings, program, regions);
     out.samples = samples.Take();
 
     return out;

@@ -106,7 +106,49 @@ void TestPlaces(Flavor flavor)
     old[flavor == Flavor::kCafe ? 10 : 9] = 0;
     XSFLIB_CHECK(!WaveSoundValuePlaces(old, flavor, 0).filters && WaveSoundValuePlaces(old, flavor, 0).pitch);
     XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WaveSoundValuePlaces(file, flavor, 3); }));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WaveSoundValuePlaces(file, Flavor::kCtr, 0); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WaveSoundValuePlaces(file, Flavor::kCtr, 0); }));
+}
+
+// The 3DS's reader reads the pan, the surround pan, the pitch, the sends to buses A and B, and the envelope. The edits
+// reach only those.
+void TestCtr()
+{
+    // The places, and new values.
+    const std::vector<uint8_t> file = sar_files::WaveSoundFile(Flavor::kCtr, Spec());
+    const WaveSoundPlaces places = WaveSoundValuePlaces(file, Flavor::kCtr, 0);
+    WaveSoundFile::WaveSound values = Read(file, Flavor::kCtr).sounds[0];
+    XSFLIB_CHECK(values.span == 10 && values.main_send == 100 &&
+                 (values.aux_sends == std::array<uint8_t, 3>{10, 20, 0}));
+    values.pan = 100;
+    values.span = 30;
+    values.pitch = 0.5f;
+    values.main_send = 90;
+    values.aux_sends = {40, 50, 0};
+    values.adshr = {10, 20, 30, 40, 50};
+
+    const std::vector<uint8_t> edited = WithWaveSoundValues(file, Flavor::kCtr, 0, values);
+
+    // The filters stay, and so does the send to bus C.
+    XSFLIB_CHECK((places == WaveSoundPlaces{true, true, false, true, 2, true}));
+    const WaveSoundFile::WaveSound read = Read(edited, Flavor::kCtr).sounds[0];
+    XSFLIB_CHECK(read.pan == 100 && read.span == 30 && read.pitch == 0.5f && read.main_send == 90 &&
+                 (read.aux_sends == std::array<uint8_t, 3>{40, 50, 0}) &&
+                 (read.adshr == ntdlib::sar::Adshr{10, 20, 30, 40, 50}));
+    const std::array<uint8_t, 4> kPanValue = {100, 30, 0, 0};
+    const std::array<uint8_t, 5> kSends = {90, 3, 40, 50, 30};
+    XSFLIB_CHECK(std::search(edited.begin(), edited.end(), kPanValue.begin(), kPanValue.end()) != edited.end());
+    XSFLIB_CHECK(std::search(edited.begin(), edited.end(), kSends.begin(), kSends.end()) != edited.end());
+    for (const auto change : {+[](WaveSoundFile::WaveSound& v) { v.low_pass = 10; },
+                              +[](WaveSoundFile::WaveSound& v) { v.aux_sends[2] = 5; }})
+    {
+        WaveSoundFile::WaveSound other = values;
+        change(other);
+        XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithWaveSoundValues(file, Flavor::kCtr, 0, other); }));
+    }
+
+    // A note's wave.
+    const WaveId kFresh{0x05000003, 5};
+    XSFLIB_CHECK(NoteWaves(Read(WithWaveSoundWave(file, Flavor::kCtr, 0, 0, kFresh), Flavor::kCtr)).front() == kFresh);
 }
 
 // New values read back. The file keeps its size, and only the bytes of the values change.
@@ -228,6 +270,7 @@ int main()
         TestValues(flavor);
         TestWave(flavor);
     }
+    TestCtr();
 
     return xsflib::testing::Summary("wave sound edit");
 }

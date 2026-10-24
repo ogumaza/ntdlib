@@ -110,4 +110,11 @@ SfzInstruments BuildTrackFiles(const Performance& perf, const seqlib::midi::Midi
 std::string InstrumentFile(const PresetKey& key, const std::string& name, const std::string& title,
                            const Settings& settings, const std::string& program, const PresetRegionsFunction& regions);
 
+// The SFZ file of each of `programs` of a bank, each of which plays its instrument by itself as a track plays it with
+// its starting settings (InstrumentFile). Program p's file is "<title>_<p>.sfz", with p padded to the digits of the
+// last program. `title` names the bank. `regions` writes the regions.
+std::vector<SfzFile> BankFiles(const std::vector<uint32_t>& programs, const std::string& title,
+                               const Settings& settings, const std::string& program,
+                               const PresetRegionsFunction& regions);
+
 } // namespace ntdlib::sequence_export

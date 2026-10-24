@@ -23,10 +23,10 @@ constexpr uint16_t kStreamTrack = 0x220E;
 constexpr uint16_t kSends = 0x220F;
 constexpr uint32_t kNone = 0xFFFFFFFF;
 
-// Appends sends to `out`: the main send, a send to each aux bus, and a byte of padding.
-void AppendSends(Out& out, uint8_t main, const std::array<uint8_t, 3>& aux)
+// Appends sends of `size` bytes to `out`: the main send, a send to each aux bus, and padding.
+void AppendSends(Out& out, uint8_t main, const std::array<uint8_t, 3>& aux, std::size_t size)
 {
-    const std::size_t at = out.Zeros(8);
+    const std::size_t at = out.Zeros(size);
     out.U8(at, main);
     for (std::size_t bus = 0; bus < aux.size(); ++bus)
     {
@@ -56,9 +56,10 @@ std::vector<uint8_t> StreamHeader(uint32_t version, bool big_endian)
 }
 
 std::vector<uint8_t> StreamDetailsOf(std::span<const uint8_t> header, const StreamSoundInfo& stream, bool sends,
-                                     bool big_endian)
+                                     Flavor flavor)
 {
-    Out out(big_endian);
+    const std::size_t sends_size = flavor == Flavor::kCtr ? 4 : 8;
+    Out out(flavor == Flavor::kCafe);
     out.Append(header);
     out.U16(0, stream.valid_tracks);
     out.U16(2, stream.channel_count);
@@ -95,13 +96,13 @@ std::vector<uint8_t> StreamDetailsOf(std::span<const uint8_t> header, const Stre
             out.U8(info + 21, track.biquad_type);
             out.U8(info + 22, track.biquad_value);
             out.Reference(info + 12, kSends, static_cast<uint32_t>(out.Size() - info));
-            AppendSends(out, track.main_send, track.aux_sends);
+            AppendSends(out, track.main_send, track.aux_sends, sends_size);
         }
     }
     if (sends)
     {
         out.Reference(16, kSends, static_cast<uint32_t>(out.Size()));
-        AppendSends(out, stream.main_send, stream.aux_sends);
+        AppendSends(out, stream.main_send, stream.aux_sends, sends_size);
     }
 
     return out.Take();
