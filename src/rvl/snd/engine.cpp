@@ -197,6 +197,72 @@ WsdPlayer* Engine::StartWaveSound(uint32_t index)
     return player;
 }
 
+StrmPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file)
+{
+    if (index >= archive_.Sounds().size())
+    {
+        return nullptr;
+    }
+
+    return StartStream(archive_.Sounds()[index], file, SendsOf(sends_, index));
+}
+
+StrmPlayer* Engine::StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file)
+{
+    return StartStream(sound, file, {});
+}
+
+StrmPlayer* Engine::StartStream(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
+                                const std::array<float, ax::kAuxBusCount>& sends)
+{
+    if (sound.type != ntdlib::rsar::SoundType::kStream)
+    {
+        return nullptr;
+    }
+
+    const ntdlib::rsar::StreamFile stream = ntdlib::rsar::StreamFile::Read(file);
+    std::optional<std::vector<StrmPlayer::Track>> tracks =
+        StrmPlayer::TracksOf(build_, sound, archive_.Version(), stream);
+    if (!tracks)
+    {
+        return nullptr;
+    }
+
+    // The stream's format, rate and loop, and the channels that the player keeps, each whole in MEM2. A voice loops to
+    // the start of the block that holds the loop's start. Each channel's decoder starts with its DSP-ADPCM info's
+    // history and its first frame's predictor (StrmPlayer::Start).
+    WaveData wave;
+    wave.format = stream.encoding;
+    wave.loop = stream.loop;
+    wave.sample_rate = stream.sample_rate;
+    wave.loop_start = stream.loop_start / stream.block_samples * stream.block_samples;
+    wave.loop_end = stream.sample_count;
+    std::vector<WaveData::Channel> channels;
+    const int kept = StrmPlayer::ChannelsKept(build_, sound, archive_.Version(), stream);
+    for (int i = 0; i < kept; i++)
+    {
+        const ntdlib::rsar::StreamFile::Channel& from = stream.channels[static_cast<std::size_t>(i)];
+        WaveData::Channel channel;
+        channel.data = memory_.Store(from.samples.data(), from.samples.size());
+        channel.adpcm = from.adpcm.value_or(ntdlib::rsar::DspAdpcmInfo{});
+        if (from.adpcm && !from.samples.empty())
+        {
+            channel.adpcm.pred_scale = from.samples.front();
+        }
+        channels.push_back(channel);
+    }
+
+    const int id = kStreamPlayers + static_cast<int>(stream_players_.size()) * StrmPlayer::kMaxTracks;
+    stream_players_.push_back(
+        std::make_unique<StrmPlayer>(id, sound, std::move(*tracks), wave, std::move(channels), build_));
+    stream_player_sends_.push_back(sends);
+    update_order_.push_back(id);
+    StrmPlayer* player = stream_players_.back().get();
+    player->Start();
+
+    return player;
+}
+
 Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const NoteOnInfo& info)
 {
     // The sequence's bank was loaded when the sound started.
@@ -282,6 +348,15 @@ void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::Call
 
 void Engine::OnVoiceEvent(ChannelId owner, Voice::Status status)
 {
+    if (owner >= kStreamPlayers)
+    {
+        const int place = (owner - kStreamPlayers) / StrmPlayer::kMaxTracks;
+        const int track = (owner - kStreamPlayers) % StrmPlayer::kMaxTracks;
+        stream_players_[static_cast<std::size_t>(place)]->VoiceEvent(*this, track, status);
+
+        return;
+    }
+
     channels_.At(owner).OnVoiceEvent(*this, status);
 }
 
@@ -296,7 +371,11 @@ void Engine::FrameProcess()
     // The players that have started, in the order they started (SoundThread's player callbacks).
     for (const int owner : update_order_)
     {
-        if (owner >= kWavePlayers)
+        if (owner >= kStreamPlayers)
+        {
+            stream_players_[static_cast<std::size_t>((owner - kStreamPlayers) / StrmPlayer::kMaxTracks)]->Update(*this);
+        }
+        else if (owner >= kWavePlayers)
         {
             wave_players_[static_cast<std::size_t>(owner - kWavePlayers)]->Update(*this);
         }
@@ -318,9 +397,14 @@ bool Engine::IsBusy() const
         return true;
     }
 
-    return std::any_of(players_.begin(), players_.end(), [](const auto& player) { return player->IsActive(); }) ||
-           std::any_of(wave_players_.begin(), wave_players_.end(),
-                       [](const auto& player) { return player->IsActive(); });
+    const auto active = [](const auto& player)
+    {
+        return player->IsActive();
+    };
+
+    return std::any_of(players_.begin(), players_.end(), active) ||
+           std::any_of(wave_players_.begin(), wave_players_.end(), active) ||
+           std::any_of(stream_players_.begin(), stream_players_.end(), active);
 }
 
 Engine::Snapshot Engine::Save() const
@@ -332,6 +416,7 @@ Engine::Snapshot Engine::Save() const
                       .global_variables = global_variables_,
                       .players = {},
                       .wave_players = {},
+                      .stream_players = {},
                       .banks = banks_.size(),
                       .wave_sound_files = wave_sound_files_.size(),
                       .effects = effects_};
@@ -343,6 +428,10 @@ Engine::Snapshot Engine::Save() const
     {
         snapshot.wave_players.push_back(*player);
     }
+    for (const std::unique_ptr<StrmPlayer>& player : stream_players_)
+    {
+        snapshot.stream_players.push_back(*player);
+    }
 
     return snapshot;
 }
@@ -350,7 +439,8 @@ Engine::Snapshot Engine::Save() const
 void Engine::Restore(const Snapshot& snapshot)
 {
     if (snapshot.players.size() != players_.size() || snapshot.wave_players.size() != wave_players_.size() ||
-        snapshot.banks != banks_.size() || snapshot.wave_sound_files != wave_sound_files_.size())
+        snapshot.stream_players.size() != stream_players_.size() || snapshot.banks != banks_.size() ||
+        snapshot.wave_sound_files != wave_sound_files_.size())
     {
         throw std::runtime_error("the engine has started a sound since the snapshot");
     }
@@ -368,6 +458,10 @@ void Engine::Restore(const Snapshot& snapshot)
     for (std::size_t i = 0; i < wave_players_.size(); i++)
     {
         *wave_players_[i] = snapshot.wave_players[i];
+    }
+    for (std::size_t i = 0; i < stream_players_.size(); i++)
+    {
+        *stream_players_[i] = snapshot.stream_players[i];
     }
 }
 

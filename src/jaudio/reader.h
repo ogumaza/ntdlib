@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-// The reader settings of the jaudio module's files, and the reads of their tags in either byte order.
+// The reader settings of the jaudio module's files, the reads of their tags in either byte order, and the reads of
+// their offsets in either width.
 //
 // The GameCube's and the Wii's formats are big-endian. The Switch's releases of some of those games, such as Super
 // Mario Galaxy's, keep the same files with each field stored little-endian in the width of its type. A tag of four
 // characters is stored as a 32-bit word there. Its characters come in reverse order: "RARC" becomes "CRAR". A few tags
-// keep their order.
+// keep their order. The Switch's release of Pikmin also widens each offset of its banks and wave systems to 64 bits.
 
 #pragma once
 
@@ -21,6 +22,29 @@ namespace ntdlib::jaudio::detail
 
 // A string's offset has to lie inside the data.
 inline constexpr xsflib::ReaderOptions kReaderOptions{.check_string_offset = true};
+
+// The widths of an offset: 32 bits, or 64 in a file whose offsets are widened.
+inline constexpr uint32_t kOffsetBytes = 4;
+inline constexpr uint32_t kWideOffsetBytes = 8;
+
+// The offset at `at`, `width` bytes wide (kOffsetBytes or kWideOffsetBytes). Throws FormatError if a 64-bit offset
+// doesn't fit in 32 bits.
+inline uint32_t OffsetAt(const xsflib::Reader& r, std::size_t at, uint32_t width)
+{
+    if (width == kOffsetBytes)
+    {
+        return r.U32(at);
+    }
+
+    const uint32_t first = r.U32(at);
+    const uint32_t second = r.U32(at + 4);
+    if ((r.BigEndian() ? first : second) != 0)
+    {
+        throw xsflib::FormatError("a 64-bit offset is out of range");
+    }
+
+    return r.BigEndian() ? second : first;
+}
 
 // Whether `data` starts with `tag` in reverse order. A little-endian file starts that way.
 inline bool StartsWithReversed(std::span<const uint8_t> data, const char* tag)

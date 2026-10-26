@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 // JAudio2's instrument banks (IBNK) of both versions: version 0 (The Wind Waker's layout) and version 1 (Twilight
-// Princess's layout), with their instruments, drum sets, oscillators and effects. A bank of version 1 can also be
-// little-endian. The Switch's releases of Wii games store their banks that way. The tag is then "KNBI", and each field
-// is little-endian in the width of its type. A key region's high key is the top byte of a 32-bit word there. The other
-// bytes of the bank's records, such as a velocity region's high velocity, keep their places.
+// Princess's layout), with their instruments, drum sets, oscillators and effects. A bank can also be little-endian. The
+// Switch's releases of GameCube and Wii games store their banks that way. The tag is then "KNBI", and each field is
+// little-endian in the width of its type. A version 1 key region's high key is the top byte of a 32-bit word there. The
+// other bytes of the bank's records, such as a velocity region's high velocity, keep their places. The Switch's release
+// of Pikmin 2 has little-endian banks of version 0. Their drum table lies 100 words further on, at 0x544. Their size
+// leaves those words out. The Switch's release of Pikmin keeps the GameCube's banks of version 0 with each offset
+// widened to 64 bits. Each bank's tag and size keep the big-endian order, and its BANK chunk's tag is reversed. Its
+// other fields are little-endian. Its size gives the size of the bank with 32-bit offsets.
 
 #pragma once
 
@@ -94,6 +98,11 @@ struct Instrument
     std::vector<std::size_t> oscillators; // into Bank::oscillators, at most two
     std::vector<InstEffect> effects;
     std::vector<KeyRegion> keys;
+
+    // The instrument's flags in a version 0 bank: the low byte of the word at +4 of its record. Pikmin's JAudio limits
+    // the instrument's voices by them (0x27911c in the main of the Switch's release). The low 4 bits pick the limit.
+    // The bits above them say what a note past the limit does. A version 1 bank leaves them 0.
+    uint8_t flags = 0;
 };
 
 // A drum set's sound for one key (JASDrumSet::TPerc). A drum plays its wave at its rate whatever the key.
@@ -117,8 +126,8 @@ struct DrumSet
 struct Bank
 {
     // Reads the bank at the start of `file`. `file` can go on past the bank: a version 1 bank's chunks can end past its
-    // size. The bank plays the waves of wave system `wave_system`. Throws FormatError if the bank is damaged or of an
-    // unknown version. It also throws for a little-endian bank of version 0: the reader has no layout for one.
+    // size. A bank with 64-bit offsets is read to the end of `file`. The bank plays the waves of wave system
+    // `wave_system`. Throws FormatError if the bank is damaged or of an unknown version.
     static Bank Parse(std::span<const uint8_t> file, uint32_t wave_system);
 
     uint32_t number = 0;      // the number a sequence selects the bank by

@@ -2,10 +2,12 @@
 
 // Builds small JAudio2 files for tests, in the layout of Four Swords Adventures' files: wave systems (WSYS) with their
 // AW file, banks (IBNK) of both versions, sound tables with their names (BST and BSTN), sequence archives (RARC) and
-// start-up archives (BAA). It also builds JAudio1's start-up archive (AAF), in The Wind Waker's layout, and writes a
-// small JAudio2 game's files. The GameCube's formats are big-endian. The builders with a `big_endian` parameter also
-// build the little-endian files of the Switch's releases of GameCube and Wii games, such as Super Mario Galaxy's: each
-// field in the width that the release stores it in, and each tag reversed.
+// start-up archives (BAA). It also builds JAudio1's start-up archive (AAF) in The Wind Waker's layout, the bank file
+// of Pikmin's JAudio (.bx) and the sequence index (BARC). It writes a small JAudio2 game's files too. The GameCube's
+// formats are big-endian.
+// The builders with a `big_endian` parameter also build the little-endian files of the Switch's releases of GameCube
+// and Wii games, such as Super Mario Galaxy's: each field in the width that the release stores it in, and each tag
+// reversed.
 
 #pragma once
 
@@ -67,6 +69,18 @@ public:
         return U32(std::bit_cast<uint32_t>(v));
     }
 
+    // An offset in `width` bytes: 4, or 8 in a file whose offsets are widened.
+    Bytes& Offset(std::size_t v, std::size_t width)
+    {
+        const auto low = static_cast<uint32_t>(v);
+        if (width == 8)
+        {
+            return big_endian_ ? U32(0).U32(low) : U32(low).U32(0);
+        }
+
+        return U32(low);
+    }
+
     Bytes& Tag(const char* tag)
     {
         for (int i = 0; i < 4; i++)
@@ -115,6 +129,20 @@ public:
         big_endian_ ? xsflib::StoreBe32(data_.data() + at, v) : xsflib::StoreLe32(data_.data() + at, v);
     }
 
+    // Stores an offset over one that Offset added, `width` bytes wide.
+    void PutOffset(std::size_t at, std::size_t v, std::size_t width)
+    {
+        Put32(width == 8 && big_endian_ ? at + 4 : at, static_cast<uint32_t>(v));
+    }
+
+    // Stores `tag` and `size` at the start, in the big-endian order whatever the file's order. A file of the Switch's
+    // release of Pikmin keeps its first tag and its size that way.
+    void PutBigEndianHeader(const char* tag, uint32_t size)
+    {
+        std::copy_n(tag, 4, data_.begin());
+        xsflib::StoreBe32(data_.data() + 4, size);
+    }
+
     const std::vector<uint8_t>& Data() const
     {
         return data_;
@@ -125,33 +153,52 @@ private:
     std::vector<uint8_t> data_;
 };
 
-// A wave system with one wave archive, `archive_name`, of `waves` PCM16 waves of 64 samples each at 32000 Hz, key 60.
-// The first loops over its last 32 samples. The archive's name has at most 111 characters.
-inline std::vector<uint8_t> WaveSystemFile(uint32_t id, int waves, const std::string& archive_name = "test.aw",
-                                           bool big_endian = true)
+// The scene of a wave system that WaveSystemFile builds: its external mode, its dependencies, and the words of its
+// lists C-EX and C-ST. Its C-DF gives wave i of the archive the word (system << 16) | i. With `null_cdf`, the offset of
+// C-DF is null. So is the offset of a list without a value.
+struct SceneSpec
 {
+    uint32_t external_mode = 0;
+    std::vector<uint32_t> dependencies;
+    bool null_cdf = false;
+    std::optional<std::vector<uint32_t>> cex = std::vector<uint32_t>();
+    std::optional<std::vector<uint32_t>> cst = std::vector<uint32_t>();
+};
+
+// A wave system with one wave archive, `archive_name`, of `waves` PCM16 waves of 64 samples each at 32000 Hz, key 60.
+// The first loops over its last 32 samples. The archive's name has at most 111 characters. The archive's record holds
+// the number of its waves at `wave_count_at`: 0x70, or 0x8c in the wide records of the Switch's releases of Pikmin and
+// Pikmin 2. Each offset takes `offset_bytes` bytes: 4, or 8 in a little-endian system of the Switch's release of
+// Pikmin. Such a system keeps its tag and its size in the big-endian order. Its size is the big-endian system's. The
+// group's scene is `scene`. Its lists follow it, each with the words that its entries point to.
+inline std::vector<uint8_t> WaveSystemFile(uint32_t id, int waves, const std::string& archive_name = "test.aw",
+                                           bool big_endian = true, std::size_t wave_count_at = 0x70,
+                                           std::size_t offset_bytes = 4, const SceneSpec& scene = {})
+{
+    const std::size_t width = offset_bytes;
     Bytes w(big_endian);
-    w.Tag("WSYS").U32(0).U32(id).U32(0).U32(0x20).U32(0); // size, id, table size, WINF, WBCT (set below)
+    w.Tag("WSYS").U32(0).U32(id).U32(0);    // size, id, table size
+    w.Offset(0x20, width).Offset(0, width); // WINF, WBCT (set below)
     w.PadTo(0x20);
 
     const std::size_t winf = w.Size();
-    w.Tag("WINF").U32(1).U32(0); // one archive
+    w.Tag("WINF").U32(1).Offset(0, width); // one archive
     const std::size_t archive = w.Size();
-    w.Put32(winf + 8, static_cast<uint32_t>(archive));
+    w.PutOffset(winf + 8, archive, width);
 
-    std::vector<uint8_t> name(0x70);
+    std::vector<uint8_t> name(wave_count_at);
     std::copy_n(archive_name.begin(), std::min<std::size_t>(archive_name.size(), 0x6f), name.begin());
     w.Append(name).U32(static_cast<uint32_t>(waves));
 
     const std::size_t offsets = w.Size();
     for (int i = 0; i < waves; i++)
     {
-        w.U32(0);
+        w.Offset(0, width);
     }
 
     for (int i = 0; i < waves; i++)
     {
-        w.Put32(offsets + 4 * static_cast<std::size_t>(i), static_cast<uint32_t>(w.Size()));
+        w.PutOffset(offsets + width * static_cast<std::size_t>(i), w.Size(), width);
         const bool loop = i == 0;
         w.U8(0).U8(3).U8(60).U8(0).F32(32000.0f);
         w.U32(static_cast<uint32_t>(128 * i)).U32(128); // offset and size in the AW file
@@ -159,38 +206,81 @@ inline std::vector<uint8_t> WaveSystemFile(uint32_t id, int waves, const std::st
         w.U16(0).U16(0);
     }
 
-    // WBCT: one scene whose C-DF gives wave i the id i.
+    // WBCT: one scene, with the offsets of its lists, then the numbers of its dependencies.
     const std::size_t wbct = w.Size();
-    w.Put32(0x14, static_cast<uint32_t>(wbct));
-    w.Tag("WBCT").U32(0).U32(1).U32(static_cast<uint32_t>(wbct + 16));
-    const std::size_t scene = w.Size();
-    w.Tag("SCNE").U32(0).U32(0).U32(static_cast<uint32_t>(scene + 16));
-    w.Tag("C-DF").U32(static_cast<uint32_t>(waves));
-
-    const std::size_t entries = w.Size();
-    for (int i = 0; i < waves; i++)
+    w.PutOffset(0x10 + width, wbct, width);
+    w.Tag("WBCT").U32(0).U32(1).Offset(wbct + 12 + width, width);
+    w.Tag("SCNE").U32(scene.external_mode).U32(static_cast<uint32_t>(scene.dependencies.size()));
+    const std::size_t lists = w.Size();
+    w.Offset(0, width).Offset(0, width).Offset(0, width); // C-DF, C-EX and C-ST (set below)
+    for (const uint32_t dependency : scene.dependencies)
     {
-        w.U32(0);
+        w.U32(dependency);
     }
 
+    // Each list: its tag, the number of its words, an offset of each word, then the words.
+    const auto list = [&w, width](std::size_t offset_at, const char* tag, const std::vector<uint32_t>& words)
+    {
+        w.PutOffset(offset_at, w.Size(), width);
+        w.Tag(tag).U32(static_cast<uint32_t>(words.size()));
+        const std::size_t entries = w.Size();
+        for (std::size_t i = 0; i < words.size(); i++)
+        {
+            w.Offset(0, width);
+        }
+
+        for (std::size_t i = 0; i < words.size(); i++)
+        {
+            w.PutOffset(entries + width * i, w.Size(), width);
+            w.U32(words[i]);
+        }
+    };
+
+    std::vector<uint32_t> cdf;
     for (int i = 0; i < waves; i++)
     {
-        w.Put32(entries + 4 * static_cast<std::size_t>(i), static_cast<uint32_t>(w.Size()));
-        w.U32(static_cast<uint32_t>(id << 16 | static_cast<uint32_t>(i)));
+        cdf.push_back(id << 16 | static_cast<uint32_t>(i));
+    }
+
+    if (!scene.null_cdf)
+    {
+        list(lists, "C-DF", cdf);
+    }
+    if (scene.cex)
+    {
+        list(lists + width, "C-EX", *scene.cex);
+    }
+    if (scene.cst)
+    {
+        list(lists + 2 * width, "C-ST", *scene.cst);
     }
 
     w.Put32(4, static_cast<uint32_t>(w.Size()));
+    if (width == 8)
+    {
+        const std::size_t size = WaveSystemFile(id, waves, archive_name, true, 0x70, 4, scene).size();
+        w.PutBigEndianHeader("WSYS", static_cast<uint32_t>(size));
+    }
 
     return w.Data();
 }
 
 // A version 0 bank whose instrument 0 plays wave 0 on every key, with an instant attack, a hold and a release of
-// `release` units. Drum set 0 (program 0xe4) plays wave 1 on key 36, panned right.
-inline std::vector<uint8_t> BankV0File(uint32_t number, int16_t release)
+// `release` units. Drum set 0 (program 0xe4) plays wave 1 on key 36, panned right. A little-endian bank has the layout
+// of the Switch's release of Pikmin 2: its drum table at 0x544, not 0x3b4. Its size leaves out the 0x190 bytes that
+// the table moves by. With `offset_bytes` 8, a little-endian bank has the layout of the Switch's release of Pikmin:
+// each offset in 8 bytes, and the drum table at 0x744. Its tag and its size keep the big-endian order, and its size is
+// the big-endian bank's. Each wave id holds `wave_system` in its high half. Pikmin's bank file names a wave's system
+// there. The instrument's record holds `flags` in its word at +4.
+inline std::vector<uint8_t> BankV0File(uint32_t number, int16_t release, bool big_endian = true,
+                                       std::size_t offset_bytes = 4, uint16_t wave_system = 0, uint32_t flags = 0)
 {
-    Bytes b;
+    const uint32_t system = uint32_t{wave_system} << 16;
+    const std::size_t width = offset_bytes;
+    const std::size_t drum_table = width == 8 ? 0x744 : big_endian ? 0x3b4 : 0x544;
+    Bytes b(big_endian);
     b.Tag("IBNK").U32(0).U32(number).U32(0).PadTo(0x20);
-    b.Tag("BANK").PadTo(0x3b4 + 12 * 4);
+    b.Tag("BANK").PadTo(drum_table + 12 * width);
 
     // Oscillator tables.
     const std::size_t attack = b.Size();
@@ -198,32 +288,37 @@ inline std::vector<uint8_t> BankV0File(uint32_t number, int16_t release)
     const std::size_t release_table = b.Size();
     b.U16(0).U16(static_cast<uint16_t>(release)).U16(0).U16(15).U16(0).U16(0);
     const std::size_t osc = b.Size();
-    b.U8(0).U8(0).U16(0).F32(1.0f).U32(static_cast<uint32_t>(attack)).U32(static_cast<uint32_t>(release_table));
+    b.U8(0).U8(0).U16(0).F32(1.0f).Offset(attack, width).Offset(release_table, width);
     b.F32(1.0f).F32(0.0f);
 
     // A velocity region, a key region and the instrument.
     const std::size_t vmap = b.Size();
-    b.U8(127).U8(0).U16(0).U32(0).F32(1.0f).F32(1.0f);
+    b.U8(127).U8(0).U16(0).U32(system | 0).F32(1.0f).F32(1.0f);
     const std::size_t keymap = b.Size();
-    b.U8(127).U8(0).U16(0).U32(1).U32(static_cast<uint32_t>(vmap));
+    b.U8(127).U8(0).U16(0).U32(1).Offset(vmap, width);
     const std::size_t inst = b.Size();
-    b.Tag("INST").U32(0).F32(1.0f).F32(1.0f).U32(static_cast<uint32_t>(osc)).U32(0);
-    b.U32(0).U32(0).U32(0).U32(0).U32(1).U32(static_cast<uint32_t>(keymap));
-    b.Put32(0x24, static_cast<uint32_t>(inst));
+    b.Tag("INST").U32(flags).F32(1.0f).F32(1.0f).Offset(osc, width).Offset(0, width);
+    b.Offset(0, width).Offset(0, width).Offset(0, width).Offset(0, width).U32(1).Offset(keymap, width);
+    b.PutOffset(0x24, inst, width);
 
     // The drum set.
     const std::size_t drum_vmap = b.Size();
-    b.U8(127).U8(0).U16(0).U32(1).F32(0.5f).F32(1.0f);
+    b.U8(127).U8(0).U16(0).U32(system | 1).F32(0.5f).F32(1.0f);
     const std::size_t pmap = b.Size();
-    b.F32(1.0f).F32(2.0f).U32(0).U32(0).U32(1).U32(static_cast<uint32_t>(drum_vmap));
+    b.F32(1.0f).F32(2.0f).Offset(0, width).Offset(0, width).U32(1).Offset(drum_vmap, width);
     const std::size_t perc = b.Size();
-    b.Tag("PER2").PadTo(perc + 0x88 + 4 * 128 + 128 + 256);
-    b.Put32(perc + 0x88 + 4 * 36, static_cast<uint32_t>(pmap));
-    b.Put8(perc + 0x288 + 36, 127);      // pan
-    b.Put16(perc + 0x308 + 2 * 36, 200); // release: 200 units
+    const std::size_t pans = perc + 0x88 + width * 128;
+    b.Tag("PER2").PadTo(pans + 128 + 256);
+    b.PutOffset(perc + 0x88 + width * 36, pmap, width);
+    b.Put8(pans + 36, 127);            // pan
+    b.Put16(pans + 128 + 2 * 36, 200); // release: 200 units
 
-    b.Put32(0x3b4, static_cast<uint32_t>(perc));
-    b.Put32(4, static_cast<uint32_t>(b.Size()));
+    b.PutOffset(drum_table, perc, width);
+    b.Put32(4, static_cast<uint32_t>(b.Size() - (drum_table - 0x3b4)));
+    if (width == 8)
+    {
+        b.PutBigEndianHeader("IBNK", static_cast<uint32_t>(BankV0File(number, release).size()));
+    }
 
     return b.Data();
 }
@@ -259,6 +354,44 @@ inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t 
     b.PadTo((b.Size() + 3) & ~std::size_t{3});
     b.Tag("LIST").U32(8).U32(1).U32(static_cast<uint32_t>(inst));
     b.Put32(4, static_cast<uint32_t>(b.Size()));
+
+    return b.Data();
+}
+
+// The bank file of Pikmin's JAudio (.bx) with the wave systems `systems` and the banks `banks`, each in its table's
+// order. An empty block leaves an empty place in its table: an entry of size 0. The header and the tables follow the
+// file's byte order. The banks come after the tables, then the wave systems, each on a 32-byte boundary, as in the
+// game's file. A little-endian file takes the blocks of the Switch's release of Pikmin (WaveSystemFile and BankV0File
+// with `offset_bytes` 8).
+inline std::vector<uint8_t> BxFile(const std::vector<std::vector<uint8_t>>& systems,
+                                   const std::vector<std::vector<uint8_t>>& banks, bool big_endian = true)
+{
+    constexpr std::size_t kSystemTable = 0x10;
+    const std::size_t bank_table = kSystemTable + 8 * systems.size();
+    Bytes b(big_endian);
+    b.U32(kSystemTable).U32(static_cast<uint32_t>(systems.size()));
+    b.U32(static_cast<uint32_t>(bank_table)).U32(static_cast<uint32_t>(banks.size()));
+    b.PadTo(bank_table + 8 * banks.size());
+
+    const auto add = [&b](std::size_t entry, const std::vector<uint8_t>& block)
+    {
+        b.PadTo((b.Size() + 31) & ~std::size_t{31});
+        if (!block.empty())
+        {
+            b.Put32(entry, static_cast<uint32_t>(b.Size()));
+            b.Put32(entry + 4, static_cast<uint32_t>(block.size()));
+            b.Append(block);
+        }
+    };
+
+    for (std::size_t i = 0; i < banks.size(); i++)
+    {
+        add(bank_table + 8 * i, banks[i]);
+    }
+    for (std::size_t i = 0; i < systems.size(); i++)
+    {
+        add(kSystemTable + 8 * i, systems[i]);
+    }
 
     return b.Data();
 }
@@ -486,8 +619,10 @@ struct RarcFileSpec
 
 // An RARC archive of `files`, after one folder entry. The info block starts at 0x20. The block's offsets and the data's
 // offsets count from there. An entry's kind and its name's offset are one word: the kind in the top byte, and the
-// offset in the low half.
-inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, bool big_endian = true)
+// offset in the low half. Each entry takes `entry_size` bytes: 20, or 24 in the wide entries of the Switch's release of
+// Pikmin 2. A wide entry ends with 4 more zero bytes.
+inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, bool big_endian = true,
+                                     std::size_t entry_size = 20)
 {
     // The strings: the folder's name, then the name of each file.
     std::vector<uint8_t> strings = {'.', 0};
@@ -501,7 +636,7 @@ inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, boo
 
     const std::size_t kEntryTable = 0x40;             // from 0x20
     const std::size_t entry_count = files.size() + 1; // the folder, then the files
-    const std::size_t strings_at = kEntryTable + 20 * entry_count;
+    const std::size_t strings_at = kEntryTable + entry_size * entry_count;
     const std::size_t data_at = (strings_at + strings.size() + 31) & ~std::size_t{31};
 
     Bytes r(big_endian);
@@ -509,12 +644,14 @@ inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, boo
     r.U32(static_cast<uint32_t>(entry_count)).U32(static_cast<uint32_t>(kEntryTable)).U32(0);
     r.U32(static_cast<uint32_t>(strings_at)).PadTo(0x20 + kEntryTable);
     r.U16(0xffff).U16(0).U32(0x02u << 24).U32(0).U32(0).U32(0); // the folder
+    r.PadTo(0x20 + kEntryTable + entry_size);
 
     std::size_t at = 0;
     for (std::size_t i = 0; i < files.size(); i++)
     {
         r.U16(files[i].id).U16(0).U32(0x01u << 24 | name_offsets[i]);
         r.U32(static_cast<uint32_t>(at)).U32(static_cast<uint32_t>(files[i].data.size())).U32(0);
+        r.PadTo(0x20 + kEntryTable + entry_size * (i + 2));
         at += files[i].data.size();
     }
 
@@ -539,7 +676,7 @@ struct AafSoundSpec
     float pitch = 1.0f;
 };
 
-// A sequence of an AAF's sequence index: its name, and its offset and size in the sequence archive.
+// A sequence of a sequence index (BarcFile): its name, and its offset and size in the file of sequences.
 struct AafSequenceSpec
 {
     std::string name;
@@ -547,27 +684,66 @@ struct AafSequenceSpec
     uint32_t size = 0;
 };
 
+// A sequence index (BARC) of `sequences`, in the order given, for the file of sequences `archive_name`. "----" follows
+// the tag. Each entry holds the sequence's name cut to 13 characters, 0xffff (it shares no other sequence's data), the
+// words 2 and 3, then the sequence's offset and size. The word at +8 takes `word_bytes` bytes: 4, or 8 in a
+// little-endian index of the Switch's release of Pikmin.
+inline std::vector<uint8_t> BarcFile(const std::vector<AafSequenceSpec>& sequences,
+                                     const std::string& archive_name = "test.arc", bool big_endian = true,
+                                     std::size_t word_bytes = 4)
+{
+    Bytes b(big_endian);
+
+    // `text`, then zeros up to `size` bytes.
+    const auto text = [&b](const std::string& s, std::size_t size)
+    {
+        const std::size_t at = b.Size();
+        for (const char c : s)
+        {
+            b.U8(static_cast<uint8_t>(c));
+        }
+
+        b.PadTo(at + size);
+    };
+
+    text("BARC----", 8);
+    b.Offset(0, word_bytes).U32(static_cast<uint32_t>(sequences.size()));
+    text(archive_name.substr(0, 15), 16);
+    for (const AafSequenceSpec& sequence : sequences)
+    {
+        text(sequence.name.substr(0, 13), 14);
+        b.U16(0xffff).U32(2).U32(3).U32(sequence.offset).U32(sequence.size);
+    }
+
+    return b.Data();
+}
+
 // JAudio1's start-up archive (AAF) with a sound table of `sounds`, one bank, and a wave system (WaveSystemFile) of one
 // wave for each name in `archives`. Wave system n has the id n. The systems' load types alternate: 1 (at start-up),
 // then 2 (for a scene). The table lists the sounds of each category in the order given. The sequences' entries come
 // first. The Wind Waker's table has them first too. The table's header gives the effects and the streams format 6, and
 // the sequences `sequence_format`. The Wind Waker's sequences have format 5, whose bit 0 makes an entry give the file.
 // Luigi's Mansion's have format 0. The archive also has a chunk of a type that the sound library skips. With `index`,
-// it has a sequence index (BARC, chunk type 4) of those sequences, in the order given, as Luigi's Mansion's has.
+// it has a sequence index (BarcFile, chunk type 4) of those sequences, as Luigi's Mansion's has.
+//
+// A little-endian archive has the layout of the Switch's release of Pikmin 2. Each list entry takes 16 bytes: a 64-bit
+// offset, the size and the value. A block of type 5 comes after the sound table's, in 16 bytes too. The wave systems
+// have wide records of their archives.
 inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, const std::vector<std::string>& archives,
-                                    uint8_t sequence_format = 5, const std::vector<AafSequenceSpec>& index = {})
+                                    uint8_t sequence_format = 5, const std::vector<AafSequenceSpec>& index = {},
+                                    bool big_endian = true)
 {
     std::vector<uint8_t> b;
-    const auto put32 = [&b](std::size_t at, uint32_t value)
+    const auto put32 = [&b, big_endian](std::size_t at, uint32_t value)
     {
         b.resize(std::max(b.size(), at + 4));
-        xsflib::StoreBe32(b.data() + at, value);
+        big_endian ? xsflib::StoreBe32(b.data() + at, value) : xsflib::StoreLe32(b.data() + at, value);
     };
-    const auto put16 = [&b](std::size_t at, uint32_t value)
+    const auto put16 = [&b, big_endian](std::size_t at, uint32_t value)
     {
         b.resize(std::max(b.size(), at + 2));
-        b[at] = static_cast<uint8_t>(value >> 8);
-        b[at + 1] = static_cast<uint8_t>(value);
+        big_endian ? xsflib::StoreBe16(b.data() + at, static_cast<uint16_t>(value))
+                   : xsflib::StoreLe16(b.data() + at, static_cast<uint16_t>(value));
     };
 
     // The chunks: the sound table, the bank list, the wave system list, a chunk that the sound library skips up to its
@@ -578,11 +754,30 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     constexpr std::size_t kSystemSize = 0x200;
     const std::size_t index_at = kSystems + archives.size() * kSystemSize;
     const std::size_t index_size = 0x20 + 0x20 * index.size();
-    std::vector<uint32_t> chunks = {1, kTable, 0x600, 0, 2, kBank, 0x10, 0, 0, 3};
+
+    // A list entry, or the block of type 5: the offset, the size and the value. A little-endian archive widens the
+    // offset to 64 bits.
+    std::vector<uint32_t> chunks = {1, kTable, 0x600, 0};
+    const auto block = [&chunks, big_endian](uint32_t offset, uint32_t size, uint32_t value)
+    {
+        chunks.insert(chunks.end(), {offset, size, value});
+        if (!big_endian)
+        {
+            chunks.insert(chunks.end() - 2, 0); // the offset's high half
+        }
+    };
+
+    if (!big_endian)
+    {
+        chunks.push_back(5);
+        block(kTable, 0x10, 0);
+    }
+    chunks.push_back(2);
+    block(kBank, 0x10, 0);
+    chunks.insert(chunks.end(), {0, 3});
     for (std::size_t s = 0; s < archives.size(); s++)
     {
-        chunks.insert(chunks.end(),
-                      {static_cast<uint32_t>(kSystems + s * kSystemSize), kSystemSize, s % 2 == 0 ? 1u : 2u});
+        block(static_cast<uint32_t>(kSystems + s * kSystemSize), kSystemSize, s % 2 == 0 ? 1u : 2u);
     }
     chunks.insert(chunks.end(), {0, 0x10, 5, 6, 0});
     if (!index.empty())
@@ -630,35 +825,19 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
 
     for (std::size_t s = 0; s < archives.size(); s++)
     {
-        const std::vector<uint8_t> system = WaveSystemFile(static_cast<uint32_t>(s), 1, archives[s]);
+        const std::vector<uint8_t> system =
+            WaveSystemFile(static_cast<uint32_t>(s), 1, archives[s], big_endian, big_endian ? 0x70 : 0x8c);
         const std::size_t at = kSystems + s * kSystemSize;
         b.resize(std::max(b.size(), at + system.size()));
         std::copy(system.begin(), system.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
     }
 
     b.resize(std::max(b.size(), index_at));
-
-    // The sequence index: "BARC", four dashes, a word, the count, and the archive's file name. Then each sequence's
-    // name, 0xffff (it shares no other sequence's data), two words, and its offset and size.
     if (!index.empty())
     {
-        b.resize(index_at + index_size);
-        const std::string kHeader = "BARC----";
-        std::copy(kHeader.begin(), kHeader.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at));
-        put32(index_at + 12, static_cast<uint32_t>(index.size()));
-        const std::string kArchive = "JaiArcS.arc";
-        std::copy(kArchive.begin(), kArchive.end(), b.begin() + static_cast<std::ptrdiff_t>(index_at + 16));
-        for (std::size_t i = 0; i < index.size(); i++)
-        {
-            const std::size_t at = index_at + 0x20 + 0x20 * i;
-            const std::string name = index[i].name.substr(0, 13);
-            std::copy(name.begin(), name.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
-            put16(at + 14, 0xffff);
-            put32(at + 16, 2);
-            put32(at + 20, 3);
-            put32(at + 24, index[i].offset);
-            put32(at + 28, index[i].size);
-        }
+        const std::vector<uint8_t> barc = BarcFile(index, "JaiArcS.arc", big_endian);
+        b.resize(index_at);
+        b.insert(b.end(), barc.begin(), barc.end());
     }
 
     return b;

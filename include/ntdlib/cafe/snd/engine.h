@@ -196,6 +196,18 @@ public:
     // Passes the callback of a stream's voice on to the stream's player.
     void VoiceEvent(const ntdlib::nwsnd::VoiceOwner& owner, ntdlib::nwsnd::VoiceCallbackStatus status);
 
+    // The counted loops that the length analysis takes as endless, each a track and its loop's body (see ntdlib's
+    // LoopsForEver).
+    void SetEndlessLoops(std::set<std::pair<int, uint32_t>> loops)
+    {
+        endless_loops_ = std::move(loops);
+    }
+
+    bool LoopsForEver(const SequenceSoundPlayer&, int track, uint32_t address) const
+    {
+        return endless_loops_.contains({track, address});
+    }
+
 private:
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
     using Players = ntdlib::nwsnd::SoundPlayers<SequenceSoundPlayer, WaveSoundPlayer, StreamSoundPlayer>;
@@ -245,6 +257,7 @@ private:
     Effects effects_;
     int ringing_frames_ = 0;
 
+    std::set<std::pair<int, uint32_t>> endless_loops_;
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track
     int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
 

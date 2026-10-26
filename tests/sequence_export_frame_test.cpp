@@ -244,19 +244,21 @@ void TestGroupFilesInSarcs()
           "another archive's group in a SARC is left out");
 
     // Group A's file beside the archive, and a SARC with copies of both groups. Group B comes from the SARC. The SARC's
-    // copy of group A changes nothing.
+    // copy of group A changes nothing. Only the file found by its name keeps its group.
     folder.Write("GROUP_A.bfgrp", sar_files::Group(true, {{1, bank("A by name")}}));
     folder.Write("B.sarc", sar_files::Sarc(true, {sar_files::Group(true, {{1, bank("A in a SARC")}}),
                                                   sar_files::Group(true, {{2, bank("B in a SARC")}})}));
     ntdlib::sar::SoundArchive both = load();
     Check(AddGroupFiles(both, input, "Sound.bfsar") == 3 && text(both.FileData(1)) == "FBNK A by name" &&
-              text(both.FileData(2)) == "FBNK B in a SARC",
+              text(both.FileData(2)) == "FBNK B in a SARC" &&
+              both.GroupFileGroups() == std::vector<std::string>{"GROUP_A", "", ""},
           "a group in a SARC after the groups found by name");
 
     // With every group found by name, the SARCs aren't read.
     folder.Write("GROUP_B.bfgrp", sar_files::Group(true, {{2, bank("B by name")}}));
     ntdlib::sar::SoundArchive named = load();
-    Check(AddGroupFiles(named, input, "Sound.bfsar") == 2 && text(named.FileData(2)) == "FBNK B by name",
+    Check(AddGroupFiles(named, input, "Sound.bfsar") == 2 && text(named.FileData(2)) == "FBNK B by name" &&
+              named.GroupFileGroups() == std::vector<std::string>{"GROUP_A", "GROUP_B"},
           "no SARC read once every group is found");
 }
 
@@ -289,8 +291,9 @@ void TestGroupFilesOfThe3ds()
     folder.Write("GROUP_A.bcgrp", sar_files::Group(kCtr, {{1, Bytes("CBNK A by name")}}));
     ntdlib::sar::SoundArchive named = load();
     Check(AddGroupFiles(named, input, "Sound.bcsar") == 1 &&
-              std::string(named.FileData(1).begin(), named.FileData(1).end()) == "CBNK A by name",
-          "a 3DS group's file is found as <group>.bcgrp");
+              std::string(named.FileData(1).begin(), named.FileData(1).end()) == "CBNK A by name" &&
+              named.GroupFileGroups() == std::vector<std::string>{"GROUP_A"},
+          "a 3DS group's file is found as <group>.bcgrp, and keeps its group");
 }
 
 void TestOptions()

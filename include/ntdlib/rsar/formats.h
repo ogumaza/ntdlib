@@ -73,6 +73,8 @@ enum class WaveEncoding : uint8_t
 // The gain, the predictor and scale at the start, and the state at the loop start come with playback_fields.
 struct DspAdpcmInfo
 {
+    friend bool operator==(const DspAdpcmInfo&, const DspAdpcmInfo&) = default;
+
     std::array<int16_t, 16> coefs{};
     int16_t yn1 = 0, yn2 = 0;
     uint16_t gain = 0;
@@ -127,6 +129,8 @@ struct WaveArchive
 // A bank's region: the wave a range of keys and velocities plays, and how (InstParam).
 struct Region
 {
+    friend bool operator==(const Region&, const Region&) = default;
+
     int32_t wave_index = 0; // into the bank's waves
     uint8_t attack = 127, decay = 127, sustain = 127, release = 127;
     uint8_t hold = 0;               // builds from 2008 only
@@ -365,6 +369,10 @@ struct SoundInfo
     uint8_t channel_priority = 64;
     bool release_priority_fix = false;
     int32_t sub_index = 0;
+
+    // Stream sounds only, playback_fields only: the channels that the sound allocates, as a count from version 1.4 on
+    // and as a bit for each channel before. A stream sound's tracks are in allocate_track_flags, a bit for each.
+    uint16_t allocate_channels = 0;
 };
 
 // Bank name and file ID. Unnamed banks use BANK_<index>.
@@ -467,6 +475,17 @@ public:
         return info_size_;
     }
 
+    // The path of a file that the archive keeps beside it, such as a stream, as the file table gives it: from the
+    // disc's root when it starts with a slash, and otherwise from the archive's folder. Nothing for a file of the
+    // archive's groups, and for a file ID past the table.
+    std::optional<std::string> ExternalPath(uint32_t file_id) const;
+
+    // The number of files in the file table.
+    uint32_t FileCount() const
+    {
+        return static_cast<uint32_t>(files_.size());
+    }
+
     // True if no group holds the file inside the archive, and one would if the archive weren't cut short: it extends
     // past the end.
     bool FileMissing(uint32_t file_id) const
@@ -512,6 +531,9 @@ private:
         bool wave_data_found = false;   // and its wave data
         bool missing = false;           // a group holds the file past the end of the archive
         bool wave_data_missing = false; // a group holds its wave data past the end of the archive
+
+        // The path of a file beside the archive.
+        std::optional<std::string> path;
     };
 
     // Reads tables through `r`, and locates the files that groups hold. Throws FormatError if the tables cannot be

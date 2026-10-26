@@ -4,11 +4,12 @@
 // flavor's format: the 3DS's, the Wii U's and the Switch's. Each archive holds two sequence files, a file of other
 // bytes, a sequence file laid out otherwise than the writer lays it out, and a group. The group holds a copy of a file
 // that only it holds, and a copy of one of the archive's sequence files. Another archive holds a sequence file with
-// bytes that no command reaches. A third archive's tables take new values. A fourth holds a wave sound beside a
+// bytes that no command reaches, and another one whose commands run on past a return, which the commands that a program
+// gives the cut make a sequence. A third archive's tables take new values. A fourth holds a wave sound beside a
 // sequence sound, for the fields of the sounds' starts. A fifth holds sounds with some of the options and without
 // them, for the places of the values. The files that stay in the bytes become runs of their own, and take new bytes:
-// in the FILE block, in a group, and in both. The last archives come with group files beside them, and the cut takes
-// those too.
+// in the FILE block, in a group, and in both. A copy with other bytes in a group can take other new bytes than the
+// archive's copy. The last archives come with group files beside them, and the cut takes those too.
 
 #include <algorithm>
 #include <cstddef>
@@ -138,7 +139,7 @@ void Insert(Layout& layout, uint32_t sequence, uint32_t at, uint32_t count, uint
 
     for (Field& field : layout.fields)
     {
-        // A place at the archive's end has no piece. Only an item's place names a sequence piece.
+        // A place at the archive's end has no piece. Only an item's place names a sequence piece, or a sequence.
         for (ntdlib::sar::Place* place : {&field.from, &field.to})
         {
             if (!place->item)
@@ -146,8 +147,8 @@ void Insert(Layout& layout, uint32_t sequence, uint32_t at, uint32_t count, uint
                 continue;
             }
 
-            const auto* piece = std::get_if<SequencePiece>(&layout.pieces[place->piece]);
-            if (piece->sequence == sequence && place->offset >= at)
+            const auto* piece = place->sequence ? nullptr : std::get_if<SequencePiece>(&layout.pieces[place->piece]);
+            if ((piece ? piece->sequence : place->piece) == sequence && place->offset >= at)
             {
                 place->offset += count;
             }
@@ -508,6 +509,52 @@ void TestBytes(Flavor flavor)
     XSFLIB_CHECK(Join(stays) == strays);
 }
 
+// A sequence file whose commands run on past a return outside every call stays in the bytes: no label or start leads
+// to the commands after the return, and the decoder can't guess them. They jump past an end to commands that nothing
+// else leads to. Commands that a program gives the cut take the decoder's place where they give the file's bytes back,
+// and the file becomes a sequence with them. Commands that don't give a file's bytes back leave it as the decoder cuts
+// it.
+void TestKnown(Flavor flavor)
+{
+    std::vector<uint8_t> run_on = {0xC1, 0x64, 0xFD, 0x89, 0x08, 0x00, 0x00, 0xFF, 0xC1, 0x20, 0xFF};
+    if (flavor != Flavor::kNx)
+    {
+        std::swap(run_on[4], run_on[6]);
+    }
+    const auto archive_of = [flavor, &run_on](const std::vector<std::pair<std::string, uint32_t>>& labels)
+    {
+        sar_files::ArchiveSpec spec;
+        spec.sounds = {{.name = "RunOn", .file = 0}, {.name = "Other", .file = 1}};
+        spec.players = {{"PLAYER", 1}};
+        spec.files = {{.bytes = sar_files::Sequence(flavor, run_on, labels)},
+                      {.bytes = sar_files::Sequence(flavor, kOther, {{"Other", 0}})}};
+        return sar_files::Archive(flavor, spec);
+    };
+    const std::vector<uint8_t> archive = archive_of({{"RunOn", 0}});
+    const Layout stays = Cut(archive, flavor);
+    XSFLIB_CHECK(stays.sequences.size() == 1 && stays.sequences[0].labels[0].name == "Other");
+
+    // A label after the return leads the decoder there. Without the label, its commands are the file's.
+    const Layout labelled = Cut(archive_of({{"RunOn", 0}, {"After", 3}}), flavor);
+    XSFLIB_CHECK(labelled.sequences.size() == 2);
+    if (labelled.sequences.size() != 2 || stays.sequences.size() != 1)
+    {
+        return;
+    }
+    ntdlib::commands::Sequence commands = labelled.sequences[0];
+    XSFLIB_CHECK(commands.items.size() == 6 && commands.labels.size() == 2 && commands.labels[1].name == "After");
+    commands.labels.pop_back();
+
+    const Layout given = ntdlib::sar::Cut(archive, {}, OptionsFor(flavor), {{0, commands}, {1, commands}});
+    XSFLIB_CHECK(given.sequences.size() == 2);
+    if (given.sequences.size() == 2)
+    {
+        XSFLIB_CHECK(given.sequences[0] == commands && given.sequences[1] == stays.sequences[0]);
+    }
+    XSFLIB_CHECK((SequencesOfPieces(given) == std::vector<uint32_t>{0, 1}));
+    XSFLIB_CHECK(Join(given) == archive);
+}
+
 // The tables' values change where the reader reads them. Sound "Song" holds every option, with bytes beside the values
 // and a release priority fix of 2. Sound "Plain" holds none and lists no banks: its options and banks stay as the
 // reader gives them. Writing the first values back gives the archive back.
@@ -758,6 +805,51 @@ void TestFileCopies(Flavor flavor)
     }
 }
 
+// A group holds a copy of a file with other bytes. With the bytes of each copy, ReplaceFile gives each copy the bytes
+// that the call gives it, and the call sees the copies as FileCopies gives them. The group's file grows by the
+// group's copy.
+void TestCopyBytes(Flavor flavor)
+{
+    const std::vector<uint8_t> kFirst = {1, 2, 3, 4, 5};
+    const std::vector<uint8_t> kOtherBytes = {9, 8, 7, 6, 5};
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Song", .file = 0}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP", 2}};
+    spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})},
+                  {.bytes = kFirst},
+                  {.bytes = sar_files::Group(flavor, {{1, kOtherBytes}})}};
+    const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
+    const ntdlib::sar::SoundArchive tables = Read(archive, flavor);
+    const Layout layout = Cut(archive, flavor);
+    const std::vector<uint8_t> kLonger(20, 0x5A);
+    const std::vector<uint8_t> kGroupLonger(30, 0xA5);
+
+    std::vector<FileCopy> seen;
+    const ntdlib::sar::ReplacedPieces pieces =
+        ntdlib::sar::ReplaceFile(flavor, layout.sequences, layout.pieces, layout.fields, {}, 1,
+                                 [&](const FileCopy& copy)
+                                 {
+                                     seen.push_back(copy);
+                                     return copy.group ? kGroupLonger : kLonger;
+                                 });
+    std::ranges::sort(seen, {}, &FileCopy::start);
+    const std::vector<FileCopy> copies =
+        ntdlib::sar::FileCopies(flavor, layout.sequences, pieces.pieces, layout.fields, 1);
+    const ntdlib::sar::SoundArchive read =
+        Read(ntdlib::sar::Join(flavor, layout.sequences, pieces.pieces, layout.fields), flavor);
+
+    XSFLIB_CHECK(seen == ntdlib::sar::FileCopies(flavor, layout.sequences, layout.pieces, layout.fields, 1));
+    XSFLIB_CHECK(copies.size() == 2 && FileOf(read, 1) == kLonger && read.GroupErrors().empty());
+    if (copies.size() == 2)
+    {
+        XSFLIB_CHECK(copies[0].bytes == kLonger && !copies[0].group);
+        XSFLIB_CHECK(copies[1].bytes == kGroupLonger && copies[1].group == 2u);
+    }
+    XSFLIB_CHECK(FileOf(read, 2).size() == FileOf(tables, 2).size() + Padded(30) - Padded(5));
+    XSFLIB_CHECK(FileOf(read, 0) == FileOf(tables, 0));
+}
+
 // ReplaceFile refuses a file that the archive lacks, an empty file, a file in a layout that keeps it inside a run, a
 // file whose bytes another file ID names too, and fields that don't follow the new size.
 void TestFileRefusals(Flavor flavor)
@@ -927,39 +1019,44 @@ ntdlib::sar::SoundArchive ReadWithGroupFiles(const Layout& layout)
 }
 
 // The cut takes the group's file beside the archive. Its copy of the archive's sequence file becomes a piece of the
-// archive's sequence, and its other files runs of their own. The sequence file that only the group's file holds stays
-// in its bytes. The archive's pieces stay as Cut makes them without the group's file. Each joins to give its bytes
-// back.
+// archive's sequence, and its other files runs of their own. The sequence file that only the group's file holds becomes
+// a sequence after the archive's. The archive's pieces and fields stay as Cut makes them without the group's file: no
+// sound's entry holds a start inside that file. Each joins to give its bytes back.
 void TestGroupFiles(Flavor flavor)
 {
     const Beside beside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kSong, {{"Song", 0}}));
     const Layout layout = ntdlib::sar::Cut(beside.archive, beside.group_files, OptionsFor(flavor));
     const Layout alone = Cut(beside.archive, flavor);
 
-    XSFLIB_CHECK(layout.pieces == alone.pieces && layout.fields == alone.fields && layout.sequences == alone.sequences);
-    XSFLIB_CHECK(layout.sequences.size() == 1 && layout.group_files.size() == 1);
-    if (layout.group_files.size() != 1)
+    XSFLIB_CHECK(layout.pieces == alone.pieces && layout.fields == alone.fields);
+    XSFLIB_CHECK(layout.sequences.size() == 2 && alone.sequences.size() == 1 && layout.group_files.size() == 1);
+    if (layout.sequences.size() != 2 || alone.sequences.size() != 1 || layout.group_files.size() != 1)
     {
         return;
     }
 
+    const ntdlib::commands::Sequence& only = layout.sequences[1];
+    XSFLIB_CHECK(layout.sequences[0] == alone.sequences[0] && only.items.size() == 2);
+    XSFLIB_CHECK(only.labels.size() == 1 && only.labels[0].name == "Only" && only.labels[0].item == 0);
     const GroupFileLayout& group_file = layout.group_files[0];
-    XSFLIB_CHECK((SequencesOf(group_file.pieces) == std::vector<uint32_t>{0}));
+    XSFLIB_CHECK((SequencesOf(group_file.pieces) == std::vector<uint32_t>{0, 1}));
     XSFLIB_CHECK(Join(layout) == beside.archive && JoinGroupFiles(layout) == beside.group_files);
     const auto holds = [&](const std::vector<uint8_t>& bytes)
     {
         return std::ranges::find(group_file.pieces, Piece{bytes}) != group_file.pieces.end();
     };
     XSFLIB_CHECK(holds({1, 2, 3, 4, 5}) && holds({6, 7, 8}) &&
-                 holds(sar_files::Sequence(flavor, kOther, {{"Only", 0}})));
+                 !holds(sar_files::Sequence(flavor, kOther, {{"Only", 0}})));
     for (const Field& field : group_file.fields)
     {
         XSFLIB_CHECK(!field.from.item && !field.to.item);
     }
 
-    // More commands make the sequence file longer in the archive and in the group's file. The group's tables follow.
+    // More commands make the sequence file longer in the archive and in the group's file, and the file that only the
+    // group's file holds longer there. The group's tables follow.
     Layout longer = layout;
     Insert(longer, 0, 1, 20, 0);
+    Insert(longer, 1, 1, 10, 0);
     const ntdlib::sar::SoundArchive read = ReadWithGroupFiles(longer);
     const std::vector<FileCopy> copies =
         ntdlib::sar::FileCopies(flavor, longer.sequences, longer.pieces, longer.fields, longer.group_files, 0);
@@ -971,11 +1068,18 @@ void TestGroupFiles(Flavor flavor)
         XSFLIB_CHECK(copies[0].bytes.size() > FileOf(Read(beside.archive, flavor), 0).size());
     }
     XSFLIB_CHECK(FileOf(read, 2) == std::vector<uint8_t>({6, 7, 8}));
+    std::vector<uint8_t> longer_other;
+    for (int i = 0; i < 11; ++i)
+    {
+        longer_other.insert(longer_other.end(), kOther.begin(), kOther.begin() + 2);
+    }
+    longer_other.push_back(0xFF);
+    XSFLIB_CHECK(FileOf(read, 3) == sar_files::Sequence(flavor, longer_other, {{"Only", 0}}));
 }
 
 // ReplaceFile gives the new bytes to each copy, in the archive and in the group's file. A file that only the group's
-// file holds takes them there, and the archive's pieces stay. FileCopies gives the copies in the group's file after the
-// archive's.
+// file holds takes them there, and the archive's pieces stay. A sequence file that only the group's file holds is a
+// piece of its sequence there, and takes no bytes. FileCopies gives the copies in the group's file after the archive's.
 void TestGroupFileReplacement(Flavor flavor)
 {
     const Beside beside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kSong, {{"Song", 0}}));
@@ -1001,13 +1105,26 @@ void TestGroupFileReplacement(Flavor flavor)
 
     const Layout both = replaced(1, kLonger);
     const Layout only = replaced(2, kLonger);
-    const Layout only_song = replaced(3, kLonger);
+
+    // With the bytes of each copy, the copy in the group's file takes other bytes than the archive's.
+    const std::vector<uint8_t> kShorter = {4, 3};
+    const ntdlib::sar::ReplacedPieces by_copy =
+        ntdlib::sar::ReplaceFile(flavor, layout.sequences, layout.pieces, layout.fields, layout.group_files, 1,
+                                 [&](const FileCopy& copy) { return copy.group_file ? kShorter : kLonger; });
+    Layout each = layout;
+    each.pieces = by_copy.pieces;
+    each.group_files[0].pieces = by_copy.group_files.at(0);
+    const std::vector<FileCopy> each_copies = copies_of(each, 1);
+    XSFLIB_CHECK(each_copies.size() == 2 && FileOf(ReadWithGroupFiles(each), 1) == kLonger);
+    if (each_copies.size() == 2)
+    {
+        XSFLIB_CHECK(each_copies[0].bytes == kLonger && each_copies[1].bytes == kShorter);
+    }
     const std::vector<FileCopy> copies = copies_of(both, 1);
     const std::vector<FileCopy> only_copies = copies_of(only, 2);
 
     XSFLIB_CHECK(FileOf(ReadWithGroupFiles(both), 1) == kLonger && FileOf(ReadWithGroupFiles(only), 2) == kLonger);
-    XSFLIB_CHECK(FileOf(ReadWithGroupFiles(only_song), 3) == kLonger);
-    XSFLIB_CHECK(only.pieces == layout.pieces && only_song.pieces == layout.pieces);
+    XSFLIB_CHECK(only.pieces == layout.pieces);
     XSFLIB_CHECK(copies.size() == 2 && only_copies.size() == 1 && copies_of(layout, 9).empty());
     if (copies.size() == 2 && only_copies.size() == 1)
     {
@@ -1019,6 +1136,8 @@ void TestGroupFileReplacement(Flavor flavor)
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { replaced(9, kLonger); }) == "the archive holds no file 9");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { replaced(0, kLonger); }) ==
                  "a copy of file 0 isn't a piece of its own");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { replaced(3, kLonger); }) ==
+                 "a copy of file 3 in group file 0 isn't a piece of its own");
     Layout unfollowed = layout;
     unfollowed.group_files[0].fields.clear();
     const auto replace = [&]
@@ -1032,7 +1151,8 @@ void TestGroupFileReplacement(Flavor flavor)
 
 // A group's file that isn't one of the console's stays one run. A copy with other bytes than the archive's keeps the
 // sequence file in the bytes, in the archive and in the group's file. So does a field of the group's file that points
-// inside its copy. The archive's other files stay runs of their own.
+// inside its copy. The archive's other files stay runs of their own. The sequence file that only the group's file holds
+// still becomes a sequence.
 void TestOtherGroupFiles(Flavor flavor)
 {
     // The group's file gives file 1 a place 4 bytes into the copy of the sequence file. INFO's second reference leads
@@ -1046,7 +1166,7 @@ void TestOtherGroupFiles(Flavor flavor)
     flavor == Flavor::kCafe ? xsflib::StoreBe32(field, song + 4) : xsflib::StoreLe32(field, song + 4);
     const Layout kept_out = ntdlib::sar::Cut(inside.archive, inside.group_files, OptionsFor(flavor));
 
-    XSFLIB_CHECK(kept_out.sequences.empty() && kept_out.pieces.size() > 1);
+    XSFLIB_CHECK(kept_out.sequences.size() == 1 && SequencesOfPieces(kept_out).empty() && kept_out.pieces.size() > 1);
     XSFLIB_CHECK(Join(kept_out) == inside.archive && JoinGroupFiles(kept_out) == inside.group_files);
 
     const Beside beside = ArchiveBeside(flavor, sar_files::Sequence(flavor, kOther, {{"Song", 0}}));
@@ -1055,7 +1175,7 @@ void TestOtherGroupFiles(Flavor flavor)
     const Layout one_run = ntdlib::sar::Cut(beside.archive, kJunk, OptionsFor(flavor));
     const Layout alone = Cut(beside.archive, flavor);
 
-    XSFLIB_CHECK(other.sequences.empty() && SequencesOfPieces(other).empty());
+    XSFLIB_CHECK(other.sequences.size() == 1 && SequencesOfPieces(other).empty());
     XSFLIB_CHECK(Join(other) == beside.archive && JoinGroupFiles(other) == beside.group_files);
     XSFLIB_CHECK(one_run.pieces == alone.pieces && one_run.fields == alone.fields && one_run.group_files.size() == 2);
     if (one_run.group_files.size() == 2)
@@ -1074,6 +1194,117 @@ void TestOtherGroupFiles(Flavor flavor)
     {
         XSFLIB_CHECK((foreign_run.group_files[0].pieces == std::vector<Piece>{Piece{foreign[0]}}));
     }
+}
+
+// An archive whose sequence file only the two group files beside it hold, with the same bytes in each. Entry starts
+// inside it, at offset 5. Another sequence file that only the group files hold has other bytes in each. The archive
+// holds one sequence file of its own.
+Beside ArchiveWithGroupSequences(Flavor flavor)
+{
+    const std::vector<uint8_t> song = sar_files::Sequence(flavor, kSong, {{"Song", 0}});
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Archived", .file = 0},
+                   {.name = "Song", .file = 1},
+                   {.name = "Entry", .file = 1, .start_offset = 5},
+                   {.name = "Other", .file = 2}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"FIRST", ntdlib::sar::kExternalGroupFile}, {"SECOND", ntdlib::sar::kExternalGroupFile}};
+    spec.files = {
+        {.bytes = sar_files::Sequence(flavor, kOther, {{"Archived", 0}})}, {.group_only = true}, {.group_only = true}};
+
+    return {sar_files::Archive(flavor, spec),
+            {sar_files::Group(flavor, {{1, song}, {2, sar_files::Sequence(flavor, kOther, {{"Other", 0}})}}),
+             sar_files::Group(flavor, {{1, song}, {2, sar_files::Sequence(flavor, kSong, {{"Other", 0}})}})}};
+}
+
+// The sequence file that only the group files hold becomes a sequence after the archive's, with a piece in each group
+// file. The field of Entry's start names two items of the sequence: its first, and the item at offset 5. The sequence
+// file with other bytes in each group file stays in their bytes. Each joins to give its bytes back. More commands
+// before the start make both copies longer, the group files' tables follow, and Entry's start moves with its item. Join
+// refuses a field that names items of a sequence and anything else, a sequence that the layout lacks, and an item past
+// the sequence's end.
+void TestGroupFileSequences(Flavor flavor)
+{
+    const Beside beside = ArchiveWithGroupSequences(flavor);
+    const Layout layout = ntdlib::sar::Cut(beside.archive, beside.group_files, OptionsFor(flavor));
+    XSFLIB_CHECK(layout.sequences.size() == 2 && layout.group_files.size() == 2);
+    if (layout.sequences.size() != 2 || layout.group_files.size() != 2)
+    {
+        return;
+    }
+
+    XSFLIB_CHECK((SequencesOfPieces(layout) == std::vector<uint32_t>{0}));
+    XSFLIB_CHECK((SequencesOf(layout.group_files[0].pieces) == std::vector<uint32_t>{1}));
+    XSFLIB_CHECK((SequencesOf(layout.group_files[1].pieces) == std::vector<uint32_t>{1}));
+    XSFLIB_CHECK(layout.sequences[1].items.size() == 5 && layout.sequences[1].labels.size() == 1);
+    const auto holds = [](const GroupFileLayout& group_file, const std::vector<uint8_t>& bytes)
+    {
+        return std::ranges::find(group_file.pieces, Piece{bytes}) != group_file.pieces.end();
+    };
+    XSFLIB_CHECK(holds(layout.group_files[0], sar_files::Sequence(flavor, kOther, {{"Other", 0}})));
+    XSFLIB_CHECK(holds(layout.group_files[1], sar_files::Sequence(flavor, kSong, {{"Other", 0}})));
+    XSFLIB_CHECK(Join(layout) == beside.archive && JoinGroupFiles(layout) == beside.group_files);
+
+    const auto names_sequence = [](const Field& field)
+    {
+        return field.from.sequence || field.to.sequence;
+    };
+    XSFLIB_CHECK(std::ranges::count_if(layout.fields, names_sequence) == 1);
+    const auto start = std::ranges::find_if(layout.fields, names_sequence);
+    if (start == layout.fields.end())
+    {
+        return;
+    }
+    XSFLIB_CHECK((start->from == ntdlib::sar::Place{1, 0, true, true}));
+    XSFLIB_CHECK((start->to == ntdlib::sar::Place{1, 3, true, true}));
+    for (const GroupFileLayout& group_file : layout.group_files)
+    {
+        for (const Field& field : group_file.fields)
+        {
+            XSFLIB_CHECK(!names_sequence(field));
+        }
+    }
+
+    // Ten volumes before the note: 20 more bytes before Entry's start.
+    Layout longer = layout;
+    Insert(longer, 1, 1, 10, 0);
+    const ntdlib::sar::SoundArchive read = ReadWithGroupFiles(longer);
+    const std::vector<FileCopy> copies =
+        ntdlib::sar::FileCopies(flavor, longer.sequences, longer.pieces, longer.fields, longer.group_files, 1);
+    std::vector<uint8_t> longer_song;
+    for (int i = 0; i < 11; ++i)
+    {
+        longer_song.insert(longer_song.end(), kSong.begin(), kSong.begin() + 2);
+    }
+    longer_song.insert(longer_song.end(), kSong.begin() + 2, kSong.end());
+    const std::vector<uint8_t> longer_file = sar_files::Sequence(flavor, longer_song, {{"Song", 0}});
+    XSFLIB_CHECK(read.GroupErrors().empty() && FileOf(read, 1) == longer_file);
+    XSFLIB_CHECK(read.Sounds().size() == 4 && read.Sounds()[2].start_offset == 25);
+    XSFLIB_CHECK(copies.size() == 2 && Join(longer).size() == beside.archive.size());
+    for (const FileCopy& copy : copies)
+    {
+        XSFLIB_CHECK(copy.group_file && copy.bytes == longer_file);
+    }
+
+    // Fields that Join refuses.
+    const auto refusal = [&](const auto& change)
+    {
+        Layout refused = layout;
+        change(*std::ranges::find_if(refused.fields, names_sequence));
+
+        return ErrorOf<std::invalid_argument>([&] { Join(refused); });
+    };
+    XSFLIB_CHECK(refusal([](Field& field) { field.to = ntdlib::sar::Place{0, 0, true}; }) ==
+                 "a field's places name items of a sequence and something else");
+    XSFLIB_CHECK(refusal([](Field& field) { field.to.piece = 0; }) ==
+                 "a field's places name items of a sequence and something else");
+    XSFLIB_CHECK(refusal([](Field& field) { field.from.item = false; }) ==
+                 "a field's places name items of a sequence and something else");
+    XSFLIB_CHECK(refusal([](Field& field) { field.from.piece = field.to.piece = 2; }) ==
+                 "a place names sequence 2, and there are 2");
+    XSFLIB_CHECK(refusal([](Field& field) { field.to.offset = 6; }) ==
+                 "a place names item 6, past the end of sequence 1");
+    XSFLIB_CHECK(refusal([](Field& field) { field.at.sequence = true; }) == "a field lies outside a run of bytes");
 }
 
 // A byte other than zero in the padding after the group file's copy of the sequence file keeps the sequence file in the
@@ -1147,16 +1378,19 @@ int main()
         TestStartFields(flavor);
         TestRefusals(flavor);
         TestBytes(flavor);
+        TestKnown(flavor);
         TestTableValues(flavor);
         TestValuePlaces(flavor);
         TestFiles(flavor);
         TestFilesInGroups(flavor);
         TestFileRefusals(flavor);
         TestFileCopies(flavor);
+        TestCopyBytes(flavor);
         TestLastFiles(flavor);
         TestGroupFiles(flavor);
         TestGroupFileReplacement(flavor);
         TestOtherGroupFiles(flavor);
+        TestGroupFileSequences(flavor);
         TestOneRun(flavor);
     }
     TestGroupFilePadding();

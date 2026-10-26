@@ -9,6 +9,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
@@ -307,6 +308,26 @@ void TestStaysInBytes()
     XSFLIB_CHECK(layout.sequences.size() == 1 && (SequencesOfPieces(layout) == std::vector<uint32_t>{0, 0}));
     XSFLIB_CHECK(Join(layout) == archive);
 
+    // So does a file whose commands run on past a return: no label or start leads to the commands after it, and they
+    // jump past an end to commands that nothing else leads to. The commands that a program gives the cut take the
+    // decoder's place, and the file becomes a sequence. A label after the return gives the commands.
+    const Bytes run_on = {0xC1, 0x64, 0xFD, 0x89, 0x00, 0x00, 0x08, 0xFF, 0xC1, 0x20, 0xFF};
+    const Bytes runs = Archive(0x0104, Sequence(run_on, {{"SEQ_B", 0}}));
+    XSFLIB_CHECK(ntdlib::rsar::Cut(runs, kBuild2008).sequences.size() == 1);
+    const Layout labelled =
+        ntdlib::rsar::Cut(Archive(0x0104, Sequence(run_on, {{"SEQ_B", 0}, {"After", 3}})), kBuild2008);
+    XSFLIB_CHECK(labelled.sequences.size() == 2);
+    if (labelled.sequences.size() == 2)
+    {
+        ntdlib::commands::Sequence commands = labelled.sequences[1];
+        XSFLIB_CHECK(commands.items.size() == 6 && commands.labels.size() == 2);
+        commands.labels.pop_back();
+        const Layout given = ntdlib::rsar::Cut(runs, kBuild2008, {{1, commands}});
+        XSFLIB_CHECK(given.sequences.size() == 2 && given.sequences.back() == commands);
+        XSFLIB_CHECK((SequencesOfPieces(given) == std::vector<uint32_t>{0, 1, 0}));
+        XSFLIB_CHECK(Join(given) == runs);
+    }
+
     // An archive cut short comes back too.
     const Bytes whole = Archive();
     const Bytes cut_short(whole.begin(), whole.end() - 0x50);
@@ -338,6 +359,79 @@ void TestBuilds()
     }
 }
 
+// Whether `call` throws std::invalid_argument.
+template <class Call>
+bool Refused(Call call)
+{
+    try
+    {
+        call();
+    }
+    catch (const std::invalid_argument&)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+void TestReplaceFile()
+{
+    const Bytes archive = Archive();
+    const ntdlib::rsar::SoundArchive tables = Read(archive);
+    const Layout layout = ntdlib::rsar::Cut(archive, kBuild2008);
+    const auto replace = [&layout](uint32_t file, const Bytes& bytes, std::optional<Bytes> wave_data)
+    {
+        const std::optional<std::span<const uint8_t>> waves =
+            wave_data ? std::optional<std::span<const uint8_t>>(*wave_data) : std::nullopt;
+        return ntdlib::rsar::Join(kBuild2008, layout.sequences,
+                                  ntdlib::rsar::ReplaceFile(kBuild2008, layout.sequences, layout.pieces,
+                                                            layout.fields, file, bytes, waves),
+                                  layout.fields);
+    };
+
+    // The bank takes 0x70 new bytes in both groups' copies, with zeros up to 0x80. The files after each copy move, and
+    // the tools would lay the archive out the same way.
+    const Bytes bank = Other(0x70, 9);
+    Bytes padded = bank;
+    padded.resize(0x80);
+    const Bytes grown = replace(2, bank, std::nullopt);
+    const ntdlib::rsar::SoundArchive grown_tables = Read(grown);
+    XSFLIB_CHECK(!grown_tables.Truncated() && grown.size() == archive.size() + 2 * 0x20);
+    XSFLIB_CHECK(FileOf(grown_tables, 2) == padded && WaveDataOf(grown_tables, 2) == WaveDataOf(tables, 2));
+    XSFLIB_CHECK(FileOf(grown_tables, 0) == FileOf(tables, 0) && FileOf(grown_tables, 1) == FileOf(tables, 1));
+    const Bytes laid = rsar_tools::MakeArchive(
+        0x0104, {{FileOf(tables, 0)}, {FileOf(tables, 1)}, {padded, WaveDataOf(tables, 2)}},
+        {{"SEQ_A", 0, 0}, {"SEQ_A_WAIT", 0, 5}, {"SEQ_B", 1, 0}}, {{0, 2}, {1, 0}, {2}});
+    XSFLIB_CHECK(grown == laid);
+    const Layout grown_layout = ntdlib::rsar::Cut(grown, kBuild2008);
+    const std::vector<ntdlib::sar::FileCopy> copies = ntdlib::rsar::FileCopies(
+        kBuild2008, grown_layout.sequences, grown_layout.pieces, grown_layout.fields, 2);
+    XSFLIB_CHECK(copies.size() == 2 && copies[0].bytes == padded && copies[1].bytes == padded);
+    XSFLIB_CHECK(copies[0].start < copies[1].start);
+
+    // The bank's wave data shrinks to 0x20 bytes in both copies. The bank keeps its bytes.
+    const Bytes shrunk = replace(2, FileOf(tables, 2), Other(0x20, 3));
+    const ntdlib::rsar::SoundArchive shrunk_tables = Read(shrunk);
+    XSFLIB_CHECK(shrunk.size() == archive.size() - 2 * 0x20);
+    XSFLIB_CHECK(WaveDataOf(shrunk_tables, 2) == Other(0x20, 3) && FileOf(shrunk_tables, 2) == FileOf(tables, 2));
+    const std::vector<ntdlib::sar::FileCopy> waves =
+        ntdlib::rsar::FileCopies(kBuild2008, layout.sequences, layout.pieces, layout.fields, 2, true);
+    XSFLIB_CHECK(waves.size() == 2 && waves[0].bytes == WaveDataOf(tables, 2));
+
+    // Both parts change at once.
+    const Bytes both = replace(2, bank, Other(0x60, 5));
+    const ntdlib::rsar::SoundArchive both_tables = Read(both);
+    XSFLIB_CHECK(FileOf(both_tables, 2) == padded && WaveDataOf(both_tables, 2) == Other(0x60, 5));
+    XSFLIB_CHECK(FileOf(both_tables, 1) == FileOf(tables, 1));
+
+    // A sequence file is no run of its own, and the second song has no wave data.
+    XSFLIB_CHECK(Refused([&replace] { replace(0, Other(0x20, 1), std::nullopt); }));
+    XSFLIB_CHECK(Refused([&replace, &tables] { replace(1, FileOf(tables, 1), Other(0x20, 1)); }));
+    XSFLIB_CHECK((ntdlib::rsar::FileCopies(kBuild2008, layout.sequences, layout.pieces, layout.fields, 1, true)
+                      .empty()));
+}
+
 } // namespace
 
 int main()
@@ -349,6 +443,7 @@ int main()
     TestStarts();
     TestStaysInBytes();
     TestBuilds();
+    TestReplaceFile();
 
     return xsflib::testing::Summary("RSAR layout");
 }

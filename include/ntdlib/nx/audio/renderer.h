@@ -2,20 +2,26 @@
 
 // The Switch's audio renderer, as a game's nn::audio sets it up: voices, the final mix and sub-mixes, and a device
 // sink, and the frames it renders from them. This follows the build of the renderer for the CPU in WarioWare: Get It
-// Together!'s sdk (nn::audio::server and nn::audio::dsp). The calls change the game's copy of the parameters. Each
-// frame then sends them to the renderer. The renderer takes them in, reports the voices' state from two frames before,
-// generates the frame's command list and runs it. An aux effect in a mix sends the mix's samples to the game and
-// receives what the game makes of them. Not modelled yet: the renderer's other effects, splitters, voice dropping, the
-// downmix and the upsampler for a 32 kHz renderer.
+// Together!'s sdk (nn::audio::server and nn::audio::dsp). Its delay and light limiter follow the build in WarioWare:
+// Move It!'s sdk. That build renders the voices and mixes as the other build does, apart from a voice with both
+// biquads on. The calls change the game's copy of the parameters. Each frame then sends them to the renderer. The
+// renderer takes them in, reports the voices' state from two frames before, generates the frame's command list and runs
+// it. An aux effect in a mix sends the mix's samples to the game and receives what the game makes of them. A delay or a
+// light limiter runs in the renderer. Not modelled yet: the renderer's reverb, I3DL2 reverb, compressor and other
+// effects, splitters, voice dropping, the downmix and the upsampler for a 32 kHz renderer.
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
 
+#include "ntdlib/nx/audio/delay.h"
 #include "ntdlib/nx/audio/dsp.h"
+#include "ntdlib/nx/audio/light_limiter.h"
 #include "ntdlib/nx/audio/voice.h"
 
 namespace ntdlib::nx::audio
@@ -106,6 +112,27 @@ public:
     virtual void ReadAuxSendBuffer(int aux, std::span<const int32_t> samples, int32_t read) = 0;
     virtual void WriteAuxReturnBuffer(int aux, std::span<const int32_t> samples, int32_t written) = 0;
 
+    // The times are in nanoseconds (nn::TimeSpan).
+    virtual void AddDelay(int mix, int64_t max_delay, int channel_count, int delay) = 0;
+    virtual void SetDelayInputOutput(int delay, std::span<const int8_t> inputs, std::span<const int8_t> outputs) = 0;
+    virtual void SetDelayTime(int delay, int64_t time) = 0;
+    virtual void SetDelayInGain(int delay, float gain) = 0;
+    virtual void SetDelayFeedbackGain(int delay, float gain) = 0;
+    virtual void SetDelayDryGain(int delay, float gain) = 0;
+    virtual void SetDelayChannelSpread(int delay, float spread) = 0;
+    virtual void SetDelayLowPassAmount(int delay, float amount) = 0;
+    virtual void SetDelayEnabled(int delay, bool enabled) = 0;
+    virtual void AddLightLimiter(int mix, int64_t max_look_ahead, int channel_count, int limiter) = 0;
+    virtual void SetLightLimiterInputOutput(int limiter, std::span<const int8_t> inputs,
+                                            std::span<const int8_t> outputs) = 0;
+    virtual void SetLightLimiterAttackTime(int limiter, int64_t time) = 0;
+    virtual void SetLightLimiterReleaseTime(int limiter, int64_t time) = 0;
+    virtual void SetLightLimiterLookAheadTime(int limiter, int64_t time) = 0;
+    virtual void SetLightLimiterThreshold(int limiter, float threshold) = 0;
+    virtual void SetLightLimiterInputGain(int limiter, float gain) = 0;
+    virtual void SetLightLimiterOutputGain(int limiter, float gain) = 0;
+    virtual void SetLightLimiterEnabled(int limiter, bool enabled) = 0;
+
     // A frame: the update, and the command list's generation and processing.
     virtual void RenderFrame() = 0;
 };
@@ -125,7 +152,8 @@ public:
 //   depop multiplies by 31,529 / 32,768 at 48 kHz, or 30,923 / 32,768 at another rate, and adds to its buffer. A
 //   depop below 2^-16 at the end of a frame becomes 0.
 // - An aux effect's send ring takes each sample rounded to the nearest integer, halves away from zero, held to 32
-//   bits. Its return ring's samples come back as they are.
+//   bits. Its return ring's samples come back as they are. A delay and a light limiter take their samples rounded the
+//   same way, and their output comes back as the console's integers.
 // - DeviceOutputFloat gives the output divided by 32,768, without a limit. DeviceOutput gives it rounded to 16 bits
 //   and held there.
 //
@@ -136,8 +164,9 @@ public:
 // leaves them. Nothing is converted, filtered or mixed, the effects don't run, and the output and the meters are
 // silent. The biquads' states, the effects' states and the aux rings stay as they were. The depop fades as in a mixed
 // frame. The voices' last samples become 0. A voice that stops before a mixed frame has given them again leaves the
-// depop nothing. Once the frames mix again, a biquad's state takes a moment to settle, and the effects lack the tails
-// of what they missed. A host runs such frames to reach a place in a sound quickly.
+// depop nothing. A delay or a light limiter that a call has set to start again does start again, and one that a call
+// has given new gains takes them. Once the frames mix again, a biquad's state takes a moment to settle, and the effects
+// lack the tails of what they missed. A host runs such frames to reach a place in a sound quickly.
 class Renderer
 {
 public:
@@ -261,6 +290,52 @@ public:
     // (WriteAuxReturnBuffer, 0x3fc90, through WriteAuxBuffer, 0x3d950). Returns how many.
     int32_t WriteAuxReturnBuffer(int aux, std::span<const int32_t> samples);
 
+    // The delay and the light limiter follow Move It!'s sdk. Their times are in nanoseconds (nn::TimeSpan). Each runs
+    // after the effects added to its mix before it, on the mix's buffers that SetDelayInputOutput or
+    // SetLightLimiterInputOutput gives it. A call that changes the delay's channels or time, or that enables it, starts
+    // it again: its lines are cleared at the next frame. A call that changes a gain gives it new gains at the next
+    // frame. A disabled delay or limiter passes its inputs through.
+
+    // A delay on a mix of up to `max_delay` on `channel_count` channels (AddDelay, 0x1cf680). It starts enabled, with
+    // no delay, no input and no feedback, and full dry and wet gains. Returns the delay.
+    int AddDelay(int mix, int64_t max_delay, int channel_count);
+
+    // The mix's buffers that the delay takes and gives, one for each channel, at most its channel count and 6
+    // (SetDelayInputOutput, 0x1cfa50).
+    void SetDelayInputOutput(int delay, std::span<const int8_t> inputs, std::span<const int8_t> outputs);
+
+    // The delay in milliseconds, towards zero (SetDelayTime, 0x1cfb90).
+    void SetDelayTime(int delay, int64_t time);
+
+    // The gains in Q14, towards zero (SetDelayInGain, 0x1cfd40, and the setters after it).
+    void SetDelayInGain(int delay, float gain);
+    void SetDelayFeedbackGain(int delay, float gain);
+    void SetDelayDryGain(int delay, float gain);
+    void SetDelayChannelSpread(int delay, float spread);
+    void SetDelayLowPassAmount(int delay, float amount);
+    void SetDelayEnabled(int delay, bool enabled);
+
+    // A light limiter on a mix with a look-ahead of up to `max_look_ahead` on `channel_count` channels
+    // (AddLightLimiter, 0x1d1890). It starts enabled, with a look-ahead of a sample, instant attack and release, and a
+    // threshold and gains of 0. Returns the limiter.
+    int AddLightLimiter(int mix, int64_t max_look_ahead, int channel_count);
+
+    // The mix's buffers that the limiter takes and gives (SetLightLimiterInputOutput, 0x1d1c70). The call starts the
+    // limiter again. So do a change of its look-ahead and an enable. The other calls take effect at the next frame
+    // without that.
+    void SetLightLimiterInputOutput(int limiter, std::span<const int8_t> inputs, std::span<const int8_t> outputs);
+
+    // The attack and release times, in microseconds towards zero, set the coefficients (SetLightLimiterAttackTime,
+    // 0x1d1d80, and SetLightLimiterReleaseTime, 0x1d1e80). The look-ahead time sets the look-ahead in samples
+    // (SetLightLimiterLookAheadTime, 0x1d1f80).
+    void SetLightLimiterAttackTime(int limiter, int64_t time);
+    void SetLightLimiterReleaseTime(int limiter, int64_t time);
+    void SetLightLimiterLookAheadTime(int limiter, int64_t time);
+    void SetLightLimiterThreshold(int limiter, float threshold);
+    void SetLightLimiterInputGain(int limiter, float gain);
+    void SetLightLimiterOutputGain(int limiter, float gain);
+    void SetLightLimiterEnabled(int limiter, bool enabled);
+
     // A frame: the update, then the command list's generation and processing.
     void RenderFrame();
 
@@ -383,6 +458,20 @@ private:
         } server;
     };
 
+    // An effect of a mix: its kind, and its index among the renderer's effects of that kind.
+    enum class EffectKind : uint8_t
+    {
+        kAux,
+        kDelay,
+        kLightLimiter,
+    };
+
+    struct Effect
+    {
+        EffectKind kind = EffectKind::kAux;
+        int index = 0;
+    };
+
     struct Mix
     {
         bool in_use = false;
@@ -392,7 +481,7 @@ private:
         int destination = kNoMix;
         std::vector<std::array<float, kMaxMixBuffers>> mix_volumes; // [source buffer][destination buffer]
         int offset = 0;                                             // its first mix buffer
-        std::vector<int> effects;                                   // in their order
+        std::vector<Effect> effects;                                // in their order
     };
 
     // An aux effect: the client's settings and the renderer's copy of them, and the two rings with their offsets, in
@@ -418,6 +507,46 @@ private:
         uint32_t send_write = 0;    // the renderer's offset
         uint32_t receive_write = 0; // the client's offset
         uint32_t receive_read = 0;  // the renderer's offset
+    };
+
+    // The parameter state that the delay and the light limiter keep: 0 starts the effect again, 1 gives it new gains,
+    // and 2 leaves it as it is.
+    static constexpr uint8_t kStart = 0;
+    static constexpr uint8_t kNewGains = 1;
+    static constexpr uint8_t kUnchanged = 2;
+
+    // The most channels a delay or a light limiter has.
+    static constexpr int kMaxEffectChannels = std::max(kDelayChannels, kLightLimiterChannels);
+
+    // A delay or a light limiter: the client's settings, and the renderer's copy of them with its state. `parameter`
+    // holds the channels' count. The renderer has a copy once an update has taken the effect.
+    template <typename Parameter, typename State, std::size_t kChannels>
+    struct RendererEffect
+    {
+        bool enabled = true;
+        bool is_new = true;
+        std::array<int8_t, kChannels> inputs{};
+        std::array<int8_t, kChannels> outputs{};
+        Parameter parameter;
+        uint8_t state = kStart;
+
+        bool server_taken = false;
+        bool server_enabled = false;
+        std::array<int8_t, kChannels> server_inputs{};
+        std::array<int8_t, kChannels> server_outputs{};
+        Parameter server_parameter;
+        uint8_t server_state = kStart;
+        State dsp;
+    };
+
+    // A delay, with the times and gains as the client set them.
+    struct Delay : RendererEffect<DelayParameter, DelayState, kDelayChannels>
+    {
+    };
+
+    // A light limiter, with the coefficients and the look-ahead in samples that the client works out from its times.
+    struct LightLimiter : RendererEffect<LightLimiterParameter, LightLimiterState, kLightLimiterChannels>
+    {
     };
 
     Voice& At(int voice);
@@ -453,6 +582,25 @@ private:
     void MeasureMix(int id);
     void Depop(const Mix& mix);
     void RenderEffects(const Mix& mix);
+    void RenderAux(const Mix& mix, Aux& aux);
+
+    // The delays' and the limiters' updates, their commands, the steps of the commands before the processing in a
+    // frame without mixing, and their states after the frame's commands.
+    void UpdateRendererEffects();
+    void RenderDelay(const Mix& mix, Delay& delay);
+    void RenderLightLimiter(const Mix& mix, LightLimiter& limiter);
+    void StartRendererEffects();
+    void FinishRendererEffects();
+
+    // An effect's channels take inputs[k] to outputs[k] of the mix's buffers. A command whose buffers aren't all among
+    // the mix buffers doesn't run. PassThrough copies each input to its output where they differ. TakeEffectBuffers
+    // gives the channels' samples, the mix's buffers themselves in the console's mode, or rounded into
+    // effect_samples_ in the enhanced mode. GiveEffectBuffers puts the enhanced mode's outputs back.
+    bool InRange(const Mix& mix, std::span<const int8_t> inputs, std::span<const int8_t> outputs) const;
+    void PassThrough(const Mix& mix, std::span<const int8_t> inputs, std::span<const int8_t> outputs);
+    void TakeEffectBuffers(const Mix& mix, std::span<const int8_t> inputs, std::span<const int8_t> outputs,
+                           std::span<const int32_t*> in, std::span<int32_t*> out);
+    void GiveEffectBuffers(const Mix& mix, std::span<const int8_t> outputs, std::span<int32_t* const> out);
     int32_t* Buffer(int index);
     float* FloatBuffer(int index);
 
@@ -466,6 +614,8 @@ private:
     std::vector<int> order_; // the client's voices in use, by priority, the newest first among equals
     std::vector<Mix> mixes_;
     std::vector<Aux> auxes_;
+    std::vector<Delay> delays_;
+    std::vector<LightLimiter> limiters_;
     bool mixes_changed_ = true;
     std::vector<int> sinks_;       // the device sink's inputs
     std::vector<int32_t> buffers_; // the mix buffers, then a working buffer for each channel a voice may have
@@ -502,6 +652,9 @@ private:
     std::vector<float> float_output_;
     std::vector<int16_t> decoded_;
     std::vector<float> input_;
+
+    // The enhanced mode's room for a delay's or a limiter's samples as integers: each channel's input, then its output.
+    std::vector<int32_t> effect_samples_;
 };
 
 // The voices and the channel resources go up to the marks.
@@ -513,6 +666,8 @@ struct Renderer::Snapshot
     std::vector<int> order;
     std::vector<Mix> mixes;
     std::vector<Aux> auxes;
+    std::vector<Delay> delays;
+    std::vector<LightLimiter> limiters;
     bool mixes_changed = true;
     std::vector<int> sinks;
     std::vector<int32_t> buffers;

@@ -1537,7 +1537,7 @@ void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
     for_each(0x2105, read_group);
 }
 
-void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes)
+void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes, std::string group)
 {
     // kStopAtFirstProblem takes a group file's copy of every file that the archive lacks.
     if (options_.rules == Rules::kStopAtFirstProblem)
@@ -1564,6 +1564,7 @@ void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes)
             items = GroupItemsStrictly(bytes, options_);
         }
         group_files_.push_back(std::move(bytes));
+        group_file_groups_.push_back(std::move(group));
         const std::vector<uint8_t>& file = group_files_.back();
         const uint32_t source = static_cast<uint32_t>(group_files_.size());
         for (const auto& [file_id, data] : items)
@@ -1583,6 +1584,7 @@ void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes)
     // Moving a vector keeps its buffer. The offsets found here stay valid in the archive's copy.
     const auto items = GroupItems(OpenFile(bytes, "GRP", options_));
     group_files_.push_back(std::move(bytes));
+    group_file_groups_.push_back(std::move(group));
     const std::vector<uint8_t>& file = group_files_.back();
     const uint32_t source = static_cast<uint32_t>(group_files_.size());
 

@@ -326,10 +326,11 @@ void StorePb(const Pb& pb, uint8_t* bytes);
 
 // The PB of the build of October 2006 (__AXServiceVPB, 0x80030534 in Smooth Moves' main.dol). Its fields up to the ITD
 // are at the same offsets. An update block follows at 0x52: three counters and the address of a buffer of changes that
-// the microcode makes within a frame. The model never queues such changes. Then come the fields from the depop values
-// to the low-pass filter, at 0x5c. A second filter of four words follows at 0xcc. The model leaves it off. The Wii
-// Remote's fields up to its sample rate converter start at 0xd4. The rest is padding. This PB has no biquad filter and
-// no filter for the Wii Remotes.
+// the microcode makes within a frame. AX's model (System) never queues such changes. ax::Renderer makes them as the
+// microcode does. Then come the fields from the depop values to the low-pass filter, at 0x5c. A second filter of four
+// words follows at 0xcc. System leaves it off, and ax::Renderer runs it as the microcode does. The Wii Remote's fields
+// up to its sample rate converter start at 0xd4. The rest is padding. This PB has no biquad filter and no filter for
+// the Wii Remotes.
 constexpr std::size_t kPbSizeOctober2006 = 0x120;
 constexpr std::size_t kUpdateBlockOctober2006 = 0x52;
 

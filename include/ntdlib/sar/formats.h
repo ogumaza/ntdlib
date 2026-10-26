@@ -532,8 +532,9 @@ public:
     // FileData afterwards. Throws FormatError if `bytes` isn't a group file. With kStopAtFirstProblem, it reads the
     // file as the console's player does. The 3DS's player reads each item's file ID first. It reads an item's bytes
     // only when the archive lacks that file. The players of the Wii U and the Switch read the group file's whole table
-    // first.
-    void AddGroupFile(std::vector<uint8_t> bytes);
+    // first. `group` gives the group's label in ExternalGroups where the caller knows it, such as from the name of the
+    // file beside the archive (GroupFileGroups).
+    void AddGroupFile(std::vector<uint8_t> bytes, std::string group = {});
 
     // Whether `bytes` is a group file of this archive, read by the archive's rules. With kStopAtFirstProblem, it reads
     // the bytes of every copy that the group file holds, on the 3DS too. A game can keep another archive's group files
@@ -546,6 +547,14 @@ public:
     const std::vector<std::vector<uint8_t>>& GroupFiles() const
     {
         return group_files_;
+    }
+
+    // The label in ExternalGroups of the group whose file each of GroupFiles is, as AddGroupFile took it, or an empty
+    // string. The 3DS's file table holds no lists of groups. Only the name under which the game finds a group's file
+    // gives the group there.
+    const std::vector<std::string>& GroupFileGroups() const
+    {
+        return group_file_groups_;
     }
 
     // Returns a file's contents, or an empty span for external files and files absent from all readable groups.
@@ -612,6 +621,7 @@ private:
     Options options_;
     std::vector<uint8_t> bytes_;
     std::vector<std::vector<uint8_t>> group_files_;
+    std::vector<std::string> group_file_groups_;
     std::vector<SoundInfo> sounds_;
     std::vector<BankInfo> banks_;
     std::vector<WaveArchiveInfo> wave_archives_;

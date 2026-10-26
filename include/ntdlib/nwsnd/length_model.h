@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: MIT
 
-// The length analysis of a sequence sound of an archive of the 3DS, the Wii U or the Switch, on ntdlib's model of the
-// console's sound library: xsflib's analysis (xsflib/rip/length.h) with a model that counts each track's passes. A
-// console's struct gives the type of the console's model and what differs between the consoles: the frame's length,
+// The length analysis of a sequence sound of an archive of the Wii, the 3DS, the Wii U or the Switch, on ntdlib's model
+// of the console's sound library: xsflib's analysis (xsflib/rip/length.h) with a model that counts each track's passes.
+// A console's struct gives the type of the console's model and what differs between the consoles: the frame's length,
 // the output, the voices, and whether the effects still ring. The Switch's struct is ntdlib::nx::atk::LengthConsole
-// (ntdlib/nx/atk/length_model.h), the Wii U's is ntdlib::cafe::snd::LengthConsole (ntdlib/cafe/snd/length_model.h), and
-// the 3DS's is ntdlib::ctr::snd::LengthConsole (ntdlib/ctr/snd/length_model.h).
+// (ntdlib/nx/atk/length_model.h), the Wii U's is ntdlib::cafe::snd::LengthConsole (ntdlib/cafe/snd/length_model.h), the
+// 3DS's is ntdlib::ctr::snd::LengthConsole (ntdlib/ctr/snd/length_model.h), and the Wii's is
+// ntdlib::rvl::snd::LengthConsole (ntdlib/rvl/snd/length_model.h).
+//
+// A struct may give two more things. Where the console's engine doesn't run frames by itself, `static bool
+// RunFrame(Model&)` runs a frame of the model and returns false if the model fails. Where an open of a track keeps the
+// track's wait, `kOpenKeepsWait` is true (see LengthModel::OnLoop). The Wii's struct gives both. The console's engine
+// gives SetEndlessLoops (see MeasureSequence).
 // The engines' hooks for the analysis are in length_hooks.h.
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +51,20 @@ inline xsflib::rip::LengthRules LengthRulesFor(double frame_ms)
     return rules;
 }
 
+// Whether an open of a track on the console of `Console` keeps the track's wait: the struct's kOpenKeepsWait, or false.
+template <class Console>
+constexpr bool OpenKeepsWait()
+{
+    if constexpr (requires { Console::kOpenKeepsWait; })
+    {
+        return Console::kOpenKeepsWait;
+    }
+    else
+    {
+        return false;
+    }
+}
+
 // The model that xsflib's length analysis (xsflib::rip::MeasureLength) reads: the console's model and the sound's
 // player. The model also counts each track's passes. A looping sequence's fade then waits for the tracks that loop at
 // other lengths than the main track (OthersLooped). A track that another track opens again makes a pass each time. The
@@ -62,7 +83,17 @@ public:
 
     bool RunFrame()
     {
-        engine_.RunFrame();
+        if constexpr (requires { Console::RunFrame(model_); })
+        {
+            if (!Console::RunFrame(model_))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            engine_.RunFrame();
+        }
         ++frames_;
 
         return true;
@@ -135,8 +166,10 @@ public:
     }
 
     // Sets the hooks for the analysis's loops, for every track's passes and for each open of a track. Only the passes
-    // that changed the sound count. An open of a track that a track opened before is such a pass: the open clears the
-    // track's wait, and the track starts its part again at once. The first open isn't a pass.
+    // that changed the sound count. An open of a track that a track opened before is such a pass: the track starts its
+    // part again. The first open isn't a pass. On most consoles, the open clears the track's wait, and the track starts
+    // again at once. Where the open keeps the wait (OpenKeepsWait), the pass counts at the track's next command. Two
+    // opens during one wait then make one pass.
     template <typename Hook>
     void OnLoop(Hook hook)
     {
@@ -155,12 +188,32 @@ public:
             const auto index = static_cast<std::size_t>(opened);
             if (opened_[index])
             {
-                ++passes_[index];
+                if constexpr (OpenKeepsWait<Console>())
+                {
+                    reopened_[index] = true;
+                }
+                else
+                {
+                    ++passes_[index];
+                }
             }
 
             opened_[index] = true;
         };
         engine_.SetOpenTrackHook(count_open);
+        if constexpr (OpenKeepsWait<Console>())
+        {
+            const auto count_start = [this](int track, uint32_t)
+            {
+                const auto index = static_cast<std::size_t>(track);
+                if (reopened_[index])
+                {
+                    ++passes_[index];
+                    reopened_[index] = false;
+                }
+            };
+            engine_.SetCommandStartHook(count_start);
+        }
     }
 
     // Whether every open track other than `track` has made kLengthLoops passes that changed the sound. A track whose
@@ -185,13 +238,15 @@ private:
     Engine& engine_;
     Player& player_;
     uint64_t frames_ = 0;
-    std::array<int, kTrackCount> passes_{};  // each track's passes that changed the sound
-    std::array<bool, kTrackCount> opened_{}; // whether another track has opened each track
+    std::array<int, kTrackCount> passes_{};    // each track's passes that changed the sound
+    std::array<bool, kTrackCount> opened_{};   // whether another track has opened each track
+    std::array<bool, kTrackCount> reopened_{}; // whether each track's next command starts its part again after an open
 };
 
-// The counted loops that the player's open tracks are in.
+// The loops that a measure at the limit makes endless: the outermost loop that each of the player's open tracks is in,
+// where that loop is a counted one. A track whose outermost loop is endless loops already, and keeps its inner loops.
 template <class Player>
-CountedLoopSet CountedLoops(const Player& player)
+CountedLoopSet OutermostCountedLoops(const Player& player)
 {
     CountedLoopSet loops;
     for (int i = 0; i < kTrackCount; ++i)
@@ -202,12 +257,11 @@ CountedLoopSet CountedLoops(const Player& player)
             continue;
         }
 
-        for (const auto& entry : track->CallStack())
+        const auto stack = track->CallStack();
+        const auto outermost = std::ranges::find_if(stack, [](const auto& entry) { return entry.is_loop; });
+        if (outermost != stack.end() && outermost->loop_count != 0)
         {
-            if (entry.is_loop && entry.loop_count != 0)
-            {
-                loops.insert({i, entry.address});
-            }
+            loops.insert({i, outermost->address});
         }
     }
 
@@ -217,20 +271,17 @@ CountedLoopSet CountedLoops(const Player& player)
 // Measures sequence sound `sound` on a model that `make_model()` makes, a std::unique_ptr<Console::Model> with the
 // caller's settings, such as the effects. The counted loops in `endless_loops` loop for ever. Returns nothing for a
 // sound that doesn't start. A sequence can repeat its music in a counted loop that the game plays for longer than the
-// limit. When the measure reaches the limit inside counted loops, it runs again on a new model with those loops
-// endless, where the console's engine can make them endless (the Switch's). Their passes then count as loops of the
-// sequence. The analysis's exceptions pass through: xsflib::rip::TryMeasure turns them into nothing.
+// limit. When the measure reaches the limit inside counted loops, it runs again on a new model with each track's
+// outermost counted loop endless. Their passes then count as loops of the sequence. An inner loop that runs at the
+// limit, such as a fill, still ends, and repeats in each pass of the outer loop as the game plays it. The analysis's
+// exceptions pass through: xsflib::rip::TryMeasure turns them into nothing.
 template <class Console, class MakeModel>
 std::optional<xsflib::rip::Timing> MeasureSequence(const MakeModel& make_model, uint32_t sound,
                                                    const CountedLoopSet& endless_loops = {})
 {
     const std::unique_ptr<typename Console::Model> model = make_model();
     auto& engine = *model->engine;
-    constexpr bool kEndless = requires { engine.SetEndlessLoops(endless_loops); };
-    if constexpr (kEndless)
-    {
-        engine.SetEndlessLoops(endless_loops);
-    }
+    engine.SetEndlessLoops(endless_loops);
     auto* player = engine.StartSequence(sound);
     if (!player)
     {
@@ -240,14 +291,11 @@ std::optional<xsflib::rip::Timing> MeasureSequence(const MakeModel& make_model, 
     LengthModel<Console> length_model(*model, *player);
     const xsflib::rip::LengthRules rules = LengthRulesFor(Console::kFrameMs);
     const std::optional<xsflib::rip::Timing> timing = xsflib::rip::MeasureLength(length_model, rules);
-    if constexpr (kEndless)
+    if (timing && endless_loops.empty() && length_model.Frames() >= rules.max_frames)
     {
-        if (timing && endless_loops.empty() && length_model.Frames() >= rules.max_frames)
+        if (const CountedLoopSet running = OutermostCountedLoops(*player); !running.empty())
         {
-            if (const CountedLoopSet running = CountedLoops(*player); !running.empty())
-            {
-                return MeasureSequence<Console>(make_model, sound, running);
-            }
+            return MeasureSequence<Console>(make_model, sound, running);
         }
     }
 

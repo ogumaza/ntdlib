@@ -102,6 +102,11 @@ public:
     // whole frames, with all of the effect's channels in each frame.
     void AppendEffect(int bus, std::unique_ptr<EffectAux> effect);
 
+    // Puts an effect that the renderer runs, a delay or a light limiter, after the others on aux bus `bus`, and enables
+    // the effect. The effect goes into the receiver's mix with its settings, on the bus's buffers. WarioWare: Move It!
+    // does the same (OutputMixer::AppendEffect, 0xdeb0d0 in that game's main, then the effect's SetEnabled).
+    void AppendEffect(int bus, std::unique_ptr<EffectBase> effect);
+
     // Whether a sound still plays or a channel still sounds.
     bool IsBusy() const;
 
@@ -125,10 +130,10 @@ public:
 
     // Returns the engine to a snapshot that it saved. The players that started after the snapshot go, and the pointers
     // that StartSequence, StartWaveSound and StartStreamSound gave for them dangle. The other players keep their
-    // places. The restore replaces each effect with a copy of the snapshot's effect. Pointers kept to the effects that
-    // AppendEffect took then dangle too. The banks and waves that notes have read stay read. Throws
-    // std::invalid_argument for a snapshot of another engine, or one with players or effects that the engine doesn't
-    // have.
+    // places. The restore replaces each effect with a copy of the snapshot's effect. The renderer restores the state
+    // of the effects that it runs. Pointers kept to the effects that AppendEffect took then dangle too. The banks and
+    // waves that notes have read stay read. Throws std::invalid_argument for a snapshot of another engine, or one with
+    // players or effects that the engine doesn't have.
     void Restore(const Snapshot& snapshot);
 
     Random& Rng()
@@ -199,12 +204,14 @@ public:
 private:
     using Players = ntdlib::nwsnd::SoundPlayers<SequenceSoundPlayer, WaveSoundPlayer, StreamSoundPlayer>;
 
-    // An effect on a bus, with the renderer's aux and the buffer it processes the samples in.
+    // An effect on a bus: an aux effect with the renderer's aux and the buffer it processes the samples in, or an
+    // effect that the renderer runs.
     struct AttachedEffect
     {
         std::unique_ptr<EffectAux> effect;
         int aux = -1;
         std::vector<int32_t> work;
+        std::unique_ptr<EffectBase> renderer_effect;
     };
 
     void FrameProcess();
@@ -262,7 +269,8 @@ struct Engine::Snapshot
     Random random;
     std::array<int16_t, 16> global_vars{};
     Players::Snapshot players;
-    std::array<std::vector<std::shared_ptr<const EffectAux>>, 4> effects; // by bus, as the engine holds them
+    std::array<std::vector<std::shared_ptr<const EffectAux>>, 4> effects;           // by bus, as the engine holds them
+    std::array<std::vector<std::shared_ptr<const EffectBase>>, 4> renderer_effects; // the same
 };
 
 // Archive mode's whole stack for one sound archive: the renderer, set up as nn::atk sets it up by default, and the

@@ -17,7 +17,8 @@
 // start.
 //
 // A bank file and a wave sound file name their waves through a table of waves. WithWaveArchives puts other wave
-// archives in the table, for a file that goes into another archive.
+// archives in the table, for a file that goes into another archive. WaveTable reads the table, and WithWaveTable puts
+// other waves in it, such as for a group's copy that names its waves in a wave archive of the group's.
 
 #pragma once
 
@@ -88,5 +89,14 @@ struct WaveArchiveFile
 // waves.
 std::vector<uint8_t> WithWaveArchives(std::span<const uint8_t> file, Flavor flavor,
                                       const std::map<uint32_t, uint32_t>& wave_archives);
+
+// The waves of the table of waves of `file` (see WithWaveArchives), in the table's order. Throws xsflib::FormatError
+// as WithWaveArchives does.
+std::vector<WaveId> WaveTable(std::span<const uint8_t> file, Flavor flavor);
+
+// `file` (see WithWaveArchives) with `waves` in its table of waves, one for each of the table's entries. The file's
+// other bytes stay. Throws xsflib::FormatError as WithWaveArchives does, and std::invalid_argument when `waves` holds
+// another number of waves than the table.
+std::vector<uint8_t> WithWaveTable(std::span<const uint8_t> file, Flavor flavor, std::span<const WaveId> waves);
 
 } // namespace ntdlib::sar

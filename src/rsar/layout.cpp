@@ -2,12 +2,17 @@
 
 #include "ntdlib/rsar/layout.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <optional>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "xsflib/binary.h"
@@ -245,9 +250,59 @@ sar::core::Container ContainerOf(const SndBuild& build)
     return container;
 }
 
+// The bytes of `location` that `archive` holds: all of them, or those before its end.
+std::span<const uint8_t> BytesOf(std::span<const uint8_t> archive, const Location& location)
+{
+    const std::size_t start = std::min(location.start, archive.size());
+
+    return archive.subspan(start, std::min(location.size, archive.size() - start));
+}
+
+// `bytes` with zeros up to a multiple of kAlignment bytes, as NW4R's tools pad each file and each wave data.
+std::vector<uint8_t> Padded(std::span<const uint8_t> bytes)
+{
+    std::vector<uint8_t> padded(bytes.begin(), bytes.end());
+    padded.resize((padded.size() + kAlignment - 1) / kAlignment * kAlignment);
+
+    return padded;
+}
+
+// Whether `joined`, whose tables `after` reads, holds the bytes of `news` in each copy of each of its locations, by
+// their IDs, and the bytes of `archive`, whose tables `before` reads, in every other location.
+bool Follows(std::span<const uint8_t> archive, const Structure& before, std::span<const uint8_t> joined,
+             const Structure& after, const std::map<uint32_t, std::vector<uint8_t>>& news)
+{
+    if (after.files.size() != before.files.size())
+    {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < before.files.size(); ++i)
+    {
+        const auto found = news.find(before.files[i].file);
+        const std::span<const uint8_t> now = BytesOf(joined, after.files[i]);
+        if (after.files[i].file != before.files[i].file ||
+            !std::ranges::equal(now, found != news.end() ? std::span<const uint8_t>(found->second)
+                                                          : BytesOf(archive, before.files[i])))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// The name of location `id` for a message: a file, or a file's wave data.
+std::string NameOf(uint32_t id)
+{
+    const std::string file = "file " + std::to_string(id & ~kWaveData);
+
+    return (id & kWaveData) != 0 ? "the wave data of " + file : file;
+}
+
 } // namespace
 
-Layout Cut(std::span<const uint8_t> archive, const SndBuild& build)
+Layout Cut(std::span<const uint8_t> archive, const SndBuild& build, const sar::KnownSequences& known)
 {
     // The reader checks the tables, and reports what it can't read.
     static_cast<void>(SoundArchive::Load(std::vector<uint8_t>(archive.begin(), archive.end())));
@@ -255,7 +310,7 @@ Layout Cut(std::span<const uint8_t> archive, const SndBuild& build)
     try
     {
         const sar::core::Source source{archive, ReadStructure(archive)};
-        sar::core::Cutting cut = sar::core::CutBy(std::span(&source, 1), ContainerOf(build));
+        sar::core::Cutting cut = sar::core::CutBy(std::span(&source, 1), ContainerOf(build), known);
         Layout layout;
         layout.sequences = std::move(cut.sequences);
         layout.pieces = std::move(cut.pieces);
@@ -282,6 +337,102 @@ std::vector<uint8_t> Join(const SndBuild& build, std::span<const commands::Seque
 std::vector<std::size_t> Starts(std::span<const uint8_t> archive, std::span<const sar::Piece> pieces)
 {
     return sar::core::StartsBy(ContainerOf(SndBuild{}), archive, pieces);
+}
+
+std::vector<sar::Piece> ReplaceFile(const SndBuild& build, std::span<const commands::Sequence> sequences,
+                                    std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
+                                    uint32_t file, std::span<const uint8_t> bytes,
+                                    std::optional<std::span<const uint8_t>> wave_data)
+{
+    const sar::core::Container container = ContainerOf(build);
+    const std::vector<uint8_t> joined = sar::core::JoinBy(container, sequences, pieces, fields);
+    const Structure before = ReadStructure(joined);
+    const std::vector<std::size_t> starts = sar::core::StartsBy(container, joined, pieces);
+    std::map<uint32_t, std::vector<uint8_t>> news{{file, Padded(bytes)}};
+    if (wave_data)
+    {
+        news[file | kWaveData] = Padded(*wave_data);
+    }
+
+    // Each copy in the groups is a run of its own. The run takes the new bytes. Several pieces can start where the copy
+    // starts: padding of no bytes, then the run.
+    std::vector<sar::Piece> replaced(pieces.begin(), pieces.end());
+    std::vector<Location> copies;
+    for (const Location& location : before.files)
+    {
+        const auto found = news.find(location.file);
+        if (found == news.end())
+        {
+            continue;
+        }
+
+        auto piece = static_cast<std::size_t>(std::ranges::lower_bound(starts, location.start) - starts.begin());
+        const auto holds_copy = [&](std::size_t i)
+        {
+            const auto* run = std::get_if<std::vector<uint8_t>>(&pieces[i]);
+            return run != nullptr && run->size() == location.size;
+        };
+        while (piece < pieces.size() && starts[piece] == location.start && !holds_copy(piece))
+        {
+            ++piece;
+        }
+        if (piece == pieces.size() || starts[piece] != location.start)
+        {
+            throw std::invalid_argument("a copy of " + NameOf(location.file) + " isn't a piece of its own");
+        }
+
+        replaced[piece] = found->second;
+        copies.push_back(location);
+    }
+    for (const auto& [id, new_bytes] : news)
+    {
+        if (std::ranges::none_of(copies, [id](const Location& copy) { return copy.file == id; }))
+        {
+            throw std::invalid_argument("no group of the archive holds " + NameOf(id));
+        }
+    }
+
+    // Another location that names the same bytes would take them too.
+    for (const Location& location : before.files)
+    {
+        const auto same = [&](const Location& copy)
+        {
+            return copy.start == location.start && copy.size == location.size;
+        };
+        if (!news.contains(location.file) && std::ranges::any_of(copies, same))
+        {
+            throw std::invalid_argument(NameOf(file) + " shares its bytes with " + NameOf(location.file));
+        }
+    }
+
+    // The tables follow when each copy holds the new bytes, and every other location keeps its bytes.
+    const std::vector<uint8_t> after = sar::core::JoinBy(container, sequences, replaced, fields);
+    if (!Follows(joined, before, after, ReadStructure(after), news))
+    {
+        throw std::invalid_argument("the archive's tables don't follow the new bytes of " + NameOf(file));
+    }
+
+    return replaced;
+}
+
+std::vector<sar::FileCopy> FileCopies(const SndBuild& build, std::span<const commands::Sequence> sequences,
+                                      std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
+                                      uint32_t file, bool wave_data)
+{
+    const std::vector<uint8_t> joined = Join(build, sequences, pieces, fields);
+    const uint32_t id = wave_data ? file | kWaveData : file;
+    std::vector<sar::FileCopy> copies;
+    for (const Location& location : ReadStructure(joined).files)
+    {
+        if (location.file == id)
+        {
+            const std::span<const uint8_t> bytes = BytesOf(joined, location);
+            copies.push_back(sar::FileCopy{.start = location.start, .bytes = {bytes.begin(), bytes.end()}});
+        }
+    }
+    std::ranges::sort(copies, {}, &sar::FileCopy::start);
+
+    return copies;
 }
 
 std::vector<std::optional<std::size_t>> StartFields(std::span<const uint8_t> archive)

@@ -7,6 +7,12 @@
 // instruments. Each wave system (WSYS) names the wave archives (AW) that hold its samples. A game keeps its sequences
 // beside the archive. In an earlier JAudio1, such as Luigi's Mansion's, they're one file that isn't a RARC. The
 // sequence index (type 4) divides it.
+//
+// The Switch's release of Pikmin 2 stores its archive little-endian. Each field of 16 or 32 bits is little-endian. The
+// archive's first word then holds its type in its first byte. Each entry of the two lists widens its offset to 64
+// bits. An entry then takes 16 bytes, with its size at +8 and its value at +12. A block of type 5 takes 16 bytes in
+// the same way. The other blocks keep 12 bytes (the archive's parser, 0x3c5430 in the release's main). The readers
+// here take the byte order from the first word.
 
 #pragma once
 
@@ -44,8 +50,8 @@ constexpr uint32_t AafCategory(uint32_t id)
 // Where an entry of the AAF's sound table gives its volume, and a sequence's file.
 inline constexpr ItemLayout kAafItemLayout = {.volume = 0xc, .file = 6};
 
-// Whether `data` starts as an AAF does: with the type of a chunk that gives a block, 1 to 8. A BAA starts with "AA_<"
-// instead.
+// Whether `data` starts as an AAF does: with the type of a chunk that gives a block, 1 to 8, in either byte order. A
+// BAA starts with "AA_<" or "<_AA" instead.
 bool IsAaf(std::span<const uint8_t> data);
 
 // The sounds of an AAF's sound table, in the table's order: the effects of each category, then the sequences. Streams
@@ -71,16 +77,19 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf);
 uint16_t AafEffectsSequenceFile(std::span<const uint8_t> aaf);
 
 // The sequences of a sequence archive that the AAF's sequence index divides, as ReadRarc gives a RARC's files: each
-// sequence's number in the index as its id, its name, and its data in `archive`. The index (a BARC block) has a
-// 32-byte header, then a 32-byte entry for each sequence: the name in up to 14 bytes, the number of the sequence whose
-// data it shares (0xffff for none), two words that the reader skips, then the sequence's offset and size in the
-// archive. The names are cut to 13 characters, with or without their extension. Returns nothing if the AAF has no
-// sequence index. Throws FormatError if the archive or its index is damaged, or if a sequence lies outside `archive`.
+// sequence's number in the index as its id, its name, its data in `archive`, and the number of the sequence whose data
+// the game reads (ArchiveFile::data_id). The index (a BARC block, barc.h) has a 32-byte header, then a 32-byte entry
+// for each sequence: the name in up to 14 bytes, the number of the sequence whose data it shares (0xffff for none), two
+// words that the reader skips, then the sequence's offset and size in the archive. The names are cut to 13 characters,
+// with or without their extension. Returns nothing if the AAF has no sequence index. Throws FormatError if the archive
+// or its index is damaged, if a sequence lies outside `archive`, or if a sequence's chain of shared data loops or names
+// a sequence past the index's end.
 std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uint8_t> aaf,
                                                              std::span<const uint8_t> archive);
 
 // The AAF's wave systems, in the order of its list. A system's number is its place in the list. In The Wind Waker, bank
-// n plays wave system n. Throws FormatError if the archive or a wave system is damaged.
+// n plays wave system n. A little-endian archive's systems have wide records of their archives (kWideWaveCountAt).
+// Throws FormatError if the archive or a wave system is damaged.
 std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf);
 
 // The AAF's banks, in the order of its list. Each bank plays the wave system that its block's value gives. A sequence
@@ -107,7 +116,9 @@ struct AsnSound
 // The sounds of a name file, in its order. The file is a 16-byte header, then 32-byte records. The header's last word
 // gives the number of sounds. The first 18 records name the sound table's categories: 16 of effects, then one of
 // sequences and one of streams. A record for each sound follows: a name of up to 28 bytes, padded with zeros, then the
-// sound's ID. Throws FormatError if the file is too short for its sounds.
-std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn);
+// sound's ID. With `big_endian` false, each ID is little-endian. The Switch's release of Pikmin 2 stores its IDs that
+// way. Its number of sounds stays big-endian. The release's code never reads the file. Throws FormatError if the file
+// is too short for its sounds.
+std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn, bool big_endian = true);
 
 } // namespace ntdlib::jaudio

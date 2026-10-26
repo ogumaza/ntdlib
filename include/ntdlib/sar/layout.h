@@ -6,19 +6,23 @@
 // runs. Each field of the tables that holds an offset or a size becomes a distance between two places in the pieces.
 // Joining lays the pieces out again and writes the distances into the fields. The pieces of an archive join to give the
 // archive back byte for byte. After an edit, each sequence file takes the size that its commands give, and the files
-// after it move. ReplaceFile gives any other file new bytes, and the files after it move the same way. FileCopies finds
-// the copies of a file. WriteTableValues writes the values of the tables that have a place there, such as a sound's
-// volume. TableValuePlaces finds which of a sound's optional values have a place. StartFields finds where the tables
-// hold each sound's start.
+// after it move. ReplaceFile gives any other file new bytes, and the files after it move the same way. Each copy of the
+// file can take other bytes. FileCopies finds the copies of a file. WriteTableValues writes the values of the tables
+// that have a place there, such as a sound's volume. TableValuePlaces finds which of a sound's optional values have a
+// place. StartFields finds where the tables hold each sound's start.
 //
 // A game can keep groups in files beside the archive. The cut takes them too, each into pieces of its own. A copy of
 // one of the archive's sequence files there becomes a piece of the same sequence, and an edit of the sequence reaches
-// it. ReplaceFile and FileCopies reach the copies of a file in the group files.
+// it. A sequence file that only group files hold becomes a sequence too. The archive's tables hold the starts of its
+// sounds as distances between items of the sequence. ReplaceFile and FileCopies reach the copies of a file in the group
+// files.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <span>
 #include <variant>
@@ -31,18 +35,22 @@ namespace ntdlib::sar
 {
 
 // A place in the archive: a byte of a piece, or the start of an item in a sequence piece's bytecode. In an archive cut
-// short, a place can lie past the end: its byte counts from the end.
+// short, a place can lie past the end: its byte counts from the end. A place can also name an item of a sequence with
+// no piece among the archive's pieces, such as a sequence file that only group files hold. The distance between two
+// items of a sequence is the same wherever the sequence lies.
 struct Place
 {
     friend bool operator==(const Place&, const Place&) = default;
 
-    uint32_t piece = 0;  // the piece, or the number of pieces for the archive's end
-    uint32_t offset = 0; // the byte, from the piece's start, or the item
-    bool item = false;   // `offset` is an item of the piece's sequence
+    uint32_t piece = 0;    // the piece, or the number of pieces for the archive's end, or the sequence
+    uint32_t offset = 0;   // the byte, from the piece's start, or the item
+    bool item = false;     // `offset` is an item of the piece's sequence, or of the sequence
+    bool sequence = false; // `piece` is a sequence, in Layout::sequences, and `offset` an item of it
 };
 
 // A field of the archive's tables that holds an offset or a size. The field is 32 bits in the archive's byte order, at
-// `at` in a run. Join writes the distance from `from` to `to` into it.
+// `at` in a run. Join writes the distance from `from` to `to` into it. When one of the two names an item of a sequence,
+// the other names an item of the same sequence.
 struct Field
 {
     friend bool operator==(const Field&, const Field&) = default;
@@ -89,7 +97,7 @@ struct Layout
     friend bool operator==(const Layout&, const Layout&) = default;
 
     Flavor flavor = Flavor::kNx;
-    std::vector<commands::Sequence> sequences; // in the order of their first files
+    std::vector<commands::Sequence> sequences; // in the order of their first copies, the archive's first
     std::vector<Piece> pieces;                 // in the order of the archive's bytes
     std::vector<Field> fields;                 // the fields whose distances an edit can change
     std::vector<GroupFileLayout> group_files;  // the group files beside the archive, in the order that Cut took them
@@ -109,20 +117,34 @@ struct Layout
 // whose fields can't all be placed becomes one run. Throws xsflib::FormatError if the archive's tables can't be read.
 Layout Cut(std::span<const uint8_t> archive, const Options& options);
 
+// The commands of sequence files, by their file IDs, for a cut. A program that laid an archive out from its sequences
+// gives them back to the cut (see Cut).
+using KnownSequences = std::map<uint32_t, commands::Sequence>;
+
 // Cuts `archive` and `group_files`, the group files that the game keeps beside it, read with `options`. Unless a copy
 // in a group file keeps a sequence file in the bytes, the archive comes out as Cut(archive, options) gives it. Each
 // group file comes out by the same rules as the archive. The FILE block of a group file holds the copies of the group's
 // files, and the tables of the group file hold its fields. A copy of a sequence file joins the archive's sequence when
 // the archive holds a copy of the file too. Unless every copy, in the archive and in the group files, holds the same
-// bytes, none becomes a piece. A sequence file that only group files hold stays in their bytes: the archive's tables
-// would hold the starts of the file's sounds in another file's bytecode. Such a file can still become a run of its
-// own. A group file that isn't a group file of the archive's console becomes one run. So does each group file when the
-// archive becomes one run. Throws xsflib::FormatError if the archive's tables can't be read.
-Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options);
+// bytes, none becomes a piece. A sequence file that only group files hold becomes a sequence by the same rules. Its
+// sequence follows the archive's sequences, and the first group file's copy gives its commands. A field of the
+// archive's tables that holds the start of one of its sounds names two items of the sequence (Place::sequence). A group
+// file that isn't a group file of the archive's console becomes one run. So does each group file when the archive
+// becomes one run. Throws xsflib::FormatError if the archive's tables can't be read.
+//
+// A sequence file of `known` takes the commands that `known` gives it when they give its bytes back, with each of its
+// sounds' starts at an item's start. The decoder's commands take their place only where they don't. Such a file then
+// becomes a sequence where the decoder would leave it in the bytes: where some of its commands lie past a return that
+// a track runs on past, outside every call, and no label or start leads to them. A program that laid the archive out
+// from its sequences gives them, and its sequences come back whole. Every other file comes out as without `known`.
+Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options,
+           const KnownSequences& known = {});
 
-// The archive's bytes from its pieces, whose sequences are in `sequences`, with `fields` written. Throws
-// std::invalid_argument for a piece that names a sequence the layout lacks, a sequence that the encoder can't write, a
-// place past its piece, a field outside a run, or a distance below zero or past 32 bits.
+// The archive's bytes from its pieces, whose sequences are in `sequences`, with `fields` written. A field whose places
+// name items of a sequence takes their distance in the sequence's bytecode. Throws std::invalid_argument for a piece or
+// a place that names a sequence the layout lacks, a sequence that the encoder can't write, a place past its piece or
+// its sequence, a field outside a run, a field whose places name items of a sequence and anything else, or a distance
+// below zero or past 32 bits.
 std::vector<uint8_t> Join(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
                           std::span<const Field> fields);
 
@@ -187,6 +209,18 @@ std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequen
 std::vector<FileCopy> FileCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
                                  std::span<const Piece> pieces, std::span<const Field> fields,
                                  std::span<const GroupFileLayout> group_files, uint32_t file);
+
+// The bytes that a copy of a file takes in ReplaceFile, from the copy as FileCopies gives it, with its old bytes.
+using CopyBytes = std::function<std::vector<uint8_t>(const FileCopy& copy)>;
+
+// The pieces in which each copy of file `file`, in the archive and in `group_files`, holds the bytes that `bytes_of`
+// gives for it. A group can hold a copy with other bytes than the archive's copy, such as a bank whose table of waves
+// names other wave archives. Such a copy can then take bytes that keep the difference. The rules and the exceptions are
+// those of ReplaceFile with group files, with the bytes that `bytes_of` gives each copy, and the exceptions of
+// `bytes_of`.
+ReplacedPieces ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
+                           std::span<const Field> fields, std::span<const GroupFileLayout> group_files, uint32_t file,
+                           const CopyBytes& bytes_of);
 
 // Writes the values of `sounds` and `players` into the tables of `archive`, an archive of `flavor`. Each value goes
 // where SoundArchive reads it with Rules::kStopAtFirstProblem. Sound i takes the values of `sounds[i]`: its player,

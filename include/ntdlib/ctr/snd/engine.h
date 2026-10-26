@@ -177,6 +177,18 @@ public:
         return global_vars_;
     }
 
+    // The counted loops that the length analysis takes as endless, each a track and its loop's body (see ntdlib's
+    // LoopsForEver).
+    void SetEndlessLoops(std::set<std::pair<int, uint32_t>> loops)
+    {
+        endless_loops_ = std::move(loops);
+    }
+
+    bool LoopsForEver(const SequenceSoundPlayer&, int track, uint32_t address) const
+    {
+        return endless_loops_.contains({track, address});
+    }
+
     // Between frames.
     Snapshot Save() const;
 
@@ -225,6 +237,7 @@ private:
 
     std::array<int16_t, 16> global_vars_;
 
+    std::set<std::pair<int, uint32_t>> endless_loops_;
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track (MuteTrack)
     int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
 };

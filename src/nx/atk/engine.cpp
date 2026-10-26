@@ -59,6 +59,19 @@ audio::RendererParameter RendererParameterFor(const EngineOptions& options)
     return parameter;
 }
 
+// The first `count` mix buffers of the receiver's aux bus `bus`. Each bus takes as many buffers as the receiver has
+// channels, the main bus's first.
+std::vector<int8_t> AuxBusBuffers(const OutputReceiver& receiver, int bus, int count)
+{
+    std::vector<int8_t> buffers;
+    for (int channel = 0; channel < count; ++channel)
+    {
+        buffers.push_back(static_cast<int8_t>((bus + 1) * receiver.channel_count + channel));
+    }
+
+    return buffers;
+}
+
 } // namespace
 
 Engine::Engine(audio::Renderer& renderer, const sar::SoundArchive& archive, const OutputReceiver& receiver,
@@ -255,14 +268,22 @@ void Engine::AppendEffect(int bus, std::unique_ptr<EffectAux> effect)
     AttachedEffect attached;
     attached.effect = std::move(effect);
     attached.aux = renderer_->AddAux(receiver_->mix, size);
-    std::vector<int8_t> buffers;
-    for (int channel = 0; channel < EffectAux::kChannelCount; ++channel)
-    {
-        buffers.push_back(static_cast<int8_t>((bus + 1) * receiver_->channel_count + channel));
-    }
+    const std::vector<int8_t> buffers = AuxBusBuffers(*receiver_, bus, EffectAux::kChannelCount);
     renderer_->SetAuxInputOutput(attached.aux, buffers, buffers);
     renderer_->SetAuxEnabled(attached.aux, true);
     attached.work.resize(static_cast<std::size_t>(renderer_->GetAuxSampleCount(attached.aux)));
+    effects_.at(static_cast<std::size_t>(bus) + 1).push_back(std::move(attached));
+}
+
+void Engine::AppendEffect(int bus, std::unique_ptr<EffectBase> effect)
+{
+    // The effect takes all of the bus's buffers.
+    effect->AddEffect(*renderer_, receiver_->mix);
+    effect->SetEffectInputOutput(AuxBusBuffers(*receiver_, bus, receiver_->channel_count));
+    effect->SetEnabled(true);
+
+    AttachedEffect attached;
+    attached.renderer_effect = std::move(effect);
     effects_.at(static_cast<std::size_t>(bus) + 1).push_back(std::move(attached));
 }
 
@@ -278,6 +299,12 @@ void Engine::UpdateEffects()
     {
         for (AttachedEffect& attached : bus)
         {
+            // An effect that the renderer runs has nothing to update here.
+            if (attached.effect == nullptr)
+            {
+                continue;
+            }
+
             const int32_t capacity = renderer_->GetAuxSampleCount(attached.aux);
             EffectAux::BufferInfo info;
             info.sample_count_per_frame = capacity / (EffectAux::kFrameCount * EffectAux::kChannelCount);
@@ -431,12 +458,19 @@ void Engine::MeterVoices()
 Engine::Snapshot Engine::Save() const
 {
     Snapshot snapshot{this,    allocator_.Save(), voice_renderer_.Save(), voices_, channels_,
-                      random_, global_vars_,      players_.Save(),        {}};
+                      random_, global_vars_,      players_.Save(),        {},      {}};
     for (std::size_t bus = 0; bus < effects_.size(); ++bus)
     {
         for (const AttachedEffect& attached : effects_[bus])
         {
-            snapshot.effects[bus].push_back(attached.effect->Clone());
+            if (attached.effect != nullptr)
+            {
+                snapshot.effects[bus].push_back(attached.effect->Clone());
+            }
+            else
+            {
+                snapshot.renderer_effects[bus].push_back(attached.renderer_effect->Clone());
+            }
         }
     }
 
@@ -452,7 +486,10 @@ void Engine::Restore(const Snapshot& snapshot)
     players_.CheckRestore(snapshot.players);
     for (std::size_t bus = 0; bus < effects_.size(); ++bus)
     {
-        if (snapshot.effects[bus].size() != effects_[bus].size())
+        const auto aux_effects = static_cast<std::size_t>(std::count_if(
+            effects_[bus].begin(), effects_[bus].end(), [](const AttachedEffect& a) { return a.effect != nullptr; }));
+        if (snapshot.effects[bus].size() != aux_effects ||
+            snapshot.renderer_effects[bus].size() != effects_[bus].size() - aux_effects)
         {
             throw std::invalid_argument("a snapshot with effects that the engine doesn't have");
         }
@@ -471,9 +508,18 @@ void Engine::Restore(const Snapshot& snapshot)
     global_vars_ = snapshot.global_vars;
     for (std::size_t bus = 0; bus < effects_.size(); ++bus)
     {
-        for (std::size_t i = 0; i < effects_[bus].size(); ++i)
+        std::size_t aux = 0;
+        std::size_t other = 0;
+        for (AttachedEffect& attached : effects_[bus])
         {
-            effects_[bus][i].effect = snapshot.effects[bus][i]->Clone();
+            if (attached.effect != nullptr)
+            {
+                attached.effect = snapshot.effects[bus][aux++]->Clone();
+            }
+            else
+            {
+                attached.renderer_effect = snapshot.renderer_effects[bus][other++]->Clone();
+            }
         }
     }
 }

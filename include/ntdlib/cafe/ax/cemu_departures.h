@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The places where Cemu's AX does otherwise than the console's. Each switch makes the model of AX do what Cemu does
-// there. The model's output can then be compared with Cemu's sample by sample. All of them are off unless the caller
-// turns them on.
+// there. All of them are off unless the caller turns them on.
 
 #pragma once
 

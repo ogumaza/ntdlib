@@ -297,6 +297,44 @@ std::optional<Decoded> Decode(std::span<const uint8_t> bytes, const std::set<uin
     return std::nullopt;
 }
 
+// `sequence` as the commands of the sequence file `bytes`, when they give its bytes back with each of `starts` at an
+// item's start. The file's labels are the labels of `sequence`.
+std::optional<Decoded> Known(std::span<const uint8_t> bytes, const std::set<uint32_t>& starts,
+                             const commands::Sequence& sequence, const Container& container)
+{
+    try
+    {
+        Decoded known;
+        known.sequence = sequence;
+        known.version = container.read(bytes).version;
+        const std::vector<uint32_t> offsets = nwsnd::EncodeSequence(sequence, container.grammar).offsets;
+        for (const uint32_t start : starts)
+        {
+            const auto found = std::ranges::find(offsets.begin(), offsets.end() - 1, start);
+            if (found == offsets.end() - 1)
+            {
+                return std::nullopt;
+            }
+            known.entries[start] = static_cast<uint32_t>(found - offsets.begin());
+        }
+        if (GivesBack(known, container, bytes))
+        {
+            return known;
+        }
+    }
+    catch (const xsflib::FormatError&)
+    {
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+    catch (const std::out_of_range&)
+    {
+    }
+
+    return std::nullopt;
+}
+
 // Reads the header and the table of blocks of the file at `base`: a NintendoWare file of the archive's kind or a group
 // in it. Adds the fields of the file's size, of each block's offset and size, and of the size in each block's header.
 // Returns each block's start.
@@ -525,7 +563,7 @@ struct Family
     bool kept = false;
     bool placed = false;   // whether the pieces hold the first copy
     uint32_t sequence = 0; // in the layout
-    uint32_t piece = 0;    // the first copy's piece, in the archive
+    uint32_t piece = 0;    // the first copy's piece, in the source that holds it
 };
 
 // The sequence files of `sources`. Copies that share a file ID belong to one family, in the archive and in the group
@@ -1033,25 +1071,28 @@ std::span<const uint8_t> BytesOf(std::span<const uint8_t> archive, const Locatio
     return archive.subspan(start, std::min(location.size, archive.size() - start));
 }
 
-// Whether `joined`, whose tables `after` reads, holds `bytes` in each copy of file `file` that `copies` lists, and the
-// bytes of `archive`, whose tables `before` reads, in every other file that holds no copy.
+// Whether `joined`, whose tables `after` reads, holds `copy_bytes[k]` in copy k of file `file` that `copies` lists, and
+// the bytes of `archive`, whose tables `before` reads, in every other file that holds no copy. `copies` lists the
+// file's locations in the order of `before`.
 bool Follows(std::span<const uint8_t> archive, const Structure& before, std::span<const uint8_t> joined,
-             const Structure& after, uint32_t file, const std::vector<Location>& copies, std::span<const uint8_t> bytes)
+             const Structure& after, uint32_t file, const std::vector<Location>& copies,
+             std::span<const std::vector<uint8_t>> copy_bytes)
 {
     if (after.files.size() != before.files.size())
     {
         return false;
     }
 
+    std::size_t copy = 0;
     for (std::size_t i = 0; i < before.files.size(); ++i)
     {
         const Location& old = before.files[i];
-        const auto holds = [&](const Location& copy)
+        const auto holds = [&](const Location& location)
         {
-            return old.start <= copy.start && copy.start + copy.size <= old.start + old.size;
+            return old.start <= location.start && location.start + location.size <= old.start + old.size;
         };
         const std::span<const uint8_t> now = BytesOf(joined, after.files[i]);
-        if (old.file == file ? !std::ranges::equal(now, bytes)
+        if (old.file == file ? !std::ranges::equal(now, copy_bytes[copy++])
                              : !std::ranges::any_of(copies, holds) && !std::ranges::equal(now, BytesOf(archive, old)))
         {
             return false;
@@ -1069,13 +1110,35 @@ std::optional<Structure> StructureOf(std::span<const uint8_t> bytes, Flavor flav
     return group ? ReadGroupFileStructure(bytes, flavor) : ReadStructure(bytes, flavor);
 }
 
-// The pieces in which each copy of file `file` holds `bytes`: the pieces of the archive, or of group file `group`
-// beside it when `group` gives the group file's place. Nothing when they hold no copy, and for a group file whose
-// tables can't be read. Throws the exceptions of ReplaceFile.
+// The copy of a file at `location` in `joined`: an archive, or a group file beside one when `group` gives its place
+// among them. The copy gives the larger file that holds it whole, if one does: a group's file in an archive.
+FileCopy FileCopyAt(std::span<const uint8_t> joined, const Structure& structure, const Location& location,
+                    std::optional<std::size_t> group)
+{
+    FileCopy copy;
+    copy.start = location.start;
+    copy.group_file = group;
+    const std::span<const uint8_t> bytes = BytesOf(joined, location);
+    copy.bytes.assign(bytes.begin(), bytes.end());
+    for (const Location& other : structure.files)
+    {
+        const bool holds = other.start <= location.start && location.start + location.size <= other.start + other.size;
+        if (other.file != location.file && holds && other.size > location.size)
+        {
+            copy.group = other.file;
+        }
+    }
+
+    return copy;
+}
+
+// The pieces in which each copy of file `file` holds the bytes that `bytes_of` gives it: the pieces of the archive, or
+// of group file `group` beside it when `group` gives the group file's place. Nothing when they hold no copy, and for a
+// group file whose tables can't be read. Throws the exceptions of ReplaceFile.
 std::optional<std::vector<Piece>> ReplaceCopies(Flavor flavor, std::span<const commands::Sequence> sequences,
                                                 std::span<const Piece> pieces, std::span<const Field> fields,
                                                 std::optional<std::size_t> group, uint32_t file,
-                                                std::span<const uint8_t> bytes)
+                                                const CopyBytes& bytes_of)
 {
     const std::vector<uint8_t> joined = Join(flavor, sequences, pieces, fields);
     const std::optional<Structure> before = StructureOf(joined, flavor, group);
@@ -1085,12 +1148,13 @@ std::optional<std::vector<Piece>> ReplaceCopies(Flavor flavor, std::span<const c
     }
     const std::vector<std::size_t> starts = Starts(joined, flavor, pieces);
 
-    // Each copy of the file, in the FILE block and in the groups, is a run of its own. The run takes the bytes. Several
-    // pieces can start where the copy starts: padding of no bytes, then the run.
+    // Each copy of the file, in the FILE block and in the groups, is a run of its own. The run takes the copy's bytes.
+    // Several pieces can start where the copy starts: padding of no bytes, then the run.
     const std::string name = "file " + std::to_string(file);
     const std::string where = group ? " in group file " + std::to_string(*group) : "";
     std::vector<Piece> replaced(pieces.begin(), pieces.end());
     std::vector<Location> copies;
+    std::vector<std::vector<uint8_t>> copy_bytes;
     for (const Location& location : before->files)
     {
         if (location.file != file)
@@ -1113,7 +1177,8 @@ std::optional<std::vector<Piece>> ReplaceCopies(Flavor flavor, std::span<const c
             throw std::invalid_argument("a copy of " + name + where + " isn't a piece of its own");
         }
 
-        replaced[piece] = std::vector<uint8_t>(bytes.begin(), bytes.end());
+        copy_bytes.push_back(bytes_of(FileCopyAt(joined, *before, location, group)));
+        replaced[piece] = copy_bytes.back();
         copies.push_back(location);
     }
     if (copies.empty())
@@ -1137,7 +1202,7 @@ std::optional<std::vector<Piece>> ReplaceCopies(Flavor flavor, std::span<const c
     // The tables follow when each copy holds the bytes, and every other file keeps its bytes.
     const std::vector<uint8_t> after = Join(flavor, sequences, replaced, fields);
     const std::optional<Structure> read = StructureOf(after, flavor, group);
-    if (!read || !Follows(joined, *before, after, *read, file, copies, bytes))
+    if (!read || !Follows(joined, *before, after, *read, file, copies, copy_bytes))
     {
         const std::string tables =
             group ? "the tables of group file " + std::to_string(*group) : "the archive's tables";
@@ -1155,24 +1220,9 @@ std::vector<FileCopy> CopiesIn(std::span<const uint8_t> joined, const Structure&
     std::vector<FileCopy> copies;
     for (const Location& location : structure.files)
     {
-        if (location.file != file)
+        if (location.file == file)
         {
-            continue;
-        }
-
-        FileCopy& copy = copies.emplace_back();
-        copy.start = location.start;
-        copy.group_file = group;
-        const std::span<const uint8_t> bytes = BytesOf(joined, location);
-        copy.bytes.assign(bytes.begin(), bytes.end());
-        for (const Location& other : structure.files)
-        {
-            const bool holds =
-                other.start <= location.start && location.start + location.size <= other.start + other.size;
-            if (other.file != file && holds && other.size > location.size)
-            {
-                copy.group = other.file;
-            }
+            copies.push_back(FileCopyAt(joined, structure, location, group));
         }
     }
     std::ranges::sort(copies, {}, &FileCopy::start);
@@ -1187,7 +1237,8 @@ Layout Cut(std::span<const uint8_t> archive, const Options& options)
     return Cut(archive, {}, options);
 }
 
-Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options)
+Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options,
+           const KnownSequences& known)
 {
     // The reader checks the tables, and reports what it can't read.
     static_cast<void>(SoundArchive::Load(std::vector<uint8_t>(archive.begin(), archive.end()), options));
@@ -1202,7 +1253,7 @@ Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t
             sources.push_back({group_file, ReadGroupFileStructure(group_file, options.flavor).value_or(Structure{})});
         }
 
-        core::Cutting cut = core::CutBy(sources, ContainerOf(options.flavor));
+        core::Cutting cut = core::CutBy(sources, ContainerOf(options.flavor), known);
         Layout layout;
         layout.flavor = options.flavor;
         layout.sequences = std::move(cut.sequences);
@@ -1253,16 +1304,26 @@ ReplacedPieces ReplaceFile(Flavor flavor, std::span<const commands::Sequence> se
                            std::span<const Field> fields, std::span<const GroupFileLayout> group_files, uint32_t file,
                            std::span<const uint8_t> bytes)
 {
+    const std::vector<uint8_t> every(bytes.begin(), bytes.end());
+
+    return ReplaceFile(flavor, sequences, pieces, fields, group_files, file,
+                       [&every](const FileCopy&) { return every; });
+}
+
+ReplacedPieces ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
+                           std::span<const Field> fields, std::span<const GroupFileLayout> group_files, uint32_t file,
+                           const CopyBytes& bytes_of)
+{
     ReplacedPieces replaced;
     std::optional<std::vector<Piece>> archive =
-        ReplaceCopies(flavor, sequences, pieces, fields, std::nullopt, file, bytes);
+        ReplaceCopies(flavor, sequences, pieces, fields, std::nullopt, file, bytes_of);
     bool found = archive.has_value();
     replaced.pieces = archive ? std::move(*archive) : std::vector<Piece>(pieces.begin(), pieces.end());
     for (std::size_t g = 0; g < group_files.size(); ++g)
     {
         const GroupFileLayout& group_file = group_files[g];
         std::optional<std::vector<Piece>> group =
-            ReplaceCopies(flavor, sequences, group_file.pieces, group_file.fields, g, file, bytes);
+            ReplaceCopies(flavor, sequences, group_file.pieces, group_file.fields, g, file, bytes_of);
         found = found || group.has_value();
         replaced.group_files.push_back(group ? std::move(*group) : group_file.pieces);
     }
@@ -1423,11 +1484,21 @@ std::vector<ValuePlaces> TableValuePlaces(std::span<const uint8_t> archive, Flav
 namespace core
 {
 
-Cutting CutBy(std::span<const Source> sources, const Container& container)
+Cutting CutBy(std::span<const Source> sources, const Container& container, const KnownSequences& known)
 {
-    // Each family's starts, and its commands when every copy holds the same bytes and they decode.
+    // Each family's starts, and its commands when every copy holds the same bytes and they decode, or the commands that
+    // `known` gives a file of the family.
     std::vector<Family> families;
     const std::map<uint32_t, std::size_t> family_of = FamiliesOf(sources, container, families);
+    std::map<std::size_t, std::vector<const commands::Sequence*>> known_of;
+    for (const auto& [file, sequence] : known)
+    {
+        const auto found = family_of.find(file);
+        if (found != family_of.end())
+        {
+            known_of[found->second].push_back(&sequence);
+        }
+    }
     const Structure& archive = sources.front().structure;
     for (const Start& start : archive.starts)
     {
@@ -1438,11 +1509,10 @@ Cutting CutBy(std::span<const Source> sources, const Container& container)
         }
     }
 
-    for (Family& family : families)
+    for (std::size_t f = 0; f < families.size(); ++f)
     {
-        // A sequence file that only group files hold stays in their bytes. The archive's tables hold its sounds'
-        // starts, and no field reaches from the archive into a group file.
-        if (family.size == 0 || family.copies.front().source != 0)
+        Family& family = families[f];
+        if (family.size == 0)
         {
             continue;
         }
@@ -1455,7 +1525,15 @@ Cutting CutBy(std::span<const Source> sources, const Container& container)
         };
         if (std::ranges::all_of(family.copies, same))
         {
-            family.decoded = Decode(first, family.starts, container);
+            const auto given = known_of.find(f);
+            for (std::size_t k = 0; given != known_of.end() && !family.decoded && k < given->second.size(); ++k)
+            {
+                family.decoded = Known(first, family.starts, *given->second[k], container);
+            }
+            if (!family.decoded)
+            {
+                family.decoded = Decode(first, family.starts, container);
+            }
             family.kept = family.decoded.has_value();
         }
     }
@@ -1467,9 +1545,11 @@ Cutting CutBy(std::span<const Source> sources, const Container& container)
     }
     LeaveOut(sources, alignments, families);
 
-    // The archive comes first, and its copies give the families their sequences.
+    // The archive comes first, and its copies give the families their sequences. A family that only group files hold
+    // takes its sequence from the first group file's copy, after the archive's sequences.
     Cutting cut;
     cut.group_files.resize(sources.size() - 1);
+    std::vector<std::optional<Place>> start_fields(archive.starts.size());
     for (std::size_t s = 0; s < sources.size(); ++s)
     {
         const Source& source = sources[s];
@@ -1486,25 +1566,40 @@ Cutting CutBy(std::span<const Source> sources, const Container& container)
 
         cut.fields = std::move(fields);
 
-        // A sound's start counts from the bytecode's first item.
-        for (const Start& start : archive.starts)
+        // Where the tables hold each sound's start.
+        for (std::size_t i = 0; i < archive.starts.size(); ++i)
         {
+            const Start& start = archive.starts[i];
             const auto found = family_of.find(start.file);
             if (!start.at || found == family_of.end() || !families[found->second].kept)
             {
                 continue;
             }
 
-            const Family& family = families[found->second];
-            const std::optional<Place> at = placed.FieldAt(*start.at);
-            if (!at)
+            start_fields[i] = placed.FieldAt(*start.at);
+            if (!start_fields[i])
             {
                 throw xsflib::FormatError("a sound's start that the pieces can't place");
             }
-
-            cut.fields.push_back({*at, Place{family.piece, 0, true},
-                                  Place{family.piece, family.decoded->entries.at(start.offset), true}});
         }
+    }
+
+    // A sound's start counts from the bytecode's first item. The field names items of the archive's copy of the file.
+    // Without such a copy, the field names items of the file's sequence.
+    for (std::size_t i = 0; i < archive.starts.size(); ++i)
+    {
+        if (!start_fields[i])
+        {
+            continue;
+        }
+
+        const Start& start = archive.starts[i];
+        const Family& family = families[family_of.at(start.file)];
+        const bool in_archive = family.copies.front().source == 0;
+        const uint32_t piece = in_archive ? family.piece : family.sequence;
+        const uint32_t item = family.decoded->entries.at(start.offset);
+        cut.fields.push_back(
+            {*start_fields[i], Place{piece, 0, true, !in_archive}, Place{piece, item, true, !in_archive}});
     }
 
     return cut;
@@ -1553,18 +1648,51 @@ std::vector<uint8_t> JoinBy(const Container& container, std::span<const commands
     }
     laid.push_back({.start = bytes.size()});
 
-    // Each field's distance, in the archive's byte order.
+    // Where an item of a sequence lies in the sequence's bytecode, for a place that names a sequence.
+    std::map<uint32_t, std::vector<uint32_t>> encoded;
+    const auto item_at = [&](const Place& place) -> std::size_t
+    {
+        if (place.piece >= sequences.size())
+        {
+            throw std::invalid_argument("a place names sequence " + std::to_string(place.piece) + ", and there are " +
+                                        std::to_string(sequences.size()));
+        }
+
+        auto found = encoded.find(place.piece);
+        if (found == encoded.end())
+        {
+            std::vector<uint32_t> offsets = nwsnd::EncodeSequence(sequences[place.piece], container.grammar).offsets;
+            found = encoded.emplace(place.piece, std::move(offsets)).first;
+        }
+        if (place.offset >= found->second.size())
+        {
+            throw std::invalid_argument("a place names item " + std::to_string(place.offset) +
+                                        ", past the end of sequence " + std::to_string(place.piece));
+        }
+
+        return found->second[place.offset];
+    };
+
+    // Each field's distance, in the archive's byte order. A field whose places name items of a sequence takes their
+    // distance in the sequence's bytecode.
     for (const Field& field : fields)
     {
         const std::size_t at = PositionOf(field.at, laid);
-        if (field.at.item || field.at.piece >= pieces.size() || !laid[field.at.piece].run ||
+        if (field.at.item || field.at.sequence || field.at.piece >= pieces.size() || !laid[field.at.piece].run ||
             field.at.offset + std::size_t{4} > laid[field.at.piece].size)
         {
             throw std::invalid_argument("a field lies outside a run of bytes");
         }
 
-        const std::size_t from = PositionOf(field.from, laid);
-        const std::size_t to = PositionOf(field.to, laid);
+        const bool items = field.from.sequence || field.to.sequence;
+        if (items && !(field.from.sequence && field.to.sequence && field.from.item && field.to.item &&
+                       field.from.piece == field.to.piece))
+        {
+            throw std::invalid_argument("a field's places name items of a sequence and something else");
+        }
+
+        const std::size_t from = items ? item_at(field.from) : PositionOf(field.from, laid);
+        const std::size_t to = items ? item_at(field.to) : PositionOf(field.to, laid);
         if (to < from || to - from > 0xFFFFFFFF)
         {
             throw std::invalid_argument("a field's distance, from " + std::to_string(from) + " to " +

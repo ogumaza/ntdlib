@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the readers of JAudio1's start-up archive (jaudio/aaf.h), with a made-up archive.
+// Tests of the readers of JAudio1's start-up archive (jaudio/aaf.h), with a made-up archive in either byte order.
 
 #include "ntdlib/jaudio/aaf.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "jaudio_describe.h"
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/rarc.h"
@@ -27,6 +29,8 @@ using xsflib::testing::ErrorOf;
 
 namespace
 {
+
+using ntdlib::testing::jaudio_describe::Describe;
 
 // The effects sequence (the table's first sequence) in file 7, two pieces of music in files 3 and 9, and effects in
 // categories 0 and 5.
@@ -156,7 +160,17 @@ void TestSequenceIndex()
         XSFLIB_CHECK(s[0].data.size() == 0x40);
         XSFLIB_CHECK(s[1].id == 1 && s[1].name == "Mansion.com" && s[1].data.size() == 0x80 && s[1].data[0] == 0x40);
         XSFLIB_CHECK(s[2].id == 2 && s[2].name == "VeryLongNameO" && s[2].data.size() == 0x40 && s[2].data[0] == 0xc0);
+        XSFLIB_CHECK(s[0].data_id == 0 && s[1].data_id == 1 && s[2].data_id == 2);
     }
+
+    // A sequence that shares another's data reads that sequence's data in the game. The 16 bits after sequence 2's
+    // name name sequence 0.
+    std::vector<uint8_t> shared = aaf;
+    const std::size_t kShareAt = 0x800 + 0x200 + 0x20 + 2 * 0x20 + 14;
+    shared[kShareAt] = 0;
+    shared[kShareAt + 1] = 0;
+    const std::optional<std::vector<jaudio::ArchiveFile>> sharing = jaudio::ReadAafSequenceFiles(shared, archive);
+    XSFLIB_CHECK(sharing && sharing->size() == 3 && (*sharing)[2].data_id == 0 && (*sharing)[2].data[0] == 0xc0);
 
     // The other readers skip the index.
     XSFLIB_CHECK(jaudio::ReadAafSounds(aaf).size() == 5 && jaudio::ReadAafWaveSystems(aaf).size() == 1);
@@ -215,8 +229,8 @@ void TestBanks()
 }
 
 // A name file of `sounds`: the 16-byte header with the count, 18 records for the categories, then a record for each
-// sound. A record is a name of up to 28 bytes, then the sound's ID.
-std::vector<uint8_t> NameFile(const std::vector<jaudio::AsnSound>& sounds)
+// sound. A record is a name of up to 28 bytes, then the sound's ID. The count is big-endian in either order.
+std::vector<uint8_t> NameFile(const std::vector<jaudio::AsnSound>& sounds, bool big_endian = true)
 {
     std::vector<uint8_t> b(16 + (18 + sounds.size()) * 32);
     xsflib::StoreBe32(b.data() + 12, static_cast<uint32_t>(sounds.size()));
@@ -229,7 +243,8 @@ std::vector<uint8_t> NameFile(const std::vector<jaudio::AsnSound>& sounds)
     {
         const std::size_t at = 16 + (18 + i) * 32;
         std::copy(sounds[i].name.begin(), sounds[i].name.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
-        xsflib::StoreBe32(b.data() + at + 28, sounds[i].id);
+        big_endian ? xsflib::StoreBe32(b.data() + at + 28, sounds[i].id)
+                   : xsflib::StoreLe32(b.data() + at + 28, sounds[i].id);
     }
 
     return b;
@@ -255,6 +270,83 @@ void TestAsnSounds()
     // A file too short for its count is rejected.
     XSFLIB_CHECK(ErrorOf([&] { jaudio::ReadAsnSounds(std::span(asn).first(asn.size() - 1)); }) ==
                  "the name file is too short for its sounds");
+
+    // The Switch's release of Pikmin 2 stores its IDs little-endian. The count stays big-endian.
+    const std::vector<uint8_t> le =
+        NameFile({{0x80000800, "JA_BGM_SE_SEQUENCE"}, {0x80000001, "JA_BGM_FIELD"}, {0x00000805, kLongest}}, false);
+    const std::vector<jaudio::AsnSound> from_le = jaudio::ReadAsnSounds(le, false);
+    XSFLIB_CHECK(le != asn && from_le.size() == 3);
+    for (std::size_t i = 0; i < std::min(from_le.size(), sounds.size()); i++)
+    {
+        XSFLIB_CHECK(from_le[i].id == sounds[i].id && from_le[i].name == sounds[i].name);
+    }
+    XSFLIB_CHECK(jaudio::ReadAsnSounds(le).at(1).id == 0x01000080);
+}
+
+// The text of every field that the readers give for a sound or a wave system, to compare what two archives give.
+std::string Describe(const jaudio::SoundEntry& s)
+{
+    return "sound " + std::to_string(s.Id()) + " " + std::to_string(s.type) + " " + std::to_string(s.volume) + " " +
+           std::to_string(static_cast<int>(s.source)) + " " + std::to_string(s.resource) + " " +
+           std::to_string(std::bit_cast<uint32_t>(s.pitch)) + " " + std::to_string(s.offset) + "\n";
+}
+
+// Everything that the readers give for an archive: its sounds, its effects sequence, its wave systems and their
+// archives, and the offsets of the banks that can't be read. The made-up archive's bank is only its magic. The reasons
+// differ between the byte orders: the reader reads a little-endian bank of version 0 past its size.
+std::string Describe(std::span<const uint8_t> aaf)
+{
+    std::string text;
+    for (const jaudio::SoundEntry& sound : jaudio::ReadAafSounds(aaf))
+    {
+        text += Describe(sound);
+    }
+
+    text += "effects sequence " + std::to_string(jaudio::AafEffectsSequenceFile(aaf)) + "\n";
+    for (const jaudio::WaveSystem& ws : jaudio::ReadAafWaveSystems(aaf))
+    {
+        text += Describe(ws);
+    }
+    for (const std::string& name : jaudio::AafWaveArchiveNames(aaf))
+    {
+        text += "archive " + name + "\n";
+    }
+    for (const std::string& name : jaudio::AafStayingWaveArchiveNames(aaf))
+    {
+        text += "staying archive " + name + "\n";
+    }
+
+    std::vector<std::string> warnings;
+    text += "banks " + std::to_string(jaudio::ReadAafBanks(aaf, warnings).size()) + "\n";
+    for (const std::string& warning : warnings)
+    {
+        text += "warning " + warning.substr(0, warning.find(':')) + "\n";
+    }
+
+    return text;
+}
+
+// A little-endian archive in the layout of the Switch's release of Pikmin 2 gives what the big-endian one gives. Its
+// block of type 5 comes before the lists. A reader that took the block as 12 bytes would miss the lists.
+void TestLittleEndian()
+{
+    const std::vector<files::AafSoundSpec> kPitched = {
+        {16, 127, 7}, {16, 100, 0x123}, {0, 80}, {0, 81, 0, 1.5f}, {5, 82},
+    };
+    const std::vector<std::string> kArchives = {"a_0.aw", "b_0.aw"};
+    const std::vector<uint8_t> be = files::AafFile(kPitched, kArchives);
+    const std::vector<uint8_t> le = files::AafFile(kPitched, kArchives, 5, {}, false);
+    const std::string from_be = Describe(be);
+
+    XSFLIB_CHECK(le[0] == 1 && le[3] == 0 && le != be);
+    XSFLIB_CHECK(jaudio::IsAaf(le) && jaudio::IsAaf(std::vector<uint8_t>{8, 0, 0, 0}));
+    XSFLIB_CHECK(!jaudio::IsAaf(std::vector<uint8_t>{9, 0, 0, 0}) && !jaudio::IsAaf(std::vector<uint8_t>{1, 0, 0, 1}));
+    XSFLIB_CHECK(from_be.find("sound 2147483649 128 100 1 291 ") != std::string::npos);
+    XSFLIB_CHECK(from_be.find("group b_0.aw 0") != std::string::npos);
+    XSFLIB_CHECK(from_be.find("staying archive a_0.aw") != std::string::npos);
+    XSFLIB_CHECK(from_be.find("warning bank at offset 1792") != std::string::npos);
+    XSFLIB_CHECK(Describe(le) == from_be);
+    XSFLIB_CHECK(jaudio::SoundArchive::ParseAaf(le).Sounds().size() == 4);
 }
 
 } // namespace
@@ -271,6 +363,7 @@ int main()
     TestIsAaf();
     TestBanks();
     TestAsnSounds();
+    TestLittleEndian();
 
     return xsflib::testing::Summary("aaf");
 }

@@ -106,6 +106,25 @@ constexpr uint16_t kPbRmtIir = 0x035a;
 // The dpop words of the remote mixes, in the order of kRemoteBuses.
 constexpr std::array<uint16_t, 8> kRemoteDpop = {0x034d, 0x0351, 0x034e, 0x0352, 0x034f, 0x0353, 0x0350, 0x0354};
 
+// The build of October 2006 keeps the PB in DRAM in that build's layout (see LoadPbOctober2006). The fields up to the
+// ITD keep the words above. An update block follows at 0x02f9: a count of updates for each third of the frame, then the
+// address of the buffer that holds the updates. The fields from the depop values to the low-pass filter therefore come
+// five words later than above. A second filter follows at 0x0336: its on word, its state and two coefficients. The Wii
+// Remotes' fields then come a word earlier than above (Renderer::Field).
+constexpr uint16_t kPbUpdateCounts = 0x02f9;
+constexpr uint16_t kPbUpdateBuffer = 0x02fc;
+constexpr uint16_t kPbSecondFilter = 0x0336;
+
+// The updates (0x0360): pairs of a word's offset in the PB and its new value. The buffer holds 32 pairs.
+constexpr uint16_t kUpdates = 0x0360;
+constexpr uint32_t kUpdatesBytes = 0x80;
+
+// The build of October 2006 works through each voice in three parts of 32 samples, and gives the Wii Remotes 6 samples
+// of each part.
+constexpr int kParts = 3;
+constexpr int kPartSamples = 32;
+constexpr int kPartRemoteSamples = 6;
+
 // The commands of the build's command list.
 enum Command : uint16_t
 {
@@ -165,6 +184,20 @@ std::array<uint16_t, kSamples> Ramp(uint16_t from, uint16_t to)
     gains[kSamples - 1] = to;
 
     return gains;
+}
+
+// A value held within the range of a signed 16-bit word. A read of an accumulator's middle word in 40-bit mode holds a
+// value there too.
+uint16_t Saturated(int64_t value)
+{
+    return static_cast<uint16_t>(MiddleWord(value * 0x10000));
+}
+
+// The volume after `steps` steps of a ramp of the build of October 2006. That build ramps a mix's volume as a signed
+// 16-bit value in 40-bit mode. A ramp stops at either end of the range.
+uint16_t SaturatedRamp(uint16_t from, uint16_t delta, int steps)
+{
+    return Saturated(static_cast<int16_t>(from) + int64_t{steps} * static_cast<int16_t>(delta));
 }
 
 // The magnitude of `value`, held within 32 bits, for a meter's peak.
@@ -234,48 +267,31 @@ void Renderer::ToMain(uint16_t from, uint32_t address, uint32_t bytes)
 
 void Renderer::LoadPb(uint32_t address)
 {
-    // The build of October 2006 keeps its PBs in another layout. LoadPbOctober2006 puts the layout's fields where the
-    // later builds keep them in DRAM. The fields that the layout lacks are 0: the biquad filter and the Wii Remotes'
-    // filter stay off.
-    if (build_ != Build::kOctober2006)
-    {
-        FromMain(address, kPb, kPbBytes);
-        return;
-    }
-
-    const uint8_t* p = memory_->At(address & 0x3fffffff, kPbSizeOctober2006);
-    std::array<uint8_t, kPbBytes> bytes{};
-    if (p != nullptr)
-    {
-        ntdlib::rvl::ax::StorePb(LoadPbOctober2006(p), bytes.data());
-    }
-    for (std::size_t i = 0; i < kPbBytes / 2; i++)
-    {
-        dram_[kPb + i] = xsflib::LoadBe16(&bytes[2 * i]);
-    }
+    // The build of October 2006 keeps its PBs in another layout. Its microcode copies a PB into DRAM as it is.
+    FromMain(address, kPb, build_ == Build::kOctober2006 ? uint32_t{kPbSizeOctober2006} : kPbBytes);
 }
 
 void Renderer::StorePb(uint32_t address)
 {
-    // A PB of the build of October 2006 takes back the fields that its layout has. The update block, the second filter
-    // and the padding keep their bytes.
+    ToMain(kPb, address, build_ == Build::kOctober2006 ? uint32_t{kPbSizeOctober2006} : kPbBytes);
+}
+
+uint16_t Renderer::Field(uint16_t word) const
+{
     if (build_ != Build::kOctober2006)
     {
-        ToMain(kPb, address, kPbBytes);
-        return;
+        return word;
+    }
+    if (word >= kPbRemote)
+    {
+        return static_cast<uint16_t>(word - 1);
+    }
+    if (word >= kPbDpop)
+    {
+        return static_cast<uint16_t>(word + 5);
     }
 
-    uint8_t* p = memory_->At(address & 0x3fffffff, kPbSizeOctober2006);
-    if (p == nullptr)
-    {
-        return;
-    }
-    std::array<uint8_t, kPbBytes> bytes{};
-    for (std::size_t i = 0; i < kPbBytes / 2; i++)
-    {
-        xsflib::StoreBe16(&bytes[2 * i], dram_[kPb + i]);
-    }
-    StorePbOctober2006(ntdlib::rvl::ax::LoadPb(bytes.data()), p);
+    return word;
 }
 
 uint32_t Renderer::Arg32(uint16_t& at) const
@@ -479,7 +495,7 @@ bool Renderer::Process(uint32_t first)
             }
         }
         LoadPb(address);
-        if (!ProcessVoice())
+        if (!(build_ == Build::kOctober2006 ? ProcessVoiceOctober2006() : ProcessVoice()))
         {
             return false;
         }
@@ -525,19 +541,19 @@ bool Renderer::ProcessVoice()
         LoadAccelerator();
         if (src == kSrcFourTap)
         {
-            FourTap(filter);
+            FourTap(filter, kFrame, kSamples);
         }
         else if (src == kSrcLinear)
         {
-            Linear();
+            Linear(kFrame, kSamples);
         }
         else
         {
-            Copy();
+            Copy(kFrame, kSamples);
         }
         StoreAccelerator();
 
-        Envelope();
+        Envelope(kFrame, kSamples);
         if (dram_[kPbLpf] != 0)
         {
             LowPass(kPbLpf + 1, kFrame, kFrame);
@@ -594,25 +610,156 @@ bool Renderer::ProcessVoice()
     return true;
 }
 
+bool Renderer::ProcessVoiceOctober2006()
+{
+    // The build of October 2006 (0x0278 and 0x0554 load a PB, 0x0349 mixes it). The PB's updates come into DRAM with
+    // the PB. The microcode takes the sample rate converter, the filter table and the mixes that the PB selects then,
+    // and sets up the ITD's history. It then works through the voice in three parts of 32 samples. Each part takes its
+    // updates first. A part of a voice that doesn't play does nothing more. In a part of a voice that plays, the
+    // converter adds the part's samples after the last part's. The envelope, the filters, the mixes and the Wii
+    // Remotes' path then work on those samples.
+    FromMain(uint32_t{dram_[kPbUpdateBuffer]} << 16 | dram_[kPbUpdateBuffer + 1u], kUpdates, kUpdatesBytes);
+    const uint16_t src = dram_[kPbSrcSelect];
+    const uint16_t filter = dram_[kPbCoefSelect];
+    const uint16_t high = dram_[kPbMixerCtrlHi];
+    const std::array<uint32_t, 4> bits = {dram_[kPbMixerCtrlLo] & 0x1fu, high & 0x1fu, high >> 5 & 0x1fu,
+                                          uint32_t{high} >> 10};
+
+    // Where the converter writes (0x0cda), the part's samples (0x0cdd), and the left and right channels' samples
+    // (0x0cde and 0x0cdf). With ITD, the left and right channels start in the 32 samples of history.
+    uint16_t write = kFrame;
+    uint16_t source = kFrame;
+    uint16_t left = kFrame;
+    uint16_t right = kFrame;
+    if (dram_[kPbItdFlag] != 0)
+    {
+        left = static_cast<uint16_t>(kItdHistory + dram_[kPbItdShift]);
+        right = static_cast<uint16_t>(kItdHistory + dram_[kPbItdShift + 1u]);
+        FromMain(uint32_t{dram_[kPbItdBuffer]} << 16 | dram_[kPbItdBuffer + 1u], kItdHistory, 0x40);
+    }
+
+    uint16_t update = kUpdates;
+    for (int part = 0; part < kParts; part++)
+    {
+        // Each of the part's updates writes a value to a word of the PB. AX's CPU side fills at most the 32 pairs that
+        // the buffer holds.
+        for (uint16_t n = dram_[kPbUpdateCounts + part]; n > 0; n--)
+        {
+            const auto at = static_cast<uint16_t>(kPb + dram_[update & 0x0fffu]);
+            if (at < dram_.size())
+            {
+                dram_[at] = dram_[(update + 1u) & 0x0fffu];
+            }
+            update = static_cast<uint16_t>(update + 2);
+        }
+        if (dram_[kPbState] != 1)
+        {
+            continue;
+        }
+
+        if (src > kSrcNone || (src == kSrcFourTap && filter > 2))
+        {
+            return false;
+        }
+        LoadAccelerator();
+        if (src == kSrcFourTap)
+        {
+            FourTap(filter, write, kPartSamples);
+        }
+        else if (src == kSrcLinear)
+        {
+            Linear(write, kPartSamples);
+        }
+        else
+        {
+            Copy(write, kPartSamples);
+        }
+        StoreAccelerator();
+        write = static_cast<uint16_t>(write + kPartSamples);
+
+        Envelope(source, kPartSamples);
+        if (dram_[Field(kPbLpf)] != 0)
+        {
+            LowPass(static_cast<uint16_t>(Field(kPbLpf) + 1), source, source, kPartSamples);
+        }
+        if (dram_[kPbSecondFilter] != 0)
+        {
+            SecondFilter(source);
+        }
+
+        // The mixes write the depop values afresh.
+        for (int i = 0; i < 12; i++)
+        {
+            dram_[Field(kPbDpop) + i] = 0;
+        }
+        for (int i = 0; i < 8; i++)
+        {
+            dram_[Field(kPbRmtDpop) + i] = 0;
+        }
+        for (int bus = 0; bus < 4; bus++)
+        {
+            MixBusOctober2006(bus, bits[static_cast<std::size_t>(bus)], part, source, left, right);
+        }
+        if (dram_[Field(kPbRemote)] != 0)
+        {
+            RemoteOctober2006(part, source);
+        }
+
+        // Each ITD shift moves a sample towards its target after each part. The next part's left and right channels
+        // start that many samples into the 32 before the part. In 40-bit mode, the shifts and the starts saturate.
+        source = write;
+        left = write;
+        right = write;
+        if (dram_[kPbItdFlag] != 0)
+        {
+            for (int side = 0; side < 2; side++)
+            {
+                uint16_t& shift = dram_[kPbItdShift + side];
+                const auto target = static_cast<int16_t>(dram_[kPbItdTarget + side]);
+                int64_t moved = static_cast<int16_t>(shift);
+                if (moved > target)
+                {
+                    moved--;
+                }
+                else if (moved < target)
+                {
+                    moved++;
+                }
+                shift = Saturated(moved);
+                (side == 0 ? left : right) = Saturated(int64_t{write} - kPartSamples + moved);
+            }
+        }
+    }
+
+    // The last part's samples go back as the ITD's history, for a voice that has stopped too.
+    if (dram_[kPbItdFlag] != 0)
+    {
+        ToMain(kItdOut, uint32_t{dram_[kPbItdBuffer]} << 16 | dram_[kPbItdBuffer + 1u], 0x40);
+    }
+
+    return true;
+}
+
 void Renderer::LoadAccelerator()
 {
     // 0x07e6: the format, the addresses, the coefficients, the gain and the decoder's state go into the accelerator's
-    // registers. Each register keeps its bits.
-    accelerator_.format = dram_[kPbFormat];
-    accelerator_.start =
-        (uint32_t{dram_[kPbLoopAddress]} << 16 | dram_[kPbLoopAddress + 1u]) & ntdlib::dsp::kAcceleratorAddressMask;
-    accelerator_.end =
-        (uint32_t{dram_[kPbEndAddress]} << 16 | dram_[kPbEndAddress + 1u]) & ntdlib::dsp::kAcceleratorAddressMask;
-    accelerator_.current = (uint32_t{dram_[kPbCurrentAddress]} << 16 | dram_[kPbCurrentAddress + 1u]) &
-                           ntdlib::dsp::kAcceleratorCurrentMask;
+    // registers. Each register keeps its bits. The build of October 2006 loads them for each part (0x08dc).
+    const auto join = [this](uint16_t word)
+    {
+        return uint32_t{dram_[Field(word)]} << 16 | dram_[Field(word) + 1u];
+    };
+    accelerator_.format = dram_[Field(kPbFormat)];
+    accelerator_.start = join(kPbLoopAddress) & ntdlib::dsp::kAcceleratorAddressMask;
+    accelerator_.end = join(kPbEndAddress) & ntdlib::dsp::kAcceleratorAddressMask;
+    accelerator_.current = join(kPbCurrentAddress) & ntdlib::dsp::kAcceleratorCurrentMask;
     for (std::size_t i = 0; i < coefs_.size(); i++)
     {
-        coefs_[i] = dram_[kPbCoefs + i];
+        coefs_[i] = dram_[Field(kPbCoefs) + i];
     }
-    accelerator_.gain = dram_[kPbGain];
-    accelerator_.pred_scale = dram_[kPbPredScale] & ntdlib::dsp::kAcceleratorPredScaleMask;
-    accelerator_.yn1 = dram_[kPbYn1];
-    accelerator_.yn2 = dram_[kPbYn2];
+    accelerator_.gain = dram_[Field(kPbGain)];
+    accelerator_.pred_scale = dram_[Field(kPbPredScale)] & ntdlib::dsp::kAcceleratorPredScaleMask;
+    accelerator_.yn1 = dram_[Field(kPbYn1)];
+    accelerator_.yn2 = dram_[Field(kPbYn2)];
     accelerator_.reads_stopped = false;
     reads_zero_ = false;
 }
@@ -638,21 +785,22 @@ int16_t Renderer::ReadSample()
 void Renderer::AtEnd()
 {
     // At the end address the accelerator stops its reads and raises exception 5. The handler (0x0f61) stops a voice
-    // that doesn't loop, and points the frame's later reads at a zero. For a voice that loops, it loads the decoder's
+    // that doesn't loop, and points the frame's later reads at a zero. The handler of the build of October 2006
+    // (0x0f67) leaves the reads stopped, and they give 0 too. For a voice that loops, the handler loads the decoder's
     // state at the loop start, and the reads go on. A stream keeps the decoder's history.
     accelerator_.reads_stopped = true;
-    if (dram_[kPbLoopFlag] != 1)
+    if (dram_[Field(kPbLoopFlag)] != 1)
     {
         dram_[kPbState] = 0;
         reads_zero_ = true;
         return;
     }
 
-    accelerator_.pred_scale = dram_[kPbLoopPredScale] & ntdlib::dsp::kAcceleratorPredScaleMask;
+    accelerator_.pred_scale = dram_[Field(kPbLoopPredScale)] & ntdlib::dsp::kAcceleratorPredScaleMask;
     if (dram_[kPbType] != 1)
     {
-        accelerator_.yn1 = dram_[kPbLoopYn1];
-        accelerator_.yn2 = dram_[kPbLoopYn2];
+        accelerator_.yn1 = dram_[Field(kPbLoopYn1)];
+        accelerator_.yn2 = dram_[Field(kPbLoopYn2)];
     }
     accelerator_.reads_stopped = false;
 }
@@ -660,28 +808,30 @@ void Renderer::AtEnd()
 void Renderer::StoreAccelerator()
 {
     // The converters end by storing the decoder's state and the current address back in the PB.
-    dram_[kPbYn2] = accelerator_.yn2;
-    dram_[kPbYn1] = accelerator_.yn1;
-    dram_[kPbPredScale] = accelerator_.pred_scale;
-    dram_[kPbCurrentAddress + 1u] = static_cast<uint16_t>(accelerator_.current);
-    dram_[kPbCurrentAddress] = static_cast<uint16_t>(accelerator_.current >> 16);
+    dram_[Field(kPbYn2)] = accelerator_.yn2;
+    dram_[Field(kPbYn1)] = accelerator_.yn1;
+    dram_[Field(kPbPredScale)] = accelerator_.pred_scale;
+    dram_[Field(kPbCurrentAddress) + 1u] = static_cast<uint16_t>(accelerator_.current);
+    dram_[Field(kPbCurrentAddress)] = static_cast<uint16_t>(accelerator_.current >> 16);
 }
 
-void Renderer::FourTap(uint16_t filter)
+void Renderer::FourTap(uint16_t filter, uint16_t to, int samples)
 {
-    // The 4-tap converter (0x071a). The ratio advances a 16.16 position. Each whole sample is a read into a ring of the
-    // last four. The position's top 7 bits select four coefficients of the filter, which multiply the four samples,
-    // oldest first. Each product is doubled.
-    const auto ratio = static_cast<int32_t>(uint32_t{dram_[kPbRatio]} << 16 | dram_[kPbRatio + 1u]);
+    // The 4-tap converter (0x071a, and 0x0806 in the build of October 2006). The ratio advances a 16.16 position. Each
+    // whole sample is a read into a ring of the last four. The position's top 7 bits select four coefficients of the
+    // filter, which multiply the four samples, oldest first. Each product is doubled.
+    const uint16_t last = Field(kPbLast);
+    const uint16_t ratio_at = Field(kPbRatio);
+    const auto ratio = static_cast<int32_t>(uint32_t{dram_[ratio_at]} << 16 | dram_[ratio_at + 1u]);
     std::array<int16_t, 4> ring{};
     for (std::size_t i = 0; i < ring.size(); i++)
     {
-        ring[i] = static_cast<int16_t>(dram_[kPbLast + i]);
+        ring[i] = static_cast<int16_t>(dram_[last + i]);
     }
     std::size_t write = 0;
     const auto table = static_cast<uint16_t>(kCoefficientRom + filter * kFilterWords);
-    int64_t position = int64_t{dram_[kPbFrac]} + ratio;
-    for (int i = 0; i < kSamples; i++)
+    int64_t position = int64_t{dram_[Field(kPbFrac)]} + ratio;
+    for (int i = 0; i < samples; i++)
     {
         const auto reads = static_cast<uint16_t>(MiddleWord(position));
         const auto frac = static_cast<uint32_t>(position & 0xffff);
@@ -700,30 +850,32 @@ void Renderer::FourTap(uint16_t filter)
             const auto coefficient = static_cast<int16_t>(ntdlib::dsp::kCoefficientRom[first + k]);
             sum += 2 * int64_t{coefficient} * ring[(write + k) & 3];
         }
-        dram_[kFrame + i] = static_cast<uint16_t>(MiddleWord(Wrap40(sum)));
+        dram_[to + i] = static_cast<uint16_t>(MiddleWord(Wrap40(sum)));
     }
     position = Wrap40(position - ratio);
 
     for (std::size_t i = 0; i < ring.size(); i++)
     {
-        dram_[kPbLast + i] = static_cast<uint16_t>(ring[(write + i) & 3]);
+        dram_[last + i] = static_cast<uint16_t>(ring[(write + i) & 3]);
     }
-    dram_[kPbFrac] = static_cast<uint16_t>(position);
+    dram_[Field(kPbFrac)] = static_cast<uint16_t>(position);
 }
 
-void Renderer::Linear()
+void Renderer::Linear(uint16_t to, int samples)
 {
-    // The linear converter (0x076b): the same reads, then the oldest of the four samples and the next one, weighted by
-    // the position. At a whole position, the oldest sample as it is.
-    const auto ratio = static_cast<int32_t>(uint32_t{dram_[kPbRatio]} << 16 | dram_[kPbRatio + 1u]);
+    // The linear converter (0x076b, and 0x085a in the build of October 2006): the same reads, then the oldest of the
+    // four samples and the next one, weighted by the position. At a whole position, the oldest sample as it is.
+    const uint16_t last = Field(kPbLast);
+    const uint16_t ratio_at = Field(kPbRatio);
+    const auto ratio = static_cast<int32_t>(uint32_t{dram_[ratio_at]} << 16 | dram_[ratio_at + 1u]);
     std::array<int16_t, 4> ring{};
     for (std::size_t i = 0; i < ring.size(); i++)
     {
-        ring[i] = static_cast<int16_t>(dram_[kPbLast + i]);
+        ring[i] = static_cast<int16_t>(dram_[last + i]);
     }
     std::size_t write = 0;
-    int64_t position = int64_t{dram_[kPbFrac]} + ratio;
-    for (int i = 0; i < kSamples; i++)
+    int64_t position = int64_t{dram_[Field(kPbFrac)]} + ratio;
+    for (int i = 0; i < samples; i++)
     {
         const auto reads = static_cast<uint16_t>(MiddleWord(position));
         for (uint16_t n = 0; n < reads; n++)
@@ -740,64 +892,84 @@ void Renderer::Linear()
             const auto weight = static_cast<uint16_t>(-frac);
             sample = MiddleWord(int64_t{ring[write]} * weight + int64_t{ring[(write + 1) & 3]} * (frac & 0xffff));
         }
-        dram_[kFrame + i] = static_cast<uint16_t>(sample);
+        dram_[to + i] = static_cast<uint16_t>(sample);
         position = Wrap40(position + ratio);
     }
     position = Wrap40(position - ratio);
 
     for (std::size_t i = 0; i < ring.size(); i++)
     {
-        dram_[kPbLast + i] = static_cast<uint16_t>(ring[(write + i) & 3]);
+        dram_[last + i] = static_cast<uint16_t>(ring[(write + i) & 3]);
     }
-    dram_[kPbFrac] = static_cast<uint16_t>(position);
+    dram_[Field(kPbFrac)] = static_cast<uint16_t>(position);
 }
 
-void Renderer::Copy()
+void Renderer::Copy(uint16_t to, int samples)
 {
-    // Without a converter (0x07c0), the frame takes 96 samples as they come. The PB keeps the last four.
-    for (int i = 0; i < kSamples; i++)
+    // Without a converter (0x07c0, and 0x08b4 in the build of October 2006), the frame takes its samples as they come.
+    // The PB keeps the last four.
+    for (int i = 0; i < samples; i++)
     {
-        dram_[kFrame + i] = static_cast<uint16_t>(ReadSample());
+        dram_[to + i] = static_cast<uint16_t>(ReadSample());
     }
     for (int i = 0; i < 4; i++)
     {
-        dram_[kPbLast + i] = dram_[kFrame + kSamples - 4 + i];
+        dram_[Field(kPbLast) + i] = dram_[to + samples - 4 + i];
     }
 }
 
-void Renderer::Envelope()
+void Renderer::Envelope(uint16_t at, int samples)
 {
-    // The volume envelope (0x034c): a gain that starts at the PB's volume and moves by the delta each sample. Each pair
-    // of samples steps by twice the delta, a 16-bit signed value. The gain is unsigned, the product doubled and
-    // saturated to 16 bits.
-    const uint16_t volume = dram_[kPbVolume];
-    const uint16_t delta = dram_[kPbDelta];
+    // The volume envelope (0x034c, and 0x036d in the build of October 2006): a gain that starts at the PB's volume and
+    // moves by the delta each sample. Each pair of samples steps by twice the delta, a 16-bit signed value. The gain is
+    // unsigned, the product doubled and saturated to 16 bits.
+    const uint16_t volume = dram_[Field(kPbVolume)];
+    const uint16_t delta = dram_[Field(kPbDelta)];
     const auto step = static_cast<int16_t>(static_cast<uint16_t>(2 * delta));
-    for (int i = 0; i < kSamples; i++)
+    for (int i = 0; i < samples; i++)
     {
         const uint32_t start = i % 2 == 0 ? volume : volume + uint32_t{delta};
         const auto gain = static_cast<uint16_t>(start + static_cast<uint32_t>((i / 2) * step));
-        const auto x = static_cast<int16_t>(dram_[kFrame + i]);
-        dram_[kFrame + i] = static_cast<uint16_t>(MiddleWord(2 * int64_t{x} * gain));
+        const auto x = static_cast<int16_t>(dram_[at + i]);
+        dram_[at + i] = static_cast<uint16_t>(MiddleWord(2 * int64_t{x} * gain));
     }
-    dram_[kPbVolume] = static_cast<uint16_t>(volume + static_cast<uint32_t>((kSamples / 2) * step));
+    dram_[Field(kPbVolume)] = static_cast<uint16_t>(volume + static_cast<uint32_t>((samples / 2) * step));
 }
 
-void Renderer::LowPass(uint16_t state, uint16_t from, uint16_t to)
+void Renderer::LowPass(uint16_t state, uint16_t from, uint16_t to, int samples)
 {
-    // The one-pole low-pass filter (0x06ab): y = a0 x + b0 y1, with the products doubled. a0 multiplies as unsigned
-    // (mulx), b0 as signed (maddx). Each output saturates to 16 bits and feeds back that way. The state holds y1, a0
-    // and b0.
+    // The one-pole low-pass filter (0x06ab, and 0x039b in the build of October 2006): y = a0 x + b0 y1, with the
+    // products doubled. a0 multiplies as unsigned (mulx), b0 as signed (maddx). Each output saturates to 16 bits and
+    // feeds back that way. The state holds y1, a0 and b0.
     auto y = static_cast<int16_t>(dram_[state]);
     const uint16_t a0 = dram_[state + 1u];
     const auto b0 = static_cast<int16_t>(dram_[state + 2u]);
-    for (int i = 0; i < kSamples; i++)
+    for (int i = 0; i < samples; i++)
     {
         const auto x = static_cast<int16_t>(dram_[from + static_cast<uint16_t>(i)]);
         y = MiddleWord(2 * int64_t{x} * a0 + 2 * int64_t{y} * b0);
         dram_[to + static_cast<uint16_t>(i)] = static_cast<uint16_t>(y);
     }
     dram_[state] = static_cast<uint16_t>(y);
+}
+
+void Renderer::SecondFilter(uint16_t at)
+{
+    // The second filter of the build of October 2006 (0x03c1): y = a x + b s, with the products doubled. a multiplies
+    // as unsigned (mulx), b as signed (maddx). For the part's first sample, s is the filter's state. After that, s is
+    // the last output negated. Each output saturates to 16 bits, and so does each negated output. The state keeps the
+    // part's last output negated.
+    auto s = static_cast<int16_t>(dram_[kPbSecondFilter + 1u]);
+    const uint16_t a = dram_[kPbSecondFilter + 2u];
+    const auto b = static_cast<int16_t>(dram_[kPbSecondFilter + 3u]);
+    for (int i = 0; i < kPartSamples; i++)
+    {
+        const auto x = static_cast<int16_t>(dram_[at + i]);
+        const int16_t y = MiddleWord(2 * int64_t{x} * a + 2 * int64_t{s} * b);
+        dram_[at + i] = static_cast<uint16_t>(y);
+        s = static_cast<int16_t>(Saturated(-int64_t{y}));
+    }
+    dram_[kPbSecondFilter + 1u] = static_cast<uint16_t>(s);
 }
 
 void Renderer::Biquad(uint16_t state, uint16_t from, uint16_t to)
@@ -867,13 +1039,21 @@ uint16_t Renderer::MixChannel(uint16_t source, uint16_t volume, bool ramp, uint1
     // Adds the samples into one bus channel (0x0bd1, 0x0beb, 0x0c21 and 0x0c51): each product, doubled, is added below
     // the bus sample's 16 fractional bits, in 40 bits. The volume is constant, or it starts at the PB's volume and
     // moves by the delta each sample. The PB keeps the volume after the frame. Returns the depop value: the middle word
-    // of the last product. A meter adds up what each product adds to the bus sample.
+    // of the last product. A meter adds up what each product adds to the bus sample. The build of October 2006 mixes
+    // with the DSP's ROM (0x80e7, 0x81f9, 0x8282 and 0x845d) and, for the Wii Remotes, with 0x0d07. Their volumes
+    // ramp as signed values and stop at the range's ends (SaturatedRamp).
     const uint16_t start = dram_[volume];
     const uint16_t delta = dram_[volume + 1u];
+    const bool saturates = build_ == Build::kOctober2006;
     int64_t product = 0;
     for (int i = 0; i < samples; i++)
     {
-        const auto gain = ramp ? static_cast<uint16_t>(start + static_cast<uint32_t>(i) * delta) : start;
+        uint16_t gain = start;
+        if (ramp)
+        {
+            gain = saturates ? SaturatedRamp(start, delta, i)
+                             : static_cast<uint16_t>(start + static_cast<uint32_t>(i) * delta);
+        }
         const auto x = static_cast<int16_t>(dram_[static_cast<uint16_t>(source + i) & 0x0fffu]);
         product = 2 * int64_t{x} * gain;
         const auto at = static_cast<uint16_t>(bus + 2 * i);
@@ -885,10 +1065,53 @@ uint16_t Renderer::MixChannel(uint16_t source, uint16_t volume, bool ramp, uint1
     }
     if (ramp)
     {
-        dram_[volume] = static_cast<uint16_t>(start + static_cast<uint32_t>(samples) * delta);
+        dram_[volume] = saturates ? SaturatedRamp(start, delta, samples)
+                                  : static_cast<uint16_t>(start + static_cast<uint32_t>(samples) * delta);
     }
 
     return static_cast<uint16_t>(MiddleWord(product));
+}
+
+void Renderer::MixBusOctober2006(int bus, uint32_t bits, int part, uint16_t source, uint16_t left, uint16_t right)
+{
+    // The handlers that the mixer control selects for each bus in the build of October 2006 (the tables at 0x0d4e,
+    // 0x0d6e, 0x0d8e and 0x0dae, and at 0x0dce for bus C's sixth bit). They take the channels that MixBus takes, 32
+    // samples of each. Buses B and C keep no depop value for the surround channel when it alone mixes, with a volume
+    // that moves (0x0b3b and 0x0bfb).
+    const auto b = static_cast<std::size_t>(bus);
+    const bool unshifted = bus == 3 && (bits & 0x20) != 0;
+    const auto volume_l = static_cast<uint16_t>(kPbMix + 4 * bus);
+    const auto volume_s = static_cast<uint16_t>(kPbMix + 16 + 2 * bus);
+    const uint16_t dpop = Field(kPbDpop);
+    const auto offset = static_cast<uint16_t>(2 * kPartSamples * part);
+    if ((bits & 0x18) != 0)
+    {
+        const uint16_t last = MixChannel(source, volume_s, (bits & 0x10) != 0,
+                                         static_cast<uint16_t>(kBuses[b][2] + offset), kPartSamples);
+        if (bus < 2 || (bits & 0x10) == 0 || (bits & 7) != 0)
+        {
+            dram_[dpop + 8 + b] = last;
+        }
+    }
+    const bool ramp = (bits & 4) != 0;
+    int64_t* sums_l = nullptr;
+    int64_t* sums_r = nullptr;
+    if (bus == 0 && meter_ >= 0)
+    {
+        MeterSums& sums = meter_sums_[static_cast<std::size_t>(meter_)];
+        sums_l = sums[0].data() + kPartSamples * part;
+        sums_r = sums[1].data() + kPartSamples * part;
+    }
+    if (ramp || (bits & 1) != 0)
+    {
+        dram_[dpop + b] = MixChannel(unshifted ? source : left, volume_l, ramp,
+                                     static_cast<uint16_t>(kBuses[b][0] + offset), kPartSamples, sums_l);
+    }
+    if (ramp || (bits & 2) != 0)
+    {
+        dram_[dpop + 4 + b] = MixChannel(unshifted ? source : right, static_cast<uint16_t>(volume_l + 2), ramp,
+                                         static_cast<uint16_t>(kBuses[b][1] + offset), kPartSamples, sums_r);
+    }
 }
 
 void Renderer::Remote()
@@ -951,6 +1174,53 @@ void Renderer::Remote()
                               kRemoteSamples);
         }
         dram_[kRemoteDpop[k]] = dpop;
+    }
+}
+
+void Renderer::RemoteOctober2006(int part, uint16_t source)
+{
+    // The Wii Remotes' path of the build of October 2006 (0x0406): a 4-tap converter from 32 kHz to 6 kHz on the 8 kHz
+    // filter turns the part's 32 samples into 6. It takes the PB's last four samples before them. This build has no
+    // remote filter. Each of the eight mixes then takes a volume that moves (0x0d07), whatever the remote mixer control
+    // selects.
+    const uint16_t last = Field(kPbRmtLast);
+    const uint16_t frac_at = Field(kPbRmtFrac);
+    for (int i = 0; i < 4; i++)
+    {
+        dram_[kScratch + i] = dram_[last + i];
+    }
+    for (int i = 0; i < kPartSamples; i++)
+    {
+        dram_[kScratch + 4 + i] = dram_[static_cast<uint16_t>(source + i) & 0x0fffu];
+    }
+    int64_t position = dram_[frac_at];
+    uint16_t index = 0;
+    for (int j = 0; j < kPartRemoteSamples; j++)
+    {
+        position = Wrap40(position + kRemoteRatio);
+        index = static_cast<uint16_t>(MiddleWord(position));
+        const auto frac = static_cast<uint32_t>(position & 0xffff);
+        const std::size_t first = (frac >> 9) * 4;
+        int64_t sum = 0;
+        for (std::size_t k = 0; k < 4; k++)
+        {
+            const auto coefficient = static_cast<int16_t>(ntdlib::dsp::kCoefficientRom[first + k]);
+            const auto sample = static_cast<int16_t>(dram_[(kScratch + index + k) & 0x0fffu]);
+            sum += 2 * int64_t{coefficient} * sample;
+        }
+        dram_[kRemoteFrame + j] = static_cast<uint16_t>(MiddleWord(Wrap40(sum)));
+    }
+    for (int i = 0; i < 4; i++)
+    {
+        dram_[last + i] = dram_[(kScratch + index + i) & 0x0fff];
+    }
+    dram_[frac_at] = static_cast<uint16_t>(position);
+
+    const auto offset = static_cast<uint16_t>(2 * kPartRemoteSamples * part);
+    for (std::size_t k = 0; k < kRemoteBuses.size(); k++)
+    {
+        dram_[Field(kRemoteDpop[k])] = MixChannel(kRemoteFrame, static_cast<uint16_t>(Field(kPbRmtMix) + 2 * k), true,
+                                                  static_cast<uint16_t>(kRemoteBuses[k] + offset), kPartRemoteSamples);
     }
 }
 

@@ -2,8 +2,8 @@
 
 // Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
 // (ntdlib/testing/length_cases.h), on the Switch's model and the Wii U's. The analysis waits for the loops of the
-// tracks other than the main track. A counted loop that runs past the limit follows. On the Switch, the analysis then
-// takes the loop as endless. The Wii U's engine can't make a loop endless, and the sound plays to the limit.
+// tracks other than the main track. Counted loops that run past the limit follow. The analysis then takes each track's
+// outermost counted loop as endless.
 
 #include <cstddef>
 #include <cstdint>
@@ -70,13 +70,10 @@ long long LengthOf(const ntdlib::sar::SoundArchive& archive, const std::string& 
     return -1;
 }
 
-// An archive with one sequence: a loop of 64 passes, each C4 for 250 ms and a rest, 10 s in all. The passes take
-// 640 s, past the limit of 600 s. Program 0 plays a wave of 1 s that ends, as in the length cases.
-std::vector<uint8_t> CountedLoopArchive(bool big_endian)
+// An archive with one sequence of `code`'s commands, on the tracks of `tracks`. Program 0 plays a wave of 1 s that
+// ends, as in the length cases.
+std::vector<uint8_t> SequenceArchive(bool big_endian, const length_cases::Code& code, uint16_t tracks = 1)
 {
-    length_cases::Code code(big_endian);
-    code.LoopStart(64).Note(60, 127, 24).Wait(936).LoopEnd().End();
-
     sar_files::ArchiveSpec spec;
     spec.banks = {{"BANK", 0}};
     spec.wave_archives = {{"WARC", 1}};
@@ -88,12 +85,88 @@ std::vector<uint8_t> CountedLoopArchive(bool big_endian)
     sar_files::SoundSpec sound;
     sound.name = "SEQ_COUNTED_LOOP";
     sound.volume = 127;
-    sound.allocate_track_flags = 1;
+    sound.allocate_track_flags = tracks;
     sound.banks = {0};
     sound.file = 2;
     spec.sounds = {sound};
 
     return sar_files::Archive(big_endian, spec);
+}
+
+// A loop of 64 passes, each C4 for 250 ms and a rest, 10 s in all. The passes take 640 s, past the limit of 600 s.
+std::vector<uint8_t> CountedLoopArchive(bool big_endian)
+{
+    length_cases::Code code(big_endian);
+    code.LoopStart(64).Note(60, 127, 24).Wait(936).LoopEnd().End();
+
+    return SequenceArchive(big_endian, code);
+}
+
+// A loop of 127 passes of 10.5 s: C4 for 0.5 s, then D4 for 5 s twice in an inner loop. The passes take 1,333.5 s. The
+// limit comes 1.5 s into the 58th pass, inside the inner loop.
+std::vector<uint8_t> NestedLoopsArchive(bool big_endian)
+{
+    length_cases::Code code(big_endian);
+    code.LoopStart(127).Note(60, 127, 48);
+    code.LoopStart(2).Note(62, 127, 480).LoopEnd();
+    code.LoopEnd().End();
+
+    return SequenceArchive(big_endian, code);
+}
+
+// Track 0's part of 10.5 s for ever: C4 for 0.5 s, then D4 for 5 s twice in a counted loop.
+void EndlessPart(length_cases::Code& code)
+{
+    code.LoopStart(0).Note(60, 127, 48);
+    code.LoopStart(2).Note(62, 127, 480).LoopEnd();
+    code.LoopEnd().End();
+}
+
+// Track 0 plays its part for ever, and track 1 the loop of 64 passes of 10 s. The limit comes 1.5 s into track 0's
+// 58th pass, inside its counted loop.
+std::vector<uint8_t> CountedInEndlessArchive(bool big_endian)
+{
+    length_cases::Code track_0(big_endian);
+    track_0.OpenTrack(1, 0);
+    EndlessPart(track_0);
+    const auto track_1 = static_cast<uint32_t>(track_0.Bytes().size());
+
+    length_cases::Code code(big_endian);
+    code.OpenTrack(1, track_1);
+    EndlessPart(code);
+    code.LoopStart(64).Note(64, 127, 24).Wait(936).LoopEnd().End();
+
+    return SequenceArchive(big_endian, code, 3);
+}
+
+// The loops that run past the limit loop for ever, and the fade starts after two passes. Of the nested loops, only the
+// outer one does: its passes take 10.5 s. Were the inner loop endless too, the track would repeat D4 for ever, and the
+// fade would start after 10.5 s. A track whose outermost loop is endless keeps its counted loop: the fade starts once
+// track 0 has looped twice, at 21 s. Were track 0's counted loop endless too, track 0 would repeat D4 for ever, and the
+// fade would start once track 1 had looped twice, at 20 s.
+template <class Console>
+void CheckLongLoops(bool big_endian, const std::string& console)
+{
+    const ntdlib::sar::SoundArchive counted = LoadArchive(CountedLoopArchive(big_endian), big_endian);
+    const ntdlib::sar::SoundArchive nested = LoadArchive(NestedLoopsArchive(big_endian), big_endian);
+    const ntdlib::sar::SoundArchive in_endless = LoadArchive(CountedInEndlessArchive(big_endian), big_endian);
+
+    const std::optional<xsflib::rip::Timing> counted_timing = Measure<Console>(counted, 0);
+    const std::optional<xsflib::rip::Timing> nested_timing = Measure<Console>(nested, 0);
+    const std::optional<xsflib::rip::Timing> in_endless_timing = Measure<Console>(in_endless, 0);
+
+    Check(counted_timing && counted_timing->length_ms >= 19995 && counted_timing->length_ms <= 20015 &&
+              counted_timing->fade_ms == 10000,
+          "on " + console + ", a counted loop that runs past the limit loops after two passes, " +
+              std::to_string(counted_timing ? counted_timing->length_ms : -1) + " ms");
+    Check(nested_timing && nested_timing->length_ms >= 20995 && nested_timing->length_ms <= 21015 &&
+              nested_timing->fade_ms == 10000,
+          "on " + console + ", only the outer of two counted loops loops for ever, " +
+              std::to_string(nested_timing ? nested_timing->length_ms : -1) + " ms");
+    Check(in_endless_timing && in_endless_timing->length_ms >= 20995 && in_endless_timing->length_ms <= 21015 &&
+              in_endless_timing->fade_ms == 10000,
+          "on " + console + ", a counted loop inside an endless loop still ends, " +
+              std::to_string(in_endless_timing ? in_endless_timing->length_ms : -1) + " ms");
 }
 
 void TestSwitch()
@@ -109,12 +182,7 @@ void TestSwitch()
     Check(end > 0 && end == LengthOf<LengthConsole>(archive, "SEQ_REST_LOOP"),
           "SEQ_END ends at the same frame as SEQ_REST_LOOP");
 
-    // The counted loop reaches the limit. The analysis then takes it as endless: two passes of 10 s, then the fade.
-    const ntdlib::sar::SoundArchive counted = LoadArchive(CountedLoopArchive(false), false);
-    const std::optional<xsflib::rip::Timing> timing = Measure<LengthConsole>(counted, 0);
-    Check(timing && timing->length_ms >= 19995 && timing->length_ms <= 20015 && timing->fade_ms == 10000,
-          "on the Switch, a counted loop that runs past the limit loops after two passes, " +
-              std::to_string(timing ? timing->length_ms : -1) + " ms");
+    CheckLongLoops<LengthConsole>(false, "the Switch");
 }
 
 void TestWiiU()
@@ -124,12 +192,7 @@ void TestWiiU()
     const ntdlib::sar::SoundArchive archive = LoadArchive(length_cases::Archive(true), true);
     length_cases::CheckCases([&archive](uint32_t index) { return Measure<LengthConsole>(archive, index); }, true);
 
-    // The counted loop plays to the limit, and fades there.
-    const ntdlib::sar::SoundArchive counted = LoadArchive(CountedLoopArchive(true), true);
-    const std::optional<xsflib::rip::Timing> timing = Measure<LengthConsole>(counted, 0);
-    Check(timing && timing->length_ms == 600000 && timing->fade_ms == 10000,
-          "on the Wii U, a counted loop that runs past the limit plays to the limit, " +
-              std::to_string(timing ? timing->length_ms : -1) + " ms");
+    CheckLongLoops<LengthConsole>(true, "the Wii U");
 }
 
 } // namespace

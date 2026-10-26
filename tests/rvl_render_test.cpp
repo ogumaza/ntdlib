@@ -7,7 +7,7 @@
 // unchanged, and the compressor leaves a frame alone while every sample of the main bus stays below full scale. A
 // host's meters measure each voice's mix into the main bus and what an aux bus returns, and leave the output as it is.
 // At a return volume of 0x8000, the build of October 2006 returns half an aux bus, and the build of December 2006 the
-// whole bus.
+// whole bus. The build of October 2006 takes a PB's updates before each third of the frame.
 
 #include <algorithm>
 #include <cstdint>
@@ -88,7 +88,12 @@ struct Model
 
     Output RunFrame(ax::Meters* meters = nullptr)
     {
-        const ax::Frame frame = ax.StartFrame();
+        return Mix(ax.StartFrame(), meters);
+    }
+
+    // Mixes the frame that StartFrame began.
+    Output Mix(const ax::Frame& frame, ax::Meters* meters = nullptr)
+    {
         Check(renderer.RunFrame(memory, frame.command_list, ax::layout::kCommandListSize, meters),
               "the frame's commands run");
         Output output;
@@ -210,6 +215,37 @@ void TestOctober2006()
     Check(model.ax.ReadPb(voice->index).state == static_cast<uint16_t>(ntdlib::ax::VoiceState::kStop),
           "the October 2006 PB keeps the stop");
     Check(std::equal(update.begin(), update.end(), block), "the October 2006 PB's update block keeps its bytes");
+}
+
+void TestOctober2006Updates()
+{
+    // The build of October 2006 works through each voice in three parts of 32 samples. Before each part, the microcode
+    // writes the part's updates into the PB. Each update gives a word of the PB and its new value. AX's model gives
+    // each PB the address of a buffer for them (layout::kUpdateBuffers). The counts in the PB's update block stay 0.
+    // Here the voice's left volume (word 0x0a) takes 0x4000 before the second part. The voice's state (word 8) takes 0
+    // before the third. The first 32 samples then come out as they are, the next 32 at half volume, and the last 32 are
+    // silent. The half rounds down.
+    Model model(ax::Build::kOctober2006);
+    ax::Voice* voice = model.StartVoice(ax::mixer::kL, 0x8000);
+    const ax::Frame frame = model.ax.StartFrame();
+    uint8_t* counts = model.memory.At(model.ax.PbAddress(voice->index) + ax::kUpdateBlockOctober2006, 6);
+    xsflib::StoreBe16(counts + 2, 1);
+    xsflib::StoreBe16(counts + 4, 1);
+    uint8_t* updates = model.memory.At(ax::layout::kUpdateBuffers + voice->index * ax::layout::kUpdateBufferSize, 8);
+    xsflib::StoreBe16(updates, 0x000a);
+    xsflib::StoreBe16(updates + 2, 0x4000);
+    xsflib::StoreBe16(updates + 4, 0x0008);
+    xsflib::StoreBe16(updates + 6, 0);
+    const Output output = model.Mix(frame);
+    bool parts = Silent(output.right);
+    for (int i = 0; i < ax::kSamplesPerFrame; i++)
+    {
+        const int expected = i < 32 ? SampleAt(i) : i < 64 ? SampleAt(i) >> 1 : 0;
+        parts = parts && output.left[static_cast<std::size_t>(i)] == expected;
+    }
+    Check(parts, "the build of October 2006 takes each third's updates before the third");
+    Check(model.ax.ReadPb(voice->index).state == static_cast<uint16_t>(ntdlib::ax::VoiceState::kStop),
+          "the October 2006 PB keeps the state that an update gave it");
 }
 
 // The largest magnitude of `samples`.
@@ -352,6 +388,7 @@ int main()
     TestAuxReturnPeaks();
     TestAuxSurroundPeaks();
     TestOctober2006AuxReturn();
+    TestOctober2006Updates();
 
     return xsflib::testing::Summary("Wii AX renderer");
 }

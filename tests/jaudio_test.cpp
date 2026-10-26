@@ -3,8 +3,10 @@
 // Tests of the JAudio2 readers on files built here (ntdlib/testing/jaudio_files.h): the wave systems, the banks of both
 // versions, the sound table with its names, the sequence collection, RARC archives, and the readers' messages, by the
 // defaults and by strict rules. The readers read the little-endian files of the Switch's releases as they read the
-// big-endian ones.
+// big-endian ones, and the banks and wave systems with 64-bit offsets too. Pikmin's bank file holds banks and wave
+// systems in either layout.
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -19,8 +21,11 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "jaudio_describe.h"
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/bank.h"
+#include "ntdlib/jaudio/barc.h"
+#include "ntdlib/jaudio/bx.h"
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
@@ -32,6 +37,8 @@ using xsflib::testing::ErrorOf;
 
 namespace
 {
+
+using ntdlib::testing::jaudio_describe::Describe;
 
 void TestWaveSystem()
 {
@@ -62,15 +69,25 @@ void TestWaveSystem()
           "ReadWaveSystems reads the archive's wave system");
 }
 
+// A group of the AW file `archive` that holds the waves `waves`.
+jaudio::WaveGroup Group(const std::string& archive, const std::vector<uint16_t>& waves)
+{
+    jaudio::WaveGroup group;
+    group.archive = archive;
+    group.waves = waves;
+
+    return group;
+}
+
 // WaveGroups on wave systems made here: for each system, the group that holds the most of the missing waves first.
 void TestWaveGroups()
 {
     jaudio::WaveSystem three;
     three.number = 3;
-    three.groups = {{"a.aw", {1, 2, 3}}, {"b.aw", {3, 4}}, {"c.aw", {4, 5}}};
+    three.groups = {Group("a.aw", {1, 2, 3}), Group("b.aw", {3, 4}), Group("c.aw", {4, 5})};
     jaudio::WaveSystem seven;
     seven.number = 7;
-    seven.groups = {{"d.aw", {8}}, {"e.aw", {1}}};
+    seven.groups = {Group("d.aw", {8}), Group("e.aw", {1})};
 
     // In system 3, a and c hold two of the waves each, and a comes first. Then c holds the rest. Wave 9 is in no group,
     // and system 9 doesn't exist.
@@ -716,31 +733,6 @@ std::string Describe(const jaudio::SoundEntry& s)
            std::to_string(std::bit_cast<uint32_t>(s.pitch)) + " " + std::to_string(s.offset) + "\n";
 }
 
-std::string Describe(const jaudio::WaveSystem& ws)
-{
-    std::string text = "system " + std::to_string(ws.number) + "\n";
-    for (const jaudio::WaveGroup& group : ws.groups)
-    {
-        text += " group " + group.archive;
-        for (const uint16_t id : group.waves)
-        {
-            text += " " + std::to_string(id);
-        }
-        text += "\n";
-    }
-
-    for (const auto& [id, w] : ws.waves)
-    {
-        text += " wave " + std::to_string(id) + " " + std::to_string(static_cast<int>(w.format)) + " " +
-                std::to_string(w.base_key) + " " + std::to_string(std::bit_cast<uint32_t>(w.sample_rate)) + " " +
-                std::to_string(w.offset) + " " + std::to_string(w.size) + " " + std::to_string(w.loop) + " " +
-                std::to_string(w.loop_start) + " " + std::to_string(w.loop_end) + " " + std::to_string(w.sample_count) +
-                " " + std::to_string(w.loop_last) + " " + std::to_string(w.loop_penult) + " " + w.archive + "\n";
-    }
-
-    return text;
-}
-
 std::string Describe(const std::vector<jaudio::OscPoint>& points)
 {
     std::string text;
@@ -945,10 +937,18 @@ void TestLittleEndianRarc()
     Check(le != be && le[0] == 'C' && le[3] == 'R', "the archive is little-endian");
     Check(text(le) == text(be) && jaudio::ReadRarc(le).size() == 2, "the little-endian archive gives the same files");
     Check(text(jaudio::DecodeYaz0(LiteralYaz0(le))) == text(be), "so does the archive compressed with Yaz0");
+
+    // The Switch's release of Pikmin 2 has wide entries of 24 bytes.
+    const std::vector<uint8_t> wide = files::RarcFile(kFiles, false, jaudio::kWideRarcEntrySize);
+    std::string from_wide;
+    for (const jaudio::ArchiveFile& file : jaudio::ReadRarc(wide, jaudio::kWideRarcEntrySize))
+    {
+        from_wide += std::to_string(file.id) + " " + file.name + " " + Text(file.data) + "\n";
+    }
+    Check(wide != le && from_wide == text(be), "the archive with wide entries gives the same files");
 }
 
-// A little-endian bank of version 1 gives what the big-endian one gives, with its tags in either order. A
-// little-endian bank of version 0 isn't read.
+// A little-endian bank of either version gives what the big-endian one gives, with its tags in either order.
 void TestLittleEndianBanks()
 {
     const std::vector<uint8_t> be = files::BankV1File(129, 0, 600);
@@ -970,18 +970,15 @@ void TestLittleEndianBanks()
         Check(Describe(jaudio::Bank::Parse(kept, 4)) == from_be, "a little-endian bank's tag can keep its order");
     }
 
-    // A version 0 bank with a little-endian header.
-    std::vector<uint8_t> v0 = files::BankV0File(7, 100);
-    const uint32_t size = xsflib::LoadBe32(v0.data() + 4);
-    v0[0] = 'K';
-    v0[1] = 'N';
-    v0[2] = 'B';
-    v0[3] = 'I';
-    xsflib::StoreLe32(v0.data() + 4, size);
-    xsflib::StoreLe32(v0.data() + 8, 7);
-    Check(ErrorOf([&] { jaudio::Bank::Parse(v0, 0); }) ==
-              "the reader has no layout for a little-endian bank of version 0",
-          "a little-endian bank of version 0");
+    // A version 0 bank. The little-endian one holds its drum table at 0x544. The Switch's release of Pikmin 2 does too.
+    const std::vector<uint8_t> v0_be = files::BankV0File(7, 100);
+    const std::vector<uint8_t> v0_le = files::BankV0File(7, 100, false);
+    const std::string from_v0 = Describe(jaudio::Bank::Parse(v0_be, 0));
+    Check(from_v0.find("drums 228") != std::string::npos && from_v0.find("drum 36") != std::string::npos,
+          "the big-endian bank of version 0 has its drum set: " + from_v0);
+    Check(v0_le.size() == v0_be.size() + 0x190 && xsflib::LoadLe32(v0_le.data() + 0x544) != 0,
+          "the little-endian bank's drum table is at 0x544");
+    Check(Describe(jaudio::Bank::Parse(v0_le, 0)) == from_v0, "the little-endian bank of version 0");
 }
 
 // A little-endian wave system gives what the big-endian one gives.
@@ -995,6 +992,456 @@ void TestLittleEndianWaveSystem()
     Check(le != be && le[0] == 'S' && le[3] == 'W', "the wave system is little-endian");
     Check(from_be.find("group other.aw 0 1 2") != std::string::npos, "the big-endian wave system: " + from_be);
     Check(Describe(jaudio::ReadWaveSystem(le, 5)) == from_be, "the little-endian wave system");
+
+    // The Switch's release of Pikmin 2 has wide records of the archives.
+    const std::vector<uint8_t> wide = files::WaveSystemFile(5, 3, "other.aw", false, jaudio::kWideWaveCountAt);
+    Check(wide.size() == le.size() + 0x1c &&
+              Describe(jaudio::ReadWaveSystem(wide, 5, jaudio::kWideWaveCountAt)) == from_be,
+          "the little-endian wave system with wide records");
+}
+
+// A version 0 bank with 64-bit offsets gives what the big-endian bank gives. The Switch's release of Pikmin keeps its
+// banks that way: the tag and the size in the big-endian order, the BANK chunk's tag reversed, the other fields
+// little-endian, and the drum table at 0x744.
+void TestWideOffsetBank()
+{
+    const std::vector<uint8_t> be = files::BankV0File(7, 100);
+    const std::vector<uint8_t> wide = files::BankV0File(7, 100, false, 8);
+
+    const std::string from_be = Describe(jaudio::Bank::Parse(be, 3));
+    const std::string from_wide = Describe(jaudio::Bank::Parse(wide, 3));
+
+    Check(std::string(wide.begin(), wide.begin() + 4) == "IBNK" && xsflib::LoadBe32(wide.data() + 4) == be.size() &&
+              xsflib::LoadLe32(wide.data() + 8) == 7 &&
+              std::string(wide.begin() + 0x20, wide.begin() + 0x24) == "KNAB" &&
+              xsflib::LoadLe32(wide.data() + 0x744) != 0 && wide.size() > be.size(),
+          "the bank has the layout of the Switch's release of Pikmin");
+    Check(from_be.find("drum 36") != std::string::npos && from_wide == from_be,
+          "the bank with 64-bit offsets gives what the big-endian bank gives: " + from_wide);
+
+    // An offset whose high half isn't 0: the instrument's.
+    std::vector<uint8_t> far = wide;
+    far[0x24 + 4] = 1;
+    Check(ErrorOf([&] { jaudio::Bank::Parse(far, 3); }) == "a 64-bit offset is out of range",
+          "a 64-bit offset past 4 GiB");
+}
+
+// An instrument's flags are the low byte of the word at +4 of its record, in each layout of a version 0 bank. A version
+// 1 bank leaves them 0.
+void TestInstrumentFlags()
+{
+    const auto flags = [](const std::vector<uint8_t>& file)
+    {
+        const jaudio::Bank bank = jaudio::Bank::Parse(file, 0);
+        const auto* inst = bank.programs.contains(0) ? std::get_if<jaudio::Instrument>(&bank.programs.at(0)) : nullptr;
+        return inst ? int{inst->flags} : -1;
+    };
+
+    Check(flags(files::BankV0File(7, 100)) == 0, "an instrument without flags");
+    Check(flags(files::BankV0File(7, 100, true, 4, 0, 0x2c)) == 0x2c, "the big-endian bank's flags");
+    Check(flags(files::BankV0File(7, 100, false, 4, 0, 0x2c)) == 0x2c, "the little-endian bank's flags");
+    Check(flags(files::BankV0File(7, 100, false, 8, 0, 0x2c)) == 0x2c, "the flags of a bank with 64-bit offsets");
+    Check(flags(files::BankV0File(7, 100, true, 4, 0, 0x1a5)) == 0xa5, "the flags are the word's low byte");
+    Check(flags(files::BankV1File(129, 0, 600)) == 0, "a version 1 bank's instrument has no flags");
+
+    // The flags change none of the other fields.
+    Check(Describe(jaudio::Bank::Parse(files::BankV0File(7, 100, false, 8, 0, 0x2c), 0)) ==
+              Describe(jaudio::Bank::Parse(files::BankV0File(7, 100), 0)),
+          "the bank with flags gives the other fields of the bank without them");
+}
+
+// A wave system with 64-bit offsets gives what the big-endian system gives. The Switch's release of Pikmin keeps its
+// wave systems that way, with wide records of the archives.
+void TestWideOffsetWaveSystem()
+{
+    const std::vector<uint8_t> be = files::WaveSystemFile(5, 3, "other.aw");
+    const std::vector<uint8_t> wide = files::WaveSystemFile(5, 3, "other.aw", false, jaudio::kWideWaveCountAt, 8);
+
+    const std::string from_be = Describe(jaudio::ReadWaveSystem(be, 5));
+    const std::string from_wide = Describe(jaudio::ReadWaveSystem(wide, 5, jaudio::kWideWaveCountAt));
+
+    const uint32_t winf = xsflib::LoadLe32(wide.data() + 0x10);
+    Check(std::string(wide.begin(), wide.begin() + 4) == "WSYS" && xsflib::LoadBe32(wide.data() + 4) == be.size() &&
+              xsflib::LoadLe32(wide.data() + 0x14) == 0 && winf + 4 <= wide.size() &&
+              std::string(wide.begin() + winf, wide.begin() + winf + 4) == "FNIW",
+          "the wave system has the layout of the Switch's release of Pikmin");
+    Check(from_be.find("group other.aw 0 1 2") != std::string::npos && from_wide == from_be,
+          "the wave system with 64-bit offsets gives what the big-endian system gives: " + from_wide);
+}
+
+// The wave system of WaveSystemFile with `scene`, of three waves, in a layout: 0 big-endian, 1 the little-endian one of
+// the Switch's release of Pikmin 2, 2 the one with 64-bit offsets of the Switch's release of Pikmin.
+std::vector<uint8_t> SceneFile(const files::SceneSpec& scene, int layout)
+{
+    const std::size_t wave_count_at = layout == 0 ? jaudio::kWaveCountAt : jaudio::kWideWaveCountAt;
+
+    return files::WaveSystemFile(5, 3, "other.aw", layout == 0, wave_count_at, layout == 2 ? 8 : 4, scene);
+}
+
+jaudio::WaveSystem ReadSceneFile(const files::SceneSpec& scene, int layout)
+{
+    return jaudio::ReadWaveSystem(SceneFile(scene, layout), 5,
+                                  layout == 0 ? jaudio::kWaveCountAt : jaudio::kWideWaveCountAt);
+}
+
+// A scene with an external mode, three dependencies, and words in C-EX and C-ST.
+files::SceneSpec FullScene()
+{
+    files::SceneSpec scene;
+    scene.external_mode = 3;
+    scene.dependencies = {7, 2, 3};
+    scene.cex = std::vector<uint32_t>{0x00010005, 0x00020001};
+    scene.cst = std::vector<uint32_t>{9};
+
+    return scene;
+}
+
+// A wave system's group holds its scene with the values that the system stores, and every wave of its archive. A list
+// whose offset is null has no value. Without C-DF, the archive's waves have no ids. Each layout gives the same.
+void TestWaveScenes()
+{
+    files::SceneSpec null_lists;
+    null_lists.cex = std::nullopt;
+    null_lists.cst = std::nullopt;
+    files::SceneSpec null_cdf;
+    null_cdf.null_cdf = true;
+
+    const jaudio::WaveSystem plain = ReadSceneFile({}, 0);
+    const jaudio::WaveSystem full = ReadSceneFile(FullScene(), 0);
+    const jaudio::WaveSystem without_lists = ReadSceneFile(null_lists, 0);
+    const jaudio::WaveSystem without_cdf = ReadSceneFile(null_cdf, 0);
+
+    Check(plain.groups.size() == 1 && full.groups.size() == 1 && without_lists.groups.size() == 1 &&
+              without_cdf.groups.size() == 1,
+          "each system has one group");
+    if (plain.groups.size() != 1 || full.groups.size() != 1 || without_lists.groups.size() != 1 ||
+        without_cdf.groups.size() != 1)
+    {
+        return;
+    }
+
+    const std::vector<uint32_t> kWords = {0x50000, 0x50001, 0x50002};
+    const jaudio::WaveGroup& group = plain.groups[0];
+    Check(group.scene.external_mode == 0 && group.scene.dependencies.empty() && group.scene.cdf == kWords &&
+              group.scene.cex == std::vector<uint32_t>() && group.scene.cst == std::vector<uint32_t>(),
+          "a scene with no dependencies and empty lists C-EX and C-ST: " + Describe(group.scene));
+    Check(group.archive_waves.size() == 3 && group.archive_waves[0].loop && !group.archive_waves[2].loop &&
+              group.archive_waves[2].offset == 256 && group.archive_waves[2].archive == "other.aw" &&
+              Describe(group.archive_waves[1]) == Describe(plain.waves.at(1)),
+          "the group holds every wave of its archive");
+
+    const jaudio::WaveScene& scene = full.groups[0].scene;
+    Check(scene.external_mode == 3 && scene.dependencies == std::vector<uint32_t>{7, 2, 3} && scene.cdf == kWords &&
+              scene.cex == std::vector<uint32_t>{0x00010005, 0x00020001} && scene.cst == std::vector<uint32_t>{9},
+          "the scene's external mode, dependencies and lists: " + Describe(scene));
+    Check(full.groups[0].waves == std::vector<uint16_t>{0, 1, 2} && full.waves.size() == 3,
+          "C-DF gives the archive's waves their ids");
+    Check(without_lists.groups[0].scene.cdf == kWords && !without_lists.groups[0].scene.cex &&
+              !without_lists.groups[0].scene.cst,
+          "lists with null offsets have no value");
+    Check(!without_cdf.groups[0].scene.cdf && without_cdf.groups[0].scene.cex == std::vector<uint32_t>() &&
+              without_cdf.groups[0].waves.empty() && without_cdf.waves.empty() &&
+              without_cdf.groups[0].archive_waves.size() == 3,
+          "without C-DF, the archive's waves have no ids");
+
+    for (const files::SceneSpec& spec : {files::SceneSpec(), FullScene(), null_lists, null_cdf})
+    {
+        const std::string from_be = Describe(ReadSceneFile(spec, 0));
+        Check(Describe(ReadSceneFile(spec, 1)) == from_be && Describe(ReadSceneFile(spec, 2)) == from_be,
+              "each layout gives what the big-endian system gives: " + from_be);
+    }
+}
+
+// A list has no value if its offset doesn't point at the list's tag. The Switch's release of Pikmin 2 has such
+// offsets. Here C-EX's tag is overwritten, and C-ST's offset points at the WINF chunk.
+void TestSceneListsElsewhere()
+{
+    std::vector<uint8_t> file = SceneFile(FullScene(), 0);
+    const std::vector<uint8_t> kScene = {'S', 'C', 'N', 'E'};
+    const std::vector<uint8_t> kCex = {'C', '-', 'E', 'X'};
+    const auto scene = std::search(file.begin(), file.end(), kScene.begin(), kScene.end());
+    const auto cex = std::search(file.begin(), file.end(), kCex.begin(), kCex.end());
+    Check(scene != file.end() && cex != file.end(), "the system has its scene and C-EX");
+    if (scene == file.end() || cex == file.end())
+    {
+        return;
+    }
+
+    std::fill_n(cex, 4, 0);
+    xsflib::StoreBe32(&*scene + 0x14, xsflib::LoadBe32(file.data() + 0x10));
+
+    const jaudio::WaveSystem ws = jaudio::ReadWaveSystem(file, 5);
+
+    Check(ws.groups.size() == 1 && ws.groups[0].scene.cdf == std::vector<uint32_t>{0x50000, 0x50001, 0x50002} &&
+              !ws.groups[0].scene.cex && !ws.groups[0].scene.cst &&
+              ws.groups[0].waves == std::vector<uint16_t>{0, 1, 2},
+          "lists whose offsets don't point at their tags have no value");
+}
+
+// A scene with 64-bit offsets has the layout of the Switch's release of Pikmin: the tag reversed, the mode, the number
+// of dependencies, the offsets of the lists in 8 bytes each, then the dependencies.
+void TestWideScene()
+{
+    const std::vector<uint8_t> file = SceneFile(FullScene(), 2);
+    const std::vector<uint8_t> kTag = {'E', 'N', 'C', 'S'};
+
+    const auto tag = std::search(file.begin(), file.end(), kTag.begin(), kTag.end());
+    const auto at = static_cast<std::size_t>(tag - file.begin());
+    const auto word = [&file, at](std::size_t offset)
+    {
+        return xsflib::LoadLe32(file.data() + at + offset);
+    };
+
+    Check(tag != file.end() && at + 0x30 <= file.size() && word(4) == 3 && word(8) == 3 && word(0x10) == 0 &&
+              word(0x18) == 0 && word(0x20) == 0 && word(0x24) == 7 && word(0x28) == 2 && word(0x2c) == 3,
+          "the scene has the layout of the Switch's release of Pikmin");
+}
+
+// A bank file of four wave systems and four banks. Place 1 of the systems' table is empty. System 3 gives the number
+// 0xffff, as two of Pikmin's do. Bank 1 plays the waves of system 0. Bank 3's waves name the system at the bank's
+// place. A little-endian file has the layout of the Switch's release of Pikmin.
+std::vector<uint8_t> BankFile(bool big_endian)
+{
+    const std::size_t width = big_endian ? 4 : 8;
+    const std::size_t wave_count_at = big_endian ? jaudio::kWaveCountAt : jaudio::kWideWaveCountAt;
+    const auto system = [&](uint32_t number, int waves, const std::string& archive)
+    {
+        return files::WaveSystemFile(number, waves, archive, big_endian, wave_count_at, width);
+    };
+    const auto bank = [&](uint32_t number, uint16_t wave_system)
+    {
+        return files::BankV0File(number, 100, big_endian, width, wave_system);
+    };
+
+    return files::BxFile({system(0, 2, "a.aw"), {}, system(2, 3, "c.aw"), system(0xffff, 2, "d.aw")},
+                         {bank(0, 0), bank(1, 0), bank(2, 2), bank(3, 0xffff)}, big_endian);
+}
+
+// Everything that a bank file's readers give, and their warnings.
+std::string DescribeBankFile(std::span<const uint8_t> bx)
+{
+    std::string text;
+    for (const jaudio::WaveSystem& ws : jaudio::ReadBxWaveSystems(bx))
+    {
+        text += Describe(ws);
+    }
+
+    std::vector<std::string> warnings;
+    for (const jaudio::Bank& bank : jaudio::ReadBxBanks(bx, warnings))
+    {
+        text += Describe(bank);
+    }
+    for (const std::string& warning : warnings)
+    {
+        text += "warning " + warning + "\n";
+    }
+
+    return text;
+}
+
+// A bank file gives its wave systems by their places, and each bank with the place of the system that its waves name.
+// The little-endian file gives what the big-endian one gives.
+void TestBankFile()
+{
+    const std::vector<uint8_t> be = BankFile(true);
+    const std::vector<uint8_t> le = BankFile(false);
+
+    const std::vector<jaudio::WaveSystem> systems = jaudio::ReadBxWaveSystems(be);
+    std::vector<std::string> warnings;
+    const std::vector<jaudio::Bank> banks = jaudio::ReadBxBanks(be, warnings);
+    const std::string from_le = DescribeBankFile(le);
+
+    Check(systems.size() == 3 &&
+              Describe(systems[0]) == Describe(jaudio::ReadWaveSystem(files::WaveSystemFile(0, 2, "a.aw"), 0)) &&
+              Describe(systems[1]) == Describe(jaudio::ReadWaveSystem(files::WaveSystemFile(2, 3, "c.aw"), 2)) &&
+              Describe(systems[2]) == Describe(jaudio::ReadWaveSystem(files::WaveSystemFile(0xffff, 2, "d.aw"), 3)),
+          "the wave systems take their places in the table");
+    const std::vector<uint32_t> kPlays = {0, 0, 2, 3};
+    bool banks_match = banks.size() == kPlays.size() && warnings.empty();
+    for (std::size_t i = 0; banks_match && i < banks.size(); i++)
+    {
+        const auto number = static_cast<uint32_t>(i);
+        const std::vector<uint8_t> alone = files::BankV0File(number, 100);
+        banks_match = Describe(banks[i]) == Describe(jaudio::Bank::Parse(alone, kPlays[i]));
+    }
+    Check(banks_match, "each bank plays the system that its waves name");
+    Check(from_le == DescribeBankFile(be), "the little-endian file gives what the big-endian file gives: " + from_le);
+}
+
+// A bank whose waves name a system that the file lacks, or more than one system, is left out with a warning. The first
+// system that gives a number takes it. The numbers above 0xff name no system.
+void TestBankFileRefusals()
+{
+    const auto system = [](uint32_t number)
+    {
+        return files::WaveSystemFile(number, 2);
+    };
+    const auto bank = [](uint32_t number, uint16_t wave_system)
+    {
+        return files::BankV0File(number, 100, true, 4, wave_system);
+    };
+
+    // Bank 4's drum plays wave 1 of system 0. Its instrument plays from system 2.
+    std::vector<uint8_t> two_systems = bank(4, 2);
+    const std::vector<uint8_t> kDrumRegion = {0x7f, 0, 0, 0, 0, 2, 0, 1, 0x3f, 0, 0, 0};
+    const auto drum = std::search(two_systems.begin(), two_systems.end(), kDrumRegion.begin(), kDrumRegion.end());
+    Check(drum != two_systems.end(), "the bank has its drum's velocity region");
+    if (drum != two_systems.end())
+    {
+        drum[5] = 0;
+    }
+
+    const std::vector<uint8_t> bx =
+        files::BxFile({system(0), {}, system(2), system(0x100), system(2)},
+                      {bank(0, 5), bank(1, 0xffff), bank(2, 2), bank(3, 0x100), two_systems});
+
+    std::vector<std::string> warnings;
+    const std::vector<jaudio::Bank> banks = jaudio::ReadBxBanks(bx, warnings);
+
+    Check(banks.size() == 1 && banks[0].number == 2 && banks[0].wave_system == 2,
+          "only bank 2 is read, and it plays the first system that gives the number 2");
+    const std::string kLacks = ": bank plays a wave system that the file lacks";
+    Check(warnings.size() == 4 && warnings[0].starts_with("bank at offset ") && warnings[0].ends_with(kLacks) &&
+              warnings[1].ends_with(kLacks) && warnings[2].ends_with(kLacks) &&
+              warnings[3].ends_with(": bank plays the waves of more than one wave system"),
+          "a warning for each bank that is left out");
+
+    // A header whose table of wave systems lies past the end of the file.
+    std::vector<uint8_t> cut(16);
+    cut[3] = 0x10;
+    cut[7] = 1;
+    Check(ErrorOf([&] { jaudio::ReadBxWaveSystems(cut); }) == "the bank file is damaged" &&
+              ErrorOf([&] { jaudio::ReadBxBanks(cut, warnings); }) == "the bank file is damaged",
+          "a file cut short");
+}
+
+// Three sequences, and where they lie in a file of sequences of 0x100 bytes.
+const std::vector<files::AafSequenceSpec> kSequences = {
+    {"se.bms", 0, 0x40}, {"field.com", 0x40, 0x80}, {"VeryLongNameOfAPiece.com", 0xc0, 0x40}};
+
+// Each sequence that an index gives: its id, its name, and its data's offset in `file` and size.
+std::string DescribeSequences(const std::vector<jaudio::ArchiveFile>& sequences, std::span<const uint8_t> file)
+{
+    std::string text;
+    for (const jaudio::ArchiveFile& sequence : sequences)
+    {
+        text += std::to_string(sequence.id) + " " + sequence.name + " " +
+                std::to_string(sequence.data.data() - file.data()) + " " + std::to_string(sequence.data.size()) + "\n";
+    }
+
+    return text;
+}
+
+// An index gives each sequence's number, its name and its data in the file of sequences. The little-endian index of
+// the Switch's layout gives the same.
+void TestSequenceIndex()
+{
+    const std::vector<uint8_t> file(0x100);
+    const std::vector<uint8_t> be = files::BarcFile(kSequences);
+    const std::vector<uint8_t> le = files::BarcFile(kSequences, "test.arc", false, 8);
+
+    const std::string kSequenceList = "0 se.bms 0 64\n1 field.com 64 128\n2 VeryLongNameO 192 64\n";
+    Check(DescribeSequences(jaudio::ReadBarcSequenceFiles(be, file), file) == kSequenceList, "a big-endian index");
+    Check(DescribeSequences(jaudio::ReadBarcSequenceFiles(le, file, false), file) == kSequenceList,
+          "a little-endian index");
+
+    const auto refusal = [&file](std::span<const uint8_t> index, std::size_t file_size)
+    {
+        return ErrorOf([&] { jaudio::ReadBarcSequenceFiles(index, std::span(file).first(file_size)); });
+    };
+
+    std::vector<uint8_t> not_index = be;
+    not_index[0] = 'X';
+    std::vector<uint8_t> too_many = be;
+    too_many[13] = 1;
+    Check(refusal(be, 0xff) == "the sequence index names a sequence outside the sequence archive",
+          "a sequence that ends past the file");
+    Check(refusal(not_index, 0x100) == "the sequence index is damaged", "an index without its tag");
+    Check(refusal(too_many, 0x100) == "the sequence index is damaged", "an index of more than 0x10000 sequences");
+    Check(refusal(std::span(be).first(be.size() - 1), 0x100) == "the sequence index is damaged", "an index cut short");
+}
+
+// Sets the sequence whose data entry `number` of a sequence index shares: the 16 bits after the entry's name.
+void SetShare(std::vector<uint8_t>& index, std::size_t entries_at, bool big_endian, uint16_t number, uint16_t shares)
+{
+    const std::size_t at = entries_at + std::size_t{number} * 0x20 + 14;
+    index[at] = static_cast<uint8_t>(big_endian ? shares >> 8 : shares);
+    index[at + 1] = static_cast<uint8_t>(big_endian ? shares : shares >> 8);
+}
+
+// An entry can share the data of another sequence, which can share the data of another. The game reads the data of the
+// chain's last sequence, the one that shares no other sequence's data (0x27a8a0 in the main of the Switch's release of
+// Pikmin). Each sequence's data_id gives that sequence. The sequence keeps the data that its entry gives. A chain that
+// loops, or that names a sequence past the index's end, is refused.
+void TestSharedSequences()
+{
+    const std::vector<uint8_t> file(0x100);
+    const std::vector<files::AafSequenceSpec> sequences = {
+        {"a.bms", 0, 0x40}, {"b.bms", 0x40, 0}, {"c.bms", 0x40, 0}, {"d.bms", 0x40, 0x40}};
+    const auto data_ids = [&file](std::span<const uint8_t> index, bool big_endian)
+    {
+        std::string text;
+        for (const jaudio::ArchiveFile& sequence : jaudio::ReadBarcSequenceFiles(index, file, big_endian))
+        {
+            text += std::to_string(sequence.id) + ":" +
+                    (sequence.data_id ? std::to_string(*sequence.data_id) : std::string("none")) + " " +
+                    std::to_string(sequence.data.size()) + " ";
+        }
+
+        return text;
+    };
+
+    // Sequence 2 shares sequence 1's data, and sequence 1 shares sequence 0's. Both read sequence 0's data. In the
+    // Switch's little-endian layout too, whose entries start at 0x24.
+    for (const bool big_endian : {true, false})
+    {
+        std::vector<uint8_t> index = files::BarcFile(sequences, "test.arc", big_endian, big_endian ? 4 : 8);
+        const std::size_t entries_at = big_endian ? 0x20 : 0x24;
+        Check(data_ids(index, big_endian) == "0:0 64 1:1 0 2:2 0 3:3 64 ", "sequences that share no data");
+        SetShare(index, entries_at, big_endian, 1, 0);
+        SetShare(index, entries_at, big_endian, 2, 1);
+        Check(data_ids(index, big_endian) == "0:0 64 1:0 0 2:0 0 3:3 64 ",
+              std::string("a chain of shared data in a ") + (big_endian ? "big" : "little") + "-endian index");
+    }
+
+    const auto refusal = [&file](std::span<const uint8_t> index)
+    {
+        return ErrorOf([&] { jaudio::ReadBarcSequenceFiles(index, file); });
+    };
+
+    std::vector<uint8_t> loop = files::BarcFile(sequences);
+    SetShare(loop, 0x20, true, 1, 2);
+    SetShare(loop, 0x20, true, 2, 1);
+    std::vector<uint8_t> self = files::BarcFile(sequences);
+    SetShare(self, 0x20, true, 3, 3);
+    std::vector<uint8_t> past = files::BarcFile(sequences);
+    SetShare(past, 0x20, true, 1, 0);
+    SetShare(past, 0x20, true, 3, 4);
+    Check(refusal(loop) == "the sequence index shares data in a loop", "a loop of shared data");
+    Check(refusal(self) == "the sequence index shares data in a loop", "a sequence that shares its data");
+    Check(refusal(past) == "the sequence index shares the data of a sequence past its end",
+          "a share of a sequence past the index's end");
+}
+
+// FindBarc finds the first index on a 4-byte boundary whose count is at most 0x10000 and whose entries fit.
+void TestFindBarc()
+{
+    const std::vector<uint8_t> index = files::BarcFile(kSequences);
+    std::vector<uint8_t> data(0x40);
+    std::copy_n("BARC", 4, data.begin() + 2);
+    std::copy_n("BARC", 4, data.begin() + 8);
+    data[8 + 14] = 1;
+    data.insert(data.end(), index.begin(), index.end());
+
+    Check(jaudio::FindBarc(data) == 0x40, "the index after a tag off the boundary and a tag whose entries don't fit");
+    Check(!jaudio::FindBarc(std::span(data).first(data.size() - 1)), "an index whose entries run past the data");
+    Check(!jaudio::FindBarc(std::vector<uint8_t>(0x100)) && !jaudio::FindBarc(std::span(index).first(4)),
+          "data without an index");
+
+    const std::vector<uint8_t> le = files::BarcFile(kSequences, "test.arc", false, 8);
+    std::vector<uint8_t> le_data(0x20);
+    le_data.insert(le_data.end(), le.begin(), le.end());
+    Check(jaudio::FindBarc(le_data, false) == 0x20, "a little-endian index");
 }
 
 } // namespace
@@ -1020,6 +1467,17 @@ int main()
     TestLittleEndianRarc();
     TestLittleEndianBanks();
     TestLittleEndianWaveSystem();
+    TestWideOffsetBank();
+    TestInstrumentFlags();
+    TestWideOffsetWaveSystem();
+    TestWaveScenes();
+    TestSceneListsElsewhere();
+    TestWideScene();
+    TestBankFile();
+    TestBankFileRefusals();
+    TestSequenceIndex();
+    TestSharedSequences();
+    TestFindBarc();
 
     return xsflib::testing::Summary("jaudio");
 }

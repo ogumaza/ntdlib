@@ -91,7 +91,7 @@ int AddGroupFiles(sar::SoundArchive& archive, const fs::path& input, const std::
 
             try
             {
-                archive.AddGroupFile(std::move(*bytes));
+                archive.AddGroupFile(std::move(*bytes), group);
                 found++;
             }
             catch (const xsflib::FormatError& e)

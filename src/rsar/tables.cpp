@@ -9,6 +9,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/rsar/reference.h"
@@ -55,6 +56,23 @@ bool MagicAt(const xsflib::Reader& r, std::size_t offset, const char* magic)
     return std::memcmp(r.Sub(offset, 4).data(), magic, 4) == 0;
 }
 
+// Where the INFO block's references count from in `archive`. Throws xsflib::FormatError for a file that isn't an
+// archive of the Wii, or one without an INFO block.
+std::size_t InfoBase(const xsflib::Reader& r)
+{
+    if (!MagicAt(r, 0, "RSAR"))
+    {
+        throw xsflib::FormatError("not an RSAR file");
+    }
+    const uint32_t info = r.U32(0x18);
+    if (!MagicAt(r, info, "INFO"))
+    {
+        throw xsflib::FormatError("the sound archive has no INFO block");
+    }
+
+    return info + std::size_t{8};
+}
+
 } // namespace
 
 void WriteTableValues(std::span<uint8_t> archive, std::span<const SoundInfo> sounds,
@@ -62,17 +80,8 @@ void WriteTableValues(std::span<uint8_t> archive, std::span<const SoundInfo> sou
 {
     // The header gives the version and the INFO block, as SoundArchive reads them.
     const xsflib::Reader r(archive, true);
-    if (!MagicAt(r, 0, "RSAR"))
-    {
-        throw xsflib::FormatError("not an RSAR file");
-    }
+    const std::size_t base = InfoBase(r);
     const uint16_t version = r.U16(6);
-    const uint32_t info = r.U32(0x18);
-    if (!MagicAt(r, info, "INFO"))
-    {
-        throw xsflib::FormatError("the sound archive has no INFO block");
-    }
-    const std::size_t base = info + std::size_t{8};
     const std::vector<Entry> sound_entries = EntriesOf(r, base, base, "sound");
     const std::vector<Entry> player_entries =
         players.empty() ? std::vector<Entry>() : EntriesOf(r, base, base + 0x10, "player");
@@ -130,6 +139,31 @@ void WriteTableValues(std::span<uint8_t> archive, std::span<const SoundInfo> sou
     for (std::size_t i = 0; i < players.size(); i++)
     {
         archive[player_entries[i].place + 4] = players[i].sound_count;
+    }
+}
+
+void WriteExternalFileSizes(std::span<uint8_t> archive, std::span<const std::pair<uint32_t, uint32_t>> sizes)
+{
+    // Each file's entry is checked before the first write.
+    const xsflib::Reader r(archive, true);
+    const std::size_t base = InfoBase(r);
+    const std::vector<Entry> files = EntriesOf(r, base, base + 0x18, "file");
+    for (const auto& [id, size] : sizes)
+    {
+        if (id >= files.size())
+        {
+            throw std::invalid_argument("file " + std::to_string(id) + " lies past the archive's file table");
+        }
+        r.Sub(files[id].place, 0x10);
+        if (!ReadRef(r, files[id].place + 0xC).IsOffset())
+        {
+            throw std::invalid_argument("file " + std::to_string(id) + " doesn't lie beside the archive");
+        }
+    }
+
+    for (const auto& [id, size] : sizes)
+    {
+        xsflib::StoreBe32(&archive[files[id].place], size);
     }
 }
 

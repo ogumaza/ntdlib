@@ -7,11 +7,17 @@
 // sequence sound's details hold its start, its bank's index in the bank table and the tracks that it allocates, a word
 // each. Its channel priority follows, and from version 1.3 on its release priority fix. A player's entry holds the
 // number of sounds that it plays at once at 4 bytes in. A new value takes the place of the old one, and nothing moves.
+//
+// A file's entry holds the file's size first. The entry of a file beside the archive, such as a stream, holds a
+// reference to its path at 0xC. The tools give such a file's entry the size of the file beside the archive. NW4R SND
+// opens the file by its path alone, from its start to its end (SoundArchive::detail_OpenFileStream, main.dol
+// 0x80041e60).
 
 #pragma once
 
 #include <cstdint>
 #include <span>
+#include <utility>
 
 #include "ntdlib/rsar/formats.h"
 
@@ -28,5 +34,10 @@ namespace ntdlib::rsar
 // for more sounds or players than the tables hold.
 void WriteTableValues(std::span<uint8_t> archive, std::span<const SoundInfo> sounds,
                       std::span<const PlayerInfo> players);
+
+// Writes the size of each file of `sizes`, a file's ID and its size, into the file's entry in `archive`. Each file has
+// to lie beside the archive. Throws xsflib::FormatError if the file table can't be read, and std::invalid_argument for
+// a file that the table lacks or that doesn't lie beside the archive.
+void WriteExternalFileSizes(std::span<uint8_t> archive, std::span<const std::pair<uint32_t, uint32_t>> sizes);
 
 } // namespace ntdlib::rsar

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -329,8 +330,48 @@ void TestWaveArchives(Flavor flavor)
     }
 }
 
-// WithWaveArchives refuses another file, a file of another console, and a table of waves past the file's end: here
-// the last wave's index lies past it.
+// WaveTable reads a bank's and a wave sound file's waves. WithWaveTable gives each entry of the table another wave
+// archive and index, and only the bytes of those change. It refuses a table of another length.
+void TestWaveTable(Flavor flavor)
+{
+    const uint32_t war0 = ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 0);
+    const uint32_t war1 = ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 1);
+    const uint32_t war7 = ntdlib::sar::ItemId(ntdlib::sar::kWaveArchiveItem, 7);
+    const std::vector<std::pair<uint32_t, uint32_t>> waves = {{war0, 0}, {war1, 5}, {war0, 2}};
+    sar_files::BankSpec bank_spec;
+    bank_spec.waves = waves;
+    bank_spec.instruments = {std::nullopt};
+    sar_files::WaveSoundFileSpec sound_spec;
+    sound_spec.waves = waves;
+    const std::vector<uint8_t> bank = sar_files::Bank(flavor, bank_spec);
+    const std::vector<uint8_t> sounds = sar_files::WaveSoundFile(flavor, sound_spec);
+    XSFLIB_CHECK(PairsOf(ntdlib::sar::WaveTable(bank, flavor)) == waves);
+    XSFLIB_CHECK(PairsOf(ntdlib::sar::WaveTable(sounds, flavor)) == waves);
+
+    const std::vector<ntdlib::sar::WaveId> others = {{war7, 3}, {war0, 0}, {war1, 9}};
+    const std::vector<std::pair<uint32_t, uint32_t>> expected = {{war7, 3}, {war0, 0}, {war1, 9}};
+    const std::vector<uint8_t> new_bank = ntdlib::sar::WithWaveTable(bank, flavor, others);
+    const std::vector<uint8_t> new_sounds = ntdlib::sar::WithWaveTable(sounds, flavor, others);
+    XSFLIB_CHECK(PairsOf(ntdlib::sar::Bank::Parse(new_bank, StrictOptions(flavor)).waves) == expected);
+    XSFLIB_CHECK(PairsOf(ntdlib::sar::WaveSoundFile::Parse(new_sounds, StrictOptions(flavor)).waves) == expected);
+    for (const auto& [before, after] : {std::pair(&bank, &new_bank), std::pair(&sounds, &new_sounds)})
+    {
+        std::size_t changed = 0;
+        for (std::size_t i = 0; i < before->size() && i < after->size(); ++i)
+        {
+            changed += (*before)[i] != (*after)[i] ? 1 : 0;
+        }
+        XSFLIB_CHECK(before->size() == after->size() && changed == 6);
+    }
+
+    XSFLIB_CHECK(
+        Throws<std::invalid_argument>([&] { ntdlib::sar::WithWaveTable(bank, flavor, std::span(others).first(2)); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>(
+        [&] { ntdlib::sar::WaveTable(bank, flavor == Flavor::kNx ? Flavor::kCafe : Flavor::kNx); }));
+}
+
+// WithWaveArchives and WaveTable refuse another file, a file of another console, and a table of waves past the file's
+// end: here the last wave's index lies past it.
 void TestWaveArchiveRefusals()
 {
     sar_files::BankSpec spec;
@@ -348,6 +389,8 @@ void TestWaveArchiveRefusals()
     XSFLIB_CHECK(Throws<xsflib::FormatError>(
         [&] { ntdlib::sar::WithWaveArchives(WaveArchiveFile().Write(), Flavor::kNx, {}); }));
     XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ntdlib::sar::WithWaveArchives(cut, Flavor::kNx, {}); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ntdlib::sar::WaveTable(cut, Flavor::kNx); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ntdlib::sar::WaveTable(WaveArchiveFile().Write(), Flavor::kNx); }));
 }
 
 } // namespace
@@ -361,6 +404,7 @@ int main()
         TestWaveArchive(flavor);
         TestOtherLayout(flavor);
         TestWaveArchives(flavor);
+        TestWaveTable(flavor);
     }
     TestRefusals();
     TestWaveArchiveRefusals();

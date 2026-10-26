@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // The NW4R SND sound engine for one sound archive: the voice and channel managers on the AX model, the banks, the
-// players of sequences and wave sounds, and the sound frame that NW4R SND's sound thread runs after each AX frame
-// (SoundThread::SoundThreadProc, main.dol 0x80047e68).
+// players of sequences, wave sounds and stream sounds, and the sound frame that NW4R SND's sound thread runs after each
+// AX frame (SoundThread::SoundThreadProc, main.dol 0x80047e68). A stream sound plays from the bytes of its stream file.
+// The game keeps the file beside the archive. The engine keeps the stream's channels in MEM2.
 
 #pragma once
 
@@ -32,6 +33,7 @@
 #include "ntdlib/rvl/snd/effect_setup.h"
 #include "ntdlib/rvl/snd/effects.h"
 #include "ntdlib/rvl/snd/sequence.h"
+#include "ntdlib/rvl/snd/stream_sound.h"
 #include "ntdlib/rvl/snd/util.h"
 #include "ntdlib/rvl/snd/wave_sound.h"
 #include "ntdlib/sound_build.h"
@@ -77,14 +79,18 @@ public:
         std::array<int16_t, 16> global_variables{};
         std::vector<SeqPlayer> players;
         std::vector<WsdPlayer> wave_players;
+        std::vector<StrmPlayer> stream_players;
         std::size_t banks = 0;            // the banks loaded by then
         std::size_t wave_sound_files = 0; // the wave sound files loaded by then
         Effects effects;
     };
 
     // The owner of a wave sound's channel: kWavePlayers plus the wave sound's place among the wave sounds that the
-    // engine started. A sequence's channel gives its player's place among the sequences' players.
+    // engine started. A sequence's channel gives its player's place among the sequences' players. A stream sound's
+    // player has the id kStreamPlayers plus StrmPlayer::kMaxTracks times its place among the stream sounds that the
+    // engine started. The owner of each of its voices is the id plus the voice's track.
     static constexpr int kWavePlayers = 0x10000;
+    static constexpr int kStreamPlayers = 0x20000;
 
     // The other hooks that the length analysis and the tests set (see SetCommandStartHook, SetVoiceParamHook and
     // SetChannelEventHook).
@@ -179,11 +185,16 @@ public:
     // The sends that the game sets through a sound's handle before the sound's first update (BasicSound::SetFxSend),
     // for the sound of the player at `player`. BasicSound::Update passes them to the sound's player. Each track adds
     // the player's sends to the track's sends (SeqTrack::UpdateChannelParam), and a wave sound's player adds them to
-    // the wave sound's (WsdPlayer::UpdateChannel). A player that the engine doesn't have gets none.
+    // the wave sound's (WsdPlayer::UpdateChannel). A stream sound's player gives them to its voices
+    // (StrmPlayer::Update). A player that the engine doesn't have gets none.
     std::array<float, ax::kAuxBusCount> SoundSends(int player) const
     {
-        const auto& sends = player >= kWavePlayers ? wave_player_sends_ : player_sends_;
-        const int place = player >= kWavePlayers ? player - kWavePlayers : player;
+        const auto& sends = player >= kStreamPlayers ? stream_player_sends_
+                            : player >= kWavePlayers ? wave_player_sends_
+                                                     : player_sends_;
+        const int place = player >= kStreamPlayers ? (player - kStreamPlayers) / StrmPlayer::kMaxTracks
+                          : player >= kWavePlayers ? player - kWavePlayers
+                                                   : player;
         if (place < 0 || static_cast<std::size_t>(place) >= sends.size())
         {
             return {};
@@ -203,6 +214,17 @@ public:
     // in the game. Throws xsflib::FormatError for a file or a wave that can't be read.
     WsdPlayer* StartWaveSound(uint32_t index);
 
+    // Starts the stream sound at `index` in the archive's sound table in the same way, with `file`: the bytes of the
+    // stream file that the sound's file entry names beside the archive (SoundArchivePlayer::PrepareStrmImpl,
+    // 0x800452a0). The engine keeps the channels that the player keeps in MEM2 (see StrmPlayer::TracksOf). Returns the
+    // player, or nullptr if the sound isn't a stream sound or can't play the stream. Throws xsflib::FormatError for a
+    // file that rsar::StreamFile::Read refuses.
+    StrmPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
+
+    // The same for a stream sound of `sound`, an entry that the archive's sound table needn't hold, such as an editor's
+    // new sound. The game sets no sends on such a sound.
+    StrmPlayer* StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file);
+
     // A note on the bank in a sequence's bank slot `slot` of `banks` (SeqPlayer::NoteOn, 0x8003f3c8, through
     // SoundArchivePlayer's note-on callback, then Bank::NoteOn, 0x80035b68): the region for the note, and a channel
     // that starts its wave. The Wii has no bank select. Its sequences play the bank in slot 0. Returns nullptr if the
@@ -212,14 +234,15 @@ public:
     // Passes a channel's callback to its owner's player (ChannelCallbackFunc's call through the track's pointer).
     void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
 
-    // Passes a voice's event to the channel that owns it (VoiceCallbackFunc's call through the callback's data).
+    // Passes a voice's event to the channel that owns it, or to the stream sound's player (VoiceCallbackFunc's call
+    // through the callback's data).
     void OnVoiceEvent(ChannelId owner, Voice::Status status);
 
     // The sound frame, after AX's frame (SoundThreadProc). Frees the voices that AX dropped. Updates AxManager, the
     // players in the order their sounds started, and the channels. Advances the random numbers. Updates the voices.
     void FrameProcess();
 
-    // Whether a sequence or a wave sound is still playing, or any note still sounds.
+    // Whether a sequence, a wave sound or a stream sound is still playing, or any note still sounds.
     bool IsBusy() const;
 
     // The length analysis's hook for each command that a track starts. ntdlib's sequence player calls OnCommandStart as
@@ -283,6 +306,10 @@ private:
     // AX's frame callback: NotifyVoiceUpdate, then the effects' part.
     void OnAxFrame();
 
+    // Starts a stream sound of `sound` with `file` and the game's `sends` (StartStreamSound).
+    StrmPlayer* StartStream(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
+                            const std::array<float, ax::kAuxBusCount>& sends);
+
     // Returns the bank with `bank_id`. The first call loads the bank. Returns nullptr if the archive doesn't hold it.
     const LoadedBank* GetBank(uint32_t bank_id);
 
@@ -308,17 +335,19 @@ private:
     std::vector<std::unique_ptr<ntdlib::rsar::Sequence>> sequences_;
 
     // The players, in the order they started. A channel's owner gives its player's place here, or for a wave sound
-    // kWavePlayers plus its player's place among the wave sounds' players. The update order holds each player's owner,
-    // in the order of their starts.
+    // kWavePlayers plus its player's place among the wave sounds' players. A stream sound's player has its id (see
+    // kStreamPlayers). The update order holds each player's owner or id, in the order of their starts.
     std::vector<std::unique_ptr<SeqPlayer>> players_;
     std::map<uint32_t, std::unique_ptr<LoadedWaveSoundFile>> wave_sound_files_;
     std::vector<std::unique_ptr<WsdPlayer>> wave_players_;
+    std::vector<std::unique_ptr<StrmPlayer>> stream_players_;
     std::vector<int> update_order_;
 
     // The sends that the game sets on sounds (see SetEffects), and those of each player's sound, by the player's place.
     std::vector<SoundSend> sends_;
     std::vector<std::array<float, ax::kAuxBusCount>> player_sends_;
     std::vector<std::array<float, ax::kAuxBusCount>> wave_player_sends_;
+    std::vector<std::array<float, ax::kAuxBusCount>> stream_player_sends_;
 
     Effects effects_;
 
@@ -329,8 +358,8 @@ private:
 };
 
 // Archive mode's whole stack for one sound archive: main memory, the mixer, AX's CPU side and the engine. The mixer is
-// a game's AX microcode on ntdlib's DSP, or the model of the microcode of AX's build of December 2006 (ax::Renderer).
-// The model mixes for the build of October 2006 too.
+// a game's AX microcode on ntdlib's DSP, or the model of the microcode of AX's builds of December 2006 and October 2006
+// (ax::Renderer).
 struct ArchiveModel
 {
     // A snapshot of the model between frames: its memory, the DSP or the renderer, AX and the engine. The snapshot
@@ -388,7 +417,7 @@ struct ArchiveModel
     ax::System ax{memory};
     ax::DspLink link{dsp};
     std::optional<Engine> engine;
-    SndBuild build; // the build of NW4R SND that the engine follows, set before Start
+    SndBuild build;          // the build of NW4R SND that the engine follows, set before Start
     ax::Meters meters;       // the renderer's meters of the last frame
     int metered_player = -1; // the player whose tracks have meters (MeterTracks)
 };

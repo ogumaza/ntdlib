@@ -18,10 +18,12 @@
 // The model also takes the command lists and PBs of AX's build of October 2006 (Build::kOctober2006). WarioWare:
 // Smooth Moves links that build. There, PROCESS loads the first PB, and command 5 mixes the voices. The later commands
 // are numbered one higher than in the build of December 2006. OUTPUT takes no master volume, and the PBs have another
-// layout (LoadPbOctober2006). MIX_AUX_A to C don't double the products of the return volume: a volume of 0x8000
-// returns half the bus. The model mixes the voices of that build as the microcode of December 2006 does. The
-// microcode of October 2006 works through each voice in three parts of 32 samples. That microcode's output can
-// therefore differ a little from the model's.
+// layout (kPbSizeOctober2006). MIX_AUX_A to C don't double the products of the return volume: a volume of 0x8000
+// returns half the bus. That build's microcode works through each voice in three parts of 32 samples (0x0349). The
+// model does the same. Before each part, the microcode writes the part's changes from the PB's buffer of updates into
+// the PB. A part of a voice that doesn't play mixes nothing. The DSP ROM's mixers ramp the volumes, and each step
+// saturates. The ITD's shifts move after each part. A second filter can follow the low-pass filter. The Wii Remotes
+// take 6 samples of each part.
 //
 // A host can also measure what the voices and the aux buses add to the main bus (Meters). The microcode has no such
 // meters.
@@ -90,20 +92,24 @@ private:
     void AddToLr(uint32_t surround, bool subtract_from_l, const Meters::Surround& returns);
     bool Process(uint32_t first);
     bool ProcessVoice();
+    bool ProcessVoiceOctober2006();
     void LoadAccelerator();
     int16_t ReadSample();
     void AtEnd();
     void StoreAccelerator();
-    void FourTap(uint16_t filter);
-    void Linear();
-    void Copy();
-    void Envelope();
-    void LowPass(uint16_t state, uint16_t from, uint16_t to);
+    void FourTap(uint16_t filter, uint16_t to, int samples);
+    void Linear(uint16_t to, int samples);
+    void Copy(uint16_t to, int samples);
+    void Envelope(uint16_t at, int samples);
+    void LowPass(uint16_t state, uint16_t from, uint16_t to, int samples = kSamplesPerFrame);
     void Biquad(uint16_t state, uint16_t from, uint16_t to);
+    void SecondFilter(uint16_t at);
     void MixBus(int bus, uint32_t bits);
+    void MixBusOctober2006(int bus, uint32_t bits, int part, uint16_t source, uint16_t left, uint16_t right);
     uint16_t MixChannel(uint16_t source, uint16_t volume, bool ramp, uint16_t bus, int samples,
                         int64_t* meter = nullptr);
     void Remote();
+    void RemoteOctober2006(int part, uint16_t source);
     void MixAux(int bus, uint16_t volume, uint32_t write, uint32_t read);
     void Compressor(uint16_t threshold, uint16_t release, uint32_t table);
     void WmOutput(const std::array<uint32_t, 4>& remotes);
@@ -111,6 +117,10 @@ private:
 
     void LoadPb(uint32_t address);
     void StorePb(uint32_t address);
+
+    // The DRAM word of the copy of the PB that holds the field that the later builds keep at `word`. The build of
+    // October 2006 keeps some fields elsewhere.
+    uint16_t Field(uint16_t word) const;
 
     Build build_ = Build::kDecember2006;
     ntdlib::dsp::WiiMemory* memory_ = nullptr;
@@ -121,7 +131,7 @@ private:
     std::array<uint16_t, 16> coefs_{};
 
     // Set once the voice reaches its end without a loop. The microcode's handler then points its sample reads at a
-    // zero in DRAM (0x0f61).
+    // zero in DRAM (0x0f61). In the build of October 2006, the reads stay stopped and give 0 (0x0f67).
     bool reads_zero_ = false;
 
     // The frame's meters, the meter of the PB that PROCESS mixes, and each meter's sums of the frame's left and right,

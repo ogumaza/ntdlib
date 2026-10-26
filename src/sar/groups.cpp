@@ -281,6 +281,40 @@ std::size_t ItemsEnd(std::span<const uint8_t> group, Flavor flavor)
     return body + 4 + (kReferenceSize + kItemEntrySize) * std::size_t{r.U32(body)};
 }
 
+// A group's file laid out as the tools lay it out: its contents, its header's 64 bytes, and whether zeros pad INFX.
+struct ToolsLayout
+{
+    GroupContents contents;
+    std::span<const uint8_t> header;
+    bool padded = false;
+    bool has_items = false; // the version holds INFX
+};
+
+// The layout of `group`, a group's file of `flavor`. Throws xsflib::FormatError for a group's file laid out another
+// way than the tools lay it out, and the exceptions of ReadGroupFile.
+ToolsLayout ToolsLayoutOf(std::span<const uint8_t> group, Flavor flavor)
+{
+    // The group's file has to come back as the tools lay it out. Zeros pad INFX unless it ends where its entries end.
+    // INFX starts on a multiple of 32 bytes, and its entries never end on one.
+    ToolsLayout layout;
+    layout.contents = ReadGroupFile(group, flavor);
+    const xsflib::Reader r(group, flavor == Flavor::kCafe);
+    const GroupBlocks blocks = BlocksOf(r, flavor);
+    layout.has_items = HasItems(flavor, r.U32(8));
+    if ((layout.has_items && !blocks.items) || group.size() < kHeaderSize)
+    {
+        throw xsflib::FormatError("a group's file laid out another way than the tools lay it out: it lacks INFX");
+    }
+    layout.padded = layout.has_items && blocks.items->first + blocks.items->second != ItemsEnd(group, flavor);
+    layout.header = group.first(kHeaderSize);
+    if (!std::ranges::equal(Build(layout.header, layout.contents, flavor, layout.padded), group))
+    {
+        throw xsflib::FormatError("a group's file laid out another way than the tools lay it out");
+    }
+
+    return layout;
+}
+
 // The groups that the list of `entry`, a file's entry of the file table, names. Nothing for an entry that holds no
 // list: an external file's. Throws xsflib::FormatError for an entry that ends before its list does.
 std::optional<std::vector<uint32_t>> ListOf(std::span<const uint8_t> entry, bool big_endian)
@@ -360,25 +394,27 @@ GroupContents ReadGroupFile(std::span<const uint8_t> group, Flavor flavor)
     return contents;
 }
 
+std::vector<GroupCopy> GroupCopies(std::span<const uint8_t> group, Flavor flavor)
+{
+    const xsflib::Reader r(group, flavor == Flavor::kCafe);
+    std::vector<GroupCopy> copies;
+    for (const CopyEntry& entry : EntriesOf(r, BlocksOf(r, flavor)))
+    {
+        if (entry.place)
+        {
+            static_cast<void>(r.Sub(*entry.place, entry.size));
+            copies.push_back({entry.file, *entry.place, entry.size});
+        }
+    }
+
+    return copies;
+}
+
 std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, std::span<const GroupMember> files,
                                std::span<const GroupItem> items)
 {
-    // The group's file has to come back as the tools lay it out. Zeros pad INFX unless it ends where its entries end.
-    // INFX starts on a multiple of 32 bytes, and its entries never end on one.
-    GroupContents contents = ReadGroupFile(group, flavor);
-    const xsflib::Reader r(group, flavor == Flavor::kCafe);
-    const GroupBlocks blocks = BlocksOf(r, flavor);
-    const bool has_items = HasItems(flavor, r.U32(8));
-    if ((has_items && !blocks.items) || group.size() < kHeaderSize)
-    {
-        throw xsflib::FormatError("a group's file laid out another way than the tools lay it out: it lacks INFX");
-    }
-    const bool padded = has_items && blocks.items->first + blocks.items->second != ItemsEnd(group, flavor);
-    const std::span<const uint8_t> header = group.first(kHeaderSize);
-    if (!std::ranges::equal(Build(header, contents, flavor, padded), group))
-    {
-        throw xsflib::FormatError("a group's file laid out another way than the tools lay it out");
-    }
+    ToolsLayout layout = ToolsLayoutOf(group, flavor);
+    GroupContents& contents = layout.contents;
 
     // The new files have to be all copies or all links, of the kind that the group holds.
     const auto has_copy = [](const GroupMember& member)
@@ -421,13 +457,42 @@ std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, st
             throw std::invalid_argument("the group lists item " + std::to_string(item.item) + " already");
         }
 
-        if (has_items)
+        if (layout.has_items)
         {
             contents.items.push_back(item);
         }
     }
 
-    return Build(header, contents, flavor, padded);
+    return Build(layout.header, contents, flavor, layout.padded);
+}
+
+std::vector<uint8_t> GroupWithCopies(std::span<const uint8_t> group, Flavor flavor, std::span<const GroupMember> copies)
+{
+    ToolsLayout layout = ToolsLayoutOf(group, flavor);
+    for (const GroupMember& member : copies)
+    {
+        const std::string name = "file " + std::to_string(member.file);
+        if (!member.copy)
+        {
+            throw std::invalid_argument("no bytes for " + name);
+        }
+
+        bool found = false;
+        for (GroupMember& held : layout.contents.files)
+        {
+            if (held.file == member.file && held.copy)
+            {
+                held.copy = member.copy;
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            throw std::invalid_argument("the group holds no copy of " + name);
+        }
+    }
+
+    return Build(layout.header, layout.contents, flavor, layout.padded);
 }
 
 std::vector<uint8_t> WithGroupLists(std::span<const uint8_t> archive, Flavor flavor, uint32_t group,

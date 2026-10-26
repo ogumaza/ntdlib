@@ -2,7 +2,7 @@
 
 // Checks the model of nn::atk's voices, channels and sequence player on the model of the renderer, without game data: a
 // low-level voice on the renderer, its queue of wave buffers, and small archives that play notes through the engine,
-// in the console's mode and in the enhanced mixing mode.
+// with effects on aux bus A, in the console's mode and in the enhanced mixing mode.
 
 #include <algorithm>
 #include <array>
@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -22,6 +23,7 @@
 
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nx/atk/channel.h"
+#include "ntdlib/nx/atk/effect.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/atk/hardware.h"
 #include "ntdlib/nx/atk/low_level_voice.h"
@@ -324,6 +326,49 @@ void TestAuxReverb()
     XSFLIB_CHECK(Sounds(std::span(reverberant).subspan(end + kRoundTrip)));
 }
 
+// The output of `frames` frames of the archive's sound, with `effect` on aux bus A.
+std::vector<int16_t> RenderWith(const std::vector<uint8_t>& bytecode, int frames,
+                                std::unique_ptr<atk::EffectBase> effect)
+{
+    const ntdlib::sar::SoundArchive archive = ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, bytecode, {ConstantPcmWave(kBigEndian, 48000)}), kSarOptions);
+    atk::ArchiveModel model(archive);
+    model.engine->AppendEffect(0, std::move(effect));
+    model.engine->StartSequence(0);
+
+    return RunFrames(model, frames);
+}
+
+void TestRendererEffects()
+{
+    // A note sent only to aux bus A. A delay of 5 ms there, with the input at full gain, no dry gain, no feedback and
+    // no low-pass filter, passes it through a frame late. A light limiter there with a threshold and gains of 1 and no
+    // look-ahead time passes it through a sample late, at the look-ahead of a sample.
+    const std::vector<uint8_t> kAux = {0xB0, 48, 0xE1, 120, 0x00, 0xDB, 0, 0xD9, 127, 60, 127, 24, 0xFF};
+    auto delay = std::make_unique<atk::EffectDelay>();
+    const bool longest_set = delay->SetDelayTimeMax(1000000000);
+    delay->SetDelayTime(5000000);
+    delay->SetInGain(1.0f);
+    delay->SetDryGain(0.0f);
+    delay->SetFeedbackGain(0.0f);
+    delay->SetLowPassAmount(0.0f);
+    auto limiter = std::make_unique<atk::EffectLightLimiter>();
+    limiter->SetLookAheadTime(0);
+    limiter->SetThreshold(1.0f);
+    constexpr std::size_t kFrame = 240 * 2;
+    constexpr std::size_t kSample = 2;
+
+    const std::vector<int16_t> dry = Render(kAux, 100);
+    const std::vector<int16_t> delayed = RenderWith(kAux, 100, std::move(delay));
+    const std::vector<int16_t> limited = RenderWith(kAux, 100, std::move(limiter));
+
+    XSFLIB_CHECK(longest_set && Sounds(dry));
+    XSFLIB_CHECK(!Sounds(std::span(delayed).first(kFrame)));
+    XSFLIB_CHECK(std::equal(dry.begin(), dry.end() - kFrame, delayed.begin() + kFrame));
+    XSFLIB_CHECK(!Sounds(std::span(limited).first(kSample)));
+    XSFLIB_CHECK(std::equal(dry.begin(), dry.end() - kSample, limited.begin() + kSample));
+}
+
 // An archive whose sequence plays two tracks that loop for ever. Track 0 plays a looping stereo wave in DSP-ADPCM at
 // 32 kHz, in notes of random lengths from 12 to 48 ticks, and sends to aux bus A. Track 1 plays a loud wave of 21 ms
 // that doesn't loop. Its voices stop at the wave's end, and the renderer's depop fades their last samples out. Without
@@ -469,6 +514,51 @@ void TestSnapshotOfAnotherModel()
 
     XSFLIB_CHECK(refused && refused_mixed);
     XSFLIB_CHECK(after == expected);
+}
+
+// A host may append the reverb itself, through a std::unique_ptr to the reverb's class. The call takes the overload for
+// aux effects, and the output is that of the reverb in the engine's options.
+void TestAppendReverb()
+{
+    enum class Bus
+    {
+        kA,
+    };
+    const ntdlib::sar::SoundArchive archive = LoopingArchive();
+    atk::ArchiveModel appended(archive);
+    atk::ArchiveModel optioned(archive, StageReverbOptions());
+    const std::optional<audio::I3dl2ReverbParameterSet> reverb = kStageReverb;
+    const Bus bus = Bus::kA;
+    appended.engine->AppendEffect(static_cast<int>(bus), std::make_unique<ntdlib::nx::atk::I3dl2AuxEffect>(*reverb));
+    appended.engine->StartSequence(0);
+    optioned.engine->StartSequence(0);
+
+    const std::vector<int16_t> out = RunFrames(appended, 300);
+
+    XSFLIB_CHECK(Sounds(out) && out == RunFrames(optioned, 300));
+}
+
+// A snapshot holds the renderer's effects on the buses: a delay with its feedback and a light limiter on aux bus A. The
+// frames after a restore repeat those after the save. A snapshot from before the effects were appended is refused.
+void TestSnapshotRendererEffects()
+{
+    const ntdlib::sar::SoundArchive archive = LoopingArchive();
+    atk::ArchiveModel model(archive);
+    const atk::ArchiveModel::Snapshot without_effects = model.Save();
+    model.engine->AppendEffect(0, std::make_unique<atk::EffectDelay>());
+    auto limiter = std::make_unique<atk::EffectLightLimiter>();
+    limiter->SetThreshold(0.05f);
+    model.engine->AppendEffect(0, std::move(limiter));
+    model.engine->StartSequence(0);
+    RunFrames(model, 100);
+    const atk::ArchiveModel::Snapshot later = model.Save();
+    const std::vector<int16_t> first = RunFrames(model, 200);
+
+    model.Restore(later);
+    const std::vector<int16_t> second = RunFrames(model, 200);
+
+    XSFLIB_CHECK(Sounds(first) && second == first);
+    XSFLIB_CHECK(Refuses(model, without_effects));
 }
 
 // A muted track plays on, and none of its sound reaches the output. With track 1 muted from the start, the output is
@@ -1240,10 +1330,13 @@ int main()
     TestNoteOffBeforeUpdate();
     TestAuxSend();
     TestAuxReverb();
+    TestRendererEffects();
     TestSnapshotRenders();
     TestSnapshotEveryFrame();
     TestSnapshotPlayers();
     TestSnapshotOfAnotherModel();
+    TestAppendReverb();
+    TestSnapshotRendererEffects();
     TestMuteTrack();
     TestMuteRelease();
     TestMuteThroughRestore();

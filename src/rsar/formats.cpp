@@ -914,6 +914,11 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
             s.channel_priority = r.U8(q + 8);
             s.release_priority_fix = version_ >= 0x0103 && r.U8(q + 9) != 0;
         }
+        else if (s.type == SoundType::kStream && detail.IsOffset() && options_.playback_fields)
+        {
+            s.allocate_channels = r.U16(q + 4);
+            s.allocate_track_flags = r.U16(q + 6);
+        }
 
         // Generate a name from the sound's type and index if the archive has none.
         const char* prefix = s.type == SoundType::kSequence    ? "SEQ_"
@@ -945,10 +950,14 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
         for_each_entry(base + 0x10, "player", read_player);
     }
 
-    // Each file lists the places in groups where the archive keeps it: a group and an item of the group.
+    // Each file lists the places in groups where the archive keeps it: a group and an item of the group. A file beside
+    // the archive has its path instead (SoundArchive::detail_OpenFileStream, main.dol 0x80041e60).
     std::vector<std::vector<FilePosition>> positions; // by file id
+    std::vector<std::optional<std::string>> paths;
     auto read_file = [&](uint32_t, std::size_t p, const Reference&)
     {
+        const Reference path = ReadRef(r, p + 0xC);
+        paths.push_back(path.IsOffset() ? std::optional(r.CString(base + path.offset, kMaxName)) : std::nullopt);
         std::vector<FilePosition>& places = positions.emplace_back();
         auto read_position = [&](uint32_t, std::size_t q, const Reference&)
         {
@@ -958,6 +967,10 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
     };
     for_each_entry(base + 0x18, "file", read_file);
     files_.resize(positions.size());
+    for (std::size_t id = 0; id < files_.size(); id++)
+    {
+        files_[id].path = std::move(paths[id]);
+    }
 
     // A group holds its files, and after them their wave data. A group with an external file path is kept outside the
     // archive (SoundArchiveFileReader::ReadGroupInfo, main.dol 0x80042ac4, and ReadGroupItemInfo, 0x80042bd4).
@@ -1047,6 +1060,11 @@ void SoundArchive::ReadTables(const xsflib::Reader& r)
         f.missing = f.missing && !f.found;
         f.wave_data_missing = f.wave_data_missing && !f.wave_data_found;
     }
+}
+
+std::optional<std::string> SoundArchive::ExternalPath(uint32_t file_id) const
+{
+    return file_id < files_.size() ? files_[file_id].path : std::nullopt;
 }
 
 std::optional<uint32_t> SoundArchive::FindSound(const std::string& name) const

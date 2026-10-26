@@ -6,11 +6,12 @@
 // linked file from the archive. The INFX block lists the items that the group loads: sounds, sound groups, banks and
 // wave archives, each with the parts that the group loads. The archive's group table gives each group's file, and the
 // file table gives each file a list of the groups that hold it. A game keeps some groups in files beside the archive.
-// The group table gives such a group no file. ReadGroupFile reads a group's file, and GroupWith adds files and items to
-// it. WithGroupMembers adds them to a group whose file the archive holds. WithGroupLists writes the groups into the
-// files' lists. GroupOfFile finds the group of a group's file that a game keeps beside an archive. EmptyGroupFile gives
-// the file of a new group, and WithNewGroup (ntdlib/sar/tables.h) adds the group to an archive. GroupSizeInArchive
-// gives the size of a group's file in the archive's file table.
+// The group table gives such a group no file. ReadGroupFile reads a group's file, and GroupCopies finds where its
+// copies lie. GroupWith adds files and items to a group's file, and GroupWithCopies gives its copies new bytes.
+// WithGroupMembers adds files and items to a group whose file the archive holds. WithGroupLists writes the groups into
+// the files' lists. GroupOfFile finds the group of a group's file that a game keeps beside an archive. EmptyGroupFile
+// gives the file of a new group, and WithNewGroup (ntdlib/sar/tables.h) adds the group to an archive.
+// GroupSizeInArchive gives the size of a group's file in the archive's file table.
 //
 // NintendoWare's tools lay a group's file out as a header of 64 bytes, then the INFO, FILE and INFX blocks, in that
 // order and without gaps. INFO holds the count of files and a reference to each file's entry, then the entries. An
@@ -86,6 +87,20 @@ std::size_t GroupSizeInArchive(std::span<const uint8_t> group, Flavor flavor);
 // end.
 GroupContents ReadGroupFile(std::span<const uint8_t> group, Flavor flavor);
 
+// A copy that a group's file holds: the file's ID, and where the copy lies in the group's file.
+struct GroupCopy
+{
+    friend bool operator==(const GroupCopy&, const GroupCopy&) = default;
+
+    uint32_t file = 0;
+    std::size_t start = 0;
+    std::size_t size = 0;
+};
+
+// The copies that `group`, a group's file of `flavor`, holds, in the order of INFO. A link has no copy. Throws the
+// exceptions of ReadGroupFile.
+std::vector<GroupCopy> GroupCopies(std::span<const uint8_t> group, Flavor flavor);
+
 // `group`, a group's file of `flavor`, with `files` after its files and `items` after its items, laid out as the tools
 // lay a group's file out. A group that holds copies takes copies, and a group that links takes links. A group without
 // files takes either, but not both. INFX keeps its padding, or its lack of padding. A group's file of the 3DS without
@@ -95,6 +110,14 @@ GroupContents ReadGroupFile(std::span<const uint8_t> group, Flavor flavor);
 // ReadGroupFile. GroupWith(group, flavor, {}, {}) gives every other group's file back byte for byte.
 std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, std::span<const GroupMember> files,
                                std::span<const GroupItem> items);
+
+// `group`, a group's file of `flavor`, in which each copy of a file of `copies` holds the member's bytes, laid out as
+// the tools lay a group's file out. The copies after one of another size move. Throws std::invalid_argument for a file
+// that the group holds no copy of, and a member without bytes. Throws xsflib::FormatError for a group's file laid out
+// another way than the tools lay it out, and the exceptions of ReadGroupFile. GroupWithCopies(group, flavor, {}) gives
+// every other group's file back byte for byte.
+std::vector<uint8_t> GroupWithCopies(std::span<const uint8_t> group, Flavor flavor,
+                                     std::span<const GroupMember> copies);
 
 // `archive`, an archive of `flavor`, in which the list of groups of each file of `files` names group `group`: the file
 // of each copy, and of each link but a wave archive's file. A list that names the group already stays as it is. The

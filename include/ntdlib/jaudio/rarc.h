@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -13,18 +15,30 @@
 namespace ntdlib::jaudio
 {
 
-// A file of a sequence archive (RARC).
+// A file of a sequence archive (RARC), or a sequence of a sequence index (barc.h).
 struct ArchiveFile
 {
     uint16_t id = 0;
     std::string name;
     std::span<const uint8_t> data;
+
+    // For a sequence of a sequence index: the number of the sequence whose data the game reads. An entry of an index
+    // can name a sequence whose data it shares, and that sequence can name another. The game follows the names to a
+    // sequence that shares no other sequence's data (0x27a840 and 0x27a8a0 in the main of the Switch's release of
+    // Pikmin). `data` stays the data that the entry itself gives. Nothing for the files of other archives.
+    std::optional<uint16_t> data_id;
 };
 
-// Reads the files of an RARC archive. The spans point into `rarc`. An archive that starts with "CRAR" is little-endian.
-// The Switch's releases of GameCube and Wii games store their archives that way. Throws FormatError if it isn't an
-// archive.
-std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc);
+// The size of an archive's file entry. The Switch's release of Pikmin 2 has wide entries: each ends with a field of 8
+// bytes in place of 4 (its archive's lookup of a file, 0x3ef4b8 in its main). The archive itself doesn't say which
+// size it uses.
+inline constexpr std::size_t kRarcEntrySize = 20;
+inline constexpr std::size_t kWideRarcEntrySize = 24;
+
+// Reads the files of an RARC archive whose file entries take `entry_size` bytes. The spans point into `rarc`. An
+// archive that starts with "CRAR" is little-endian. The Switch's releases of GameCube and Wii games store their
+// archives that way. Throws FormatError if it isn't an archive.
+std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc, std::size_t entry_size = kRarcEntrySize);
 
 // Whether `data` is compressed with Yaz0: whether it starts with "Yaz0".
 bool IsYaz0(std::span<const uint8_t> data);

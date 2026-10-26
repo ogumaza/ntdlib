@@ -109,9 +109,10 @@ struct Cutting
     std::vector<GroupFileLayout> group_files;
 };
 
-// Cuts `sources`, the archive and the group files beside it, by their structures and the rules of `container`. Throws
+// Cuts `sources`, the archive and the group files beside it, by their structures and the rules of `container`. A
+// sequence file of `known` takes the commands that `known` gives it where they give its bytes back (sar::Cut). Throws
 // xsflib::FormatError for a field that the pieces can't place.
-Cutting CutBy(std::span<const Source> sources, const Container& container);
+Cutting CutBy(std::span<const Source> sources, const Container& container, const KnownSequences& known = {});
 
 // The archive's bytes from its pieces by the rules of `container`. Throws the exceptions of Join (sar/layout.h).
 std::vector<uint8_t> JoinBy(const Container& container, std::span<const commands::Sequence> sequences,

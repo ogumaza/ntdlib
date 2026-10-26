@@ -122,6 +122,42 @@ void SetBlock(Out& out, std::size_t index, uint16_t type, std::size_t start)
     out.U32(entry + 8, size);
 }
 
+// The start of the table of waves of `file`, a bank file or a wave sound file of `flavor`, and a reader of the file in
+// its byte order. The table holds a count, then a wave archive's item ID and a wave's index for each wave. Throws
+// xsflib::FormatError for bytes that aren't such a file, a file of another console, a file without a table of waves,
+// and a table past the file's end.
+std::pair<std::size_t, xsflib::Reader> WaveTableOf(std::span<const uint8_t> file, Flavor flavor)
+{
+    // The file's kind and console. INFO's first two references lead to its tables.
+    const bool bank = file.size() >= 4 && std::memcmp(file.data() + 1, "BNK", 3) == 0;
+    if (!bank && (file.size() < 4 || std::memcmp(file.data() + 1, "WSD", 3) != 0))
+    {
+        throw xsflib::FormatError("not a bank file or a wave sound file");
+    }
+    const auto [read_flavor, r] = Open(file, bank ? "BNK" : "WSD", bank ? "bank file" : "wave sound file");
+    if (read_flavor != flavor)
+    {
+        throw xsflib::FormatError("a file of another console");
+    }
+    const std::size_t info = BlockOf(r, bank ? kBankInfoBlock : kWaveSoundInfoBlock, "INFO").first + 8;
+    std::optional<std::size_t> table;
+    for (std::size_t i = 0; i < 2; ++i)
+    {
+        const int32_t offset = r.S32(info + i * 8 + 4);
+        if (r.U16(info + i * 8) == kWaveTableReference && offset >= 0)
+        {
+            table = info + static_cast<std::size_t>(offset);
+        }
+    }
+    if (!table)
+    {
+        throw xsflib::FormatError("a file without a table of waves");
+    }
+    r.Sub(*table + 4, std::size_t{r.U32(*table)} * 8);
+
+    return {*table, r};
+}
+
 } // namespace
 
 WaveFile WaveFile::Read(std::span<const uint8_t> file)
@@ -323,44 +359,53 @@ std::vector<uint8_t> WaveArchiveFile::Write() const
 std::vector<uint8_t> WithWaveArchives(std::span<const uint8_t> file, Flavor flavor,
                                       const std::map<uint32_t, uint32_t>& wave_archives)
 {
-    // The file's kind and console. INFO's first two references lead to its tables.
-    const bool bank = file.size() >= 4 && std::memcmp(file.data() + 1, "BNK", 3) == 0;
-    if (!bank && (file.size() < 4 || std::memcmp(file.data() + 1, "WSD", 3) != 0))
-    {
-        throw xsflib::FormatError("not a bank file or a wave sound file");
-    }
-    const auto [read_flavor, r] = Open(file, bank ? "BNK" : "WSD", bank ? "bank file" : "wave sound file");
-    if (read_flavor != flavor)
-    {
-        throw xsflib::FormatError("a file of another console");
-    }
-    const std::size_t info = BlockOf(r, bank ? kBankInfoBlock : kWaveSoundInfoBlock, "INFO").first + 8;
-    std::optional<std::size_t> table;
-    for (std::size_t i = 0; i < 2; ++i)
-    {
-        const int32_t offset = r.S32(info + i * 8 + 4);
-        if (r.U16(info + i * 8) == kWaveTableReference && offset >= 0)
-        {
-            table = info + static_cast<std::size_t>(offset);
-        }
-    }
-    if (!table)
-    {
-        throw xsflib::FormatError("a file without a table of waves");
-    }
-
     // Each wave's wave archive, mapped.
-    const uint32_t count = r.U32(*table);
-    r.Sub(*table + 4, std::size_t{count} * 8);
-    std::vector<uint8_t> bytes(file.begin(), file.end());
-    for (uint32_t i = 0; i < count; ++i)
+    std::vector<WaveId> waves = WaveTable(file, flavor);
+    for (WaveId& wave : waves)
     {
-        const std::size_t at = *table + 4 + std::size_t{i} * 8;
-        const auto mapped = wave_archives.find(r.U32(at));
+        const auto mapped = wave_archives.find(wave.wave_archive_item);
         if (mapped != wave_archives.end())
         {
-            r.BigEndian() ? xsflib::StoreBe32(&bytes[at], mapped->second)
-                          : xsflib::StoreLe32(&bytes[at], mapped->second);
+            wave.wave_archive_item = mapped->second;
+        }
+    }
+
+    return WithWaveTable(file, flavor, waves);
+}
+
+std::vector<WaveId> WaveTable(std::span<const uint8_t> file, Flavor flavor)
+{
+    const auto [table, r] = WaveTableOf(file, flavor);
+    std::vector<WaveId> waves(r.U32(table));
+    for (std::size_t i = 0; i < waves.size(); ++i)
+    {
+        waves[i] = {.wave_archive_item = r.U32(table + 4 + i * 8), .index = r.U32(table + 8 + i * 8)};
+    }
+
+    return waves;
+}
+
+std::vector<uint8_t> WithWaveTable(std::span<const uint8_t> file, Flavor flavor, std::span<const WaveId> waves)
+{
+    const auto [table, r] = WaveTableOf(file, flavor);
+    if (r.U32(table) != waves.size())
+    {
+        throw std::invalid_argument("a table of waves of another length");
+    }
+
+    std::vector<uint8_t> bytes(file.begin(), file.end());
+    for (std::size_t i = 0; i < waves.size(); ++i)
+    {
+        uint8_t* entry = &bytes[table + 4 + i * 8];
+        if (r.BigEndian())
+        {
+            xsflib::StoreBe32(entry, waves[i].wave_archive_item);
+            xsflib::StoreBe32(entry + 4, waves[i].index);
+        }
+        else
+        {
+            xsflib::StoreLe32(entry, waves[i].wave_archive_item);
+            xsflib::StoreLe32(entry + 4, waves[i].index);
         }
     }
 

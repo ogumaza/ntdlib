@@ -2,8 +2,9 @@
 
 // Tests of the groups of sound archives and their files (ntdlib/sar/groups.h). The tests lay their groups and archives
 // out as NintendoWare's tools do, with ntdlib/testing/sar_tools.h: a group that holds copies of its files, one that
-// links to them, one that ends without padding, and one without files. GroupWith gives each back, and adds files and
-// items to it. WithGroupLists names a group in the files' lists. WithGroupMembers adds files to a group whose file the
+// links to them, one that ends without padding, and one without files. ReadGroupFile and GroupCopies read each.
+// GroupWith gives each back, and adds files and items to it. GroupWithCopies gives each back, and gives its copies new
+// bytes. WithGroupLists names a group in the files' lists. WithGroupMembers adds files to a group whose file the
 // archive holds. GroupOfFile finds the group of a group's file beside an archive. The 3DS's groups' files come in two
 // versions: 1.0.0.0 without items, and 1.1.0.0 with them. The 3DS's file table holds no lists.
 
@@ -116,6 +117,8 @@ std::vector<uint8_t> Bytes(std::span<const uint8_t> bytes)
 }
 
 // ReadGroupFile gives each file with its copy, or as a link, and each item with the parts that the group loads.
+// GroupCopies gives where each copy lies: on a multiple of 64 bytes on the Switch, and of 32 bytes on the other
+// consoles. A link has no copy.
 void TestRead(Flavor flavor, uint32_t version = kCtrFirst)
 {
     const sar::GroupContents copies = sar::ReadGroupFile(sar_tools::Group(flavor, Copies(version)), flavor);
@@ -128,6 +131,21 @@ void TestRead(Flavor flavor, uint32_t version = kCtrFirst)
     XSFLIB_CHECK((links.files == std::vector<GroupMember>{{3, std::nullopt}, {5, std::nullopt}}));
     XSFLIB_CHECK(none.files.empty() && none.items.empty());
     XSFLIB_CHECK(!ErrorOf<xsflib::FormatError>([&] { sar::ReadGroupFile(kWaves, flavor); }).empty());
+
+    const std::vector<uint8_t> group = sar_tools::Group(flavor, Copies(version));
+    const std::vector<sar::GroupCopy> places = sar::GroupCopies(group, flavor);
+    const std::size_t alignment = flavor == Flavor::kNx ? 64 : 32;
+    XSFLIB_CHECK(places.size() == 2 && copies.files.size() == 2);
+    for (std::size_t i = 0; i < places.size() && i < copies.files.size(); ++i)
+    {
+        const sar::GroupCopy& place = places[i];
+        XSFLIB_CHECK(place.file == copies.files[i].file && place.start % alignment == 0);
+        XSFLIB_CHECK(place.start + place.size <= group.size() &&
+                     Bytes(std::span(group).subspan(place.start, place.size)) == copies.files[i].copy);
+    }
+    XSFLIB_CHECK(sar::GroupCopies(sar_tools::Group(flavor, Links(version)), flavor).empty());
+    XSFLIB_CHECK(sar::GroupCopies(sar_tools::Group(flavor, Empty(version)), flavor).empty());
+    XSFLIB_CHECK(!ErrorOf<xsflib::FormatError>([&] { sar::GroupCopies(kWaves, flavor); }).empty());
 
     // A file of another kind, in the console's byte order.
     std::vector<uint8_t> other = sar_tools::Group(flavor, Copies(version));
@@ -206,6 +224,56 @@ void TestGroupWithRefusals(Flavor flavor, uint32_t version = kCtrFirst)
     XSFLIB_CHECK(other_layout(longer) == "a group's file laid out another way than the tools lay it out");
     XSFLIB_CHECK(other_layout(moved) == "a group's file laid out another way than the tools lay it out");
     XSFLIB_CHECK(other_layout(copies).empty());
+}
+
+// GroupWithCopies gives each group back without new bytes, and with the bytes that its copies hold. A copy of another
+// size moves the copies after it. A link and a file that the group doesn't hold take no bytes.
+void TestGroupWithCopies(Flavor flavor, uint32_t version = kCtrFirst)
+{
+    const std::vector<uint8_t> big(70, 0x5A);
+    const auto copied = [flavor](sar_tools::GroupSpec spec, uint32_t file, const std::vector<uint8_t>& bytes)
+    {
+        for (auto& [id, copy] : spec.files)
+        {
+            if (id == file)
+            {
+                copy = bytes;
+            }
+        }
+
+        return sar_tools::Group(flavor, spec);
+    };
+
+    for (const sar_tools::GroupSpec& spec : {Copies(version), Links(version), Unpadded(version), Empty(version)})
+    {
+        const std::vector<uint8_t> group = sar_tools::Group(flavor, spec);
+        XSFLIB_CHECK(sar::GroupWithCopies(group, flavor, {}) == group);
+    }
+    for (const sar_tools::GroupSpec& spec : {Copies(version), Unpadded(version)})
+    {
+        const std::vector<uint8_t> group = sar_tools::Group(flavor, spec);
+        XSFLIB_CHECK(sar::GroupWithCopies(group, flavor, {{{3, big}}}) == copied(spec, 3, big));
+        XSFLIB_CHECK(sar::GroupWithCopies(group, flavor, {{{5, kOther}}}) == copied(spec, 5, kOther));
+        XSFLIB_CHECK(sar::GroupWithCopies(group, flavor, {{{3, kBank}}}) == group);
+    }
+    const std::vector<uint8_t> copies = sar_tools::Group(flavor, Copies(version));
+    const std::vector<sar::GroupCopy> before = sar::GroupCopies(copies, flavor);
+    const std::vector<sar::GroupCopy> after =
+        sar::GroupCopies(sar::GroupWithCopies(copies, flavor, {{{3, big}}}), flavor);
+    XSFLIB_CHECK(before.size() == 2 && after.size() == 2 && after.back().start > before.back().start);
+
+    const std::vector<uint8_t> links = sar_tools::Group(flavor, Links(version));
+    std::vector<uint8_t> longer = copies;
+    longer.push_back(0);
+    const auto refusal = [flavor](const std::vector<uint8_t>& group, std::vector<GroupMember> members)
+    {
+        return ErrorOf<std::invalid_argument>([&] { sar::GroupWithCopies(group, flavor, members); });
+    };
+    XSFLIB_CHECK(refusal(links, {{3, kOther}}) == "the group holds no copy of file 3");
+    XSFLIB_CHECK(refusal(copies, {{7, kOther}}) == "the group holds no copy of file 7");
+    XSFLIB_CHECK(refusal(copies, {{3, std::nullopt}}) == "no bytes for file 3");
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sar::GroupWithCopies(longer, flavor, {}); }) ==
+                 "a group's file laid out another way than the tools lay it out");
 }
 
 // An archive with a sequence file, a bank's file, a wave archive's file, a group's file that holds a copy of the bank
@@ -459,6 +527,7 @@ int main()
         TestRead(flavor);
         TestGroupWith(flavor);
         TestGroupWithRefusals(flavor);
+        TestGroupWithCopies(flavor);
         TestLists(flavor);
         TestMembers(flavor);
         TestMembersNamedInGroups(flavor);
@@ -469,6 +538,7 @@ int main()
         TestRead(Flavor::kCtr, version);
         TestGroupWith(Flavor::kCtr, version);
         TestGroupWithRefusals(Flavor::kCtr, version);
+        TestGroupWithCopies(Flavor::kCtr, version);
         TestMembers(Flavor::kCtr, version);
         TestMembersNamedInGroups(Flavor::kCtr, version);
     }
