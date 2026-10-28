@@ -13,6 +13,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -67,6 +68,9 @@ GameRules RulesOf(const std::string& archive_sha1)
     // The Wind Waker: the SHA-1s of the USA release's start-up archive on the GameCube and in The Wind Waker HD.
     constexpr std::array<std::string_view, 2> kWindWaker{"65ea70655099a196e0707bf4e4ce61e7818553d9",
                                                          "c66c0103a5c7c1292b5fc6c3371ed1458035cde7"};
+    // Pikmin 2: the SHA-1s of the USA release's start-up archive on the GameCube and on the Wii.
+    constexpr std::array<std::string_view, 2> kPikmin2{"a8b63d2f333c34aaf9cb859f37f23011149af917",
+                                                       "6747c3c7bce964bc62f817e1c8c32711c905c4c3"};
     GameRules rules;
     if (std::ranges::find(kWindWaker, archive_sha1) != kWindWaker.end())
     {
@@ -113,6 +117,14 @@ GameRules RulesOf(const std::string& archive_sha1)
         TrackMask select = kEveryTrack;
         select[0] = 1u << 2 | 1u << 7;
         rules.tracks[0x0100001a] = select;
+    }
+
+    if (std::ranges::find(kPikmin2, archive_sha1) != kPikmin2.end())
+    {
+        // The sound table's first sequence is a jingle. The game's sound layer starts se.bms as its effects sequence:
+        // the function at 0x80335728 in the GameCube's main.dol makes the sequence's object with that name
+        // (0x8051e134) at 0x803359c0.
+        rules.effects_sequence = "se.bms";
     }
 
     return rules;
@@ -289,6 +301,7 @@ void Game::OpenArchive(std::vector<uint8_t> bytes)
     jaudio1_ = true;
     rules_.default_release = 0x10;
     effects_file_ = ntdlib::jaudio::AafEffectsSequenceFile(bytes);
+    effect_slot_counts_ = ntdlib::jaudio::AafEffectSlotCounts(bytes);
     archive_ = std::make_unique<SoundArchive>(SoundArchive::ParseAaf(std::move(bytes)));
 }
 
@@ -344,6 +357,16 @@ void Game::FindSequences()
         catch (const FormatError& e)
         {
             warnings_.push_back(sequence_archive_name_ + ": " + e.what() + ": its music is skipped");
+        }
+    }
+
+    // A game's rules can name its effects sequence's file.
+    if (jaudio1_ && !rules_.effects_sequence.empty())
+    {
+        const auto named = std::ranges::find(sequence_files_, rules_.effects_sequence, &ArchiveFile::name);
+        if (named != sequence_files_.end())
+        {
+            effects_file_ = named->id;
         }
     }
 
@@ -459,11 +482,21 @@ void Game::FindSequences()
 
 SequenceSound Game::EffectSound(const SoundEntry& s, std::span<const uint8_t> sequence) const
 {
-    // The first slot of the effect's category, with JAudio1's default table of categories: four slots each
-    // (JAInter::Const::sCInfos_0). Only the slot's track plays.
+    // The first slot of the effect's category. The effects manager numbers the slots of the categories in turn, from
+    // category 0 (JAInter::SeMgr::checkPlayingSe, 0x800aede4 in Pikmin 2's main.dol). The AAF's table of scenes gives
+    // each category its count. Without the table, each category has four (JAInter::Const::sCInfos_0). A category past
+    // the table's row starts after the row's last slot. Only the slot's track plays.
     constexpr uint32_t kSlotsPerCategory = 4;
     const uint32_t category = ntdlib::jaudio::AafCategory(s.Id());
-    const auto slot = static_cast<uint8_t>(kSlotsPerCategory * category);
+    uint32_t first_slot = kSlotsPerCategory * category;
+    if (effect_slot_counts_)
+    {
+        const std::span<const uint8_t> counts = *effect_slot_counts_;
+        const auto before = counts.first(std::min<std::size_t>(category, counts.size()));
+        first_slot = std::accumulate(before.begin(), before.end(), 0u);
+    }
+
+    const auto slot = static_cast<uint8_t>(first_slot);
 
     // The name file gives some effects their IDs without bits 10 and 11. The game keeps such an effect going by
     // starting it again (kAafToEnd).

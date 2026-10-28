@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
@@ -141,6 +142,33 @@ float OscillatorState::Value() const
     }
 
     return level_ * osc_->scale + osc_->vertex;
+}
+
+bool OscillatorState::HoldsSilent() const
+{
+    if (osc_ == nullptr || state_ != State::kHold || osc_->vertex != 0.0f || Value() != 0.0f)
+    {
+        return false;
+    }
+    if (osc_->scale == 0.0f)
+    {
+        return true;
+    }
+
+    // The release starts from the held level of 0 and moves to its points' values. A release table that is the attack
+    // table carries on from the hold point, and a loop can reach any point of it.
+    std::span<const OscPoint> release = osc_->release;
+    const bool loops = std::ranges::any_of(release, [](const OscPoint& p) { return p.mode == kModeLoop; });
+    if (osc_->release_is_attack && !loops)
+    {
+        release = release.subspan(std::min(point_ + 1, release.size()));
+    }
+
+    const auto stays_silent = [](const OscPoint& p)
+    {
+        return p.mode == kModeLoop || p.mode == kModeHold || p.mode == kModeStop || p.value == 0;
+    };
+    return std::ranges::all_of(release, stays_silent);
 }
 
 void OscillatorState::Update()

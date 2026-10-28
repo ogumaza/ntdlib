@@ -3464,28 +3464,35 @@ std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity,
 {
     // JASTrack::channelStart and JASBank::noteOn: find what the program plays, and start a channel on a voice.
     Track& tr = TrackAt(t);
-    if (tr.program >= 0xf0)
+    std::optional<NoteSound> found;
+    if (tr.program >= kFirstOscillatorProgram)
     {
-        Approximate("notes on the DSP's oscillators omitted");
-        return std::nullopt;
+        found = FindOscillatorSound(tr.bank, tr.program);
+        if (!found)
+        {
+            Approximate("notes on the DSP's noise, ramp and other oscillators omitted");
+            return std::nullopt;
+        }
     }
-
-    const Bank* bank = banks_.Archive().FindBank(tr.bank);
-    if (bank == nullptr)
+    else
     {
-        Approximate("notes on a missing bank omitted");
-        return std::nullopt;
-    }
+        const Bank* bank = banks_.Archive().FindBank(tr.bank);
+        if (bank == nullptr)
+        {
+            Approximate("notes on a missing bank omitted");
+            return std::nullopt;
+        }
 
-    const std::optional<NoteSound> found = FindSound(*bank, tr.program, key, velocity);
-    if (!found)
-    {
-        return std::nullopt;
+        found = FindSound(*bank, tr.program, key, velocity);
+        if (!found)
+        {
+            return std::nullopt;
+        }
     }
 
     const Pcm* pcm = banks_.GetWave(found->wave_system, found->wave_id);
-    const WaveSystem* ws = banks_.Archive().FindWaveSystem(found->wave_system);
-    if (pcm == nullptr || ws == nullptr)
+    const WaveInfo* wave = FindWave(banks_.Archive(), found->wave_system, found->wave_id);
+    if (pcm == nullptr || wave == nullptr)
     {
         return std::nullopt;
     }
@@ -3509,7 +3516,7 @@ std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity,
     Channel ch;
     ch.track = t;
     ch.sound = *found;
-    ch.sound.wave = &ws->waves.at(found->wave_id);
+    ch.sound.wave = wave;
     ch.key = static_cast<uint8_t>(std::clamp(key, 0, 127));
     ch.velocity = static_cast<uint8_t>(std::clamp(velocity, 0, 127));
     ch.init_pitch = found->pitch * (ch.sound.wave->sample_rate / kDacRate);
@@ -3810,6 +3817,7 @@ void Performer::UpdateChannel(Channel& ch)
     }
 
     float osc_volume = 1.0f, osc_pitch = 1.0f;
+    bool silenced = false;
     for (std::size_t i = 0; i < 2; i++)
     {
         if (!ch.osc[i].Valid())
@@ -3821,12 +3829,21 @@ void Performer::UpdateChannel(Channel& ch)
         if (ch.osc_data[i]->target == 0)
         {
             osc_volume *= value;
+            silenced = silenced || ch.osc[i].HoldsSilent();
         }
         else if (ch.osc_data[i]->target == 1)
         {
             osc_pitch *= value;
         }
     }
+
+    // A volume oscillator that holds at 0 silences the channel for good. The game keeps the channel, but the MIDI note
+    // ends here. The zone's release then ends its sound. The zone's decay alone would let it ring on.
+    if (silenced)
+    {
+        MidiNoteOff(static_cast<std::size_t>(&ch - channels_.data()));
+    }
+
     ch.envelope = osc_volume;
     ch.envelope_heard = ch.envelope_heard || !Inaudible(osc_volume);
     ch.level = ChannelVolume(ch, osc_volume);
@@ -4321,14 +4338,20 @@ void Performer::MidiNoteOn(std::size_t c)
     ch.slot = SlotOf(t);
     ch.midi_id = recorder_.NextNote();
 
-    // A note that ties take above its velocity starts at the highest they reach. The instrument has to play the same
-    // wave at that velocity. CC11 lowers the note until then.
+    // A note that ties take above its velocity starts at the highest they reach. CC11 lowers the note until then. The
+    // instrument has to play the same wave at that velocity. An oscillator plays the same waveform at every velocity.
     const auto planned = tie_velocities_in_.find(ch.midi_id);
     if (planned != tie_velocities_in_.end())
     {
-        const Bank* bank = banks_.Archive().FindBank(ch.sound.bank);
-        const std::optional<NoteSound> higher =
-            bank != nullptr ? FindSound(*bank, ch.sound.program, ch.key, planned->second) : std::nullopt;
+        std::optional<NoteSound> higher;
+        if (ch.sound.program >= kFirstOscillatorProgram)
+        {
+            higher = FindOscillatorSound(ch.sound.bank, ch.sound.program);
+        }
+        else if (const Bank* bank = banks_.Archive().FindBank(ch.sound.bank))
+        {
+            higher = FindSound(*bank, ch.sound.program, ch.key, planned->second);
+        }
         if (higher && higher->wave_system == ch.sound.wave_system && higher->wave_id == ch.sound.wave_id)
         {
             ch.midi_velocity = planned->second;

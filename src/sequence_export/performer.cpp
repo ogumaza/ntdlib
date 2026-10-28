@@ -3570,7 +3570,7 @@ bool Performer::NoteOn(int t, int key, int velocity, int32_t length, bool drop)
         {
             if (other.key_group == n.key_group)
             {
-                ReleaseNote(t, other, Wii() ? -1 : 126);
+                ReleaseNote(t, other, Wii() ? -1 : kKeyGroupRelease);
             }
         }
     }

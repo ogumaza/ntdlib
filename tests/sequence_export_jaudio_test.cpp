@@ -367,6 +367,44 @@ void TestOscillatorWithoutReleaseTable()
     Check(fallback.Stopped(), "the default release stops at its end");
 }
 
+void TestHoldsSilent()
+{
+    // A decay to silence over 60 units that holds there. A release then stays silent unless its table rises. A release
+    // table that is the attack table carries on from the hold. A hold at full level isn't silent.
+    Oscillator falls;
+    falls.attack = {{0, 0, 0x7fff}, {0, 60, 0}, {14, 0, 0}};
+    falls.release = {{0, 30, 0}, {15, 0, 0}};
+    Oscillator bare = falls;
+    bare.release.clear();
+    Oscillator rises = falls;
+    rises.release = {{0, 30, 0x4000}, {15, 0, 0}};
+    Oscillator goes_on = falls;
+    goes_on.attack.push_back({0, 30, 0x7fff});
+    goes_on.release = goes_on.attack;
+    goes_on.release_is_attack = true;
+    Oscillator full;
+    full.attack = {{0, 0, 0x7fff}, {14, 0, 0}};
+    std::array<OscillatorState, 5> s;
+    const std::array<const Oscillator*, 5> oscs{&falls, &bare, &rises, &goes_on, &full};
+
+    for (std::size_t i = 0; i < s.size(); i++)
+    {
+        s[i].Start(*oscs[i]);
+        s[i].Advance(30.0f);
+    }
+    const bool early = s[0].HoldsSilent();
+    for (OscillatorState& o : s)
+    {
+        o.Advance(30.0f);
+    }
+
+    Check(!early && s[0].Holding() && s[0].HoldsSilent(), "a decay that holds at 0 is silent from the hold on");
+    Check(s[1].HoldsSilent(), "so is one without a release table");
+    Check(s[2].Holding() && !s[2].HoldsSilent(), "a release table that rises can sound again");
+    Check(s[3].Holding() && !s[3].HoldsSilent(), "so can an attack table that rises after the hold");
+    Check(!s[4].HoldsSilent(), "a hold at full level isn't silent");
+}
+
 void TestEnvelopeFit()
 {
     Oscillator osc;
@@ -491,6 +529,49 @@ void TestOscillatorScale()
     Check(scale(adsr) == 1.0f && std::abs(peak(adsr_zones)) < 0.01, "a simple ADSR sets the scale back to 1");
     Check(bare.presets.size() == 1 && bare.presets[0].volume_oscillator == -1 && std::abs(peak(bare_zones)) < 0.01,
           "without a table, the scale leaves the instrument's oscillator alone");
+}
+
+// Track 0 sets its volume table at kTable and holds key 60 for 96 ticks, a second. The table rises to full level at
+// once. It then holds there, or with `decays` falls to silence over 60 units, a tenth of a second, and holds at 0.
+// Return the tick of the MIDI note's note-off, or -1 without one.
+int64_t NoteOffTick(bool decays)
+{
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.Bank(0).Program(0).OscillatorTable(0, kTable).NoteOn(60, 1, 127).Wait(96).NoteOff(1).Finish().PadTo(kTable);
+    s.Point(0, 0, 0x7fff);
+    if (decays)
+    {
+        s.Point(0, 60, 0);
+    }
+    s.Point(14, 0, 0);
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+
+    const Performance perf = Perform(game.Sound(0), game.banks, {}, kProgram);
+
+    for (const std::vector<TrackEvent>& events : perf.tracks)
+    {
+        for (const TrackEvent& e : events)
+        {
+            if (e.kind == EventKind::kNoteOff && e.key == 60)
+            {
+                return e.tick;
+            }
+        }
+    }
+
+    return -1;
+}
+
+void TestNoteEndsWhenItsVolumeHoldsAtZero()
+{
+    // The game keeps a channel whose volume holds at 0 until its note-off, but nothing sounds. The MIDI note ends where
+    // the volume reaches 0: a tenth of a second at 96 ticks a second.
+    const int64_t silenced = NoteOffTick(true);
+    const int64_t held = NoteOffTick(false);
+
+    Check(silenced >= 9 && silenced <= 11, "a note ends where its volume holds at 0");
+    Check(held == 96, "a note that holds at full level ends at its note-off");
 }
 
 void TestSweepAndTie()
@@ -908,6 +989,61 @@ void TestConversion()
     Check(sfz_problem.empty(), "the SFZ files match the MIDI file: " + sfz_problem);
 }
 
+// Program 0xf3 plays the DSP's pulse of 25% duty, and needs no bank. Its cycle lasts 32 samples at 16,736 Hz: key 60
+// plays 523 Hz. The PCM holds the cycle in 256 samples at 33,472 Hz, two octaves below, and the zone plays it two
+// octaves up. The pulse's last quarter is high, at 0x4000. Program 0xfb's noise is left out and reported.
+void TestOscillatorNotes()
+{
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.Bank(5).Program(0xf3).NoteOn(60, 1, 100).Wait(48).NoteOff(1).Program(0xfb).NoteOn(60, 1, 100).Wait(48);
+    s.NoteOff(1).Finish();
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+
+    const Conversion c = ConvertSequence(game.Sound(0), game.banks, {}, kProgram);
+    const std::vector<PresetZone> zones =
+        c.performance.presets.size() == 1 ? ZonesOf(0, c.performance, game.banks) : std::vector<PresetZone>{};
+    const Pcm* pcm = game.banks.GetWave(kOscillatorWaveSystem, 3);
+
+    Check(Count(c.performance, 0, EventKind::kNoteOn) == 1, "the pulse plays its note, and the noise none");
+    Check(c.performance.approximations.contains("notes on the DSP's noise, ramp and other oscillators omitted"),
+          "the noise's note is reported");
+    Check(zones.size() == 1 && zones[0].low_key == 0 && zones[0].high_key == 127 && zones[0].root_key == 60 &&
+              std::abs(zones[0].cents - 2400.0) < 1e-9 && zones[0].wave_system == kOscillatorWaveSystem &&
+              zones[0].wave_id == 3,
+          "one zone plays the pulse two octaves above the PCM's rate");
+    Check(pcm && pcm->loop && pcm->loop_start == 0 && pcm->loop_end == 256 && pcm->Length() == 256 &&
+              std::lround(pcm->sample_rate) == 33472,
+          "the PCM loops a cycle of 256 samples at 33,472 Hz");
+    Check(pcm && pcm->Length() == 256 &&
+              std::count(pcm->channels[0].begin(), pcm->channels[0].begin() + 192, int16_t{-0x4000}) == 192 &&
+              std::count(pcm->channels[0].begin() + 192, pcm->channels[0].end(), int16_t{0x4000}) == 64,
+          "the pulse is high in the last quarter of its cycle");
+    Check(c.samples == 1 && Joined(seqlib::sf2::Check(c.sf2)).empty(), "the SoundFont holds the pulse's sample");
+    Check(!game.banks.GetWave(kOscillatorWaveSystem, 11), "the noise has no PCM");
+}
+
+// An oscillator plays the same waveform at every velocity. A tie that doubles the velocity of a note on the square
+// wave therefore starts the MIDI note at the higher velocity. TestSweepAndTie checks the same for an instrument in a
+// bank. Bank 5 doesn't exist. The oscillator needs none.
+void TestOscillatorTie()
+{
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.Bank(5).Program(0xf0).Gate(60, 0x40, 50, 24).Gate(60, 0x00, 100, 24).Finish();
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+
+    const Performance perf = Perform(game.Sound(0), game.banks, {}, kProgram);
+
+    int velocity = 0;
+    for (const TrackEvent& e : perf.tracks[0])
+    {
+        velocity = e.kind == EventKind::kNoteOn ? e.value : velocity;
+    }
+    Check(Count(perf, 0, EventKind::kNoteOn) == 1 && velocity == 100 && perf.level_cut_db == 0.0,
+          "an oscillator's note starts at the velocity its tie reaches");
+}
+
 // The instrument plays its wave, at 32000 Hz, at the wave's rate on key 60. On key 96, three octaves up, the DSP plays
 // it just under its limit, a rate of 32767/4096 of the output's. On key 97, the DSP plays it at that limit. The zones
 // of a preset that plays such a key stop below it. A zone for the keys from there up plays every key at the limit.
@@ -1031,8 +1167,13 @@ void TestGameRules()
     Check(japan.category_volumes == usa.category_volumes && japan.default_release == 0x10 && japan.echo &&
               japan.echo->delay == 64 && japan.tracks == usa.tracks,
           "the Japanese release has the same rules");
-    Check(other.category_volumes.empty() && other.default_release == 0 && !other.echo && other.tracks.empty(),
+    Check(other.category_volumes.empty() && other.default_release == 0 && !other.echo && other.tracks.empty() &&
+              other.effects_sequence.empty(),
           "another game gets the defaults");
+    Check(RulesOf("a8b63d2f333c34aaf9cb859f37f23011149af917").effects_sequence == "se.bms" &&
+              RulesOf("6747c3c7bce964bc62f817e1c8c32711c905c4c3").effects_sequence == "se.bms" &&
+              usa.effects_sequence.empty(),
+          "Pikmin 2 plays its effects in se.bms on the GameCube and the Wii");
 }
 
 // A note that sends to Four Swords Adventures' echo lengthens its sequence by the repeats that the game plays at 12 or
@@ -1658,6 +1799,21 @@ void TestCutAboveFullLevel()
           "a cut of 0.4 cB, which the report would show as 0.0 dB, applies but isn't recorded");
 }
 
+// Runs the converters that RunArchiveConverterWithGames builds from `archive_converter` and `game_options` on `args`.
+// The tests make up their arguments and pass them here. On Windows, the entry point reads the process's command line in
+// place of argv (xsflib's Arguments).
+int RunWithGames(const std::vector<std::string>& args,
+                 const ntdlib::sequence_export::ArchiveConverter<ntdlib::sar::SoundArchive>& archive_converter,
+                 const GameOptions& game_options = {})
+{
+    namespace frame = ntdlib::sequence_export;
+    const auto archives = frame::MakeArchiveConverter(archive_converter);
+    const GameConverter games = MakeGameConverter(archives.program, archives.version_line,
+                                                  ArchiveProgramOptions(archives.option), archives.usage, game_options);
+
+    return frame::Run(args, archives, ArchiveProgramGames(args, games));
+}
+
 // The frame's converter of JAudio games opens a start-up archive with its game's files, lists the sequences and
 // converts them. IsStartUpArchive identifies a BAA and an AAF by their first bytes. A converter of another library's
 // archives converts the game where it takes JAudio games, with its options.
@@ -1699,23 +1855,29 @@ void TestGameConverter()
     Check(parsed.perform.voice_limit == 8 && parsed.perform.seed == 5, "a game takes --voices and --seed");
     Check(unknown == "unknown option --port", "and only the options of the program's archives: " + unknown);
 
+    // The converters of the two entry points run on made-up arguments. RunArchiveConverter runs the converter of
+    // archives. RunArchiveConverterWithGames adds the converter of games. An entry point runs its converters on
+    // Arguments(argc, argv).
+    const std::vector<std::string> args = {"xyz2midi", "--quiet", frame::Utf8(folder / "test.baa")};
     std::string program = "xyz2midi";
-    std::string quiet = "--quiet";
-    std::string path = (folder / "test.baa").string();
-    char* argv[] = {program.data(), quiet.data(), path.data(), nullptr};
-    const int refused = frame::RunArchiveConverter(3, argv, archives);
-    const int converted = RunArchiveConverterWithGames(3, argv, archives);
+    char* argv[] = {program.data(), nullptr};
+
+    const int refused = frame::Run(args, frame::MakeArchiveConverter(archives));
+    const int converted = RunWithGames(args, archives);
+    const int entry_point = RunArchiveConverterWithGames(1, argv, archives);
+    const int on_arguments = RunWithGames(frame::Arguments(1, argv), archives);
 
     Check(refused == 1 && converted == 0 && fs::exists(folder / "test_xyz2midi" / "BGM_FIELD.mid"),
           "a converter of archives converts a JAudio game where it takes them");
+    Check(entry_point == on_arguments, "the entry point runs the same converters on the command line");
 
     std::error_code ignored;
     fs::remove_all(folder, ignored);
 }
 
-// RunArchiveConverterWithGames opens each JAudio game with the game options that the caller gives. Without them, a
-// JAudio1 game's music converts alone. With GameOptions::jaudio1_effects, the game's effects convert too. The game here
-// has its effects sequence (file 7), one piece of music (file 3) and one effect.
+// The converters of RunArchiveConverterWithGames (RunWithGames) open each JAudio game with the game options that the
+// caller gives. Without them, a JAudio1 game's music converts alone. With GameOptions::jaudio1_effects, the game's
+// effects convert too. The game here has its effects sequence (file 7), one piece of music (file 3) and one effect.
 void TestArchiveConverterGameOptions()
 {
     namespace fs = std::filesystem;
@@ -1731,17 +1893,14 @@ void TestArchiveConverterGameOptions()
     // Two command lines of a converter of archives, with separate output folders.
     frame::ArchiveConverter<ntdlib::sar::SoundArchive> archives;
     archives.program = "xyz2midi";
-    std::string program = "xyz2midi";
-    std::string quiet = "--quiet";
-    std::string output = "--output";
-    std::string plain_folder = (folder / "plain").string();
-    std::string effects_folder = (folder / "effects").string();
-    std::string path = (folder / "test.aaf").string();
-    char* plain_argv[] = {program.data(), quiet.data(), output.data(), plain_folder.data(), path.data(), nullptr};
-    char* effects_argv[] = {program.data(), quiet.data(), output.data(), effects_folder.data(), path.data(), nullptr};
+    const std::string path = frame::Utf8(folder / "test.aaf");
+    const std::vector<std::string> plain_args = {"xyz2midi", "--quiet", "--output", frame::Utf8(folder / "plain"),
+                                                 path};
+    const std::vector<std::string> effects_args = {"xyz2midi", "--quiet", "--output", frame::Utf8(folder / "effects"),
+                                                   path};
 
-    const int plain = RunArchiveConverterWithGames(5, plain_argv, archives);
-    const int effects = RunArchiveConverterWithGames(5, effects_argv, archives, {.jaudio1_effects = true});
+    const int plain = RunWithGames(plain_args, archives);
+    const int effects = RunWithGames(effects_args, archives, {.jaudio1_effects = true});
 
     Check(plain == 0 && fs::exists(folder / "plain" / "field.mid") && !fs::exists(folder / "plain" / "se0-0000.mid"),
           "without game options, the music converts alone");
@@ -1761,11 +1920,13 @@ int main()
     TestFindSound();
     TestOscillator();
     TestOscillatorWithoutReleaseTable();
+    TestHoldsSilent();
     TestEnvelopeFit();
     TestReleaseAfterDecayToSilence();
     TestPerformance();
     TestOscillatorScaleArguments();
     TestOscillatorScale();
+    TestNoteEndsWhenItsVolumeHoldsAtZero();
     TestSweepAndTie();
     TestTieBelowHearing();
     TestGateTickRate();
@@ -1780,6 +1941,8 @@ int main()
     TestConversion();
     TestCutAboveFullLevel();
     TestPitchLimit();
+    TestOscillatorNotes();
+    TestOscillatorTie();
     TestWaveArchiveThatCannotBeRead();
     TestFolderWithAppleDoubleFiles();
     TestGameRules();

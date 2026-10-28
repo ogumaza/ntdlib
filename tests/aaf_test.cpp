@@ -326,6 +326,89 @@ std::string Describe(std::span<const uint8_t> aaf)
     return text;
 }
 
+// `aaf` with a table of scenes (type 6) in place of the chunk that the sound library skips. Both take four words. The
+// table goes at the archive's end. Scene n's row gives each category of `rows[n]` its count of slots, and a limit of 1.
+// A little-endian table widens the scenes' offsets to 64 bits.
+std::vector<uint8_t> WithScenes(std::vector<uint8_t> aaf, const std::vector<std::vector<uint8_t>>& rows,
+                                bool big_endian = true)
+{
+    const auto put32 = [big_endian](std::vector<uint8_t>& b, std::size_t at, uint32_t value)
+    {
+        b.resize(std::max(b.size(), at + 4));
+        big_endian ? xsflib::StoreBe32(b.data() + at, value) : xsflib::StoreLe32(b.data() + at, value);
+    };
+
+    const std::size_t offset_bytes = big_endian ? 4 : 8;
+    std::vector<uint8_t> table;
+    put32(table, 0, static_cast<uint32_t>(rows.size()));
+    std::size_t row_at = 4 + offset_bytes * rows.size();
+    for (std::size_t n = 0; n < rows.size(); n++)
+    {
+        put32(table, 4 + offset_bytes * n, static_cast<uint32_t>(row_at));
+        table.resize(std::max(table.size(), 4 + offset_bytes * (n + 1)));
+        row_at += 2 * rows[n].size();
+    }
+
+    for (const std::vector<uint8_t>& row : rows)
+    {
+        for (const uint8_t count : row)
+        {
+            table.insert(table.end(), {count, 1});
+        }
+    }
+
+    // The skipped chunk's words: its type 0x10, then 5, 6 and the 0 that ends it.
+    std::vector<uint8_t> skipped;
+    for (const uint32_t word : {0x10u, 5u, 6u, 0u})
+    {
+        put32(skipped, skipped.size(), word);
+    }
+
+    const auto found = std::ranges::search(aaf, skipped);
+    const auto at = static_cast<std::size_t>(found.begin() - aaf.begin());
+    put32(aaf, at, 6);
+    put32(aaf, at + 4, static_cast<uint32_t>(aaf.size()));
+    put32(aaf, at + 8, static_cast<uint32_t>(table.size()));
+    put32(aaf, at + 12, 0);
+    aaf.insert(aaf.end(), table.begin(), table.end());
+
+    return aaf;
+}
+
+// The message with which AafEffectSlotCounts rejects the archive, or an empty one.
+std::string SlotRefusal(std::span<const uint8_t> aaf)
+{
+    return ErrorOf([&] { jaudio::AafEffectSlotCounts(aaf); });
+}
+
+void TestEffectSlots()
+{
+    // Without a table of scenes, the sound library gives each category four slots. The readers report no table.
+    const std::vector<uint8_t> plain = files::AafFile(kSounds, {});
+    XSFLIB_CHECK(!jaudio::AafEffectSlotCounts(plain));
+
+    // The counts of scene 0, as in Pikmin 2: its row runs to scene 1's. The other readers skip the table.
+    const std::vector<std::vector<uint8_t>> kScenes = {{2, 2, 4, 4, 3, 5}, {2, 2, 3, 3, 3, 3}, {2, 2, 3}};
+    const std::vector<uint8_t> kScene0 = {2, 2, 4, 4, 3, 5};
+    const std::vector<uint8_t> scenes = WithScenes(plain, kScenes);
+    XSFLIB_CHECK(jaudio::AafEffectSlotCounts(scenes) == kScene0);
+    XSFLIB_CHECK(Describe(scenes) == Describe(plain));
+
+    // A table of one scene: the row runs to the table's end.
+    XSFLIB_CHECK(jaudio::AafEffectSlotCounts(WithScenes(plain, {{8, 7, 1}})) == std::vector<uint8_t>({8, 7, 1}));
+
+    // A little-endian archive widens the offsets.
+    const std::vector<uint8_t> le = files::AafFile(kSounds, {}, 5, {}, false);
+    XSFLIB_CHECK(jaudio::AafEffectSlotCounts(WithScenes(le, kScenes, false)) == kScene0);
+
+    // A table of no scenes, and a row that starts past the table's end, are rejected.
+    XSFLIB_CHECK(SlotRefusal(WithScenes(plain, {})) == "the AAF archive's table of scenes lists no scenes");
+    std::vector<uint8_t> past = scenes;
+    const std::size_t table_at = past.size() - (4 + 4 * kScenes.size()) - 2 * 15;
+    past[table_at + 7] = 0xff; // the low byte of scene 0's offset
+    XSFLIB_CHECK(SlotRefusal(past) == "the AAF archive is damaged");
+}
+
 // A little-endian archive in the layout of the Switch's release of Pikmin 2 gives what the big-endian one gives. Its
 // block of type 5 comes before the lists. A reader that took the block as 12 bytes would miss the lists.
 void TestLittleEndian()
@@ -356,6 +439,7 @@ int main()
     TestSounds();
     TestDamaged();
     TestEffectsSequence();
+    TestEffectSlots();
     TestSequenceFormat();
     TestEffectFormat();
     TestSequenceIndex();

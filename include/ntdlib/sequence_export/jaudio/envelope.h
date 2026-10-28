@@ -70,6 +70,10 @@ public:
         return state_ == State::kHold;
     }
 
+    // Whether the oscillator holds at a value of 0 that no release can raise. A direct release stays at 0, and so does
+    // a release table whose points lie at 0. A volume oscillator in that state silences its note until the note ends.
+    bool HoldsSilent() const;
+
 private:
     enum class State
     {

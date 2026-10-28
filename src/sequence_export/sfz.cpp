@@ -4,7 +4,7 @@
 //
 // Each track file has a <master> per preset, selected by loprog/hiprog and, above 128 presets, bank select (CC0).
 // Regions match the SoundFont: the engine's key/velocity precedence, sample, root key, tuning, volume, pan, overridden
-// envelope, key groups (group/off_by) and loops. LFOs use a sine with depth from CC1.
+// envelope, key groups (group, off_by and the game's fade) and loops. LFOs use a sine with depth from CC1.
 //
 // Controller curves map kSfzLowPassController to lpf_1p cutoff (filter 1), and kSfzBiquadController to biquad cutoff,
 // resonance and gain. SFZ cannot bypass a biquad. Instead, hicc/locc select filtered or unfiltered regions at note-on.
@@ -21,8 +21,10 @@
 #include <vector>
 
 #include "seqlib/midi/performance_writer.h"
+#include "seqlib/sfz/text.h"
 
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/resampling.h"
@@ -43,9 +45,14 @@ std::string RegionOpcodes(const PresetKey& key, const sar::VelocityRegion& r, co
     s += SfzVolumeOpcode(r.volume, gain_db, false);
     s += SfzEnvelopeOpcodes(key, RegionEnvelope(r), r.ignore_note_off, wave, settings);
 
+    // A note fades out the other notes of its key group at release rate 126. sfizz gives each of them a release of
+    // off_time in time mode. off_time is the length of a region's ampeg_release at that rate.
     if (r.key_group != 0)
     {
-        s += " group=" + std::to_string(r.key_group) + " off_by=" + std::to_string(r.key_group);
+        EnvelopeValues cut;
+        cut.release = kKeyGroupRelease;
+        s += " group=" + std::to_string(r.key_group) + " off_by=" + std::to_string(r.key_group) +
+             " off_mode=time off_time=" + seqlib::sfz::Number(ConvertEnvelopeForSfz(cut, settings).release, 6);
     }
 
     // A region can select linear interpolation (1) on the Wii U's AX and on the 3DS's DSP, and none (2) on the DSP.

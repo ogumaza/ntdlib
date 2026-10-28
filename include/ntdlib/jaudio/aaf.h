@@ -76,6 +76,15 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf);
 // FormatError if the archive or its sound table is damaged, or if the table lists no sequences.
 uint16_t AafEffectsSequenceFile(std::span<const uint8_t> aaf);
 
+// The effects sequence's count of slots for each category of effects in sound scene 0, from the AAF's table of scenes
+// (type 6), or nothing if the AAF has no such table. The table starts with its count of scenes, then gives each scene's
+// offset in the table. A little-endian archive widens those offsets to 64 bits. A scene's row gives each category two
+// bytes: its count of slots, then a limit on the effects of one object. The readers here skip the limit. The sound
+// library copies the table at start-up (JAInter::InitData::checkInitDataOnMemory). It plays scene 0 unless the game
+// changes it. Without the table, each category has four slots (JAInter::Const::sCInfos_0). Throws FormatError if the
+// archive or its table of scenes is damaged.
+std::optional<std::vector<uint8_t>> AafEffectSlotCounts(std::span<const uint8_t> aaf);
+
 // The sequences of a sequence archive that the AAF's sequence index divides, as ReadRarc gives a RARC's files: each
 // sequence's number in the index as its id, its name, its data in `archive`, and the number of the sequence whose data
 // the game reads (ArchiveFile::data_id). The index (a BARC block, barc.h) has a 32-byte header, then a 32-byte entry

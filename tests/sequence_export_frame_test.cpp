@@ -475,15 +475,21 @@ void TestOtherInputs()
     Check(!fs::exists(folder.Path() / "y_fake"), "nothing of the other input from the converter");
 }
 
+// RunMain runs `run` on the command line as Arguments reads it. On Windows, Arguments reads the process's command line
+// in place of argv.
 void TestRunMain()
 {
     char program[] = "fake";
     char* argv[] = {program, nullptr};
+    const std::vector<std::string> arguments = Arguments(1, argv);
+    const auto run = [&arguments](const std::vector<std::string>& args)
+    {
+        return args == arguments ? 3 : 4;
+    };
 
     const int thrown =
         RunMain(1, argv, [](const std::vector<std::string>&) -> int { throw std::runtime_error("broken"); });
-    const int returned = RunMain(
-        1, argv, [](const std::vector<std::string>& args) { return args == std::vector<std::string>{"fake"} ? 3 : 4; });
+    const int returned = RunMain(1, argv, run);
 
     Check(thrown == 1, "an exception gives exit status 1");
     Check(returned == 3, "the arguments reach the run, and its status comes back");

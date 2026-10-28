@@ -3281,6 +3281,58 @@ void TestSfzRegionFollowsLinearInterpolation()
     XSFLIB_CHECK(convert(1) == std::pair(true, true) && convert(0) == std::pair(false, false));
 }
 
+void TestSfzKeyGroupFadesAtTheGamesRate()
+{
+    // A note fades out the other notes of its key group at release rate 126. The level then falls 2.4 dB a millisecond
+    // (CurveAdshr::CalcRelease). sfzformat.com's release falls 8 * 20 / ln(10) = 69.49 dB over its time. The game's
+    // fade takes 28.953 ms for that. The 3DS's envelopes step 5 ms in a frame of 4.889 ms, and the time there scales
+    // to 28.309 ms. A region without a key group writes none of the four opcodes.
+    auto region_line = [](uint8_t key_group)
+    {
+        files::Region region;
+        region.volume = 127;
+        region.pan = 64;
+        if (key_group != 0)
+        {
+            region.flags = uint32_t{key_group} << 8;
+        }
+
+        const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, region}}};
+        const files::KeyTable keys{files::KeyTable::kDirect, 0, {{127, velocities}}};
+        std::vector<ArchiveFile> files(3);
+        files[0].data = Fseq({0x3c, 0x64, 0x18, 0xff});
+        files[1].data = files::Bank(console->settings.archive.flavor, {{{0x05000000, 0}}, {keys}});
+        files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
+        const SoundArchive archive =
+            SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
+                               console->settings.archive);
+        BankSet banks(archive, archive.Sounds()[0], console->settings);
+        MidiReport midi;
+        midi.bend_ranges[0] = 2;
+
+        const Performance p = Perform(archive, 0, banks, {});
+        const SfzInstruments sfz =
+            BuildSfz(p, midi, banks, "TITLE", std::vector<std::string>(p.presets.size(), "preset"));
+        if (sfz.files.size() != 1)
+        {
+            return std::string();
+        }
+
+        const std::string& text = sfz.files[0].text;
+        const std::size_t start = text.find("<region>");
+        return start == std::string::npos ? std::string() : text.substr(start, text.find('\n', start) - start);
+    };
+
+    const std::string off_time = ByConsole<std::string>("0.028953", "0.028953", "0.028309");
+
+    const std::string grouped = region_line(3);
+    const std::string alone = region_line(0);
+
+    XSFLIB_CHECK(grouped.find(" group=3 off_by=3 off_mode=time off_time=" + off_time) != std::string::npos);
+    XSFLIB_CHECK(!alone.empty() && alone.find("group=") == std::string::npos &&
+                 alone.find("off_") == std::string::npos);
+}
+
 void TestSfzCommentKeepsTheNameOnItsLine()
 {
     // A newline in a sequence name could end its comment and inject SFZ opcodes. Test without banks. Any region would
@@ -3414,6 +3466,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestSoundsOwnPanCurveIsReported,
     TestSfzFileHasTheTracksPresetsAndFilters,
     TestSfzResonanceAmountFitsTheType,
+    TestSfzKeyGroupFadesAtTheGamesRate,
     TestDirectVelocityTableTakesVelocitiesAbove127,
     TestSfzCommentKeepsTheNameOnItsLine,
     TestBankSoundFontHoldsEachInstrumentAtItsProgram,

@@ -40,6 +40,10 @@ struct GameRules
     // The tracks that play in the sounds whose tracks the game's code mutes, by the sounds' IDs (SoundEntry::Id). The
     // other sounds play every track (SequenceSound::tracks).
     std::map<uint32_t, TrackMask> tracks;
+
+    // The name of the file in the sequence archive that a JAudio1 game's code starts as its effects sequence. Empty
+    // when the effects sequence is the sound table's first sequence.
+    std::string effects_sequence;
 };
 
 // The rules of the game whose start-up archive has the SHA-1 `archive_sha1`, as 40 lowercase hex digits.
@@ -50,9 +54,11 @@ struct GameOptions
 {
     // List a JAudio1 game's effects too, after the other sequences, in the sound table's order. The other sequences
     // keep their places. Each effect plays the effects sequence and starts in the first slot of its category
-    // (SequenceSound::effect). JAudio1's default table of categories gives each category four slots, and The Wind Waker
-    // keeps it. An effect takes its name from the name file. Without one, it's named after its category and index, as
-    // "se4-0123". It plays at its volume in the sound table, times its category's volume (GameRules::category_volumes).
+    // (SequenceSound::effect). The start-up archive's table of scenes gives each category its count of slots
+    // (ntdlib::jaudio::AafEffectSlotCounts). Without the table, each category has the four slots of JAudio1's default
+    // table of categories. An effect takes its name from the name file. Without one, it's named after its category and
+    // index, as "se4-0123". It plays at its volume in the sound table, times its category's volume
+    // (GameRules::category_volumes).
     bool jaudio1_effects = false;
 };
 
@@ -123,7 +129,8 @@ private:
     GameRules rules_;
     GameOptions options_;
     bool jaudio1_ = false;
-    uint16_t effects_file_ = 0; // a JAudio1 game's effects sequence
+    uint16_t effects_file_ = 0;                              // a JAudio1 game's effects sequence
+    std::optional<std::vector<uint8_t>> effect_slot_counts_; // the effects sequence's slots (AafEffectSlotCounts)
     std::vector<uint8_t> sequence_archive_;
     std::string sequence_archive_name_;
     bool sequence_table_ = false;           // the sequences are in a table (ReadSequenceTable), not a RARC

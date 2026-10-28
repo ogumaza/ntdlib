@@ -145,7 +145,7 @@ void SoundFontBuilder::Add(uint32_t index, const std::string& name)
     sf2::Instrument inst;
     inst.name = name;
     inst.zones.push_back(GlobalZone(key));
-    if (banks_.Archive().FindBank(key.bank) == nullptr)
+    if (key.program < kFirstOscillatorProgram && banks_.Archive().FindBank(key.bank) == nullptr)
     {
         warnings_.push_back(name + ": there is no bank " + std::to_string(key.bank));
     }
@@ -203,6 +203,11 @@ std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys)
 
 std::string WaveName(uint32_t wave_system, uint16_t wave_id)
 {
+    if (wave_system == kOscillatorWaveSystem)
+    {
+        return "osc" + std::to_string(wave_id);
+    }
+
     return "w" + std::to_string(wave_system) + "_" + std::to_string(wave_id);
 }
 
@@ -230,19 +235,24 @@ std::optional<SoundFontSamples::Sample> SoundFontSamples::Get(const std::string&
 std::vector<PresetZone> ZonesOf(std::size_t preset, const Performance& perf, BankSet& banks)
 {
     const PresetKey& key = perf.presets[preset];
+    const Oscillator* volume =
+        key.volume_oscillator >= 0 ? &perf.oscillators[static_cast<std::size_t>(key.volume_oscillator)] : nullptr;
+    const Oscillator* pitch =
+        key.pitch_oscillator >= 0 ? &perf.oscillators[static_cast<std::size_t>(key.pitch_oscillator)] : nullptr;
+    const bool limit_pitch = perf.pitch_limited_presets.contains(static_cast<uint32_t>(preset));
+    if (key.program >= kFirstOscillatorProgram)
+    {
+        return OscillatorZones(key.program, volume, pitch, key.direct_release, perf.default_release, limit_pitch);
+    }
+
     const Bank* bank = banks.Archive().FindBank(key.bank);
     if (bank == nullptr)
     {
         return {};
     }
 
-    const Oscillator* volume =
-        key.volume_oscillator >= 0 ? &perf.oscillators[static_cast<std::size_t>(key.volume_oscillator)] : nullptr;
-    const Oscillator* pitch =
-        key.pitch_oscillator >= 0 ? &perf.oscillators[static_cast<std::size_t>(key.pitch_oscillator)] : nullptr;
     return PresetZones(*bank, banks.Archive().FindWaveSystem(bank->wave_system), key.program, volume, pitch,
-                       key.direct_release, perf.default_release,
-                       perf.pitch_limited_presets.contains(static_cast<uint32_t>(preset)));
+                       key.direct_release, perf.default_release, limit_pitch);
 }
 
 Conversion ConvertSequence(const SequenceSound& sound, BankSet& banks, const PerformOptions& options,

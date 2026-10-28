@@ -50,7 +50,8 @@ std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys);
 // The zones of preset `preset` (an index into Performance::presets) in `perf`, from the banks that `banks` reads.
 std::vector<PresetZone> ZonesOf(std::size_t preset, const Performance& perf, BankSet& banks);
 
-// The name of wave `wave_id` of wave system `wave_system` among a sequence's samples, such as "w0_12".
+// The name of wave `wave_id` of wave system `wave_system` among a sequence's samples, such as "w0_12", or "osc3" for
+// oscillator 3's waveform.
 std::string WaveName(uint32_t wave_system, uint16_t wave_id);
 
 // The samples of a sequence's SoundFont, `sf`: the samples of each wave, added once, on first use. A wave goes by its

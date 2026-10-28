@@ -33,6 +33,7 @@ constexpr uint32_t kSoundTable = 1;
 constexpr uint32_t kBankList = 2;
 constexpr uint32_t kWaveSystemList = 3;
 constexpr uint32_t kSequenceIndex = 4;
+constexpr uint32_t kSceneTable = 6;
 constexpr uint32_t kLastBlockType = 8;
 
 // The sizes of a list's entry and of a block, and where an entry holds its value. A little-endian archive widens the
@@ -100,6 +101,8 @@ struct Blocks
     std::size_t table = 0;
     std::size_t table_size = 0;
     std::optional<std::size_t> sequence_index;
+    std::optional<std::size_t> scene_table;
+    std::size_t scene_table_size = 0;
     std::vector<ListedBlock> banks;
     std::vector<ListedBlock> wave_systems;
 };
@@ -140,6 +143,11 @@ Blocks FindBlocks(const xsflib::Reader& r)
             else if (type == kSequenceIndex)
             {
                 blocks.sequence_index = r.U32(at);
+            }
+            else if (type == kSceneTable)
+            {
+                blocks.scene_table = r.U32(at);
+                blocks.scene_table_size = r.U32(at + 4);
             }
 
             at += wide && type == kWideBlockType ? kWideEntryBytes : kEntryBytes;
@@ -293,6 +301,41 @@ uint16_t AafEffectsSequenceFile(std::span<const uint8_t> aaf)
     }
 
     return r.U16(TableEntry(table, CategoryFirst(r, table, kSequenceCategory)) + *kAafItemLayout.file);
+}
+
+std::optional<std::vector<uint8_t>> AafEffectSlotCounts(std::span<const uint8_t> aaf)
+{
+    const xsflib::Reader r = AafReader(aaf);
+    const Blocks blocks = FindBlocks(r);
+    if (!blocks.scene_table)
+    {
+        return std::nullopt;
+    }
+
+    // Scene 0's row runs to scene 1's row, or to the table's end. A wide offset starts with its low word. The low word
+    // holds the whole offset.
+    const xsflib::Reader table(r.Sub(*blocks.scene_table, blocks.scene_table_size), r.BigEndian(), kAafReaderOptions);
+    const std::size_t offset_bytes = r.BigEndian() ? 4 : 8;
+    const uint32_t scenes = table.U32(0);
+    if (scenes == 0)
+    {
+        throw xsflib::FormatError("the AAF archive's table of scenes lists no scenes");
+    }
+
+    const std::size_t row = table.U32(4);
+    const std::size_t end = scenes > 1 ? table.U32(4 + offset_bytes) : table.Size();
+    if (end < row || end > table.Size())
+    {
+        throw xsflib::FormatError("the AAF archive is damaged");
+    }
+
+    std::vector<uint8_t> counts;
+    for (std::size_t at = row; at + 2 <= end; at += 2)
+    {
+        counts.push_back(table.U8(at));
+    }
+
+    return counts;
 }
 
 std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uint8_t> aaf,

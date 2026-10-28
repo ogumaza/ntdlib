@@ -45,6 +45,23 @@ struct NoteSound
 // value: a preset can't vary note by note. The result reports that one was there.
 std::optional<NoteSound> FindSound(const Bank& bank, uint32_t program, int key, int velocity);
 
+// Programs from 0xf0 on play one of the DSP program's oscillators, the program's distance from 0xf0, and need no bank
+// (JASBank::noteOnOsc).
+constexpr uint32_t kFirstOscillatorProgram = 0xf0;
+
+// The wave system that holds the oscillators' waveforms. Wave n is oscillator n's waveform.
+constexpr uint32_t kOscillatorWaveSystem = 0xffffffff;
+
+// What a note of oscillator `program` plays, as a wave of kOscillatorWaveSystem: the oscillator's waveform at full
+// volume, centred, at JASBank::noteOnOsc's pitch, with the oscillators' envelope (OSC_ENV). `bank` is the track's
+// bank. It names the preset. Return nothing for an oscillator that makes no waveform from its pitch alone: those
+// that read a mixing bus, make noise or a ramp, or output their pitch.
+std::optional<NoteSound> FindOscillatorSound(uint32_t bank, uint32_t program);
+
+// Wave `wave_id` of wave system `wave_system` in `archive`, or of kOscillatorWaveSystem. Return nullptr if there's
+// none.
+const WaveInfo* FindWave(const SoundArchive& archive, uint32_t wave_system, uint16_t wave_id);
+
 // The keys and velocities with which one region plays, for building presets: a run of keys that find the same key
 // region, and the velocity ranges of its regions.
 struct PlayedRegion
@@ -94,6 +111,12 @@ std::vector<PresetZone> PresetZones(const Bank& bank, const WaveSystem* waves, u
                                     const Oscillator* volume_override, const Oscillator* pitch_override,
                                     uint16_t direct_release, uint16_t default_release, bool limit_pitch);
 
+// The zone of oscillator `program` (FindOscillatorSound), in the form of PresetZones's result. The zone plays every
+// key and velocity. Return no zone for an oscillator that FindOscillatorSound leaves out.
+std::vector<PresetZone> OscillatorZones(uint32_t program, const Oscillator* volume_override,
+                                        const Oscillator* pitch_override, uint16_t direct_release,
+                                        uint16_t default_release, bool limit_pitch);
+
 // A sequence's banks and their waves, decoded on demand. Read failures are collected in Errors() and silence only the
 // notes they affect.
 class BankSet
@@ -110,7 +133,8 @@ public:
         return archive_;
     }
 
-    // Decode and cache wave `wave_id` of wave system `wave_system`, or return nullptr and record why.
+    // Decode and cache wave `wave_id` of wave system `wave_system`, or return nullptr and record why. Wave n of
+    // kOscillatorWaveSystem is oscillator n's waveform.
     const Pcm* GetWave(uint32_t wave_system, uint16_t wave_id);
 
     // Read failures for the waves.

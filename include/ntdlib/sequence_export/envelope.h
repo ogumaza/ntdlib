@@ -55,6 +55,10 @@ constexpr int kInaudibleSustain = 400;
 // channel's fade. A loud note can still be heard at kInaudibleSustain.
 constexpr int kFadedAttenuation = 600;
 
+// A note's start releases the other notes of its key group at this rate on the 3DS, the Wii U and the Switch. Their
+// level falls 2.4 dB a millisecond (CurveAdshr::CalcRelease).
+constexpr int kKeyGroupRelease = 126;
+
 // SoundFont volume envelope generators (timecents; sustain in centibels of attenuation).
 struct Sf2Envelope
 {
