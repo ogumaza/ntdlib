@@ -39,6 +39,7 @@ namespace ntdlib::sequence_export::konami
 {
 
 using ntdlib::agb::FrameSeconds;
+using ntdlib::agb::kMaxSilentEndSeconds;
 using ntdlib::agb::LoopStart;
 using ntdlib::agb::PassComparison;
 using ntdlib::agb::WriteFile;
@@ -1710,10 +1711,64 @@ void WriteTrack(MidiTrack& mt, int ch, int range, const std::vector<Event>& even
     }
 }
 
+// Moves the end of a song without a loop back to where its last sound dies away, when the end lies more than
+// kMaxSilentEndSeconds later, as MP2K's conversion does. A track sounds from a note with a level on either side until
+// the note ends or its levels fall to 0. The song then ends two frames after the last such end. On the beat, a note's
+// end can lie up to a frame and a half after its frame, and the second frame keeps it in the file. A note that still
+// sounds where the song stops keeps the end, and so does a song that reached the frame limit.
+void EndWithLastSound(const Rom& rom, const DriverInfo& info, Simulation& sim)
+{
+    if (sim.loop_end >= 0 || sim.truncated || sim.frames.empty())
+    {
+        return;
+    }
+
+    std::vector<std::string> warnings;
+    const std::array<std::vector<Event>, kTracks> events = RenderTracks(rom, info, sim, warnings);
+    uint32_t last = 0; // the frame of the last sound's end
+    for (const std::vector<Event>& track : events)
+    {
+        bool on = false, sounds = false;
+        for (const Event& e : track)
+        {
+            const bool level = e.level_l > 0 || e.level_r > 0;
+            bool now = sounds;
+            if (e.type == Event::kNoteOn)
+            {
+                on = true;
+                now = level;
+            }
+            else if (e.type == Event::kLevels && on)
+            {
+                now = level;
+            }
+            else if (e.type == Event::kNoteOff)
+            {
+                on = false;
+                now = false;
+            }
+            if (sounds && !now)
+            {
+                last = std::max(last, e.frame);
+            }
+            sounds = now;
+        }
+    }
+
+    const uint32_t end = uint32_t(sim.frames.size());
+    const uint32_t quiet = last + 2;
+    if (last > 0 && quiet < end && FrameSeconds(end - quiet) > kMaxSilentEndSeconds)
+    {
+        sim.frames.resize(quiet);
+        sim.state.resize(quiet);
+    }
+}
+
 // Simulates the song for its conversion. The marked loop starts at the song's second pass if the first pass plays
 // unlike the second. That happens, for example, when the tracks come back to their loop points with the volume or pan
 // that the loop's end left them. A delay at the start of a loop point plays only in the later passes. It moves its
-// track's notes there. The comparison of passes times each track's notes from its first note and misses the move.
+// track's notes there. The comparison of passes times each track's notes from its first note and misses the move. A
+// song without a loop ends where its last sound dies away (EndWithLastSound()).
 Simulation MarkedSimulation(const Rom& rom, const DriverInfo& info, int song, const Request& request, int loops)
 {
     Simulation sim = Simulate(rom, info, song, request, loops, LoopStart::kFirstPass);
@@ -1723,6 +1778,7 @@ Simulation MarkedSimulation(const Rom& rom, const DriverInfo& info, int song, co
     {
         sim = Simulate(rom, info, song, request, loops, LoopStart::kSecondPass);
     }
+    EndWithLastSound(rom, info, sim);
 
     return sim;
 }

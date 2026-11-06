@@ -1189,6 +1189,48 @@ void TestLoopWithoutDelay()
     fs::remove_all(dir, ec);
 }
 
+void TestSilentEndAfterLastSound()
+{
+    // Song 2's sample track plays a note for 10 frames, rests for 500 and stops the song. The stop comes about 8.4 s
+    // after the note falls silent, and the song ends there. Song 3 rests for 700 frames, about 11.7 s, more than
+    // kMaxSilentEndSeconds. It then ends two frames after the note's end, and its MIDI file holds nothing later.
+    Image m = SyntheticImage();
+    constexpr uint32_t kBase = kRomBase + 0x600;
+    m.Song(kSongTable, 2, kBase, 0x40, {{4, 0}});
+    m.Song(kSongTable, 3, kBase, 0x40, {{4, 0x20}});
+    m.PutBytes(kBase, {0x00, 0xA8, 0x10, 0x05, 0x0A, 0xE0, 0xE1, 0xF4, 0xFF, 0x00});
+    m.PutBytes(kBase + 0x20, {0x00, 0xA8, 0x10, 0x05, 0x0A, 0xE0, 0xE2, 0xBC, 0xFF, 0x00});
+    m.PutBytes(kBase + 0x40, {0x00, 0xFD});
+    const Rom rom = m.ToRom();
+
+    DriverInfo info;
+    SEQLIB_CHECK(DetectGiven(rom, kSongTable, 4, info));
+
+    const fs::path dir = TempPath("silent_end");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    ConvertSettings opt;
+    opt.frame_timing = true;
+    opt.out_dir = Utf8(dir);
+
+    const SongReport near = ConvertSong(rom, info, 2, opt, nullptr);
+    const SongReport far = ConvertSong(rom, info, 3, opt, nullptr);
+    SEQLIB_CHECK(near.ok && near.seconds > FrameSeconds(510) && near.seconds < FrameSeconds(513));
+    SEQLIB_CHECK(far.ok && far.seconds == FrameSeconds(12));
+    SEQLIB_CHECK(far.loop_end == -1.0);
+
+    uint32_t last = 0;
+    int ons = 0;
+    for (const MidiEvent& e : ReadEvents(far.midi_path))
+    {
+        last = std::max(last, e.frame);
+        ons += (e.status & 0xF0) == 0x90 && e.data2 > 0 ? 1 : 0;
+    }
+    SEQLIB_CHECK_EQ(ons, 1);
+    SEQLIB_CHECK(last <= 12);
+    fs::remove_all(dir, ec);
+}
+
 void TestFrameLimit()
 {
     // Song 2 plays a note and loops every 2048 frames, and song 3 plays a note and waits 65535 frames twice before it
@@ -3599,6 +3641,7 @@ int RunTests()
     TestPsgTuning();
     TestSampleKeys();
     TestLoopWithoutDelay();
+    TestSilentEndAfterLastSound();
     TestFrameLimit();
     TestTrackPastEnd();
     TestManyPresets();
