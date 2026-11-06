@@ -685,6 +685,14 @@ void Sequencer::RunTrack(int t)
         StartTrack(track);
     }
 
+    // The Metroid games' sequencer counts a wait down and moves the LFO on before it runs the commands that are due. A
+    // tick that runs commands moves the LFO on only if the track was waiting at its start.
+    if (info_.metroid_sequencer && track.wait)
+    {
+        track.wait--;
+        RunMetroidLfo(track);
+    }
+
     // Run the commands that are due, up to the next wait. A track that ends doesn't move its LFO on.
     for (int commands = 0; track.wait == 0; commands++)
     {
@@ -697,6 +705,12 @@ void Sequencer::RunTrack(int t)
         {
             return;
         }
+    }
+
+    if (info_.metroid_sequencer)
+    {
+        ReportTrack(t);
+        return;
     }
 
     track.wait--;
@@ -726,6 +740,33 @@ void Sequencer::RunTrack(int t)
     ReportTrack(t);
 }
 
+void Sequencer::RunMetroidLfo(Track& track)
+{
+    // The delay counts down at any speed and depth. The LFO moves on only while the track's newest note sounds. The
+    // swing is half as wide as in the SDK's library.
+    if (track.lfo_delay_c)
+    {
+        track.lfo_delay_c--;
+        return;
+    }
+    if (!track.lfo_speed || !track.mod || track.chan < 0 || !(channels_[size_t(track.chan)].status & kStatusOn))
+    {
+        return;
+    }
+
+    // The sequencer leaves the swing as it is when the triangle wave's new value, before the depth scales it, equals
+    // the old swing (0x080016E0 in Metroid Fusion).
+    const uint32_t phase = uint32_t(track.lfo_speed_c) + track.lfo_speed;
+    track.lfo_speed_c = uint8_t(phase);
+    const int32_t shape = int8_t(uint8_t(phase - 64)) >= 0 ? 128 - int32_t(uint8_t(phase)) : int8_t(uint8_t(phase));
+    if (shape == track.mod_m)
+    {
+        return;
+    }
+    track.mod_m = int8_t(uint8_t(((int32_t(track.mod) + 1) * shape) >> 7));
+    track.flags |= track.mod_t == 0 ? kFlagPitChange : kFlagVolChange;
+}
+
 bool Sequencer::RunCommand(int t)
 {
     Track& track = tracks_[size_t(t)];
@@ -738,8 +779,9 @@ bool Sequencer::RunCommand(int t)
 
     // The decoder reads the command as the driver does, with the running status and the last key and velocity.
     const uint32_t address = track.position;
-    const PlayedCommand played = ReadPlayedCommand([this](uint32_t at) { return rom_.U8(at); }, address,
-                                                   RunningState{track.running, track.key, track.velocity});
+    const PlayedCommand played =
+        ReadPlayedCommand([this](uint32_t at) { return rom_.U8(at); }, address,
+                          RunningState{track.running, track.key, track.velocity}, info_.metroid_short_notes ? 2 : 3);
     if (!played.valid)
     {
         Warn("track " + std::to_string(t) +
@@ -916,8 +958,9 @@ bool Sequencer::RunCommand(int t)
         break;
 
     case Kind::kLfoSpeed:
-        track.lfo_speed = uint8_t(value);
-        if (!track.lfo_speed)
+        // The Metroid games' sequencer halves the speed, rounding up, and keeps the LFO's swing.
+        track.lfo_speed = info_.metroid_sequencer ? uint8_t((value + 1) >> 1) : uint8_t(value);
+        if (!track.lfo_speed && !info_.metroid_sequencer)
         {
             ClearModulation(track);
         }
@@ -929,7 +972,7 @@ bool Sequencer::RunCommand(int t)
 
     case Kind::kLfoDepth:
         track.mod = uint8_t(value);
-        if (!track.mod)
+        if (!track.mod && !info_.metroid_sequencer)
         {
             ClearModulation(track);
         }
@@ -1047,7 +1090,32 @@ void Sequencer::Note(int t, uint32_t command)
         {
             rhythm_pan = voice.RhythmPan();
             key = voice.key;
+
+            // The Metroid games' sequencer gives the track a drum's pan: the centre for a byte of 0, the byte less 0x80
+            // from 0x80 up, and the track's pan otherwise (0x0800481C in Metroid Fusion).
+            if (info_.metroid_sequencer)
+            {
+                rhythm_pan = 0;
+                if (voice.pan_sweep == 0 || (voice.pan_sweep & 0x80))
+                {
+                    track.pan = voice.pan_sweep ? int8_t(uint8_t(voice.pan_sweep - 0xC0)) : int8_t(0);
+                    track.sets |= kSetPan;
+                }
+            }
         }
+    }
+
+    // The Metroid games' sequencer sets the LFO's swing to 0 and works the track's levels and pitch out again at each
+    // note, before it looks for a channel. The track's other notes keep theirs, unless a command changed them.
+    if (info_.metroid_sequencer)
+    {
+        if (track.lfo_delay)
+        {
+            track.lfo_delay_c = track.lfo_delay;
+        }
+        track.mod_m = 0;
+        track.flags |= kFlagVolSet | kFlagPitSet;
+        UpdateTrack(track);
     }
 
     // A later version of Camelot's sequencer keeps 255 for the notes of a player whose priority is 120, and others go
@@ -1090,12 +1158,15 @@ void Sequencer::Note(int t, uint32_t command)
     UnlinkChannel(c);
     LinkChannel(c, t);
 
-    track.lfo_delay_c = track.lfo_delay;
-    if (track.lfo_delay)
+    if (!info_.metroid_sequencer)
     {
-        ClearModulation(track);
+        track.lfo_delay_c = track.lfo_delay;
+        if (track.lfo_delay)
+        {
+            ClearModulation(track);
+        }
+        UpdateTrack(track);
     }
-    UpdateTrack(track);
 
     ch.gate = track.gate;
     ch.midi_key = track.key;
@@ -1103,6 +1174,7 @@ void Sequencer::Note(int t, uint32_t command)
     ch.priority = uint8_t(priority);
     ch.key = key;
     ch.rhythm_pan = rhythm_pan;
+    ch.start_pan = track.pan;
     ch.type = voice.type;
     ch.wave = voice.wave;
     ch.attack = voice.attack;
@@ -1128,7 +1200,10 @@ void Sequencer::Note(int t, uint32_t command)
     ch.status = kStatusStart;
     ch.synth = false;
     ch.audible = false;
-    track.flags &= uint8_t(~kFlagVolPitChange);
+    if (!info_.metroid_sequencer)
+    {
+        track.flags &= uint8_t(~kFlagVolPitChange);
+    }
 
     a.channel = c;
     a.play_key = key;
@@ -1290,8 +1365,15 @@ void Sequencer::ClearModulation(Track& track)
     track.sets |= track.mod_t == 0 ? kSetPitch : track.mod_t == 1 ? kSetVolume : kSetPan;
 }
 
-Sequencer::SideLevels Sequencer::TrackLevels(const Track& track)
+Sequencer::SideLevels Sequencer::TrackLevels(const Track& track, bool metroid)
 {
+    // The Metroid games' sequencer gives a pan of -64 to 63 a side's level out of 128, from the centre's level out of
+    // 64. Its tremolo multiplies the level by 65 plus the swing over 64, up to 255.
+    if (metroid)
+    {
+        return MetroidLevels(track, track.pan);
+    }
+
     // The volume and pan give each side a level. The pan moves the level in a straight line from one side to the
     // other. Each side's level is a byte. A level that the LFO raises past 255 wraps around.
     uint32_t level = (uint32_t(track.vol) * track.vol_x) >> 5;
@@ -1310,11 +1392,28 @@ Sequencer::SideLevels Sequencer::TrackLevels(const Track& track)
     return {uint8_t((uint32_t(127 - pan) * level) >> 8), uint8_t((uint32_t(pan + 128) * level) >> 8)};
 }
 
+Sequencer::SideLevels Sequencer::MetroidLevels(const Track& track, int pan)
+{
+    uint32_t level = (uint32_t(track.vol) * track.vol_x) >> 5;
+    if (track.mod_t == 1)
+    {
+        level = uint32_t(std::min(255, (int32_t(level) * (track.mod_m + 65)) >> 6));
+    }
+
+    pan = std::clamp(pan, -64, 63);
+    if (track.mod_t == 2)
+    {
+        pan = std::clamp(pan + track.mod_m, -64, 63);
+    }
+
+    return {uint8_t((uint32_t(64 - pan) * level) >> 7), uint8_t((uint32_t(pan + 64) * level) >> 7)};
+}
+
 void Sequencer::UpdateTrack(Track& track)
 {
     if (track.flags & kFlagVolSet)
     {
-        const SideLevels levels = TrackLevels(track);
+        const SideLevels levels = TrackLevels(track, info_.metroid_sequencer);
         track.vol_mr = levels.right;
         track.vol_ml = levels.left;
     }
@@ -1322,7 +1421,7 @@ void Sequencer::UpdateTrack(Track& track)
     // The pitch is in 256ths of a semitone: the key offset in the high bits, and the fine tune in the low 8.
     if (track.flags & kFlagPitSet)
     {
-        const int32_t pitch = TrackPitch(track);
+        const int32_t pitch = TrackPitch(track, info_.metroid_sequencer);
         track.key_m = int8_t(uint8_t(pitch >> 8));
         track.pit_m = uint8_t(pitch);
     }
@@ -1332,6 +1431,19 @@ void Sequencer::UpdateTrack(Track& track)
 
 void Sequencer::SetChannelVolume(Channel& c, const Track& track) const
 {
+    // The Metroid games' sequencer plays a note at its velocity plus 1 out of 128 of the track's levels. The mixer
+    // works a drum kit's levels out again for each DirectSound note, at the pan that the note started with (0x08001006
+    // in Metroid Fusion).
+    if (info_.metroid_sequencer)
+    {
+        const SideLevels levels = (track.tone.type & kVoiceDrumKit) && !(c.type & kVoicePsg)
+                                      ? MetroidLevels(track, c.start_pan)
+                                      : SideLevels{track.vol_ml, track.vol_mr};
+        c.right = uint8_t(std::min(((c.velocity + 1) * levels.right) >> 7, 255));
+        c.left = uint8_t(std::min(((c.velocity + 1) * levels.left) >> 7, 255));
+        return;
+    }
+
     // Camelot's sequencer works out the left side's level from 128 less a drum kit voice's pan, where the driver takes
     // it from 127, so every note's left side comes out a little louder.
     const int right = (c.velocity * (128 + c.rhythm_pan) * track.vol_mr) >> 14;
@@ -1344,7 +1456,11 @@ void Sequencer::SetChannelPitch(Channel& c, const Track& track) const
 {
     const int key = std::max(0, c.key + track.key_m);
     const int psg = c.type & kVoicePsg;
-    if (psg)
+    if (psg && psg != 4 && info_.metroid_psg_table)
+    {
+        c.frequency = MetroidPsgFrequency(key, track.pit_m);
+    }
+    else if (psg)
     {
         c.frequency = KeyToPsgFrequency(psg, key, track.pit_m);
     }
@@ -1352,6 +1468,22 @@ void Sequencer::SetChannelPitch(Channel& c, const Track& track) const
     {
         c.frequency = SampleFrequency(info_, rom_.U32(c.wave + 4), key, track.pit_m);
     }
+}
+
+uint32_t Sequencer::MetroidPsgFrequency(int key, int fine) const
+{
+    // The Metroid games take a square or wave channel's setting for a key from their table, and add (fine + 1)/256 of
+    // the step to the next key's for a fine tune above 0. The table's keys below 36 repeat the octave from 36 up
+    // (0x08001E48 in Metroid Fusion).
+    key = std::min(key, 127);
+    const uint32_t table = info_.metroid_psg_table;
+    const int low = rom_.U16(table + 2 * uint32_t(key));
+    if (!fine)
+    {
+        return uint32_t(low);
+    }
+    const int high = rom_.U16(table + 2 * uint32_t(key + 1));
+    return uint32_t(low + (((high - low) * (fine + 1)) >> 8)) & 0xFFFF;
 }
 
 void Sequencer::UpdateChannels()
@@ -1394,6 +1526,24 @@ void Sequencer::UpdateChannels()
             }
 
             c = next;
+        }
+
+        // The Metroid games' mixer leaves a drum kit's track at the pan of the last DirectSound note whose levels it
+        // works out. It works through the channels in order.
+        if (info_.metroid_sequencer && (track.tone.type & kVoiceDrumKit) && (track.flags & kFlagVolChange))
+        {
+            int last = -1;
+            for (int c = track.chan; c >= 0; c = channels_[size_t(c)].next)
+            {
+                if (!(channels_[size_t(c)].type & kVoicePsg))
+                {
+                    last = std::max(last, c);
+                }
+            }
+            if (last >= 0)
+            {
+                track.pan = channels_[size_t(last)].start_pan;
+            }
         }
 
         track.flags &= uint8_t(~kFlagVolPitChange);
@@ -1908,7 +2058,7 @@ void Sequencer::RunDirect()
         {
             // Camelot's mixer takes 256 less the release off the level each frame, in a straight line.
             envelope = info_.camelot_mixer ? envelope + c.release - 256 : (envelope * c.release) >> 8;
-            echo = envelope <= c.echo_volume;
+            echo = info_.metroid_sequencer ? envelope <= 0 : envelope <= c.echo_volume;
         }
         else if ((c.status & kStatusEnvelope) == kPhaseDecay)
         {
@@ -1934,7 +2084,39 @@ void Sequencer::RunDirect()
             {
                 envelope = 255;
                 c.status--;
+
+                // The Metroid games' mixer moves the level down by the decay in the frame that the attack ends.
+                if (info_.metroid_sequencer)
+                {
+                    envelope = (envelope * c.decay) >> 8;
+                    if (envelope <= c.sustain)
+                    {
+                        envelope = c.sustain;
+                        if (envelope == 0)
+                        {
+                            echo = true;
+                        }
+                        else
+                        {
+                            c.status--;
+                        }
+                    }
+                }
             }
+        }
+        // The Metroid games' mixer ends a note whose level reaches 0, unless it has both an echo volume and an echo
+        // length. Such a note is silent for that frame, then plays on at its last level for the length less 1
+        // (0x080010EA in Metroid Fusion).
+        if (echo && info_.metroid_sequencer)
+        {
+            if (!c.echo_volume || !c.echo_length)
+            {
+                c.status = 0;
+                EndNote(i, true);
+                continue;
+            }
+            c.status |= kStatusEcho;
+            continue;
         }
         if (echo)
         {
@@ -2969,7 +3151,10 @@ void Sequencer::ReportTrack(int t)
 
     // The levels on each side. The driver computes them from the track's settings at the end of the frame, or when the
     // track starts a note.
-    const SideLevels levels = TrackLevels(track);
+    // A drum kit's notes in the Metroid games keep the pans that they started with. The levels follow the newest.
+    const bool drums = info_.metroid_sequencer && (track.tone.type & kVoiceDrumKit) && track.chan >= 0;
+    const SideLevels levels = drums ? MetroidLevels(track, channels_[size_t(track.chan)].start_pan)
+                                    : TrackLevels(track, info_.metroid_sequencer);
     if (levels.left != track.last_left || levels.right != track.last_right || (again & (kSetVolume | kSetPan)))
     {
         track.restate &= uint8_t(~(kSetVolume | kSetPan));
@@ -2981,7 +3166,7 @@ void Sequencer::ReportTrack(int t)
         AddAction(a);
     }
 
-    const int pitch = TrackPitch(track);
+    const int pitch = TrackPitch(track, info_.metroid_sequencer);
     if (pitch != track.last_pitch || (again & kSetPitch))
     {
         track.restate &= uint8_t(~kSetPitch);
@@ -2992,8 +3177,21 @@ void Sequencer::ReportTrack(int t)
     }
 }
 
-int32_t Sequencer::TrackPitch(const Track& track)
+int32_t Sequencer::TrackPitch(const Track& track, bool metroid)
 {
+    // The Metroid games' sequencer adds 1 to an upward bend. The highest bend then reaches the bend range. It moves the
+    // tune in 16ths of a semitone, and the LFO's swing in steps of 48, while the LFO has a speed and a depth.
+    if (metroid)
+    {
+        const int32_t bend = track.bend > 0 ? track.bend + 1 : track.bend;
+        int32_t pitch = bend * track.bend_range * 4 + track.key_shift * 256 + track.tune * 16;
+        if (track.mod_t == 0 && track.lfo_speed && track.mod)
+        {
+            pitch += 48 * track.mod_m;
+        }
+        return pitch;
+    }
+
     int32_t pitch = (track.tune + track.bend * track.bend_range) * 4 + track.key_shift * 256;
     if (track.mod_t == 0)
     {

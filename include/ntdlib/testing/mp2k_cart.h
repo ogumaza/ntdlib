@@ -44,6 +44,10 @@ inline constexpr uint32_t kCamelotSearch = kRomBase + 0x360; // the note start's
 inline constexpr uint32_t kCamelotEchoWords = kRomBase + 0x370; // the literals of the output stage's echo
 inline constexpr uint32_t kCamelotPulse = kRomBase + 0x380;     // the mixer's pulse wave
 inline constexpr uint32_t kLaterCamelot = kRomBase + 0x3A0;     // the code of a later version of Camelot's driver
+
+// Addresses of the Metroid games' changes in a test cartridge that has them.
+inline constexpr uint32_t kMetroidTempo = kRomBase + 0x3D0;  // the sequencer's TEMPO handler
+inline constexpr uint32_t kMetroidTables = kRomBase + 0x3E0; // the loads of the player and song tables, and their pool
 inline constexpr uint32_t kSongTable = kRomBase + 0x500;
 inline constexpr uint32_t kData = kRomBase + 0x1000; // storage for songs, voices and samples
 
@@ -323,6 +327,55 @@ public:
         {
             Put8(kLaterCamelot + i, kCode[i]);
         }
+    }
+
+    // Writes the Metroid games' changes: the sequencer's TEMPO handler, the loads of the player and song tables that a
+    // game without the routine that starts a song has (Metroid: Zero Mission), and the routine that reads the table of
+    // PSG frequency settings, with that table: 129 settings, `step` apart. With `short_notes`, it also writes
+    // Metroid Fusion's read of a note's arguments. That read takes no third byte. Returns the table's address.
+    uint32_t WriteMetroid(uint16_t step, bool short_notes = false)
+    {
+        if (short_notes)
+        {
+            const std::vector<uint8_t> kShortNote = {0x4A, 0x78, 0x01, 0x20, 0x08, 0x56, 0x00, 0x28, 0x02,
+                                                     0xDB, 0xE2, 0x73, 0x58, 0x1C, 0x60, 0x62, 0x21, 0x78};
+            Place(kShortNote, 2);
+        }
+
+        const uint8_t kTempo[14] = {0x4A, 0x6A, 0x53, 0x78, 0x02, 0x32, 0x4A, 0x62, 0x5A, 0x00, 0x42, 0x81, 0x96, 0x2A};
+        for (uint32_t i = 0; i < 14; i++)
+        {
+            Put8(kMetroidTempo + i, kTempo[i]);
+        }
+
+        // ldr r3, =players; ldr r0, =songs; lsls r2, r4, #3; bx lr
+        const uint16_t kTables[4] = {0x4B01, 0x4802, 0x00E2, 0x4770};
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            Put16(kMetroidTables + 2 * i, kTables[i]);
+        }
+        Put32(kMetroidTables + 8, kPlayerTable);
+        Put32(kMetroidTables + 12, kSongTable);
+
+        std::vector<uint8_t> table;
+        for (uint16_t k = 0; k < 129; k++)
+        {
+            table.push_back(uint8_t(k * step));
+            table.push_back(uint8_t((k * step) >> 8));
+        }
+        const uint32_t table_at = Place(table);
+
+        // The test of the voice's PSG channel against 3, and the load of the table, indexed by the key times 2.
+        std::vector<uint8_t> code;
+        for (const int h : {0x3034, 0x7801, 0x2007, 0x4008, 0x2803, 0xD800, 0x4901, 0x0060, 0x1840, 0x8803})
+        {
+            code.push_back(uint8_t(h));
+            code.push_back(uint8_t(h >> 8));
+        }
+        AppendLe32(code, table_at);
+        Place(code);
+
+        return table_at;
     }
 
     // Places a sample of `points` points of 4-bit steps, for a later version of Camelot's mixer: its size is negative.

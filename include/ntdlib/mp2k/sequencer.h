@@ -80,6 +80,7 @@ struct Channel
     uint8_t velocity = 0;
     uint8_t priority = 0;
     int8_t rhythm_pan = 0;
+    int8_t start_pan = 0;   // the track's pan when the note started, for the Metroid games' mixer
     uint32_t frequency = 0; // a DirectSound channel's rate in Hz, or the PSG channel's frequency setting
     uint32_t wave = 0;      // the sample, or the PSG channel's duty, wave pattern or noise type
     uint8_t part = 0;       // 0 for a DirectSound channel, or the PSG channel that it plays: 1 to 4
@@ -449,6 +450,9 @@ private:
     // Runs a tick of track `t`: counts down its notes, runs its commands that are due and moves its LFO on.
     void RunTrack(int t);
 
+    // Moves a track's LFO on for a tick of its wait in the Metroid games' way (0x08001696 in Metroid Fusion).
+    void RunMetroidLfo(Track& track);
+
     // Runs one command of track `t`. Returns false if the track has ended.
     bool RunCommand(int t);
 
@@ -462,8 +466,13 @@ private:
     void ClearModulation(Track& track);
 
     // Returns the levels that a track's volume and pan give each side. The LFO's swing counts when it modulates them.
-    // The driver's TrkVolPitSet computes the same.
-    static SideLevels TrackLevels(const Track& track);
+    // The driver's TrkVolPitSet computes the same, and `metroid` gives the Metroid games' sequencer's routine
+    // (0x0800491C in Metroid Fusion).
+    static SideLevels TrackLevels(const Track& track, bool metroid);
+
+    // Returns the levels that the Metroid games' sequencer gives a track's volume at `pan` (0x0800491C in Metroid
+    // Fusion).
+    static SideLevels MetroidLevels(const Track& track, int pan);
 
     // Recalculates a track's volumes and pitch, as the driver's TrkVolPitSet does, if its flags ask for it.
     void UpdateTrack(Track& track);
@@ -473,6 +482,10 @@ private:
 
     // Sets a channel's frequency from its key and its track's pitch.
     void SetChannelPitch(Channel& c, const Track& track) const;
+
+    // Returns a square or wave channel's frequency setting for `key`, raised by `fine`/256 of a semitone, from the
+    // Metroid games' table.
+    uint32_t MetroidPsgFrequency(int key, int fine) const;
 
     // Updates the channels of tracks whose volume or pitch changed in the frame.
     void UpdateChannels();
@@ -557,8 +570,8 @@ private:
     void ReportTrack(int t);
 
     // Returns a track's pitch in 256ths of a semitone: its tune, bend and key shift, and the LFO's swing when it
-    // modulates the pitch.
-    static int32_t TrackPitch(const Track& track);
+    // modulates the pitch. `metroid` gives the Metroid games' sequencer's routine (0x080048C0 in Metroid Fusion).
+    static int32_t TrackPitch(const Track& track, bool metroid);
 
     void AddAction(Action action);
 

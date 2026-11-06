@@ -123,6 +123,19 @@ constexpr uint8_t kCamelotOnePoint[16] = {0xFF, 0x84, 0xA0, 0xE3, 0x28, 0x88, 0x
 // ldrne r7, [r4, #0x1c].
 constexpr uint8_t kCamelotAdpcm[8] = {0x20, 0x00, 0x10, 0xE3, 0x1C, 0x70, 0x94, 0x15};
 
+// The TEMPO command's handler of the sequencer that Metroid Fusion and Metroid: Zero Mission share: ldr r2, [r1,
+// #0x24]; ldrb r3, [r2, #1]; adds r2, #2; str r2, [r1, #0x24]; lsls r2, r3, #1; strh r2, [r0, #0xa]; cmp r2, #0x96. The
+// SDK's library has no such code. The sequencer reads its commands in other ways.
+constexpr uint8_t kMetroidTempo[14] = {0x4A, 0x6A, 0x53, 0x78, 0x02, 0x32, 0x4A,
+                                       0x62, 0x5A, 0x00, 0x42, 0x81, 0x96, 0x2A};
+
+// The end of Metroid Fusion's read of a note's arguments, after the key: ldrb r2, [r1, #1]; movs r0, #1; ldrsb r0, [r1,
+// r0]; cmp r0, #0; blt; strb r2, [r4, #0xf]; adds r0, r3, #1; str r0, [r4, #0x24]; ldrb r1, [r4] (0x080017B2). It reads
+// no third byte. Metroid: Zero Mission reads a third byte. As in the SDK's library, that byte adds to the note's
+// length.
+constexpr uint8_t kMetroidShortNote[18] = {0x4A, 0x78, 0x01, 0x20, 0x08, 0x56, 0x00, 0x28, 0x02,
+                                           0xDB, 0xE2, 0x73, 0x58, 0x1C, 0x60, 0x62, 0x21, 0x78};
+
 // The distance, in bytes, that the literals of a Camelot mixer's echo can lie before kCamelotPulse.
 constexpr uint32_t kCamelotEchoReach = 0x400;
 
@@ -598,6 +611,82 @@ int CountSongs(const Rom& rom, const DriverInfo& info, uint32_t table)
     return count;
 }
 
+// Finds the tables of a game with the Metroid games' sequencer and no m4aSongNumStart (Metroid: Zero Mission): two
+// loads of literals in a row, the music player table's and then the song table's, and a shift of the song's number by
+// 3 within the next two instructions (0x08002B28 in Zero Mission). The first pair whose tables read wins. Returns false
+// if there's none.
+bool FindMetroidTables(const Rom& rom, DriverInfo& info)
+{
+    const uint32_t end = kRomBase + uint32_t(rom.Size());
+    for (uint32_t at = kRomBase; at + 10 <= end; at += 2)
+    {
+        if ((rom.U16(at) & 0xF800) != 0x4800 || (rom.U16(at + 2) & 0xF800) != 0x4800)
+        {
+            continue;
+        }
+
+        // lsls rd, rm, #3
+        if ((rom.U16(at + 4) & 0xFFC0) != 0x00C0 && (rom.U16(at + 6) & 0xFFC0) != 0x00C0)
+        {
+            continue;
+        }
+
+        const uint32_t player_table = ThumbLiteral(rom, at);
+        const uint32_t song_table = ThumbLiteral(rom, at + 2);
+        if (!rom.Contains(player_table, 12) || !rom.Contains(song_table, 8))
+        {
+            continue;
+        }
+
+        DriverInfo candidate;
+        candidate.player_table = player_table;
+        ReadPlayers(rom, candidate);
+        if (candidate.players.empty() || CountSongs(rom, candidate, song_table) == 0)
+        {
+            continue;
+        }
+
+        info.player_table = player_table;
+        info.song_table = song_table;
+        info.log.push_back("song and music player tables read at " + Hex(at));
+        return true;
+    }
+
+    return false;
+}
+
+// Finds the Metroid games' table of square and wave channel settings, one for each key, from the routine that reads it:
+// a test of the voice's PSG channel against 3, then the load of the table and an index of the key by 2 (0x08001E56 in
+// Metroid Fusion). Returns 0 if there's none.
+uint32_t FindMetroidPsgTable(const Rom& rom)
+{
+    constexpr uint16_t kCode[] = {0x3034, 0x7801, 0x2007, 0x4008, 0x2803};
+    const uint32_t end = kRomBase + uint32_t(rom.Size());
+    for (uint32_t at = kRomBase; at + 20 <= end; at += 2)
+    {
+        bool match = true;
+        for (size_t i = 0; i < std::size(kCode) && match; i++)
+        {
+            match = rom.U16(at + 2 * uint32_t(i)) == kCode[i];
+        }
+
+        // bhi, ldr r1, [pc, #imm], lsls r0, r4, #1, adds r0, r0, r1, ldrh r3, [r0]
+        if (!match || (rom.U16(at + 10) & 0xFF00) != 0xD800 || (rom.U16(at + 12) & 0xFF00) != 0x4900 ||
+            rom.U16(at + 14) != 0x0060 || rom.U16(at + 16) != 0x1840 || rom.U16(at + 18) != 0x8803)
+        {
+            continue;
+        }
+
+        const uint32_t table = ThumbLiteral(rom, at + 12);
+        if (rom.Contains(table, 2 * 129))
+        {
+            return table;
+        }
+    }
+
+    return 0;
+}
+
 } // namespace
 
 bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error)
@@ -611,9 +700,16 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
     info.camelot_sequencer = HasCode(rom, kCamelotChannelSearch);
     info.camelot_top_priority = info.camelot_sequencer && HasCode(rom, kCamelotTopPriority);
     info.camelot_mixer = HasCode(rom, kCamelotPulse);
+    info.metroid_sequencer = HasCode(rom, kMetroidTempo);
+    info.metroid_short_notes = info.metroid_sequencer && HasCode(rom, kMetroidShortNote);
+    if (info.metroid_sequencer)
+    {
+        info.metroid_psg_table = FindMetroidPsgTable(rom);
+    }
 
-    // Find the routine that starts a song, and from it the tables, and the init's setting of the driver's mode.
-    if (FindSongStart(rom, info))
+    // Find the routine that starts a song, and from it the tables, and the init's setting of the driver's mode. A game
+    // with the Metroid games' sequencer may have no such routine. Its code gives the tables elsewhere.
+    if (FindSongStart(rom, info) || (info.metroid_sequencer && FindMetroidTables(rom, info)))
     {
         ReadPlayers(rom, info);
         info.sound_mode = FindSoundMode(rom, info.player_table);
@@ -680,7 +776,9 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
     if (info.song_start)
     {
         info.log.push_back("song start routine at " + Hex(info.song_start));
-
+    }
+    if (info.song_start || info.metroid_sequencer)
+    {
         // Camelot's mixer leaves out the master volume and the reverb, and has an echo instead.
         std::string mixer = "mixer: " + std::to_string(info.mix_rate) + " Hz, up to " +
                             std::to_string(info.max_channels) + " DirectSound channels";
@@ -737,6 +835,14 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         if (info.camelot_sequencer)
         {
             info.log.push_back("note start: Camelot's choice of channels, volumes and rates");
+        }
+        if (info.metroid_sequencer)
+        {
+            info.log.push_back("sequencer: the Metroid games' rework of the SDK's sequencer");
+            if (info.metroid_psg_table)
+            {
+                info.log.push_back("PSG frequency table at " + Hex(info.metroid_psg_table));
+            }
         }
     }
     info.log.push_back("song table at " + Hex(info.song_table) + ": " + std::to_string(info.song_count) + " song" +

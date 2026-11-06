@@ -78,9 +78,10 @@ commands::Kind KindOfExtended(uint8_t x);
 } // namespace detail
 
 // Reads the command at address `at` as the driver reads it, with the track's state `state`. `byte_at(address)` gives
-// the byte at an address.
+// the byte at an address. A note reads up to `note_arguments` bytes: the SDK's library reads a key, a velocity and an
+// extra length, and the Metroid games' sequencer only a key and a velocity.
 template <typename ByteAt>
-PlayedCommand ReadPlayedCommand(const ByteAt& byte_at, uint32_t at, const RunningState& state)
+PlayedCommand ReadPlayedCommand(const ByteAt& byte_at, uint32_t at, const RunningState& state, int note_arguments = 3)
 {
     using commands::Kind;
     using commands::Source;
@@ -129,7 +130,7 @@ PlayedCommand ReadPlayedCommand(const ByteAt& byte_at, uint32_t at, const Runnin
     // A note, or an end of a tie: the arguments that are there, each below 0x80.
     if (code >= kCmdTie || code == kCmdEot)
     {
-        const int most = code == kCmdEot ? 1 : 3;
+        const int most = code == kCmdEot ? 1 : note_arguments;
         int count = 0;
         uint8_t arguments[3] = {};
         while (count < most && byte_at(at) < 0x80)

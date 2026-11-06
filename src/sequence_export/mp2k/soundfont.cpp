@@ -458,14 +458,16 @@ int SoundfontBuilder::InstrumentFor(uint32_t address, int key)
     }
     else if (top.type & kVoiceDrumKit)
     {
-        // Each key of a drum kit plays its own voice, at that voice's key and pan.
+        // Each key of a drum kit plays the kit's voice for that key, at that voice's key and pan. The Metroid games'
+        // sequencer gives the track the voice's pan instead. CC10 holds that pan.
         for (int k = 0; k < 128; k++)
         {
             Voice sub;
             const uint32_t sub_address = SplitVoice(rom_, top, k);
             if (sub_address && ReadVoice(rom_, sub_address, sub) && !sub.IsSplit())
             {
-                plays = AddZone(si, sub, k, k, sub.key, sub.RhythmPan()) || plays;
+                const int8_t rhythm_pan = info_.metroid_sequencer ? int8_t(0) : sub.RhythmPan();
+                plays = AddZone(si, sub, k, k, sub.key, rhythm_pan) || plays;
             }
         }
     }

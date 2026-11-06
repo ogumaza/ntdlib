@@ -3563,6 +3563,58 @@ void TestQuietPsg()
     SEQLIB_CHECK(ons.size() == 1 && ons[0].tick == 12 * kMidiTicks && ons[0].bytes[1] == 62);
 }
 
+void TestPsgLevels()
+{
+    // At a track volume of 127, the MIDI file plays a PSG note of velocity v at level 15v/127, and the hardware at the
+    // driver's whole number: its two volumes added up and divided by 16, rounded down. The MIDI velocity's square
+    // follows v times the hardware's level against the MIDI file's.
+    //  - A square at velocity 64 plays at level 7, not 7.56. The velocity of 59.27 gives a MIDI velocity of 87, not 90.
+    //  - The wave channel at velocity 36 plays at level 4 in the driver, which NR32 plays at 25%. A pattern of 3 and 14
+    //    plays as 0 and 3 at 25%, at 0.273 of the pattern's level rather than 0.25. That's level 4.09, not 4.25: a
+    //    MIDI velocity of 66, not 68.
+    //  - At velocity 95, the driver's level of 11 plays at 75%. A pattern of 0 and 15 plays as 0 and 11 there: level
+    //    11, not 11.22. That's a MIDI velocity of 109, not 110.
+    //  - At velocity 127, the wave channel plays its full volume, and the MIDI velocity stays 127.
+    Cart cart;
+    const uint32_t three_fourteen = cart.Place(std::vector<uint8_t>(16, 0x3E));
+    const uint32_t zero_fifteen = cart.Place(std::vector<uint8_t>(16, 0x0F));
+    const uint32_t voices = cart.VoiceGroup({{0, Cart::Voice(1, 2, 60, {0, 0, 15, 0})},
+                                             {1, Cart::Voice(3, three_fourteen, 60, {0, 0, 15, 0})},
+                                             {2, Cart::Voice(3, zero_fifteen, 60, {0, 0, 15, 0})}});
+    cart.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdVol, 127).Note(12, 60, 64).Wait(12).Fine(),
+               Track()
+                   .Cmd(kCmdVoice, 1)
+                   .Cmd(kCmdVol, 127)
+                   .Note(12, 62, 36)
+                   .Wait(12)
+                   .Cmd(kCmdVoice, 2)
+                   .Note(12, 64, 95)
+                   .Wait(12)
+                   .Note(12, 65, 127)
+                   .Wait(12)
+                   .Fine()},
+              voices);
+    const Rom rom = cart.ToRom();
+    const DriverInfo info = Detect(rom);
+
+    ConvertSettings opt = TempSettings("psg_levels");
+
+    const SongReport r = ConvertSong(rom, info, 0, opt, nullptr);
+
+    // Each track plays on a MIDI channel of its own.
+    std::map<int, int> velocities;
+    const MidiEvents midi = ReadMidi(r.midi_path);
+    for (const uint8_t status : {uint8_t(0x90), uint8_t(0x91)})
+    {
+        for (const auto& on : midi.Find(status))
+        {
+            velocities[on.bytes[1]] = on.bytes[2];
+        }
+    }
+    SEQLIB_CHECK(r.ok);
+    SEQLIB_CHECK(velocities == (std::map<int, int>{{60, 87}, {62, 66}, {64, 109}, {65, 127}}));
+}
+
 void TestDump()
 {
     Cart cart;
@@ -4603,6 +4655,168 @@ bool Throws(F f)
     }
 
     return false;
+}
+
+// The Metroid games' sequencer is found by its TEMPO handler. Metroid: Zero Mission has no routine that starts a song:
+// its tables come from two loads of literals in a row. The table of PSG frequency settings comes from the routine that
+// reads it.
+void TestMetroidDetection()
+{
+    Cart cart(kMode, {10, 3}, false, false);
+    const uint32_t psg_table = cart.WriteMetroid(16);
+    cart.Song({Track().Fine()}, cart.VoiceGroup({{0, Cart::Voice(0, cart.Wave(Saw()))}}));
+    Cart plain(kMode, {10, 3}, false, false);
+    plain.Song({Track().Fine()}, plain.VoiceGroup({{0, Cart::Voice(0, plain.Wave(Saw()))}}));
+
+    const DriverInfo info = Detect(cart.ToRom());
+    DriverInfo plain_info;
+    std::string error;
+    const bool plain_found = DetectDriver(plain.ToRom(), DriverOverrides(), plain_info, error);
+
+    SEQLIB_CHECK(info.metroid_sequencer);
+    SEQLIB_CHECK_EQ(info.song_start, 0u);
+    SEQLIB_CHECK_EQ(info.player_table, kPlayerTable);
+    SEQLIB_CHECK_EQ(info.song_table, kSongTable);
+    SEQLIB_CHECK_EQ(info.song_count, 1);
+    SEQLIB_CHECK_EQ(info.metroid_psg_table, psg_table);
+    SEQLIB_CHECK(!plain_found && !plain_info.metroid_sequencer && !plain_info.metroid_psg_table);
+}
+
+// The Metroid games' sequencer keeps each note of a drum kit at the pan that it started with when the track's volume
+// changes. Its mixer ends a note whose level reaches 0, unless the track gave both an echo volume and an echo length.
+// The echo then plays at the note's last level for the length less 1. A square takes its setting from the game's table.
+// In Metroid Fusion, a note reads a key and a velocity, and a third byte below 0x80 is the next note's key. In Metroid:
+// Zero Mission, the third byte adds to the note's length.
+void TestMetroidSequencer()
+{
+    Cart cart;
+    cart.WriteMetroid(16);
+    const uint32_t wave = cart.Wave(Saw(), 13379, 0);
+    const uint32_t kit = cart.VoiceGroup({{60, Cart::Voice(0, wave, 60, {255, 0, 255, 0}, 0xA0)},
+                                          {61, Cart::Voice(0, wave, 60, {255, 0, 255, 0}, 0xE0)}});
+    const uint32_t voices = cart.VoiceGroup({{0, Cart::Voice(kVoiceDrumKit, kit)},
+                                             {1, Cart::Voice(0, wave, 60, {255, 0, 255, 0})},
+                                             {2, Cart::Voice(1, 2, 60, {0, 0, 15, 0})}});
+    cart.Song({Track()
+                   .Cmd(kCmdTempo, 75)
+                   .Cmd(kCmdVoice, 0)
+                   .Cmd(kCmdVol, 127)
+                   .Tie(60, 127)
+                   .Tie(61, 127)
+                   .Wait(1)
+                   .Cmd(kCmdVol, 64)
+                   .Wait(2)
+                   .Fine()},
+              voices);
+    for (const int length : {0, 5})
+    {
+        cart.Song({Track()
+                       .Cmd(kCmdTempo, 75)
+                       .Cmd(kCmdVoice, 1)
+                       .Cmd(kCmdVol, 127)
+                       .Raw({kCmdXcmd, kXcmdEchoVol, 70, kCmdXcmd, kXcmdEchoLen, uint8_t(length)})
+                       .Note(2, 60, 127)
+                       .Wait(20)
+                       .Fine()},
+                  voices);
+    }
+    cart.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 2).Cmd(kCmdTune, 0x48).Tie(60, 127).Wait(2).Fine()}, voices);
+    cart.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 1).Note(24, 60, 100, 50).Wait(24).Fine()}, voices);
+    const Rom rom = cart.ToRom();
+    const DriverInfo info = Detect(rom);
+
+    // After the volume falls, the note of key 60 stays on the left and that of key 61 on the right.
+    Sequencer drums(rom, info, 0);
+    drums.Step();
+    drums.Step();
+    std::vector<std::pair<int, int>> sides;
+    for (int c = 0; c < 2; c++)
+    {
+        const Channel& ch = drums.GetChannel(c);
+        sides.push_back({ch.midi_key, ch.left - ch.right});
+    }
+    std::sort(sides.begin(), sides.end());
+    SEQLIB_CHECK(sides.size() == 2 && sides[0].first == 60 && sides[0].second > 0 && sides[1].first == 61 &&
+                 sides[1].second < 0);
+
+    // The note's release takes its level to 0 in a frame. Without an echo length it ends there. With 5, it stays on for
+    // 4 frames more at the level it had before.
+    std::vector<int> frames;
+    std::vector<int> levels;
+    for (int song = 1; song <= 2; song++)
+    {
+        Sequencer seq(rom, info, song);
+        int on = 0;
+        for (int f = 0; f < 12; f++)
+        {
+            seq.Step();
+            const Channel& ch = seq.GetChannel(0);
+            if (ch.status & ntdlib::mp2k::kStatusOn)
+            {
+                on++;
+                if (ch.status & ntdlib::mp2k::kStatusEcho)
+                {
+                    levels.push_back(ch.envelope);
+                }
+            }
+        }
+        frames.push_back(on);
+    }
+    SEQLIB_CHECK(frames.size() == 2 && frames[1] == frames[0] + 5);
+    SEQLIB_CHECK(levels.size() == 5 && std::all_of(levels.begin(), levels.end(), [](int l) { return l == 255; }));
+
+    // A tune of 8/64 of a semitone takes 129/256 of the step from key 60's setting to key 61's.
+    Sequencer square(rom, info, 3);
+    square.Step();
+    SEQLIB_CHECK_EQ(square.GetChannel(kFirstPsgChannel).frequency, 60u * 16 + 8);
+
+    Sequencer notes(rom, info, 4);
+    std::vector<int> keys;
+    for (const Action& a : Actions(notes, 1, Action::kNoteOn))
+    {
+        keys.push_back(a.key);
+    }
+    SEQLIB_CHECK(!info.metroid_short_notes && keys == std::vector<int>({60}));
+
+    Cart fusion;
+    fusion.WriteMetroid(16, true);
+    fusion.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Note(24, 60, 100, 50).Wait(24).Fine()},
+                fusion.VoiceGroup({{0, Cart::Voice(0, fusion.Wave(Saw(), 13379, 0))}}));
+    const Rom fusion_rom = fusion.ToRom();
+    const DriverInfo fusion_info = Detect(fusion_rom);
+    Sequencer short_notes(fusion_rom, fusion_info, 0);
+    keys.clear();
+    for (const Action& a : Actions(short_notes, 1, Action::kNoteOn))
+    {
+        keys.push_back(a.key);
+    }
+    SEQLIB_CHECK(fusion_info.metroid_short_notes && keys == std::vector<int>({60, 50}));
+}
+
+// The Metroid games' LFO leaves its swing as it is when the triangle wave's value, before the depth scales it, equals
+// the old swing: at a speed of 32 and a depth of 63, the swing goes 16, 32, 32 and 0 rather than 16, 32, 16 and 0.
+void TestMetroidLfo()
+{
+    Cart cart;
+    cart.WriteMetroid(16);
+    const uint32_t voices = cart.VoiceGroup({{0, Cart::Voice(0, cart.Wave(Saw(), 13379, 0), 60, {255, 0, 255, 0})}});
+    cart.Song(
+        {Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdLfoS, 63).Cmd(kCmdMod, 63).Tie(60, 127).Wait(6).Fine()},
+        voices);
+    const Rom rom = cart.ToRom();
+    Sequencer seq(rom, Detect(rom), 0);
+
+    // The swing moves the pitch by 48/256 of a semitone a step. The note at tick 0 sets the swing to 0.
+    std::vector<std::pair<uint64_t, int>> pitches;
+    for (const Action& a : Actions(seq, 8, Action::kPitch))
+    {
+        if (a.tick >= 1 && a.tick <= 4)
+        {
+            pitches.push_back({a.tick, a.value});
+        }
+    }
+    const std::vector<std::pair<uint64_t, int>> kPitches = {{1, 768}, {2, 1536}, {4, 0}};
+    SEQLIB_CHECK(pitches == kPitches);
 }
 
 // A song of two tracks: a saw that loops on a DirectSound channel, and a square. A rest takes the place of either.
@@ -5882,6 +6096,7 @@ int RunTests()
     TestPsgPitch();
     TestPsgRelease();
     TestQuietPsg();
+    TestPsgLevels();
     TestDump();
     TestCamelotDetection();
     TestCamelotSequencer();
@@ -5891,6 +6106,9 @@ int RunTests()
     TestLaterCamelotSteps();
     TestLaterCamelotPriority();
     TestCamelotConversion();
+    TestMetroidDetection();
+    TestMetroidSequencer();
+    TestMetroidLfo();
     TestPlayerFifo();
     TestPlayerStoreCycle();
     TestPlayerFramesWithoutSamples();

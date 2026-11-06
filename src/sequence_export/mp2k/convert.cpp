@@ -12,6 +12,7 @@
 #include <numbers>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -25,6 +26,7 @@
 #include "ntdlib/mp2k/sequencer.h"
 #include "ntdlib/mp2k/song.h"
 #include "ntdlib/sequence_export/agb/midi.h"
+#include "ntdlib/sequence_export/agb/psg.h"
 #include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/agb/song_banks.h"
@@ -51,6 +53,7 @@ using ntdlib::mp2k::kDefaultTempo;
 using ntdlib::mp2k::KeyToPsgFrequency;
 using ntdlib::mp2k::kFirstPsgChannel;
 using ntdlib::mp2k::kMaxTracks;
+using ntdlib::mp2k::kStatusEcho;
 using ntdlib::mp2k::kTickCounter;
 using ntdlib::mp2k::PlayedTracks;
 using ntdlib::mp2k::ReadSong;
@@ -69,6 +72,8 @@ using ntdlib::sequence_export::agb::LevelsToControllers;
 using ntdlib::sequence_export::agb::MelodicChannel;
 using ntdlib::sequence_export::agb::MidiFile;
 using ntdlib::sequence_export::agb::MidiTrack;
+using ntdlib::sequence_export::agb::PsgModel;
+using ntdlib::sequence_export::agb::PsgRegisters;
 using ntdlib::sequence_export::agb::Sf2File;
 using ntdlib::sequence_export::agb::SongNumber;
 using ntdlib::sequence_export::agb::SongReport;
@@ -110,14 +115,281 @@ std::vector<TrackLayout> ScanTracks(const Rom& rom, const SongHeader& header, in
     return layouts;
 }
 
+// The levels from 0 to 15 that the console's PSG channels play at in a frame. A negative level marks a frame of a
+// note's echo, which the MIDI file leaves out.
+using PsgLevels = std::array<float, 4>;
+
+// The offsets from agb::kRegSound1CntL of the PSG's registers: each channel's NRx1 and NRx2, and its NRx3 and NRx4,
+// then NR10, NR30 and the wave RAM.
+constexpr uint32_t kEnvelopeOffsets[4] = {0x02, 0x08, 0x12, 0x18};
+constexpr uint32_t kFrequencyOffsets[4] = {0x04, 0x0C, 0x14, 0x1C};
+constexpr uint32_t kNr10Offset = 0x00;
+constexpr uint32_t kNr30Offset = 0x10;
+constexpr uint32_t kWaveRamOffset = 0x30;
+
+// Returns the level of the wave channel's pattern `pattern` (16 bytes, 32 points of 4 bits) at NR32 `nr32`, against
+// the pattern at 100%. A listener hears the waveform less its mean. The level is therefore that of the AC part. The
+// hardware drops a point's low bit at 50% and its low 2 bits at 25%. At 75%, the hardware multiplies the point by 3 and
+// drops the low 2 bits.
+double WaveLevel(std::span<const uint8_t> pattern, uint8_t nr32)
+{
+    int times = 1, shift = 0;
+    if (nr32 & 0x80)
+    {
+        times = 3;
+        shift = 2;
+    }
+    else if ((nr32 >> 5 & 3) == 0)
+    {
+        return 0;
+    }
+    else
+    {
+        shift = (nr32 >> 5 & 3) - 1;
+    }
+
+    double sum = 0, squares = 0, played_sum = 0, played_squares = 0;
+    for (size_t i = 0; i < 32; i++)
+    {
+        const int point = i % 2 ? pattern[i / 2] & 0xF : pattern[i / 2] >> 4;
+        const int played = (point * times) >> shift;
+        sum += point;
+        squares += point * point;
+        played_sum += played;
+        played_squares += played * played;
+    }
+
+    const double variance = squares / 32 - (sum / 32) * (sum / 32);
+    const double played_variance = played_squares / 32 - (played_sum / 32) * (played_sum / 32);
+    if (variance <= 0)
+    {
+        return double(times) / (1 << shift);
+    }
+
+    return std::sqrt(std::max(played_variance, 0.0) / variance);
+}
+
+// Follows the console's PSG channels as the hardware plays the driver's stores to their registers, frame by frame.
+class PsgTrace
+{
+public:
+    // Returns the level of each channel in the frame that `seq` ran last. A square or noise channel plays at the
+    // volume that its envelope has at the frame's start. The wave channel plays at 15 times WaveLevel().
+    PsgLevels Frame(const Sequencer& seq)
+    {
+        const std::span<const uint8_t> registers = seq.SoundRegisters();
+        const auto half = [&](uint32_t offset)
+        {
+            return uint16_t(registers[offset] | registers[offset + 1] << 8);
+        };
+
+        // A store to NRx4 with bit 7 set restarts the channel.
+        std::array<bool, 4> restarted = {};
+        for (const ntdlib::agb::RegisterWrite& w : seq.SoundWrites())
+        {
+            for (size_t n = 0; n < 4; n++)
+            {
+                const uint32_t address = ntdlib::agb::kRegSound1CntL + kFrequencyOffsets[n] + 1;
+                if (address >= w.address && address < w.address + w.size &&
+                    (w.value >> (8 * (address - w.address)) & 0x80))
+                {
+                    restarted[n] = true;
+                }
+            }
+        }
+
+        PsgLevels levels;
+        for (size_t n = 0; n < 4; n++)
+        {
+            PsgRegisters r;
+            r.nr10 = half(kNr10Offset);
+            r.envelope = half(kEnvelopeOffsets[n]);
+            r.frequency = half(kFrequencyOffsets[n]);
+            r.nr30 = half(kNr30Offset);
+            r.restarted = restarted[n];
+            double level = std::max(models_[n].Frame(r), 0);
+            if (n == 2)
+            {
+                level *= WaveLevel(registers.subspan(kWaveRamOffset, 16), uint8_t(r.envelope >> 8));
+            }
+            if (seq.GetChannel(kFirstPsgChannel + int(n)).status & kStatusEcho)
+            {
+                level = -1;
+            }
+            levels[n] = float(level);
+        }
+
+        return levels;
+    }
+
+private:
+    std::array<PsgModel, 4> models_ = {PsgModel(0), PsgModel(1), PsgModel(2), PsgModel(3)};
+};
+
+// A PSG note's squared levels, added up over the frames from its start to the end of its sound: as the hardware plays
+// it, and as the MIDI file plays it at the driver's velocity.
+struct PsgPower
+{
+    double heard = 0;
+    double played = 0;
+};
+
+// Returns the level from 0 to 15 that a PSG voice's zone plays `counts` counts of the driver's envelope counter into a
+// note, at the full level of 15, before the note's release (see EnvelopeFor()). A decay to a sustain level falls
+// linearly in decibels. EnvelopeFor() lengthens a decay to silence to keep the loudness of a straight fade. The model
+// takes that decay as a straight line.
+double HeldZoneLevel(const Voice& voice, double counts)
+{
+    const double attack = 15.0 * voice.attack;
+    if (counts < attack)
+    {
+        return counts / voice.attack;
+    }
+
+    const int sustain = std::min(int(voice.sustain), 15);
+    counts -= attack;
+    if (sustain == 15)
+    {
+        return 15;
+    }
+    if (voice.decay && counts < (15.0 - sustain) * voice.decay)
+    {
+        if (!sustain)
+        {
+            return 15 - counts / voice.decay;
+        }
+
+        return 15 * std::pow(sustain / 15.0, counts / ((15.0 - sustain) * voice.decay));
+    }
+
+    return sustain;
+}
+
+// Returns the level that HeldZoneLevel() gives, with the note's release from `release` counts on, or none if
+// `release` is negative. The release is taken as a straight fade to silence.
+double ZoneLevel(const Voice& voice, double counts, double release)
+{
+    if (release < 0 || counts < release)
+    {
+        return HeldZoneLevel(voice, counts);
+    }
+    if (!voice.release)
+    {
+        return 0;
+    }
+
+    const int sustain = std::min(int(voice.sustain), 15);
+    const double left = 1 - (counts - release) / ((sustain ? sustain : 15) * double(voice.release));
+
+    return left > 0 ? HeldZoneLevel(voice, release) * left : 0;
+}
+
 // Results of running a song through the model: actions, warnings, and the tick where it gave up, if it did.
 struct Simulation
 {
     std::vector<Action> actions;
     std::vector<uint64_t> tick_ends; // the player's tick count after each frame
     std::vector<std::string> warnings;
-    std::optional<uint64_t> cut_off; // the tick where the model gave up, at the frame limit
+    std::optional<uint64_t> cut_off;       // the tick where the model gave up, at the frame limit
+    std::vector<PsgLevels> psg_levels;     // the levels of the PSG's channels in each frame
+    std::map<size_t, PsgPower> psg_powers; // each PSG note's levels, by the index of its note on in `actions`
 };
+
+void TrackControllers(int left, int right, bool psg, const DriverInfo& info, int& cc10, int& cc11);
+
+// Works out the levels of each PSG note on the console's channels. The MIDI file plays a PSG note at the level that its
+// velocity and the track's controllers set, from 0 to 15, times the zone envelope at the full level of 15 (see
+// TrackControllers() and ZoneLevel()). The hardware plays it at the whole number from 0 to 15 that the driver's
+// envelope gives, and the wave channel at NR32's levels (see WaveLevel()). The levels count from the frame in which the
+// note starts up to the end of its sound, but not in its echo.
+std::map<size_t, PsgPower> PsgPowers(const Rom& rom, const DriverInfo& info, const Simulation& sim)
+{
+    struct Part
+    {
+        size_t note_on = 0;
+        int track = 0;
+        int velocity = 0;
+        Voice voice;
+        uint32_t on = 0;
+        int64_t release = -1;
+        PsgPower power;
+    };
+    std::array<std::optional<Part>, 4> parts;
+    std::array<std::pair<int, int>, kMaxTracks> levels = {};
+    std::map<size_t, PsgPower> powers;
+    const auto finish = [&](size_t n)
+    {
+        if (parts[n])
+        {
+            powers[parts[n]->note_on] = parts[n]->power;
+            parts[n].reset();
+        }
+    };
+
+    size_t i = 0;
+    for (uint32_t f = 0; f < sim.psg_levels.size(); f++)
+    {
+        for (; i < sim.actions.size() && sim.actions[i].frame <= f; i++)
+        {
+            const Action& a = sim.actions[i];
+            if (a.kind == Action::kLevels && a.track >= 0 && a.track < kMaxTracks)
+            {
+                levels[size_t(a.track)] = {a.left, a.right};
+            }
+
+            const int n = a.channel - kFirstPsgChannel;
+            if (n < 0 || n >= 4)
+            {
+                continue;
+            }
+            if (a.kind == Action::kNoteOn)
+            {
+                finish(size_t(n));
+                Part& part = parts[size_t(n)].emplace();
+                part.note_on = i;
+                part.track = a.track;
+                part.velocity = a.velocity;
+                ReadVoice(rom, a.voice, part.voice);
+                part.on = f;
+            }
+            else if (a.kind == Action::kRelease && parts[size_t(n)] && parts[size_t(n)]->release < 0)
+            {
+                parts[size_t(n)]->release = f;
+            }
+            else if (a.kind == Action::kNoteEnd)
+            {
+                finish(size_t(n));
+            }
+        }
+
+        // The envelope's counter counts 16 times every 15 frames.
+        for (size_t n = 0; n < 4; n++)
+        {
+            const double heard = sim.psg_levels[f][n];
+            if (!parts[n] || heard < 0)
+            {
+                continue;
+            }
+
+            Part& part = *parts[n];
+            int cc10 = 64, cc11 = 0;
+            TrackControllers(levels[size_t(part.track)].first, levels[size_t(part.track)].second, true, info, cc10,
+                             cc11);
+            const double side = cc11 * cc11 / (127.0 * 127.0) * (cc10 == 64 ? 1 : std::numbers::sqrt2);
+            const double counts = (f - part.on) * 16.0 / 15;
+            const double release = part.release < 0 ? -1 : double(part.release - part.on) * 16 / 15;
+            const double played = part.velocity / 127.0 * side * ZoneLevel(part.voice, counts, release);
+            part.power.heard += heard * heard;
+            part.power.played += played * played;
+        }
+    }
+    for (size_t n = 0; n < 4; n++)
+    {
+        finish(n);
+    }
+
+    return powers;
+}
 
 // Runs the model until it has played the plan's last tick, or until every track has ended. With `commands`, the
 // actions include each command that the tracks ran.
@@ -134,6 +406,7 @@ Simulation Simulate(const Rom& rom, const DriverInfo& info, int song, const Song
         seq.RestateFrom(plan.loop_start);
     }
 
+    PsgTrace psg;
     uint32_t frames = 0;
     bool finished = false; // the song reached the plan's end, or its tracks ended
     for (uint32_t f = 0; f < kMaxFrames; f++)
@@ -141,6 +414,7 @@ Simulation Simulate(const Rom& rom, const DriverInfo& info, int song, const Song
         const std::vector<Action>& actions = seq.Step();
         sim.actions.insert(sim.actions.end(), actions.begin(), actions.end());
         sim.tick_ends.push_back(seq.Tick());
+        sim.psg_levels.push_back(psg.Frame(seq));
         frames = f + 1;
         if (seq.Tick() > plan.end || seq.TracksEnded())
         {
@@ -167,7 +441,9 @@ Simulation Simulate(const Rom& rom, const DriverInfo& info, int song, const Song
                 sim.actions.push_back(a);
             }
         }
+        sim.psg_levels.push_back(psg.Frame(seq));
     }
+    sim.psg_powers = PsgPowers(rom, info, sim);
 
     return sim;
 }
@@ -197,7 +473,28 @@ struct Note
     int channel = -1;            // with a MIDI channel for each track, the first of the driver's channels that plays it
     int gate = 0;                // its command's length in ticks, or 0 for a tied note
     std::optional<uint64_t> cut; // with a MIDI channel for each track, where a later note took a channel it held
+    PsgPower power;              // for a PSG note, its levels on each of the driver's channels that play it, added up
 };
+
+// Adds the levels of the PSG note that note on `a` starts to those of `n`. `a` is one of the actions in `sim`.
+void AddPower(Note& n, const Simulation& sim, const Action& a)
+{
+    const auto found = sim.psg_powers.find(size_t(&a - sim.actions.data()));
+    if (found != sim.psg_powers.end())
+    {
+        n.power.heard += found->second.heard;
+        n.power.played += found->second.played;
+    }
+}
+
+// Returns the velocity on the MIDI file's scale of 0 to 127 that plays note `n` at the level the hardware plays it at.
+// The MIDI velocity's square follows the driver's velocity. A PSG note's driver velocity is scaled by the ratio of the
+// level in the hardware to the level in the MIDI file, over the note's frames (see PsgPowers()).
+int MidiVelocity(const Note& n)
+{
+    const double gain = n.power.played > 0 ? std::sqrt(n.power.heard / n.power.played) : 1;
+    return SquareRootValue(n.velocity * gain, 127, 1);
+}
 
 // The MIDI file's notes, and the number of notes the game didn't play for want of a channel. With a MIDI channel for
 // each track, `unstarted` holds the notes that the driver never started: those that found no channel or whose voice
@@ -329,6 +626,7 @@ Notes CollectNotes(const Rom& rom, const Simulation& sim, const SongPlan& plan, 
                 n.level += a.velocity;
                 n.velocity = std::min(127, n.level);
                 n.voices++;
+                AddPower(n, sim, a);
                 held[size_t(a.channel)] = same_key;
                 last[size_t(a.channel)] = same_key;
                 continue;
@@ -340,6 +638,7 @@ Notes CollectNotes(const Rom& rom, const Simulation& sim, const SongPlan& plan, 
 
             notes.push_back(NoteFrom(rom, a));
             notes.back().channel = a.channel;
+            AddPower(notes.back(), sim, a);
             same_key = int(notes.size()) - 1;
             held[size_t(a.channel)] = same_key;
             last[size_t(a.channel)] = same_key;
@@ -441,6 +740,7 @@ Notes CollectVoiceNotes(const Rom& rom, const Simulation& sim, const SongPlan& p
 
             Note n = NoteFrom(rom, a);
             n.sound_channel = a.channel;
+            AddPower(n, sim, a);
             notes.push_back(n);
             current[size_t(a.channel)] = int(notes.size()) - 1;
         }
@@ -1482,7 +1782,7 @@ void AddSongTracks(MidiFile& midi, const Simulation& sim, const SongPlan& plan, 
     {
         MidiTrack& mt = *track[size_t(n.track)];
         const int ch = channel[size_t(n.track)];
-        mt.NoteOn(uint32_t(n.on), ch, n.key, SquareRootValue(n.velocity, 127, 1), n.before_programs, n.step);
+        mt.NoteOn(uint32_t(n.on), ch, n.key, MidiVelocity(n), n.before_programs, n.step);
         mt.NoteOff(uint32_t(n.off), ch, n.key);
     }
 }
@@ -1621,7 +1921,7 @@ void WriteVoiceChannel(MidiTrack& mt, int ch, const std::vector<const Note*>& no
             set_pitch(c->first, played(c->second));
         }
 
-        mt.NoteOn(uint32_t(n.on), ch, n.key, SquareRootValue(n.velocity, 127, 1));
+        mt.NoteOn(uint32_t(n.on), ch, n.key, MidiVelocity(n));
         mt.NoteOff(uint32_t(n.off), ch, n.key);
         if (n.stop)
         {

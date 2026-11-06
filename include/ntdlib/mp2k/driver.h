@@ -85,6 +85,9 @@ struct DriverInfo
     int camelot_cross_echo = -8;       // the echo's level from each side's old output to the other side, over 128
     int camelot_tap = 176;             // how far back in the mixer's points the left side takes the right side's output
     bool camelot_adpcm = false;        // Camelot's mixer plays a fixed-pitch sample of a negative size as 4-bit steps
+    bool metroid_sequencer = false;    // the sequencer of Metroid Fusion and Metroid: Zero Mission
+    uint32_t metroid_psg_table = 0;    // the Metroid games' table of PSG frequency settings, or 0
+    bool metroid_short_notes = false;  // a note reads a key and a velocity, and no third byte (Metroid Fusion)
     SongChannelList song_channels;     // the songs that the game's code gives another number of DirectSound channels
     std::vector<SongSetting> song_settings; // what the game's code gives some songs when it starts them
     std::vector<std::string> log;           // detection results, for a listing of what it found
