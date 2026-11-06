@@ -868,8 +868,7 @@ StreamFile MakeStream(Flavor flavor, uint32_t version, WaveEncoding encoding, ui
     {
         for (uint32_t i = 0; i < s.samples_past_end; ++i)
         {
-            const int16_t sample =
-                s.loop ? channel[s.loop_start + i % (s.sample_count - s.loop_start)] : int16_t{0};
+            const int16_t sample = s.loop ? channel[s.loop_start + i % (s.sample_count - s.loop_start)] : int16_t{0};
             channel.push_back(sample);
         }
     }

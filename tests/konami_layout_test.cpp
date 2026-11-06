@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the cut and the join of a GBA ROM of Konami's driver (ntdlib/konami/layout.h), on small carts built here. The
-// expected ROMs come from the driver's rules: a song table entry holds a song's address and its tracks' offsets from
-// that address, and nothing else names a song's bytes.
+// Tests of the cut and the join of a GBA ROM of Konami's driver (ntdlib/konami/layout.h), on small carts built here.
+// The expected ROMs come from the driver's rules: a song table entry holds a song's address and its tracks' offsets
+// from that address, and nothing else names a song's bytes.
 
 #include <algorithm>
 #include <array>
@@ -50,8 +50,8 @@ constexpr uint32_t kSongB = 0x20B;
 constexpr uint32_t kSongC = 0x214;
 constexpr uint32_t kSongsEnd = 0x216;
 
-// Song A's bytes. Track 0: its first delay, a duty byte, a delay, a PSG note, a delay of 4, a rest, a delay, the end. The
-// song's other tracks start after it: a delay and the song's end.
+// Song A's bytes. Track 0: its first delay, a duty byte, a delay, a PSG note, a delay of 4, a rest, a delay, the end.
+// The song's other tracks start after it: a delay and the song's end.
 const std::vector<uint8_t> kBytesA = {0x00, 0x81, 0x00, 0xD3, 0x18, 0x04, 0xE0, 0x00, 0xFE, 0x00, 0xFD};
 
 // Song B's bytes. Track 1: its first delay, a PSG note, a delay of 8, a rest, a delay, the end. The others as above.
@@ -409,8 +409,8 @@ void TestSongsThatStay()
         Check(konami::Join(layout) == image, "the song with two readings comes back");
     }
 
-    // Track 1 starts at the end command of track 0, and reads it as a delay. The decoder keeps the song as data, and the
-    // song stays.
+    // Track 1 starts at the end command of track 0, and reads it as a delay. The decoder keeps the song as data, and
+    // the song stays.
     {
         std::vector<uint8_t> image = CartBytes();
         PutEntry(image, 2, kSongC, 0, {0, 1});
@@ -555,7 +555,8 @@ void TestDetection()
             xsflib::StoreLe16(&image[kCode + 2 * i], sum[i]);
         }
         xsflib::StoreLe32(&image[kCode + 0x10], kRomBase + kTable);
-        const uint16_t reader[] = {0x781D, 0x2DFC, 0xDD1E, 0x2DFF, 0xD107, 0x2DFD, 0xD100, 0x2DEF, 0xDC00, 0x2DE0, 0xD110};
+        const uint16_t reader[] = {0x781D, 0x2DFC, 0xDD1E, 0x2DFF, 0xD107, 0x2DFD,
+                                   0xD100, 0x2DEF, 0xDC00, 0x2DE0, 0xD110};
         for (uint32_t i = 0; i < 11; i++)
         {
             xsflib::StoreLe16(&image[0x900 + 2 * i], reader[i]);

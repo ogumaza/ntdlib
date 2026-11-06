@@ -238,8 +238,9 @@ void AddWindWakerMusicStates(GameRules& rules, bool gamecube)
 }
 
 // Give Twilight Princess's rules the states in which its code plays its music once a piece has started, and the start
-// states that its scenes and its other starters give more pieces: `states` holds kTwilightPrincessStates, or HD's
-// kTwilightPrincessHdStates. Child m of track 0 is the handle's child m. A state's port 9 is a game port.
+// states that its scenes and its other starters give more pieces: `states` holds kTwilightPrincessStates,
+// kTwilightPrincessWiiStates, kTwilightPrincessHdStates or, for Link's Crossbow Training, kCrossbowTrainingStates.
+// Child m of track 0 is the handle's child m. A state's port 9 is a game port.
 void AddTwilightPrincessMusicStates(std::span<const ntdlib::jaudio::MusicState> states, GameRules& rules)
 {
     for (const ntdlib::jaudio::MusicState& music : states)
@@ -526,8 +527,8 @@ std::map<std::string, uint8_t> ReadVolumeTable(std::span<const uint8_t> archive,
 {
     std::vector<uint8_t> decoded;
     const std::vector<ArchiveFile> files = ReadRarc(DecodeIfYaz0(archive, decoded));
-    const auto file = std::ranges::find_if(files, [&](const ArchiveFile& f)
-                                           { return AsciiLower(f.name) == AsciiLower(table.file); });
+    const auto file =
+        std::ranges::find_if(files, [&](const ArchiveFile& f) { return AsciiLower(f.name) == AsciiLower(table.file); });
     if (file == files.end())
     {
         throw FormatError("the archive holds no " + table.file);
@@ -563,10 +564,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
                                                                     "aab07cea25ba957374524c4f29d36b72e6d36a67"};
     // The Wind Waker: the SHA-1s of the start-up archives of the USA and Japanese releases on the GameCube and of the
     // USA and Japanese releases of The Wind Waker HD. The European releases have the USA releases' archives.
-    constexpr std::array<std::string_view, 4> kWindWaker{"65ea70655099a196e0707bf4e4ce61e7818553d9",
-                                                         "0a0f93a5bb97313d895e0a5a16604ad77f567547",
-                                                         "c66c0103a5c7c1292b5fc6c3371ed1458035cde7",
-                                                         "aa3077a9dafc178e46b80b4e5d975550cb28c517"};
+    constexpr std::array<std::string_view, 4> kWindWaker{
+        "65ea70655099a196e0707bf4e4ce61e7818553d9", "0a0f93a5bb97313d895e0a5a16604ad77f567547",
+        "c66c0103a5c7c1292b5fc6c3371ed1458035cde7", "aa3077a9dafc178e46b80b4e5d975550cb28c517"};
     // Luigi's Mansion: the SHA-1 of the USA release's start-up archive.
     constexpr std::string_view kLuigisMansion = "4a60396b9c35333f3083848be1f49c82bf9ba4df";
     // Pikmin 2: the SHA-1s of the USA release's start-up archive on the GameCube and on the Wii.
@@ -577,11 +577,16 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
     // Twilight Princess: the SHA-1 of the start-up archive on the GameCube. The USA, European and Japanese releases
     // share it.
     constexpr std::string_view kTwilightPrincessGameCube = "05b96ae88eb84f1f29fb606aad19b1be138223e8";
-    // Twilight Princess: the SHA-1 of the start-up archive on the Wii (the USA release's third version) and in
-    // Twilight Princess HD. Both hold the same file.
-    constexpr std::string_view kTwilightPrincessWii = "f3e93983847ccbb9d801ad047faea0182ab466cc";
-    // Link's Crossbow Training: the SHA-1 of the USA release's start-up archive (revision 1).
-    constexpr std::string_view kCrossbowTraining = "b93115de942c91600250e2742be35005708aad91";
+    // Twilight Princess: the SHA-1s of the start-up archive on the Wii. The USA release's third version, the Japanese
+    // release and Twilight Princess HD hold the first file. The USA release's first version holds the second, and the
+    // European release the third.
+    constexpr std::array<std::string_view, 3> kTwilightPrincessWii{"f3e93983847ccbb9d801ad047faea0182ab466cc",
+                                                                   "b17393f6f9a15d891c8aa02682c6e5ee08b3f0c4",
+                                                                   "d7d9d7b67d6ef6334a31d1d71be87a80e012cf0a"};
+    // Link's Crossbow Training: the SHA-1s of the start-up archive. The USA release (revision 1) and the European
+    // release hold the first file, and the Japanese release the second.
+    constexpr std::array<std::string_view, 2> kCrossbowTraining{"b93115de942c91600250e2742be35005708aad91",
+                                                                "53f7fd5c6de729cd161e877ca1bbd5689e163cf1"};
     // Donkey Kong Jungle Beat: the SHA-1s of the USA release's start-up archive, decoded, on the GameCube and in New
     // Play Control! on the Wii.
     constexpr std::array<std::string_view, 2> kJungleBeat{"8cf5a451fc0533f8922e4cd0b922029a4d1f5129",
@@ -612,8 +617,8 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // MSound's constructor (0x80014e70) gives each category of effects that has sounds a volume, in the loop from
         // 0x80014fe4 to 0x80015070. The category's row of the table at 0x803ac8ec (16 bytes a row) holds a float at +8.
         // The constructor passes the whole part of 127 times that float to JAIBasic::setSeCategoryVolume (0x803029a4).
-        // That function stores the volume divided by 127. The name file names the categories. The rows give the pump (category
-        // 0) 0.76, objects (3) 0.81, system sounds (4) 0.84, the surroundings (5) 0.59, water (6) 0.9, other
+        // That function stores the volume divided by 127. The name file names the categories. The rows give the pump
+        // (category 0) 0.76, objects (3) 0.81, system sounds (4) 0.84, the surroundings (5) 0.59, water (6) 0.9, other
         // characters (8) 0.76, and Mario (1), enemies (2) and Mario's voice (7) 1. Nine other calls of
         // setSeCategoryVolume, from 0x800143b8 to 0x80014c24, change the volumes later. Nobody has read when they run.
         constexpr std::array<std::pair<uint8_t, uint8_t>, 6> kCategoryVolumes{
@@ -1096,7 +1101,18 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.callback = std::map<uint16_t, uint16_t>{{0xa, 1}};
     }
 
-    if (archive_sha1 == kTwilightPrincessGameCube || archive_sha1 == kTwilightPrincessWii)
+    // The Wii's first USA version and its European release hold other start-up archives. Their code gives the rules
+    // below too. Runs on a CPU emulator of changeBgmStatus and changeSubBgmStatus (0x80294a90 and 0x8029660c in the
+    // first version's main.dol, 0x802946bc and 0x80296238 in the European one) logged the same calls as runs of the
+    // third version, for every piece and status. Z2AudioMgr::init passes the same volumes (0x802af710, 0x802af554).
+    // JASDriver::getChannelLevel_dsp returns 12000 (0x8028342c, 0x80283030). With the linker's fields masked,
+    // initDataArc, setFXLine, bgmStart, subBgmStart, sceneBgmStart and the battle and field functions match the code of
+    // the third version, apart from changes that reach no start and no state. In both releases, the code that ends the
+    // battle music differs (0x80298508 and 0x802980d8 in the third version). The first version also differs in a
+    // volume of the whole piece that bgmStart and subBgmStart set for two pieces, in one scene's choice of piece and in
+    // FX lines 2 and 3. Its Hyrule Field sequence differs as well. The conversion plays the file on the disc.
+    const bool twilight_wii = std::ranges::find(kTwilightPrincessWii, archive_sha1) != kTwilightPrincessWii.end();
+    if (archive_sha1 == kTwilightPrincessGameCube || twilight_wii)
     {
         // Z2AudioMgr::init (0x802cd34c in the USA release's main.dol) gives the game's ten categories of effects their
         // volumes at start-up. From 0x802cd458 on, it passes Z2Param's variables to JAISoundParamsMove::moveVolume
@@ -1129,10 +1145,17 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         AddStarts(ntdlib::jaudio::kTwilightPrincessStarts, rules);
 
         // HD shares the Wii's start-up archive. HD's code gives two pieces other states (kTwilightPrincessHdStates).
-        AddTwilightPrincessMusicStates(
-            options.wii_u ? std::span<const ntdlib::jaudio::MusicState>(ntdlib::jaudio::kTwilightPrincessHdStates)
-                          : std::span<const ntdlib::jaudio::MusicState>(ntdlib::jaudio::kTwilightPrincessStates),
-            rules);
+        // The Wii's code reaches one state through another status (kTwilightPrincessWiiStates).
+        std::span<const ntdlib::jaudio::MusicState> states = ntdlib::jaudio::kTwilightPrincessStates;
+        if (options.wii_u)
+        {
+            states = ntdlib::jaudio::kTwilightPrincessHdStates;
+        }
+        else if (twilight_wii)
+        {
+            states = ntdlib::jaudio::kTwilightPrincessWiiStates;
+        }
+        AddTwilightPrincessMusicStates(states, rules);
 
         // The audio set-up reads the archive's FX configurations. On the Wii, Z2AudioArcLoader::readBFCA (0x8028e060 in
         // the USA release's main.dol) reads them. Z2FxLineMgr::initDataArc (0x8029cc74) passes the first, default.bfc,
@@ -1154,8 +1177,14 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.echo = EchoLine{delay, 0x3fff / 32768.0f, 0x6000 / 32768.0f, 2.0f * level / 32768.0f};
     }
 
-    if (archive_sha1 == kCrossbowTraining)
+    if (std::ranges::find(kCrossbowTraining, archive_sha1) != kCrossbowTraining.end())
     {
+        // The archive of the Japanese release differs from the USA one in the banks, the wave systems and the
+        // sequences of the effects. The two share the sound table, the names and the FX configurations. The sequence
+        // archive, ZapSoundSeqs.arc, is the same file in both. The Japanese main.dol links the functions below at
+        // other addresses. Each function matches the USA one with the linker's fields masked. The Japanese init
+        // (0x8016eee0) passes the same volumes, from variables at 0x803db540 to 0x803db55c.
+        //
         // Link's Crossbow Training runs a later build of Twilight Princess's sound layer, Z2. Its Z2AudioMgr::init
         // (0x8016eba0 in the main.dol) passes Z2Param's variables to JAISoundParamsMove::moveVolume (0x80149884) from
         // 0x8016ecb0 on, in Twilight Princess's order. The variable for Link's voice (0x803df97c) holds 1. The one
@@ -1174,6 +1203,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // pieces. Its fieldBgmStart (0x8015b12c) and fieldRidingMute (0x8015b238) work as in Twilight Princess. Only
         // the offset of Link's riding flag differs.
         AddStarts(ntdlib::jaudio::kTwilightPrincessStarts, rules);
+
+        // The game's scenes and one boss give three pieces states (kCrossbowTrainingStates).
+        AddTwilightPrincessMusicStates(ntdlib::jaudio::kCrossbowTrainingStates, rules);
 
         // Z2FxLineMgr::initDataArc (0x8015da80) passes the archive's first FX configuration to JASDsp::setFXLine
         // (0x801442fc) for all four FX lines, from 0x8015df98 and 0x8015e030. The lines are the same as in Twilight
@@ -1216,9 +1248,24 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.rhythm_mutes_child_0 = true;
         using Starts = std::span<const std::pair<uint16_t, uint16_t>>;
         constexpr std::array<std::pair<uint16_t, uint16_t>, 18> kGalaxyStarts{{
-            {0x05, 0x0000}, {0x08, 0x3ffe}, {0x0f, 0x0000}, {0x15, 0x0000}, {0x1a, 0x0000}, {0x25, 0x0000},
-            {0x28, 0x0000}, {0x38, 0x0000}, {0x3b, 0x0000}, {0x3c, 0x0000}, {0x45, 0x0000}, {0x46, 0x0000},
-            {0x4b, 0x07fe}, {0x4f, 0x0000}, {0x53, 0x0000}, {0x54, 0x0000}, {0x60, 0x0000}, {0x63, 0x07fe},
+            {0x05, 0x0000},
+            {0x08, 0x3ffe},
+            {0x0f, 0x0000},
+            {0x15, 0x0000},
+            {0x1a, 0x0000},
+            {0x25, 0x0000},
+            {0x28, 0x0000},
+            {0x38, 0x0000},
+            {0x3b, 0x0000},
+            {0x3c, 0x0000},
+            {0x45, 0x0000},
+            {0x46, 0x0000},
+            {0x4b, 0x07fe},
+            {0x4f, 0x0000},
+            {0x53, 0x0000},
+            {0x54, 0x0000},
+            {0x60, 0x0000},
+            {0x63, 0x07fe},
         }};
         constexpr std::array<std::pair<uint16_t, uint16_t>, 41> kGalaxy2Starts{{
             {0x08, 0x05fe}, {0x09, 0x07fe}, {0x0a, 0xc73e}, {0x17, 0x019e}, {0x18, 0x0000}, {0x1d, 0x0000},
@@ -1501,8 +1548,8 @@ std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles>
     if (game.rules_.volume_table)
     {
         const std::string table_path = folder + AsciiLower(game.rules_.volume_table->archive);
-        const auto table = std::ranges::find_if(files, [&](const ntdlib::disc::GameFile* f)
-                                                { return AsciiLower(f->path) == table_path; });
+        const auto table = std::ranges::find_if(
+            files, [&](const ntdlib::disc::GameFile* f) { return AsciiLower(f->path) == table_path; });
         std::optional<std::vector<uint8_t>> table_archive;
         if (table != files.end())
         {

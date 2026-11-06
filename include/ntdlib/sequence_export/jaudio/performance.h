@@ -239,9 +239,10 @@ struct SequenceSound
     // registers 16 and 17 are (JASTrack::writeRegDirect, 0x800a1a24, and readReg32, 0x800a1778). The cave music opens
     // a phrase at the offset that registers 16 and 17 hold. A track's tick also counts down the wait that a running
     // interrupt put aside (JASTrack::mainProc, 0x8009f544). The Wind Waker's library leaves that wait as it is. The
-    // root tracks of Pikmin 2's music wait between their polls while an interrupt runs every tick. A tempo or a timebase
-    // reaches the tracks' tick rates at once, and a child opens with its parent's rate (JASTrack::setTempo, 0x800a259c,
-    // and openChild, 0x800a155c). The lengths of the notes follow those rates. GameRules::later_jaudio1 sets this.
+    // root tracks of Pikmin 2's music wait between their polls while an interrupt runs every tick. A tempo or a
+    // timebase reaches the tracks' tick rates at once, and a child opens with its parent's rate (JASTrack::setTempo,
+    // 0x800a259c, and openChild, 0x800a155c). The lengths of the notes follow those rates. GameRules::later_jaudio1
+    // sets this.
     bool later_jaudio1 = false;
 
     // The game's sequence callback mutes child 15 of any track when the child calls it with ID 0 (command 0xe7). Super

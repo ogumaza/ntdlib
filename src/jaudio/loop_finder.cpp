@@ -76,6 +76,21 @@ void LoopFinder::TakeWaits(const std::function<TrackWait(uint32_t track)>& read)
     for (auto& [id, track] : tracks_)
     {
         track.wait = read(id);
+        track.wait_since.reset();
+    }
+}
+
+void LoopFinder::TakeWaits(uint64_t now, const std::function<TrackWait(uint32_t track)>& read)
+{
+    for (auto& [id, track] : tracks_)
+    {
+        const TrackWait wait = read(id);
+        if (!track.wait_since || wait.ticks != track.wait.ticks || wait.notes != track.wait.notes)
+        {
+            track.wait_since = now;
+        }
+
+        track.wait = wait;
     }
 }
 
@@ -268,11 +283,22 @@ void LoopFinder::JumpInCall(Track& track, const TrackEvent& event)
     }
 }
 
+bool LoopFinder::Counting(const Track& track, uint64_t now) const
+{
+    if (track.wait.ticks <= 0 || track.wait.notes)
+    {
+        return false;
+    }
+
+    // With port 9 at 2, The Wind Waker HD's P_GANON_1 closes 16 tracks. The first of them stays 119 ticks into a wait.
+    const std::optional<uint64_t>& since = track.wait_since;
+    return !since || now <= *since || FramesToMs(now - *since, sample_rate_) < kStillMs;
+}
+
 bool LoopFinder::Settled(const Track& track, uint64_t now) const
 {
-    const bool counting = track.wait.ticks > 0 && !track.wait.notes;
     const bool still = FramesToMs(now - track.last_command, sample_rate_) >= kStillMs;
-    return track.idle || track.finished || (still && !counting);
+    return track.idle || track.finished || (still && !Counting(track, now));
 }
 
 bool LoopFinder::HeldBack(uint32_t id, const Track& track, uint64_t now) const

@@ -218,6 +218,66 @@ void TestLaterTrack()
     XSFLIB_CHECK(while_polling == (std::vector{Verdict::kNone, Verdict::kLoops}));
 }
 
+// The root track polls while a track that opened before kLater waits, and kLater loops. The waiting track's wait
+// starts at `ticks` and falls by `step` each pass. With `timed`, TakeWaits gets the time. Returns the verdicts of
+// kLater's jumps back, one for each of `passes` passes. `loops_ms` gets the time of the first that counts a loop, in
+// milliseconds, or -1.
+std::vector<Verdict> LoopBehindWait(int passes, int32_t ticks, int32_t step, bool timed, long long& loops_ms)
+{
+    constexpr uint32_t kWaiting = 0x1800;
+    LoopFinder finder(kRoot, kRate);
+    Feeder feeder(finder);
+    std::vector<Verdict> verdicts;
+    loops_ms = -1;
+    feeder.Command(kRoot, 0x08, kNote);
+    feeder.Command(kWaiting, 0x30, kNote);
+    feeder.Command(kWaiting, 0x32, kWait);
+    for (int pass = 0; pass < passes; pass++)
+    {
+        PollPass(feeder, kRoot);
+        feeder.Command(kLater, 0x40, kNote);
+        feeder.Command(kLater, 0x42, kWait);
+        verdicts.push_back(feeder.Jump(kLater, 0x48, 0x40));
+        if (verdicts.back() == Verdict::kLoops && loops_ms < 0)
+        {
+            loops_ms = FramesToMs(feeder.Frame(), kRate);
+        }
+
+        const int32_t left = ticks - step * pass;
+        const auto read = [&](uint32_t track)
+        {
+            return track == kWaiting ? TrackWait{left, false} : TrackWait{1, false};
+        };
+        if (timed)
+        {
+            finder.TakeWaits(feeder.Frame(), read);
+        }
+        else
+        {
+            finder.TakeWaits(read);
+        }
+    }
+
+    return verdicts;
+}
+
+void TestStoppedWait()
+{
+    // A track that stays 119 ticks into a wait counts nothing down. It settles 10 s after its last command and its
+    // wait's last change, and kLater's loop counts after that. Without a time, its wait counts down. A track whose wait
+    // falls holds back kLater's loop for as long as it waits.
+    long long stopped_ms = 0;
+    long long untimed_ms = 0;
+    long long counting_ms = 0;
+    LoopBehindWait(2'000, 119, 0, true, stopped_ms);
+    const std::vector<Verdict> untimed = LoopBehindWait(2'000, 119, 0, false, untimed_ms);
+    const std::vector<Verdict> counting = LoopBehindWait(2'000, 1'000'000, 1, true, counting_ms);
+
+    XSFLIB_CHECK(stopped_ms > 10'000 && stopped_ms < 10'100);
+    XSFLIB_CHECK(untimed_ms == -1 && untimed == std::vector(2'000, Verdict::kNone));
+    XSFLIB_CHECK(counting_ms == -1 && counting == std::vector(2'000, Verdict::kNone));
+}
+
 // The root track plays a note, then calls a routine that polls the game, while a later track loops. Returns the
 // verdicts of the later track's jumps back, one for each of `passes` passes. With `return_at`, the routine returns in
 // that pass, and the root track plays another note.
@@ -386,6 +446,7 @@ int main()
     TestJAudio1Commands();
     TestRestartAsPass();
     TestRestartBeforeStart();
+    TestStoppedWait();
 
     return xsflib::testing::Summary("loop finder");
 }

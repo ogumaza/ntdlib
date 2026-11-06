@@ -90,9 +90,9 @@ using ntdlib::mp2k::ScanTrack;
 using ntdlib::mp2k::Sequencer;
 using ntdlib::mp2k::SongAddress;
 using ntdlib::mp2k::SongChannels;
+using ntdlib::mp2k::SongPlayer;
 using ntdlib::mp2k::SongReverb;
 using ntdlib::mp2k::SongVolume;
-using ntdlib::mp2k::SongPlayer;
 using ntdlib::mp2k::SynthStep;
 using ntdlib::mp2k::Wave;
 using ntdlib::sequence_export::agb::ChannelWriter;
@@ -127,9 +127,9 @@ using ntdlib::testing::agb_files::TempPath;
 using ntdlib::testing::agb_files::TempSettings;
 using ntdlib::testing::mp2k_cart::Cart;
 using ntdlib::testing::mp2k_cart::kCamelotMode;
-using ntdlib::testing::mp2k_cart::kLaterCamelotMode;
 using ntdlib::testing::mp2k_cart::kData;
 using ntdlib::testing::mp2k_cart::kInit;
+using ntdlib::testing::mp2k_cart::kLaterCamelotMode;
 using ntdlib::testing::mp2k_cart::kMode;
 using ntdlib::testing::mp2k_cart::kMonoVolume;
 using ntdlib::testing::mp2k_cart::kPlayerTable;
@@ -4323,8 +4323,8 @@ void TestLaterCamelotSteps()
     std::vector<uint8_t> level = {0x44};
     level.resize(10 * kPoints, 0x00);
 
-    for (const auto& [steps, points] : {std::pair{even, 2 * kPoints}, std::pair{by_hand, 6},
-                                        std::pair{level, 20 * kPoints}})
+    for (const auto& [steps, points] :
+         {std::pair{even, 2 * kPoints}, std::pair{by_hand, 6}, std::pair{level, 20 * kPoints}})
     {
         const uint32_t wave = cart.StepWave(steps, uint32_t(points));
         const uint32_t voices = cart.VoiceGroup({{0, Cart::Voice(kFixed, wave)}});
@@ -4793,8 +4793,8 @@ void TestMetroidSequencer()
     SEQLIB_CHECK(fusion_info.metroid_short_notes && keys == std::vector<int>({60, 50}));
 }
 
-// The Metroid games' PSG routine counts a square's envelope a level every `attack`, `decay` or `release` frames, with no
-// extra step every 15th frame, and writes NR12 (0x63) only when a phase starts, each time with a restart in NR14
+// The Metroid games' PSG routine counts a square's envelope a level every `attack`, `decay` or `release` frames, with
+// no extra step every 15th frame, and writes NR12 (0x63) only when a phase starts, each time with a restart in NR14
 // (0x65). The attack restarts the channel at 0, rising every 6/64 s, while the count starts at 1. When the count
 // reaches the full level, the decay restarts the channel a level below it, falling. The sustain restarts it at the
 // sustain level with a step time of 0. The release restarts it a level below the count, falling every 2/64 s, and the

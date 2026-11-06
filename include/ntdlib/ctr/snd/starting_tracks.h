@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -37,12 +38,24 @@ struct SequenceVariable
     uint32_t frame = 0;
 };
 
+// The number of variables that a SequenceStart can set: 17. New Leaf's DJ interludes take the most. Each sets player
+// variable 0 to start, and the 16 track variables that hold the town's tune.
+constexpr std::size_t kStartVariables = 17;
+
 // The item ID of an empty bank slot in SequenceStart::banks.
 constexpr uint32_t kNoBank = 0xffffffff;
 
-// How a game starts a sequence: the tracks that it quiets, bit N for track N, the variables that it sets, the state of
-// the random generator, the tempo, pitch and volume that it sets, the banks that it gives the sequence, and the sends
-// and the effect that it gives the sequence on the aux buses. A track in neither mask plays at its usual volume.
+// The tracks of a sequence: 16.
+constexpr std::size_t kSequenceTracks = 16;
+
+// Every track at a volume of 1: the volumes that the sound library gives a sequence's tracks as the sound starts.
+constexpr std::array<float, kSequenceTracks> kFullTrackVolumes = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                                                  1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+// How a game starts a sequence: the tracks that it quiets, bit N for track N, the volumes that it gives the other
+// tracks, the variables that it sets, the state of the random generator, the tempo, pitch and volume that it sets, the
+// banks that it gives the sequence, and the sends and the effect that it gives the sequence on the aux buses. A track
+// in neither mask plays at its usual volume times its entry in `track_volumes`.
 struct SequenceStart
 {
     friend bool operator==(const SequenceStart&, const SequenceStart&) = default;
@@ -56,8 +69,13 @@ struct SequenceStart
     // The tracks that the game silences (SequenceSoundHandle::SetTrackSilence) or sets to a volume of 0. Their notes
     // start and take their voices, at a volume of 0.
     uint16_t silenced = 0;
-    // The variables that the game sets as the sequence starts or plays, in the order of their frames.
-    std::array<SequenceVariable, 2> variables = {};
+    // The volumes other than 0 that the game gives the tracks (SequenceSoundHandle::SetTrackVolume), track 0 first, as
+    // factors of amplitude. The driver multiplies each into the volume of the track's channels (UpdateChannelParam,
+    // 0x31DE18 in Pokémon X's code.bin). A volume of 0 here plays as the track's bit in `silenced`.
+    std::array<float, kSequenceTracks> track_volumes = kFullTrackVolumes;
+    // The variables that the game sets as the sequence starts or plays, in the order of their frames. Entries with the
+    // index kNone set nothing. A reader reads every entry and skips those.
+    std::array<SequenceVariable, kStartVariables> variables = {};
     // The random generator's state at the sequence's first tick, for an effect that the game plays only on some draws.
     // The sequence's first random command draws the number after it. Without a value, the player's state holds.
     std::optional<uint32_t> seed = std::nullopt;
@@ -84,11 +102,11 @@ struct SequenceStart
     uint8_t game_effect = kArchiveEffects;
 };
 
-// How a known game starts sequence sound `sound`: the tracks that it quiets, the variables that it sets, the random
-// generator's state, the tempo, pitch and volume, the banks, and the sends and the effect on the aux buses. A player
-// gives the sequence the banks as it starts it. It applies the masks, the variables of frame 0, the tempo ratio, the
-// pitch, the volume and the sends after the sequence's start and before its first tick. No listed game sets a track's
-// volume between 0 and full at the start.
+// How a known game starts sequence sound `sound`: the tracks that it quiets, the tracks' volumes, the variables that it
+// sets, the random generator's state, the tempo, pitch and volume, the banks, and the sends and the effect on the aux
+// buses. A player gives the sequence the banks as it starts it. It applies the masks, the tracks' volumes, the
+// variables of frame 0, the tempo ratio, the pitch, the volume and the sends after the sequence's start and before its
+// first tick.
 SequenceStart StartingSequenceTracks(std::string_view archive_sha1, std::string_view sound);
 
 // Another state of a sequence that a known game's code moves the sequence to as the game goes on. A rip writes the

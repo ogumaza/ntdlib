@@ -198,7 +198,7 @@ struct Channel
 {
     uint16_t id = 0;
     uint16_t twin = 0; // the console's channel whose part it plays: itself, or another for a grown one (GrowChannels)
-    uint8_t type = 0;           // 0: PCM, 1: PSG, 2: noise
+    uint8_t type = 0;  // 0: PCM, 1: PSG, 2: noise
     uint8_t envelope_stage = 0; // 0: attack, 1: decay, 2: sustain, 3: release
     bool active = false;
     bool start = false;

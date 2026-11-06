@@ -47,8 +47,28 @@ public:
     // stay empty.
     BankSet(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings);
 
-    // Returns the bank in `slot`, or nullptr. Only four slots exist. nw::snd accepts higher slots and reads past its
-    // bank table. Those slots are silent here.
+    // The first slot of a companion's banks (SetCompanion).
+    static constexpr int kCompanionSlot = 128;
+
+    // The number that the wave keys of a companion from another archive add to its wave archives' numbers (WaveKey).
+    // Item numbers have 24 bits. The keys of the two archives' waves therefore differ.
+    static constexpr uint32_t kCompanionWaveArchives = 1u << 24;
+
+    // Gives slots kCompanionSlot to kCompanionSlot + 3 the banks of `companion`'s slots 0 to 3: a sequence that a game
+    // plays beside this one, from this archive or another (PerformBeside). `companion` has to outlive this set.
+    void SetCompanion(BankSet* companion)
+    {
+        companion_ = companion;
+    }
+
+    // The companion's banks (SetCompanion), or nullptr.
+    const BankSet* Companion() const
+    {
+        return companion_;
+    }
+
+    // Returns the bank in `slot`, or nullptr. Only four slots exist, and a companion's four (SetCompanion). nw::snd
+    // accepts higher slots and reads past its bank table. Those slots are silent here.
     const sar::Bank* GetBank(int slot) const;
 
     // Returns the bank name, BANK_<index> for unnamed banks, or an empty string for an empty slot.
@@ -64,7 +84,8 @@ public:
     // no-wave entries are not (see NoWave).
     const sar::Pcm* GetWave(int slot, uint32_t wave_id_index);
 
-    // Identifies a shared wave across banks by (wave archive index, wave index).
+    // Identifies a shared wave across banks by (wave archive index, wave index). A companion's wave archives from
+    // another archive count from kCompanionWaveArchives.
     std::optional<std::pair<uint32_t, uint32_t>> WaveKey(int slot, uint32_t wave_id_index) const;
 
     // True for the no-wave sentinel, wave index 0xFFFFFFFF. Such regions are silent in the game too.
@@ -83,8 +104,15 @@ private:
     // Reports an invalid wave reference that WaveKey could not resolve. Each entry is reported only once.
     void ReportBrokenWaveId(int slot, uint32_t wave_id_index);
 
+    // Whether `slot` is one of the companion's (SetCompanion).
+    bool CompanionSlot(int slot) const
+    {
+        return companion_ && slot >= kCompanionSlot && slot < kCompanionSlot + sar::kBankSlots;
+    }
+
     const sar::SoundArchive& archive_;
     sar::Options options_;
+    BankSet* companion_ = nullptr;
     std::array<std::optional<sar::Bank>, sar::kBankSlots> banks_;
     std::array<std::string, sar::kBankSlots> bank_names_;
     std::map<uint32_t, std::optional<sar::WaveArchive>> wave_archives_; // by wave archive index

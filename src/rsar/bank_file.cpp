@@ -422,7 +422,8 @@ void CheckTree(const BankFile& bank)
     const std::vector<TreeNode>& nodes = bank.nodes;
     const auto check = [&](const TreeReference& reference)
     {
-        if (reference.type > BankFile::kOtherNode || (reference.type != BankFile::kNone && reference.node >= nodes.size()))
+        if (reference.type > BankFile::kOtherNode ||
+            (reference.type != BankFile::kNone && reference.node >= nodes.size()))
         {
             throw std::invalid_argument("a reference of an unknown data type, or to a node that the bank lacks");
         }

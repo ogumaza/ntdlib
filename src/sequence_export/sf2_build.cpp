@@ -602,8 +602,7 @@ const std::vector<uint16_t>& SoundFontParts::Samples(std::pair<uint32_t, uint32_
         {
             adjust(w);
         }
-        ids = sf2::AddSamples(sf_, std::move(w), "w" + std::to_string(key.first) + "_" + std::to_string(key.second),
-                              decoded->sample_rate, root_key);
+        ids = sf2::AddSamples(sf_, std::move(w), WaveFileName(key), decoded->sample_rate, root_key);
     }
 
     return samples_.emplace(key, std::move(ids)).first->second;

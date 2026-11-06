@@ -28,6 +28,7 @@ namespace ntdlib::sequence_export::mp2k
 {
 using ntdlib::agb::kFrameRate;
 using ntdlib::agb::Rom;
+using ntdlib::mp2k::DecodeCamelotSteps;
 using ntdlib::mp2k::DriverInfo;
 using ntdlib::mp2k::DutyStep;
 using ntdlib::mp2k::FilterSaw;
@@ -37,7 +38,6 @@ using ntdlib::mp2k::kVoiceDrumKit;
 using ntdlib::mp2k::kVoiceFixed;
 using ntdlib::mp2k::kVoiceReverse;
 using ntdlib::mp2k::ReadVoice;
-using ntdlib::mp2k::DecodeCamelotSteps;
 using ntdlib::mp2k::ReadWave;
 using ntdlib::mp2k::SampleFrequency;
 using ntdlib::mp2k::SawPoint;

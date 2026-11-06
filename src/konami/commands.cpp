@@ -518,8 +518,8 @@ std::vector<uint8_t> UsualBytes(const Item& item, Revision r)
 // The track that reads an item's bytes the way the item says.
 int ReadingTrack(const Item& item)
 {
-    const bool sample_track = (item.kind == Kind::kVolume && item.index == 2) ||
-                              (item.kind == Kind::kLoopStart && !item.bytes.empty());
+    const bool sample_track =
+        (item.kind == Kind::kVolume && item.index == 2) || (item.kind == Kind::kLoopStart && !item.bytes.empty());
     return sample_track ? kSampleTrack : 0;
 }
 
@@ -901,8 +901,8 @@ private:
             }
 
             outer_end = offset + read.length;
-            in_loop_point = revision_ == Revision::kDungeonDiceMonsters && !read.wait &&
-                            rom_.U8(base_ + offset) == 0xFA;
+            in_loop_point =
+                revision_ == Revision::kDungeonDiceMonsters && !read.wait && rom_.U8(base_ + offset) == 0xFA;
         }
     }
 
@@ -1254,8 +1254,8 @@ Item NewLoopPoint(int track, Revision revision)
 {
     Item item;
     item.kind = Kind::kLoopStart;
-    const bool extra = revision == Revision::kDungeonDiceMonsters ||
-                       (!IsPsgTrack(track) && !RaveMasterCommands(revision));
+    const bool extra =
+        revision == Revision::kDungeonDiceMonsters || (!IsPsgTrack(track) && !RaveMasterCommands(revision));
     if (extra)
     {
         item.bytes.assign(2, 0);

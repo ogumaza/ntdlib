@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/rsar/formats.h"
@@ -26,7 +28,6 @@
 #include "ntdlib/rvl/snd/wave_sound.h"
 #include "ntdlib/sound_build.h"
 #include "ntdlib/testing/rsar_files.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {

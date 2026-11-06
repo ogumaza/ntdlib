@@ -455,8 +455,7 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
         if (frames == Z2_LATER_FRAMES && later && p->set_port_data && (p->music_status & Z2_MUSIC_STATUS_SET) &&
             p->sound != 0)
         {
-            ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff,
-                                       0xffffffffu);
+            ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff, 0xffffffffu);
         }
         if (*status == Z2_STATUS_PLAYING && p->sound == 0)
         {

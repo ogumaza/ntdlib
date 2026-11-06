@@ -216,8 +216,11 @@ private:
         kSystemCall = 0xc00,
     };
 
-    // Each returns false to stop execution.
-    bool Step(uint32_t op);
+    // A page number that no address has: the fetch's page is forgotten.
+    static constexpr uint32_t kNoFetchPage = UINT32_MAX;
+
+    // Each returns false to stop execution. Step is inlined into Run, its one caller.
+    inline bool Step(uint32_t op);
     bool Op19(uint32_t op);
     bool Op31(uint32_t op);
     bool Op59(uint32_t op);
@@ -297,6 +300,12 @@ private:
     Bus& bus_;
     std::vector<uint8_t*> data_map_;
     std::vector<uint8_t*> fetch_map_;
+
+    // The page that Fetch read last through the fetch map, by number, and its host memory. The next fetch from the
+    // same page skips the MSR's test and the map. Run, SetMsr and RebuildMap forget the page.
+    uint32_t fetch_page_ = kNoFetchPage;
+    const uint8_t* fetch_host_ = nullptr;
+
     uint64_t cycles_ = 0;
     uint64_t end_ = 0;        // the cycle the current Run stops at
     uint64_t next_check_ = 0; // the next cycle at which to check for interrupts

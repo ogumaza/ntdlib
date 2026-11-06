@@ -126,7 +126,8 @@ void TestUltimateMasters()
 
     Check(items[0].kind == Kind::kWait && items[0].value.value == 5 * kOne, "a tick is a frame of a delay");
     Check(items[1].kind == Kind::kProgram && items[1].index == 0 && items[1].value.value == 0x00, "the duty byte");
-    Check(items[1].encoding.opcode == (konami::kKeptBytes | 0x84), "a duty that the usual byte doesn't give keeps its byte");
+    Check(items[1].encoding.opcode == (konami::kKeptBytes | 0x84),
+          "a duty that the usual byte doesn't give keeps its byte");
     Check(items[3].kind == Kind::kNote && items[3].key == 0x3C && items[3].velocity == 3 * kOne && !items[3].sample &&
               items[3].value.value == 0,
           "a PSG note");
@@ -135,11 +136,11 @@ void TestUltimateMasters()
           "a delay in a long form keeps its bytes");
     Check(items[5].kind == Kind::kNoteOff && items[5].encoding.opcode == (konami::kKeptBytes | 0xE5), "a rest");
     Check(items[6].kind == Kind::kWait && items[6].value.value == 0x102 * kOne, "a delay of 3 bytes");
-    Check(items[7].kind == Kind::kPan && items[7].value.value == (0x20 - 0x40) * kOne,
-          "a pan with 0x40 the centre");
+    Check(items[7].kind == Kind::kPan && items[7].value.value == (0x20 - 0x40) * kOne, "a pan with 0x40 the centre");
     Check(items[8].value.value == 0x123 * kOne && items[8].encoding.opcode == 0, "a delay in its usual form");
     Check(items[9].kind == Kind::kLfoDepth && items[9].value.value == 0x40 * kOne, "a vibrato");
-    Check(items[11].kind == Kind::kPitchBend && items[11].value.value == kOne / 64, "a bend, on a range of 2 semitones");
+    Check(items[11].kind == Kind::kPitchBend && items[11].value.value == kOne / 64,
+          "a bend, on a range of 2 semitones");
     Check(items[13].kind == Kind::kPitchBend && items[13].value.value == 16 * (kOne / 64), "a long bend");
     Check(items[15].kind == Kind::kVolume && items[15].value.value == 2 * kOne, "a short volume");
     Check(items[17].kind == Kind::kVolume && items[17].value.value == 0x90 * kOne, "a volume with its byte");
@@ -167,18 +168,18 @@ void TestSampleNotes()
     // A sample note holds its volume in the opcode up to 7, or in a byte. Bx adds semitones.
     {
         const std::vector<uint8_t> bytes = {
-            0x00,                   //
-            0xA3, 0x20,             // sample 0x20, volume 3
-            0x00,                   //
-            0xA8, 0x80, 0x21,       // sample 0x21, volume 0x80
-            0x00,                   //
-            0xB2, 0x22, 0xFE,       // sample 0x22, volume 2, 2 semitones down
-            0x00,                   //
-            0xB0, 0x23, 0x00,       // sample 0x23, volume 0, semitones 0 in the longer form
-            0x00,                   //
-            0xF3, 0x12, 0x34,       // a loop point, of 3 bytes on a sample track
-            0x00,                   //
-            0xFE,                   // the end of the track
+            0x00,             //
+            0xA3, 0x20,       // sample 0x20, volume 3
+            0x00,             //
+            0xA8, 0x80, 0x21, // sample 0x21, volume 0x80
+            0x00,             //
+            0xB2, 0x22, 0xFE, // sample 0x22, volume 2, 2 semitones down
+            0x00,             //
+            0xB0, 0x23, 0x00, // sample 0x23, volume 0, semitones 0 in the longer form
+            0x00,             //
+            0xF3, 0x12, 0x34, // a loop point, of 3 bytes on a sample track
+            0x00,             //
+            0xFE,             // the end of the track
         };
         const Revision r = Revision::kUltimateMasters;
         std::vector<uint16_t> offsets = Offsets(r, 0);
@@ -199,8 +200,9 @@ void TestSampleNotes()
                   "a sample note");
             Check(items[3].sample == 0x21 && items[3].velocity == 0x80 * kOne, "a sample note with a volume's byte");
             Check(items[5].sample == 0x22 && items[5].key == 0xFE, "a sample note 2 semitones down");
-            Check(items[7].sample == 0x23 && items[7].key == 0 && items[7].encoding.opcode == (konami::kKeptBytes | 0xB0),
-                  "a longer form keeps its bytes");
+            Check(
+                items[7].sample == 0x23 && items[7].key == 0 && items[7].encoding.opcode == (konami::kKeptBytes | 0xB0),
+                "a longer form keeps its bytes");
             Check(items[9].kind == Kind::kLoopStart && items[9].bytes == std::vector<uint8_t>({0x12, 0x34}),
                   "a sample track's loop point holds the bytes that the driver skips");
             Check(EncodesBack(decoded, all, r), "the sample track encodes back");
@@ -220,8 +222,7 @@ void TestSampleNotes()
         Check(EncodesBack(live, bytes, Revision::kLiveStart), "Live Start's note encodes back");
 
         const std::vector<uint8_t> other = {0x00, 0xA1, 0xF2, 0x00, 0xFE};
-        const Decoded tennis =
-            DecodeSequence(other, Offsets(Revision::kPrinceOfTennis, 0), Revision::kPrinceOfTennis);
+        const Decoded tennis = DecodeSequence(other, Offsets(Revision::kPrinceOfTennis, 0), Revision::kPrinceOfTennis);
         Check(!tennis.opaque && tennis.sequence.items[1].sample == 0xF2, "Prince of Tennis 2004's sample byte");
 
         // The Ultimate Masters revision doesn't read such a note.
@@ -235,28 +236,28 @@ void TestOlderRevisions()
 {
     const Revision wct = Revision::kWct2004;
     const std::vector<uint8_t> bytes = {
-        0x03,             //
-        0x81,             // duty 1, in bits 6-7
-        0x00,             //
-        0x85,             // wave 1
-        0x00,             //
-        0xD5, 0x30,       // PSG note 0x30, volume 5
-        0xFF, 0x05,       // delay (0x1F << 8) | 5
-        0xC7,             // volume 7
-        0x00,             //
-        0xF0, 0x7B,       // left 7, right 11
-        0x00,             //
-        0xF4, 0x10,       // attack
-        0x00,             //
-        0xF5, 0x20,       // decay
-        0x00,             //
-        0xF6, 0x02,       // instrument 2
-        0x00,             //
-        0xFA, 0x01,       // a volume scale from the game's setting
-        0x00,             //
-        0xFB,             // does nothing
-        0x00,             //
-        0xFE,             // a loop of the song
+        0x03,       //
+        0x81,       // duty 1, in bits 6-7
+        0x00,       //
+        0x85,       // wave 1
+        0x00,       //
+        0xD5, 0x30, // PSG note 0x30, volume 5
+        0xFF, 0x05, // delay (0x1F << 8) | 5
+        0xC7,       // volume 7
+        0x00,       //
+        0xF0, 0x7B, // left 7, right 11
+        0x00,       //
+        0xF4, 0x10, // attack
+        0x00,       //
+        0xF5, 0x20, // decay
+        0x00,       //
+        0xF6, 0x02, // instrument 2
+        0x00,       //
+        0xFA, 0x01, // a volume scale from the game's setting
+        0x00,       //
+        0xFB,       // does nothing
+        0x00,       //
+        0xFE,       // a loop of the song
     };
     const Decoded decoded = DecodeSequence(bytes, Offsets(wct, 0), wct);
     const std::vector<Command>& items = decoded.sequence.items;
@@ -317,16 +318,16 @@ void TestOlderRevisions()
     // Eternal Duelist reads F4-FC as F1, and F0 by the track. Its long delays are Fx yy.
     const Revision ed = Revision::kEternalDuelist;
     const std::vector<uint8_t> duelist = {
-        0xF1, 0x23,       // delay 0x123
-        0xF5, 0x10,       // a vibrato
-        0xEF,             // delay 0xEF, in one byte
-        0xF0, 0x31,       // volume 1, and 3 for the next track
-        0x00,             //
-        0xFD,             //
-        0x00,             // a PSG track
-        0xF0, 0x11,       // its NR51 bits
-        0x00,             //
-        0xFD,             //
+        0xF1, 0x23, // delay 0x123
+        0xF5, 0x10, // a vibrato
+        0xEF,       // delay 0xEF, in one byte
+        0xF0, 0x31, // volume 1, and 3 for the next track
+        0x00,       //
+        0xFD,       //
+        0x00,       // a PSG track
+        0xF0, 0x11, // its NR51 bits
+        0x00,       //
+        0xFD,       //
     };
     std::vector<uint16_t> ed_offsets = Offsets(ed, 0);
     for (int t = 0; t < konami::kPsgTracks; t++)
@@ -343,9 +344,9 @@ void TestOlderRevisions()
                   di[1].encoding.opcode == (konami::kKeptBytes | 0xF5),
               "F5 is a vibrato that keeps its opcode");
         Check(di[2].value.value == 0xEF * kOne && di[2].encoding.opcode == 0, "EF is a delay of a byte");
-        Check(di[3].kind == Kind::kVolume && di[3].index == 2 && di[3].value.value == kOne &&
-                  di[3].velocity == 3 * kOne,
-              "a sample track's F0 sets two volumes");
+        Check(
+            di[3].kind == Kind::kVolume && di[3].index == 2 && di[3].value.value == kOne && di[3].velocity == 3 * kOne,
+            "a sample track's F0 sets two volumes");
         Check(di[7].kind == Kind::kOther && di[7].encoding.opcode == 0xF0 && di[7].bytes == std::vector<uint8_t>{0x11},
               "a PSG track's F0 sets its NR51 bits");
         Check(EncodesBack(ed_items, duelist, ed), "Eternal Duelist's items encode back");
@@ -357,46 +358,46 @@ void TestDungeonDice()
 {
     const Revision r = Revision::kDungeonDiceMonsters;
     const std::vector<uint8_t> bytes = {
-        0x00,             //
-        0x72,             // wave 2
-        0x00,             //
-        0x7D,             // duty 1, in bits 6-7
-        0x00,             //
-        0x20,             // a duty byte of 0x20
-        0x00,             //
-        0x85,             // vibrato 5
-        0x00,             //
-        0x93, 0x40,       // the track's sample at note 0x40, volume 3
-        0x00,             //
-        0xA4, 0x41,       // sample map entry 0x41, on the next track, volume 4
-        0x00,             //
-        0xB5, 0x42,       // sample map entry 0x42, volume 5
-        0x00,             //
-        0xC6,             // restart at volume 6
-        0x00,             //
-        0xD7,             // volume 7, without a note
-        0x00,             //
-        0xE8, 0x43,       // PSG note 0x43, volume 8
-        0x00,             //
-        0xF0, 0x77,       // the PSG's volume on each side
-        0x00,             //
-        0xF1, 0x21,       // a bend of 1 sixteenth on the next track
-        0x00,             //
-        0xF2, 0x1E,       // a bend of -2 sixteenths
-        0x00,             //
-        0xF3, 0x22,       // a bend of the note by 2 sixteenths
-        0x00,             //
-        0xF6,             // does nothing
-        0x00,             //
-        0xF8,             // a fade of this track
-        0x00,             //
-        0xF9,             // a fade of the next track
-        0x00,             //
-        0xFB,             // a release
-        0x00,             //
-        0xFC,             // a rest
-        0x00,             //
-        0xFF,             // a stop of the song
+        0x00,       //
+        0x72,       // wave 2
+        0x00,       //
+        0x7D,       // duty 1, in bits 6-7
+        0x00,       //
+        0x20,       // a duty byte of 0x20
+        0x00,       //
+        0x85,       // vibrato 5
+        0x00,       //
+        0x93, 0x40, // the track's sample at note 0x40, volume 3
+        0x00,       //
+        0xA4, 0x41, // sample map entry 0x41, on the next track, volume 4
+        0x00,       //
+        0xB5, 0x42, // sample map entry 0x42, volume 5
+        0x00,       //
+        0xC6,       // restart at volume 6
+        0x00,       //
+        0xD7,       // volume 7, without a note
+        0x00,       //
+        0xE8, 0x43, // PSG note 0x43, volume 8
+        0x00,       //
+        0xF0, 0x77, // the PSG's volume on each side
+        0x00,       //
+        0xF1, 0x21, // a bend of 1 sixteenth on the next track
+        0x00,       //
+        0xF2, 0x1E, // a bend of -2 sixteenths
+        0x00,       //
+        0xF3, 0x22, // a bend of the note by 2 sixteenths
+        0x00,       //
+        0xF6,       // does nothing
+        0x00,       //
+        0xF8,       // a fade of this track
+        0x00,       //
+        0xF9,       // a fade of the next track
+        0x00,       //
+        0xFB,       // a release
+        0x00,       //
+        0xFC,       // a rest
+        0x00,       //
+        0xFF,       // a stop of the song
     };
     const Decoded decoded = DecodeSequence(bytes, Offsets(r, 0), r);
     const std::vector<Command>& items = decoded.sequence.items;
@@ -414,7 +415,8 @@ void TestDungeonDice()
         Check(items[13].kind == Kind::kNote && items[13].sample == 0x42 && items[13].index == 0, "Bx");
         Check(items[15].kind == Kind::kVolume && items[15].index == 0 && items[15].value.value == 6 * kOne, "Cx");
         Check(items[17].kind == Kind::kVolume && items[17].index == 1 && items[17].value.value == 7 * kOne, "Dx");
-        Check(items[19].kind == Kind::kNote && items[19].key == 0x43 && items[19].index == 0 && !items[19].sample, "Ex");
+        Check(items[19].kind == Kind::kNote && items[19].key == 0x43 && items[19].index == 0 && !items[19].sample,
+              "Ex");
         Check(items[21].kind == Kind::kOther && items[21].encoding.opcode == 0xF0, "the PSG's volume");
         Check(items[23].kind == Kind::kPitchBend && items[23].index == 2 && items[23].value.value == kOne / 32, "F1");
         Check(items[25].kind == Kind::kPitchBend && items[25].index == 1 && items[25].value.value == -2 * (kOne / 32),
@@ -609,11 +611,13 @@ void TestNewCommands()
     Command note = command(Kind::kNote, 0);
     note.key = 0x3C;
     note.velocity = 9 * kOne;
-    Check(BytesOfCommand(note, Revision::kUltimateMasters) == bytes_of({0xD8, 9, 0x3C}), "a PSG note with a volume's byte");
+    Check(BytesOfCommand(note, Revision::kUltimateMasters) == bytes_of({0xD8, 9, 0x3C}),
+          "a PSG note with a volume's byte");
     note.velocity = 5 * kOne;
     Check(BytesOfCommand(note, Revision::kUltimateMasters) == bytes_of({0xD5, 0x3C}), "a short PSG note");
     Check(BytesOfCommand(note, Revision::kWct2004) == bytes_of({0xD5, 0x3C}), "WCT 2004's PSG note");
-    Check(BytesOfCommand(note, Revision::kDungeonDiceMonsters) == bytes_of({0xE5, 0x3C}), "Dungeon Dice Monsters' note");
+    Check(BytesOfCommand(note, Revision::kDungeonDiceMonsters) == bytes_of({0xE5, 0x3C}),
+          "Dungeon Dice Monsters' note");
 
     note.sample = 0x20;
     note.key = 0;
@@ -682,26 +686,25 @@ void TestNewCommands()
 void TestItemOffsets()
 {
     // A wait, a rest, a wait and an end, as bytes, then a command that the revision lacks.
-    const ntdlib::commands::Sequence sequence = {{Command{.kind = Kind::kWait, .value = {.value = 2 * kOne}},
-                                                  Command{.kind = Kind::kData, .bytes = {1, 2, 3}},
-                                                  Command{.kind = Kind::kNoteOff},
-                                                  Command{.kind = Kind::kWait, .value = {.value = 0}},
-                                                  Command{.kind = Kind::kEnd}},
-                                                 {}};
+    const ntdlib::commands::Sequence sequence = {
+        {Command{.kind = Kind::kWait, .value = {.value = 2 * kOne}}, Command{.kind = Kind::kData, .bytes = {1, 2, 3}},
+         Command{.kind = Kind::kNoteOff}, Command{.kind = Kind::kWait, .value = {.value = 0}},
+         Command{.kind = Kind::kEnd}},
+        {}};
     const std::vector<uint32_t> offsets = konami::ItemOffsets(sequence, Revision::kWct2004);
     Check(offsets == std::vector<uint32_t>{0, 1, 4, 5, 6, 7}, "each item's offset, then the end");
 
     // The same items as bytes give the same offsets.
-    const konami::Encoded encoded = konami::EncodeSequence(
-        {{Command{.kind = Kind::kWait}, Command{.kind = Kind::kNoteOff}, Command{.kind = Kind::kWait},
-          Command{.kind = Kind::kEnd}},
-         {}},
-        std::vector<uint32_t>{0}, Revision::kWct2004);
-    const std::vector<uint32_t> again = konami::ItemOffsets(
-        {{Command{.kind = Kind::kWait}, Command{.kind = Kind::kNoteOff}, Command{.kind = Kind::kWait},
-          Command{.kind = Kind::kEnd}},
-         {}},
-        Revision::kWct2004);
+    const konami::Encoded encoded =
+        konami::EncodeSequence({{Command{.kind = Kind::kWait}, Command{.kind = Kind::kNoteOff},
+                                 Command{.kind = Kind::kWait}, Command{.kind = Kind::kEnd}},
+                                {}},
+                               std::vector<uint32_t>{0}, Revision::kWct2004);
+    const std::vector<uint32_t> again =
+        konami::ItemOffsets({{Command{.kind = Kind::kWait}, Command{.kind = Kind::kNoteOff},
+                              Command{.kind = Kind::kWait}, Command{.kind = Kind::kEnd}},
+                             {}},
+                            Revision::kWct2004);
     Check(again == encoded.offsets, "the offsets are the encoder's");
 
     bool refused = false;

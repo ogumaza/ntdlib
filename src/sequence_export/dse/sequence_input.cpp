@@ -112,8 +112,7 @@ std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile>
             continue;
         }
 
-        SequenceInput input{
-            .folder = FolderOf(path), .name = StemOf(path), .ref = {path}, .song = songs.Get(set.song)};
+        SequenceInput input{.folder = FolderOf(path), .name = StemOf(path), .ref = {path}, .song = songs.Get(set.song)};
         const std::shared_ptr<const ntdlib::dse::WaveBank> bank = banks.Get(*set.bank);
         if (!input.song || !bank)
         {

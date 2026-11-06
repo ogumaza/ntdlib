@@ -12,8 +12,8 @@
 #include "xsflib/binary.h"
 
 #include "ead_later_tables.h"
-#include "round_toward_zero.h"
 #include "ntdlib/n64/rom_data.h"
+#include "round_toward_zero.h"
 
 namespace ntdlib::n64
 {

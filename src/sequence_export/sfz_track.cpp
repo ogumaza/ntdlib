@@ -230,7 +230,7 @@ const SfzWave& SfzSampleSet::Get(std::pair<uint32_t, uint32_t> key, const std::f
         const seqlib::PreparedWave w =
             seqlib::PrepareForSfz(ToSeqlib(*decoded), (decoded->sample_rate * 4 + 999) / 1000); // 4 ms
         const std::size_t n = std::min<std::size_t>(w.channels.size(), 2);
-        const std::string base = "w" + std::to_string(key.first) + "_" + std::to_string(key.second);
+        const std::string base = WaveFileName(key);
         for (std::size_t c = 0; c < n; c++)
         {
             const std::string name = base + (n == 1 ? "" : (c == 0 ? "L" : "R")) + ".wav";

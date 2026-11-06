@@ -129,6 +129,34 @@ int main()
                   (z2::kMusicStatusSet | z2::kMusicStatusLater | 10),
           "a status that the game writes once the piece plays");
 
+    // The horse battle's status 2 and the variant music's status 3 move their sequences to another section. Both
+    // sequences clear port 9 in their first tick. The variant music's status 2 leaves its sequence in the start's
+    // section, and the rodeo music's sequence reads no port. Both statuses stay with the start.
+    Check(z2::PieceStateOf(*in_table(0x01000004, "_status2")).music_status ==
+                  (z2::kMusicStatusSet | z2::kMusicStatusLater | 2) &&
+              z2::PieceStateOf(*in_table(0x01000039, "_status3")).music_status ==
+                  (z2::kMusicStatusSet | z2::kMusicStatusLater | 3) &&
+              z2::PieceStateOf(*in_table(0x01000039, "_status2")).music_status == (z2::kMusicStatusSet | 2) &&
+              z2::PieceStateOf(*in_table(0x01000029, "_status2")).music_status == (z2::kMusicStatusSet | 2),
+          "the later statuses of the horse battle and the variant music");
+
+    // The Wii's table: Hyrule Castle's room 12 plays its volumes as status 3150, from Link's height. Room 8 stays.
+    const auto& wii = ntdlib::jaudio::kTwilightPrincessWiiStates;
+    const auto in_wii = [](std::string_view suffix)
+    {
+        const auto& states = ntdlib::jaudio::kTwilightPrincessWiiStates;
+        return std::find_if(states.begin(), states.end(), [&](const ntdlib::jaudio::MusicState& state)
+                            { return state.sound == 0x0100003f && state.suffix == suffix; });
+    };
+    const auto foot = in_wii("_status3150");
+    Check(in_wii("_status12") == wii.end() && foot != wii.end() && z2::PieceStateOf(*foot).muted_children == 0x0278 &&
+              z2::PieceStateOf(*foot).partial_children == 0x0180 &&
+              z2::PieceStateOf(*foot).partial_volumes[7] == 0.5f && foot->status_port == 3150 &&
+              in_wii("_status8") != wii.end() && in_wii("_status6150") != wii.end() &&
+              in_table(0x0100003f, "_status12") != ntdlib::jaudio::kTwilightPrincessStates.end() &&
+              wii.size() == ntdlib::jaudio::kTwilightPrincessStates.size(),
+          "Twilight Princess's states on the Wii");
+
     // HD's table: Hyrule Castle's piece starts with children 3 to 6 at 0.3, without 0 to 2 and 7 to 9. Its room 12 is
     // gone. The twilight battle music writes its status to port 9.
     const auto& hd = ntdlib::jaudio::kTwilightPrincessHdStates;

@@ -40,7 +40,7 @@ inline constexpr uint32_t kPlayerTable = kRomBase + 0x400;
 // Addresses of Camelot's changes in a test cartridge that has them.
 inline constexpr uint32_t kUnusedSongStart =
     kRomBase + 0x180; // a copy of the routine that starts a song, its pool zeroed
-inline constexpr uint32_t kCamelotSearch = kRomBase + 0x360; // the note start's search for a channel
+inline constexpr uint32_t kCamelotSearch = kRomBase + 0x360;    // the note start's search for a channel
 inline constexpr uint32_t kCamelotEchoWords = kRomBase + 0x370; // the literals of the output stage's echo
 inline constexpr uint32_t kCamelotPulse = kRomBase + 0x380;     // the mixer's pulse wave
 inline constexpr uint32_t kLaterCamelot = kRomBase + 0x3A0;     // the code of a later version of Camelot's driver

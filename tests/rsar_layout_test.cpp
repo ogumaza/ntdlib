@@ -384,10 +384,10 @@ void TestReplaceFile()
     {
         const std::optional<std::span<const uint8_t>> waves =
             wave_data ? std::optional<std::span<const uint8_t>>(*wave_data) : std::nullopt;
-        return ntdlib::rsar::Join(kBuild2008, layout.sequences,
-                                  ntdlib::rsar::ReplaceFile(kBuild2008, layout.sequences, layout.pieces,
-                                                            layout.fields, file, bytes, waves),
-                                  layout.fields);
+        return ntdlib::rsar::Join(
+            kBuild2008, layout.sequences,
+            ntdlib::rsar::ReplaceFile(kBuild2008, layout.sequences, layout.pieces, layout.fields, file, bytes, waves),
+            layout.fields);
     };
 
     // The bank takes 0x70 new bytes in both groups' copies, with zeros up to 0x80. The files after each copy move, and
@@ -400,13 +400,13 @@ void TestReplaceFile()
     XSFLIB_CHECK(!grown_tables.Truncated() && grown.size() == archive.size() + 2 * 0x20);
     XSFLIB_CHECK(FileOf(grown_tables, 2) == padded && WaveDataOf(grown_tables, 2) == WaveDataOf(tables, 2));
     XSFLIB_CHECK(FileOf(grown_tables, 0) == FileOf(tables, 0) && FileOf(grown_tables, 1) == FileOf(tables, 1));
-    const Bytes laid = rsar_tools::MakeArchive(
-        0x0104, {{FileOf(tables, 0)}, {FileOf(tables, 1)}, {padded, WaveDataOf(tables, 2)}},
-        {{"SEQ_A", 0, 0}, {"SEQ_A_WAIT", 0, 5}, {"SEQ_B", 1, 0}}, {{0, 2}, {1, 0}, {2}});
+    const Bytes laid =
+        rsar_tools::MakeArchive(0x0104, {{FileOf(tables, 0)}, {FileOf(tables, 1)}, {padded, WaveDataOf(tables, 2)}},
+                                {{"SEQ_A", 0, 0}, {"SEQ_A_WAIT", 0, 5}, {"SEQ_B", 1, 0}}, {{0, 2}, {1, 0}, {2}});
     XSFLIB_CHECK(grown == laid);
     const Layout grown_layout = ntdlib::rsar::Cut(grown, kBuild2008);
-    const std::vector<ntdlib::sar::FileCopy> copies = ntdlib::rsar::FileCopies(
-        kBuild2008, grown_layout.sequences, grown_layout.pieces, grown_layout.fields, 2);
+    const std::vector<ntdlib::sar::FileCopy> copies =
+        ntdlib::rsar::FileCopies(kBuild2008, grown_layout.sequences, grown_layout.pieces, grown_layout.fields, 2);
     XSFLIB_CHECK(copies.size() == 2 && copies[0].bytes == padded && copies[1].bytes == padded);
     XSFLIB_CHECK(copies[0].start < copies[1].start);
 
@@ -428,8 +428,8 @@ void TestReplaceFile()
     // A sequence file is no run of its own, and the second song has no wave data.
     XSFLIB_CHECK(Refused([&replace] { replace(0, Other(0x20, 1), std::nullopt); }));
     XSFLIB_CHECK(Refused([&replace, &tables] { replace(1, FileOf(tables, 1), Other(0x20, 1)); }));
-    XSFLIB_CHECK((ntdlib::rsar::FileCopies(kBuild2008, layout.sequences, layout.pieces, layout.fields, 1, true)
-                      .empty()));
+    XSFLIB_CHECK(
+        (ntdlib::rsar::FileCopies(kBuild2008, layout.sequences, layout.pieces, layout.fields, 1, true).empty()));
 }
 
 } // namespace

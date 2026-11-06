@@ -516,16 +516,16 @@ void CheckTrackVolumes()
 }
 
 // The tracks that Mario Kart Wii plays of its streams as they start, for the USA release's sound archive, by the
-// sounds' names. Six courses' streams hold several tracks. As one of them starts, the game's mixer of the music's tracks
-// sets each track to its volume in the course's first state (.text + 0x1e834c of the game's relocatable module, with
-// the tables at .rodata + 0x114e8): track 0 alone, and on Koopa Cape tracks 0 and 3. Every other stream sound plays
-// every track, and so does every sound of an unknown archive. A name matches only as the archive spells it.
+// sounds' names. Six courses' streams hold several tracks. As one of them starts, the game's mixer of the music's
+// tracks sets each track to its volume in the course's first state (.text + 0x1e834c of the game's relocatable module,
+// with the tables at .rodata + 0x114e8): track 0 alone, and on Koopa Cape tracks 0 and 3. Every other stream sound
+// plays every track, and so does every sound of an unknown archive. A name matches only as the archive spells it.
 void CheckStartingTracks()
 {
     constexpr std::string_view kMarioKartWii = "93d5c0c61d4fe47d730915be0ea451e45e9be4e1";
-    for (const std::string_view sound : {"STRM_N_FACTORY_N", "STRM_N_FACTORY_F", "STRM_N_TRUCK_N", "STRM_N_TRUCK_F",
-                                         "STRM_N_DESERT_N", "STRM_N_DESERT_F", "STRM_N_RIDGEHIGHWAY_N",
-                                         "STRM_N_RIDGEHIGHWAY_F", "STRM_N_KOOPA_N", "STRM_N_KOOPA_F"})
+    for (const std::string_view sound :
+         {"STRM_N_FACTORY_N", "STRM_N_FACTORY_F", "STRM_N_TRUCK_N", "STRM_N_TRUCK_F", "STRM_N_DESERT_N",
+          "STRM_N_DESERT_F", "STRM_N_RIDGEHIGHWAY_N", "STRM_N_RIDGEHIGHWAY_F", "STRM_N_KOOPA_N", "STRM_N_KOOPA_F"})
     {
         Check(snd::StartingStreamTracks(kMarioKartWii, sound) == 0x1, std::string(sound) + " plays track 0");
     }
@@ -536,8 +536,7 @@ void CheckStartingTracks()
           "another stream sound plays every track");
     Check(snd::StartingStreamTracks(kMarioKartWii, "strm_n_factory_n") == snd::kAllTracks,
           "a name in other letters plays every track");
-    Check(snd::StartingStreamTracks("0000000000000000000000000000000000000000", "STRM_N_FACTORY_N") ==
-              snd::kAllTracks,
+    Check(snd::StartingStreamTracks("0000000000000000000000000000000000000000", "STRM_N_FACTORY_N") == snd::kAllTracks,
           "an unknown archive plays every track");
 }
 

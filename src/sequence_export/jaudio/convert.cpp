@@ -66,8 +66,8 @@ sf2::Zone GlobalZone(const PresetKey& key)
     return global;
 }
 
-// Build a zone for `z` with `sample`, as `layer` of the track's filter. Add `quieter` centibels of attenuation. A zone at
-// the DSP's pitch limit plays every key at its tuning (a scaleTuning of 0).
+// Build a zone for `z` with `sample`, as `layer` of the track's filter. Add `quieter` centibels of attenuation. A zone
+// at the DSP's pitch limit plays every key at its tuning (a scaleTuning of 0).
 sf2::Zone RegionZone(const PresetZone& z, const FilterLayer& layer, double quieter, uint16_t sample, bool loop)
 {
     const Sf2Envelope e = ConvertEnvelope(z.envelope);

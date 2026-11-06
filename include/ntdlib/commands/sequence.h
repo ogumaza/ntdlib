@@ -172,9 +172,9 @@ struct Command
     Kind kind = Kind::kOther;
     bool conditional = false; // runs only if the last comparison held
     uint8_t key = 0;
-    int64_t velocity = 0;         // a note's velocity: a level (units.h)
-    uint8_t index = 0;            // the track, bus, LFO, variable or register that the command addresses
-    Argument value = {};          // a note's length, a wait, or a setting's value
+    int64_t velocity = 0;              // a note's velocity: a level (units.h)
+    uint8_t index = 0;                 // the track, bus, LFO, variable or register that the command addresses
+    Argument value = {};               // a note's length, a wait, or a setting's value
     std::optional<Argument> time = {}; // the time over which a setting moves to its value
     uint32_t target = 0;               // the item that a command of HasTarget goes to
     bool target_outside = false; // `target` is a byte offset or an address outside the bytes, where no item starts

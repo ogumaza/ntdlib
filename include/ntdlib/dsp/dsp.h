@@ -91,6 +91,12 @@ public:
     // Runs up to `steps` steps. Stops early if the DSP halts. Returns the number of steps run.
     uint64_t Run(uint64_t steps);
 
+    // Runs a batch of up to `steps` steps, as the DSP interface runs the DSP's share of a slice. The first eight steps
+    // stop at a halt. Then come groups of eight steps that also stop at a polling loop (AtIdleLoop). Each group is
+    // followed by up to 200 steps with no checks. A stop forfeits the rest of the batch. The batch runs here so that
+    // the step inlines into its loops.
+    void RunBatch(int64_t steps);
+
     bool Halted() const
     {
         return (control_ & control::kHalt) != 0;
@@ -238,12 +244,16 @@ private:
     };
 
     // An instruction's handler (instructions.cpp). A table maps each instruction word to its handler. Most words go to
-    // Execute. The words that AX's microcodes run most have dedicated handlers. In those handlers the compiler folds
-    // away every test of the instruction's kind.
+    // Execute. The words that AX's microcodes and JAudio's DSP programs run most have dedicated handlers. In those
+    // handlers the compiler folds away every test of the instruction's kind.
     using Handler = void (*)(Dsp& dsp, uint16_t op);
 
     static const Handler* Handlers();
     static const Handler* GenericHandlers();
+
+    // The body of Step (dsp.cpp), without the count of steps: IRAM, the handlers and the loop-end map come as
+    // arguments. Step, Run and RunBatch inline it. Run and RunBatch add their steps to the count at their end.
+    inline void StepOnce(const uint16_t* iram, const Handler* handlers, const uint8_t* loop_end);
 
     template <uint16_t word>
     static void ExecuteWord(Dsp& dsp, uint16_t op);

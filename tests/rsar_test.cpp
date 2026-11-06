@@ -16,13 +16,14 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/rsar/decode.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/tables.h"
 #include "ntdlib/testing/rsar_files.h"
-#include "xsflib/binary.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {

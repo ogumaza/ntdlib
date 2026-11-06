@@ -20,7 +20,6 @@
 #include "ntdlib/nx/audio/light_limiter.h"
 #include "ntdlib/nx/audio/reverb.h"
 #include "ntdlib/nx/audio/voice.h"
-
 #include "nx/audio/arithmetic.h"
 
 namespace ntdlib::nx::audio

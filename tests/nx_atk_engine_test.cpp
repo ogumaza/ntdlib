@@ -510,9 +510,9 @@ int SoundingFrames(atk::ArchiveModel& model, int frames)
 // An add-on archive's sequence plays the notes of its bank beside the engine's archive. Its global variables are the
 // engine's. The engine's archive plays a note on a wave of 100 ms, and the add-on the same note on a wave of 50 ms,
 // after it writes 5 to the global variable 20. Each note sounds for its wave and the same few frames of release. The
-// engine's note therefore sounds 10 frames (50 ms) longer. An archive past the add-ons starts nothing. A snapshot keeps each
-// player's archive: after a restore to before the add-on's start, the player in the add-on's place plays the engine's
-// archive again.
+// engine's note therefore sounds 10 frames (50 ms) longer. An archive past the add-ons starts nothing. A snapshot keeps
+// each player's archive: after a restore to before the add-on's start, the player in the add-on's place plays the
+// engine's archive again.
 void TestAddonArchive()
 {
     const std::vector<uint8_t> kNote = {0xB0, 48, 0xE1, 120, 0x00, 60, 127, 24, 0xFF};

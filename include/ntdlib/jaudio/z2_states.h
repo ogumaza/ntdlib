@@ -2,8 +2,10 @@
 
 // The states in which Twilight Princess's sound layer, Z2, plays a piece of music once the piece has started, and the
 // states that its scenes and its other starters start more pieces in. RulesOf in sequence_export/jaudio/game.h reads
-// the table. PieceStateOf in flipper/z2_params.h gives the Z2 driver a state from it. HD's code gives some pieces other
-// states (kTwilightPrincessHdStates). The starts that Z2SeqMgr::bgmStart gives five pieces are in z2_starts.h.
+// the table. PieceStateOf in flipper/z2_params.h gives the Z2 driver a state from it. The Wii's code reaches one state
+// through another status (kTwilightPrincessWiiStates). HD's code gives some pieces other states
+// (kTwilightPrincessHdStates). The code of Link's Crossbow Training gives a few pieces other states
+// (kCrossbowTrainingStates). The starts that Z2SeqMgr::bgmStart gives five pieces are in z2_starts.h.
 
 #pragma once
 
@@ -182,10 +184,12 @@ inline constexpr std::array kTwilightPrincessStates{
     State(0x0100003e, "_status1", {{0x783c, 0.0f}}, 1),
     State(0x0100003e, "_status100", {{0x003c, 0.0f}}, 100),
 
-    // Z2BGM_DUNGEON_LV9_02: rooms 8 and 12 set the tracks. Over 3000, the status comes from Link's height: from 3150
-    // to 6150 it moves the volumes from room 12's to every child's but 0 to 2 (linearTransform). For any other status,
-    // the code passes volumes that it never sets. They hold what earlier code left in the registers. In the runs, the
-    // GameCube passed 0 and the Wii passed stray values. The rules leave those rooms at the start's volumes.
+    // Z2BGM_DUNGEON_LV9_02: Z2SceneMgr::setSceneName gives the piece to rooms 8 and 12 of its stage (0x802b9400, the
+    // Wii's 0x8029bb24). The rooms set the tracks (0x802b17dc and 0x802b17c0). The Wii's code tests for 8 and 0x33
+    // instead (kTwilightPrincessWiiStates). Over 3000, the status comes from Link's height: from 3150 to 6150 it moves
+    // the volumes from room 12's to every child's but 0 to 2 (linearTransform). For any other status, the code passes
+    // volumes that it never sets. They hold what earlier code left in the registers. In the runs, the GameCube passed 0
+    // and the Wii passed stray values. The rules leave those rooms at the start's volumes.
     State(0x0100003f, "_status8", {{0x0007, 0.0f}, {0x0078, 0.5f}, {0x0200, 0.8f}}, 8),
     State(0x0100003f, "_status12", {{0x0278, 0.0f}, {0x0180, 0.5f}}, 12),
     State(0x0100003f, "_status6150", {{0x0007, 0.0f}}, 6150),
@@ -205,25 +209,32 @@ inline constexpr std::array kTwilightPrincessStates{
     LaterState(0x01000088, "_status2", {}, 2),
 
     // Z2BGM_HORSE_BATTLE over the main music: changeSubBgmStatus's status 1 plays children 11 to 13 in place of 0 and
-    // 1. Status 2 plays the start's children and writes 2 to port 9, which the sequence reads.
+    // 1. Status 2 plays the start's children and writes 2 to port 9. The game writes it once the piece plays. The
+    // sequence (bajobattle.bms) writes 0 to port 9 in its first tick (0x10). From tick 8160 on, it reads the port five
+    // times a pass (0x45). A 2 opens every track at the status's section (0x58).
     State(0x01000004, "_status1", {{0x0003, 0.0f}}),
-    State(0x01000004, "_status2", {{0x3800, 0.0f}}, 2),
+    LaterState(0x01000004, "_status2", {{0x3800, 0.0f}}, 2),
 
     // Z2BGM_FACE_OFF_BATTLE2: subBgmStart's status 0 leaves out children 11 to 13. Status 1 plays them in place of 0
     // and 10.
     State(0x01000096, "", {{0x3800, 0.0f}}),
     State(0x01000096, "_status1", {{0x0401, 0.0f}}),
 
-    // Z2BGM_RODEO: subBgmStart's status 1 plays child 9 without 10 to 14. Status 2 plays 10 to 14 in place of 9.
+    // Z2BGM_RODEO: subBgmStart's status 1 plays child 9 without 10 to 14. Status 2 plays 10 to 14 in place of 9. The
+    // sequence (rodeo.bms) never reads or writes a port.
     State(0x01000029, "", {{0x7c00, 0.0f}}, 1),
     State(0x01000029, "_status2", {{0x0200, 0.0f}}, 2),
 
-    // Z2BGM_VARIANT: subBgmStart's status 1 only writes the port. A few frames after the piece starts, its sequence
-    // calls the game's onVariantBgmJumpEnd (0x802b299c, 0x8029694c), which sets children 8 to 10 to 0. Status 2 plays
-    // them in place of child 0. A later status 1 leaves them out again. Status 3 only writes 3 to port 9.
+    // Z2BGM_VARIANT: subBgmStart's status 1 only writes the port. The sequence (e_variant.bms) plays section 1 and
+    // writes 0 to port 9 in its first tick (0x3e). Each time it opens a section's tracks, it calls the game (0xd5).
+    // Section 1's sync 0x1004 sets children 8 to 10 to 0 through onVariantBgmJumpEnd (0x802b299c, 0x8029694c). Section
+    // 2's sync 0x1005 sets child 0 to 1. Status 2 plays children 8 to 10 in place of 0. On port 9, statuses 1 and 2
+    // both stand for section 1. Status 2 therefore leaves the sequence where it is. Status 3 only writes 3 to port 9.
+    // The game writes it once the piece plays. At its next check (0x50), the sequence moves to section 2. A later
+    // status 1 moves it back to section 1. When status 3 came before, children 8 to 10 fade out over 45 frames.
     State(0x01000039, "", {{0x0700, 0.0f}}, 1),
     State(0x01000039, "_status2", {{0x0001, 0.0f}}, 2),
-    State(0x01000039, "_status3", {{0x0700, 0.0f}}, 3),
+    LaterState(0x01000039, "_status3", {{0x0700, 0.0f}}, 3),
 
     // Z2BGM_BATTLE_TWILIGHT: startBattleBgm's status 0 or 1 plays child 4. Status 2 plays 2 to 5, and status 3 plays 5
     // to 12. The Wii's code writes the status to port 9 too (0x80296930). The GameCube's doesn't.
@@ -311,6 +322,51 @@ inline constexpr std::array kTwilightPrincessStates{
     LaterState(0x01000094, "_status2", {}, 2),
 };
 
+// Twilight Princess's states on the Wii: the table above, with Z2BGM_DUNGEON_LV9_02's _status3150 in place of its
+// _status12. Runs on a CPU emulator of changeBgmStatus and changeSubBgmStatus from the GameCube's USA release
+// (0x802aff8c, 0x802b1df4) and the Wii's third USA version (0x80294254, 0x80295dd0) logged each call of
+// setChildTrackVolume and setPortData. They covered every piece from 0x01000000 to 0x010000c0, with statuses 0 to 20
+// and twelve more up to 6200. The volumes differ only in that piece. The Wii's changeBgmStatus tests its status for 8
+// and 0x33, not 12, in each release: at 0x802957e0 in the third USA version, 0x8029601c in the first, 0x80295c48 in
+// the European release and 0x80297300 in the Japanese one. Either value gives room 8's volumes. For room 12, the code
+// passes volumes that it never sets: what its callers left in f28 to f31. setChildTrackVolume clamps each to the range
+// 0 to 1 (0x8029784c).
+//
+// Those volumes last one frame. setSceneName turns on a flag for rooms 8 and 12 (0x8029bec4). While the flag is on and
+// the piece plays, processBgmFramework calls changeBgmStatus in each frame with Link's height as the status
+// (0x80297464), and the volumes move to the new ones over 30 frames. Room 12's floors run from 3150 to 6150, by its
+// player starts in R12_00.arc. Room 8's floor is at 6150. At 3150, the foot of room 12, the code gives room 12's
+// volumes. Runs of processBgmFramework's block on a CPU emulator, with Link at heights from 2999 to 7150, gave the
+// same volumes over 3000 in the four Wii releases and the GameCube's USA release. _status3150 holds them, as in HD's
+// table (kTwilightPrincessHdStates). HD's code tests the same values. Link's Crossbow Training's code tests for 8 and
+// 12, as the GameCube's does (0x8015770c and 0x801576f0).
+inline constexpr auto kTwilightPrincessWiiStates = []
+{
+    auto wii = kTwilightPrincessStates;
+    for (MusicState& state : wii)
+    {
+        if (state.sound == 0x0100003f && state.suffix == "_status12")
+        {
+            state = State(0x0100003f, "_status3150", {{0x0278, 0.0f}, {0x0180, 0.5f}}, 3150);
+        }
+    }
+    return wii;
+}();
+
+// The Wii's table holds _status3150. A table above without the castle's _status12 stops the build here.
+static_assert(
+    []
+    {
+        for (const MusicState& state : kTwilightPrincessWiiStates)
+        {
+            if (state.sound == 0x0100003f && state.suffix == "_status3150")
+            {
+                return true;
+            }
+        }
+        return false;
+    }());
+
 // Twilight Princess HD's states: the table above, with two changes that HD's code makes (Zelda.rpx of the USA release,
 // version 81). Runs of HD's changeBgmStatus (0x02c2286c), changeSubBgmStatus (0x02c214e4) and sceneBgmStart
 // (0x02c1954c) on a CPU emulator logged each call of setChildTrackVolume (0x02c20b24) and Z2SoundStarter::setPortData
@@ -365,5 +421,28 @@ inline constexpr auto kTwilightPrincessHdStates = []
 
 // The HD table fills every place. A place left empty stops the build here, and a write past the end stops it above.
 static_assert(kTwilightPrincessHdStates.back().sound != 0 && kTwilightPrincessHdStates[0].sound != 0);
+
+// Link's Crossbow Training's states. The addresses are in the USA release's main.dol. The European and Japanese
+// releases give the same states. The game's Z2SceneMgr::setSceneName (0x8015d03c) looks the stage's name up in a list
+// of 41 (0x802c7210). It takes the stage's music from a table that a static initialiser fills (0x8015d918). Its
+// sceneBgmStart (0x8015d2f0) then calls changeBgmStatus (0x80155f3c) for two of the stages' pieces. Z2BGM_DUNGEON_LV5
+// (stage ZP_007) takes the room as its status, and Z2BGM_HOLY_FOREST (ZP_038) takes 0. Runs of sceneBgmStart on a CPU
+// emulator, for each stage and each room on the disc, logged each call of setChildTrackVolume (0x80159e00). In rooms 1
+// and 2 of ZP_007, the snow ruins' music plays without children 0 to 4. In the stage's other rooms, it plays without
+// children 8 to 13, as in Twilight Princess. ZP_038 plays the game's version of the grove's music, which differs from
+// Twilight Princess's, without children 4 to 6. No other stage's music gets a state as it starts. The boss d_a_b_tn
+// (stage ZP_037) starts Z2BGM_TN_MBOSS and writes 1 to it through changeSubBgmStatus (0x80157cf0) as the fight goes
+// on, as in Twilight Princess.
+//
+// Twilight Princess's other states don't arise from the scenes. The field code (fieldBgmFramework, 0x8015b618) runs
+// only in scenes 0x47 and 0x48, and sceneBgmStart's other special cases test scenes 0x2b to 0x41. Those are places in
+// Twilight Princess's list of stages. The game's list ends at 40. No stage places the boss d_a_b_ds, which writes
+// statuses 1 and 2 through 0x80166234.
+inline constexpr std::array kCrossbowTrainingStates{
+    State(0x01000037, "", {{0x3f00, 0.0f}}),
+    State(0x01000037, "_status1", {{0x001f, 0.0f}}, 1),
+    State(0x01000041, "", {{0x0070, 0.0f}}),
+    LaterState(0x0100006c, "_status1", {}, 1),
+};
 
 } // namespace ntdlib::jaudio

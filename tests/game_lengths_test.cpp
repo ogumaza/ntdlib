@@ -866,8 +866,10 @@ void TestPooledJAudio1()
 }
 
 // An effect in slot 0x12 whose slot track polls once a block. That loop changes nothing, so the track idles. In block
-// 1, a child of the slot track plays a note and then waits `wait` ticks, for longer than the sound plays. It sounds all
-// along.
+// 1, a child of the slot track plays a note and then waits `wait` ticks. From block 2 on, the child's wait counts down
+// by one tick a block. At 0 the child plays its next note and waits as long again. The game's track tick does the
+// same. In Luigi's Mansion, it takes one off a wait above 0 (0x801A51F4 to 0x801A5204). Once the wait is 0, it goes
+// on to the loop over the track's commands (0x801A5208 to 0x801A5210, then 0x801A5270). It sounds all along.
 std::optional<xsflib::rip::Timing> AnalyzeLongWait(uint32_t endless_wait, int32_t wait)
 {
     FakeMachine machine;
@@ -887,6 +889,15 @@ std::optional<xsflib::rip::Timing> AnalyzeLongWait(uint32_t endless_wait, int32_
         if (block == 1)
         {
             JAudio1Command(m, kChildTrack, 0x20, kNote);
+            m.words_[kChildTrack + 0x14] = static_cast<uint32_t>(wait);
+            return;
+        }
+
+        const uint32_t left = m.words_[kChildTrack + 0x14] - 1;
+        m.words_[kChildTrack + 0x14] = left;
+        if (left == 0)
+        {
+            JAudio1Command(m, kChildTrack, 0x22, kNote);
             m.words_[kChildTrack + 0x14] = static_cast<uint32_t>(wait);
         }
     };

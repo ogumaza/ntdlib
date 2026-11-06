@@ -341,36 +341,8 @@ void DspInterface<Memory>::SendAiBlock()
 template <typename Memory>
 void DspInterface<Memory>::RunBatch(int64_t cycles)
 {
-    // First eight steps that stop at a halt. Then groups of eight steps that also stop at a polling loop. Each group is
-    // followed by up to 200 steps with no checks. Stopping early forfeits the rest of the batch.
-    int64_t ran = 0;
-    for (int i = 0; i < 8 && ran < cycles && !dsp_.Halted(); i++, ran++)
-    {
-        dsp_.Step();
-    }
-    while (ran < cycles && !dsp_.Halted())
-    {
-        bool stopped = false;
-        for (int i = 0; i < 8 && ran < cycles; i++, ran++)
-        {
-            if (dsp_.Halted() || dsp_.AtIdleLoop())
-            {
-                stopped = true;
-                break;
-            }
-
-            dsp_.Step();
-        }
-        if (stopped)
-        {
-            break;
-        }
-
-        for (int i = 0; i < 200 && ran < cycles; i++, ran++)
-        {
-            dsp_.Step();
-        }
-    }
+    // The DSP runs one step per DSP cycle. Its batch stops early at a halt or a polling loop (Dsp::RunBatch).
+    dsp_.RunBatch(cycles);
 
     // The DSP's interrupt request reaches DSPCR at the end of the batch.
     if (dsp_.TakeInterruptRequest())

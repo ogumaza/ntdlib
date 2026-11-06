@@ -73,8 +73,9 @@ std::size_t LastSamplesEnd(std::span<const uint8_t> bytes, std::size_t start, st
 {
     const std::size_t cut = start + SamplesSize(wave.encoding, wave.loop_end);
     const bool padding = cut < stop && (cut + kBlockAlignment - 1) / kBlockAlignment * kBlockAlignment == stop &&
-                         std::all_of(bytes.begin() + static_cast<std::ptrdiff_t>(cut),
-                                     bytes.begin() + static_cast<std::ptrdiff_t>(stop), [](uint8_t b) { return b == 0; });
+                         std::all_of(
+                             bytes.begin() + static_cast<std::ptrdiff_t>(cut),
+                             bytes.begin() + static_cast<std::ptrdiff_t>(stop), [](uint8_t b) { return b == 0; });
 
     return padding ? cut : stop;
 }

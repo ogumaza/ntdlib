@@ -62,6 +62,16 @@ Conversion ConvertTogether(const sar::SoundArchive& archive, std::span<const uin
                            const std::string& name, const PerformOptions& options, const Settings& settings,
                            const std::string& program);
 
+// Performs sequence `sound_index` of a CSAR or FSAR archive beside sequence `companion_index` of `companion_archive`,
+// as a game plays them together (PerformBeside in performer.h), and builds one MIDI file, one SoundFont and one set of
+// SFZ files, titled after the piece. The SoundFont holds the instruments of both sounds' banks. Its comment lists the
+// sequences and the companion's banks. Throws FormatError if a sequence cannot be read, when the tracks with notes are
+// more than 16, or when the companion doesn't hand over to the piece.
+Conversion ConvertBeside(const sar::SoundArchive& archive, uint32_t sound_index,
+                         const sar::SoundArchive& companion_archive, uint32_t companion_index,
+                         const CompanionScript& script, const PerformOptions& options, const Settings& settings,
+                         const std::string& program);
+
 // A SoundFont of a bank's instruments, from program `first` to program `last`.
 struct BankSoundFont
 {

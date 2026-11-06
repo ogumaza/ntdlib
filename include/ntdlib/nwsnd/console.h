@@ -954,14 +954,19 @@ struct CtrPolicy
     }
 
     // The channel's track volume (UpdateChannelParam, 0x31de18): the product of the track's volume, volume2 and the
-    // player's main volume over 127^3, squared, then the player's volume times it. The 3DS's track has no float volume.
-    static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float, float player_volume)
+    // player's main volume over 127^3, squared, then times the product of the track's float volume and the player's
+    // volume. The float volume is +8 of the track, which the sound's handle sets (SequenceSoundPlayer::SetTrackVolume:
+    // driver command 0x19 and 0x2776cc in Mario Kart 7's code.bin). UpdateChannelParam reads it at 0x31de74 and
+    // multiplies it by the player's volume at 0x31de88. A Unicorn run of 0x31de18 at track volumes of 1, 0.8, 0.75, 0.5
+    // and 0 gives this product, bit for bit. At a volume of 1 it's the player's volume times the square.
+    static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float track_volume,
+                             float player_volume)
     {
         const uint32_t level = volume * (volume2 * main_volume);
         float squared = static_cast<float>(level) * kOneOver127Cubed;
         squared = squared * squared;
 
-        return player_volume * squared;
+        return (track_volume * player_volume) * squared;
     }
 
     // The track's pan and surround pan, from -63 to 63 and from 0 to 126, as -1 to 1 and 0 to 2 (UpdateChannelParam).

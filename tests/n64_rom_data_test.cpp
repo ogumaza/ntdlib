@@ -192,7 +192,8 @@ void TestRareSequenceTable()
     // A block that decodes to another size than its entry's.
     Bytes wrong = image;
     wrong[6 + 4 + 5] = 4;
-    const n64::RareSequenceTable wrong_table = n64::RareSequenceTable::Parse(std::span<const uint8_t>(wrong).subspan(6));
+    const n64::RareSequenceTable wrong_table =
+        n64::RareSequenceTable::Parse(std::span<const uint8_t>(wrong).subspan(6));
     XSFLIB_CHECK(!ErrorOf<xsflib::FormatError>([&] { wrong_table.Sequence(0); }).empty());
 
     // The second block doesn't start where the first ends.

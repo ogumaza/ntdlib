@@ -40,9 +40,9 @@ struct ConvertedSong
     uint32_t loop_end = 0;
     uint32_t end_frame = 0;
     uint32_t end_tick = 0;
-    double quarter_frames = 0;                 // the frames of a quarter note at the song's first tempo
+    double quarter_frames = 0;                    // the frames of a quarter note at the song's first tempo
     std::vector<ntdlib::konami::TrackRead> reads; // each read of the tracks' data
-    std::vector<ConvertedNote> notes;          // each track's notes in order, the tracks in order
+    std::vector<ConvertedNote> notes;             // each track's notes in order, the tracks in order
 };
 
 // Plays `song` as ConvertSong() does with `settings`. Each note of the MIDI file becomes a note of the result.

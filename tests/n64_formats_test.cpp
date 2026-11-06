@@ -220,8 +220,8 @@ void TestBankFile()
                  "a wave of a bank file has the unknown type 7");
 }
 
-// A compressed file with one track: a tempo, a loop start, two notes, a block that repeats 8 bytes of them, a delta with
-// a doubled block code, a third note, a loop end and an end of track.
+// A compressed file with one track: a tempo, a loop start, two notes, a block that repeats 8 bytes of them, a delta
+// with a doubled block code, a third note, a loop end and an end of track.
 Bytes CompressedBytes()
 {
     Bytes file;

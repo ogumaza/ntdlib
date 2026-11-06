@@ -154,7 +154,8 @@ public:
             Mark(sample.data, sample.length);
             if (sample.packed)
             {
-                Mark(rom.U32(table + uint32_t(n) * entry_size), sample.data - rom.U32(table + uint32_t(n) * entry_size));
+                Mark(rom.U32(table + uint32_t(n) * entry_size),
+                     sample.data - rom.U32(table + uint32_t(n) * entry_size));
             }
         }
     }
@@ -375,8 +376,7 @@ Layout Cut(const Rom& rom, const DriverInfo& info)
         for (uint32_t p = 0; p < layout.pieces.size(); p++)
         {
             const auto* bytes = std::get_if<std::vector<uint8_t>>(&layout.pieces[p]);
-            const uint32_t size =
-                bytes ? uint32_t(bytes->size()) : std::get<sar::SequencePiece>(layout.pieces[p]).room;
+            const uint32_t size = bytes ? uint32_t(bytes->size()) : std::get<sar::SequencePiece>(layout.pieces[p]).room;
             if (bytes && entry >= start && entry < start + size)
             {
                 const uint32_t offset = entry - start;
@@ -403,7 +403,8 @@ std::vector<std::vector<uint32_t>> TrackEntries(std::span<const sar::Piece> piec
     std::vector<std::vector<uint32_t>> entries(pieces.size());
     for (const sar::Field& field : fields)
     {
-        if (field.from.item && field.to.item && field.to.piece < pieces.size() && entries[field.to.piece].size() < tracks)
+        if (field.from.item && field.to.item && field.to.piece < pieces.size() &&
+            entries[field.to.piece].size() < tracks)
         {
             entries[field.to.piece].push_back(field.to.offset);
         }
@@ -413,8 +414,8 @@ std::vector<std::vector<uint32_t>> TrackEntries(std::span<const sar::Piece> piec
 }
 
 std::vector<uint8_t> Join(Revision revision, std::span<const commands::Sequence> sequences,
-                          std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
-                          const FreeSpace& free, const JoinOptions& options)
+                          std::span<const sar::Piece> pieces, std::span<const sar::Field> fields, const FreeSpace& free,
+                          const JoinOptions& options)
 {
     // Each piece's place, from the ROM's start.
     std::vector<uint64_t> starts;

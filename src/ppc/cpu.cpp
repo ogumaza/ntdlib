@@ -15,6 +15,7 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/types.h"
+#include "ppc/inline.h"
 
 namespace ntdlib::ppc
 {
@@ -151,6 +152,7 @@ StopReason Cpu::Run(uint64_t cycles)
     UpdateRounding();
     end_ = cycles_ + cycles;
     stopped_ = false;
+    fetch_page_ = kNoFetchPage;
     stop_reason_ = StopReason::kBudget;
     while (cycles_ < end_ && !stopped_)
     {
@@ -326,7 +328,7 @@ std::string Cpu::Describe() const
     return text;
 }
 
-bool Cpu::Step(uint32_t op)
+NTDLIB_PPC_FORCE_INLINE bool Cpu::Step(uint32_t op)
 {
     State& s = state_;
     const int d = Rd(op);
@@ -675,7 +677,7 @@ bool Cpu::Op19(uint32_t op)
     const int d = Rd(op);
     const int a = Ra(op);
     const int b = Rb(op);
-    const auto cr_op = [&](auto combine)
+    const auto cr_op = [&](auto combine) NTDLIB_PPC_INLINE_LAMBDA
     {
         const bool value = combine(CrBit(a), CrBit(b));
         const uint32_t bit = 1u << (31 - d);
@@ -770,7 +772,7 @@ bool Cpu::Op31(uint32_t op)
     const bool oe = (op & 0x400) != 0;
 
     // The forms with OE set record an overflow in XER.
-    const auto set_overflow = [&](bool overflow)
+    const auto set_overflow = [&](bool overflow) NTDLIB_PPC_INLINE_LAMBDA
     {
         if (oe)
         {
@@ -779,7 +781,7 @@ bool Cpu::Op31(uint32_t op)
     };
 
     // The arithmetic forms: the sum of x, y and a carry in, with the carry and overflow out.
-    const auto arith = [&](uint32_t x, uint32_t y, uint32_t carry_in, bool set_carry)
+    const auto arith = [&](uint32_t x, uint32_t y, uint32_t carry_in, bool set_carry) NTDLIB_PPC_INLINE_LAMBDA
     {
         const uint64_t sum = uint64_t{x} + y + carry_in;
         const auto result = static_cast<uint32_t>(sum);
@@ -798,7 +800,7 @@ bool Cpu::Op31(uint32_t op)
         return true;
     };
 
-    const auto logical = [&](uint32_t result)
+    const auto logical = [&](uint32_t result) NTDLIB_PPC_INLINE_LAMBDA
     {
         s.gpr[a] = result;
         if (Rc(op))
@@ -1396,6 +1398,7 @@ bool Cpu::MtSpr(int number, uint32_t value)
 void Cpu::SetMsr(uint32_t value)
 {
     state_.msr = value;
+    fetch_page_ = kNoFetchPage;
 
     // A change may enable an interrupt that's waiting.
     next_check_ = 0;
@@ -1423,6 +1426,11 @@ void Cpu::RebuildMap(bool instruction)
     // The BATs that are valid in supervisor mode. The lowest-numbered BAT comes last so that it wins where two overlap.
     std::vector<uint8_t*>& map = instruction ? fetch_map_ : data_map_;
     std::fill(map.begin(), map.end(), nullptr);
+    if (instruction)
+    {
+        fetch_page_ = kNoFetchPage;
+    }
+
     for (int i = BatCount(state_) - 1; i >= 0; i--)
     {
         const Bat bat = BatAt(state_, i, instruction);
@@ -1636,10 +1644,19 @@ void Cpu::WriteSlow(uint32_t address, int size, uint32_t value)
 
 bool Cpu::Fetch(uint32_t address, uint32_t& op)
 {
+    // The page of the last fetch through the map, then the map.
+    if (address >> 12 == fetch_page_)
+    {
+        op = xsflib::LoadBe32(fetch_host_ + (address & kPageMask));
+        return true;
+    }
+
     if (state_.msr & msr::kIr)
     {
         if (const uint8_t* page = fetch_map_[address >> 12])
         {
+            fetch_page_ = address >> 12;
+            fetch_host_ = page;
             op = xsflib::LoadBe32(page + (address & kPageMask));
             return true;
         }

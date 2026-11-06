@@ -36,11 +36,158 @@ constexpr uint32_t kSoundBias = 0x04000504;
 constexpr uint32_t kSoundBiasMiddle = 0x200;
 
 // The captures' control registers, both of whose busy bits a 16-bit read gives, and the channels and the captures of
-// the SDK's reverb.
+// the SDK's reverb and output effect.
 constexpr uint32_t kCaptureControl = 0x04000508;
 constexpr uint32_t kCapturesBusy = 0x8080;
 constexpr uint32_t kReverbChannels = 0xA;
 constexpr uint32_t kReverbCaptures = 3;
+
+// The arguments of SND_SetupChannelPcm and SND_SetupCapture in the driver's commands.
+constexpr int32_t kTimerClock = 0xFFB0FF;
+constexpr uint32_t kLoopForEver = 1;
+constexpr uint32_t kMaximumVolume = 127;
+constexpr uint32_t kMaximumPan = 127;
+
+// The output effect's alarm: the first that the sound library of the SDK allocates. The output selector's settings:
+// channel 1 on the left and channel 3 on the right, neither in the mixer. The surround decay that the games' setter
+// gives the surround.
+constexpr uint32_t kEffectAlarm = 0;
+constexpr std::array<uint32_t, 4> kEffectOutputs = {1, 2, 1, 1};
+constexpr uint32_t kSurroundDecay = 0x3000;
+
+// A tick of the OS timer, in system clocks. The alarms count in ticks.
+constexpr uint64_t kTickClocks = 64;
+
+// The function of OutputMode::kCrossfeed keeps a quarter for each of 24 samples.
+constexpr std::size_t kCrossfeedDelay = 24;
+
+// What NNS_SndCaptureStartEffect works out for an output effect.
+struct EffectLayout
+{
+    uint32_t timer = 0;      // the channels' and the captures' timer
+    uint32_t half = 0;       // the bytes of each half
+    uint32_t part_bytes = 0; // the bytes of each part of a half
+    uint32_t period = 0;     // the alarm's period, in ticks
+    uint32_t first = 0;      // the alarm's first tick after the start
+};
+
+EffectLayout LayoutOf(const OutputEffect& effect)
+{
+    const auto mode = static_cast<int>(effect.mode);
+    if (mode < static_cast<int>(OutputMode::kNone) || mode > static_cast<int>(OutputMode::kMono))
+    {
+        throw std::invalid_argument("no output mode " + std::to_string(mode));
+    }
+
+    const auto refuse = [&effect]
+    {
+        throw std::invalid_argument("the SDK can't lay out an output effect of " + std::to_string(effect.size) +
+                                    " bytes in " + std::to_string(effect.interval) + " parts at " +
+                                    std::to_string(effect.sample_rate) + " Hz");
+    };
+    if (effect.sample_rate <= 0 || effect.interval <= 0 || effect.size % 2 != 0)
+    {
+        refuse();
+    }
+
+    // The timer is a multiple of 32: a sample then takes a whole number of the alarm's ticks.
+    EffectLayout layout;
+    layout.timer = static_cast<uint32_t>((kTimerClock / effect.sample_rate + 16) & ~31);
+    layout.half = effect.size / 2;
+    const auto interval = static_cast<uint32_t>(effect.interval);
+    layout.part_bytes = layout.half / interval;
+    if (layout.timer < 32 || layout.timer > 0xFFE0 || layout.half % interval != 0 || layout.part_bytes == 0 ||
+        layout.part_bytes % 4 != 0)
+    {
+        refuse();
+    }
+
+    // The alarm's period is a part's samples. Its first tick comes a part and 32 bytes of samples after the start.
+    const uint32_t samples = effect.pcm8 ? layout.half : layout.half / 2;
+    const uint32_t sample_ticks = layout.timer / 32;
+    layout.period = samples / interval * sample_ticks;
+    layout.first = layout.period + sample_ticks * (effect.pcm8 ? 32 : 16);
+    return layout;
+}
+
+int16_t Clamp16(int32_t value)
+{
+    return static_cast<int16_t>(std::clamp<int32_t>(value, -0x8000, 0x7FFF));
+}
+
+// OutputMode::kSurround: the steps of the function at 0x020608A0 in New Super Mario Bros. (USA).
+void Surround(std::span<int16_t> left, std::span<int16_t> right, OutputHistory& history)
+{
+    // The differences of the part's last two samples, before their change, for the next part.
+    const std::size_t count = left.size();
+    std::array<int32_t, 2> last = {};
+    for (std::size_t i = 0; i < last.size(); i++)
+    {
+        last[i] = Clamp16(left[count - 2 + i] - right[count - 2 + i]);
+    }
+
+    // From the end down: the samples two places earlier keep their values until the loop reaches them.
+    for (std::size_t i = count; i-- > 2;)
+    {
+        const int32_t difference = left[i - 2] - right[i - 2];
+        left[i] = Clamp16(left[i] + difference);
+        right[i] = Clamp16(right[i] - difference);
+    }
+    for (std::size_t i = 0; i < last.size(); i++)
+    {
+        left[i] = Clamp16(left[i] + history[i]);
+        right[i] = Clamp16(right[i] - history[i]);
+        history[i] = last[i];
+    }
+}
+
+// OutputMode::kCrossfeed: the steps of the function at 0x020606A8 in New Super Mario Bros. (USA). Pair k of the history
+// holds the quarters that the samples of place k of the next 24 add: the left side's, then the right side's.
+void Crossfeed(std::span<int16_t> left, std::span<int16_t> right, OutputHistory& history)
+{
+    // Whole runs of 24 samples while more than 24 remain. The quarters come from the sums before the stop.
+    const std::size_t count = left.size();
+    std::size_t base = 0;
+    while (count > base + kCrossfeedDelay)
+    {
+        for (std::size_t k = 0; k < kCrossfeedDelay; k++)
+        {
+            const int32_t sum_left = left[base + k] + history[2 * k];
+            const int32_t sum_right = right[base + k] + history[2 * k + 1];
+            left[base + k] = Clamp16(sum_left);
+            right[base + k] = Clamp16(sum_right);
+            history[2 * k] = (sum_right + 1) >> 2;
+            history[2 * k + 1] = (sum_left + 1) >> 2;
+        }
+        base += kCrossfeedDelay;
+    }
+
+    // The last 1 to 24 samples take the first quarters. The unused quarters move to the front. The samples after the
+    // stop give the quarters after them.
+    const std::size_t rest = count - base;
+    for (std::size_t j = 0; j < rest; j++)
+    {
+        left[base + j] = Clamp16(left[base + j] + history[2 * j]);
+        right[base + j] = Clamp16(right[base + j] + history[2 * j + 1]);
+    }
+    std::copy(history.begin() + static_cast<std::ptrdiff_t>(2 * rest), history.end(), history.begin());
+    for (std::size_t j = 0; j < rest; j++)
+    {
+        const std::size_t k = kCrossfeedDelay - rest + j;
+        history[2 * k] = (right[base + j] + 1) >> 2;
+        history[2 * k + 1] = (left[base + j] + 1) >> 2;
+    }
+}
+
+// OutputMode::kMono: the steps of the function at 0x02060660 in New Super Mario Bros. (USA).
+void Mono(std::span<int16_t> left, std::span<int16_t> right)
+{
+    for (std::size_t i = 0; i < left.size(); i++)
+    {
+        left[i] = static_cast<int16_t>((left[i] + right[i] + 1) >> 1);
+    }
+    std::copy(left.begin(), left.end(), right.begin());
+}
 
 // The places of a player's channel priority and volume, for the command that writes a player's field.
 constexpr uint32_t kPlayerChannelPriority = 4;
@@ -87,14 +234,9 @@ const Info& Record(const std::vector<std::optional<Info>>& records, uint32_t ind
 
 snd::CommandList ReverbCommands(const Reverb& reverb, uint32_t buffer)
 {
-    // SND_SetupChannelPcm's and SND_SetupCapture's arguments, as the driver's commands hold them.
-    constexpr uint32_t kTimerClock = 0xFFB0FF;
-    constexpr uint32_t kLoopForEver = 1;
-    constexpr int kMaximumPan = 127;
-
     const uint32_t half = reverb.size / 2;
     const uint32_t words = half / 4;
-    const auto timer = static_cast<uint32_t>(static_cast<int32_t>(kTimerClock) / reverb.sample_rate);
+    const auto timer = static_cast<uint32_t>(kTimerClock / reverb.sample_rate);
     // The channels' format is 0 for PCM8 and 1 for PCM16. The captures' is 1 for PCM8 and 0 for PCM16.
     const uint32_t format = reverb.pcm8 ? 0 : 1;
     const uint32_t format_bit = reverb.pcm8 ? 1 : 0;
@@ -104,7 +246,7 @@ snd::CommandList ReverbCommands(const Reverb& reverb, uint32_t buffer)
     {
         const uint32_t channel = capture * 2 + 1;
         const uint32_t address = buffer + capture * half;
-        const auto pan = static_cast<uint32_t>(capture * kMaximumPan);
+        const uint32_t pan = capture * kMaximumPan;
         list.push_back(
             {snd::CommandId::kSetUpPcmChannel,
              {channel | timer << 16, address, words | volume << 24, format << 24 | kLoopForEver << 26 | pan << 16}});
@@ -112,6 +254,67 @@ snd::CommandList ReverbCommands(const Reverb& reverb, uint32_t buffer)
             {snd::CommandId::kSetUpCapture, {address, words, capture << 31 | format_bit << 30 | 1u << 29, 0}});
     }
     list.push_back({snd::CommandId::kStartTimer, {kReverbChannels, kReverbCaptures, 0, 0}});
+    return list;
+}
+
+void ApplyOutputMode(OutputMode mode, std::span<int16_t> left, std::span<int16_t> right, OutputHistory& history)
+{
+    switch (mode)
+    {
+    case OutputMode::kSurround:
+        Surround(left, right, history);
+        break;
+    case OutputMode::kCrossfeed:
+        Crossfeed(left, right, history);
+        break;
+    case OutputMode::kMono:
+        Mono(left, right);
+        break;
+    case OutputMode::kNone:
+        break;
+    }
+}
+
+snd::CommandList OutputModeCommands(OutputMode from, OutputMode to)
+{
+    if (from == to)
+    {
+        return {};
+    }
+    if (from == OutputMode::kSurround)
+    {
+        return {{snd::CommandId::kSurroundDecay, {0, 0, 0, 0}}};
+    }
+    if (to == OutputMode::kSurround)
+    {
+        return {{snd::CommandId::kSurroundDecay, {kSurroundDecay, 0, 0, 0}}};
+    }
+    return {};
+}
+
+snd::CommandList OutputEffectCommands(const OutputEffect& effect, uint32_t buffer, uint8_t alarm_id)
+{
+    const EffectLayout layout = LayoutOf(effect);
+    const uint32_t words = layout.half / 4;
+
+    // The channels' format is 0 for PCM8 and 1 for PCM16. The captures' is 1 for PCM8 and 0 for PCM16.
+    const uint32_t format = effect.pcm8 ? 0 : 1;
+    const uint32_t format_bit = effect.pcm8 ? 1 : 0;
+    snd::CommandList list = {{snd::CommandId::kLockChannels, {kReverbChannels, 0, 0, 0}}};
+    for (uint32_t capture = 0; capture < 2; capture++)
+    {
+        const uint32_t channel = capture * 2 + 1;
+        const uint32_t address = buffer + capture * layout.half;
+        const uint32_t pan = capture * kMaximumPan;
+        list.push_back({snd::CommandId::kSetUpPcmChannel,
+                        {channel | layout.timer << 16, address, words | kMaximumVolume << 24,
+                         format << 24 | kLoopForEver << 26 | pan << 16}});
+        list.push_back(
+            {snd::CommandId::kSetUpCapture, {address, words, capture << 31 | format_bit << 30 | 1u << 29, 0}});
+    }
+    list.push_back({snd::CommandId::kSetUpAlarm, {kEffectAlarm, layout.first, layout.period, alarm_id}});
+    list.push_back({snd::CommandId::kOutputSelector, kEffectOutputs});
+    list.push_back({snd::CommandId::kStartTimer, {kReverbChannels, kReverbCaptures, 1u << kEffectAlarm, 0}});
     return list;
 }
 
@@ -340,9 +543,19 @@ ArchivePlayer::ArchivePlayer(const sdat::Archive& archive, const ArchivePlayerOp
 void ArchivePlayer::Start(const SequenceRef& sequence, const GameSettings& settings, int player)
 {
     CheckPlayer(player);
+    if (settings.reverb && settings.effect)
+    {
+        throw std::invalid_argument("the SDK runs a reverb or an output effect, not both");
+    }
+
     snd::CommandList list;
     if (settings.reverb)
     {
+        if (effect_)
+        {
+            throw std::invalid_argument("an output effect runs: the SDK starts no reverb");
+        }
+
         const Reverb& reverb = *settings.reverb;
         if (reverb.size > kFiles - kReverbBuffer || reverb.size % 8 != 0 || reverb.sample_rate <= 0)
         {
@@ -360,8 +573,61 @@ void ArchivePlayer::Start(const SequenceRef& sequence, const GameSettings& setti
         const snd::CommandList commands = ReverbCommands(reverb, kReverbBuffer);
         list.insert(list.end(), commands.begin(), commands.end());
     }
+
+    // The output effect's commands and state wait until the sequence's commands are known.
+    std::optional<EffectState> started;
+    if (settings.effect)
+    {
+        const OutputEffect& effect = *settings.effect;
+        const EffectLayout layout = LayoutOf(effect);
+        if (effect.size > kFiles - kEffectBuffer)
+        {
+            throw std::invalid_argument("an output effect's buffer of " + std::to_string(effect.size) +
+                                        " bytes doesn't fit the player");
+        }
+        if (!effect_ && (unit_.Read(kCaptureControl, 2) & kCapturesBusy))
+        {
+            throw std::invalid_argument("a reverb runs: the SDK starts no output effect");
+        }
+
+        if (!unit_.Enhanced())
+        {
+            // The games' setter of the mode comes first. NNS_SndCaptureStartEffect then stops an effect that runs, as
+            // NNSi_SndCaptureStop does. The stop sends the mixer to the output again.
+            const snd::CommandList mode = OutputModeCommands(output_mode_, effect.mode);
+            list.insert(list.end(), mode.begin(), mode.end());
+            if (effect_)
+            {
+                list.push_back({snd::CommandId::kStopTimer, {kReverbChannels, kReverbCaptures, 1u << kEffectAlarm, 0}});
+                list.push_back({snd::CommandId::kUnlockChannels, {kReverbChannels, 0, 0, 0}});
+                list.push_back({snd::CommandId::kOutputSelector, {0, 0, 0, 0}});
+            }
+            const snd::CommandList commands =
+                OutputEffectCommands(effect, kEffectBuffer, static_cast<uint8_t>(alarm_ids_ + 1));
+            list.insert(list.end(), commands.begin(), commands.end());
+            started = EffectState{.size = effect.size,
+                                  .part_bytes = layout.part_bytes,
+                                  .interval = static_cast<uint32_t>(effect.interval),
+                                  .part = 0,
+                                  .next_alarm = clock_ + snd::kFrameClocks + layout.first * kTickClocks,
+                                  .period = layout.period * kTickClocks};
+        }
+    }
+
     const snd::CommandList start = StartCommands(heap_, archive_, sequence, settings, player);
     list.insert(list.end(), start.begin(), start.end());
+    if (started)
+    {
+        // The setter clears the history as it changes the mode. NNS_SndCaptureStartEffect clears the buffer.
+        if (settings.effect->mode != output_mode_)
+        {
+            history_ = {};
+            output_mode_ = settings.effect->mode;
+        }
+        alarm_ids_++;
+        std::fill_n(memory_.begin() + (kEffectBuffer - kMainMemory), started->size, uint8_t{0});
+        effect_ = started;
+    }
     pending_.push_back(std::move(list));
 }
 
@@ -419,22 +685,46 @@ void ArchivePlayer::Play(std::vector<SoundOutput>* out, std::vector<float>* enha
     }
     unit_.SetMutedChannels(muted);
     unit_.SetMeters(meters);
-    if (out)
+
+    // The output effect's alarms split the frame. The ARM9 changes a part at each.
+    if (effect_)
     {
-        unit_.Run(snd::kFrameClocks / 2, *out);
-        peaks_ = unit_.MeterPeaks();
+        effect_->sounded = EffectSounds();
     }
-    else if (enhanced_out)
+    const uint64_t end = clock_ + snd::kFrameClocks;
+    uint64_t at = clock_;
+    const auto play_to = [this, out, enhanced_out, &at](uint64_t until)
     {
-        unit_.Run(snd::kFrameClocks / 2, *enhanced_out);
+        const uint64_t ticks = (until - at) / 2;
+        if (out)
+        {
+            unit_.Run(ticks, *out);
+        }
+        else if (enhanced_out)
+        {
+            unit_.Run(ticks, *enhanced_out);
+        }
+        else
+        {
+            unit_.Run(ticks);
+        }
+        at = until;
+    };
+    while (effect_ && effect_->next_alarm < end)
+    {
+        play_to(effect_->next_alarm);
+        RunEffect();
+    }
+    play_to(end);
+    if (out || enhanced_out)
+    {
         peaks_ = unit_.MeterPeaks();
     }
     else
     {
-        unit_.Run(snd::kFrameClocks / 2);
         peaks_ = {};
     }
-    clock_ += snd::kFrameClocks;
+    clock_ = end;
 
     // A channel that the ARM9's command sets up plays no track's note.
     for (const snd::CommandList& list : pending_)
@@ -450,6 +740,45 @@ void ArchivePlayer::Play(std::vector<SoundOutput>* out, std::vector<float>* enha
     }
     driver_.Frame(true, pending_);
     pending_.clear();
+}
+
+void ArchivePlayer::RunEffect()
+{
+    // The alarm handler of the SDK passes part `part` of each half to the callback of the effect. The callback runs the
+    // function of the mode.
+    EffectState& effect = *effect_;
+    const std::size_t count = effect.part_bytes / 2;
+    const uint32_t left_at = kEffectBuffer - kMainMemory + effect.part * effect.part_bytes;
+    const uint32_t right_at = left_at + effect.size / 2;
+    std::vector<int16_t> left(count);
+    std::vector<int16_t> right(count);
+    for (std::size_t i = 0; i < count; i++)
+    {
+        left[i] = static_cast<int16_t>(memory_[left_at + 2 * i] | memory_[left_at + 2 * i + 1] << 8);
+        right[i] = static_cast<int16_t>(memory_[right_at + 2 * i] | memory_[right_at + 2 * i + 1] << 8);
+    }
+
+    ApplyOutputMode(output_mode_, left, right, history_);
+
+    for (std::size_t i = 0; i < count; i++)
+    {
+        memory_[left_at + 2 * i] = static_cast<uint8_t>(left[i]);
+        memory_[left_at + 2 * i + 1] = static_cast<uint8_t>(static_cast<uint16_t>(left[i]) >> 8);
+        memory_[right_at + 2 * i] = static_cast<uint8_t>(right[i]);
+        memory_[right_at + 2 * i + 1] = static_cast<uint8_t>(static_cast<uint16_t>(right[i]) >> 8);
+    }
+    effect.part = effect.part + 1 < effect.interval ? effect.part + 1 : 0;
+    effect.next_alarm += effect.period;
+}
+
+bool ArchivePlayer::EffectSounds() const
+{
+    const auto buffer = std::span(memory_).subspan(kEffectBuffer - kMainMemory, effect_->size);
+    const auto nonzero = [](auto value)
+    {
+        return value != 0;
+    };
+    return std::ranges::any_of(buffer, nonzero) || std::ranges::any_of(history_, nonzero);
 }
 
 void ArchivePlayer::OnNote(const snd::NoteEvent& note)
@@ -519,12 +848,16 @@ bool ArchivePlayer::Busy() const
     }
     for (int channel = 0; channel < unit_.ChannelCount(); channel++)
     {
+        if (effect_ && (channel == 1 || channel == 3))
+        {
+            continue;
+        }
         if (unit_.Busy(channel))
         {
             return true;
         }
     }
-    return false;
+    return effect_ && (effect_->sounded || EffectSounds());
 }
 
 uint64_t ArchivePlayer::Clock() const
@@ -576,6 +909,10 @@ ArchivePlayer::Snapshot ArchivePlayer::Save(const Snapshot* previous) const
     snapshot.clock_ = clock_;
     snapshot.pending_ = pending_;
     snapshot.channel_tracks_ = channel_tracks_;
+    snapshot.effect_ = effect_;
+    snapshot.output_mode_ = output_mode_;
+    snapshot.history_ = history_;
+    snapshot.alarm_ids_ = alarm_ids_;
     return snapshot;
 }
 
@@ -596,6 +933,10 @@ void ArchivePlayer::Restore(const Snapshot& snapshot)
     clock_ = snapshot.clock_;
     pending_ = snapshot.pending_;
     channel_tracks_ = snapshot.channel_tracks_;
+    effect_ = snapshot.effect_;
+    output_mode_ = snapshot.output_mode_;
+    history_ = snapshot.history_;
+    alarm_ids_ = snapshot.alarm_ids_;
 }
 
 } // namespace ntdlib::ntr

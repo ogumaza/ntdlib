@@ -429,10 +429,10 @@ struct SoundTableBlocks
 };
 
 // A sound table of `sections`, and its name table. Each sound's entry is 12 bytes. A type with bit 0x40 set has the
-// later layout: the volume at +1, the sequence archive's file at +2 and the switches at +6. Any other type has the earlier one: the volume
-// at +2 and the file in the low half of the word at +8. With `first_layouts`, every entry has the first layouts: the
-// volume at +8 and no file. A group gives each sound's type in a byte and its entry's offset in the 24 bits after it.
-// Each file number is a 16-bit field.
+// later layout: the volume at +1, the sequence archive's file at +2 and the switches at +6. Any other type has the
+// earlier one: the volume at +2 and the file in the low half of the word at +8. With `first_layouts`, every entry has
+// the first layouts: the volume at +8 and no file. A group gives each sound's type in a byte and its entry's offset in
+// the 24 bits after it. Each file number is a 16-bit field.
 inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, bool first_layouts = false,
                                    bool big_endian = true)
 {

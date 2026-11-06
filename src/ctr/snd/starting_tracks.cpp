@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -204,10 +205,15 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // unmutes track 7 and fades it in over 40 frames (0x1E2E50, from 0x420404). The list gives the start. kCafeTrack7 gives
 // the state after the fade.
 //
-// SEQ_BGM_DJ_HS_MURAMELO and SEQ_BGM_DJ_FC_MURAMELO also play the town's tune, one step from each of track 15's
-// variables 0 to 15. DJ K.K.'s player writes them from the tune that the save holds (0x28B0E0 to 0x28B170). A note's
-// step gets the note's transpose in the major scale (0x411284) plus the song's key. A rest or a held note gets 10000.
-// A start holds only two variables. The list therefore leaves the 16 at -1. Each step then plays the same note.
+// SEQ_BGM_DJ_HS_MURAMELO and SEQ_BGM_DJ_FC_MURAMELO also play the town's tune four times on track 15. Before each step,
+// the track copies the next of its variables 0 to 15 into player variable 4. A value of 10000 mutes the step. A value
+// below -1000 picks a random note. Any other value transposes note 60. No other track reads a track variable. DJ K.K.'s
+// player (0x28B08C) writes the 16 values to track 15 (SetTrackVariable, 0x52EACC) from the tune that the save holds. A
+// note gets its transpose in the major scale (0x411284) plus the key of the song in the player's slot. The key comes
+// from the song's entry in the table at 0x8BB51C (0x7ADE6C and 0x7ADDA0). A rest or a hold gets 10000. A random note
+// gets the key less 10000. A new town takes one of four default tunes at random (0x7B7F40, from the table at 0x8BBCE2).
+// The list gives the first of them in key 0. Key 0 is the commonest key of DJ K.K.'s 94 songs: 24 of them take it. A
+// save can hold any tune, and the songs' keys run from -5 to 6. At -1, every step plays B, a semitone under note 60.
 //
 // New Leaf's tune player (0x411330) plays a tune of 16 steps one note at a time. Most players take the town's tune
 // (0x410F64). Each note starts the player's SE_MELODY_ sound again (0x411534). The player writes variable 15 = 0,
@@ -328,11 +334,14 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // and parameters (0x222FD4). In the Activity Log (0x1CCCB0), BGM_CTR_PLOG_MAIN keeps tracks 0 to 9 of its 14,
 // BGM_CTR_PLOG_MAIN_CLOCK tracks 0 to 11 and BGM_CTR_PLOG_MAIN_STEP tracks 0 to 9, 12 and 13.
 //
-// Mii Maker sets the levels of MEDIT_BGM_FACE's tracks from its code (0x19E97C). Its first screen starts the piece
-// and sets tracks 8 to 15 to a volume of 0 at once (0x27D0FC). The list gives that start. Two other routines give
-// the same tracks (0x27D038 and 0x1C4718). 0x27D470 fades tracks 3, 4 and 7 out and sets tracks 8 and 9 to 0.8.
-// 0x27D9E4 also sets track 10 to 0.75. Which screens call them wasn't mapped, and the list can't give a volume between
-// 0 and full.
+// Mii Maker sets the levels of MEDIT_BGM_FACE's tracks from its code (0x19E97C, through SetTrackVolume at 0x1EFF90).
+// Its first screen starts the piece and sets tracks 8 to 15 to a volume of 0 at once (0x27D0FC). The list gives that
+// start. Two other routines give the same tracks (0x27D038, and 0x1C4718 with the sound's volume at 0.7). Two more
+// give the later mixes. 0x27D470 (state 6 of a screen's update at 0x171344) sets the sound's volume to 0.7 (0x19EAD0),
+// tracks 8 and 9 to 0.8 and tracks 3, 4 and 7 to 0. 0x27D9E4 (state 8, at 0x171470) also sets track 10 to 0.75. While
+// the piece plays, each fades over 30 frames, and the tracks that go out fade over 60. Tracks 10 to 15 keep the first
+// screen's volume of 0 through 0x27D470. kMiiMakerMixes gives the two mixes, named by the tracks that they add. A
+// Unicorn run of each routine from a hand-set state gives the values. Which screens run the two states wasn't mapped.
 //
 // Seven of Mario Party: Island Tour's minigame and boss pieces set their tempo from player variable 0. A track moves a
 // copy of the variable toward it every 2 ticks, clamps the copy and scales it (TEMPO_CONTROL_START). The game writes
@@ -414,8 +423,18 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // lap). The BGM's start reads each sound's BPM from byte 9 of its 3D information in the archive (0x3C9B6C). The beat
 // starts once the stream plays (0x3CA0D8). Its tempo ratio is the stream's BPM over the beat's (0x3C9F88). Each beat
 // sequence is at 120 BPM. Music Park's stream plays at 139 BPM, and at 166 on the final lap. Killer Ship's plays at
-// 148 and 178, and Waluigi Pinball's at 135 and 166. SEQ_SYNC_BEAT_120 takes the BPM of each of the other courses. The
-// list leaves its ratio at 1.
+// 148 and 178, and Waluigi Pinball's at 135 and 166. SEQ_SYNC_BEAT_120 takes the BPM of each of the other 29 courses,
+// from 112 to 173, and from 136 to 207 on the final lap. The list starts it at Toad Circuit's 140 BPM, the first
+// course's. kSyncBeat120States gives Toad Circuit's final lap and both of each other course's tempos, named by the
+// stream's label without STRM_CN_ or STRM_CR_ and _N.
+//
+// Track 15 of each beat plays a drum loop for the player who leads the race. As the race's BGM starts, and again on
+// the final lap, it fades the track's level to 0 at once (0x3C7E5C and 0x3C8090, through 0x3C86E0 and 0x3C9D2C). The
+// BGM's update sets track 15's volume to the BGM's volume times that level, and mutes the track at 0 (0x3CA2CC,
+// through 0x3C9DB4). A race controller sets the level in each frame (0x3D4D38). It's 0 unless the player is in first
+// place. Then it rises from 0 at a lead of 150 over second place to 1 at a lead of 370, or from 200 to 1000 in one mode
+// (0x3D4F40 to 0x3D5040, the ramp at 0x3D75B4, the parameters at 0x661AF8 from 0x5430F8). The list plays track 15 at
+// full level: the leader's beat.
 //
 // SEQ_SYNC_BEAT_MUSIC_PARK holds an instrument's part on each of tracks 0 to 3. The race's BGM mutes all four as the
 // beat starts (0x3C8418). Track 15 plays on. On one of the course's instrument roads, the kart unmutes track 0, 1 or 2
@@ -468,6 +487,24 @@ constexpr SequenceStart DjStart(SequenceVariable variable)
 {
     return {.variables = {{variable}}, .fx_send = kClubSend, .game_effect = kClubEffect};
 }
+
+// What DJ K.K.'s player writes to track 15's variables 0 to 15 for New Leaf's first default tune (0x8BBCE2) in key 0. A
+// Unicorn run of 0x28B08C gives the values.
+constexpr std::array<int16_t, 16> kFirstDefaultTune = {12, 10000, 7, 4,      5, 5,     5,     10000,
+                                                       7,  7,     5, -10000, 0, 10000, 10000, 10000};
+
+// A start of one of DJ K.K.'s interludes that play the town's tune: player variable 0 at 0, and the first default tune
+// in track variables 0 to 15 (indices 32 to 47).
+constexpr SequenceStart DjTuneStart()
+{
+    SequenceStart start = DjStart(kDjInterlude);
+    for (std::size_t step = 0; step < kFirstDefaultTune.size(); ++step)
+    {
+        start.variables[step + 1] = {.index = static_cast<uint8_t>(32 + step), .value = kFirstDefaultTune[step]};
+    }
+    return start;
+}
+
 constexpr SequenceVariable kTuneNoteC = {.index = 14, .value = 3};
 constexpr SequenceVariable kTrainTuneFirstNote = {.index = 14, .value = 9};
 constexpr SequenceVariable kFirstChord = {.index = 26, .value = 0};
@@ -481,7 +518,7 @@ constexpr float kKillerShipFinalLapTempo = 178.0f / 120.0f;
 constexpr float kWaluigiPinballTempo = 135.0f / 120.0f;
 constexpr float kWaluigiPinballFinalLapTempo = 166.0f / 120.0f;
 
-constexpr std::array<StartingSequence, 120> kStartingSequences = {{
+constexpr std::array<StartingSequence, 121> kStartingSequences = {{
     {kOcarinaOfTime3D, "NA_BGM_RONRON", {.silenced = 0x2000}},
     {kIslandTour, "SEQ_BGM_MENU", {.muted = 0xfff0}},
     {kWarioWareGold, "SEQ_M_TSUNAGI_TRICKY_NEXT1", {.silenced = 0x0fff}},
@@ -496,8 +533,8 @@ constexpr std::array<StartingSequence, 120> kStartingSequences = {{
     {kNewLeaf, "SEQ_BGM_DJ95_FC_EVENT", DjStart(kDjIntro)},
     {kNewLeaf, "SEQ_BGM_DJ_HS_HANIWA", DjStart(kDjInterlude)},
     {kNewLeaf, "SEQ_BGM_DJ_FC_HANIWA", DjStart(kDjInterlude)},
-    {kNewLeaf, "SEQ_BGM_DJ_HS_MURAMELO", DjStart(kDjInterlude)},
-    {kNewLeaf, "SEQ_BGM_DJ_FC_MURAMELO", DjStart(kDjInterlude)},
+    {kNewLeaf, "SEQ_BGM_DJ_HS_MURAMELO", DjTuneStart()},
+    {kNewLeaf, "SEQ_BGM_DJ_FC_MURAMELO", DjTuneStart()},
     {kTomodachiLife, "BGM_MANSION_AND_ROOM", {.muted = 0xfff8}},
     {kTomodachiLife, "BGM_AKICHI_NIGHT", {.muted = 0xff0f}},
     {kTomodachiLife, "SE_MII_PLAY_GUITAR_S", {.variables = {{kFirstChord}}}},
@@ -580,6 +617,7 @@ constexpr std::array<StartingSequence, 120> kStartingSequences = {{
     {kMarioKart7, "SEQ_SYNC_BEAT_MUSIC_PARK", {.muted = 0x000f, .tempo_ratio = kMusicParkTempo}},
     {kMarioKart7, "SEQ_SYNC_BEAT_KILLER_SHIP", {.tempo_ratio = kKillerShipTempo}},
     {kMarioKart7, "SEQ_SYNC_BEAT_WALUIGI_PINBALL", {.tempo_ratio = kWaluigiPinballTempo}},
+    {kMarioKart7, "SEQ_SYNC_BEAT_120", {.tempo_ratio = 140.0f / 120.0f}},
     {kMarioKart7, "SE_KT_FALL_WATER", {.variables = {{kPlayersKart}}}},
     {kMarioKart7, "SE_KT_FALL_LAVA", {.variables = {{kPlayersKart}}}},
     {kMarioKart7, "SE_KT_GLIDER_AIR_CURRENT", {.variables = {{kPlayersKart}}}},
@@ -810,7 +848,7 @@ constexpr SequenceStart Mgn708APattern(int16_t pattern)
 // variable to 3 at the first tick. The loop's first pass comes after frame 1 and plays the pattern. The module moves
 // the music on to the B set with variable 9 at 1 (0x135C). A patched Azahar run set r2 to 1 at the module's check at
 // 0x6BD8 in the second round. The module then wrote variable 9 = 1 for 7 seconds. Each later round wrote variable 10 =
-// 3, 0, 1, 2 and 1, as in the A set, and the recording holds the B set's four patterns at those times.
+// 3, 0, 1, 2 and 1, as in the A set, and the B set's four patterns played at those times.
 constexpr SequenceStart Mgn708BPattern(int16_t pattern)
 {
     return {.variables = {{{.index = 10, .value = pattern, .frame = 1}}}};
@@ -876,6 +914,17 @@ constexpr std::array<SequenceArrangement, 1> kNightApartmentStates = {{
     {"_tracks_8_to_11", {.muted = 0xf0ff}},
 }};
 
+// MEDIT_BGM_FACE's later mixes in Mii Maker: the sound at 0.7, tracks 3, 4 and 7 out, tracks 8 and 9 at 0.8, and in
+// the second, track 10 at 0.75.
+constexpr std::array<float, kSequenceTracks> kMiiMakerTracks8And9 = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                                                     0.8f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+constexpr std::array<float, kSequenceTracks> kMiiMakerTracks8To10 = {1.0f, 1.0f, 1.0f,  1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                                                     0.8f, 0.8f, 0.75f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+constexpr std::array<SequenceArrangement, 2> kMiiMakerMixes = {{
+    {"_tracks_8_9", {.silenced = 0xfc98, .track_volumes = kMiiMakerTracks8And9, .volume = 0.7f}},
+    {"_tracks_8_to_10", {.silenced = 0xf898, .track_volumes = kMiiMakerTracks8To10, .volume = 0.7f}},
+}};
+
 // The final laps of Killer Ship and Waluigi Pinball.
 constexpr std::array<SequenceArrangement, 1> kKillerShipFinalLap = {{
     {"_final_lap", {.tempo_ratio = kKillerShipFinalLapTempo}},
@@ -884,7 +933,69 @@ constexpr std::array<SequenceArrangement, 1> kWaluigiPinballFinalLap = {{
     {"_final_lap", {.tempo_ratio = kWaluigiPinballFinalLapTempo}},
 }};
 
-constexpr std::array<ArrangedSequence, 56> kArrangedSequences = {{
+// SEQ_SYNC_BEAT_120's other states: Toad Circuit's final lap, then each other course and its final lap, at the stream's
+// BPM over 120 (the BPMs in the archive's 3D information).
+constexpr std::array<SequenceArrangement, 57> kSyncBeat120States = {{
+    {"_toad_circuit_final_lap", {.tempo_ratio = 168.0f / 120.0f}},
+    {"_glide_lake", {.tempo_ratio = 140.0f / 120.0f}},
+    {"_glide_lake_final_lap", {.tempo_ratio = 155.0f / 120.0f}},
+    {"_marine_road", {.tempo_ratio = 130.0f / 120.0f}},
+    {"_marine_road_final_lap", {.tempo_ratio = 156.0f / 120.0f}},
+    {"_sand_town", {.tempo_ratio = 112.0f / 120.0f}},
+    {"_sand_town_final_lap", {.tempo_ratio = 136.0f / 120.0f}},
+    {"_wufu_island1", {.tempo_ratio = 125.0f / 120.0f}},
+    {"_wufu_island1_final_lap", {.tempo_ratio = 150.0f / 120.0f}},
+    {"_mario_circuit", {.tempo_ratio = 140.0f / 120.0f}},
+    {"_mario_circuit_final_lap", {.tempo_ratio = 168.0f / 120.0f}},
+    {"_rally_cource", {.tempo_ratio = 173.0f / 120.0f}},
+    {"_rally_cource_final_lap", {.tempo_ratio = 207.0f / 120.0f}},
+    {"_underground", {.tempo_ratio = 139.0f / 120.0f}},
+    {"_underground_final_lap", {.tempo_ratio = 153.0f / 120.0f}},
+    {"_advanced_circuit", {.tempo_ratio = 142.0f / 120.0f}},
+    {"_advanced_circuit_final_lap", {.tempo_ratio = 168.0f / 120.0f}},
+    {"_wufu_island2", {.tempo_ratio = 125.0f / 120.0f}},
+    {"_wufu_island2_final_lap", {.tempo_ratio = 150.0f / 120.0f}},
+    {"_dk_jungle", {.tempo_ratio = 137.0f / 120.0f}},
+    {"_dk_jungle_final_lap", {.tempo_ratio = 153.0f / 120.0f}},
+    {"_ice_slider", {.tempo_ratio = 145.0f / 120.0f}},
+    {"_ice_slider_final_lap", {.tempo_ratio = 166.0f / 120.0f}},
+    {"_koopa_castle", {.tempo_ratio = 136.0f / 120.0f}},
+    {"_koopa_castle_final_lap", {.tempo_ratio = 163.0f / 120.0f}},
+    {"_rainbow_road", {.tempo_ratio = 136.0f / 120.0f}},
+    {"_rainbow_road_final_lap", {.tempo_ratio = 168.0f / 120.0f}},
+    {"_wario_ship", {.tempo_ratio = 152.0f / 120.0f}},
+    {"_wario_ship_final_lap", {.tempo_ratio = 174.0f / 120.0f}},
+    {"_n64_luigi_circuit", {.tempo_ratio = 140.0f / 120.0f}},
+    {"_n64_luigi_circuit_final_lap", {.tempo_ratio = 168.0f / 120.0f}},
+    {"_agb_koopa_castle", {.tempo_ratio = 170.0f / 120.0f}},
+    {"_agb_koopa_castle_final_lap", {.tempo_ratio = 190.0f / 120.0f}},
+    {"_wii_kinoko_canyon", {.tempo_ratio = 133.0f / 120.0f}},
+    {"_wii_kinoko_canyon_final_lap", {.tempo_ratio = 150.0f / 120.0f}},
+    {"_ds_luigi_mansion", {.tempo_ratio = 122.0f / 120.0f}},
+    {"_ds_luigi_mansion_final_lap", {.tempo_ratio = 155.0f / 120.0f}},
+    {"_n64_nokonoko_beach", {.tempo_ratio = 118.0f / 120.0f}},
+    {"_n64_nokonoko_beach_final_lap", {.tempo_ratio = 141.0f / 120.0f}},
+    {"_sfc_mario_circuit2", {.tempo_ratio = 133.0f / 120.0f}},
+    {"_sfc_mario_circuit2_final_lap", {.tempo_ratio = 160.0f / 120.0f}},
+    {"_wii_coconuts_mall", {.tempo_ratio = 132.0f / 120.0f}},
+    {"_wii_coconuts_mall_final_lap", {.tempo_ratio = 158.0f / 120.0f}},
+    {"_n64_karakara_desert", {.tempo_ratio = 128.0f / 120.0f}},
+    {"_n64_karakara_desert_final_lap", {.tempo_ratio = 154.0f / 120.0f}},
+    {"_ds_dk_snow_mountain", {.tempo_ratio = 119.0f / 120.0f}},
+    {"_ds_dk_snow_mountain_final_lap", {.tempo_ratio = 153.0f / 120.0f}},
+    {"_gc_daisy_cruiser", {.tempo_ratio = 125.0f / 120.0f}},
+    {"_gc_daisy_cruiser_final_lap", {.tempo_ratio = 155.0f / 120.0f}},
+    {"_wii_maple_tree_house", {.tempo_ratio = 148.0f / 120.0f}},
+    {"_wii_maple_tree_house_final_lap", {.tempo_ratio = 200.0f / 120.0f}},
+    {"_wii_nokonoko_cape", {.tempo_ratio = 160.0f / 120.0f}},
+    {"_wii_nokonoko_cape_final_lap", {.tempo_ratio = 192.0f / 120.0f}},
+    {"_gc_dinodino_jungle", {.tempo_ratio = 137.0f / 120.0f}},
+    {"_gc_dinodino_jungle_final_lap", {.tempo_ratio = 157.0f / 120.0f}},
+    {"_sfc_rainbow_road", {.tempo_ratio = 145.0f / 120.0f}},
+    {"_sfc_rainbow_road_final_lap", {.tempo_ratio = 174.0f / 120.0f}},
+}};
+
+constexpr std::array<ArrangedSequence, 58> kArrangedSequences = {{
     {kTomodachiLife, "BGM_MANSION_AND_ROOM", kApartmentStates},
     {kTomodachiLife, "BGM_AKICHI_NIGHT", kNightApartmentStates},
     {kNewLeaf, "SEQ_BGM_IND_CAFEARBEIT", kCafeTrack7},
@@ -938,9 +1049,11 @@ constexpr std::array<ArrangedSequence, 56> kArrangedSequences = {{
     {kIslandTour, "SEQ_BGM_BOSS_04_B2", kTenSecondsLeft},
     {kIslandTour, "SEQ_BGM_BOSS_04_B3", kTenSecondsLeft},
     {kMiiForce, "SD_BGM_D01", kGameOverEndings},
+    {kMiiMaker, "MEDIT_BGM_FACE", kMiiMakerMixes},
     {kMarioKart7, "SEQ_SYNC_BEAT_MUSIC_PARK", kMusicParkStates},
     {kMarioKart7, "SEQ_SYNC_BEAT_KILLER_SHIP", kKillerShipFinalLap},
     {kMarioKart7, "SEQ_SYNC_BEAT_WALUIGI_PINBALL", kWaluigiPinballFinalLap},
+    {kMarioKart7, "SEQ_SYNC_BEAT_120", kSyncBeat120States},
 }};
 
 // Happy Home Designer gives each room an ambient sound: an item of the category Environment, items 0x34EE to 0x34FC.

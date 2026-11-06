@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the reader of the sound archive of Intelligent Systems' engine (ntdlib/n64/sbn.h). Each test builds its bytes
-// by hand in the layouts that the header describes, and the expected values were worked out by hand from the same
+// Tests of the reader of the sound archive of Intelligent Systems' engine (ntdlib/n64/sbn.h). Each test builds its
+// bytes by hand in the layouts that the header describes, and the expected values were worked out by hand from the same
 // layouts.
 
 #include <algorithm>
@@ -52,13 +52,9 @@ void Append(Bytes& out, std::initializer_list<uint8_t> bytes)
 // A BGM file with one composition, one phrase and one track, and a table of one drum and one instrument.
 //
 //     0x00  the header, 0x24 bytes
-//     0x24  the composition: play the phrase at +0x10, start a loop with label 1, end the loop with label 1, 3 times, end
-//     0x34  the phrase's 16 words, 0x40 bytes
-//     0x74  the track's commands
-//     0x90  the detour's bytes
-//     0x98  the branch's table: two entries
-//     0xA0  the branch's places
-//     0xA8  the drum, then the instrument
+//     0x24  the composition: play the phrase at +0x10, start a loop with label 1, end the loop with label 1, 3 times,
+//     end 0x34  the phrase's 16 words, 0x40 bytes 0x74  the track's commands 0x90  the detour's bytes 0x98  the
+//     branch's table: two entries 0xA0  the branch's places 0xA8  the drum, then the instrument
 Bytes MakeBgm()
 {
     Bytes bgm;
@@ -88,8 +84,8 @@ Bytes MakeBgm()
         Put32(bgm, 0);
     }
 
-    // 0x74: tempo; a wait of 16; a note of key 0x10 with a length of 1; a note with a long length; a long wait; a detour
-    // of 3 bytes to 0x90; a branch; the end.
+    // 0x74: tempo; a wait of 16; a note of key 0x10 with a length of 1; a note with a long length; a long wait; a
+    // detour of 3 bytes to 0x90; a branch; the end.
     Append(bgm, {0xE0, 0x00, 0x78});
     Append(bgm, {0x10});
     Append(bgm, {0x90, 0x60, 0x01});
@@ -250,13 +246,13 @@ Bytes MakeBk()
     }
 
     bank.resize(0x40, 0);
-    Put32(bank, 0xB0);  // the wave
-    Put32(bank, 9);     // its size
-    Put32(bank, 0x70);  // the loop's state
-    Put32(bank, 0);     // the loop's start
-    Put32(bank, 16);    // its end
+    Put32(bank, 0xB0); // the wave
+    Put32(bank, 9);    // its size
+    Put32(bank, 0x70); // the loop's state
+    Put32(bank, 0);    // the loop's start
+    Put32(bank, 16);   // its end
     Put32(bank, 0xFFFFFFFF);
-    Put32(bank, 0x90);  // the book
+    Put32(bank, 0x90); // the book
     Put16(bank, 32);
     Put16(bank, 6000);
     Put32(bank, 32000);
@@ -303,15 +299,15 @@ void TestArchive()
 {
     Bytes archive;
     PutText(archive, "SBN ");
-    Put32(archive, 0);   // the size, filled in below
+    Put32(archive, 0); // the size, filled in below
     Put32(archive, 0);
     Put32(archive, 0);
     Put32(archive, 0x40);
-    Put32(archive, 3);   // files
+    Put32(archive, 3); // files
     Put32(archive, 0);
     Put32(archive, 0);
     Put32(archive, 0);
-    Put32(archive, 0x60);  // INIT
+    Put32(archive, 0x60); // INIT
     archive.resize(0x40, 0);
 
     // The table: the files at 0x90, 0x150 and 0x210.
@@ -368,7 +364,8 @@ void TestArchive()
     XSFLIB_CHECK(parsed.Entries()[1].format == n64::kSbnFormatBank && parsed.Entries()[1].size == 0x40);
     XSFLIB_CHECK(parsed.File(0).size() == bgm.size());
     XSFLIB_CHECK(std::equal(bank.begin(), bank.end(), parsed.File(1).begin(), parsed.File(1).end()));
-    XSFLIB_CHECK(parsed.InitBanks().size() == 1 && parsed.InitBanks()[0].file == 1 && parsed.InitBanks()[0].bank_set == 3);
+    XSFLIB_CHECK(parsed.InitBanks().size() == 1 && parsed.InitBanks()[0].file == 1 &&
+                 parsed.InitBanks()[0].bank_set == 3);
     XSFLIB_CHECK(parsed.Songs().size() == 1 && parsed.Songs()[0].banks[0] == 1);
     XSFLIB_CHECK(parsed.OtherFiles() == std::vector<uint16_t>({7, 8}));
 

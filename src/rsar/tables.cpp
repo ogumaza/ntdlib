@@ -12,9 +12,10 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/rsar/reference.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/rsar/reference.h"
 
 namespace ntdlib::rsar
 {

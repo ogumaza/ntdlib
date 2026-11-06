@@ -384,8 +384,8 @@ void TestPerform()
     const std::vector<seqlib::midi::TrackEvent> silent = EventsOf(
         Perform(one_note.archive, {0}, {.commands = {TrackVolume(0x0001, -32768)}}), 0, EventKind::kExpression);
     const std::vector<seqlib::midi::TrackEvent> restored =
-        EventsOf(Perform(one_note.archive, {0}, {.commands = {TrackVolume(0x0001, -32768), TrackVolume(0x0001, 0)}}),
-                 0, EventKind::kExpression);
+        EventsOf(Perform(one_note.archive, {0}, {.commands = {TrackVolume(0x0001, -32768), TrackVolume(0x0001, 0)}}), 0,
+                 EventKind::kExpression);
     Check(!silent.empty() && silent[0].tick == 0 && silent[0].value == 0 && !restored.empty() &&
               restored[0].tick == 0 && restored[0].value == 107,
           "a game's track volume after the start: CC11 0 at volume 0, and 107 once a later command gives 127");
@@ -474,10 +474,20 @@ void TestPerform()
 void TestChanges()
 {
     const TestArchive sometimes({
-        0xB8, 0x00, 0x05, 0x00, // 0: whether variable 0 is 5
-        0xA2, 0x3C, 0x7F, 0x18, // 4: if so, a note of 24 ticks
-        0x80, 0x18,             // 8: a wait of 24 ticks
-        0x94, 0x00, 0x00, 0x00, // 10: back to 0
+        0xB8,
+        0x00,
+        0x05,
+        0x00, // 0: whether variable 0 is 5
+        0xA2,
+        0x3C,
+        0x7F,
+        0x18, // 4: if so, a note of 24 ticks
+        0x80,
+        0x18, // 8: a wait of 24 ticks
+        0x94,
+        0x00,
+        0x00,
+        0x00, // 10: back to 0
     });
 
     const Performance without = Perform(sometimes.archive, {0});
@@ -494,8 +504,7 @@ void TestChanges()
     // and the notes stop.
     const Performance back = Perform(sometimes.archive, {0}, {.changes = {{3000, 0, 1}, {2000, 0, 5}}});
     const std::vector<seqlib::midi::TrackEvent> between = EventsOf(back, 0, EventKind::kNoteOn);
-    Check(!between.empty() && between.front().tick >= 1000 && between.front().tick < 1024 &&
-              between.back().tick < 1500,
+    Check(!between.empty() && between.front().tick >= 1000 && between.front().tick < 1024 && between.back().tick < 1500,
           "two changes: the note plays only between them");
 
     // A global variable, by index 16 on.

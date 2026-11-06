@@ -275,8 +275,8 @@ private:
         // channel's level.
         std::vector<std::array<int, 4>> levels;
         std::vector<std::array<std::array<int32_t, 4>, 2>> gains;
-        uint64_t samples = 0;                          // the samples whose times lie before the present cycle
-        bool stale = false;                            // a run without output left the steps behind the channels
+        uint64_t samples = 0; // the samples whose times lie before the present cycle
+        bool stale = false;   // a run without output left the steps behind the channels
     };
 
     // The console's sound registers.

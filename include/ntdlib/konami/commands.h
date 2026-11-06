@@ -18,18 +18,20 @@
 //   kNote       `velocity` is the volume. A sample note has `sample`, with its semitones as a byte in `key`, and in
 //               Dungeon Dice Monsters `index` 1 where the next track plays it (Ax). A note without `sample` has its
 //               note in `key`, and in Dungeon Dice Monsters `index` 1 for 9x: the track's sample at the note
-//   kVolume     `index` 0: C0-CF; 1: Dungeon Dice Monsters' Dx; 2: Eternal Duelist's F0 on a sample track, with the next
+//   kVolume     `index` 0: C0-CF; 1: Dungeon Dice Monsters' Dx; 2: Eternal Duelist's F0 on a sample track, with the
+//   next
 //               track's volume in `velocity`
 //   kNoteOff    a rest
 //   kRelease    Dungeon Dice Monsters. `index` 0: FB; 1: a fade of this track (F8); 2: a fade of the next track (F9)
-//   kPan        the Ultimate Masters builds: F0's position, with 0x40 the centre. The older revisions' F0 xy, left level
+//   kPan        the Ultimate Masters builds: F0's position, with 0x40 the centre. The older revisions' F0 xy, left
+//   level
 //               x and right level y: right minus left as the position, and the larger level in `velocity`. A new
 //               command with a `velocity` of 0 takes level 15
 //   kLfoDepth   the vibrato's depth
-//   kPitchBend  `index` 0: F2, or in Dungeon Dice Monsters F3; 1: Dungeon Dice Monsters' F2; 2: its F1, for the next track
-//   kLoopStart  the track's loop point. `bytes` holds the bytes that the driver skips after it
-//   kLoopEnd    a loop of the song: every track goes back to its loop point, or to its start
-//   kEnd        `index` 0: the end of the track, until a song loop; 1: the end for good (Ultimate Masters' FD); 2: a stop
+//   kPitchBend  `index` 0: F2, or in Dungeon Dice Monsters F3; 1: Dungeon Dice Monsters' F2; 2: its F1, for the next
+//   track kLoopStart  the track's loop point. `bytes` holds the bytes that the driver skips after it kLoopEnd    a loop
+//   of the song: every track goes back to its loop point, or to its start kEnd        `index` 0: the end of the track,
+//   until a song loop; 1: the end for good (Ultimate Masters' FD); 2: a stop
 //               of the song
 //   kCall       `key` is the opcode and gives what the call sets first (CallSetsFirst), `value` the count of
 //               commands, `target` the item where they start and `index` the track whose start the offset counts from
@@ -43,8 +45,8 @@
 // The encoder writes those bytes while they read as the item's values. After an edit that changes the values, it writes
 // the usual bytes.
 //
-// A pitch bend's unit is a fraction of a range of 2 semitones: the driver's value is in 32nds of a semitone, or 16ths in
-// Dungeon Dice Monsters. The other values stay in the driver's units.
+// A pitch bend's unit is a fraction of a range of 2 semitones: the driver's value is in 32nds of a semitone, or 16ths
+// in Dungeon Dice Monsters. The other values stay in the driver's units.
 //
 // A track's calls count from the track's start in the song table. Dungeon Dice Monsters' F5 sets a duty or a wave from
 // the delay byte that follows it, and its FA's two bytes are a delay and a command that only a song loop reads. Those

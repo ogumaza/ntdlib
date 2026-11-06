@@ -6,6 +6,8 @@
 // tested in ctr_snd_test.cpp.
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -96,6 +98,21 @@ void TestSystemTitles()
     CheckStart(kActivityLog, "BGM_CTR_PLOG_BOOK", {});
     CheckStart(kMiiPlaza, "BGM_CTR_MSET", {});
     CheckStart(kMiiMaker, "MEDIT_BGM_FACE", {.silenced = 0xff00});
+
+    // Mii Maker's later mixes (R-938): the sound at 0.7, tracks 3, 4 and 7 out, tracks 8 and 9 at 0.8, and in the
+    // second, track 10 at 0.75. A start's tracks default to a volume of 1.
+    const auto mixes = SequenceArrangements(kMiiMaker, "MEDIT_BGM_FACE");
+    std::array<float, ntdlib::ctr::snd::kSequenceTracks> volumes = ntdlib::ctr::snd::kFullTrackVolumes;
+    volumes[8] = 0.8f;
+    volumes[9] = 0.8f;
+    Check(mixes.size() == 2 && mixes[0].suffix == "_tracks_8_9" &&
+              mixes[0].start == SequenceStart{.silenced = 0xfc98, .track_volumes = volumes, .volume = 0.7f},
+          "Mii Maker's first later mix adds tracks 8 and 9 at 0.8");
+    volumes[10] = 0.75f;
+    Check(mixes.size() == 2 && mixes[1].suffix == "_tracks_8_to_10" &&
+              mixes[1].start == SequenceStart{.silenced = 0xf898, .track_volumes = volumes, .volume = 0.7f},
+          "Mii Maker's second later mix adds track 10 at 0.75");
+    Check(SequenceStart{}.track_volumes == ntdlib::ctr::snd::kFullTrackVolumes, "a start's tracks play at 1");
 }
 
 // Ultimate Angler mutes track 15 of every piece on its main BGM player, by the start of the piece's name.
@@ -304,8 +321,8 @@ void TestArrangements()
     constexpr SequenceStart kEchoes = {.fx_send = {0.38f, 0.0f}, .game_effect = 1};
     for (const std::string_view archive : {kHappyHomeDesigner, kHappyHomeDesignerOld})
     {
-        for (const std::string_view piece : {"SEQ_BGM_MU01_SANBIKA", "SEQ_BGM_MUSS91_BIRTHDAYSONG_SCORE",
-                                             "SEQ_BGM_RM90_DISCO"})
+        for (const std::string_view piece :
+             {"SEQ_BGM_MU01_SANBIKA", "SEQ_BGM_MUSS91_BIRTHDAYSONG_SCORE", "SEQ_BGM_RM90_DISCO"})
         {
             const auto room = SequenceArrangements(archive, piece);
             Check(room.size() == 2 && room[0].suffix == "_ringing" && room[0].start == kRinging &&
@@ -385,7 +402,8 @@ void TestIslandTourTempoPieces()
 
 // Mario Kart 7's beat sequences play at their stream's BPM over 120. Music Park's starts with tracks 0 to 3 muted. Its
 // other states unmute one of them, or come from the final lap, with track variable 0 at 1 and the faster stream.
-// Killer Ship's and Waluigi Pinball's have a final lap too. SEQ_SYNC_BEAT_120 keeps its tempo.
+// Killer Ship's and Waluigi Pinball's have a final lap too. SEQ_SYNC_BEAT_120 starts at Toad Circuit's BPM, and its
+// states follow each other course's normal and final-lap streams (R-939).
 void TestMarioKart7Beats()
 {
     constexpr float kMusicPark = 139.0f / 120.0f;
@@ -393,7 +411,7 @@ void TestMarioKart7Beats()
     CheckStart(kMarioKart7, "SEQ_SYNC_BEAT_MUSIC_PARK", {.muted = 0x000f, .tempo_ratio = kMusicPark});
     CheckStart(kMarioKart7, "SEQ_SYNC_BEAT_KILLER_SHIP", {.tempo_ratio = 148.0f / 120.0f});
     CheckStart(kMarioKart7, "SEQ_SYNC_BEAT_WALUIGI_PINBALL", {.tempo_ratio = 135.0f / 120.0f});
-    CheckStart(kMarioKart7, "SEQ_SYNC_BEAT_120", {});
+    CheckStart(kMarioKart7, "SEQ_SYNC_BEAT_120", {.tempo_ratio = 140.0f / 120.0f});
 
     const auto park = SequenceArrangements(kMarioKart7, "SEQ_SYNC_BEAT_MUSIC_PARK");
     Check(park.size() == 8 && park[0].suffix == "_track_0" && park[3].suffix == "_track_3" &&
@@ -418,7 +436,19 @@ void TestMarioKart7Beats()
     const auto pinball = SequenceArrangements(kMarioKart7, "SEQ_SYNC_BEAT_WALUIGI_PINBALL");
     Check(pinball.size() == 1 && pinball[0].start == SequenceStart{.tempo_ratio = 166.0f / 120.0f},
           "Waluigi Pinball's beat follows the final lap's stream");
-    Check(SequenceArrangements(kMarioKart7, "SEQ_SYNC_BEAT_120").empty(), "the other courses' beat has no later state");
+    const auto beat = SequenceArrangements(kMarioKart7, "SEQ_SYNC_BEAT_120");
+    Check(beat.size() == 57 && beat[0].suffix == "_toad_circuit_final_lap" &&
+              beat[0].start == SequenceStart{.tempo_ratio = 168.0f / 120.0f},
+          "the first course's beat follows its final lap's stream");
+    Check(beat.size() == 57 && beat[5].suffix == "_sand_town" &&
+              beat[5].start == SequenceStart{.tempo_ratio = 112.0f / 120.0f},
+          "Sand Town's beat plays at 112 BPM, the slowest course's");
+    Check(beat.size() == 57 && beat[12].suffix == "_rally_cource_final_lap" &&
+              beat[12].start == SequenceStart{.tempo_ratio = 207.0f / 120.0f},
+          "the fastest final lap's beat plays at 207 BPM");
+    Check(beat.size() == 57 && beat[56].suffix == "_sfc_rainbow_road_final_lap" &&
+              beat[56].start == SequenceStart{.tempo_ratio = 174.0f / 120.0f},
+          "the last retro course's beat follows its final lap's stream");
 }
 
 // The player's kart starts Mario Kart 7's falls and air current with variable 0 at 1. The glider's flutter always
@@ -446,8 +476,10 @@ void TestMarioKart7Effects()
 }
 
 // New Leaf's DJ K.K. starts his songs with variable 0 at 1, and the birthday and event songs and the interludes at 0.
-// Each plays with the club's effect 0 and a send of 0.4 on bus A. The museum's entry for its whole name stays. The
-// café's piece starts with track 7 muted.
+// Each plays with the club's effect 0 and a send of 0.4 on bus A. The two interludes that play the town's tune also
+// take the game's first default tune in key 0 in track variables 0 to 15 (indices 32 to 47). A Unicorn run of the DJ's
+// writer (0x28B08C) gave the 16 values. The museum's entry for its whole name stays. The café's piece starts with
+// track 7 muted.
 void TestNewLeafDj()
 {
     constexpr SequenceStart kOne = {
@@ -459,10 +491,22 @@ void TestNewLeafDj()
         CheckStart(kNewLeaf, song, kOne);
     }
     for (const std::string_view song :
-         {"SEQ_BGM_DJ91_HS_BIRTHDAYSONG", "SEQ_BGM_DJ95_FC_EVENT", "SEQ_BGM_DJ_HS_HANIWA", "SEQ_BGM_DJ_FC_MURAMELO"})
+         {"SEQ_BGM_DJ91_HS_BIRTHDAYSONG", "SEQ_BGM_DJ95_FC_EVENT", "SEQ_BGM_DJ_HS_HANIWA", "SEQ_BGM_DJ_FC_HANIWA"})
     {
         CheckStart(kNewLeaf, song, kZero);
     }
+    constexpr std::array<int16_t, 16> kTune = {12, 10000, 7, 4,      5, 5,     5,     10000,
+                                               7,  7,     5, -10000, 0, 10000, 10000, 10000};
+    SequenceStart tune = kZero;
+    for (std::size_t step = 0; step < kTune.size(); ++step)
+    {
+        tune.variables[step + 1] = {.index = static_cast<uint8_t>(32 + step), .value = kTune[step]};
+    }
+    for (const std::string_view interlude : {"SEQ_BGM_DJ_HS_MURAMELO", "SEQ_BGM_DJ_FC_MURAMELO"})
+    {
+        CheckStart(kNewLeaf, interlude, tune);
+    }
+    Check(ntdlib::ctr::snd::kStartVariables == 17, "a start holds the interludes' 17 variables");
     CheckStart(kNewLeaf, "SEQ_BGM_IND_MUSEUM", {.muted = 0xe3f0});
     CheckStart(kTomodachiLife, "SEQ_BGM_DJ05_FC_JAZZ", {});
     CheckStart(kNewLeaf, "SEQ_BGM_IND_CAFEARBEIT", {.muted = 0x0080});

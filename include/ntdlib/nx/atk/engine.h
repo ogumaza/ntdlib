@@ -75,9 +75,9 @@ public:
     Engine& operator=(const Engine&) = delete;
 
     // Adds an add-on sound archive and returns its number: 1 for the first, 2 for the next, and so on. The engine
-    // plays an add-on archive's sounds beside its archive's sounds. A game's sound archive player plays them in the same
-    // sound system, with the same global variables. The engine keeps a reference to `archive`. `archive` has to outlive
-    // the engine. The engine reads the add-on's banks and waves in the same way as its archive's.
+    // plays an add-on archive's sounds beside its archive's sounds. A game's sound archive player plays them in the
+    // same sound system, with the same global variables. The engine keeps a reference to `archive`. `archive` has to
+    // outlive the engine. The engine reads the add-on's banks and waves in the same way as its archive's.
     int AddArchive(const sar::SoundArchive& archive);
 
     // Starts sequence sound `index`, by its index in the sound table of archive `archive`: 0 for the engine's archive,

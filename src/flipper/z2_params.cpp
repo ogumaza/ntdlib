@@ -76,8 +76,8 @@ PieceState PieceStateOf(const jaudio::MusicState& state)
     }
     if (state.status_port >= 0)
     {
-        piece.music_status = kMusicStatusSet | (state.status_later ? kMusicStatusLater : 0) |
-                             static_cast<uint32_t>(state.status_port);
+        piece.music_status =
+            kMusicStatusSet | (state.status_later ? kMusicStatusLater : 0) | static_cast<uint32_t>(state.status_port);
     }
     for (std::size_t i = 0; i < state.section_statuses.size(); i++)
     {

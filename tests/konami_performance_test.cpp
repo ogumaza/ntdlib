@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the performance of a song of Konami's GBA driver (ntdlib/sequence_export/konami/performance.h), on small carts
-// built here. Each song's bytes are worked out by hand from the driver's rules in ntdlib/konami/seqformat.h: a delay of n
-// takes n frames, and a tick is a frame. The frames, offsets, stretches and mix follow from them. Every note then has to
-// be a note of the MIDI file that the conversion writes.
+// Tests of the performance of a song of Konami's GBA driver (ntdlib/sequence_export/konami/performance.h), on small
+// carts built here. Each song's bytes are worked out by hand from the driver's rules in ntdlib/konami/seqformat.h: a
+// delay of n takes n frames, and a tick is a frame. The frames, offsets, stretches and mix follow from them. Every note
+// then has to be a note of the MIDI file that the conversion writes.
 
 #include <cstdint>
 #include <map>
@@ -118,8 +118,8 @@ std::vector<Note> NotesOf(const std::vector<TrackEvent>& events)
     return notes;
 }
 
-// Checks that the performance holds the notes of the MIDI file that the conversion writes with `settings`: their number,
-// their keys and their ticks.
+// Checks that the performance holds the notes of the MIDI file that the conversion writes with `settings`: their
+// number, their keys and their ticks.
 void CheckAgainstMidi(const Rom& rom, const konami::DriverInfo& info, const Performance& perf,
                       const export_::agb::ConvertSettings& settings)
 {
@@ -156,11 +156,13 @@ void CheckAgainstMidi(const Rom& rom, const konami::DriverInfo& info, const Perf
 void TestOneTrack()
 {
     const std::map<int, std::vector<uint8_t>> tracks = {
-        // Offset 0: a delay of 0, a PSG note (volume 3, note 24) at frame 0, a delay of 4, a rest at frame 4, a delay of
+        // Offset 0: a delay of 0, a PSG note (volume 3, note 24) at frame 0, a delay of 4, a rest at frame 4, a delay
+        // of
         // 0, the track's end. Note 0 of a square channel is C2, MIDI key 36.
         {0, {0x00, 0xD3, 0x18, 0x04, 0xE0, 0x00, 0xFE}},
         // Offset 7: a delay of 0, a note (volume 16, sample 5) at frame 0, a delay of 10, a volume of 7 at frame 10, a
-        // delay of 5, a pan of 0x20 at frame 15, a delay of 3, a rest at frame 18, a delay of 2, the track's end at frame
+        // delay of 5, a pan of 0x20 at frame 15, a delay of 3, a rest at frame 18, a delay of 2, the track's end at
+        // frame
         // 20.
         {4, {0x00, 0xA8, 0x10, 0x05, 0x0A, 0xC7, 0x05, 0xF0, 0x20, 0x03, 0xE0, 0x02, 0xFE}},
     };
@@ -210,8 +212,8 @@ void TestOneTrack()
 void TestCalls()
 {
     // Offset 0: a delay of 0, a note at frame 0, a delay of 4, a call of 2 commands from offset 10 at frame 4. There, a
-    // delay of 1, a rest at frame 5, a delay of 2, a note at frame 7. The track then goes back to offset 8: a delay of 3
-    // and a loop of the song at frame 10.
+    // delay of 1, a rest at frame 5, a delay of 2, a note at frame 7. The track then goes back to offset 8: a delay of
+    // 3 and a loop of the song at frame 10.
     const std::map<int, std::vector<uint8_t>> tracks = {
         {0, {0x00, 0xD3, 0x18, 0x04, 0x90, 0x0A, 0x00, 0x02, 0x03, 0xFE, 0x01, 0xE0, 0x02, 0xD3, 0x18}},
     };
@@ -252,8 +254,8 @@ void TestCalls()
 
 void TestOtherCauses()
 {
-    // A volume restarts a PSG channel: a delay of 0, a note, a delay of 4, a volume of 5 at frame 4, a delay of 4, a rest
-    // at frame 8, a delay of 0, the track's end.
+    // A volume restarts a PSG channel: a delay of 0, a note, a delay of 4, a volume of 5 at frame 4, a delay of 4, a
+    // rest at frame 8, a delay of 0, the track's end.
     {
         const std::map<int, std::vector<uint8_t>> tracks = {
             {0, {0x00, 0xD3, 0x18, 0x04, 0xC5, 0x04, 0xE0, 0x00, 0xFE}},
@@ -275,8 +277,8 @@ void TestOtherCauses()
     }
 
     // The older revisions: a pan of left 8 and right F on square 1 plays the left side on the next channel. Its note
-    // leads to square 1's command: a delay of 0, the pan, a delay of 0, a note at frame 0, a delay of 8, a rest, a delay
-    // of 0, the track's end.
+    // leads to square 1's command: a delay of 0, the pan, a delay of 0, a note at frame 0, a delay of 8, a rest, a
+    // delay of 0, the track's end.
     {
         const std::map<int, std::vector<uint8_t>> tracks = {
             {0, {0x00, 0xF0, 0x8F, 0x00, 0xD3, 0x18, 0x08, 0xE0, 0x00, 0xFD}},
@@ -299,8 +301,8 @@ void TestOtherCauses()
         CheckAgainstMidi(rom, info, perf, {});
     }
 
-    // An attack's steps restart a PSG channel in frames without a command. Those notes lead to the note command: a delay
-    // of 0, an attack of 1, a delay of 0, a note at frame 0, a delay of 8, a rest, a delay of 0, the track's end.
+    // An attack's steps restart a PSG channel in frames without a command. Those notes lead to the note command: a
+    // delay of 0, an attack of 1, a delay of 0, a note at frame 0, a delay of 8, a rest, a delay of 0, the track's end.
     {
         const std::map<int, std::vector<uint8_t>> tracks = {
             {0, {0x00, 0xF4, 0x01, 0x00, 0xD8, 0x0F, 0x18, 0x08, 0xE0, 0x00, 0xFD}},
@@ -326,9 +328,9 @@ void TestOtherCauses()
 
 void TestDungeonDice()
 {
-    // Offset 0: a delay of 0 and FA at frame 0: its last two bytes, a delay of 0 and a duty byte, run after a loop of the
-    // song. A delay of 0, a note of volume 8 at frame 0, a delay of 4, a note of volume 7 on the next track at frame 4, a
-    // delay of 4, a rest at frame 8, a delay of 2, and a loop of the song at frame 10.
+    // Offset 0: a delay of 0 and FA at frame 0: its last two bytes, a delay of 0 and a duty byte, run after a loop of
+    // the song. A delay of 0, a note of volume 8 at frame 0, a delay of 4, a note of volume 7 on the next track at
+    // frame 4, a delay of 4, a rest at frame 8, a delay of 2, and a loop of the song at frame 10.
     const std::map<int, std::vector<uint8_t>> tracks = {
         {4, {0x00, 0xFA, 0x00, 0x7E, 0x00, 0xB8, 0x05, 0x04, 0xA7, 0x05, 0x04, 0xFC, 0x02, 0xFE}},
     };
@@ -347,7 +349,8 @@ void TestDungeonDice()
     const std::vector<Note> here = NotesOf(perf.tracks[4]);
     if (Check(!here.empty(), "a note on the track"))
     {
-        Check(here[0].on == 0 && perf.note_commands[here[0].id - 1].offset == 5, "the track's note leads to its command");
+        Check(here[0].on == 0 && perf.note_commands[here[0].id - 1].offset == 5,
+              "the track's note leads to its command");
     }
     const std::vector<Note> next = NotesOf(perf.tracks[5]);
     if (Check(!next.empty(), "a note on the next track"))

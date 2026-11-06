@@ -55,6 +55,30 @@ Performance PerformTogether(const rsar::SoundArchive& archive, std::span<const u
 Performance PerformTogether(const sar::SoundArchive& archive, std::span<const uint32_t> sound_indices, BankSet& banks,
                             const PerformOptions& options, const Settings& settings);
 
+// Performs sequence `sound_index` of `archive`, the piece, beside sequence `companion_index` of `companion_archive`,
+// the companion, as a game plays them together (CompanionScript). `banks` contains the banks of the piece, and
+// `companion_banks` those of the companion. The two sounds share the global variables. The game's player updates the
+// companion first. The piece's commands therefore see the companion's changes in the same frame, and the companion's
+// commands see the piece's changes in the next frame. The performer plays each sound in turn with the other's changes
+// until neither changes. A sound takes only the changes of the variables that it reads. The piece starts in the frame
+// in which the companion hands over, with the global variables as they are then. `options` apply to the piece. The
+// piece's variables keep the values that `options` give them. The companion plays with `options` too, except for the
+// variables, changes, tracks, banks and volume. The companion plays as long as the piece.
+//
+// The performance has the piece's timing, loop and end. It contains the piece's tracks with notes, then the
+// companion's, each named after its sequence and its track ("<label> Track <n>"). The companion's events move to where
+// the piece's tempo puts their times. The companion's notes before the piece's start are left out, and so are its
+// tracks without a note while the piece plays. Its settings from before the start move to the start. The companion's
+// presets use the companion's slots of `banks` (BankSet::SetCompanion). The function sets those slots. A piece that
+// loops keeps its loop only where the companion's events repeat with it. Otherwise the piece has no loop, with a
+// warning. The two sounds' levels share one scale, and their tracks share MIDI's channels. The performance has no
+// records for an editor. Throws FormatError for corrupt data, when the tracks with notes are more than 16, or when the
+// companion doesn't hand over to the piece within 30 seconds.
+Performance PerformBeside(const sar::SoundArchive& archive, uint32_t sound_index, BankSet& banks,
+                          const sar::SoundArchive& companion_archive, uint32_t companion_index,
+                          BankSet& companion_banks, const CompanionScript& script, const PerformOptions& options,
+                          const Settings& settings);
+
 // The preset key of a note of `program` of the bank in slot 0, on a track that keeps the settings that it starts with:
 // no envelope overrides, an LFO of depth 0 and the centre as its initial pan.
 PresetKey StartingPresetKey(uint32_t program, const Settings& settings);

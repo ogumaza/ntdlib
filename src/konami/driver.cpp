@@ -928,8 +928,8 @@ uint32_t ScanForSongTable(const Rom& rom, Revision revision)
 }
 
 // Finds the song table from the play-song routine's code, or failing that in the data. `code` holds the revision's
-// patterns. `has_reader` says that the ROM holds the driver's command reader. Returns 0 and sets `error` if the code loads
-// a table without songs, or returns 0 with `error` empty if there's no sign of a song table.
+// patterns. `has_reader` says that the ROM holds the driver's command reader. Returns 0 and sets `error` if the code
+// loads a table without songs, or returns 0 with `error` empty if there's no sign of a song table.
 uint32_t FindSongTable(const Rom& rom, Revision revision, const RevisionCode& code, bool has_reader,
                        std::vector<std::string>& log, std::string& error)
 {

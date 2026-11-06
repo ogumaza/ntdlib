@@ -12,14 +12,13 @@
 #include <string>
 #include <vector>
 
+#include "converted_notes.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/konami/driver.h"
 #include "ntdlib/konami/seqformat.h"
 #include "ntdlib/konami/sequencer.h"
 #include "ntdlib/sequence_export/agb/settings.h"
-
-#include "converted_notes.h"
 
 namespace ntdlib::sequence_export::konami
 {
@@ -47,9 +46,9 @@ struct RanCommand
     bool note = false;
 };
 
-// Gives the offset of a read from the song's base, at the start of an item of the decoded song. Dungeon Dice Monsters' FA
-// holds a delay and a command in its last two bytes. A track reads them after a loop of the song, and the decoded song
-// holds them in FA's item. Such a read's offset is the offset of FA.
+// Gives the offset of a read from the song's base, at the start of an item of the decoded song. Dungeon Dice Monsters'
+// FA holds a delay and a command in its last two bytes. A track reads them after a loop of the song, and the decoded
+// song holds them in FA's item. Such a read's offset is the offset of FA.
 class ReadOffsets
 {
 public:

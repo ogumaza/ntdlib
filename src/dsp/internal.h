@@ -19,6 +19,14 @@
 #define NTDLIB_DSP_FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
+// The same for a lambda. It goes after the lambda's parameter list. The generic decoder calls its helper lambdas from
+// many cases. The compiler would otherwise call them out of line there.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define NTDLIB_DSP_INLINE_LAMBDA [[msvc::forceinline]]
+#else
+#define NTDLIB_DSP_INLINE_LAMBDA __attribute__((always_inline))
+#endif
+
 namespace ntdlib::dsp
 {
 

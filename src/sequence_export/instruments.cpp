@@ -156,12 +156,22 @@ void BankSet::ReadBank(std::size_t slot, std::size_t index)
 
 const Bank* BankSet::GetBank(int slot) const
 {
+    if (CompanionSlot(slot))
+    {
+        return companion_->GetBank(slot - kCompanionSlot);
+    }
+
     return slot >= 0 && slot < sar::kBankSlots && banks_[slot] ? &*banks_[slot] : nullptr;
 }
 
 const std::string& BankSet::BankName(int slot) const
 {
     static const std::string kNone;
+    if (CompanionSlot(slot))
+    {
+        return companion_->BankName(slot - kCompanionSlot);
+    }
+
     return slot >= 0 && slot < sar::kBankSlots ? bank_names_[slot] : kNone;
 }
 
@@ -184,6 +194,17 @@ const VelocityRegion* BankSet::FindRegion(int slot, uint32_t program, int key, i
 
 std::optional<std::pair<uint32_t, uint32_t>> BankSet::WaveKey(int slot, uint32_t wave_id_index) const
 {
+    if (CompanionSlot(slot))
+    {
+        std::optional<std::pair<uint32_t, uint32_t>> key = companion_->WaveKey(slot - kCompanionSlot, wave_id_index);
+        if (key && &companion_->archive_ != &archive_)
+        {
+            key->first += kCompanionWaveArchives;
+        }
+
+        return key;
+    }
+
     const Bank* bank = GetBank(slot);
     if (!bank || wave_id_index >= bank->waves.size())
     {
@@ -207,6 +228,11 @@ bool BankSet::NoWave(int slot, uint32_t wave_id_index) const
 
 const Pcm* BankSet::GetWave(int slot, uint32_t wave_id_index)
 {
+    if (CompanionSlot(slot))
+    {
+        return companion_->GetWave(slot - kCompanionSlot, wave_id_index);
+    }
+
     const auto key = WaveKey(slot, wave_id_index);
     if (!key)
     {

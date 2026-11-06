@@ -21,6 +21,7 @@
 
 #include "ntdlib/n64/audio_list.h"
 #include "ntdlib/n64/audio_memory.h"
+#include "ntdlib/n64/audio_rsp.h"
 #include "ntdlib/n64/bank_file.h"
 #include "ntdlib/n64/ead_bank.h"
 #include "ntdlib/n64/ead_later.h"
@@ -30,6 +31,7 @@
 #include "ntdlib/sequence_export/n64/image.h"
 #include "ntdlib/sequence_export/n64/libmus.h"
 #include "ntdlib/sequence_export/n64/libultra.h"
+#include "ntdlib/sequence_export/n64/resampler_low_pass.h"
 #include "ntdlib/sequence_export/n64/sbn.h"
 
 namespace
@@ -1459,6 +1461,152 @@ void TestLibmusSend()
     Check(!levels.empty() && levels.back().value == std::lround(127.0 * std::sqrt(dry)), "the dry level of a send");
 }
 
+// The resampler's mean response at `fraction` of the rate: the root mean square over its 64 filters of each filter's
+// magnitude, from the microcode's table.
+double ResamplerResponse(double fraction)
+{
+    const std::array<int16_t, 256>& table = n64::AudioResampleTable();
+    double power = 0.0;
+    for (std::size_t phase = 0; phase < 64; phase++)
+    {
+        double re = 0.0;
+        double im = 0.0;
+        for (std::size_t tap = 0; tap < 4; tap++)
+        {
+            const double w = 2.0 * std::numbers::pi * fraction * static_cast<double>(tap);
+            re += table[phase * 4 + tap] / 32768.0 * std::cos(w);
+            im -= table[phase * 4 + tap] / 32768.0 * std::sin(w);
+        }
+
+        power += (re * re + im * im) / 64.0;
+    }
+
+    return std::sqrt(power);
+}
+
+double Db(double amplitude)
+{
+    return 20.0 * std::log10(amplitude);
+}
+
+void TestResamplerLowPassResponse()
+{
+    const std::array<int16_t, 5>& taps = ntdlib::sequence_export::n64::ResamplerLowPass();
+
+    Check(taps[0] + 2 * (taps[1] + taps[2] + taps[3] + taps[4]) == 32768, "the filter passes a constant level at 1.0");
+    Check(Near(Db(ResamplerResponse(0.25)), -2.26, 0.01) && Near(Db(ResamplerResponse(0.45)), -6.96, 0.01) &&
+              Near(Db(ResamplerResponse(0.5)), -7.43, 0.01),
+          "the resampler's mean response");
+    for (const double fraction : {0.05, 0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45})
+    {
+        double response = taps[0];
+        for (std::size_t tap = 1; tap < taps.size(); tap++)
+        {
+            response += 2.0 * taps[tap] * std::cos(2.0 * std::numbers::pi * fraction * static_cast<double>(tap));
+        }
+
+        Check(Near(Db(response / 32768.0), Db(ResamplerResponse(fraction)), 0.02),
+              "the filter follows the resampler's mean response");
+    }
+}
+
+void TestResamplerLowPassSine()
+{
+    // A sine at a quarter of the rate, with no loop. Away from the ends, the filter takes it down by the resampler's
+    // mean response there, and the length stays.
+    seqlib::Pcm pcm;
+    pcm.channels.emplace_back();
+    for (int i = 0; i < 4000; i++)
+    {
+        pcm.channels[0].push_back(
+            static_cast<int16_t>(std::lround(16384.0 * std::sin(0.5 * std::numbers::pi * i + 0.3))));
+    }
+
+    const seqlib::Pcm out = ntdlib::sequence_export::n64::ApplyResamplerLowPass(pcm);
+
+    Check(out.channels.size() == 1 && out.channels[0].size() == 4000 && !out.loop, "the length stays");
+    double in_power = 0.0;
+    double out_power = 0.0;
+    for (std::size_t i = 100; i < 3900; i++)
+    {
+        in_power += static_cast<double>(pcm.channels[0][i]) * pcm.channels[0][i];
+        out_power += static_cast<double>(out.channels[0][i]) * out.channels[0][i];
+    }
+
+    Check(Near(10.0 * std::log10(out_power / in_power), Db(ResamplerResponse(0.25)), 0.02), "a sine at a quarter");
+}
+
+void TestResamplerLowPassEnds()
+{
+    // A constant level of 1000 with no loop. Inside, it stays. At each end, the filter reads zeros past the wave.
+    const std::array<int16_t, 5>& taps = ntdlib::sequence_export::n64::ResamplerLowPass();
+    seqlib::Pcm pcm;
+    pcm.channels.emplace_back(32, int16_t{1000});
+
+    const seqlib::Pcm out = ntdlib::sequence_export::n64::ApplyResamplerLowPass(pcm);
+
+    const std::vector<int16_t>& s = out.channels.at(0);
+    Check(s.size() == 32 && std::all_of(s.begin() + 4, s.end() - 4, [](int16_t v) { return v == 1000; }),
+          "a constant level stays");
+    const int32_t half = taps[0] + taps[1] + taps[2] + taps[3] + taps[4];
+    Check(s[0] == (1000 * half + 16384) >> 15 && s[31] == s[0], "zeros before the first sample and after the last");
+}
+
+void TestResamplerLowPassLoop()
+{
+    // An attack of 10 samples and a loop of 7, shorter than the filter. The filtered wave plays as the filtered wave
+    // that repeats the loop 20 times: the loop's last samples and its first join as the loop wraps. Only the first
+    // pass's first 4 samples of the loop differ. There they read the attack, and in the filtered wave the loop's end.
+    seqlib::Pcm pcm;
+    pcm.loop = true;
+    pcm.loop_start = 10;
+    pcm.loop_end = 17;
+    pcm.channels.emplace_back();
+    for (int i = 0; i < 17; i++)
+    {
+        pcm.channels[0].push_back(static_cast<int16_t>((i * 7919) % 20001 - 10000));
+    }
+
+    seqlib::Pcm unrolled;
+    unrolled.channels.emplace_back(pcm.channels[0].begin(), pcm.channels[0].begin() + 10);
+    for (int repeat = 0; repeat < 20; repeat++)
+    {
+        unrolled.channels[0].insert(unrolled.channels[0].end(), pcm.channels[0].begin() + 10, pcm.channels[0].end());
+    }
+
+    const seqlib::Pcm out = ntdlib::sequence_export::n64::ApplyResamplerLowPass(pcm);
+    const seqlib::Pcm played = ntdlib::sequence_export::n64::ApplyResamplerLowPass(unrolled);
+
+    Check(out.loop && out.loop_start == 10 && out.loop_end == 17 && out.channels.at(0).size() == 17, "the loop stays");
+    bool same = true;
+    for (std::size_t i = 0; i < 10 + 7 * 10; i++)
+    {
+        if (i >= 10 && i < 14)
+        {
+            continue;
+        }
+
+        const std::size_t looped = i < 10 ? i : 10 + (i - 10) % 7;
+        same = same && out.channels[0][looped] == played.channels[0][i];
+    }
+
+    Check(same, "the attack and the loop play as the repeated loop");
+}
+
+void TestResamplerLowPassClips()
+{
+    // Three samples at the top between pairs at the bottom. The middle one goes past 16 bits, to 34343, and is
+    // limited.
+    seqlib::Pcm pcm;
+    pcm.channels.push_back({-32768, -32768, 32767, 32767, 32767, -32768, -32768});
+    std::size_t clipped = 0;
+
+    const seqlib::Pcm out = ntdlib::sequence_export::n64::ApplyResamplerLowPass(pcm, &clipped);
+
+    Check(clipped == 1 && out.channels.at(0)[3] == 32767, "a sample past 16 bits is limited");
+    Check(out.channels[0][2] == out.channels[0][4] && out.channels[0][2] < 32767, "its neighbours stay inside");
+}
+
 } // namespace
 
 // A bank of one instrument and one drum. The envelope rises in 4 updates and holds at `top`.
@@ -2609,5 +2757,10 @@ int main()
                                         TestSbnZones();
                                         TestSbnDrumZone();
                                         TestSbnDrumNote();
+                                        TestResamplerLowPassResponse();
+                                        TestResamplerLowPassSine();
+                                        TestResamplerLowPassEnds();
+                                        TestResamplerLowPassLoop();
+                                        TestResamplerLowPassClips();
                                     });
 }

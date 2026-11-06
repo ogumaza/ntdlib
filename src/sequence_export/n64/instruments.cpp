@@ -20,6 +20,7 @@
 #include "seqlib/wav.h"
 
 #include "ntdlib/sequence_export/conversion.h"
+#include "ntdlib/sequence_export/n64/resampler_low_pass.h"
 
 namespace ntdlib::sequence_export::n64
 {
@@ -76,7 +77,7 @@ sf2::Zone GlobalZone()
     return global;
 }
 
-// The SoundFont's samples: each wave once.
+// The SoundFont's samples: each wave once, through the resampler's low-pass.
 class SoundFontSamples
 {
 public:
@@ -93,8 +94,8 @@ public:
             return found->second;
         }
 
-        const std::vector<uint16_t> added =
-            sf2::AddSamples(sf_, seqlib::PrepareForSoundFont(wave.pcm), wave.name, wave.rate, 60);
+        const std::vector<uint16_t> added = sf2::AddSamples(
+            sf_, seqlib::PrepareForSoundFont(ApplyResamplerLowPass(wave.pcm)), wave.name, wave.rate, 60);
         ids_[wave.name] = added.at(0);
         loops = wave.pcm.loop;
 
@@ -185,7 +186,7 @@ sf2::Zone SoundFontZone(const Zone& z, uint16_t sample, bool loop, double quiete
     return zone;
 }
 
-// The SFZ files' samples of a sequence: each wave once, as a WAV file.
+// The SFZ files' samples of a sequence: each wave once, through the resampler's low-pass, as a WAV file.
 class SfzSamples
 {
 public:
@@ -207,11 +208,11 @@ public:
         }
 
         // sfizz's crossfade of a loop spans at least 1 ms. 4 ms of repeated loop data before the loop's start makes it
-        // inaudible. A wave without a loop goes out as it is.
-        seqlib::Pcm out = wave.pcm;
-        if (wave.pcm.loop)
+        // inaudible. A wave without a loop goes out as the filter leaves it.
+        seqlib::Pcm out = ApplyResamplerLowPass(wave.pcm);
+        if (out.loop)
         {
-            const seqlib::PreparedWave prepared = seqlib::PrepareForSfz(wave.pcm, (wave.rate * 4 + 999) / 1000);
+            const seqlib::PreparedWave prepared = seqlib::PrepareForSfz(out, (wave.rate * 4 + 999) / 1000);
             out.channels = prepared.channels;
             out.loop = prepared.loop;
             out.loop_start = prepared.loop_start;

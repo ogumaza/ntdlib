@@ -101,8 +101,13 @@ public:
     // Takes one event, in the order in which the events happened.
     Verdict Take(const TrackEvent& event, const Sounded& sounded);
 
-    // Takes what each track waits for. `read` gives it for a track.
+    // Takes what each track waits for. `read` gives it for a track. A track with ticks left to wait counts them down,
+    // unless it waits for its notes.
     void TakeWaits(const std::function<TrackWait(uint32_t track)>& read);
+
+    // Takes what each track waits for at frame `now`, as above. A track whose wait hasn't changed for 10 s counts
+    // nothing down. A track that the sound has closed keeps the ticks that it had left to wait.
+    void TakeWaits(uint64_t now, const std::function<TrackWait(uint32_t track)>& read);
 
     // Whether the sound holds at frame `now`: a track idles, every track has settled, and no track has moved for 10 s.
     bool Holds(uint64_t now) const;
@@ -142,6 +147,7 @@ private:
         int restarts = 0; // with restarts_as_passes: the passes of the whole track that count, in a row
         bool finished = false;
         TrackWait wait = {};
+        std::optional<uint64_t> wait_since; // from TakeWaits with a time: the frame at which the wait last changed
     };
 
     Track& Find(uint32_t track, uint64_t frame);
@@ -154,8 +160,12 @@ private:
     Verdict Restart(Track& track, const TrackEvent& event, const Sounded& sounded);
     void JumpInCall(Track& track, const TrackEvent& event);
 
+    // Whether a track counts ticks down at frame `now`: it has ticks left to wait and doesn't wait for its notes. With
+    // a time from TakeWaits, its wait has also changed in the last 10 s.
+    bool Counting(const Track& track, uint64_t now) const;
+
     // Whether a track can't move by itself: it idles, it has finished (kFinishCommand), or it has run no command for
-    // 10 s and has no ticks left to wait.
+    // 10 s and counts no ticks down.
     bool Settled(const Track& track, uint64_t now) const;
 
     // Whether a track that opened before `id` holds back its loop: it moved during the pass, or it can still move.

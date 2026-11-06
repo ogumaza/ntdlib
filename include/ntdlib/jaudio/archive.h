@@ -65,8 +65,8 @@ struct SoundEntry
     // A factor on the pitch of the sound's notes. Only a JAudio1 effect's entry gives one (ReadAafSounds).
     float pitch = 1.0f;
 
-    // The switches of a sound of types 0x60 to 0x6f in the later layout: the halfword at +6 of its entry. The game's code
-    // reads them (AudSoundInfo::getSoundSw in Super Mario Galaxy, 0x8002a1dc). 0 for other sounds.
+    // The switches of a sound of types 0x60 to 0x6f in the later layout: the halfword at +6 of its entry. The game's
+    // code reads them (AudSoundInfo::getSoundSw in Super Mario Galaxy, 0x8002a1dc). 0 for other sounds.
     uint16_t switches = 0;
 
     // Where the sound's entry starts in the archive. LayoutOf or FirstLayoutOf gives where the entry holds the volume

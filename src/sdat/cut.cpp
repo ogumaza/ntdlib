@@ -249,9 +249,8 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
     {
         const FileEntry& entry = archive.files[id];
         const auto entry_at = static_cast<uint32_t>(fat + 12 + id * 16);
-        const auto cut =
-            std::find_if(sequence_files.begin(), sequence_files.end(), [&](const CutFile* file)
-                         { return file->start == entry.offset && file->end - file->start == entry.size; });
+        const auto cut = std::find_if(sequence_files.begin(), sequence_files.end(), [&](const CutFile* file)
+                                      { return file->start == entry.offset && file->end - file->start == entry.size; });
         const std::optional<sar::Place> file_start = start_place(entry.offset);
         const std::optional<sar::Place> file_end =
             cut != sequence_files.end() ? std::optional(sar::Place{ends[std::size_t(cut - sequence_files.begin())], 0})

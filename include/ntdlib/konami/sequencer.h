@@ -101,9 +101,9 @@ constexpr uint32_t kMaxFrames = 60 * 60 * 30;
 // start. The checked songs' loop points are within a frame of each other.
 constexpr int kLoopPointWindow = 2;
 
-// A read of a track's data, for an editor's view of a song: a command, or the delay after it (Op::kDelay). A record with
-// a `track` of -1 marks a loop of the song. The driver runs the loop's frame again. The frame's earlier reads produce no
-// output.
+// A read of a track's data, for an editor's view of a song: a command, or the delay after it (Op::kDelay). A record
+// with a `track` of -1 marks a loop of the song. The driver runs the loop's frame again. The frame's earlier reads
+// produce no output.
 struct TrackRead
 {
     uint32_t frame = 0;
@@ -134,8 +134,8 @@ public:
     // Runs one frame of the sequencer and returns the 16 track outputs.
     const std::array<TrackOutput, kTracks>& Step();
 
-    // Adds each read of the tracks' data to `log` from now on, in the order of the reads. `log` has to outlive this. The
-    // log doesn't change what the sequencer plays.
+    // Adds each read of the tracks' data to `log` from now on, in the order of the reads. `log` has to outlive this.
+    // The log doesn't change what the sequencer plays.
     void SetReadLog(std::vector<TrackRead>* log)
     {
         read_log_ = log;

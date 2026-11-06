@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// A GBA ROM of Konami's driver cut into pieces for an editor, and joined again, in the shapes of sar/layout.h. Each song
-// that the decoder reads (commands.h) becomes a sequence piece, and the ROM's other bytes become runs. The song table
-// stays in a run. Its fields name each song: a song's base through a field of 32 bits, and the start of each of its
-// tracks through a field of 16 bits. The pieces of a ROM join to give the ROM back byte for byte.
+// A GBA ROM of Konami's driver cut into pieces for an editor, and joined again, in the shapes of sar/layout.h. Each
+// song that the decoder reads (commands.h) becomes a sequence piece, and the ROM's other bytes become runs. The song
+// table stays in a run. Its fields name each song: a song's base through a field of 32 bits, and the start of each of
+// its tracks through a field of 16 bits. The pieces of a ROM join to give the ROM back byte for byte.
 //
 // The driver finds a song only through the song table, and a song's bytes count from its base. A song can therefore lie
 // anywhere in the ROM, on any byte. A song whose bytes fit its place stays there, with zeros after them. A song that
@@ -12,8 +12,8 @@
 // into the free space at the ROM's end, and the ROM grows when the songs there run past its end.
 //
 // A ROM can lack room at its end: it fills the GBA's 32 MiB. Join can then put a song into a run of filler bytes inside
-// the ROM (FillerRuns), where the user allows it (JoinOptions::filler). Nothing shows that the game's other code doesn't
-// read such a run.
+// the ROM (FillerRuns), where the user allows it (JoinOptions::filler). Nothing shows that the game's other code
+// doesn't read such a run.
 
 #pragma once
 
@@ -54,11 +54,11 @@ struct FreeSpace
 {
     friend bool operator==(const FreeSpace&, const FreeSpace&) = default;
 
-    // Where the free space at the ROM's end starts, from the ROM's start. It lies 256 bytes or more into the run of 0xFF
-    // or of zeros at the ROM's end, on a multiple of 256 bytes, and past every byte of that run that the driver reads.
-    // Without such a run, it lies at the ROM's end, on a multiple of 4 bytes. It can lie past the ROM's end.
+    // Where the free space at the ROM's end starts, from the ROM's start. It lies 256 bytes or more into the run of
+    // 0xFF or of zeros at the ROM's end, on a multiple of 256 bytes, and past every byte of that run that the driver
+    // reads. Without such a run, it lies at the ROM's end, on a multiple of 4 bytes. It can lie past the ROM's end.
     uint32_t start = 0;
-    uint8_t padding = 0xFF; // what fills the bytes that the ROM grows by, up to a song
+    uint8_t padding = 0xFF;   // what fills the bytes that the ROM grows by, up to a song
     std::vector<Span> filler; // FillerRuns
 };
 
@@ -85,15 +85,15 @@ struct Layout
     FreeSpace free;
 };
 
-// Cuts `rom`, with the driver that `info` describes. Each song of the song table becomes a sequence piece once, when the
-// decoder reads it without keeping it as data, when its encoding gives its bytes back, and when its bytes lie clear of
-// every other song's and of the song table. Entries that give the same base and the same tracks share a piece. A
+// Cuts `rom`, with the driver that `info` describes. Each song of the song table becomes a sequence piece once, when
+// the decoder reads it without keeping it as data, when its encoding gives its bytes back, and when its bytes lie clear
+// of every other song's and of the song table. Entries that give the same base and the same tracks share a piece. A
 // sequence piece's room is the size of its bytes. A ROM without such a song becomes one run.
 Layout Cut(const Rom& rom, const DriverInfo& info);
 
 // The item where each track of a sequence starts, by the index of the sequence's piece, from `fields`: a song's fields
-// of 16 bits give its tracks in order. Takes as many fields as revision `revision`'s songs have tracks. A run's entry is
-// empty.
+// of 16 bits give its tracks in order. Takes as many fields as revision `revision`'s songs have tracks. A run's entry
+// is empty.
 std::vector<std::vector<uint32_t>> TrackEntries(std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
                                                 Revision revision);
 
@@ -102,8 +102,8 @@ std::vector<std::vector<uint32_t>> TrackEntries(std::span<const sar::Piece> piec
 // or names a place that the pieces lack, a song's track past 0xFFFF bytes from its base, and a ROM that would outgrow
 // kLargestRom without room in the filler runs. Throws the exceptions of EncodeSequence.
 std::vector<uint8_t> Join(Revision revision, std::span<const commands::Sequence> sequences,
-                          std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
-                          const FreeSpace& free, const JoinOptions& options = {});
+                          std::span<const sar::Piece> pieces, std::span<const sar::Field> fields, const FreeSpace& free,
+                          const JoinOptions& options = {});
 
 // Join with the parts of `layout`.
 std::vector<uint8_t> Join(const Layout& layout, const JoinOptions& options = {});
@@ -111,8 +111,8 @@ std::vector<uint8_t> Join(const Layout& layout, const JoinOptions& options = {})
 // The runs of filler bytes in `rom`, with the driver that `info` describes: runs of 0xFF in the order of their places,
 // then runs of zeros in the order of their places. A filler run lies in a run of kLeastFillerRun or more bytes of 0xFF
 // or of zeros. A run at the ROM's end is Join's free space, and doesn't count. The filler run starts kFreeSpaceMargin
-// bytes or more into the run, on a multiple of kFreeSpaceMargin, and ends kFreeSpaceMargin bytes before the run's end. A
-// run that holds a byte that the driver reads doesn't count. Those bytes are the song table, each song's bytes, the
+// bytes or more into the run, on a multiple of kFreeSpaceMargin, and ends kFreeSpaceMargin bytes before the run's end.
+// A run that holds a byte that the driver reads doesn't count. Those bytes are the song table, each song's bytes, the
 // sample tables with every sample that they name, and the driver's other tables. Zeros can be data of the game, such as
 // blank pictures. Nothing shows that the game's other code doesn't read a filler run.
 std::vector<Span> FillerRuns(const Rom& rom, const DriverInfo& info);

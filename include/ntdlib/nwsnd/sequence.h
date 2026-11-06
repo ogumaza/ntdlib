@@ -654,22 +654,22 @@ private:
 
     // What a rip tool's length analysis follows while the engine follows loops. Times are counts of the commands that
     // the player's tracks have run (SequenceSoundPlayer::commands_run_).
-    std::vector<uint64_t> run_;                // when the track last ran each command, or 0 if it hasn't
-    uint64_t changed_at_ = 0;                  // when the track last changed the sound
-    uint64_t drew_at_ = 0;                     // when the track last drew a random number
-    uint64_t conditional_at_ = 0;              // when the track last ran a conditional command
-    uint64_t set_at_ = 0;                      // when the track last changed a variable's value
-    uint64_t looped_at_ = 0;                   // when the track last went back to the start of a loop
+    std::vector<uint64_t> run_;   // when the track last ran each command, or 0 if it hasn't
+    uint64_t changed_at_ = 0;     // when the track last changed the sound
+    uint64_t drew_at_ = 0;        // when the track last drew a random number
+    uint64_t conditional_at_ = 0; // when the track last ran a conditional command
+    uint64_t set_at_ = 0;         // when the track last changed a variable's value
+    uint64_t looped_at_ = 0;      // when the track last went back to the start of a loop
     uint64_t polled_at_ = 0; // when the track last ended an idle pass of a poll after its last loop, or 0 (CountPoll)
-    uint64_t noted_at_ = 0;                    // when the track last played a note
+    uint64_t noted_at_ = 0;  // when the track last played a note
     uint16_t variables_read_ = 0;              // the track's variables it has read, a bit each
     std::array<int16_t, 48> loop_variables_{}; // the variables that tracks read, at the last loop (0 for the others)
     bool idle_ = false;                        // whether the track's last pass of a loop changed nothing in the sound
     bool still_ = false; // whether that pass was idle, drew no random number and left the variables as the one before
     bool quiet_ = false; // whether that pass played no note
-    bool conditional_ = false; // whether the command being run is conditional
-    bool holds_ = false;       // whether the track's last note is a held one (see kHeldTicks)
-    bool held_wait_ = false;   // whether the track waits out a held note
+    bool conditional_ = false;            // whether the command being run is conditional
+    bool holds_ = false;                  // whether the track's last note is a held one (see kHeldTicks)
+    bool held_wait_ = false;              // whether the track waits out a held note
     ChannelId note_channel_ = kNoChannel; // the channel that the track's last note started or continued
     int note_velocity_ = -1;              // that note's velocity, after the velocity range
 };
@@ -868,10 +868,11 @@ public:
 
     // Sets the volume of each allocated track whose bit is set in `track_flags`, bit 0 for track 0. Policy::TrackVolume
     // multiplies it into the volume of the track's channels. It starts at 1, and opening a track keeps it. A game sets
-    // it through the sound's handle (SeqPlayer::SetTrackVolume, 0x8003e8b0 in Wii Sports' main.dol). The 3DS's policy
-    // leaves it out. Before Start, the volume goes to each of those tracks that Start allocates. The sound library
-    // allocates a sound's tracks as it sets the sound up, before the commands that the game sends with the start. A
-    // volume that the game sets as it starts the sound therefore reaches the tracks before the first tick.
+    // it through the sound's handle (SeqPlayer::SetTrackVolume, 0x8003e8b0 in Wii Sports' main.dol, and
+    // SequenceSoundPlayer::SetTrackVolume, 0x27abec in Mario Kart 7's code.bin). Before Start, the volume goes to each
+    // of those tracks that Start allocates. The sound library allocates a sound's tracks as it sets the sound up,
+    // before the commands that the game sends with the start. A volume that the game sets as it starts the sound
+    // therefore reaches the tracks before the first tick.
     void SetTrackVolume(uint32_t track_flags, float volume)
     {
         for (int i = 0; i < kTrackCount; ++i)

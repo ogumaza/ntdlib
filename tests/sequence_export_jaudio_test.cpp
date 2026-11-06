@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -1413,7 +1414,8 @@ void TestGameRules()
               usa.random_keys.empty(),
           "The Wind Waker's Japanese release has the same keys, and other games have none");
     const GameRules sunshine = RulesOf("00c63687e6963ad89e1d86f02070e1f552623632");
-    Check(sunshine.sequence_volume == 0.75f && usa.sequence_volume == 1.0f, "Super Mario Sunshine plays its music at 0.75");
+    Check(sunshine.sequence_volume == 0.75f && usa.sequence_volume == 1.0f,
+          "Super Mario Sunshine plays its music at 0.75");
     const std::map<uint8_t, float> sunshine_volumes{{0, 96 / 127.0f}, {3, 102 / 127.0f}, {4, 106 / 127.0f},
                                                     {5, 74 / 127.0f}, {6, 114 / 127.0f}, {8, 96 / 127.0f}};
     Check(sunshine.category_volumes == sunshine_volumes,
@@ -1613,8 +1615,7 @@ void TestGameRules()
               ganon_1->state.game_ports == std::map<uint8_t, uint16_t>{{9, 1}},
           "Z2BGM_VS_GANON_04's status 1 plays without children 12 to 15, with 1 on port 9");
     const auto darknut = find(twilight, 0x0100006c, "status1");
-    Check(darknut != twilight.arrangements.end() &&
-              darknut->state.game_ports == std::map<uint8_t, uint16_t>{{9, 1}} &&
+    Check(darknut != twilight.arrangements.end() && darknut->state.game_ports == std::map<uint8_t, uint16_t>{{9, 1}} &&
               twilight.start_states.find(0x0100006c) == twilight.start_states.end(),
           "Z2BGM_TN_MBOSS's status 1 is a state, and its start writes nothing to port 9");
     const auto ganon = find(twilight, 0x01000087, "status1");
@@ -1635,11 +1636,20 @@ void TestGameRules()
               final_phase->state.child_volumes.empty() &&
               final_phase->state.game_ports == std::map<uint8_t, uint16_t>{{9, 1}},
           "the battle music starts without children 1 to 3, 12 and 14, and brings them in as the fight goes");
-    Check(twilight.arrangements.size() == twilight_wii.arrangements.size() &&
-              std::ranges::equal(twilight.arrangements, twilight_wii.arrangements,
-                                 [](const Arrangement& a, const Arrangement& b)
-                                 { return a.sound == b.sound && a.suffix == b.suffix; }),
-          "both archives have the same states");
+    // The Wii's code tests Z2BGM_DUNGEON_LV9_02's status for rooms 8 and 0x33, not 12. In each frame after the start,
+    // the game passes Link's height as the status, and 3150 at the foot of room 12 gives room 12's volumes. The Wii's
+    // archive has the GameCube's states, with room 12 as status 3150.
+    const auto same_but_room_12 = [](const Arrangement& a, const Arrangement& b)
+    {
+        return a.sound == b.sound && (a.suffix == b.suffix || (a.suffix == "status12" && b.suffix == "status3150"));
+    };
+    const auto room_12 = find(twilight, 0x0100003f, "status12");
+    const auto foot = find(twilight_wii, 0x0100003f, "status3150");
+    Check(std::ranges::equal(twilight.arrangements, twilight_wii.arrangements, same_but_room_12) &&
+              room_12 != twilight.arrangements.end() && foot != twilight_wii.arrangements.end() &&
+              foot->state.child_volumes == room_12->state.child_volumes &&
+              foot->state.game_ports == std::map<uint8_t, uint16_t>{{9, 3150}},
+          "the Wii's archive has the GameCube's states, with Z2BGM_DUNGEON_LV9_02's room 12 as status 3150");
     // HD's code gives Z2BGM_DUNGEON_LV9_02 a start and other rooms, and the twilight battle music writes port 9.
     const auto castle_hd = twilight_hd.start_states.find(0x0100003f);
     const auto twilight_battle_hd = find(twilight_hd, 0x0100001b, "status3");
@@ -1649,16 +1659,55 @@ void TestGameRules()
               castle_hd->second.child_volumes.at(6) == 0.3f &&
               find(twilight_hd, 0x0100003f, "status12") == twilight_hd.arrangements.end() &&
               find(twilight_hd, 0x0100003f, "status3150") != twilight_hd.arrangements.end() &&
-              find(twilight_wii, 0x0100003f, "status12") != twilight_wii.arrangements.end() &&
+              find(twilight, 0x0100003f, "status12") != twilight.arrangements.end() &&
+              find(twilight_wii, 0x0100003f, "status12") == twilight_wii.arrangements.end() &&
               twilight_battle_hd != twilight_hd.arrangements.end() &&
               twilight_battle_hd->state.game_ports == std::map<uint8_t, uint16_t>{{9, 3}} &&
-              twilight_battle_wii != twilight_wii.arrangements.end() &&
-              twilight_battle_wii->state.game_ports.empty() &&
+              twilight_battle_wii != twilight_wii.arrangements.end() && twilight_battle_wii->state.game_ports.empty() &&
               twilight_hd.arrangements.size() == twilight_wii.arrangements.size(),
           "HD's states differ in Z2BGM_DUNGEON_LV9_02 and in the twilight battle music's port 9");
-    Check(started(crossbow) && riding(crossbow) && crossbow.start_states.size() == starts.size() &&
-              crossbow.arrangements.size() == 1,
-          "Link's Crossbow Training silences the same children, and has none of the later states");
+    // The Wii's first USA version and its European release hold other start-up archives. Their code gives the same
+    // rules as the code of the third version.
+    const auto same_state = [](const SequenceState& a, const SequenceState& b)
+    {
+        return a.child_volumes == b.child_volumes && a.tempo_ratio == b.tempo_ratio && a.game_ports == b.game_ports &&
+               a.fade_in == b.fade_in && a.tracks == b.tracks && a.status_by_section == b.status_by_section;
+    };
+    for (const char* sha1 : {"b17393f6f9a15d891c8aa02682c6e5ee08b3f0c4", "d7d9d7b67d6ef6334a31d1d71be87a80e012cf0a"})
+    {
+        const GameRules release = RulesOf(sha1);
+        Check(release.category_volumes == volumes && echo_of(release, 12000.0f) && started(release) &&
+                  riding(release) && release.ports == twilight_wii.ports &&
+                  std::ranges::equal(release.start_states, twilight_wii.start_states, [&](const auto& a, const auto& b)
+                                     { return a.first == b.first && same_state(a.second, b.second); }) &&
+                  std::ranges::equal(
+                      release.arrangements, twilight_wii.arrangements, [&](const Arrangement& a, const Arrangement& b)
+                      { return a.sound == b.sound && a.suffix == b.suffix && same_state(a.state, b.state); }),
+              "the Wii's first USA version and its European release get the third version's rules");
+    }
+    // The scenes of Link's Crossbow Training and one boss give three pieces states (kCrossbowTrainingStates).
+    const auto snow_ruins = find(crossbow, 0x01000037, "status1");
+    const auto boss = find(crossbow, 0x0100006c, "status1");
+    const std::map<uint8_t, uint16_t> status_1{{9, 1}};
+    Check(started(crossbow) && riding(crossbow) && crossbow.start_states.size() == starts.size() + 2 &&
+              children(crossbow, 0x01000037) == 0xc0ff && children(crossbow, 0x01000041) == 0xff8f &&
+              crossbow.arrangements.size() == 3 && snow_ruins != crossbow.arrangements.end() &&
+              mask(snow_ruins->state) == 0xffe0 && snow_ruins->state.game_ports == status_1 &&
+              boss != crossbow.arrangements.end() && boss->state.child_volumes.empty() &&
+              boss->state.game_ports == status_1,
+          "Link's Crossbow Training silences the same children, starts the snow ruins' music without children 8 to 13 "
+          "and the grove's without 4 to 6, and plays two pieces with status 1");
+    // The Japanese release of Link's Crossbow Training holds another start-up archive. Its code gives the same rules.
+    const GameRules crossbow_japan = RulesOf("53f7fd5c6de729cd161e877ca1bbd5689e163cf1");
+    Check(crossbow_japan.category_volumes == crossbow.category_volumes &&
+              crossbow_japan.default_release == crossbow.default_release && echo_of(crossbow_japan, 12000.0f) &&
+              crossbow_japan.ports == crossbow.ports &&
+              std::ranges::equal(crossbow_japan.start_states, crossbow.start_states, [&](const auto& a, const auto& b)
+                                 { return a.first == b.first && same_state(a.second, b.second); }) &&
+              std::ranges::equal(
+                  crossbow_japan.arrangements, crossbow.arrangements, [&](const Arrangement& a, const Arrangement& b)
+                  { return a.sound == b.sound && a.suffix == b.suffix && same_state(a.state, b.state); }),
+          "the Japanese release of Link's Crossbow Training gets the USA release's rules");
     const std::map<uint32_t, uint32_t> pikmin2_starts = {{0x5829, 3}, {0x58fc, 1}, {0x58fe, 1}};
     Check(RulesOf("a8b63d2f333c34aaf9cb859f37f23011149af917").random_starts == pikmin2_starts &&
               RulesOf("6747c3c7bce964bc62f817e1c8c32711c905c4c3").random_starts == pikmin2_starts &&
@@ -1693,8 +1742,8 @@ void TestGameRules()
 
     const GameRules galaxy = RulesOf("01611ea8ef87b9a6fcec990ec7c9accfb7c00720");
     const GameRules galaxy2 = RulesOf("037ac96ba485f943bdabef4e18b579df9a985f99");
-    const std::map<uint8_t, float> categories{{0, 1.2f},  {1, 1.2f},  {2, 1.2f},  {3, 1.3f},  {4, 1.2f},
-                                              {5, 1.2f},  {6, 1.2f},  {7, 1.2f},  {8, 1.2f},  {9, 1.2f},
+    const std::map<uint8_t, float> categories{{0, 1.2f},  {1, 1.2f},  {2, 1.2f}, {3, 1.3f}, {4, 1.2f},
+                                              {5, 1.2f},  {6, 1.2f},  {7, 1.2f}, {8, 1.2f}, {9, 1.2f},
                                               {10, 1.2f}, {11, 1.2f}, {13, 1.5f}};
     Check(galaxy.sequence_volume == 1.2f && galaxy2.sequence_volume == 1.2f && galaxy.category_volumes == categories &&
               galaxy2.category_volumes == categories,
@@ -2501,7 +2550,9 @@ void TestConductor()
     constexpr uint32_t kPhrases = kLists + 0x20;
     Sequence1 s;
     const auto load = [&s](uint32_t reg, uint32_t value)
-    { s.Byte(0xac).Byte(reg).Byte(value >> 8).Byte(value & 0xff); };
+    {
+        s.Byte(0xac).Byte(reg).Byte(value >> 8).Byte(value & 0xff);
+    };
     load(0x10, 0);
     load(0x11, kTables);
     s.WritePort(2, 0x10).WritePort(3, 0x11);
@@ -2579,8 +2630,9 @@ void TestLaterJAudio1Interrupt()
 }
 
 // The later JAudio1 gives a track the current tick rate (SequenceSound::later_jaudio1). The first track opens track 0
-// and halves the timebase, in either order. Track 0's gate note of 24 ticks starts in that tick. Under the later library,
-// it lasts 24 ticks at the new rate. The Wind Waker's library keeps the default rate for it, so it lasts as long as 12.
+// and halves the timebase, in either order. Track 0's gate note of 24 ticks starts in that tick. Under the later
+// library, it lasts 24 ticks at the new rate. The Wind Waker's library keeps the default rate for it, so it lasts as
+// long as 12.
 void TestLaterJAudio1TickRate()
 {
     const auto note_end = [](bool later, bool open_first)
@@ -2610,7 +2662,8 @@ void TestLaterJAudio1TickRate()
         const uint32_t later = note_end(true, open_first);
         Check(later >= 23 && later <= 24, "the later library gives the note the first track's rate at once");
         const uint32_t earlier = note_end(false, open_first);
-        Check(earlier >= 11 && earlier <= 12, "the earlier library keeps the default rate in the tick that opens a track");
+        Check(earlier >= 11 && earlier <= 12,
+              "the earlier library keeps the default rate in the tick that opens a track");
     }
 }
 
@@ -3324,8 +3377,8 @@ void TestCompressedStartUpArchives()
 // its file decoded. A file that isn't compressed stays as it is.
 void TestCompressedSequences()
 {
-    const files::SoundTableBlocks sounds = files::SoundTable(
-        {{"BGM", {{"FIELD", {{0x11, 127, 7, "BGM_FIELD"}, {0x11, 127, 3, "BGM_TOWN"}}}}}});
+    const files::SoundTableBlocks sounds =
+        files::SoundTable({{"BGM", {{"FIELD", {{0x11, 127, 7, "BGM_FIELD"}, {0x11, 127, 3, "BGM_TOWN"}}}}}});
     const std::vector<uint8_t> szs = files::LiteralYaz0(files::StartUpArchive(files::BankV0File(0, 60), {}, sounds));
     const std::vector<uint8_t> field = files::OneNoteSequence();
     std::vector<uint8_t> town = files::OneNoteSequence();

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "converted_notes.h"
 #include "ntdlib/agb/files.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
@@ -32,8 +33,6 @@
 #include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/agb/song_banks.h"
 #include "ntdlib/sequence_export/konami/soundfont.h"
-
-#include "converted_notes.h"
 
 namespace ntdlib::sequence_export::konami
 {
@@ -2081,7 +2080,10 @@ ConvertedSong ConvertedNotes(const Rom& rom, const DriverInfo& info, int song, c
             continue;
         }
 
-        const auto tick_of = [&](uint32_t frame) { return ticks.Channel(t, frame, converted.end_tick); };
+        const auto tick_of = [&](uint32_t frame)
+        {
+            return ticks.Channel(t, frame, converted.end_tick);
+        };
         std::optional<size_t> playing;
         const auto end_note = [&](uint32_t frame)
         {

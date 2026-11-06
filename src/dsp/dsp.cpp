@@ -27,49 +27,107 @@ Dsp<Memory>::Dsp(Memory& memory)
 }
 
 template <typename Memory>
-void Dsp<Memory>::Step()
+NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::StepOnce(const uint16_t* iram, const Handler* handlers,
+                                                   const uint8_t* loop_end)
 {
-    steps_++;
     taken_exception_ = -1;
     if (pending_exceptions_ != 0)
     {
         CheckExceptions();
     }
 
-    // The boot ROM isn't present. Its routines run in boot_rom.cpp instead. Without them, a program that leaves IRAM
-    // halts the DSP.
-    if (Memory::kBootRom && regs_.pc >= kRomEntry && regs_.pc < kRomEnd)
+    // IRAM starts at address 0. One test of its end finds the usual case. Word 0 is a NOP. Its handler would do
+    // nothing. The step skips the call. The boot ROM isn't present. Its routines run in boot_rom.cpp instead. Without
+    // them, a program that leaves IRAM halts the DSP. With them, every other address outside IRAM reads as 0.
+    const uint16_t pc = regs_.pc;
+    if (pc < Memory::kIramSize) [[likely]]
+    {
+        const uint16_t op = iram[pc];
+        regs_.pc = static_cast<uint16_t>(pc + 1);
+        if (op != 0)
+        {
+            handlers[op](*this, op);
+        }
+    }
+    else if (Memory::kBootRom && pc >= kRomEntry && pc < kRomEnd)
     {
         RomStep();
     }
-    else if (!Memory::kBootRom && regs_.pc >= Memory::kIramSize)
+    else if (!Memory::kBootRom)
     {
         control_ |= control::kHalt;
         return;
     }
     else
     {
-        const uint16_t op = ReadImem(regs_.pc);
-        regs_.pc++;
-        handlers_[op](*this, op);
+        regs_.pc = static_cast<uint16_t>(pc + 1);
     }
 
-    if (loop_end_[static_cast<uint16_t>(regs_.pc - 1)])
+    if (loop_end[static_cast<uint16_t>(regs_.pc - 1)])
     {
         CheckLoop();
     }
 }
 
 template <typename Memory>
+void Dsp<Memory>::Step()
+{
+    steps_++;
+    StepOnce(iram_.data(), handlers_, loop_end_.data());
+}
+
+template <typename Memory>
 uint64_t Dsp<Memory>::Run(uint64_t steps)
 {
+    // No step moves IRAM or the loop-end map, or changes the handlers. Their pointers are read once.
+    const uint16_t* iram = iram_.data();
+    const Handler* handlers = handlers_;
+    const uint8_t* loop_end = loop_end_.data();
     uint64_t run = 0;
     for (; run < steps && !Halted(); run++)
     {
-        Step();
+        StepOnce(iram, handlers, loop_end);
     }
 
+    steps_ += run;
+
     return run;
+}
+
+template <typename Memory>
+void Dsp<Memory>::RunBatch(int64_t steps)
+{
+    // No step moves IRAM or the loop-end map, or changes the handlers. Their pointers are read once.
+    const uint16_t* iram = iram_.data();
+    const Handler* handlers = handlers_;
+    const uint8_t* loop_end = loop_end_.data();
+    int64_t ran = 0;
+    for (int i = 0; i < 8 && ran < steps && !Halted(); i++, ran++)
+    {
+        StepOnce(iram, handlers, loop_end);
+    }
+
+    bool stopped = false;
+    while (!stopped && ran < steps && !Halted())
+    {
+        for (int i = 0; i < 8 && ran < steps; i++, ran++)
+        {
+            if (Halted() || AtIdleLoop())
+            {
+                stopped = true;
+                break;
+            }
+
+            StepOnce(iram, handlers, loop_end);
+        }
+
+        for (int i = 0; !stopped && i < 200 && ran < steps; i++, ran++)
+        {
+            StepOnce(iram, handlers, loop_end);
+        }
+    }
+
+    steps_ += static_cast<uint64_t>(ran);
 }
 
 template <typename Memory>

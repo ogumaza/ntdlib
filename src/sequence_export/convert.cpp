@@ -204,8 +204,8 @@ Conversion ConvertPerformance(Performance performance, BankSet& banks, const std
     build(nullptr);
 
     // A SoundFont holds each preset's whole instrument. Many presets of large instruments can pass the format's limits.
-    // A sequence plays few of their keys. The SoundFont then holds only the zones that the notes pick. A synth plays the
-    // same from it.
+    // A sequence plays few of their keys. The SoundFont then holds only the zones that the notes pick. A synth plays
+    // the same from it.
     const PlayedNotes played(c.performance);
     std::vector<std::string> builder_warnings;
     if (!FitsSoundFont(builder->Result()))
@@ -225,12 +225,24 @@ Conversion ConvertPerformance(Performance performance, BankSet& banks, const std
             comment += " b" + std::to_string(slot) + " = " + banks.BankName(slot) + ";";
         }
     }
+    for (int slot = 0; banks.Companion() && slot < sar::kBankSlots; slot++)
+    {
+        if (banks.GetBank(BankSet::kCompanionSlot + slot))
+        {
+            comment += " companion b" + std::to_string(slot) + " = " + banks.Companion()->BankName(slot) + ";";
+        }
+    }
 
     WriteSoundFont(c, sf, title, comment, program);
     c.sfz = BuildSfz(c.performance, midi, banks, title, names, settings, program);
 
     builder_warnings.insert(builder_warnings.end(), builder->Warnings().begin(), builder->Warnings().end());
-    CollectWarnings(c, midi, builder_warnings, banks.Errors());
+    std::vector<std::string> bank_errors = banks.Errors();
+    if (banks.Companion())
+    {
+        bank_errors.insert(bank_errors.end(), banks.Companion()->Errors().begin(), banks.Companion()->Errors().end());
+    }
+    CollectWarnings(c, midi, builder_warnings, bank_errors);
 
     return c;
 }
@@ -273,6 +285,22 @@ Conversion ConvertTogether(const sar::SoundArchive& archive, std::span<const uin
     }
 
     return ConvertPerformance(std::move(performance), banks, name, SequencesText(labels), settings, program);
+}
+
+Conversion ConvertBeside(const sar::SoundArchive& archive, uint32_t sound_index,
+                         const sar::SoundArchive& companion_archive, uint32_t companion_index,
+                         const CompanionScript& script, const PerformOptions& options, const Settings& settings,
+                         const std::string& program)
+{
+    const sar::SoundInfo& sound = archive.Sounds()[sound_index];
+    const sar::SoundInfo& companion = companion_archive.Sounds()[companion_index];
+    BankSet banks(archive, sound, settings);
+    BankSet companion_banks(companion_archive, companion, settings);
+    Performance performance = PerformBeside(archive, sound_index, banks, companion_archive, companion_index,
+                                            companion_banks, script, options, settings);
+
+    return ConvertPerformance(std::move(performance), banks, sound.name,
+                              "sequence " + sound.name + " beside " + companion.name, settings, program);
 }
 
 BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings,

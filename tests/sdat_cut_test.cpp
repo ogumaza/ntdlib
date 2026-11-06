@@ -97,8 +97,8 @@ void TestRoundTrip()
         // Each place names a byte of a run, or the start of a piece or of the archive's end.
         for (const ntdlib::sar::Place& place : {field.at, field.from, field.to})
         {
-            const Bytes* run = place.piece < layout.pieces.size() ? std::get_if<Bytes>(&layout.pieces[place.piece])
-                                                                  : nullptr;
+            const Bytes* run =
+                place.piece < layout.pieces.size() ? std::get_if<Bytes>(&layout.pieces[place.piece]) : nullptr;
             XSFLIB_CHECK(!place.item && !place.sequence && (run ? place.offset < run->size() : place.offset == 0));
         }
     }

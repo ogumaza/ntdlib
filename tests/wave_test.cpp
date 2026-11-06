@@ -190,7 +190,10 @@ void TestAfc2()
         std::vector<uint8_t> four = {header};
         for (uint32_t i = 0; i < 16; i += 2)
         {
-            const auto top = [&](uint32_t n) { return (kSamples[n / 4] >> (6 - 2 * (n & 3)) & 3) << 2; };
+            const auto top = [&](uint32_t n)
+            {
+                return (kSamples[n / 4] >> (6 - 2 * (n & 3)) & 3) << 2;
+            };
             four.push_back(static_cast<uint8_t>(top(i) << 4 | top(i + 1)));
         }
         Check(DecodeAfc2(two, 16, 1200, -800) == DecodeAfc(four, 16, 1200, -800),

@@ -488,7 +488,7 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
         frames += rules.block_frames;
         if (finder)
         {
-            finder->TakeWaits([&](uint32_t track) { return detail::ReadWait(machine, watch, track); });
+            finder->TakeWaits(frames, [&](uint32_t track) { return detail::ReadWait(machine, watch, track); });
         }
 
         // The game releases the sound when its tracks have ended. Its notes can still sound after that: the output runs

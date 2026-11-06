@@ -171,8 +171,9 @@ void TestPcmStream(Flavor flavor)
     // A last frame of DSP-ADPCM with an odd number of samples takes its header and a byte for each two of them, the
     // last byte half used: 1,009 samples take 72 frames and 2 bytes.
     const std::vector<std::vector<int16_t>> odd = {Tone(1009, 0)};
-    XSFLIB_CHECK(ntdlib::sar::MakeStream(flavor, Newest(flavor), WaveEncoding::kDspAdpcm, 32000, odd, {})
-                     .LastBlockSize() == 578);
+    XSFLIB_CHECK(
+        ntdlib::sar::MakeStream(flavor, Newest(flavor), WaveEncoding::kDspAdpcm, 32000, odd, {}).LastBlockSize() ==
+        578);
 }
 
 // A stream's tracks: each one's volume, pan, span, flags and channels read back.
@@ -298,8 +299,7 @@ void TestCtrOldest()
     XSFLIB_CHECK(StreamFile::Read(one.Write()).Write() == one.Write());
 
     // A looped stream takes the loop's first samples past its end in this version too.
-    const StreamFile looped =
-        ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kPcm16, 32000, input, 0);
+    const StreamFile looped = ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kPcm16, 32000, input, 0);
     XSFLIB_CHECK(looped.samples_past_end == 128 && looped.uncounted_samples == 0);
     XSFLIB_CHECK(StreamFile::Read(looped.Write()).Write() == looped.Write());
 }

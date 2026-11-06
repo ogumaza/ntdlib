@@ -14,6 +14,9 @@
 #include <cstdlib>
 #include <vector>
 
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/render.h"
@@ -21,8 +24,6 @@
 #include "ntdlib/rvl/ax/voice.h"
 #include "ntdlib/rvl/axfx/axfx.h"
 #include "ntdlib/types.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
 
 using xsflib::testing::Check;
 

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -31,7 +32,9 @@ struct PresetKey
 {
     bool operator==(const PresetKey&) const = default;
 
-    uint8_t bank_slot = 0; // index into the sound's bank list (0-3; higher slots have no bank). It's 0 on the Wii.
+    // Index into the sound's bank list (0-3; higher slots have no bank). It's 0 on the Wii. 128 to 131 are the banks of
+    // a companion (BankSet::SetCompanion).
+    uint8_t bank_slot = 0;
     uint32_t program = 0;
 
     // Track envelope overrides (0xff: none, the bank region's value applies).
@@ -148,6 +151,19 @@ struct MixChange
     int16_t value = 0;
 };
 
+// A game's change of a variable while the sequence plays, through the sound's handle. Variable `index` takes `value` at
+// the start of sound frame `frame`, before the frame's ticks. Frame 0 is the frame of the sequence's first tick.
+// Indices 0 to 15 are the player's variables, and 16 to 31 the global ones. 32 to 47 set track variable `index` - 32
+// of every track. Other indices change nothing.
+struct VariableChange
+{
+    bool operator==(const VariableChange&) const = default;
+
+    uint64_t frame = 0;
+    uint8_t index = 0;
+    int16_t value = -1;
+};
+
 // A recorded sequence: PerformanceBase, with its presets and what the NintendoWare performer adds to it.
 struct Performance : PerformanceBase
 {
@@ -170,26 +186,37 @@ struct Performance : PerformanceBase
     std::vector<NoteCommand> note_commands;
 
     // Whether a track drew a random number before the performance stopped. A sound that draws can play otherwise when
-    // the game starts it in another frame: the sound library steps its random numbers once a frame (PerformOptions::seed).
+    // the game starts it in another frame: the sound library steps its random numbers once a frame
+    // (PerformOptions::seed).
     bool draws = false;
 
     // For an editor: each track's changes of its volume, pan and sends, in the order of their ticks. A ramp changes
     // its setting in each tick until it ends.
     std::array<std::vector<MixChange>, 16> mix;
+
+    // The changes of the global variables (16 to 31) that the sequence's commands made, in order, each in the frame of
+    // its tick (VariableChange). Another sound reads them in the same frame (PerformBeside). The changes of
+    // PerformOptions' `changes` aren't among them.
+    std::vector<VariableChange> global_changes;
+
+    // The global variables that the sequence's commands read: bit i for variable 16 + i.
+    uint16_t globals_read = 0;
 };
 
 // The most voices that --voices takes. Without --voices, a track can start this many new notes in one tick.
 constexpr uint32_t kMaxVoiceLimit = 1024;
 
-// A game's change of a variable while the sequence plays, through the sound's handle. Variable `index` takes `value` at
-// the start of sound frame `frame`, before the frame's ticks. Frame 0 is the frame of the sequence's first tick.
-// Indices 0 to 15 are the player's variables, and 16 to 31 the global ones. 32 to 47 set track variable `index` - 32
-// of every track. Other indices change nothing.
-struct VariableChange
+// How a game plays a companion: a sequence that it starts before a piece and plays beside it, and that talks with the
+// piece through the global variables (PerformBeside). The game starts the companion, and writes `writes` from the
+// companion's first frame: frame 0 is the frame of the companion's first tick. The piece plays from the frame in which
+// the companion's commands set global variable `hand_over` to `hand_over_value`. `volume` is the companion's volume
+// (PerformOptions::volume).
+struct CompanionScript
 {
-    uint64_t frame = 0;
-    uint8_t index = 0;
-    int16_t value = -1;
+    std::vector<VariableChange> writes;
+    uint8_t hand_over = 16;
+    int16_t hand_over_value = 0;
+    float volume = 1.0f;
 };
 
 // A game's write of a variable inside a user procedure: a function of the game that the sequence calls with the command
@@ -205,8 +232,11 @@ struct ProcedureChange
     int16_t value = -1;
 };
 
-// A value that a game gives a track's variable through the sound's handle as the sequence starts. Variable `index`, 0 to
-// 15, of track `track` is the variable that the track's commands number 32 + `index`.
+// The tracks of a sequence: 16.
+inline constexpr std::size_t kSequenceTracks = 16;
+
+// A value that a game gives a track's variable through the sound's handle as the sequence starts. Variable `index`, 0
+// to 15, of track `track` is the variable that the track's commands number 32 + `index`.
 struct TrackVariable
 {
     uint8_t track = 0;
@@ -265,6 +295,13 @@ struct PerformOptions
     // volume 0 that way. Their notes stay in the file, at CC11 0. The search for loops and for the end still counts
     // those notes.
     uint16_t tracks = 0xffff;
+
+    // The volumes that a game's code gives the tracks through the sound's handle (the player's SetTrackVolume), track 0
+    // first, as factors of amplitude. Once the sound has started, the performance sets each volume other than 1 that
+    // way, on the tracks that `tracks` keeps. The player multiplies a track's volume into its channels' volume, and
+    // CC11 takes its square root.
+    std::array<float, kSequenceTracks> track_volumes = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                                        1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 
     // The sound's effect sends on buses A, B and C, from 0 to 1. A game's code sets them through the sound's handle
     // (BasicSound::SetFxSend). Each adds to every track's send on its bus. A voice holds the sum between 0 and 1. CC91

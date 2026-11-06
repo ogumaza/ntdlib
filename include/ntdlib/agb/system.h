@@ -95,7 +95,8 @@ private:
     // Runs DMA `channel`'s transfer if its control starts one at once.
     void StartDma(int channel);
 
-    // The BIOS's calls: Div, CpuSet, CpuFastSet and GetBiosChecksum. Returns false for a call that the system doesn't model.
+    // The BIOS's calls: Div, CpuSet, CpuFastSet and GetBiosChecksum. Returns false for a call that the system doesn't
+    // model.
     bool Swi(arm::Cpu& cpu, uint32_t comment);
     void CpuSet(uint32_t source, uint32_t destination, uint32_t control, bool fast);
 

@@ -23,11 +23,12 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/nx/audio/delay.h"
 #include "ntdlib/nx/audio/light_limiter.h"
 #include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/nx/audio/reverb.h"
-#include "xsflib/testing/check.h"
 
 using namespace xsflib::testing;
 

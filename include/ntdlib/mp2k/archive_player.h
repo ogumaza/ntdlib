@@ -193,7 +193,7 @@ private:
     agb::Apu apu_;
     uint32_t store_cycle_ = 0;
     uint64_t frames_ = 0;
-    int tail_ = 0;                                // frames left for the FIFOs' last points
+    int tail_ = 0; // frames left for the FIFOs' last points
     bool enhanced_ = false;
     std::vector<std::pair<int, uint8_t>> writes_; // the memory's writes before the next frame
     std::vector<Action> actions_;

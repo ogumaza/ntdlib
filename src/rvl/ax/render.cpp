@@ -8,11 +8,12 @@
 #include <cstdint>
 #include <limits>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/coef_rom.h"
 #include "ntdlib/dsp/memory.h"
-#include "xsflib/bytes.h"
 
 namespace ntdlib::rvl::ax
 {

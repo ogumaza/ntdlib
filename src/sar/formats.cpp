@@ -448,7 +448,10 @@ void ReadSoundDetails(const xsflib::Reader& r, std::size_t p, const Reference& d
     {
     case 0x2201:
         s.type = SoundType::kStream;
-        ReadStreamDetails(r, p + detail.offset, !ctr ? version : version >= 0x02030200 ? 0x00020200 : 0x00020000,
+        ReadStreamDetails(r, p + detail.offset,
+                          !ctr                    ? version
+                          : version >= 0x02030200 ? 0x00020200
+                                                  : 0x00020000,
                           s.stream);
         break;
 

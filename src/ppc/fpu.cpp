@@ -18,6 +18,7 @@
 
 #include "ntdlib/fused.h"
 #include "ntdlib/ppc/cpu.h"
+#include "ppc/inline.h"
 
 namespace ntdlib::ppc
 {
@@ -413,7 +414,7 @@ bool Cpu::PairedLoadStore(uint32_t op)
     {
         const Quantization q = LoadQuantization(gqr);
         const int size = Size(q.type);
-        const auto read = [&](uint32_t at)
+        const auto read = [&](uint32_t at) NTDLIB_PPC_INLINE_LAMBDA
         {
             return size == 1 ? uint32_t{Read8(at)} : size == 2 ? uint32_t{Read16(at)} : Read32(at);
         };
@@ -432,7 +433,7 @@ bool Cpu::PairedLoadStore(uint32_t op)
     {
         const Quantization q = StoreQuantization(gqr);
         const int size = Size(q.type);
-        const auto write = [&](uint32_t at, double value)
+        const auto write = [&](uint32_t at, double value) NTDLIB_PPC_INLINE_LAMBDA
         {
             const uint32_t raw = Quantize(value, q);
             if (size == 1)
@@ -537,7 +538,7 @@ bool Cpu::Op63(uint32_t op)
     const double b = s.fpr[Fb(op)].ps0;
     const double c = s.fpr[Fc(op)].ps0;
 
-    const auto arithmetic = [&](double result)
+    const auto arithmetic = [&](double result) NTDLIB_PPC_INLINE_LAMBDA
     {
         rd.ps0 = result;
         SetFprf(result);
@@ -546,7 +547,7 @@ bool Cpu::Op63(uint32_t op)
         return true;
     };
 
-    const auto move = [&](double result)
+    const auto move = [&](double result) NTDLIB_PPC_INLINE_LAMBDA
     {
         rd.ps0 = result;
         RecordFpscr(op);
@@ -703,7 +704,7 @@ bool Cpu::Op4(uint32_t op)
     const Fpr b = s.fpr[Fb(op)];
     const Fpr c = s.fpr[Fc(op)];
 
-    const auto set = [&](double ps0, double ps1)
+    const auto set = [&](double ps0, double ps1) NTDLIB_PPC_INLINE_LAMBDA
     {
         s.fpr[d].ps0 = RoundToSingle(ps0);
         s.fpr[d].ps1 = RoundToSingle(ps1);
@@ -713,7 +714,7 @@ bool Cpu::Op4(uint32_t op)
         return true;
     };
 
-    const auto move = [&](double ps0, double ps1)
+    const auto move = [&](double ps0, double ps1) NTDLIB_PPC_INLINE_LAMBDA
     {
         s.fpr[d].ps0 = ps0;
         s.fpr[d].ps1 = ps1;

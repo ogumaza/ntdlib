@@ -97,8 +97,8 @@ struct LaterSoundData
     std::size_t sequence_table = 0;
     std::size_t sample_table = 0;
 
-    // The offset in `code` of the table of each sequence's banks. The table holds an offset for each sequence, each to a
-    // count and the banks. The field is 0 when the data holds no such table.
+    // The offset in `code` of the table of each sequence's banks. The table holds an offset for each sequence, each to
+    // a count and the banks. The field is 0 when the data holds no such table.
     std::size_t bank_set_table = 0;
 
     // The places in the image of the three files that the tables count from.

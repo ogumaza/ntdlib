@@ -282,8 +282,8 @@ bool Follows(std::span<const uint8_t> archive, const Structure& before, std::spa
         const auto found = news.find(before.files[i].file);
         const std::span<const uint8_t> now = BytesOf(joined, after.files[i]);
         if (after.files[i].file != before.files[i].file ||
-            !std::ranges::equal(now, found != news.end() ? std::span<const uint8_t>(found->second)
-                                                          : BytesOf(archive, before.files[i])))
+            !std::ranges::equal(
+                now, found != news.end() ? std::span<const uint8_t>(found->second) : BytesOf(archive, before.files[i])))
         {
             return false;
         }

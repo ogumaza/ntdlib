@@ -7,6 +7,9 @@
 // The player starts the driver, sets up the shared work and gives it to the driver in its first frame. The ARM9's
 // SND_Init does the same. Each frame of the driver comes snd::kFrameClocks system clocks after the last. The sound unit
 // plays the samples between frames.
+//
+// The ARM9's part also takes a game's output effect (OutputEffect). Each time the effect's alarm fires, the player
+// changes a part of the effect's buffer as the ARM9 does, at the alarm's clock.
 
 #pragma once
 
@@ -64,6 +67,72 @@ struct Reverb
 // over the rate, as the SDK works it out. The SDK clears the buffer before it sends them.
 snd::CommandList ReverbCommands(const Reverb& reverb, uint32_t buffer);
 
+// The functions that games give the SDK's output effect, by the mode of their sound setting. Each changes a part of
+// both halves of the effect's buffer. The functions read and write 16-bit samples. The ARM9 binary of New Super Mario
+// Bros. (USA) contains them at 0x02060A40, 0x020608A0, 0x020606A8 and 0x02060660, and their setter at 0x02060AD8.
+// Mario Kart DS (USA) contains the same code at 0x0212F59C, 0x0212F3F8, 0x0212F1F8, 0x0212F1AC and 0x0212F638.
+enum class OutputMode
+{
+    // Changes nothing.
+    kNone = 0,
+
+    // From the part's end down, each sample adds the difference of the sides two samples earlier, before their change:
+    // the left with a plus, the right with a minus. A sample stops at the limits of 16 bits. The part's first two
+    // samples add the last two differences of the part before, each stopped at the limits of 16 bits.
+    kSurround = 1,
+
+    // Each side adds a quarter of the other side's sum 24 samples earlier: (sum + 1) >> 2. The sum is that of the
+    // sample and the quarter that it took, before it stops at the limits of 16 bits. The quarters of the part's last
+    // samples (up to 24) come from the samples after the stop.
+    kCrossfeed = 2,
+
+    // Each left sample takes (left + right + 1) >> 1. The right half then takes the left half's samples.
+    kMono = 3,
+};
+
+// What a function of OutputMode keeps from one part to the next: 24 pairs of words. The surround keeps the last two
+// differences in the first two words. The crossfeed keeps a quarter for each of the next 24 samples of each side: the
+// left side's in the first word of each pair, the right side's in the second. The games' setter clears them as it
+// changes the mode.
+using OutputHistory = std::array<int32_t, 48>;
+
+// Changes one part of both halves of the effect's buffer as the function of `mode` does: `left` and `right` hold the
+// part's samples, with the same size. The surround requires at least 2 samples.
+void ApplyOutputMode(OutputMode mode, std::span<int16_t> left, std::span<int16_t> right, OutputHistory& history);
+
+// The SDK's output effect on the capture units (NNS_SndCaptureStartEffect), with a function of OutputMode. Captures 0
+// and 1 record the mixer's left and right sides into the two halves of a buffer. Channels 1 and 3 play the halves in a
+// loop with the same timers, at volume 127 and at pans 0 and 127. The output takes channel 1 on the left and channel 3
+// on the right in place of the mixer, and neither channel goes to the mixer (SND_SetOutputSelector). The SDK divides
+// each half into `interval` parts. Each time a part of each half is full, an alarm of the driver fires and the ARM9
+// changes that part. The channels play it on their next pass. The output therefore runs one half's length behind the
+// mixer. The captures take 16 bits of the mixer's sum before the master volume.
+//
+// The SDK's timer is 0xFFB0FF over the rate, plus 16, rounded down to a multiple of 32. At 32,000 Hz the timer is 512.
+// The effect then runs at the output's rate (kOutputRate). The alarm's period is a part's samples. Its first tick comes
+// one part and 16 samples (PCM16) or 32 samples (PCM8) after the start. The games' setter gives the driver a surround
+// decay of 0x3000 with the surround, and of 0 when the surround ends (SND_SetSurroundDecay). The decay lowers the
+// channels panned below 24 or above 104, except channels 1 and 3.
+struct OutputEffect
+{
+    OutputMode mode = OutputMode::kSurround;
+    uint32_t size = 0x1000; // the buffer's bytes: two halves, each `interval` parts of a multiple of 4 bytes
+    bool pcm8 = false;      // the halves' format: PCM8, or PCM16. The function reads 16-bit samples either way
+    int sample_rate = 32000;
+    int interval = 2;
+};
+
+// The commands of the games' setter of the mode, for a change from `from` to `to`: a surround decay of 0 as the
+// surround ends, and of 0x3000 as it starts. None when the mode stays.
+snd::CommandList OutputModeCommands(OutputMode from, OutputMode to);
+
+// The commands that NNS_SndCaptureStartEffect sends the driver for `effect`, with its buffer at `buffer`. They lock
+// channels 1 and 3, set up each channel and its capture, set up alarm 0, send channels 1 and 3 to the output, and start
+// the channels, the captures and the alarm together. `alarm_id` counts the alarm's set-ups on the ARM9: 1 for the
+// first. The SDK clears the buffer before it sends them. Throws std::invalid_argument for an effect whose halves don't
+// divide into parts of a multiple of 4 bytes, or whose rate gives no timer from 32 to 0xFFE0.
+snd::CommandList OutputEffectCommands(const OutputEffect& effect, uint32_t buffer, uint8_t alarm_id = 1);
+
 // The channels that a game gives some of a sequence's tracks (NNS_SndPlayerSetTrackAllocatableChannel).
 struct TrackChannels
 {
@@ -72,8 +141,8 @@ struct TrackChannels
 };
 
 // What a game's code sets as it starts a sequence: the values of the variables, the channels that the archive's
-// players give their sequences' tracks, other channels for some tracks, and the capture units' reverb. A game's profile
-// gives them. The default plays the sequence as the archive gives it.
+// players give their sequences' tracks, other channels for some tracks, and the capture units' reverb or output effect.
+// A game's profile gives them. The default plays the sequence as the archive gives it.
 struct GameSettings
 {
     Variables variables = {};
@@ -87,6 +156,9 @@ struct GameSettings
     std::vector<TrackChannels> track_channels = {};
 
     std::optional<Reverb> reverb = {};
+
+    // The SDK runs the reverb or the output effect, not both.
+    std::optional<OutputEffect> effect = {};
 };
 
 // Loads into `heap` what `sequence` of `archive` requires, and returns the commands that start it on the driver's
@@ -97,7 +169,8 @@ struct GameSettings
 // requires it loaded already. The commands prepare the sequence, give its tracks the channels of the archive's player
 // when the player names some, and set its channel priority. `settings` can give the archive's players other channels.
 // Then the commands set the variables, set the player's volume to the sequence's when that isn't 127, and start the
-// sequence. The track channels of `settings` come last. The reverb isn't among the commands: ReverbCommands gives it.
+// sequence. The track channels of `settings` come last. The reverb and the output effect aren't among the commands:
+// ReverbCommands and OutputEffectCommands give them.
 // Throws xsflib::FormatError when the archive lacks the sequence, its file or its bank, and std::runtime_error when the
 // files don't fit in the heap.
 snd::CommandList StartCommands(sdat::SoundHeap& heap, const sdat::Archive& archive, const SequenceRef& sequence,
@@ -132,7 +205,8 @@ struct ArchivePlayerOptions
 
     // Mixes in the enhanced mode (SoundUnit::StartEnhanced), with a driver that grows its channels in place of taking a
     // channel whose note sounds before its release (snd::Driver::GrowChannels). RunFrame(std::vector<float>&) then
-    // gives each frame's samples.
+    // gives each frame's samples. The enhanced mode leaves out the output effect: its channels would play the capture
+    // of the console's mixer, at the console's rate and in 16 bits, in place of the enhanced mixer's output.
     bool enhanced = false;
 };
 
@@ -146,6 +220,9 @@ public:
     static constexpr uint32_t kReverbBuffer = 0x02002000;
     static constexpr uint32_t kFiles = 0x02010000;
 
+    // The output effect's buffer takes the reverb's place: the SDK runs one or the other.
+    static constexpr uint32_t kEffectBuffer = kReverbBuffer;
+
     // A player of `archive`'s sequences, whose driver has taken the shared work. The archive must outlive the player.
     explicit ArchivePlayer(const sdat::Archive& archive, const ArchivePlayerOptions& options = {});
     ArchivePlayer(const ArchivePlayer&) = delete;
@@ -154,8 +231,17 @@ public:
     // Loads `sequence`'s files and starts it on the driver's player `player` at the next frame, with what a game's code
     // sets before it (see StartCommands). A reverb in `settings` starts in the same frame, before the sequence, with
     // its buffer at kReverbBuffer. A reverb that runs already stops first, as NNS_SndCaptureStartReverb stops it.
+    //
+    // An output effect in `settings` starts in the same way, with its buffer at kEffectBuffer. The commands of the
+    // games' setter of the mode come first (OutputModeCommands). A change of mode clears the function's history. An
+    // effect that runs already stops first. NNS_SndCaptureStartEffect stops it the same way. The stop sends the mixer
+    // to the output again. The effect's alarms then count from the frame that runs the commands. In the enhanced mode,
+    // the player checks the effect and leaves it out.
+    //
     // Throws std::invalid_argument for a reverb whose buffer doesn't fit before kFiles or whose halves aren't
-    // multiples of 4 bytes.
+    // multiples of 4 bytes, for an output effect whose buffer doesn't fit before kFiles or that OutputEffectCommands
+    // refuses, and for settings with both. The SDK refuses a reverb while an output effect runs, and an output effect
+    // while a reverb runs. So does the player: it throws std::invalid_argument.
     void Start(const SequenceRef& sequence, const GameSettings& settings = {}, int player = 0);
 
     // Sends the driver `list`. The driver runs it at the next frame.
@@ -174,7 +260,9 @@ public:
     // quickly.
     void RunFrame();
 
-    // Whether commands wait for the next frame, a sequence plays or a channel sounds.
+    // Whether commands wait for the next frame, a sequence plays or a channel sounds. The channels of a running output
+    // effect play for as long as the effect runs. They count only while the effect's buffer or history holds a value
+    // other than 0, or held one as the last frame started: until the last sound has passed through the effect.
     bool Busy() const;
 
     // The system clock of the last frame.
@@ -212,25 +300,8 @@ public:
     void MeterTracks(int player);
     std::array<int32_t, 2> TrackPeaks(int track) const;
 
-    // The player's state between frames. A snapshot shares the pages of main memory that haven't changed with the
-    // snapshot before it.
-    class Snapshot
-    {
-    private:
-        friend class ArchivePlayer;
-
-        static constexpr uint32_t kPageSize = 0x1000;
-        using Page = std::array<uint8_t, kPageSize>;
-
-        const ArchivePlayer* owner_ = nullptr;
-        std::vector<std::shared_ptr<const Page>> pages_;
-        std::optional<snd::Driver> driver_;
-        std::optional<SoundUnit> unit_;
-        std::optional<sdat::SoundHeap> heap_;
-        uint64_t clock_ = 0;
-        std::vector<snd::CommandList> pending_;
-        std::vector<int16_t> channel_tracks_;
-    };
+    // The player's state between frames, the output effect's included (see below).
+    class Snapshot;
 
     // Takes a snapshot between frames. `previous` is null or an earlier snapshot of this player.
     Snapshot Save(const Snapshot* previous) const;
@@ -252,7 +323,25 @@ private:
         ArchivePlayer& player_;
     };
 
+    // A running output effect: the state that NNS_SndCaptureStartEffect keeps on the ARM9.
+    struct EffectState
+    {
+        uint32_t size = 0;       // the buffer's bytes
+        uint32_t part_bytes = 0; // the bytes of a part of each half
+        uint32_t interval = 0;   // the parts of each half
+        uint32_t part = 0;       // the part that the next alarm changes
+        uint64_t next_alarm = 0; // the system clock of the next alarm
+        uint64_t period = 0;     // the alarm's period in system clocks
+
+        // Whether the buffer or the history held a value other than 0 as the last frame started. The channels read
+        // ahead of their output (SoundUnit's queue). Their last samples from the buffer can then play in the frame
+        // after the buffer contains only zeros.
+        bool sounded = false;
+    };
+
     void Play(std::vector<SoundOutput>* out, std::vector<float>* enhanced_out);
+    void RunEffect();
+    bool EffectSounds() const;
     void OnNote(const snd::NoteEvent& note);
 
     const sdat::Archive& archive_;
@@ -267,9 +356,40 @@ private:
     // The track whose note last started each channel: the player's number times 16 plus the track's, or -1.
     std::vector<int16_t> channel_tracks_ = std::vector<int16_t>(snd::kChannelCount, -1);
 
+    // The output effect: the running effect, the mode that the games' setter last set, the history of the mode's
+    // function and the count of the alarm's set-ups on the ARM9.
+    std::optional<EffectState> effect_;
+    OutputMode output_mode_ = OutputMode::kNone;
+    OutputHistory history_ = {};
+    uint8_t alarm_ids_ = 0;
+
     std::array<uint16_t, snd::kPlayerCount> muted_ = {}; // each player's muted tracks
     int metered_player_ = -1;
     std::array<std::array<int32_t, 2>, snd::kTracksPerPlayer> peaks_ = {};
+};
+
+// The player's state between frames. A snapshot shares the pages of main memory that haven't changed with the snapshot
+// before it.
+class ArchivePlayer::Snapshot
+{
+private:
+    friend class ArchivePlayer;
+
+    static constexpr uint32_t kPageSize = 0x1000;
+    using Page = std::array<uint8_t, kPageSize>;
+
+    const ArchivePlayer* owner_ = nullptr;
+    std::vector<std::shared_ptr<const Page>> pages_;
+    std::optional<snd::Driver> driver_;
+    std::optional<SoundUnit> unit_;
+    std::optional<sdat::SoundHeap> heap_;
+    uint64_t clock_ = 0;
+    std::vector<snd::CommandList> pending_;
+    std::vector<int16_t> channel_tracks_;
+    std::optional<EffectState> effect_;
+    OutputMode output_mode_ = OutputMode::kNone;
+    OutputHistory history_ = {};
+    uint8_t alarm_ids_ = 0;
 };
 
 } // namespace ntdlib::ntr
