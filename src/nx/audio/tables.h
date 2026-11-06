@@ -2,8 +2,8 @@
 
 // The audio renderer's tables as WarioWare: Get It Together!'s sdk holds them (the addresses are offsets into it). The
 // sample-rate converter takes a row of a table for each output sample, by the top 7 bits of its Q15 fraction, and
-// applies it to the next 4 or 8 input samples. The I3DL2 reverb takes its delays, early reflections, powers of ten and
-// sines from the others.
+// applies it to the next 4 or 8 input samples. The reverb and the I3DL2 reverb take their delays, early reflections,
+// powers of ten and sines from the others.
 
 #pragma once
 
@@ -885,6 +885,34 @@ inline constexpr float kI3dl2EarlyTapTime[20] = {
     0.0171360001f, 0.0591540001f, 0.161733001f, 0.390186012f, 0.425262004f, 0.455410987f, 0.689737022f, 0.745909989f,
     0.833844006f, 0.859502017f, 0.0f, 0.0750240013f, 0.168788001f, 0.299901009f, 0.337442994f, 0.371903002f,
     0.599011004f, 0.716741025f, 0.817858994f, 0.851664007f,
+};
+
+// The reverb's early reflections' delays in ms in Q14, 11 for each early mode: the ten taps, then the late reverb's tap
+// (UpdateReverbEffectParameter, 0x72ce0).
+inline constexpr int32_t kReverbEarlyDelay[55] = {
+    0, 57344, 45875, 63897, 44236, 219545, 129433, 137625, 162201, 196608, 204800, 0, 193331, 90112, 183500, 170393,
+    624230, 363724, 484966, 347340, 406323, 655360, 0, 679936, 335872, 676659, 0, 483328, 553779, 740556, 766771, 0,
+    819200, 542310, 709427, 373555, 620953, 244121, 578355, 293273, 560332, 0, 709427, 819200, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0,
+};
+
+// The reverb's early reflections' gains in Q14, 10 for each early mode (UpdateReverbEffectParameter).
+inline constexpr int32_t kReverbEarlyGain[50] = {
+    11468, 11141, 11468, 11141, 11468, 11141, 11468, 11141, 11141, 11141, 11468, 11141, 11468, 11141, 11468, 11141,
+    11141, 11141, 11141, 11141, 8192, 11468, 11468, 11141, 8192, 11141, 11141, 11468, 11141, 0, 15237, 15073, 14254,
+    14090, 15400, 13271, 13107, 12615, 12451, 10649, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+
+// The delays in ms in Q14 of the reverb's four feedback lines, 4 for each late mode (UpdateReverbEffectParameter).
+inline constexpr int32_t kReverbFdnDelay[20] = {
+    883970, 1297491, 1904456, 2140001, 883970, 1297491, 1904456, 2795361, 81920, 163840, 81920, 163840, 770539, 1163264,
+    1687552, 2785280, 883970, 1297491, 1904456, 2795361,
+};
+
+// And of their all-passes (UpdateReverbEffectParameter).
+inline constexpr int32_t kReverbAllPassDelay[20] = {
+    114688, 147456, 212992, 278528, 114688, 147456, 212992, 278528, 16384, 16384, 16384, 16384, 114688, 114688, 212992,
+    147456, 114688, 147456, 212992, 278528,
 };
 
 // The early reflections' gains for two channels, tap by tap (ApplyI3dl2ReverbEffect2ch, 0x76310). The code loads the

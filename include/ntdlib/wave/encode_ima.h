@@ -32,10 +32,14 @@ struct ImaAdpcmChannel
 // The bytes of IMA-ADPCM that hold `samples` samples. The high nibble of the last byte of an odd count is 0.
 std::size_t ImaAdpcmBytes(std::size_t samples);
 
-// Encodes `samples`. The loop's state is the decoder's state before sample `loop_start` when it plays the channel from
-// the start. A decoder that goes back to the loop's start with that state plays the loop's samples again as in the
-// first pass. A loop start past the last sample gives the state after the last sample. Throws std::invalid_argument for
-// more samples than a wave's 32-bit sizes hold.
-ImaAdpcmChannel EncodeImaAdpcm(std::span<const int16_t> samples, uint32_t loop_start);
+// A decoder's step: the state after a nibble.
+using ImaAdpcmStep = ImaAdpcmState (*)(ImaAdpcmState state, uint8_t nibble);
+
+// Encodes `samples`. `step` decodes each nibble. ImaAdpcmNext is IMA's step. A console whose decoder clamps the sample
+// otherwise gives that decoder's step. The loop's state is the decoder's state before sample `loop_start` when it plays
+// the channel from the start. A decoder that goes back to the loop's start with that state plays the loop's samples
+// again as in the first pass. A loop start past the last sample gives the state after the last sample. Throws
+// std::invalid_argument for more samples than a wave's 32-bit sizes hold.
+ImaAdpcmChannel EncodeImaAdpcm(std::span<const int16_t> samples, uint32_t loop_start, ImaAdpcmStep step = ImaAdpcmNext);
 
 } // namespace ntdlib::wave

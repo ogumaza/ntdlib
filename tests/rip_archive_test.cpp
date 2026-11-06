@@ -321,12 +321,13 @@ std::size_t FileBlockEntry(std::span<const uint8_t> bytes, sar::Flavor flavor)
     return entry;
 }
 
-// The cut of `archive` for `sounds`, read back with the group files beside the archive that the cut keeps. Their
-// places among the archive's group files go to `group_files`. Nothing if there's no cut.
+// The cut of `archive` for `sounds` and the banks `start_banks`, read back with the group files beside the archive that
+// the cut keeps. Their places among the archive's group files go to `group_files`. Nothing if there's no cut.
 std::optional<sar::SoundArchive> CutOf(const sar::SoundArchive& archive, const std::vector<uint32_t>& sounds,
-                                       std::vector<std::size_t>* group_files = nullptr)
+                                       std::vector<std::size_t>* group_files = nullptr,
+                                       const std::vector<uint32_t>& start_banks = {})
 {
-    const std::optional<rip::LibraryArchive> kept = rip::KeepSequenceData(archive, sounds);
+    const std::optional<rip::LibraryArchive> kept = rip::KeepSequenceData(archive, sounds, start_banks);
     if (!kept)
     {
         return std::nullopt;
@@ -419,7 +420,8 @@ std::vector<uint8_t> ThreeSequences(sar::Flavor flavor)
 
 // The cut keeps each sequence's file, the files of its banks and of their wave archives, and nothing else: the wave
 // sound's file goes. A bank or wave archive that two sequences play is kept once. An empty slot keeps nothing. Each
-// kept file starts on the console's alignment.
+// kept file starts on the console's alignment. A bank that a game gives a sequence as it starts it keeps its file and
+// its wave archives' files too.
 void TestKeepSequenceData()
 {
     for (const Console& console : kConsoles)
@@ -432,6 +434,7 @@ void TestKeepSequenceData()
         const std::optional<sar::SoundArchive> b = CutOf(archive, {1});
         const std::optional<sar::SoundArchive> a_and_c = CutOf(archive, {2, 0});
         const std::optional<sar::SoundArchive> all = CutOf(archive, {0, 1, 2});
+        const std::optional<sar::SoundArchive> a_started = CutOf(archive, {0}, nullptr, {0x03000002});
 
         Check(a && HoldsOnly(archive, *a, {0, 3, 6}) && Aligned(*a, {0, 3, 6}, console.alignment),
               name + ": SEQ_A's files");
@@ -441,6 +444,8 @@ void TestKeepSequenceData()
         Check(all && HoldsOnly(archive, *all, {0, 1, 2, 3, 4, 5, 6, 7, 8}) &&
                   Aligned(*all, {0, 1, 2, 3, 4, 5, 6, 7, 8}, console.alignment),
               name + ": the files of every sequence");
+        Check(a_started && HoldsOnly(archive, *a_started, {0, 3, 5, 6, 8}),
+              name + ": SEQ_A's files, with BANK_C's from its start");
         Check(a && a_and_c && a->Bytes().size() < a_and_c->Bytes().size() &&
                   a_and_c->Bytes().size() < archive.Bytes().size(),
               name + ": each cut is smaller");
@@ -1007,18 +1012,20 @@ bool KeepsCopies(std::span<const uint8_t> group, std::span<const uint8_t> cut, s
                                                   group.subspan(infx->first, infx->second))));
 }
 
-// The cut of `archive` for `sounds`, with the cut of the group files beside it that the cut keeps.
+// The cut of `archive` for `sounds` and the banks `start_banks`, with the cut of the group files beside it that the cut
+// keeps.
 struct CutWithGroups
 {
     rip::LibraryArchive library;
     std::vector<std::vector<uint8_t>> groups;
 };
 
-std::optional<CutWithGroups> CutWithGroupsOf(const sar::SoundArchive& archive, const std::vector<uint32_t>& sounds)
+std::optional<CutWithGroups> CutWithGroupsOf(const sar::SoundArchive& archive, const std::vector<uint32_t>& sounds,
+                                             const std::vector<uint32_t>& start_banks = {})
 {
-    std::optional<rip::LibraryArchive> library = rip::KeepSequenceData(archive, sounds);
+    std::optional<rip::LibraryArchive> library = rip::KeepSequenceData(archive, sounds, start_banks);
     std::optional<std::vector<std::vector<uint8_t>>> groups =
-        library ? rip::KeepGroupCopies(archive, *library, sounds) : std::nullopt;
+        library ? rip::KeepGroupCopies(archive, *library, sounds, start_banks) : std::nullopt;
     if (!groups)
     {
         return std::nullopt;
@@ -1063,7 +1070,7 @@ void TestGroupsOfThe3ds()
 
 // The group files that a library holds keep the copies that a model reads: for each file, the first copy among the
 // group files. Every other copy becomes a link to the archive's file, and the INFX block follows the FILE block. Each
-// cut reads back with the library's archive.
+// cut reads back with the library's archive. A bank that a game gives a sequence as it starts it keeps its copy.
 void TestKeepGroupCopies()
 {
     for (const Console& console : kConsoles)
@@ -1077,6 +1084,7 @@ void TestKeepGroupCopies()
         const std::optional<CutWithGroups> a = CutWithGroupsOf(archive, {0});
         const std::optional<CutWithGroups> b = CutWithGroupsOf(archive, {1});
         const std::optional<CutWithGroups> both = CutWithGroupsOf(archive, {1, 0});
+        const std::optional<CutWithGroups> a_started = CutWithGroupsOf(archive, {0}, {0x03000001});
 
         Check(a && a->library.group_files == std::vector<std::size_t>{0} &&
                   KeepsCopies(CommonGroup(flavor), a->groups.at(0), flavor, {0, 2, 4}, console.alignment) &&
@@ -1091,6 +1099,11 @@ void TestKeepGroupCopies()
                   KeepsCopies(StageGroup(flavor), both->groups.at(1), flavor, {1, 3}, console.alignment) &&
                   ReadsBack(archive, *both, {0, 1, 2, 3, 4}),
               name + ": both sequences' files, each from the first group file that holds it");
+        Check(a_started && a_started->library.group_files == std::vector<std::size_t>{0, 1} &&
+                  KeepsCopies(CommonGroup(flavor), a_started->groups.at(0), flavor, {0, 2, 4}, console.alignment) &&
+                  KeepsCopies(StageGroup(flavor), a_started->groups.at(1), flavor, {3}, console.alignment) &&
+                  ReadsBack(archive, *a_started, {0, 2, 3, 4}),
+              name + ": SEQ_A's files, with BANK_B's copy from GROUP_STAGE for its start");
 
         // A block that overlaps the FILE block gives no cut.
         std::vector<uint8_t> overlapping = CommonGroup(flavor);

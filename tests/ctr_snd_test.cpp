@@ -21,6 +21,8 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -42,6 +44,7 @@ namespace sar = ntdlib::sar;
 using ntdlib::ctr::snd::ArchiveModel;
 using ntdlib::ctr::snd::DspKind;
 using ntdlib::ctr::snd::kNoVoice;
+using xsflib::testing::Check;
 
 // The frames of a second of output: 160 samples each at about 32,728 Hz.
 constexpr int kSecond = 205;
@@ -676,6 +679,128 @@ void TestStreams(const sar::SoundArchive& archive)
     XSFLIB_CHECK(on_bus != nullptr && bus->engine->Voices().At(on_bus->ChannelVoice(0)).started_);
 }
 
+// The model's output for 3 s of frames of a stream sound of `info` with the tracks `tracks`, on the looped stream.
+// Before frame `frame`, the tracks `later` take the volume `volume`.
+std::vector<int16_t> PlayStream(const sar::SoundArchive& archive, const sar::SoundInfo& info, uint16_t tracks,
+                                int frame = -1, uint32_t later = 0, float volume = 0.0f)
+{
+    std::vector<int16_t> out;
+    const std::unique_ptr<ArchiveModel> model = Start(DspKind::kModel, {}, archive, out);
+    ntdlib::ctr::snd::StreamSoundPlayer* player = model->engine->StartStreamSound(info, Streams()[0], tracks);
+    XSFLIB_CHECK(player != nullptr);
+    for (int i = 0; i < 3 * kSecond; i++)
+    {
+        if (i == frame)
+        {
+            player->SetTrackVolume(later, volume);
+        }
+        XSFLIB_CHECK(model->engine->RunFrame());
+    }
+
+    return out;
+}
+
+// The volumes that a game's code sets on a stream's tracks through the sound's handle (R-540). With the mask of every
+// track, sound 9 plays as Teakra played it before the tracks' volumes: its first 2.5 s hash to the record. The start of
+// an info plays the same. Of a sound whose two tracks play a channel each, a track that the start leaves out plays as a
+// track whose volume in the archive is 0, and the other track plays on. A later volume below 0 plays at 0.
+void TestStreamTrackVolumes(const sar::SoundArchive& archive)
+{
+    constexpr uint16_t kAll = ntdlib::nwsnd::kAllStreamTracks;
+    std::vector<int16_t> every;
+    {
+        const std::unique_ptr<ArchiveModel> model = Start(DspKind::kModel, {}, archive, every);
+        XSFLIB_CHECK(model->engine->StartStreamSound(9, Streams()[0], kAll) != nullptr);
+        for (int i = 0; i < 3 * kSecond; i++)
+        {
+            XSFLIB_CHECK(model->engine->RunFrame());
+        }
+    }
+    XSFLIB_CHECK(every.size() >= kHashedValues &&
+                 Hash(std::span(every).first(std::min(every.size(), kHashedValues))) == FirmwareHash(9));
+    XSFLIB_CHECK(PlayStream(archive, archive.Sounds()[9], kAll) == every);
+
+    sar::SoundInfo two = archive.Sounds()[9];
+    two.stream = StreamDetails(3, {{.channels = {0}}, {.channels = {1}}});
+    sar::SoundInfo quiet_second = two;
+    quiet_second.stream.tracks[1].volume = 0;
+    const std::vector<int16_t> both = PlayStream(archive, two, kAll);
+    const std::vector<int16_t> first_only = PlayStream(archive, two, 0x1);
+    const std::vector<int16_t> quiet = PlayStream(archive, quiet_second, kAll);
+    XSFLIB_CHECK(Sounds(first_only) && first_only == quiet && first_only != both);
+
+    // Both tracks until the change, and the quiet output from 3 frames after it on, in values of both channels.
+    const std::vector<int16_t> below = PlayStream(archive, two, kAll, kSecond, 0x2, -1.0f);
+    const auto until = static_cast<std::ptrdiff_t>(2 * 160 * kSecond);
+    const auto from = static_cast<std::ptrdiff_t>(2 * 160 * (kSecond + 3));
+    XSFLIB_CHECK(below.size() == quiet.size() && std::equal(below.begin(), below.begin() + until, both.begin()) &&
+                 std::equal(below.begin() + from, below.end(), quiet.begin() + from));
+}
+
+// The tracks that Mario Kart 7, Super Mario 3D Land, New Leaf, Happy Home Designer and Tomodachi Life play of their
+// stream sounds as they start, by the archives of the USA releases and the sounds' names. Each game's code plays track
+// 0 alone as these start: four of Mario Kart 7's courses' BGMs, their final laps' BGMs and two of its menus' BGMs,
+// Super Mario 3D Land's 30 BGMs of several tracks with the speakers and out of the water, four of New Leaf's BGMs,
+// Happy Home Designer's STRM_BGM_AMIIBOPHONE in both of its archives, and Tomodachi Life's BGM_MANSION_INFOMATION.
+// Mario Kart 7's STRM_MENU_CHANNEL and New Leaf's STRM_BGM_IND_MUSEUM play track 1 alone. Every track plays for the
+// sounds of one track, every sound of an unknown archive, and a name in other letters.
+void TestStartingStreamTracks()
+{
+    using ntdlib::ctr::snd::StartingStreamTracks;
+    constexpr std::string_view kMarioKart7 = "cfd8fb5750069922dc631708d883fcc7374f8fa5";
+    constexpr std::string_view kSuperMario3DLand = "bfb2742fc5e8f2869c9ce781710ba393f675fbc1";
+    constexpr std::string_view kNewLeaf = "54f0fbc801c85ea2035219923aa4cd955e6f4cc7";
+    constexpr std::string_view kHappyHomeDesigner = "8c07814daf28befb015cc97dd2c66699254035be";
+    constexpr std::string_view kHappyHomeDesignerOld = "30c98d66881296eda5e676964918e7003b403c75";
+    constexpr std::string_view kTomodachiLife = "200b87d7d1152f5035b29a092f2e20e726695264";
+    constexpr uint16_t kAll = ntdlib::nwsnd::kAllStreamTracks;
+    for (const std::string_view sound :
+         {"STRM_CN_UNDERGROUND_N", "STRM_CN_RAINBOW_ROAD_N", "STRM_CN_WARIO_SHIP_N", "STRM_CR_WII_NOKONOKO_CAPE_N"})
+    {
+        Check(StartingStreamTracks(kMarioKart7, sound) == 0x1, std::string(sound) + " plays track 0");
+        const std::string final_lap = std::string(sound.substr(0, sound.size() - 1)) + "F";
+        Check(StartingStreamTracks(kMarioKart7, final_lap) == 0x1, final_lap + " plays track 0");
+    }
+    XSFLIB_CHECK(StartingStreamTracks(kMarioKart7, "STRM_MENU_SINGLE_MULTI") == 0x1);
+    XSFLIB_CHECK(StartingStreamTracks(kMarioKart7, "STRM_MENU_WIFI") == 0x1);
+    XSFLIB_CHECK(StartingStreamTracks(kMarioKart7, "STRM_MENU_CHANNEL") == 0x2);
+    XSFLIB_CHECK(StartingStreamTracks(kMarioKart7, "STRM_CR_SFC_RAINBOW_ROAD_F") == kAll);
+
+    const std::initializer_list<std::string_view> super_mario_3d_land = {
+        "STM_BGM_TRUCK_B",          "STM_BGM_TRUCK_B_FAST", "STM_BGM_SENKAN",        "STM_BGM_SENKAN_FAST",
+        "STM_BGM_MUTEKISTAR",       "STM_BGM_GOAL_01",      "STM_BGM_FIELD_WALK",    "STM_BGM_FIELD_WALK_FAST",
+        "STM_BGM_JG_MISS",          "STM_BGM_JG_GAME_OVER", "STM_BGM_BEACH",         "STM_BGM_BEACH_FAST",
+        "STM_BGM_STAFF_ROLL",       "STM_BGM_GHOST",        "STM_BGM_GHOST_FAST",    "STM_BGM_CLOCK_TOWER",
+        "STM_BGM_CLOCK_TOWER_FAST", "STM_BGM_ATHLETIC",     "STM_BGM_ATHLETIC_FAST", "STM_BGM_DESERT",
+        "STM_BGM_DESERT_FAST",      "STM_BGM_DOTCOIN",      "STM_BGM_DOTCOIN_FAST",  "STM_BGM_KOOPA_01",
+        "STM_BGM_KOOPA_01_FAST",    "STM_BGM_KOOPA_02",     "STM_BGM_KOOPA_02_FAST", "STM_BGM_WORLD3_A",
+        "STM_BGM_KINOHOUSE",        "STM_BGM_DEMO04_B"};
+    for (const std::string_view sound : super_mario_3d_land)
+    {
+        Check(StartingStreamTracks(kSuperMario3DLand, sound) == 0x1, std::string(sound) + " plays track 0");
+    }
+    XSFLIB_CHECK(StartingStreamTracks(kSuperMario3DLand, "STM_BGM_CHIKA") == kAll);
+
+    for (const std::string_view sound : {"STRM_BGM_EVT_CARNIVAL", "STRM_BGM_IND_KODANUKI_HOMECENTER",
+                                         "STRM_BGM_IND_ABLESISTERS", "STRM_BGM_EVT_EASTER"})
+    {
+        Check(StartingStreamTracks(kNewLeaf, sound) == 0x1, std::string(sound) + " plays track 0");
+    }
+    XSFLIB_CHECK(StartingStreamTracks(kNewLeaf, "STRM_BGM_IND_MUSEUM") == 0x2);
+    XSFLIB_CHECK(StartingStreamTracks(kNewLeaf, "STRM_BGM_OUTDOOR00_SNOWY_SUR") == kAll);
+    XSFLIB_CHECK(StartingStreamTracks(kNewLeaf, "STRM_BGM_EVT_CHRISTMAS_SUR") == kAll);
+
+    for (const std::string_view archive : {kHappyHomeDesigner, kHappyHomeDesignerOld})
+    {
+        XSFLIB_CHECK(StartingStreamTracks(archive, "STRM_BGM_AMIIBOPHONE") == 0x1);
+    }
+    XSFLIB_CHECK(StartingStreamTracks(kTomodachiLife, "BGM_MANSION_INFOMATION") == 0x1);
+
+    XSFLIB_CHECK(StartingStreamTracks(kMarioKart7, "STRM_BGM_AMIIBOPHONE") == kAll);
+    XSFLIB_CHECK(StartingStreamTracks(kMarioKart7, "strm_cn_underground_n") == kAll);
+    XSFLIB_CHECK(StartingStreamTracks("0000000000000000000000000000000000000000", "STRM_CN_UNDERGROUND_N") == kAll);
+}
+
 // The model plays sound `sound` as Teakra running `firmware` plays it, sample for sample, for 3 s. The frames' ends can
 // fall a few samples apart: the model's frames end at about the firmware's times. Every sound sounds but the stream on
 // the bus of two channels. Teakra's samples also hash to the record.
@@ -769,6 +894,8 @@ int main()
     TestMeters(archive);
     TestWaveSounds(archive);
     TestStreams(archive);
+    TestStreamTrackVolumes(archive);
+    TestStartingStreamTracks();
 
     for (const auto& [sound, hash] : kFirmwareHashes)
     {

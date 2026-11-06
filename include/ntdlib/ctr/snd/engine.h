@@ -131,11 +131,16 @@ public:
     // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
     // names beside the archive. The stream's channels go into FCRAM, where the DSP reads them. Returns the player, or
     // nullptr if there's no such stream sound, no track plays or no channel plays. Throws xsflib::FormatError for a
-    // file that sar::StreamFile::Read refuses, and std::runtime_error when FCRAM can't hold the channels.
-    StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
+    // file that sar::StreamFile::Read refuses, and std::runtime_error when FCRAM can't hold the channels. The tracks
+    // whose bits `tracks` leaves clear start at a volume of 0, bit N for track N. A game's code silences tracks that
+    // way through the sound's handle as the sound starts (StreamSoundPlayer::SetTrackVolume). StartingStreamTracks
+    // gives a known game's tracks.
+    StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file,
+                                        uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
     // The same for a stream sound of `info`, which the archive needn't hold.
-    StreamSoundPlayer* StartStreamSound(const ntdlib::sar::SoundInfo& info, std::span<const uint8_t> file);
+    StreamSoundPlayer* StartStreamSound(const ntdlib::sar::SoundInfo& info, std::span<const uint8_t> file,
+                                        uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
     // Bank::NoteOn (code.bin 0x48f954) for the bank in slot `bank_index` of a player's `bank_items`: finds the velocity
     // region, loads its wave and starts a channel for it.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The effects that a game puts on AX's aux buses through nw::snd: each effect's device and bus, its class and the
-// parameters that the game gives the class's SetParam.
+// parameters that the game gives the class's SetParam. The classes are nw::snd's, or Nintendo Land's two.
 
 #pragma once
 
@@ -13,8 +13,8 @@
 namespace ntdlib::cafe::snd
 {
 
-// nw::snd's effect classes. The parameters are the words of the class's parameter structure, in order: floats as their
-// bits, and the reverbs' modes as integers.
+// The effect classes. The parameters are the words of the class's parameter structure, in order: floats as their bits,
+// and the modes, indices and counts as integers.
 enum class EffectType : uint8_t
 {
     // FxReverbHi: preDelayTime, fusedTime, coloration, damping, crossTalk, outGain, earlyMode, preDelayTimeMax,
@@ -27,6 +27,13 @@ enum class EffectType : uint8_t
     kChorus = 3,
     // FxDelay: delay (ms), feedback, outGain, maxDelay (ms), lpf.
     kDelay = 4,
+    // Nintendo Land's reverb (nintendo_land::Reverb): the pre-delay (s), the decay time (s), the all-passes'
+    // coefficient, damping, gain, the early reflection's index, the set of lengths, the early reflection's level, the
+    // reverb's level, the rate, the threaded path's flag (the first byte), the ring's frames and its start.
+    kNintendoLandReverb = 5,
+    // Nintendo Land's delay (nintendo_land::Delay): delay (ms), feedback, level, damping, the rate, the threaded path's
+    // flag (the first byte), the ring's frames and its start.
+    kNintendoLandDelay = 6,
 };
 
 // The number of words in the parameter structure of `type`, or 0 for a type that isn't one of these.
@@ -41,6 +48,10 @@ constexpr uint32_t EffectParamWords(EffectType type)
     case EffectType::kChorus:
     case EffectType::kDelay:
         return 5;
+    case EffectType::kNintendoLandReverb:
+        return 13;
+    case EffectType::kNintendoLandDelay:
+        return 8;
     }
 
     return 0;

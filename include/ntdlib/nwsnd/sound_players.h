@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -14,6 +15,9 @@
 
 namespace ntdlib::nwsnd
 {
+
+// Every track of a stream sound, bit N for track N: the tracks that the engines' StartStreamSound plays by default.
+constexpr uint16_t kAllStreamTracks = 0xffff;
 
 template <typename... Kinds>
 class SoundPlayers

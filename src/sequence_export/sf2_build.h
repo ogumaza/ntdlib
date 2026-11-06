@@ -10,12 +10,14 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "seqlib/loop.h"
+#include "seqlib/midi/performance.h"
 #include "seqlib/sf2/soundfont.h"
 
 #include "ntdlib/sequence_export/convert.h"
@@ -72,6 +74,7 @@ seqlib::sf2::Zone RegionZone(const RegionGenerators& g, const std::pair<int, int
 // fixed filter has the lower cutoff. Those keys keep the track's filter. A preset whose filter changes during notes
 // (filter_controller) takes no low-pass. A preset whose zones fit their cutoff to the track's one-pole low-pass
 // (FitsTrackLowPass) keeps ResamplingSpans' spans. Each of its zones picks one of the two low-passes (AddZoneLowPass).
+// Every preset keeps the spans at the console's pitch limits (PitchLimitSpans).
 std::vector<ResamplingSpan> ZoneSpans(std::pair<int, int> keys, const ResamplingRegion& region, const PresetKey& key,
                                       const Settings& settings);
 
@@ -94,25 +97,55 @@ void AddResamplingFilter(seqlib::sf2::Zone& zone, const ResamplingFilter& filter
 void AddZoneLowPass(seqlib::sf2::Zone& zone, const ResamplingFilter* filter, const std::optional<FittedCutoff>& fitted,
                     const ResamplingRegion& region, const PresetKey& key, const Settings& settings);
 
+// Makes `zone` play every key `cents` above its sample's rate: a scale tuning of 0, with the tuning in its coarse and
+// fine generators. A zone at one of the console's pitch limits plays so (ResamplingSpan::limit_cents). The sample's
+// generator stays last.
+void PlayAtFixedPitch(seqlib::sf2::Zone& zone, int cents);
+
 // A region's zone up to its low-pass, for the wave's channel `channel`, the keys `keys` and the velocities
 // `velocities` (RegionZone).
 using ChannelZoneFunction =
     std::function<seqlib::sf2::Zone(std::size_t channel, std::pair<int, int> keys, std::pair<int, int> velocities)>;
 
+// Whether a zone of the keys `keys` and the velocities `velocities` goes in the SoundFont.
+using ZoneFilter = std::function<bool(std::pair<int, int> keys, std::pair<int, int> velocities)>;
+
 // Adds the zones of a region that plays the key ranges `keys` at the velocity ranges `velocities` to `zones`: one for
 // each span of a key range (ZoneSpans), each velocity range and each of the wave's `channels`. `zone` gives each zone
 // up to its low-pass. AddZoneLowPass then adds the span's low-pass, with the cutoff that `low_pass` fits to the span
-// (ZoneLowPass::Fit). The region is in preset `index`, whose key is `key`. The region plays `wave` as `region`
-// describes. `wave_key` names the wave.
+// (ZoneLowPass::Fit). A zone at one of the console's pitch limits plays there (PlayAtFixedPitch) and takes no fit. The
+// region is in preset `index`, whose key is `key`. The region plays `wave` as `region` describes. `wave_key` names the
+// wave. `keep`, if set, leaves out the zones that it rejects.
 void AddRegionZones(std::vector<seqlib::sf2::Zone>& zones, uint32_t index, const PresetKey& key,
                     const std::vector<std::pair<int, int>>& keys, const std::vector<std::pair<int, int>>& velocities,
                     std::size_t channels, const ResamplingRegion& region, std::pair<uint32_t, uint32_t> wave_key,
                     const wave::Pcm& wave, ZoneLowPass& low_pass, const Settings& settings,
-                    const ChannelZoneFunction& zone);
+                    const ChannelZoneFunction& zone, const ZoneFilter& keep = {});
+
+// The notes that a performance plays with each of its presets: each note's key and velocity. A synth picks a preset's
+// zones by those two as a note starts. A zone that no note picks never sounds.
+class PlayedNotes
+{
+public:
+    explicit PlayedNotes(const seqlib::midi::Performance& perf);
+
+    // Whether a note of preset `index` picks a zone of the keys `keys` and the velocities `velocities`.
+    bool Picks(uint32_t index, std::pair<int, int> keys, std::pair<int, int> velocities) const;
+
+private:
+    std::map<uint32_t, std::set<std::pair<int, int>>> notes_; // by preset: each note's key and velocity
+};
+
+// Whether `sf` stays within the SoundFont format's limits of 65,535 zones, generators and modulators.
+bool FitsSoundFont(const seqlib::sf2::SoundFont& sf);
 
 // Names presets by bank slot and program ("b0 p12"), or by program alone ("p12") without `bank_slots`. Adds a number
 // when different track settings produce several presets from the same instrument (seqlib::sf2::PresetNames).
 std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys, bool bank_slots);
+
+// What a SoundFont's comment says that it plays, for the sequences with `labels`: "sequence A" for one, or "sequences
+// A, B and C together" for a piece of several.
+std::string SequencesText(std::span<const std::string> labels);
 
 // Returns the volume of the region that `key`'s instrument plays at `note` and `velocity`, or 0 for none.
 using RegionVolumeFunction = std::function<int(const PresetKey& key, int note, int velocity)>;

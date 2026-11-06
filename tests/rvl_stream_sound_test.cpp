@@ -6,9 +6,11 @@
 // and pan of the track. A voice plays its channels from the stream's start, with the history of the DSP-ADPCM info and
 // the first frame's predictor, and loops to the start of the block that holds the loop's start, with the info's state
 // for the loop. A stream without a loop ends the sound in the frame after its voices end. A snapshot keeps the player.
-// An entry that the archive's sound table doesn't hold plays as the table's entry does.
-// The expected values are the ones that NW4R SND's StrmPlayer and SoundArchiveFileReader give in the code of Wii Sports
-// and Mario Kart Wii (see stream_sound.h).
+// An entry that the archive's sound table doesn't hold plays as the table's entry does. The volumes that a game's code
+// sets on the tracks reach the tracks' voices. Mario Kart Wii's courses start some tracks of their streams at 0.
+// The expected values are the ones that NW4R SND's StrmPlayer, StrmSound and SoundArchiveFileReader give in the code of
+// Wii Sports and Mario Kart Wii (see stream_sound.h), and the volumes that Mario Kart Wii's mixer of the music's tracks
+// starts with.
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +19,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -104,14 +107,15 @@ struct TestArchive
     rsar::SoundArchive archive;
 };
 
-// A model of `build` on the renderer, with stream sound 0 of `test` started on `stream`.
+// A model of `build` on the renderer, with stream sound 0 of `test` started on `stream` with `tracks`.
 struct Playing
 {
-    Playing(const TestArchive& test, SndBuild build, const std::vector<uint8_t>& stream)
+    Playing(const TestArchive& test, SndBuild build, const std::vector<uint8_t>& stream,
+            uint16_t tracks = snd::kAllTracks)
     {
         model->build = build;
         model->StartWithRenderer(test.archive);
-        player = model->engine->StartStreamSound(0, stream);
+        player = model->engine->StartStreamSound(0, stream, tracks);
     }
 
     void Run(int frames)
@@ -434,6 +438,109 @@ void CheckSnapshots()
     Check(refused, "a restore after another start is refused");
 }
 
+// The volumes that a game's code sets on the tracks through the sound's handle. The builds from March 2008 multiply the
+// volume of each track's voice by the track's volume (UpdateVoiceParams, Mario Kart Wii's main.dol 0x800a6ff0). A track
+// that the start leaves out plays as a track whose stream file gives a volume of 0. A later volume reaches the voice in
+// the next frames, clamped to the range 0 to 1 (StrmSound::SetTrackVolume, 0x800a8960). A bit beyond the tracks changes
+// nothing. A snapshot keeps the volumes. The build of 2007 gives its voice the player's volume alone (Update, Wii
+// Sports' main.dol 0x80049d00).
+void CheckTrackVolumes()
+{
+    streams::StreamSpec spec;
+    spec.loop_start = 0;
+    spec.channels = {Tone(20000, 0), Tone(20000, 1), Tone(20000, 2), Tone(20000, 3)};
+    spec.tracks = {{100, 64, {0, 1}}, {127, 64, {2, 3}}};
+    const std::vector<uint8_t> file = streams::MakeStream(spec);
+    spec.tracks[1].volume = 0;
+    const std::vector<uint8_t> quiet = streams::MakeStream(spec);
+    const TestArchive test({.version = 0x0104, .volume = 127, .channels = 4, .tracks = 3});
+
+    Playing silenced(test, k2008, file, 0x1);
+    Playing silent_file(test, k2008, quiet);
+    Playing every(test, k2008, file);
+    silenced.Run(200);
+    silent_file.Run(200);
+    every.Run(200);
+    const int kept = silenced.PbOf(0, 0).ve.current_volume;
+
+    Check(silenced.output == silent_file.output &&
+              std::ranges::any_of(silenced.output, [](int16_t sample) { return sample != 0; }),
+          "a track that the start leaves out plays at a volume of 0");
+    Check(kept == every.PbOf(0, 0).ve.current_volume && silenced.PbOf(1, 0).ve.current_volume == 0 &&
+              every.PbOf(1, 0).ve.current_volume != 0,
+          "the other track keeps its volume (" + std::to_string(kept) + ")");
+
+    // Later volumes: 0.5 for the second track, then 2 for the first track and a track that the stream lacks. The first
+    // track's volume of 100 over 127 shows the clamp: unclamped, its voice would play louder.
+    silenced.player->SetTrackVolume(0x2, 0.5f);
+    silenced.Run(2);
+    const int half = silenced.PbOf(1, 0).ve.current_volume;
+    silenced.Run(10);
+    const int settled = silenced.PbOf(1, 0).ve.current_volume;
+    silenced.player->SetTrackVolume(0x5, 2.0f);
+    silenced.Run(10);
+    const int clamped = silenced.PbOf(0, 0).ve.current_volume;
+
+    Check(half == RampedVolume(0.5f), "a later volume reaches the voice (" + std::to_string(half) + ")");
+    Check(clamped == kept, "a volume above 1 plays at 1 (" + std::to_string(clamped) + ")");
+    Check(silenced.PbOf(1, 0).ve.current_volume == settled, "a track outside the bits keeps its volume");
+
+    // A restore brings back the volumes of the snapshot's moment.
+    Playing restored(test, k2008, file, 0x1);
+    restored.Run(10);
+    const snd::ArchiveModel::Snapshot snapshot = restored.model->Save();
+    std::vector<int16_t> silent_after;
+    for (int frame = 0; frame < 50; frame++)
+    {
+        restored.model->RunFrame(silent_after);
+    }
+
+    restored.model->Restore(snapshot);
+    restored.player->SetTrackVolume(0x2, 1.0f);
+    restored.model->Restore(snapshot);
+    std::vector<int16_t> again;
+    for (int frame = 0; frame < 50; frame++)
+    {
+        restored.model->RunFrame(again);
+    }
+
+    Check(again == silent_after, "a snapshot keeps the tracks' volumes");
+
+    // The build of 2007 plays its one voice at the player's volume, whatever the tracks.
+    Playing old_left_out(test, k2007, file, 0x0);
+    Playing old_every(test, k2007, file);
+    old_left_out.Run(200);
+    old_every.Run(200);
+
+    Check(old_left_out.output == old_every.output, "the build of 2007 holds no tracks' volumes");
+}
+
+// The tracks that Mario Kart Wii plays of its streams as they start, for the USA release's sound archive, by the
+// sounds' names. Six courses' streams hold several tracks. As one of them starts, the game's mixer of the music's tracks
+// sets each track to its volume in the course's first state (.text + 0x1e834c of the game's relocatable module, with
+// the tables at .rodata + 0x114e8): track 0 alone, and on Koopa Cape tracks 0 and 3. Every other stream sound plays
+// every track, and so does every sound of an unknown archive. A name matches only as the archive spells it.
+void CheckStartingTracks()
+{
+    constexpr std::string_view kMarioKartWii = "93d5c0c61d4fe47d730915be0ea451e45e9be4e1";
+    for (const std::string_view sound : {"STRM_N_FACTORY_N", "STRM_N_FACTORY_F", "STRM_N_TRUCK_N", "STRM_N_TRUCK_F",
+                                         "STRM_N_DESERT_N", "STRM_N_DESERT_F", "STRM_N_RIDGEHIGHWAY_N",
+                                         "STRM_N_RIDGEHIGHWAY_F", "STRM_N_KOOPA_N", "STRM_N_KOOPA_F"})
+    {
+        Check(snd::StartingStreamTracks(kMarioKartWii, sound) == 0x1, std::string(sound) + " plays track 0");
+    }
+    Check(snd::StartingStreamTracks(kMarioKartWii, "STRM_N_WATER_N") == 0x9 &&
+              snd::StartingStreamTracks(kMarioKartWii, "STRM_N_WATER_F") == 0x9,
+          "Koopa Cape plays tracks 0 and 3");
+    Check(snd::StartingStreamTracks(kMarioKartWii, "STRM_N_CIRCUIT1_N") == snd::kAllTracks,
+          "another stream sound plays every track");
+    Check(snd::StartingStreamTracks(kMarioKartWii, "strm_n_factory_n") == snd::kAllTracks,
+          "a name in other letters plays every track");
+    Check(snd::StartingStreamTracks("0000000000000000000000000000000000000000", "STRM_N_FACTORY_N") ==
+              snd::kAllTracks,
+          "an unknown archive plays every track");
+}
+
 } // namespace
 
 int main()
@@ -446,6 +553,8 @@ int main()
         CheckEntriesOutsideTable();
         CheckEnds();
         CheckSnapshots();
+        CheckTrackVolumes();
+        CheckStartingTracks();
     };
 
     return xsflib::testing::RunTest("rvl_stream_sound", tests);

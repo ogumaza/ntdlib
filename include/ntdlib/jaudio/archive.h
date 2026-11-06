@@ -20,9 +20,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/jaudio/bank.h"
@@ -62,6 +64,10 @@ struct SoundEntry
 
     // A factor on the pitch of the sound's notes. Only a JAudio1 effect's entry gives one (ReadAafSounds).
     float pitch = 1.0f;
+
+    // The switches of a sound of types 0x60 to 0x6f in the later layout: the halfword at +6 of its entry. The game's code
+    // reads them (AudSoundInfo::getSoundSw in Super Mario Galaxy, 0x8002a1dc). 0 for other sounds.
+    uint16_t switches = 0;
 
     // Where the sound's entry starts in the archive. LayoutOf or FirstLayoutOf gives where the entry holds the volume
     // and the file.
@@ -155,12 +161,22 @@ std::vector<WaveSystem> ReadWaveSystems(std::span<const uint8_t> baa, const BaaO
 class SoundArchive
 {
 public:
-    // Reads a BAA file by BaaOptions' defaults. Throws FormatError if it isn't one, or is damaged.
-    static SoundArchive Parse(std::vector<uint8_t> baa);
+    // Reads a BAA file by `options`. Throws FormatError if it isn't one, or is damaged.
+    //
+    // Mario Kart: Double Dash!!'s archive also has a "baac" block: a count, each archive's offset in the block, then
+    // more start-up archives. Each of them holds a wave system and a bank, for the game's voices. The game's code loads
+    // one of them at a time (0x801148fc in the USA release's main.dol). Parse reads the wave systems and banks of all
+    // of them. Each archive numbers its wave system 3. Here the wave system of the block's k-th archive, from 0, gets
+    // (k + 1) << 16 added to its number. The archive's banks name it by the new number.
+    static SoundArchive Parse(std::vector<uint8_t> baa, const BaaOptions& options = {});
 
     // Reads JAudio1's start-up archive (AAF, aaf.h): its sound table (ReadAafSounds), its wave systems and its banks.
     // It has no sequence collection. Throws FormatError if it's damaged.
     static SoundArchive ParseAaf(std::vector<uint8_t> aaf);
+
+    // Reads Pikmin's bank file (.bx, bx.h): its wave systems and its banks. It has no sound table and no sequence
+    // collection. Throws FormatError if it's damaged.
+    static SoundArchive ParseBx(std::vector<uint8_t> bx);
 
     // The sound table's sounds, in its order.
     const std::vector<SoundEntry>& Sounds() const
@@ -178,6 +194,10 @@ public:
     std::span<const uint8_t> Collection() const;
     std::optional<uint32_t> CollectionSequence(uint32_t category, uint32_t index) const;
 
+    // The sequence block ("bms ") with the ID `id`, or nothing. A block holds one sequence. The sequence addresses the
+    // block from its start.
+    std::optional<std::span<const uint8_t>> SequenceBlock(uint32_t id) const;
+
     // Problems found while reading that leave the rest readable, such as a bank that can't be read.
     const std::vector<std::string>& Warnings() const
     {
@@ -191,7 +211,8 @@ private:
     std::vector<Bank> banks_;
     std::size_t collection_offset_ = 0;
     std::size_t collection_size_ = 0;
-    std::vector<std::vector<uint32_t>> collection_; // each category's sequence offsets
+    std::vector<std::vector<uint32_t>> collection_;                  // each category's sequence offsets
+    std::map<uint32_t, std::pair<std::size_t, std::size_t>> blocks_; // each sequence block's offset and size, by ID
     std::vector<std::string> warnings_;
 };
 

@@ -125,7 +125,7 @@ void TestLaterLayout()
 
     const files::SoundTableBlocks blocks = files::SoundTable({
         {"SE", {{"SYSTEM", {{0x41, 90, 0, "SE_A"}}}}},
-        {"BGM", {{"FIELD", {{0x62, 70, 0x123, "BGM_FIELD"}, {0x11, 50, 7, "BGM_OLD"}}}}},
+        {"BGM", {{"FIELD", {{0x62, 70, 0x123, "BGM_FIELD", 0x8001}, {0x11, 50, 7, "BGM_OLD", 0x8001}}}}},
     });
     // The command list: "AA_<", bfca with its argument, bst and bstn with two each, then ">_AA".
     const auto kTableAt = static_cast<uint32_t>(4 + 8 + 12 + 12 + 4);
@@ -151,6 +151,8 @@ void TestLaterLayout()
           "a later sound that plays a file of the sequence archive");
     Check(sounds[2].volume == 50 && sounds[2].source == jaudio::SoundEntry::Source::kArchive && sounds[2].resource == 7,
           "an earlier sound in the same table");
+    Check(sounds[1].switches == 0x8001 && sounds[2].switches == 0 && sounds[0].switches == 0,
+          "a later sound of types 0x60 to 0x6f gives its switches; other sounds give none");
 }
 
 // The first layouts of a sound's entry (Mario Kart: Double Dash!!), and a start-up archive with "bms " and "baac"
@@ -223,6 +225,93 @@ void TestFirstLayouts()
               jaudio::ReadWaveSystems(a.Data()).size() == 1,
           "the wave system after a baac command");
     Check(ErrorOf([&] { jaudio::SoundArchive::Parse(a.Data()); }).empty(), "Parse walks past a baac command");
+}
+
+// Mario Kart: Double Dash!!'s start-up archive: Parse reads the sound table by the first layouts, the sequence blocks
+// ("bms ") and the wave systems and banks of the "baac" block's archives.
+void TestSequenceBlocksAndBaac()
+{
+    const files::SoundTableBlocks blocks = files::SoundTable(
+        {
+            {"TYPE_SE", {{"SE_SYSTEM", {{0x10, 90, 0, "SE_A"}}}}},
+            {"TYPE_BGM", {{"MAIN_BGM", {{0x20, 102, 0, "BGM_TITLE"}}}}},
+        },
+        true);
+
+    // An archive of the "baac" block: a wave system and a bank, both after its command list. Each archive numbers its
+    // wave system 3. The first archive's bank is bank 6, the second's bank 2.
+    const auto more = [](uint32_t bank)
+    {
+        const std::vector<uint8_t> ws = files::WaveSystemFile(bank, 2, "voice" + std::to_string(bank) + ".aw");
+        const std::vector<uint8_t> ibnk = files::BankV0File(bank, 10);
+        constexpr uint32_t kWsAt = 4 + 16 + 12 + 4;
+        const auto bank_at = static_cast<uint32_t>(kWsAt + ws.size());
+        files::Bytes a;
+        a.Tag("AA_<");
+        a.Tag("ws  ").U32(3).U32(kWsAt).U32(0xffffffff);
+        a.Tag("bnk ").U32(3).U32(bank_at);
+        a.Tag(">_AA").Append(ws).Append(ibnk);
+        return a.Data();
+    };
+    const std::vector<uint8_t> first = more(6), second = more(2);
+    files::Bytes baac;
+    baac.U32(2).U32(12).U32(static_cast<uint32_t>(12 + first.size())).Append(first).Append(second);
+
+    // The command list: "AA_<", bst and bstn, two sequence blocks, baac, then ">_AA". The table, the names, the blocks
+    // and baac's block follow it.
+    const uint32_t kTableAt = 4 + 12 + 12 + 16 + 16 + 12 + 4;
+    const auto names_at = static_cast<uint32_t>(kTableAt + blocks.table.size());
+    const auto sequence_at = static_cast<uint32_t>(names_at + blocks.names.size());
+    const uint32_t second_sequence_at = sequence_at + 4;
+    const uint32_t baac_at = second_sequence_at + 8;
+    files::Bytes a;
+    a.Tag("AA_<");
+    a.Tag("bst ").U32(kTableAt).U32(names_at);
+    a.Tag("bstn").U32(names_at).U32(sequence_at);
+    a.Tag("bms ").U32(0x01000000).U32(sequence_at).U32(second_sequence_at);
+    a.Tag("bms ").U32(0x01000001).U32(second_sequence_at).U32(baac_at);
+    a.Tag("baac").U32(baac_at).U32(static_cast<uint32_t>(baac_at + baac.Size()));
+    a.Tag(">_AA").Append(blocks.table).Append(blocks.names).U32(0xc1000000).U32(0x80000000).U32(0xc1000000);
+    a.Append(baac.Data());
+
+    jaudio::BaaOptions options;
+    options.first_layouts = true;
+    const jaudio::SoundArchive archive = jaudio::SoundArchive::Parse(a.Data(), options);
+    Check(archive.Sounds().size() == 2 && archive.Sounds()[1].volume == 102 &&
+              archive.Sounds()[1].source == jaudio::SoundEntry::Source::kBlock &&
+              archive.Sounds()[1].resource == 0x01000000,
+          "Parse reads the sound table by the first layouts");
+    const jaudio::SoundArchive by_default = jaudio::SoundArchive::Parse(a.Data());
+    Check(by_default.Sounds().size() == 2 && by_default.Sounds()[1].source == jaudio::SoundEntry::Source::kCollection,
+          "Parse reads the earlier layouts by default");
+
+    const std::optional<std::span<const uint8_t>> title = archive.SequenceBlock(0x01000000);
+    const std::optional<std::span<const uint8_t>> next = archive.SequenceBlock(0x01000001);
+    Check(title && title->size() == 4 && (*title)[0] == 0xc1 && next && next->size() == 8 && (*next)[0] == 0x80,
+          "each sequence block runs from its start to its end");
+    Check(!archive.SequenceBlock(0x01000002), "no block for another ID");
+
+    // The wave system of the k-th archive is numbered (k + 1) << 16 | 3, and the archive's bank plays it.
+    const jaudio::Bank* six = archive.FindBank(6);
+    const jaudio::Bank* two = archive.FindBank(2);
+    Check(six != nullptr && six->wave_system == (1u << 16 | 3) && two != nullptr && two->wave_system == (2u << 16 | 3),
+          "each archive's bank plays the archive's wave system");
+    const jaudio::WaveSystem* six_ws = archive.FindWaveSystem(1u << 16 | 3);
+    const jaudio::WaveSystem* two_ws = archive.FindWaveSystem(2u << 16 | 3);
+    Check(six_ws != nullptr && two_ws != nullptr && archive.FindWaveSystem(3) == nullptr &&
+              six_ws->groups.size() == 1 && six_ws->groups[0].archive == "voice6.aw" && two_ws->groups.size() == 1 &&
+              two_ws->groups[0].archive == "voice2.aw",
+          "each archive's wave system names its wave archive");
+    Check(archive.Warnings().empty(), "the archive reads without warnings");
+
+    // The second archive's offset, 4, lies before the first's. The first archive then ends before it starts.
+    std::vector<uint8_t> data = a.Data();
+    for (std::size_t i = 0; i < 4; i++)
+    {
+        data[baac_at + 8 + i] = i == 3 ? 4 : 0;
+    }
+    Check(!ErrorOf([&] { jaudio::SoundArchive::Parse(data, options); }).empty(),
+          "Parse rejects an archive of the baac block that ends before it starts");
 }
 
 void TestBanks()
@@ -316,23 +405,6 @@ void TestSoundTable()
           "the collection's sequences");
 }
 
-// `data` compressed with Yaz0, every byte as a literal: groups of eight chunks after a flag byte of 0xff.
-std::vector<uint8_t> LiteralYaz0(std::span<const uint8_t> data)
-{
-    files::Bytes yaz0;
-    yaz0.Tag("Yaz0").U32(static_cast<uint32_t>(data.size())).U32(0).U32(0);
-    for (std::size_t i = 0; i < data.size(); i++)
-    {
-        if (i % 8 == 0)
-        {
-            yaz0.U8(0xff);
-        }
-        yaz0.U8(data[i]);
-    }
-
-    return yaz0.Data();
-}
-
 void TestRarc()
 {
     const std::vector<uint8_t> rarc = files::RarcFile({{3, "a.bms", {1, 2, 3}}, {9, "long_name.bms", {4, 5, 6, 7, 8}}});
@@ -348,7 +420,7 @@ void TestRarc()
           "the second file");
 
     // The same archive compressed with Yaz0.
-    const std::vector<uint8_t> yaz0 = LiteralYaz0(rarc);
+    const std::vector<uint8_t> yaz0 = files::LiteralYaz0(rarc);
     Check(jaudio::IsYaz0(yaz0) && !jaudio::IsYaz0(rarc), "IsYaz0 checks the magic");
     const std::vector<uint8_t> decoded = jaudio::DecodeYaz0(yaz0);
     Check(decoded == rarc && jaudio::ReadRarc(decoded).size() == 2, "a Yaz0 archive decodes to the archive");
@@ -413,7 +485,7 @@ void TestRepackSequenceTable()
           "the header's sizes");
 
     // A Yaz0 archive, every byte as a literal, gives the same result.
-    Check(jaudio::RepackSequenceTable(LiteralYaz0(rarc), table) == out, "a Yaz0 archive is decoded first");
+    Check(jaudio::RepackSequenceTable(files::LiteralYaz0(rarc), table) == out, "a Yaz0 archive is decoded first");
 
     // A file whose id is past the table's end, and a table cut short, are rejected.
     Check(ErrorOf([&] { jaudio::RepackSequenceTable(rarc, SequenceTable({kField, "boss"})); }) ==
@@ -936,7 +1008,7 @@ void TestLittleEndianRarc()
 
     Check(le != be && le[0] == 'C' && le[3] == 'R', "the archive is little-endian");
     Check(text(le) == text(be) && jaudio::ReadRarc(le).size() == 2, "the little-endian archive gives the same files");
-    Check(text(jaudio::DecodeYaz0(LiteralYaz0(le))) == text(be), "so does the archive compressed with Yaz0");
+    Check(text(jaudio::DecodeYaz0(files::LiteralYaz0(le))) == text(be), "so does the archive compressed with Yaz0");
 
     // The Switch's release of Pikmin 2 has wide entries of 24 bytes.
     const std::vector<uint8_t> wide = files::RarcFile(kFiles, false, jaudio::kWideRarcEntrySize);
@@ -1455,6 +1527,7 @@ int main()
     TestSoundTable();
     TestLaterLayout();
     TestFirstLayouts();
+    TestSequenceBlocksAndBaac();
     TestRarc();
     TestRepackSequenceTable();
     TestReadSequenceTable();

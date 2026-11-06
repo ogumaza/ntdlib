@@ -300,6 +300,18 @@ void StreamSoundPlayer::Start(Engine& engine)
     }
 }
 
+void StreamSoundPlayer::SetTrackVolume(uint32_t tracks, float volume)
+{
+    const float raised = volume >= 0.0f ? volume : 0.0f;
+    for (std::size_t index = 0; index < tracks_.size() && index < 32; ++index)
+    {
+        if ((tracks >> index & 1) != 0)
+        {
+            tracks_[index].volume = raised;
+        }
+    }
+}
+
 void StreamSoundPlayer::Update(Engine& engine)
 {
     if (!started_ || finished_)

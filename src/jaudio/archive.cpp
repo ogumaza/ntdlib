@@ -19,6 +19,7 @@
 #include "jaudio/reader.h"
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/bank.h"
+#include "ntdlib/jaudio/bx.h"
 #include "ntdlib/jaudio/wave_system.h"
 
 namespace ntdlib::jaudio
@@ -46,7 +47,8 @@ xsflib::ReaderOptions ReaderOptionsOf(const BaaOptions& options)
 
 // The number of argument bytes after a command's tag, or nothing for a command that isn't known. Mario Kart: Double
 // Dash!!'s code handles "baac" (0x80122f50), not its sound library. The command gives a block's start and end. The game
-// copies the block: a count, the offsets of more start-up archives, and the archives. The readers here skip it.
+// copies the block: a count, the offsets of more start-up archives, and the archives. SoundArchive::Parse reads their
+// wave systems and banks. The other readers skip the block.
 std::optional<std::size_t> ArgumentBytes(const std::string& tag)
 {
     if (tag == "ws  " || tag == "bms ")
@@ -240,6 +242,10 @@ std::vector<SoundEntry> ReadSoundTable(const xsflib::Reader& table, uint32_t tab
                 const ItemLayout layout = options.first_layouts ? FirstLayoutOf(sound.type) : LayoutOf(sound.type);
                 sound.volume = table.U8(entry + layout.volume);
                 sound.stream = layout.stream;
+                if (!options.first_layouts && (sound.type & 0xf0) == 0x60)
+                {
+                    sound.switches = table.U16(entry + 6);
+                }
                 if (const std::optional<uint32_t> slot = name_slot(names_group, 8, i))
                 {
                     sound.name = name(*slot);
@@ -439,27 +445,57 @@ ItemLayout FirstLayoutOf(uint8_t type)
     return {.volume = 8, .file = std::nullopt, .stream = type == 0x30, .block = type == 0x20};
 }
 
-SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
+SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa, const BaaOptions& options)
 {
     SoundArchive archive;
     archive.data_ = std::move(baa);
-    const BaaOptions kOptions;
     const xsflib::Reader r(archive.data_, IsBigEndian(archive.data_, "AA_<"), kReaderOptions);
+
+    // Reads the banks at `banks` in the archive that `from` reads: each with the number of the wave system that it
+    // plays, and its offset. A bank's chunks can end past its size (see Bank::Parse). Each bank therefore gets the rest
+    // of the archive. `base` is the archive's offset in the file, for the warnings.
+    const auto read_banks =
+        [&](const xsflib::Reader& from, const std::vector<std::pair<uint32_t, uint32_t>>& banks, std::size_t base)
+    {
+        for (const auto& [wave_system, offset] : banks)
+        {
+            try
+            {
+                const std::size_t rest = from.Size() - std::min<std::size_t>(offset, from.Size());
+                archive.banks_.push_back(Bank::Parse(from.Sub(offset, rest), wave_system));
+            }
+            catch (const xsflib::FormatError& e)
+            {
+                archive.warnings_.push_back("bank at offset " + std::to_string(base + offset) + ": " + e.what());
+            }
+        }
+    };
 
     // Each command's arguments are offsets into the archive. A wave system is read as the walk reaches it.
     std::span<const uint8_t> bst, bstn;
-    uint32_t bst_offset = 0;
+    uint32_t bst_offset = 0, baac_offset = 0;
+    std::span<const uint8_t> baac;
     std::vector<std::pair<uint32_t, uint32_t>> banks; // wave system number, offset
     const auto read_command = [&](const std::string& tag, std::size_t at)
     {
         if (tag == "ws  ")
         {
             const uint32_t number = r.U32(at), offset = r.U32(at + 4);
-            archive.wave_systems_.push_back(ReadWaveSystem(WaveSystemData(r, offset, kOptions), number));
+            archive.wave_systems_.push_back(ReadWaveSystem(WaveSystemData(r, offset, options), number));
         }
         else if (tag == "bnk ")
         {
             banks.emplace_back(r.U32(at), r.U32(at + 4));
+        }
+        else if (tag == "bms ")
+        {
+            const std::span<const uint8_t> block = Block(r, at + 4);
+            archive.blocks_[r.U32(at)] = {r.U32(at + 4), block.size()};
+        }
+        else if (tag == "baac")
+        {
+            baac = Block(r, at);
+            baac_offset = r.U32(at);
         }
         else if (tag == "bst " || tag == "bstn" || tag == "bsc ")
         {
@@ -480,20 +516,45 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
             }
         }
     };
-    WalkCommands(r, kOptions, read_command);
+    WalkCommands(r, options, read_command);
+    read_banks(r, banks, 0);
 
-    // Banks: each plays the wave system that its chunk names. A bank's chunks can end past its size (see Bank::Parse).
-    // Each bank therefore gets the rest of the archive.
-    for (const auto& [wave_system, offset] : banks)
+    // The archives of the "baac" block (see Parse in archive.h). Their offsets are from the block's start. Each
+    // archive's commands give offsets from the archive's start. An archive ends where the next starts. The last ends
+    // with the block.
+    if (!baac.empty())
     {
-        try
+        const xsflib::Reader block(baac, r.BigEndian(), kReaderOptions);
+        const uint32_t count = block.U32(0);
+        for (uint32_t k = 0; k < count; k++)
         {
-            const std::size_t rest = r.Size() - std::min<std::size_t>(offset, r.Size());
-            archive.banks_.push_back(Bank::Parse(r.Sub(offset, rest), wave_system));
-        }
-        catch (const xsflib::FormatError& e)
-        {
-            archive.warnings_.push_back("bank at offset " + std::to_string(offset) + ": " + e.what());
+            const uint32_t start = block.U32(4 + std::size_t{4} * k);
+            const uint32_t end =
+                k + 1 < count ? block.U32(8 + std::size_t{4} * k) : static_cast<uint32_t>(block.Size());
+            if (end < start)
+            {
+                throw xsflib::FormatError("archive's baac block has an archive that ends before it starts");
+            }
+
+            const std::span<const uint8_t> data = block.Sub(start, end - start);
+            const xsflib::Reader more(data, IsBigEndian(data, "AA_<"), kReaderOptions);
+            const uint32_t place = (k + 1) << 16;
+            std::vector<std::pair<uint32_t, uint32_t>> more_banks;
+            const auto read_more = [&](const std::string& tag, std::size_t at)
+            {
+                if (tag == "ws  ")
+                {
+                    const uint32_t number = more.U32(at), offset = more.U32(at + 4);
+                    archive.wave_systems_.push_back(
+                        ReadWaveSystem(WaveSystemData(more, offset, options), place | number));
+                }
+                else if (tag == "bnk ")
+                {
+                    more_banks.emplace_back(place | more.U32(at), more.U32(at + 4));
+                }
+            };
+            WalkCommands(more, options, read_more);
+            read_banks(more, more_banks, std::size_t{baac_offset} + start);
         }
     }
 
@@ -526,7 +587,7 @@ SoundArchive SoundArchive::Parse(std::vector<uint8_t> baa)
             bstn.empty() ? std::nullopt
                          : std::optional<xsflib::Reader>(xsflib::Reader(bstn, r.BigEndian(), kReaderOptions));
         archive.sounds_ =
-            ReadSoundTable(xsflib::Reader(bst, r.BigEndian(), kReaderOptions), bst_offset, names, kOptions);
+            ReadSoundTable(xsflib::Reader(bst, r.BigEndian(), kReaderOptions), bst_offset, names, options);
     }
 
     return archive;
@@ -539,6 +600,16 @@ SoundArchive SoundArchive::ParseAaf(std::vector<uint8_t> aaf)
     archive.sounds_ = ReadAafSounds(archive.data_);
     archive.wave_systems_ = ReadAafWaveSystems(archive.data_);
     archive.banks_ = ReadAafBanks(archive.data_, archive.warnings_);
+
+    return archive;
+}
+
+SoundArchive SoundArchive::ParseBx(std::vector<uint8_t> bx)
+{
+    SoundArchive archive;
+    archive.data_ = std::move(bx);
+    archive.wave_systems_ = ReadBxWaveSystems(archive.data_);
+    archive.banks_ = ReadBxBanks(archive.data_, archive.warnings_);
 
     return archive;
 }
@@ -582,6 +653,17 @@ std::optional<uint32_t> SoundArchive::CollectionSequence(uint32_t category, uint
     }
 
     return collection_[category][index];
+}
+
+std::optional<std::span<const uint8_t>> SoundArchive::SequenceBlock(uint32_t id) const
+{
+    const auto found = blocks_.find(id);
+    if (found == blocks_.end())
+    {
+        return std::nullopt;
+    }
+
+    return std::span<const uint8_t>(data_).subspan(found->second.first, found->second.second);
 }
 
 } // namespace ntdlib::jaudio

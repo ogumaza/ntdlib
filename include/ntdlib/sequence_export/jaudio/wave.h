@@ -28,8 +28,9 @@ struct Pcm : seqlib::Pcm
 
 // Decode `info`'s samples from its AW file, `aw`. A looping wave ends at its loop end. An ADPCM wave's loop starts each
 // repeat from the decoder history that the wave system gives. Where that history differs from the decoder's at the loop
-// start, the loop is unrolled once. The first pass and the repeats then play as in the game. Throw FormatError if the
-// samples run past the file, or for 2-bit ADPCM. No known game uses it.
+// start, the loop is unrolled once. The first pass and the repeats then play as in the game. Both forms of ADPCM decode
+// this way: 4-bit and 2-bit. Super Mario Sunshine and Pikmin use 2-bit ADPCM for some effects. Throw FormatError if the
+// samples run past the file.
 Pcm DecodeWave(const WaveInfo& info, std::span<const uint8_t> aw);
 
 using seqlib::PreparedWave;

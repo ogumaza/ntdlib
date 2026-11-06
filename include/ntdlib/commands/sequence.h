@@ -94,8 +94,26 @@ enum class Kind : uint8_t
     kCompareLess,
     kCompareNotEqual,
     kUserProcedure,
-    kOther, // an opcode that does nothing on the console, in `encoding.opcode`
-    kData,  // bytes that no command reaches, in `bytes`
+    kNoteOff,     // ends the newest note with `key` whose length was 0: MP2K's end of a tie
+    kRepeat,      // goes back to `target` until the command has run `value` times in all, or for ever at 0
+    kJumpIfEqual, // goes to `target` if variable `index` compares with `value` as the kind's name says
+    kJumpIfNotEqual,
+    kJumpIfGreater,
+    kJumpIfGreaterOrEqual,
+    kJumpIfLessOrEqual,
+    kJumpIfLess,
+    kTune,         // a fine tune of the track's pitch
+    kRegister,     // writes `value` to the sound register `index` bytes past the first
+    kSampleWave,   // the track's voice plays the sample at address `value`
+    kVoiceType,    // the type of the track's voice
+    kEchoVolume,   // MP2K's echo of a PSG note after its release: its level
+    kEchoLength,   // its length in frames
+    kPsgLength,    // a PSG voice's length
+    kSweep,        // a PSG voice's sweep
+    kSampleOffset, // the point in the sample that the track's notes start from
+    kOther,        // an opcode that does nothing on the console, in `encoding.opcode`, or on Konami's GBA driver a
+                   // command without a kind, with its arguments in `bytes`
+    kData,         // bytes that no command reaches, in `bytes`
 };
 
 // The number of kinds.
@@ -126,11 +144,25 @@ struct Encoding
 {
     friend bool operator==(const Encoding&, const Encoding&) = default;
 
-    uint16_t opcode = 0;          // a kOther command's opcode: a byte, or 0xF000 plus the byte after 0xF0
+    uint16_t opcode = 0;          // a kOther command's opcode: a byte, or 0xF000 plus the byte after 0xF0. On Konami's
+                                  // GBA driver, 0x100 plus the first byte of a command that keeps its bytes
     uint8_t value_bytes = 0;      // the bytes of a variable-length value, where it took more than it requires; else 0
     uint8_t unused_time = 0;      // a time prefix that the command reads no time for: its byte, or 0
     bool unused_random = false;   // a random prefix that the command reads no argument for
     bool unused_variable = false; // a variable prefix that the command reads no argument for
+
+    // MP2K: the command repeats the running status, and its bytes leave the opcode out. On MP2K, `opcode` holds a
+    // kOther command's opcode, the opcode of an end other than 0xB1, or 0xCD00 plus the byte after 0xCD for an extended
+    // command that stands for a kind, such as a long wait.
+    bool repeated = false;
+
+    // MP2K: the argument bytes of a note or of an end of a tie, where they aren't the usual ones. A note's usual ones
+    // are its key, its velocity and, where its length requires it, its extra length. An end of a tie's usual one is
+    // its key. The bytes that a command leaves out take the track's last key and velocity.
+    std::optional<uint8_t> arguments;
+
+    // MP2K: a note's length code (0 to 48), where it isn't the code of the longest length up to the note's length.
+    std::optional<uint8_t> length_code;
 };
 
 struct Command
@@ -141,13 +173,16 @@ struct Command
     bool conditional = false; // runs only if the last comparison held
     uint8_t key = 0;
     int64_t velocity = 0;         // a note's velocity: a level (units.h)
-    uint8_t index = 0;            // the track, bus, LFO or variable that the command addresses
-    Argument value;               // a note's length, a wait, or a setting's value
-    std::optional<Argument> time; // the time over which a setting moves to its value
-    uint32_t target = 0;          // the item that a jump, a call or a track start goes to
-    bool target_outside = false;  // `target` is a byte offset past the end of the bytes, where no item starts
+    uint8_t index = 0;            // the track, bus, LFO, variable or register that the command addresses
+    Argument value = {};          // a note's length, a wait, or a setting's value
+    std::optional<Argument> time = {}; // the time over which a setting moves to its value
+    uint32_t target = 0;               // the item that a command of HasTarget goes to
+    bool target_outside = false; // `target` is a byte offset or an address outside the bytes, where no item starts
     Encoding encoding;
-    std::vector<uint8_t> bytes; // a kData item's bytes
+    std::vector<uint8_t> bytes; // a kData item's bytes, the argument bytes of an MP2K or DSE command of kOther, or on
+                                // Konami's GBA driver the arguments of kOther, of a loop point and of a command that
+                                // keeps its bytes
+    std::optional<uint16_t> sample = {}; // on Konami's GBA driver, the sample that a sample note plays
 };
 
 struct Label

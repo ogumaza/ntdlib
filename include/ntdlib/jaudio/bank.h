@@ -81,6 +81,7 @@ struct VelocityRegion
     uint16_t wave_id = 0;
     float volume = 1.0f;
     float pitch = 1.0f;
+    uint16_t system_id = 0; // the high half of the wave's id word: some archives name the wave's system by it
 };
 
 // The velocity regions that a range of keys plays, up to `high_key`.
@@ -135,6 +136,10 @@ struct Bank
     uint32_t version = 0;
     std::vector<Oscillator> oscillators;
     std::map<uint32_t, std::variant<Instrument, DrumSet>> programs; // drum sets from 0xe4 in version 0 banks
+
+    // The numbers of the wave systems that the velocity regions name by system_id, when they aren't all wave_system.
+    // A region whose system_id isn't here plays a wave of wave_system. Luigi's Mansion has banks like that (aaf.h).
+    std::map<uint16_t, uint32_t> named_systems;
 };
 
 } // namespace ntdlib::jaudio

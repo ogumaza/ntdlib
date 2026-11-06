@@ -282,8 +282,8 @@ std::string RegionLines(const std::vector<std::pair<int, int>>& keys,
     std::string s;
     for (const std::pair<int, int>& range : keys)
     {
-        const std::vector<ResamplingSpan> spans = resampling_slot != 0 ? ResamplingSpans(range, region, settings)
-                                                                       : std::vector<ResamplingSpan>{{range, nullptr}};
+        const std::vector<ResamplingSpan> spans =
+            resampling_slot != 0 ? ResamplingSpans(range, region, settings) : PitchLimitSpans(range, region, settings);
         for (const ResamplingSpan& span : spans)
         {
             const std::string low_pass = span.filter ? SfzResamplingOpcodes(*span.filter, region, resampling_slot) : "";
@@ -291,7 +291,7 @@ std::string RegionLines(const std::vector<std::pair<int, int>>& keys,
             {
                 for (std::size_t c = 0; c < channels; c++)
                 {
-                    s += line(c, span.keys, v) + low_pass + "\n";
+                    s += line(c, span, v) + low_pass + "\n";
                 }
             }
         }
@@ -307,6 +307,11 @@ std::string SfzPitchOpcodes(uint8_t original_key, float tune)
     s += seqlib::sfz::TuneOpcodes(static_cast<int>(std::lround(cents)));
 
     return s;
+}
+
+std::string SfzFixedPitchOpcodes(int cents)
+{
+    return " pitch_keytrack=0" + seqlib::sfz::TuneOpcodes(cents);
 }
 
 std::string SfzVolumeOpcode(uint8_t volume, double gain_db, bool silent, int16_t lift)

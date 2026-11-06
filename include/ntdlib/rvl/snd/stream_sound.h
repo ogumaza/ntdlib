@@ -20,15 +20,22 @@
 // priority, 255. The voices keep the dual pan mode and the square-root curve: no build gives a stream's voices the
 // sound's pan mode or curve. Archive mode leaves the game's parameters at their starting values. The voices then take
 // the volume of the sound's entry, the tracks' volumes and pans, and the sends that the game sets on the sound.
+//
+// A game's code can also set the volume of each track through the sound's handle (StrmSound::SetTrackVolume, 0x800a8960
+// in Mario Kart Wii's main.dol). The builds from March 2008 multiply the volume of the track's voice by that volume
+// (UpdateVoiceParams, 0x800a6ff0). Archive mode starts every track at 1. Engine::StartStreamSound can silence some of
+// the tracks as the sound starts. StartingStreamTracks gives the tracks that a known game plays as its streams start.
 
 #pragma once
 
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/stream_file.h"
+#include "ntdlib/rvl/snd/arrangement.h"
 #include "ntdlib/rvl/snd/driver.h"
 #include "ntdlib/sound_build.h"
 
@@ -47,12 +54,14 @@ public:
 
     // A track that the player plays: the stream's channels that its voice plays, and the volume and pan that the stream
     // file gives the track. The builds before March 2008 play one track of the stream's first two channels, at full
-    // volume and in the centre.
+    // volume and in the centre. `handle_volume` is the volume that the game's code sets through the sound's handle
+    // (SetTrackVolume).
     struct Track
     {
         bool active = false;
         uint8_t volume = 127;
         uint8_t pan = 64;
+        float handle_volume = 1.0f;
         std::vector<uint8_t> channels;
     };
 
@@ -90,6 +99,13 @@ public:
     {
         started_ = true;
     }
+
+    // Sets the volume of each track whose bit `tracks` sets, bit N for track N, from the player's next update. The game
+    // clamps the volume to the range 0 to 1 (StrmSound::SetTrackVolume, 0x800a8960) and stores it in the player's
+    // tracks (StrmPlayer::SetTrackVolume, 0x800a7f20). The model sets the volume at once: the game can also move it
+    // over a number of frames. The builds before March 2008 give the voice the player's volume alone (Update, Wii
+    // Sports' main.dol 0x80049d00). There, the track's volume changes nothing.
+    void SetTrackVolume(uint32_t tracks, float volume);
 
     // Each sound frame (Update, 0x80049bb0 and 0x800a6e30): the voices start in the first (StrmPlayer::Start,
     // 0x80048cac and 0x800a5e10). In each frame, the player stops once a track's voice has gone, and otherwise gives
@@ -145,5 +161,11 @@ private:
     // leaves the game's other parameters at their starting values.
     float volume_ = 1.0f;
 };
+
+// The tracks that a known game plays of stream sound `sound`, by its name, as the sound starts, bit N for track N. The
+// game's code sets the others to a volume of 0 through the sound's handle. `archive_sha1` is the SHA-1 of the sound
+// archive that holds the sound, in 40 lowercase hex digits. Every track for a sound that the list leaves out, and for
+// every sound of an unknown archive. Engine::StartStreamSound takes the tracks.
+uint16_t StartingStreamTracks(std::string_view archive_sha1, std::string_view sound);
 
 } // namespace ntdlib::rvl::snd

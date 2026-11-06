@@ -25,6 +25,7 @@
 #include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/instruments.h"
 #include "ntdlib/sequence_export/jaudio/performance.h"
+#include "ntdlib/sequence_export/jaudio/track_filter.h"
 #include "ntdlib/sequence_export/jaudio/wave.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -35,10 +36,10 @@ namespace
 using seqlib::WavFile;
 using seqlib::sfz::Number;
 
-// Write a region's opcodes: its sample, keys and velocities, tuning, level, pan, envelope and loop. Add `gain_db` to
-// its volume. A region at the DSP's pitch limit plays every key at its tuning. A range of velocities from 0 starts at
-// 1. A velocity of 0 is a note-off.
-std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double gain_db)
+// Write a region's opcodes: its sample, keys and velocities, tuning, level, pan, envelope, loop and filter, as `layer`
+// of the track's filter. Add `gain_db` to its volume. A region at the DSP's pitch limit plays every key at its tuning.
+// A range of velocities from 0 starts at 1. A velocity of 0 is a note-off.
+std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, const FilterLayer& layer, double gain_db)
 {
     std::string s = "<region> sample=" + wave.name + " lokey=" + std::to_string(z.low_key) +
                     " hikey=" + std::to_string(z.high_key) + " lovel=" + std::to_string(std::max(z.low_velocity, 1)) +
@@ -50,7 +51,8 @@ std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double
     s += seqlib::sfz::TuneOpcodes(static_cast<int>(std::lround(std::clamp(z.cents, -12000.0, 12000.0))));
 
     const SfzEnvelope e = ConvertEnvelopeForSfz(z.envelope);
-    const double volume = (z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0) + e.peak_db + gain_db;
+    const double volume =
+        (z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0) + e.peak_db + gain_db + 20.0 * std::log10(layer.gain);
     if (std::abs(volume) >= 0.005)
     {
         s += " volume=" + Number(volume, 2);
@@ -70,6 +72,10 @@ std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double
                                           .sustain = e.sustain,
                                           .release = e.release});
     s += seqlib::sfz::LoopOpcodes(wave.loop, wave.loop_start, wave.loop_end);
+    if (layer.cutoff_cents)
+    {
+        s += " cutoff=" + Number(CutoffHz(*layer.cutoff_cents), 1);
+    }
 
     return s + "\n";
 }
@@ -143,13 +149,17 @@ SfzInstruments BuildSfz(const Performance& perf, const MidiReport& midi, BankSet
         {
             const PresetKey& key = perf.presets[p];
             std::string s = VibratoOpcodes(key) + "<group>\n";
+            const std::vector<FilterLayer>& layers = perf.sfz_filter_layers.at(key.track_filter);
             for (const PresetZone& z : ZonesOf(p, perf, banks))
             {
                 const SfzSamples::Wave& wave = samples.Get(WaveName(z.wave_system, z.wave_id),
                                                            [&] { return banks.GetWave(z.wave_system, z.wave_id); });
                 if (!wave.name.empty())
                 {
-                    s += RegionLine(z, wave, perf.level_cut_db);
+                    for (const FilterLayer& layer : layers)
+                    {
+                        s += RegionLine(z, wave, layer, perf.level_cut_db);
+                    }
                 }
             }
 

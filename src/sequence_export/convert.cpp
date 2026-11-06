@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Sequence conversion for the CSAR and FSAR formats (see convert.h). This file builds the SoundFont. seqlib writes the
-// MIDI file, and sfz.cpp the SFZ files.
+// Sequence conversion for the CSAR and FSAR formats (see convert.h): of a sequence, or of sequences that play together
+// as one piece. This file builds the SoundFont. seqlib writes the MIDI file, and sfz.cpp the SFZ files.
 //
 // Each performance preset combines a bank instrument with its track settings. Each such preset becomes one SoundFont
 // instrument and preset, with a zone for each region. Zones contain the region's key and velocity ranges, sample, root
@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,14 +44,33 @@ namespace sf2 = seqlib::sf2;
 namespace
 {
 
+// Whether `keep` takes a zone of any of `played`'s key ranges and velocity ranges.
+bool KeepsAny(const PlayedRanges& played, const ZoneFilter& keep)
+{
+    for (const std::pair<int, int>& keys : played.keys)
+    {
+        for (const std::pair<int, int>& velocities : played.velocities)
+        {
+            if (keep(keys, velocities))
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 // Builds a SoundFont instrument and preset for each performance preset. Adds each wave's samples only once.
 class SoundFontBuilder : public SoundFontParts
 {
 public:
     // Adds `quieter` centibels of attenuation to every region (see SoundFontCut). The zones fit their cutoff for the
-    // track's low-pass to the keys that `perf` plays (ZoneLowPass).
-    SoundFontBuilder(BankSet& banks, double quieter, const Performance& perf, const Settings& settings)
-        : banks_(banks), quieter_(quieter), settings_(settings), low_pass_(perf, settings)
+    // track's low-pass to the keys that `perf` plays (ZoneLowPass). `played`, if set, leaves out each zone that no note
+    // picks, and each wave that only such zones play.
+    SoundFontBuilder(BankSet& banks, double quieter, const Performance& perf, const Settings& settings,
+                     const PlayedNotes* played = nullptr)
+        : banks_(banks), quieter_(quieter), settings_(settings), low_pass_(perf, settings), played_(played)
     {
     }
 
@@ -67,6 +87,7 @@ private:
     double quieter_;
     const Settings& settings_;
     ZoneLowPass low_pass_;
+    const PlayedNotes* played_;
 };
 
 const std::vector<uint16_t>& SoundFontBuilder::WaveSamples(int slot, uint32_t wave_id_index, uint8_t root_key)
@@ -94,8 +115,22 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
                             std::to_string(key.program));
     }
 
+    ZoneFilter keep;
+    if (played_ != nullptr)
+    {
+        keep = [this, index](std::pair<int, int> keys, std::pair<int, int> velocities)
+        {
+            return played_->Picks(index, keys, velocities);
+        };
+    }
+
     for (const PlayedRanges& played : bank_inst ? RegionRanges(*bank_inst) : std::vector<PlayedRanges>())
     {
+        if (keep && !KeepsAny(played, keep))
+        {
+            continue;
+        }
+
         const sar::VelocityRegion& r = *played.region;
         // A no-wave entry is silent in the game too.
         const std::vector<uint16_t>& ids = WaveSamples(key.bank_slot, r.wave_id_index, r.original_key);
@@ -115,7 +150,8 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
         RegionGenerators g = ConvertRegion(key, RegionEnvelope(r), r.ignore_note_off, r.pitch, r.volume, r.original_key,
                                            wave.loop, quieter_, settings_);
         g.exclusive_class = r.key_group;
-        const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation};
+        const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation,
+                                             key.at_pitch_limits};
         const auto zone = [&](std::size_t c, std::pair<int, int> keys, std::pair<int, int> velocities)
         {
             double p = pan;
@@ -127,23 +163,21 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
             return RegionZone(g, keys, velocities, p, 0.0, ids[c]);
         };
         AddRegionZones(inst.zones, index, key, played.keys, played.velocities, ids.size(), resampling,
-                       *banks_.WaveKey(key.bank_slot, r.wave_id_index), wave, low_pass_, settings_, zone);
+                       *banks_.WaveKey(key.bank_slot, r.wave_id_index), wave, low_pass_, settings_, zone, keep);
     }
 
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));
 }
 
-} // namespace
-
-Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
-                           const Settings& settings, const std::string& program)
+// Builds the MIDI file, the SoundFont and the SFZ files of `performance`, which plays the banks in `banks`. `title`
+// names the files. `source` says in the SoundFont's comment what the performance plays, such as "sequence <label>".
+Conversion ConvertPerformance(Performance performance, BankSet& banks, const std::string& title,
+                              const std::string& source, const Settings& settings, const std::string& program)
 {
-    const sar::SoundInfo& sound = archive.Sounds()[sound_index];
-    BankSet banks(archive, sound, settings);
     Conversion c;
-    c.performance = Perform(archive, sound_index, banks, options, settings);
+    c.performance = std::move(performance);
 
-    const seqlib::midi::MidiReport midi = WriteMidiFile(c, sound.name);
+    const seqlib::midi::MidiReport midi = WriteMidiFile(c, title);
 
     // The attenuation that keeps the loudest region that the performance plays at full level (SoundFontCut).
     auto volume_of = [&banks](const PresetKey& key, int note, int velocity)
@@ -153,19 +187,37 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
     };
     const double quieter = SoundFontCut(c.performance, volume_of);
 
-    SoundFontBuilder builder(banks, quieter, c.performance, settings);
     const std::vector<std::string> names = PresetNames(c.performance.presets, true);
-    for (std::size_t i = 0; i < c.performance.presets.size(); i++)
+    std::optional<SoundFontBuilder> builder;
+    const auto build = [&](const PlayedNotes* played)
     {
-        builder.Add(static_cast<uint32_t>(i), c.performance.presets[i], names[i]);
-    }
-    for (uint32_t index : midi.channel_10_presets)
+        builder.emplace(banks, quieter, c.performance, settings, played);
+        for (std::size_t i = 0; i < c.performance.presets.size(); i++)
+        {
+            builder->Add(static_cast<uint32_t>(i), c.performance.presets[i], names[i]);
+        }
+        for (uint32_t index : midi.channel_10_presets)
+        {
+            builder->AddChannel10Copy(index);
+        }
+    };
+    build(nullptr);
+
+    // A SoundFont holds each preset's whole instrument. Many presets of large instruments can pass the format's limits.
+    // A sequence plays few of their keys. The SoundFont then holds only the zones that the notes pick. A synth plays the
+    // same from it.
+    const PlayedNotes played(c.performance);
+    std::vector<std::string> builder_warnings;
+    if (!FitsSoundFont(builder->Result()))
     {
-        builder.AddChannel10Copy(index);
+        build(&played);
+        builder_warnings.push_back(
+            "the SoundFont holds only the zones that the sequence plays: with every zone, it would pass the format's "
+            "limits");
     }
 
-    sf2::SoundFont& sf = builder.Result();
-    std::string comment = "Converted by " + program + " from sequence " + sound.name + ". Banks:";
+    sf2::SoundFont& sf = builder->Result();
+    std::string comment = "Converted by " + program + " from " + source + ". Banks:";
     for (int slot = 0; slot < sar::kBankSlots; slot++)
     {
         if (banks.GetBank(slot))
@@ -174,12 +226,53 @@ Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_inde
         }
     }
 
-    WriteSoundFont(c, sf, sound.name, comment, program);
-    c.sfz = BuildSfz(c.performance, midi, banks, sound.name, names, settings, program);
+    WriteSoundFont(c, sf, title, comment, program);
+    c.sfz = BuildSfz(c.performance, midi, banks, title, names, settings, program);
 
-    CollectWarnings(c, midi, builder.Warnings(), banks.Errors());
+    builder_warnings.insert(builder_warnings.end(), builder->Warnings().begin(), builder->Warnings().end());
+    CollectWarnings(c, midi, builder_warnings, banks.Errors());
 
     return c;
+}
+
+} // namespace
+
+Conversion ConvertSequence(const sar::SoundArchive& archive, uint32_t sound_index, const PerformOptions& options,
+                           const Settings& settings, const std::string& program)
+{
+    // A game's code can give the sequence other banks as it starts it (PerformOptions::banks).
+    sar::SoundInfo sound = archive.Sounds()[sound_index];
+    if (options.banks)
+    {
+        sound.banks.assign(options.banks->begin(), options.banks->end());
+    }
+
+    BankSet banks(archive, sound, settings);
+    Performance performance = Perform(archive, sound_index, banks, options, settings);
+
+    return ConvertPerformance(std::move(performance), banks, sound.name, "sequence " + sound.name, settings, program);
+}
+
+Conversion ConvertTogether(const sar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
+                           const std::string& name, const PerformOptions& options, const Settings& settings,
+                           const std::string& program)
+{
+    if (sound_indices.empty())
+    {
+        throw std::invalid_argument("no sequences to convert together");
+    }
+
+    BankSet banks(archive, archive.Sounds()[sound_indices[0]], settings);
+    Performance performance = PerformTogether(archive, sound_indices, banks, options, settings);
+
+    // The SoundFont's comment lists the sequences: "sequences A, B and C together".
+    std::vector<std::string> labels;
+    for (const uint32_t index : sound_indices)
+    {
+        labels.push_back(archive.Sounds()[index].name);
+    }
+
+    return ConvertPerformance(std::move(performance), banks, name, SequencesText(labels), settings, program);
 }
 
 BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings,

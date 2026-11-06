@@ -11,6 +11,9 @@
 // 0x022983CC). In each frame, the callback runs the bus's effects in the order that the game appended them. Each
 // class's UpdateBuffer (for FxDelay, 0x022B0F2C) passes the library's callback the bus's first three channels.
 // UpdateBuffer does nothing while the device mixes for Dolby Pro Logic II.
+//
+// Nintendo Land appends two classes that its code defines (nintendo_land::Reverb and nintendo_land::Delay) in the same
+// way. Their UpdateBuffer has no test of the mode.
 
 #pragma once
 
@@ -26,6 +29,7 @@
 #include "ntdlib/cafe/axfx/reverb_hi.h"
 #include "ntdlib/cafe/axfx/reverb_std.h"
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "ntdlib/cafe/snd/nintendo_land_effects.h"
 #include "ntdlib/cafe/snd/util.h"
 
 namespace ntdlib::cafe::snd
@@ -44,8 +48,8 @@ class Effects
 {
 public:
     // Sets up `setups` in order, at the rate of the renderer that `system` started with. An effect whose Init fails
-    // isn't appended. The effects skip their frames on a device whose mode in `modes` (the TV's, then the GamePad's)
-    // is Dolby Pro Logic II.
+    // isn't appended. nw::snd's effects skip their frames on a device whose mode in `modes` (the TV's, then the
+    // GamePad's) is Dolby Pro Logic II.
     Effects(ax::System& system, const std::vector<EffectSetup>& setups, const std::array<OutputMode, 2>& modes);
 
     Effects(const Effects&) = delete;
@@ -67,9 +71,10 @@ public:
     void Restore(const Snapshot& snapshot);
 
 private:
-    using Model = std::variant<axfx::ReverbHiExp, axfx::ReverbStdExp, axfx::ChorusExp, axfx::DelayExp>;
+    using Model = std::variant<axfx::ReverbHiExp, axfx::ReverbStdExp, axfx::ChorusExp, axfx::DelayExp,
+                               nintendo_land::Reverb, nintendo_land::Delay>;
 
-    // A bus with effects: the device, the bus, whether the effects skip their frames, and the effects in order.
+    // A bus with effects: the device, the bus, whether nw::snd's effects skip their frames, and the effects in order.
     struct Bus
     {
         ax::System::Device device = ax::System::Device::kTv;

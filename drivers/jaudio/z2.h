@@ -16,7 +16,10 @@
  *      first scene's groups, the scene manager first erases those that the list doesn't hold. If the profile names
  *      start-up groups for room and the wave heap then has no room for a group, the scene manager erases the list's
  *      groups and those start-up groups, and loads the list's groups again;
- *   7. the sound: the audio manager starts it by its JAudio sound ID.
+ *   7. the sound: the audio manager starts it by its JAudio sound ID. If the profile names the music manager, the
+ *      driver then gives the children of the sound's track 0 the volumes that the mini file names, as the game's
+ *      bgmStart and changeBgmStatus do. If the profile names setPortData, the driver writes the mini file's status
+ *      to port 9 of the sound's root track.
  * Then the audio manager's frame process runs once a frame, forever. A step that fails stops the driver with its number
  * in the status word (step 1 is the driver's check of its header).
  * The game's audio process calls the set-up and then the frame process. z2_main() calls them directly.
@@ -57,6 +60,21 @@ typedef int s32;
 #define Z2_WAVE_NONE 0
 #define Z2_WAVE_LOADING 1
 #define Z2_WAVE_LOADED 2
+
+/* The most children of track 0 that a mini file gives a volume between 0 and 1. */
+#define Z2_MAX_PARTIAL_CHILDREN 16u
+
+/* The port of the root track that holds a piece's status (Z2SeqMgr::changeBgmStatus), and the flag of a status that
+   the driver writes there. */
+#define Z2_MUSIC_STATUS_PORT 9u
+#define Z2_MUSIC_STATUS_SET 0x10000u
+#define Z2_MUSIC_STATUS_LATER 0x20000u
+/* The frame after the start in which the driver writes a later status, once the sequence plays: a second at 30 frames
+   a second. */
+#define Z2_LATER_FRAMES 30u
+
+/* The port of the root track on which a piece's sequence gives its section. */
+#define Z2_SECTION_PORT 10u
 
 /* A main thread's JKRThread, allocated with room to spare. */
 #define Z2_THREAD_SIZE 0x100u
@@ -125,6 +143,26 @@ struct Z2Params
        sound's groups again. A console that erases none leaves these at 0. */
     u32 room_wave_count;               /* the groups that follow */
     u32 room_waves[Z2_MAX_ROOM_WAVES]; /* each (bank << 16) | group */
+    /* the music manager. As the game starts a piece of music, its bgmStart sets some children of the piece's track 0 to
+       a volume of 0. Its changeBgmStatus and the scenes' starts set other volumes. The driver sets the same volumes
+       after it starts the sound. A console without the two leaves them at 0. */
+    u32 music_manager;    /* the variable that holds the game's music manager (Z2SeqMgr) */
+    u32 set_child_volume; /* void Z2SeqMgr::setChildTrackVolume(JAISoundHandle*, int, f32 volume, u32, f32, f32) */
+    /* the writer of a piece's status. changeBgmStatus writes the status to port 9 of the piece's root track. The
+       function doesn't read its object. A console without it leaves it at 0. */
+    u32 set_port_data; /* void Z2SoundStarter::setPortData(JAISoundHandle*, u32 port, u16 value, s8 child) */
+    /* the reader of a piece's section, for the statuses by section below. The function doesn't read its object, and
+       it returns 0 once the handle is empty. A console without it leaves it at 0. */
+    u32 get_port_data; /* u16 Z2SoundStarter::getPortData(JAISoundHandle*, u32 port, s8 child) */
+    /* the piece's state, written by each mini file */
+    u32 muted_children;                           /* the children that start at a volume of 0, bit n for child n */
+    u32 partial_children;                         /* the children at a volume between 0 and 1, bit n for child n */
+    u32 partial_volumes[Z2_MAX_PARTIAL_CHILDREN]; /* child n's volume, as a float's bits */
+    u32 music_status; /* Z2_MUSIC_STATUS_SET | the value of port 9 of the sound's root track, or 0 for none, with
+                         Z2_MUSIC_STATUS_LATER for a status that the driver writes Z2_LATER_FRAMES frames later */
+    /* the statuses that the game's code writes in each frame by the section on port 10 of the root track. Each half
+       of the word holds (section << 8) | status. A status of 0 is none. */
+    u32 section_statuses;
 };
 
 typedef u32 (*z2_fn0)(void);
@@ -133,6 +171,28 @@ typedef u32 (*z2_fn2)(u32, u32);
 typedef u32 (*z2_fn3)(u32, u32, u32);
 typedef u32 (*z2_fn4)(u32, u32, u32, u32);
 typedef u32 (*z2_fn5)(u32, u32, u32, u32, u32);
+
+/* Calls setChildTrackVolume at `fn` for the music manager, the handle, the child and the time of the move in r3 to r6,
+   with the volume, the pan and the surround at `f` in f1 to f3, as the game's code passes floats. The driver is built
+   without floating point. A float that it passed would go in a general register. */
+__attribute__((naked)) static void z2_call_child_volume(u32 fn, const u32* f, u32 music, u32 handle, u32 child,
+                                                        u32 move)
+{
+    __asm__ volatile(
+        "mtctr 3\n"
+        "lfs 1, 0(4)\n"
+        "lfs 2, 4(4)\n"
+        "lfs 3, 8(4)\n"
+        "mr 3, 5\n"
+        "mr 4, 6\n"
+        "mr 5, 7\n"
+        "mr 6, 8\n"
+        "bctr\n");
+}
+
+/* The floats of bgmStart's mutes: a volume of 0.0f, then -1.0f for the pan and the surround. A value of -1.0f leaves
+   them as they are. */
+static const u32 z2_muted_floats[3] = {0x00000000, 0xbf800000, 0xbf800000};
 
 /* The console's steps. The driver defines them. */
 static void z2_init_machine(volatile struct Z2Params* p);
@@ -156,6 +216,25 @@ __attribute__((noreturn)) static void z2_fail(volatile struct Z2Params* p, volat
 }
 
 /* Whether every listed wave group is loaded. The scene manager's functions don't use their object. */
+/* The statuses by section, as Z2SeqMgr::fieldBgmFramework writes them in each frame. */
+static void z2_write_section_statuses(volatile struct Z2Params* p)
+{
+    if (p->section_statuses == 0 || p->get_port_data == 0 || p->set_port_data == 0)
+    {
+        return;
+    }
+
+    const u32 section = ((z2_fn4)p->get_port_data)(0, (u32)&p->sound, Z2_SECTION_PORT, 0xffffffffu) & 0xffff;
+    for (u32 shift = 0; shift < 32; shift += 16)
+    {
+        const u32 entry = (p->section_statuses >> shift) & 0xffff;
+        if ((entry & 0xff) != 0 && (entry >> 8) == section)
+        {
+            ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, entry & 0xff, 0xffffffffu);
+        }
+    }
+}
+
 static int z2_waves_loaded(volatile struct Z2Params* p)
 {
     for (u32 i = 0; i < p->wave_count && i < Z2_MAX_WAVES; i++)
@@ -337,9 +416,48 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
     }
     *status = Z2_STATUS_PLAYING;
 
-    for (;;)
+    /* The piece's state. The children of track 0 that the game's bgmStart mutes as the piece starts, as bgmStart
+       mutes them: at once, with the pan and the surround left as they are. Then the children that the state plays at
+       a volume between 0 and 1, the same way. A scene's start calls changeBgmStatus right after bgmStart. */
+    if (p->music_manager && p->set_child_volume)
     {
+        const u32 music = z2_word(p->music_manager);
+        for (u32 child = 0; child < 32; child++)
+        {
+            if (p->muted_children & (1u << child))
+            {
+                z2_call_child_volume(p->set_child_volume, z2_muted_floats, music, (u32)&p->sound, child, 0);
+            }
+        }
+        for (u32 child = 0; child < Z2_MAX_PARTIAL_CHILDREN; child++)
+        {
+            if (p->partial_children & (1u << child))
+            {
+                const u32 floats[3] = {p->partial_volumes[child], z2_muted_floats[1], z2_muted_floats[2]};
+                z2_call_child_volume(p->set_child_volume, floats, music, (u32)&p->sound, child, 0);
+            }
+        }
+    }
+
+    /* The piece's status, on port 9 of the root track (child -1), as changeBgmStatus writes it. A scene's start writes
+       it right after bgmStart. An actor writes it once the piece plays. Many sequences clear port 9 in their first
+       tick, so the driver writes such a status Z2_LATER_FRAMES frames after the start. */
+    const u32 later = p->music_status & Z2_MUSIC_STATUS_LATER;
+    if (p->set_port_data && (p->music_status & Z2_MUSIC_STATUS_SET) && !later)
+    {
+        ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff, 0xffffffffu);
+    }
+
+    for (frames = 0;; frames++)
+    {
+        z2_write_section_statuses(p);
         ((z2_fn1)p->audio_frame)(p->audio_manager);
+        if (frames == Z2_LATER_FRAMES && later && p->set_port_data && (p->music_status & Z2_MUSIC_STATUS_SET) &&
+            p->sound != 0)
+        {
+            ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff,
+                                       0xffffffffu);
+        }
         if (*status == Z2_STATUS_PLAYING && p->sound == 0)
         {
             *status = Z2_STATUS_FINISHED;

@@ -99,11 +99,15 @@ public:
     // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
     // names beside the archive. The engine keeps the stream's channels, in AX's memory. Returns the player, or nullptr
     // if there's no such stream sound or no track plays. Throws xsflib::FormatError for a file that
-    // sar::StreamFile::Read refuses.
-    StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
+    // sar::StreamFile::Read refuses. The tracks whose bits `tracks` leaves clear start at a volume of 0, bit N for
+    // track N. A game's code silences tracks that way through the sound's handle as the sound starts
+    // (StreamSoundPlayer::SetTrackVolume). StartingStreamTracks gives a known game's tracks.
+    StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file,
+                                        uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
     // The same for a stream sound of `info`, which the archive needn't hold.
-    StreamSoundPlayer* StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file);
+    StreamSoundPlayer* StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file,
+                                        uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
     // A frame of 3 ms. AX renders, and AX's frame callback updates nw::snd's AX voices (HwCallbackProc, 0x022A9FD8).
     // Then the sound thread's frame runs (FrameProcess, 0x0229F228).

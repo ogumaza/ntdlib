@@ -114,4 +114,9 @@ ImaAdpcmState ImaAdpcmNext(ImaAdpcmState state, uint8_t nibble);
 // decoded.
 std::vector<int16_t> DecodeAfc(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2);
 
+// Decodes up to `samples` samples of the GameCube's 2-bit ADPCM: 5-byte frames of 16 samples, four to a byte, the high
+// bits of each byte first. The frame's first byte and the prediction are the 4-bit form's. `hist1` and `hist2` are the
+// two samples before the first. A frame that the data cuts short isn't decoded.
+std::vector<int16_t> DecodeAfc2(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2);
+
 } // namespace ntdlib::wave

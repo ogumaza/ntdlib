@@ -28,6 +28,7 @@
 #include <variant>
 #include <vector>
 
+#include "seqlib/midi/controllers.h"
 #include "seqlib/midi/recorder.h"
 #include "seqlib/sf2/units.h"
 #include "xsflib/binary.h"
@@ -237,6 +238,12 @@ struct MidiNote
     bool lfo_bends = false;
     bool lfo_crowded = false;
     bool lfo_random = false;
+
+    // On the Wii U and the Switch: the MIDI note starts past one of the console's pitch limits (PastPitchLimit).
+    // `at_limits`: an earlier pass found its pitch still (PassFindings::pitch_moves), and its preset plays it at the
+    // limit (PresetKey::at_pitch_limits).
+    bool past_limit = false;
+    bool at_limits = false;
 };
 
 // A sounding nw::snd channel and its corresponding MIDI note.
@@ -365,8 +372,8 @@ struct Note
     float release_rate = 0;      // 0.1 dB per millisecond
 
     // Whether the wave is a one-shot. The core's position model gives the frame in which a one-shot wave runs out: at
-    // the note's start, a prediction at the key's pitch (RecordingEngine::PredictEnd), and once the voice plays, the
-    // frame at the voice's rate (Performer::TakeCoreWaves).
+    // the note's start, a prediction at the key's pitch times PerformOptions::pitch (RecordingEngine::PredictEnd), and
+    // once the voice plays, the frame at the voice's rate (Performer::TakeCoreWaves).
     bool one_shot = false;
     std::optional<uint64_t> core_end;
 
@@ -586,13 +593,19 @@ struct Track
     double change_level = -1.0;
     int change_filter = -1;
     float change_pitch = 0.0f;
-    bool idle = false;   // its last pass of a loop changed nothing; inner and Leavable passes don't count (OnLoop)
+    // Whether the track's last pass of a loop changed nothing. Inner passes don't count. A Leavable pass counts only
+    // when it changed nothing, no variable included, and drew no random number (OnLoop).
+    bool idle = false;
     uint32_t opened = 0; // the tick it last opened at
 
     // When the track last changed a player or global variable that another open track has read and can read again. The
     // value is the number of commands run by then (Performer::commands_run_). Such a change counts as a change of the
     // sound for main-loop detection (OnLoop). The other track may play because of it.
     std::optional<uint64_t> last_signal;
+
+    // The number of commands run (Performer::commands_run_) when the track last changed a variable, or 0 before its
+    // first change (see OnLoop).
+    uint64_t last_variable_change = 0;
 
     // The number of commands run (Performer::commands_run_) after the track's last conditional jump, call, return or
     // fin, and after its last note, or 0 before the first (see Leavable).
@@ -921,6 +934,11 @@ struct PassFindings
     // The MIDI notes whose pitch LFO changes while they sound, by note id. A later pass gives each of them a part of
     // its own. The pitch bends of that part add the LFO (MidiRecorder::MidiNoteOn).
     std::set<uint32_t> lfo_changes = {};
+
+    // The MIDI notes past one of the console's pitch limits whose part bends while they sound, by note id: a sweep, an
+    // LFO in the part's bends or a bend. The other notes past a limit hold their pitch. A later pass gives those notes
+    // a preset that plays them at the limit (PresetKey::at_pitch_limits).
+    std::set<uint32_t> pitch_moves = {};
 };
 
 // The recording of a sequence's performance: the MIDI events, and the parts of them that the passes use. The recorder's
@@ -1114,6 +1132,7 @@ public:
     std::map<uint32_t, int16_t> early_releases_;
     std::map<uint32_t, VolumeLfoSums> lfo_sums_;
     std::set<uint32_t> lfo_changes_;
+    std::set<uint32_t> pitch_moves_;
     std::array<TrackMidi, kTrackCount> tracks_{}; // what each track's MIDI channels have been sent
 };
 
@@ -1190,8 +1209,10 @@ public:
             }
         }
 
-        // The game's changes come in the order of their frames.
+        // The game's changes come in the order of their frames, and so do its writes in user procedures.
         std::ranges::stable_sort(options_.changes, {}, &VariableChange::frame);
+        std::ranges::stable_sort(options_.procedure_changes, {}, &ProcedureChange::frame);
+        procedure_taken_.assign(options_.procedure_changes.size(), false);
 
         main_volume_.Init(127);
 
@@ -1238,7 +1259,8 @@ public:
                 .rises = midi_.rises_,
                 .early_releases = midi_.early_releases_,
                 .lfo_fits = midi_.VolumeLfoFits(),
-                .lfo_changes = midi_.lfo_changes_};
+                .lfo_changes = midi_.lfo_changes_,
+                .pitch_moves = midi_.pitch_moves_};
     }
 
     // Highest sounding CC11 value before `level_scale` and MIDI clamping. Game volumes can reach 255. This value may
@@ -1267,8 +1289,9 @@ public:
         endless_loops_ = loops;
     }
 
-    // The counted loops that the open tracks were in when the performance was cut at the time limit, each a track and
-    // its loop's body. The set is empty when the performance ended before the limit or counted as finished there.
+    // The loops that a performance cut at the time limit makes endless when it runs again: the outermost loop that each
+    // open track was in, where that loop is a counted one, each a track and its loop's body. The set is empty when the
+    // performance ended before the limit or counted as finished there.
     const std::set<std::pair<int, uint32_t>>& LimitLoops() const
     {
         return limit_loops_;
@@ -1456,16 +1479,16 @@ private:
     // finish normally; held notes last kHoldSeconds. No further sequence commands run.
     void PlayOutStopped();
 
-    // Real milliseconds per tick at the current tempo, or 0 at tempo 0 or timebase 0. A tick of the Wii's build of
-    // October 2006 lasts 416 / tempo frames, whatever the timebase.
+    // Real milliseconds per tick at the current tempo and PerformOptions::tempo_ratio, or 0 at tempo 0 or timebase 0. A
+    // tick of the Wii's build of October 2006 lasts 416 / tempo frames, whatever the timebase.
     double MsPerTick() const
     {
         if (WiiOctober2006())
         {
-            return tempo_ > 0 ? settings_.frame_ms * kTickUnits / tempo_ : 0.0;
+            return tempo_ > 0 ? settings_.frame_ms * kTickUnits / (tempo_ * double{options_.tempo_ratio}) : 0.0;
         }
 
-        const double tpm = static_cast<double>(timebase_) * tempo_; // ticks per minute
+        const double tpm = static_cast<double>(timebase_) * tempo_ * options_.tempo_ratio; // ticks per minute
         return tpm > 0 ? 60000.0 / tpm : 0.0;
     }
 
@@ -1515,8 +1538,25 @@ private:
     void StartTick();
 
     // Makes the game's changes of variables that come by the current frame (PerformOptions::changes), before the
-    // frame's first tick. The search for the main loop then starts again.
+    // frame's first tick. The search for the main loop then starts again. It also starts again at the frame of a write
+    // in a user procedure (PerformOptions::procedure_changes). The write waits from then for a call.
     void ChangeVariables();
+
+    // Makes the game's writes in user procedure `procedure` (PerformOptions::procedure_changes) that wait for a call by
+    // the current frame and haven't taken effect, in their order. A call of the procedure by a track runs them. The
+    // search for the main loop then starts again.
+    void ChangeInProcedure(uint16_t procedure);
+
+    // Runs the game's model of user procedure `procedure` (PerformOptions::user_procedures) for a call by track `t`.
+    // The model's changes of variables count as the track's. A call that changed the model's state counts as a random
+    // draw.
+    void RunUserProcedure(int t, uint16_t procedure);
+
+    // Whether the frame of every write in a user procedure has come.
+    bool ProcedureChangesArmed() const
+    {
+        return armed_procedure_changes_ == options_.procedure_changes.size();
+    }
 
     // Runs the open tracks from track `first` on for one tick, and closes those that finish. Returns true if one of
     // them is still open.
@@ -1538,6 +1578,11 @@ private:
     // How the next pass of the main loop starts when track `t` has jumped back to `target` in this tick.
     PassStart NextPassStart(int t, uint32_t target) const;
 
+    // True if a copy of this performer that plays on for kMinLoopSeconds from track `t`'s jump back to `target` finds
+    // the loop at `target` inner (CountedPassStart). A pass of another loop then ends with a jump back to `target` in
+    // it.
+    bool TurnsInner(int t, uint32_t target) const;
+
     // True if a MIDI player that loops on the pass from `start` to `end` plays each repeat's notes as the game plays
     // the notes of the next pass (passes.h). This performer has played that pass.
     bool RepeatsAsTheGame(uint32_t start, uint32_t end) const;
@@ -1555,6 +1600,9 @@ private:
 
     // Resolves player, global or track variable `index` for track `t`. Returns nullptr above 47.
     int16_t* Variable(int t, uint8_t index);
+    // Sets track variable `index` - 32 (`index` from 32 to 47) of every allocated track, in the core and here.
+    template <typename Core>
+    void SetTrackVariables(Core& core, uint8_t index, int16_t value);
 
     // Records that track `t` reads player or global variable `index` (a comparison or an argument), or changes it. A
     // change sets Track::last_signal if another open track has read the variable and can still read on.
@@ -1757,8 +1805,11 @@ private:
     bool silent_loop_ = false;                    // the main loop sounded nothing (SilentLoop)
     MainLoopPasses main_loop_;                    // the main loop's counted passes and marked pass (OnLoop)
     std::size_t next_change_ = 0;                 // the first of the game's changes still to come (ChangeVariables)
-    uint32_t changed_at_ = 0;                     // the tick of the last change
+    std::vector<bool> procedure_taken_;           // for each write in a user procedure, whether it has taken effect
+    std::size_t armed_procedure_changes_ = 0;     // the writes in user procedures whose frames have come
+    uint32_t changed_at_ = 0;                     // the tick of the last change, or of a procedure write's frame
     std::optional<uint32_t> last_draw_;           // the last tick a track drew a random number in
+    uint64_t last_draw_order_ = 0;                // commands_run_ at the last random draw, or 0 before the first
     std::array<uint16_t, 32> variable_readers_{}; // the tracks that have read each player or global variable
     std::set<std::pair<int, uint32_t>> endless_loops_;
     std::set<std::pair<int, uint32_t>> limit_loops_;
@@ -1905,7 +1956,7 @@ MidiRecorder::MidiRecorder() : rec_(RecordingRules())
 
 void MidiRecorder::OnTempo(Performer& engine)
 {
-    const double tempo = static_cast<double>(engine.tempo_);
+    const double tempo = static_cast<double>(engine.tempo_) * engine.options_.tempo_ratio;
     const double bpm = engine.WiiOctober2006()
                            ? tempo * (60000.0 / engine.settings_.frame_ms / kTickUnits) / out_.timebase
                            : tempo * engine.timebase_ / out_.timebase;
@@ -2050,6 +2101,19 @@ int16_t* Performer::Variable(int t, uint8_t index)
     return nullptr;
 }
 
+template <typename Core>
+void Performer::SetTrackVariables(Core& core, uint8_t index, int16_t value)
+{
+    core.GetPlayer().SetVariable(core, index, value);
+    for (int t = 0; t < kTrackCount; t++)
+    {
+        if (core.GetPlayer().Track(t))
+        {
+            tracks_[t].vars[index - 32] = value;
+        }
+    }
+}
+
 PresetKey Performer::NoteKey(int t, const Note& n) const
 {
     PresetKey pk = ChannelPresetKey(tracks_[t], n);
@@ -2057,6 +2121,7 @@ PresetKey Performer::NoteKey(int t, const Note& n) const
     pk.lift = n.midi.lift;
     pk.lfo_swing = n.midi.lfo_fit.swing;
     pk.lfo_cut = n.midi.lfo_fit.cut;
+    pk.at_pitch_limits = n.midi.at_limits;
     if (midi_.earlier_.filter_moves[t])
     {
         pk.filter_controller = true;
@@ -2879,6 +2944,23 @@ void MidiRecorder::UpdateOutputs(Performer& engine, int t)
     // The games put an effect on bus A. Bus A becomes the synth's reverb. Bus B usually has none, and CC93 stays at 0.
     // A synth's default chorus send therefore adds nothing either.
     c.reverb = engine.settings_.sends == Sends::kNone ? 0 : engine.EffectSend(t, 0);
+    if (engine.settings_.sends == Sends::kReverbDry &&
+        (engine.options_.bus_reverbs[1] || engine.options_.bus_reverbs[2]))
+    {
+        // A reverb on bus B or C takes that bus's send too (PerformOptions::bus_reverbs). CC91 stands in for every
+        // reverb. A delay on bus A then leaves CC91 (PerformOptions::bus_a_delay).
+        if (engine.options_.bus_a_delay)
+        {
+            c.reverb = 0;
+        }
+        for (int bus = 1; bus < 3; ++bus)
+        {
+            if (engine.options_.bus_reverbs[static_cast<std::size_t>(bus)])
+            {
+                c.reverb = std::min(127, c.reverb + engine.EffectSend(t, bus));
+            }
+        }
+    }
     if (engine.settings_.sends == Sends::kReverb || engine.settings_.sends == Sends::kNone)
     {
         c.chorus = 0;
@@ -3026,6 +3108,22 @@ std::optional<float> MidiRecorder::PartPitch(const Performer& engine, int t, uin
 bool MidiRecorder::SendPitch(Performer& engine, int t, uint8_t part, uint64_t frame, double after)
 {
     const std::optional<float> pitch = PartPitch(engine, t, part, frame);
+    if (pitch && *pitch != 0.0f)
+    {
+        // The notes past a pitch limit on the part move away from their keys' pitch (PassFindings::pitch_moves).
+        const Track& tr = engine.tracks_[t];
+        for (const auto* list : {&tr.notes, &tr.detached})
+        {
+            for (const Note& n : *list)
+            {
+                if (n.midi.past_limit && n.HasMidiNote() && n.midi.part == part)
+                {
+                    pitch_moves_.insert(n.midi.id);
+                }
+            }
+        }
+    }
+
     return pitch && rec_.SendPitch(out_, tracks_[t].output, engine.tick_, *pitch, part, after);
 }
 
@@ -3171,15 +3269,25 @@ double MidiRecorder::TrackLevel(const Performer& engine, int t) const
     // track's sends (PerformOptions::fx_sends).
     //
     // The volume that the game sets through the sound's handle multiplies the channel's volume (Policy::TrackVolume).
-    // A track that PerformOptions::tracks leaves out has volume 0 there.
+    // A track that PerformOptions::tracks leaves out has volume 0 there. The sound's volume from its handle
+    // (PerformOptions::volume) multiplies its volume from the archive.
     const Track& tr = engine.tracks_[t];
     const double handle = std::sqrt(std::max(0.0f, tr.handle_volume));
     if (engine.settings_.sends == Sends::kReverbDry)
     {
         const std::array<float, 3>& sends = engine.options_.fx_sends;
-        const double dry = (tr.main_send + tr.fx_send_b + tr.fx_send_c) / 127.0 + sends[1] + sends[2];
+        const std::array<std::optional<float>, 3>& reverbs = engine.options_.bus_reverbs;
+        double dry = (tr.main_send + tr.fx_send_b + tr.fx_send_c) / 127.0 + sends[1] + sends[2];
+        if (reverbs[1] || reverbs[2])
+        {
+            // A bus with a reverb passes on only its dry gain's share of the send (PerformOptions::bus_reverbs). The
+            // reverb's part goes to CC91 (EffectSend). A bus that gets no send leaves the level exactly as it was.
+            dry -= (1.0 - reverbs[1].value_or(1.0f)) * (tr.fx_send_b / 127.0 + sends[1]) +
+                   (1.0 - reverbs[2].value_or(1.0f)) * (tr.fx_send_c / 127.0 + sends[2]);
+            dry = std::max(dry, 0.0);
+        }
         return std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) * (engine.main_volume_.Get() / 127.0) *
-               std::sqrt(engine.sound_.volume / 127.0 * dry) * handle;
+               std::sqrt(engine.sound_.volume / 127.0 * engine.options_.volume * dry) * handle;
     }
 
     // The Wii's voice clamps a channel's volume to 1 (Voice::SetVolume), and the sound's volume to 1 too. The track's
@@ -3187,14 +3295,14 @@ double MidiRecorder::TrackLevel(const Performer& engine, int t) const
     // note's zones take the rest (ZoneLift).
     if (engine.Wii())
     {
-        const double level = std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) *
-                             (engine.main_volume_.Get() / 127.0) *
-                             std::sqrt(std::min<int>(engine.sound_.volume, 127) / 127.0) * handle;
+        const double level =
+            std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) * (engine.main_volume_.Get() / 127.0) *
+            std::sqrt(std::min<int>(engine.sound_.volume, 127) / 127.0 * engine.options_.volume) * handle;
         return std::min(level, 127.0 * 127.0 / std::clamp(tr.vol.Get(), 1, 127));
     }
 
     return std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) * (engine.main_volume_.Get() / 127.0) *
-           std::sqrt(engine.sound_.volume / 127.0) * handle;
+           std::sqrt(engine.sound_.volume / 127.0 * engine.options_.volume) * handle;
 }
 
 int16_t MidiRecorder::ZoneLift(const Performer& engine, int t, int velocity) const
@@ -3219,6 +3327,7 @@ float Performer::UserVolume(int t) const
     user *= main_volume * main_volume;
     user *= tr.handle_volume;
     user *= std::clamp(static_cast<float>(sound_.volume) / 127.0f, 0.0f, 1.0f);
+    user *= options_.volume;
 
     return user;
 }
@@ -3293,6 +3402,8 @@ void MidiRecorder::MidiNoteOn(Performer& engine, int t, Note& n, int velocity, c
     n.midi.key = n.key;
     n.midi.lfo_bends = false;
     n.midi.lfo_crowded = false;
+    n.midi.past_limit = false;
+    n.midi.at_limits = false;
     if (velocity <= 0)
     {
         return; // silent in nw::snd; MIDI velocity 0 would be a note-off
@@ -3373,6 +3484,18 @@ void MidiRecorder::MidiNoteOn(Performer& engine, int t, Note& n, int velocity, c
         attack != earlier_.early_releases.end() ? std::optional<int16_t>(attack->second) : std::nullopt;
     const auto fit = earlier_.lfo_fits.find(rec_.NextNote());
     n.midi.lfo_fit = fit != earlier_.lfo_fits.end() ? fit->second : VolumeLfoFit{};
+    // AX on the Wii U and nn::atk on the Switch hold a voice's pitch within the console's limits (resampling.h). A note
+    // past a limit whose pitch holds still plays at the limit (PresetKey::at_pitch_limits). A note that starts with a
+    // sweep, an LFO in its part's bends or a bend moves. An earlier pass found the notes that a later bend or LFO moves
+    // (PassFindings::pitch_moves).
+    const Pcm* limited = region ? engine.banks_.GetWave(n.bank_slot, region->wave_id_index) : nullptr;
+    n.midi.past_limit =
+        limited &&
+        PastPitchLimit(n.midi.key, {region->original_key, region->pitch, limited->sample_rate, region->interpolation},
+                       engine.settings_);
+    const bool moves = n.SweepAt(engine.frame_) != 0.0f || n.midi.lfo_bends ||
+                       tr.Bend() + tracks_[t].legato_bend != 0.0f || earlier_.pitch_moves.contains(rec_.NextNote());
+    n.midi.at_limits = n.midi.past_limit && !moves;
     n.midi.preset = engine.NoteKey(t, n);
     n.midi.lfo_moved = false;
 
@@ -3555,7 +3678,7 @@ bool Performer::NoteOn(int t, int key, int velocity, int32_t length, bool drop)
     n.region_volume = region->volume;
     if (!pcm->loop)
     {
-        const float ratio = nwsnd::CalcPitchRatio((key - region->original_key) * 256) * region->pitch;
+        const float ratio = nwsnd::CalcPitchRatio((key - region->original_key) * 256) * region->pitch * options_.pitch;
         n.one_shot = true;
         WithCore([&](auto& core) { n.core_end = core.PredictEnd(frame_, pcm->Length(), ratio, pcm->sample_rate); });
     }
@@ -3837,6 +3960,7 @@ void Performer::NoteVariableRead(int t, uint8_t index)
 
 void Performer::NoteVariableChange(int t, uint8_t index)
 {
+    tracks_[t].last_variable_change = commands_run_;
     if (index >= 32)
     {
         return;
@@ -3976,17 +4100,6 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
         tr.inner_loops.erase(target);
     }
 
-    // A jump back inside a subroutine isn't a loop when its pass ran a conditional command that can leave the loop and
-    // played no note. A subroutine that polls a variable after a one-shot sound does that. A stricter rule would leave
-    // out every pass that runs a conditional command. But a game may loop a melody, or move the pitch of a note it has
-    // played, in such a subroutine until it stops the sound. And a conditional setvar can't leave the loop.
-    if (jump && Leavable(t, first_command))
-    {
-        return std::nullopt;
-    }
-
-    tr.last_pass_ms = now_ms_;
-
     // A pass that changed nothing is idle: the track only waited, polled or counted. Changing a variable that another
     // open track reads counts as a change (Track::last_signal). It belongs to the pass if it came after the pass's
     // first command. The tick doesn't show that: a loop's last commands run in the tick that its next pass starts in.
@@ -3996,6 +4109,26 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
         return (other.last_change && *other.last_change >= start) ||
                (other.last_signal && *other.last_signal > first_command);
     };
+
+    // A jump back inside a subroutine isn't a loop when its pass ran a conditional command that can leave the loop and
+    // played no note. A subroutine that polls a variable after a one-shot sound does that. A stricter rule would leave
+    // out every pass that runs a conditional command. But a game may loop a melody, or move the pitch of a note it has
+    // played, in such a subroutine until it stops the sound. And a conditional setvar can't leave the loop.
+    // Such a pass is still idle when it changed nothing, changed no variable and drew no random number. The track then
+    // does the same on every pass until another track or the game changes a variable. A track that polls the game's
+    // variables once a tick, while later tracks play the music, does that for as long as the sound plays. A countdown
+    // between a track's notes changes its counter. Its passes keep Track::idle as the track's other passes set it.
+    if (jump && Leavable(t, first_command))
+    {
+        if (!changed(t) && tr.last_variable_change <= first_command && last_draw_order_ <= first_command)
+        {
+            tr.idle = true;
+        }
+
+        return std::nullopt;
+    }
+
+    tr.last_pass_ms = now_ms_;
     tr.idle = !changed(t);
 
     // Use the lowest-numbered track that can still advance: track 0 while active, or a later track for continuing sound
@@ -4027,7 +4160,7 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
 
 void Performer::MarkPass(int t, uint32_t target, uint32_t start)
 {
-    const Track& tr = tracks_[t];
+    Track& tr = tracks_[t];
 
     // A pass that changed something, of another loop than the marked one, means the marked pass doesn't repeat what
     // plays now. That happens when an earlier track has gone idle while a later track's loop plays on. Mark this pass
@@ -4046,8 +4179,24 @@ void Performer::MarkPass(int t, uint32_t target, uint32_t start)
 
     // The performance stops at a pass that repeats, once it has played the passes asked for and kMinLoopSeconds. It
     // plays on while a change of a variable is still to come. The change can change what the loop plays.
-    if (midi_.out_.loops >= options_.loops && now_ms_ >= kMinLoopSeconds * 1000.0 - settings_.early_ticks_ms &&
-        next_change_ == options_.changes.size() && MarkSteadyPass(t, target))
+    const bool may_stop = midi_.out_.loops >= options_.loops &&
+                          now_ms_ >= kMinLoopSeconds * 1000.0 - settings_.early_ticks_ms &&
+                          next_change_ == options_.changes.size() && ProcedureChangesArmed();
+
+    // A silent pass that ran a conditional command that can leave its loop can be a tick of a countdown between the
+    // notes of an outer loop. The outer loop's first pass shows such a loop as inner (CountedPassStart). When that pass
+    // ends after kMinLoopSeconds, the countdown's passes count first. A copy of the performer therefore plays on for
+    // kMinLoopSeconds to see whether the loop turns inner. If it does, it's inner from now on, and the performance
+    // plays on.
+    const auto run = last_run_[t].find(target);
+    if (may_stop && run != last_run_[t].end() && tr.leave_at > run->second.order && tr.note_at <= run->second.order &&
+        TurnsInner(t, target))
+    {
+        tr.inner_loops.insert(target);
+        return;
+    }
+
+    if (may_stop && MarkSteadyPass(t, target))
     {
         stop_ = true;
         stopped_by_ = t;
@@ -4234,6 +4383,19 @@ void Performer::StartTick()
 
 void Performer::ChangeVariables()
 {
+    // A write in a user procedure waits from its frame for a call. A pass that started before the frame plays without
+    // the write, and the passes after it can take the write. As after a change, the earlier pass doesn't count.
+    const std::vector<ProcedureChange>& waits = options_.procedure_changes;
+    if (armed_procedure_changes_ < waits.size() && waits[armed_procedure_changes_].frame <= frame_)
+    {
+        while (armed_procedure_changes_ < waits.size() && waits[armed_procedure_changes_].frame <= frame_)
+        {
+            ++armed_procedure_changes_;
+        }
+        changed_at_ = tick_;
+        main_loop_.Restart(midi_.out_, std::nullopt);
+    }
+
     const std::vector<VariableChange>& changes = options_.changes;
     if (next_change_ == changes.size() || changes[next_change_].frame > frame_)
     {
@@ -4249,12 +4411,105 @@ void Performer::ChangeVariables()
             *Variable(0, change.index) = change.value;
             WithCore([&](auto& core) { core.GetPlayer().SetVariable(core, change.index, change.value); });
         }
+        else if (change.index < 48)
+        {
+            WithCore([&](auto& core) { SetTrackVariables(core, change.index, change.value); });
+        }
     }
 
     // The passes of the main loop so far can play otherwise than the passes after the change. The search for the main
     // loop starts again with the first pass that starts after it (OnLoop).
     changed_at_ = tick_;
     main_loop_.Restart(midi_.out_, std::nullopt);
+}
+
+void Performer::ChangeInProcedure(uint16_t procedure)
+{
+    const std::vector<ProcedureChange>& changes = options_.procedure_changes;
+    bool changed = false;
+    for (std::size_t i = 0; i < armed_procedure_changes_; ++i)
+    {
+        const ProcedureChange& change = changes[i];
+        if (procedure_taken_[i] || change.procedure != procedure)
+        {
+            continue;
+        }
+
+        procedure_taken_[i] = true;
+        changed = true;
+        if (change.index < 32)
+        {
+            *Variable(0, change.index) = change.value;
+            WithCore([&](auto& core) { core.GetPlayer().SetVariable(core, change.index, change.value); });
+        }
+    }
+
+    // As after a change before a frame (ChangeVariables).
+    if (changed)
+    {
+        changed_at_ = tick_;
+        main_loop_.Restart(midi_.out_, std::nullopt);
+    }
+}
+
+void Performer::RunUserProcedure(int t, uint16_t procedure)
+{
+    if (!options_.user_procedures)
+    {
+        return;
+    }
+
+    // The core holds the variables as the track's commands left them. The performer takes them from it after each
+    // command.
+    std::array<int16_t, 16> local = player_vars_;
+    std::array<int16_t, 16> global = global_vars_;
+    std::array<int16_t, 16> track = tracks_[t].vars;
+    WithCore(
+        [&](auto& core)
+        {
+            local = core.GetPlayer().LocalVariables();
+            global = core.GlobalVariables();
+            if (const auto* core_track = core.GetPlayer().Track(t))
+            {
+                track = core_track->Variables();
+            }
+        });
+
+    const std::array<std::array<int16_t, 16>, 3> before = {local, global, track};
+    if (options_.user_procedures(procedure, local, global, track))
+    {
+        last_draw_ = tick_;
+        last_draw_order_ = commands_run_;
+    }
+
+    const std::array<const std::array<int16_t, 16>*, 3> after = {&local, &global, &track};
+    for (std::size_t set = 0; set < after.size(); ++set)
+    {
+        for (std::size_t i = 0; i < 16; ++i)
+        {
+            const int16_t value = (*after[set])[i];
+            if (value == before[set][i])
+            {
+                continue;
+            }
+
+            const auto index = static_cast<uint8_t>(set * 16 + i);
+            *Variable(t, index) = value;
+            WithCore(
+                [&](auto& core)
+                {
+                    if (index < 32)
+                    {
+                        core.GetPlayer().SetVariable(core, index, value);
+                    }
+                    else
+                    {
+                        core.GetPlayer().SetTrackVariable(t, index - 32, value);
+                    }
+                });
+            NoteVariableChange(t, index);
+        }
+    }
 }
 
 bool Performer::ParseTracks(int first)
@@ -4375,7 +4630,13 @@ void Performer::FollowCommandStart(int t, uint32_t offset, uint32_t command, boo
 
 void Performer::FollowCommand(int t, uint32_t command, int32_t arg1, int32_t arg2, uint32_t next)
 {
-    // The extended command 0xe0 calls into the game. The performer records nothing for it.
+    // The extended command 0xe0 calls into the game. The performer records nothing for it. The model of the game's
+    // procedure runs (RunUserProcedure), and then the game's writes in the procedure take effect (ChangeInProcedure).
+    if (!stop_ && command == 0xf0e0)
+    {
+        RunUserProcedure(t, static_cast<uint16_t>(arg1));
+        ChangeInProcedure(static_cast<uint16_t>(arg1));
+    }
     if (stop_ || command == 0xf0e0)
     {
         return;
@@ -4779,6 +5040,8 @@ void Performer::FollowRandomDraw()
     }
 
     last_draw_ = tick_;
+    midi_.out_.draws = true;
+    last_draw_order_ = commands_run_;
 }
 
 void Performer::FollowVariableRead(int t, int index)
@@ -5191,15 +5454,31 @@ void Performer::StartCore()
     {
         core.Play(info, seq_.data, 0);
         core.GetPlayer().SetBuild(core.Build());
+        core.GetPlayer().SetTempoRatio(options_.tempo_ratio);
+        core.GetPlayer().SetPitch(options_.pitch);
         for (const auto& [index, value] : options_.variables)
         {
-            core.GetPlayer().SetVariable(core, static_cast<int>(index), value);
+            if (index < 32)
+            {
+                core.GetPlayer().SetVariable(core, static_cast<int>(index), value);
+            }
+        }
+        for (const TrackVariable& variable : options_.track_variables)
+        {
+            core.GetPlayer().SetTrackVariable(variable.track, variable.index, variable.value);
         }
 
         // The frame starts the sound, and the player allocates its tracks. The game's code then silences the tracks
-        // that PerformOptions::tracks leaves out.
+        // that PerformOptions::tracks leaves out, and sets the tracks' variables.
         core.BeginFrame();
         core.GetPlayer().SetTrackVolume(~static_cast<uint32_t>(options_.tracks) & 0xffffu, 0.0f);
+        for (const auto& [index, value] : options_.variables)
+        {
+            if (index >= 32 && index < 48)
+            {
+                SetTrackVariables(core, index, value);
+            }
+        }
         core.GetPlayer().StartClock(1);
         core.GetPlayer().NextTickTime();
     };
@@ -5224,16 +5503,22 @@ bool Performer::EndAtTimeLimit()
     const bool finished = !sounding && now_ms_ - sound_end_ms_ > kHoldSeconds * 1000.0;
     midi_.out_.truncated = !finished;
 
-    // When the performance is cut here, the counted loops that the open tracks are in (LimitLoops). A performance that
-    // counts as finished ends with its last sound.
+    // When the performance is cut here, the outermost loop that each open track is in, where that loop is a counted one
+    // (LimitLoops). The length analysis takes the same loops (nwsnd::OutermostCountedLoops). calls[0] is the outermost
+    // entry. A track whose outermost loop is endless loops already, and keeps its inner loops. An inner loop still
+    // ends, and repeats in each pass of the outer loop. A performance that counts as finished ends with its last sound.
     for (int t = 0; midi_.out_.truncated && t < kTrackCount; t++)
     {
         const Track& tr = tracks_[t];
         for (int i = 0; tr.open && i < tr.call_depth; i++)
         {
-            if (tr.calls[i].is_loop && tr.calls[i].count != 0)
+            if (tr.calls[i].is_loop)
             {
-                limit_loops_.insert({t, tr.calls[i].address});
+                if (tr.calls[i].count != 0)
+                {
+                    limit_loops_.insert({t, tr.calls[i].address});
+                }
+                break;
             }
         }
     }
@@ -5283,6 +5568,39 @@ Performer Performer::PlayOn(int t, uint32_t target, uint32_t until) const
     }
 
     return probe;
+}
+
+bool Performer::TurnsInner(int t, uint32_t target) const
+{
+    // The copy starts as PlayOn's does. It stops at the first tick that shows the loop inner.
+    Performer probe = *this;
+    probe.stop_ = false;
+    probe.options_.loops = std::numeric_limits<int>::max();
+    probe.tracks_[t].current = target;
+    probe.WithCore([&](auto& core) { probe.ContinueCoreTrack(core, t); });
+    probe.ParseTracks(t + 1);
+    probe.FinishTick();
+
+    const double end_ms = now_ms_ + kMinLoopSeconds * 1000.0;
+    while (probe.now_ms_ < end_ms && !probe.tracks_[t].inner_loops.contains(target))
+    {
+        const std::optional<TickTime> next = probe.NextTick();
+        if (!next)
+        {
+            break;
+        }
+
+        probe.AdvanceTo(*next);
+        probe.StartTick();
+        const bool any_open = probe.ParseTracks(0);
+        probe.FinishTick();
+        if (!any_open)
+        {
+            break;
+        }
+    }
+
+    return probe.tracks_[t].inner_loops.contains(target);
 }
 
 Performer::PassStart Performer::NextPassStart(int t, uint32_t target) const
@@ -5473,6 +5791,16 @@ void Performer::EndPerformance(bool finished)
             }
             std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
         }
+        else if (EndsAtLastSound(sound_end_ms_ / 1000.0, tick_ms_[LastChangeTick()] / 1000.0))
+        {
+            // Changes that come more than kHoldSeconds after the last sound can't be heard either (EndsAtLastSound).
+            // The performance then ends with the sound. A note below hearing that sounds on keeps its note-off, at the
+            // end.
+            const uint32_t end = MsToTick(sound_end_ms_);
+            seqlib::midi::ClampNoteOffs(midi_.out_, end);
+            seqlib::midi::CutAt(midi_.out_, end);
+            std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
+        }
 
         const uint32_t last_change = LastChangeTick();
         midi_.out_.end_tick = std::max(last_change, MsToTick(sound_end_ms_));
@@ -5529,6 +5857,57 @@ struct Passes
     double peak = 0.0;
 };
 
+// Tunes every part of every track of `performance` by `pitch`, a ratio of frequencies (PerformOptions::pitch): RPN 2
+// takes the nearest whole number of semitones and RPN 1 the rest, in 8192ths of a semitone. The events come before the
+// part's other events at tick 0, and end with the null RPN. A pitch of 1 adds nothing.
+void TuneChannels(Performance& performance, float pitch)
+{
+    if (pitch == 1.0f || !(pitch > 0.0f))
+    {
+        return;
+    }
+
+    const double semitones = 12.0 * std::log2(static_cast<double>(pitch));
+    const long coarse = std::clamp(std::lround(semitones), -64L, 63L);
+    const long fine = std::clamp(8192 + std::lround((semitones - static_cast<double>(coarse)) * 8192.0), 0L, 16383L);
+    constexpr uint8_t kCoarseTuning = 2;
+    constexpr uint8_t kFineTuning = 1;
+    constexpr uint8_t kNullRpn = 127;
+    const std::array<std::pair<uint8_t, long>, 10> controls = {{
+        {seqlib::midi::cc::kRpnMsb, 0},
+        {seqlib::midi::cc::kRpnLsb, kCoarseTuning},
+        {seqlib::midi::cc::kDataEntry, 64 + coarse},
+        {seqlib::midi::cc::kDataEntryLsb, 0},
+        {seqlib::midi::cc::kRpnMsb, 0},
+        {seqlib::midi::cc::kRpnLsb, kFineTuning},
+        {seqlib::midi::cc::kDataEntry, fine >> 7},
+        {seqlib::midi::cc::kDataEntryLsb, fine & 0x7f},
+        {seqlib::midi::cc::kRpnMsb, kNullRpn},
+        {seqlib::midi::cc::kRpnLsb, kNullRpn},
+    }};
+    for (std::vector<TrackEvent>& events : performance.tracks)
+    {
+        std::set<uint8_t> parts;
+        for (const TrackEvent& e : events)
+        {
+            parts.insert(e.part);
+        }
+
+        std::vector<TrackEvent> tuning;
+        for (const uint8_t part : parts)
+        {
+            for (const auto& [controller, value] : controls)
+            {
+                tuning.push_back({.tick = 0,
+                                  .kind = seqlib::midi::ControlKind(controller),
+                                  .value = static_cast<uint8_t>(value),
+                                  .part = part});
+            }
+        }
+        events.insert(events.begin(), tuning.begin(), tuning.end());
+    }
+}
+
 // Runs as many passes of a sequence's performance as it takes. The passes take what `shared` gives. The counted loops
 // in `endless_loops` loop for ever.
 Passes PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& banks, const PerformOptions& options,
@@ -5570,8 +5949,8 @@ Passes PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& banks
         performance = performer.Run();
 
         // A sequence can repeat its music in a counted loop that the game plays for longer than the limit. When the
-        // performance is cut at the limit inside counted loops, the sequence is performed again with those loops
-        // endless. Their passes then count as loops of the sequence.
+        // performance is cut at the limit inside counted loops, the sequence is performed again with each track's
+        // outermost counted loop endless. Their passes then count as loops of the sequence.
         if (endless_loops.empty() && !performer.LimitLoops().empty())
         {
             return PerformPasses(sound, seq, banks, options, settings, shared, performer.LimitLoops());
@@ -5612,20 +5991,44 @@ Passes PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& banks
     }
 
     SetLevelCut(performance, applied);
+    TuneChannels(performance, options.pitch);
 
     return {std::move(performance), applied};
 }
 
-// A Wii sound's fields and its sequence's bytecode, in sar's form, for the performer.
-struct WiiSequence
+// A sound's fields and its sequence's bytecode, in sar's form, for the performer: from a CSAR or FSAR archive
+// (ReadSarSequence) or from a Wii archive (ReadWiiSequence).
+struct SarSequence
 {
     SoundInfo sound;
     Sequence seq;
 };
 
+// Reads sequence `sound_index` of a CSAR or FSAR archive, with the archive options of `settings`. Throws FormatError
+// for a sequence that the archive and its group files don't hold.
+SarSequence ReadSarSequence(const SoundArchive& archive, uint32_t sound_index, const Settings& settings)
+{
+    const SoundInfo& sound = archive.Sounds()[sound_index];
+    const auto file = archive.FileData(sound.file_id);
+    if (file.empty() && !archive.FileMissing(sound.file_id))
+    {
+        // As in NoData (instruments.cpp), the 3DS's message doesn't mention group files.
+        throw xsflib::FormatError(settings.archive.flavor == sar::Flavor::kCtr || archive.ExternalGroups().empty()
+                                      ? "sequence file is not stored in the archive"
+                                      : "sequence file is not stored in the archive or a group file beside it");
+    }
+    if (file.empty())
+    {
+        throw xsflib::FormatError(archive.Truncated() ? "sequence extends past the truncated archive"
+                                                      : "sequence extends past the archive");
+    }
+
+    return {sound, Sequence::Parse(file, settings.archive)};
+}
+
 // Reads sequence `sound_index` of the Wii's `archive`. The Wii's arguments are big-endian. Throws FormatError for a
 // sequence that the archive doesn't hold.
-WiiSequence ReadWiiSequence(const rsar::SoundArchive& archive, uint32_t sound_index)
+SarSequence ReadWiiSequence(const rsar::SoundArchive& archive, uint32_t sound_index)
 {
     const rsar::SoundInfo& sound = archive.Sounds()[sound_index];
     const auto file = archive.FileData(sound.file_id);
@@ -5639,7 +6042,7 @@ WiiSequence ReadWiiSequence(const rsar::SoundArchive& archive, uint32_t sound_in
                                                       : "sequence extends past the archive");
     }
 
-    WiiSequence wii;
+    SarSequence wii;
     wii.seq.data = rsar::Sequence::Parse(file).data;
     wii.seq.big_endian = true;
 
@@ -5672,19 +6075,19 @@ struct PieceRun
 // A sequence of a piece, how it plays and its performance.
 struct PieceSequence
 {
-    WiiSequence wii;
+    SarSequence source;
     PieceRun run;
     Passes played;
 };
 
 // Performs a sequence of a piece as `run` gives.
-Passes PlayPieceSequence(const WiiSequence& wii, const PieceRun& run, Regions& banks, const PerformOptions& options,
+Passes PlayPieceSequence(const SarSequence& source, const PieceRun& run, Regions& banks, const PerformOptions& options,
                          const Settings& settings)
 {
     PerformOptions played = options;
     played.loops = run.loops;
 
-    return PerformPasses(wii.sound, wii.seq, banks, played, settings, run.shared);
+    return PerformPasses(source.sound, source.seq, banks, played, settings, run.shared);
 }
 
 // Whether a track's `events` play a note.
@@ -5940,7 +6343,7 @@ Performance MergePiece(const std::vector<PieceSequence>& sequences, const PieceT
     for (std::size_t k = 0; k < sequences.size(); k++)
     {
         const Performance& perf = sequences[k].played.performance;
-        const std::string& label = sequences[k].wii.sound.name;
+        const std::string& label = sequences[k].source.sound.name;
 
         // Each track with notes, with the piece's note ids and presets, at the lead's ticks. The piece takes only the
         // presets that those tracks use.
@@ -6070,30 +6473,51 @@ std::vector<PieceRun> PieceRuns(const std::vector<PieceSequence>& sequences, con
     return runs;
 }
 
+// Performs `sequences`, whose sources are read, as one piece with the banks of `regions` (PerformTogether). Each
+// sequence plays alone first. Then each that has to play otherwise for the piece plays again (PieceRuns). A run can
+// only add passes, lower the levels' scale or take parts away. The runs therefore settle in a round or two.
+Performance PerformPiece(std::vector<PieceSequence>& sequences, Regions& regions, const PerformOptions& options,
+                         const Settings& settings)
+{
+    for (PieceSequence& s : sequences)
+    {
+        s.run.loops = options.loops;
+        s.played = PlayPieceSequence(s.source, s.run, regions, options, settings);
+    }
+
+    for (int round = 0; round < 3; round++)
+    {
+        const PieceTiming timing = TimePiece(sequences, options.loops);
+        Performance piece = MergePiece(sequences, timing);
+        const std::vector<PieceRun> runs = PieceRuns(sequences, timing, piece);
+        bool again = false;
+        for (std::size_t k = 0; k < sequences.size(); k++)
+        {
+            if (runs[k] != sequences[k].run)
+            {
+                sequences[k].run = runs[k];
+                sequences[k].played = PlayPieceSequence(sequences[k].source, runs[k], regions, options, settings);
+                again = true;
+            }
+        }
+        if (!again)
+        {
+            return piece;
+        }
+    }
+
+    return MergePiece(sequences, TimePiece(sequences, options.loops));
+}
+
 } // namespace
 
 // Finds, reads and performs a CSAR or FSAR archive's sequence.
 Performance Perform(const SoundArchive& archive, uint32_t sound_index, BankSet& banks, const PerformOptions& options,
                     const Settings& settings)
 {
-    const SoundInfo& sound = archive.Sounds()[sound_index];
-    const auto file = archive.FileData(sound.file_id);
-    if (file.empty() && !archive.FileMissing(sound.file_id))
-    {
-        // As in NoData (instruments.cpp), the 3DS's message doesn't mention group files.
-        throw xsflib::FormatError(settings.archive.flavor == sar::Flavor::kCtr || archive.ExternalGroups().empty()
-                                      ? "sequence file is not stored in the archive"
-                                      : "sequence file is not stored in the archive or a group file beside it");
-    }
-    if (file.empty())
-    {
-        throw xsflib::FormatError(archive.Truncated() ? "sequence extends past the truncated archive"
-                                                      : "sequence extends past the archive");
-    }
-
-    const Sequence seq = Sequence::Parse(file, settings.archive);
+    const SarSequence source = ReadSarSequence(archive, sound_index, settings);
     SarRegions regions(banks);
-    return PerformPasses(sound, seq, regions, options, settings).performance;
+    return PerformPasses(source.sound, source.seq, regions, options, settings).performance;
 }
 
 // Finds, reads and performs a Wii archive's sequence. The sound's fields and the sequence's bytecode go to the
@@ -6101,9 +6525,39 @@ Performance Perform(const SoundArchive& archive, uint32_t sound_index, BankSet& 
 Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, RsarBankSet& banks,
                     const PerformOptions& options, const Settings& settings)
 {
-    const WiiSequence wii = ReadWiiSequence(archive, sound_index);
+    const SarSequence wii = ReadWiiSequence(archive, sound_index);
     RsarRegions regions(banks, settings.wii_build.SinceMarch2008());
     return PerformPasses(wii.sound, wii.seq, regions, options, settings).performance;
+}
+
+Performance PerformTogether(const SoundArchive& archive, std::span<const uint32_t> sound_indices, BankSet& banks,
+                            const PerformOptions& options, const Settings& settings)
+{
+    if (sound_indices.empty())
+    {
+        throw std::invalid_argument("no sequences to perform together");
+    }
+
+    // One SoundFont holds the piece's instruments. The sequences therefore share their banks, and the pan mode that
+    // places their stereo waves.
+    const SoundInfo& first = archive.Sounds()[sound_indices[0]];
+    for (const uint32_t index : sound_indices)
+    {
+        const SoundInfo& sound = archive.Sounds()[index];
+        if (sound.banks != first.banks || sound.pan_mode != first.pan_mode)
+        {
+            throw std::invalid_argument(first.name + " and " + sound.name + " differ in banks or pan mode");
+        }
+    }
+
+    SarRegions regions(banks);
+    std::vector<PieceSequence> sequences(sound_indices.size());
+    for (std::size_t k = 0; k < sound_indices.size(); k++)
+    {
+        sequences[k].source = ReadSarSequence(archive, sound_indices[k], settings);
+    }
+
+    return PerformPiece(sequences, regions, options, settings);
 }
 
 Performance PerformTogether(const rsar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
@@ -6126,40 +6580,14 @@ Performance PerformTogether(const rsar::SoundArchive& archive, std::span<const u
         }
     }
 
-    // Each sequence plays alone first. Then each that has to play otherwise for the piece plays again (PieceRuns). A
-    // run can only add passes, lower the levels' scale or take parts away. The runs therefore settle in a round or two.
     RsarRegions regions(banks, settings.wii_build.SinceMarch2008());
-    std::vector<PieceSequence> sequences;
-    for (const uint32_t index : sound_indices)
+    std::vector<PieceSequence> sequences(sound_indices.size());
+    for (std::size_t k = 0; k < sound_indices.size(); k++)
     {
-        PieceSequence& s = sequences.emplace_back();
-        s.wii = ReadWiiSequence(archive, index);
-        s.run.loops = options.loops;
-        s.played = PlayPieceSequence(s.wii, s.run, regions, options, settings);
+        sequences[k].source = ReadWiiSequence(archive, sound_indices[k]);
     }
 
-    for (int round = 0; round < 3; round++)
-    {
-        const PieceTiming timing = TimePiece(sequences, options.loops);
-        Performance piece = MergePiece(sequences, timing);
-        const std::vector<PieceRun> runs = PieceRuns(sequences, timing, piece);
-        bool again = false;
-        for (std::size_t k = 0; k < sequences.size(); k++)
-        {
-            if (runs[k] != sequences[k].run)
-            {
-                sequences[k].run = runs[k];
-                sequences[k].played = PlayPieceSequence(sequences[k].wii, runs[k], regions, options, settings);
-                again = true;
-            }
-        }
-        if (!again)
-        {
-            return piece;
-        }
-    }
-
-    return MergePiece(sequences, TimePiece(sequences, options.loops));
+    return PerformPiece(sequences, regions, options, settings);
 }
 
 PresetKey StartingPresetKey(uint32_t program, const Settings& settings)

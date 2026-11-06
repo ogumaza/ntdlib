@@ -29,7 +29,8 @@ namespace ntdlib::sequence_export::jaudio
 // AAF (ntdlib::jaudio::IsAaf).
 bool IsStartUpArchive(std::span<const uint8_t> header);
 
-// Whether the file at `path` starts a JAudio start-up archive. A file that can't be read doesn't.
+// Whether the file at `path` starts a JAudio start-up archive, decoded first if it's compressed with Yaz0. A file that
+// can't be read or decoded doesn't.
 bool IsStartUpArchiveFile(const std::filesystem::path& path);
 
 // A JAudio game being converted, and the banks that its sequences play. It counts the banks' errors that the
@@ -62,7 +63,8 @@ using GameConverter = Converter<PerformOptions, std::unique_ptr<GameInput>, Conv
 
 // The frame's converter of JAudio games for `program`, whose --version prints `version_line`. An input is a start-up
 // archive with its game's other files beside it (Game::FromFolder). `option` reads the program's options beyond the
-// frame's. `usage` prints the program's help. `game_options` says which sounds of each game to list.
+// frame's. `usage` prints the program's help. `game_options` says which sounds of each game to list, and whether the
+// games run on the Wii U.
 GameConverter MakeGameConverter(const std::string& program, const std::string& version_line,
                                 OptionHandler<PerformOptions> option, std::function<void()> usage,
                                 const GameOptions& game_options = {});

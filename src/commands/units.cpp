@@ -38,6 +38,7 @@ std::optional<Unit> UnitOf(Kind kind)
     case Kind::kTranspose:
     case Kind::kBendRange:
     case Kind::kSweepPitch:
+    case Kind::kTune:
         return Unit::kCents;
     case Kind::kPitchBend:
         return Unit::kBend;
@@ -62,11 +63,40 @@ std::optional<Unit> UnitOf(Kind kind)
     case Kind::kLoopEnd:
     case Kind::kEnd:
     case Kind::kEnvelopeReset:
+    case Kind::kNoteOff:
     case Kind::kData:
         return std::nullopt;
     default:
         return Unit::kNumber;
     }
+}
+
+Fixed ToUnit(int64_t value, const Scale& scale)
+{
+    return value * scale.step + scale.offset;
+}
+
+int64_t FromUnit(Fixed unit, const Scale& scale)
+{
+    // The console's values on either side of the unit. Of two at the same distance, FromUnit takes the one further
+    // from zero.
+    const Fixed above = unit - scale.offset;
+    int64_t value = above / scale.step;
+    if (above % scale.step != 0 && above < 0)
+    {
+        --value;
+    }
+
+    const Fixed low = ToUnit(value, scale);
+    const Fixed high = ToUnit(value + 1, scale);
+    const Fixed down = unit - low;
+    const Fixed up = high - unit;
+    if (up < down || (up == down && (high < 0 ? -high : high) > (low < 0 ? -low : low)))
+    {
+        ++value;
+    }
+
+    return value;
 }
 
 std::string_view Name(Unit unit)

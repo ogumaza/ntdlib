@@ -21,6 +21,7 @@ using xsflib::FormatError;
 
 using ntdlib::jaudio::ArchiveFile;
 using ntdlib::jaudio::Bank;
+using ntdlib::jaudio::DecodeIfYaz0;
 using ntdlib::jaudio::DecodeYaz0;
 using ntdlib::jaudio::Drum;
 using ntdlib::jaudio::DrumSet;

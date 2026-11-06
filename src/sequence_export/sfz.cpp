@@ -36,13 +36,12 @@ namespace ntdlib::sequence_export
 namespace
 {
 
-// Writes velocity region opcodes using track settings `key`, except for sample, key/velocity ranges and pan. Adds
-// `gain_db` to the region volume.
+// Writes velocity region opcodes using track settings `key`, except for sample, key/velocity ranges, pan and pitch.
+// Adds `gain_db` to the region volume.
 std::string RegionOpcodes(const PresetKey& key, const sar::VelocityRegion& r, const SfzWave& wave, double gain_db,
                           const Settings& settings)
 {
-    std::string s = SfzPitchOpcodes(r.original_key, r.pitch);
-    s += SfzVolumeOpcode(r.volume, gain_db, false);
+    std::string s = SfzVolumeOpcode(r.volume, gain_db, false);
     s += SfzEnvelopeOpcodes(key, RegionEnvelope(r), r.ignore_note_off, wave, settings);
 
     // A note fades out the other notes of its key group at release rate 126. sfizz gives each of them a release of
@@ -98,8 +97,10 @@ std::string PresetRegions(const PresetKey& key, BankSet& banks, SfzSampleSet& sa
         // The engine's pan: (region pan + track initial pan - 64) / 63. Stereo channels get an additional -1 or +1.
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
         const std::string opcodes = RegionOpcodes(key, r, wave, gain_db, settings);
-        const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation};
-        const auto line = [&](std::size_t c, std::pair<int, int> keys, std::pair<int, int> velocities)
+        const ResamplingRegion resampling = {r.original_key, r.pitch, wave.sample_rate, r.interpolation,
+                                             key.at_pitch_limits};
+        const std::string pitch = SfzPitchOpcodes(r.original_key, r.pitch);
+        const auto line = [&](std::size_t c, const ResamplingSpan& span, std::pair<int, int> velocities)
         {
             double p = pan;
             if (wave.names.size() == 2)
@@ -107,7 +108,8 @@ std::string PresetRegions(const PresetKey& key, BankSet& banks, SfzSampleSet& sa
                 p += c == 0 ? -1.0 : 1.0;
             }
 
-            return SfzRegionStart(wave.names[c], keys, velocities, p) + opcodes;
+            return SfzRegionStart(wave.names[c], span.keys, velocities, p) +
+                   (span.limit_cents ? SfzFixedPitchOpcodes(*span.limit_cents) : pitch) + opcodes;
         };
         s +=
             RegionLines(played.keys, played.velocities, wave.names.size(), resampling, resampling_slot, settings, line);

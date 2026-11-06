@@ -226,7 +226,7 @@ void CheckEarly(Library library, FrameFormat format)
     ReverbParam param;
     param.early_gain = 1.0f;
     param.fused_gain = 0.0f;
-    param.enable_surround = library == Library::kNwSnd;
+    param.enable_surround = library == Library::kNwSnd || library == Library::kNwSnd2011;
     Reverb reverb(library, param, format);
     const auto input = [](std::size_t c, std::size_t i) -> int32_t
     {
@@ -246,6 +246,7 @@ void TestReverbEarly()
     CheckEarly(Library::kNwSnd, kStrict);
     CheckEarly(Library::kNnSnd, kStrict);
     CheckEarly(Library::kNnSnd2011, kStrict);
+    CheckEarly(Library::kNwSnd2011, kStrict);
     CheckEarly(Library::kNwSnd, kEnhanced);
 }
 
@@ -285,6 +286,7 @@ void TestReverbCombGains()
     CheckCombGains(Library::kNwSnd, kStrict);
     CheckCombGains(Library::kNnSnd, kStrict);
     CheckCombGains(Library::kNnSnd2011, kStrict);
+    CheckCombGains(Library::kNwSnd2011, kStrict);
     CheckCombGains(Library::kNwSnd, kEnhanced);
 }
 
@@ -293,7 +295,7 @@ void TestReverbDamping()
     // The parameters of CheckCombGains with a damping of 0.5: gains of 64/128. The impulse leaves the all-pass filter
     // at sample 800, and the comb filters' next echo comes 3 frames later. In between, the output is the damping
     // filter's response. nw::snd and the later nn::snd add half the input and half the last output. The high-pass
-    // damping subtracts both. nn::snd of 2011 takes half the sum of the input and the last output from the input.
+    // damping subtracts both. The libraries of 2011 take half the sum of the input and the last output from the input.
     const auto response = [](Library library, bool high_pass)
     {
         ReverbParam param{5, 500, 5, 0.0f, 0.5f, {3 * 160, 40 * 160, 160}, 0.0f, 1.0f, false, high_pass};
@@ -326,6 +328,7 @@ void TestReverbDamping()
     XSFLIB_CHECK(response(Library::kNwSnd, true) == high);
     XSFLIB_CHECK(response(Library::kNnSnd, true) == high);
     XSFLIB_CHECK(response(Library::kNnSnd2011, false) == older);
+    XSFLIB_CHECK(response(Library::kNwSnd2011, false) == older);
     XSFLIB_CHECK(older[1] < 0 && older[2] > 0);
 }
 
@@ -339,7 +342,7 @@ void TestReverbShortTimes()
         return c == 0 && i == 7 ? kImpulse : 0;
     };
     const std::vector<std::pair<std::size_t, int32_t>> late{{167, kImpulse}};
-    for (const Library library : {Library::kNwSnd, Library::kNnSnd, Library::kNnSnd2011})
+    for (const Library library : {Library::kNwSnd, Library::kNnSnd, Library::kNnSnd2011, Library::kNwSnd2011})
     {
         Reverb reverb(library, param);
         XSFLIB_CHECK(Nonzero(Run(reverb, 160, 30, input)[0]) == late);
@@ -381,11 +384,13 @@ void TestReverbParams()
     XSFLIB_CHECK(refused(Library::kNnSnd, param));
     XSFLIB_CHECK(refused(Library::kNnSnd2011, param));
     XSFLIB_CHECK(!refused(Library::kNwSnd, param));
+    XSFLIB_CHECK(!refused(Library::kNwSnd2011, param));
 
-    // nn::snd of 2011 has no high-pass damping.
+    // The libraries of 2011 have no high-pass damping.
     param = ReverbParam{};
     param.high_pass_damping = true;
     XSFLIB_CHECK(refused(Library::kNnSnd2011, param));
+    XSFLIB_CHECK(refused(Library::kNwSnd2011, param));
     XSFLIB_CHECK(!refused(Library::kNnSnd, param));
 
     // After the setup, the times and the filters can't grow, and surround can't start. A refusal changes nothing.

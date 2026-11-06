@@ -56,6 +56,12 @@ Conversion ConvertTogether(const rsar::SoundArchive& archive, std::span<const ui
                            const std::string& name, const PerformOptions& options, const Settings& settings,
                            const std::string& program);
 
+// The same for sequences `sound_indices` of a CSAR or FSAR archive. The sequences share their list of banks and their
+// pan mode.
+Conversion ConvertTogether(const sar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
+                           const std::string& name, const PerformOptions& options, const Settings& settings,
+                           const std::string& program);
+
 // A SoundFont of a bank's instruments, from program `first` to program `last`.
 struct BankSoundFont
 {

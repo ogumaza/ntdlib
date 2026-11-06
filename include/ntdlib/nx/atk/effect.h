@@ -3,8 +3,8 @@
 // nn::atk's aux effects (EffectAux), which run in the game's process on what the renderer sends them from a bus, and
 // the I3DL2 reverb that the reference game runs on its aux bus A that way. Each function's comment gives the address of
 // the routine it follows in WarioWare: Get It Together!'s main. Also nn::atk's effects that the renderer runs
-// (EffectBase): the delay and the light limiter of the version of nn::atk in WarioWare: Move It!'s main. Their
-// comments give the addresses in Move It!'s main.
+// (EffectBase): the delay and the light limiter of the version of nn::atk in WarioWare: Move It!'s main, and the reverb
+// of the version in Clubhouse Games: 51 Worldwide Classics' main. Their comments give the addresses in those mains.
 
 #pragma once
 
@@ -155,6 +155,62 @@ private:
     float dry_gain_ = 0.5f;
     float low_pass_amount_ = 0.8f;
     float channel_spread_ = 0.3f;
+    bool enabled_ = false;
+};
+
+// nn::atk's reverb (EffectReverb, constructor 0x544d90 in Clubhouse Games' main), on the renderer's reverb. It starts
+// with early and late mode 0 (a small room), early and late gains of 0.7, a pre-delay of 15 ms, a decay time of 1.5 s,
+// a high-frequency decay ratio of 0.8, a coloration of 0.7, a reverb gain of 0.2, an out gain of 1, a dry gain of 0.7,
+// disabled, on 4 channels. The setters hold each gain and the coloration to 0 to 1, the ratio to 0.1 to 1, the
+// pre-delay to 0 to 300 ms and the decay time to 0.1 to 20 s. They store a mode as it is. Nintendo's code stops when
+// it passes a mode above 4 to the renderer, and the renderer's model throws. On 6 channels, the reverb takes the bus's
+// channels in their order.
+class EffectReverb : public EffectBase
+{
+public:
+    static constexpr int64_t kDefaultPredelay = 15000000;
+    static constexpr int64_t kDefaultDecay = 1500000000;
+    static constexpr int64_t kMostPredelay = 300000000;
+    static constexpr int64_t kLeastDecay = 100000000;
+    static constexpr int64_t kMostDecay = 20000000000;
+
+    // The renderer's AddReverb, then each setting from the early mode to the enable (the virtual function at +0x18,
+    // 0x544ee0).
+    void AddEffect(audio::Renderer& renderer, int mix) override;
+
+    // The renderer's SetReverbInputOutput (0x5450b0).
+    void SetEffectInputOutput(std::span<const int8_t> buffers) override;
+
+    // The channel mode changes only before the effect is added, and returns whether it changed (0x5452e0).
+    bool SetChannelMode(ChannelMode mode);
+
+    void SetEarlyMode(int mode);                  // 0x545400
+    void SetEarlyGain(float gain);                // 0x545480
+    void SetPredelayTime(int64_t time);           // 0x5454f0
+    void SetLateMode(int mode);                   // 0x545590
+    void SetLateGain(float gain);                 // 0x545610
+    void SetDecayTime(int64_t time);              // 0x545680
+    void SetHighFrequencyDecayRatio(float ratio); // 0x545730
+    void SetColoration(float coloration);         // 0x5457b0
+    void SetReverbGain(float gain);               // 0x545820
+    void SetOutGain(float gain);                  // 0x545890
+    void SetDryGain(float gain);                  // 0x545900
+    void SetEnabled(bool enabled) override;       // 0x545970
+
+    std::unique_ptr<EffectBase> Clone() const override;
+
+private:
+    int early_mode_ = 0;
+    float early_gain_ = 0.7f;
+    int64_t predelay_ = kDefaultPredelay;
+    int late_mode_ = 0;
+    float late_gain_ = 0.7f;
+    int64_t decay_ = kDefaultDecay;
+    float high_frequency_decay_ratio_ = 0.8f;
+    float coloration_ = 0.7f;
+    float reverb_gain_ = 0.2f;
+    float out_gain_ = 1.0f;
+    float dry_gain_ = 0.7f;
     bool enabled_ = false;
 };
 

@@ -174,6 +174,13 @@ public:
         return channel >= 0 && channel < ChannelCount() ? voices_[static_cast<std::size_t>(channel)] : kNoVoice;
     }
 
+    // Sets the volume of each track whose bit `tracks` sets, bit N for track N, from the player's next update. A game's
+    // code sets it through the sound's handle (StreamSound::SetTrackVolume: 0x022C2814 in amiibo Festival, 0x02AE70AC
+    // in Nintendo Land). The Wii U's library raises a volume below 0 to 0 and sets no upper limit. It moves the track's
+    // volume there over a number of frames. The model sets it at once. Nobody has read the Switch's routine. A bit past
+    // the player's tracks changes nothing.
+    void SetTrackVolume(uint32_t tracks, float volume);
+
 private:
     // A track (StreamTrack): whether it plays, its settings, and what the game sets through the sound's handle: its
     // volume, its output line (-1 takes the player's) and its output parameters.

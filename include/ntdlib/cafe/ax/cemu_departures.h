@@ -13,7 +13,7 @@ struct CemuDepartures
     // Every switch on.
     static CemuDepartures All()
     {
-        return {true, true, true, true, true};
+        return {true, true, true, true, true, true};
     }
 
     // A voice keeps the ADPCM history of its last use: the sync copies the game's ADPCM block to the renderer without
@@ -33,6 +33,10 @@ struct CemuDepartures
     // Every device converts a 32 kHz renderer's output to 48 kHz by linear interpolation. The console uses its FIR
     // filter unless the game selects linear interpolation.
     bool linear_upsampler = false;
+
+    // A voice without a filter keeps each product of its envelope whole. The microcode saturates each product to 16
+    // bits. A voice with a filter saturates here as well: no recording shows what Cemu does there.
+    bool unsaturated_envelope = false;
 };
 
 } // namespace ntdlib::cafe::ax

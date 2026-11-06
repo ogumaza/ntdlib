@@ -64,6 +64,10 @@ std::string SfzRegionStart(const std::string& sample, std::pair<int, int> keys, 
 // A region's pitch: its root key and its tuning ratio.
 std::string SfzPitchOpcodes(uint8_t original_key, float tune);
 
+// The pitch of a region at one of the console's pitch limits: every key `cents` above the wave's rate
+// (ResamplingSpan::limit_cents).
+std::string SfzFixedPitchOpcodes(int cents);
+
 // A region's volume, from its volume over 127, raised by `gain_db`. `silent` gives the lowest volume. No opcode means
 // 0 dB. `lift` raises the volume over 127 by that many centibels, up to full level (PresetKey::lift). SFZ's
 // documentation gives volume a range up to 6 dB. The volume over 127 gives at most that much. `gain_db` can raise the
@@ -79,15 +83,16 @@ std::string SfzEnvelopeOpcodes(const PresetKey& key, const EnvelopeValues& env, 
 // the region's original key, which tracks the key at 100 cents a key.
 std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const ResamplingRegion& region, int slot);
 
-// A region's line up to its low-pass, for the wave's channel `channel`, the keys `keys` and the velocities
-// `velocities`.
+// A region's line up to its low-pass, for the wave's channel `channel`, the span `span` and the velocities
+// `velocities`. The line plays the span's keys, at the limit for a span at one of the console's pitch limits.
 using RegionLineFunction =
-    std::function<std::string(std::size_t channel, std::pair<int, int> keys, std::pair<int, int> velocities)>;
+    std::function<std::string(std::size_t channel, const ResamplingSpan& span, std::pair<int, int> velocities)>;
 
 // The lines of a region that plays the key ranges `keys` at the velocity ranges `velocities`: one for each resampling
 // span of a key range (ResamplingSpans), each velocity range and each of the wave's `channels`. `line` gives each line
-// up to its low-pass. The span's low-pass then takes filter slot `resampling_slot`, or none with 0
-// (PresetRegionsFunction). `region` gives the low-passes their rates and their key.
+// up to its low-pass. The span's low-pass then takes filter slot `resampling_slot`. With 0, the spans take no
+// low-pass, and only the pitch limits split a range (PitchLimitSpans, PresetRegionsFunction). `region` gives the
+// low-passes their rates and their key.
 std::string RegionLines(const std::vector<std::pair<int, int>>& keys,
                         const std::vector<std::pair<int, int>>& velocities, std::size_t channels,
                         const ResamplingRegion& region, int resampling_slot, const Settings& settings,

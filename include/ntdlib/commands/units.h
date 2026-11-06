@@ -38,6 +38,22 @@ inline constexpr int kUnitCount = static_cast<int>(Unit::kFraction) + 1;
 using Fixed = int64_t;
 inline constexpr Fixed kOne = 65536;
 
+// How a console's value converts to its unit: the unit's value is the console's value times a step, plus an offset.
+struct Scale
+{
+    friend bool operator==(const Scale&, const Scale&) = default;
+
+    Fixed step = kOne;
+    Fixed offset = 0;
+};
+
+// The console's value `value` in its unit.
+Fixed ToUnit(int64_t value, const Scale& scale);
+
+// The console's value nearest `unit`. Of two values at the same distance, the one whose unit lies further from zero.
+// The value that gave `unit` comes back.
+int64_t FromUnit(Fixed unit, const Scale& scale);
+
 // The unit of the value of a command of `kind`, or nothing for a kind without a value. A note's value is its length,
 // in kTicks, and its velocity is a kLevel. A time is in kTicks.
 std::optional<Unit> UnitOf(Kind kind);

@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -73,11 +74,18 @@ public:
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
 
-    // Starts sequence sound `index`, by its index in the archive's sound table. The game's sound archive player does
-    // the same when a sound is started before a frame. The sound starts in the second sound frame after that (the first
-    // frame takes the start to the sound thread). Returns the player, or nullptr if there's no such sequence or its
-    // files aren't in the archive.
-    SequenceSoundPlayer* StartSequence(uint32_t index);
+    // Adds an add-on sound archive and returns its number: 1 for the first, 2 for the next, and so on. The engine
+    // plays an add-on archive's sounds beside its archive's sounds. A game's sound archive player plays them in the same
+    // sound system, with the same global variables. The engine keeps a reference to `archive`. `archive` has to outlive
+    // the engine. The engine reads the add-on's banks and waves in the same way as its archive's.
+    int AddArchive(const sar::SoundArchive& archive);
+
+    // Starts sequence sound `index`, by its index in the sound table of archive `archive`: 0 for the engine's archive,
+    // or an add-on's number (AddArchive). The game's sound archive player does the same when a sound is started before
+    // a frame. The sound starts in the second sound frame after that (the first frame takes the start to the sound
+    // thread). Its notes play the banks of its archive. Returns the player, or nullptr if there's no such archive or
+    // sequence, or the sequence's files aren't in its archive.
+    SequenceSoundPlayer* StartSequence(uint32_t index, int archive = 0);
 
     // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
     // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks
@@ -102,9 +110,10 @@ public:
     // whole frames, with all of the effect's channels in each frame.
     void AppendEffect(int bus, std::unique_ptr<EffectAux> effect);
 
-    // Puts an effect that the renderer runs, a delay or a light limiter, after the others on aux bus `bus`, and enables
-    // the effect. The effect goes into the receiver's mix with its settings, on the bus's buffers. WarioWare: Move It!
-    // does the same (OutputMixer::AppendEffect, 0xdeb0d0 in that game's main, then the effect's SetEnabled).
+    // Puts an effect that the renderer runs, a delay, a reverb or a light limiter, after the others on aux bus `bus`,
+    // and enables the effect. The effect goes into the receiver's mix with its settings, on the bus's buffers.
+    // WarioWare: Move It! does the same (OutputMixer::AppendEffect, 0xdeb0d0 in that game's main, then the effect's
+    // SetEnabled). So does Clubhouse Games: 51 Worldwide Classics (0x606d10 in its main).
     void AppendEffect(int bus, std::unique_ptr<EffectBase> effect);
 
     // Whether a sound still plays or a channel still sounds.
@@ -179,8 +188,8 @@ public:
     }
 
     // A note on the bank in a sequence's bank slot (Bank::NoteOn, 0xc0b140): the velocity region for the key and
-    // velocity, its wave, and a channel that starts it. Returns nullptr if the slot, the program, the region or the
-    // wave isn't there, or no channel is free.
+    // velocity, its wave, and a channel that starts it. The bank is in the archive of the note's player. Returns
+    // nullptr if the slot, the program, the region or the wave isn't there, or no channel is free.
     Channel* NoteOn(const std::vector<uint32_t>& banks, int slot, const NoteOnInfo& info);
 
     // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
@@ -199,6 +208,27 @@ public:
     bool LoopsForEver(const SequenceSoundPlayer&, int track, uint32_t address) const
     {
         return endless_loops_.contains({track, address});
+    }
+
+    // A game's procedure for its sequences (nn::atk's SequenceUserProcCallback). The command 0xF0E0 calls the
+    // procedure with a number, on the track that runs the command. The engine passes the hook the player, the track
+    // and the number. A write to the player's variables in the hook takes effect before the track's next command. The
+    // game's procedure writes them in the same way, through the callback's pointers to the variables. Without a hook,
+    // the command changes nothing. The hook isn't part of a snapshot, and stays through a restore.
+    using UserProcedureHook = std::function<void(SequenceSoundPlayer& player, int track, uint16_t procedure)>;
+
+    void SetUserProcedureHook(UserProcedureHook hook)
+    {
+        user_procedure_ = std::move(hook);
+    }
+
+    // The sequence player calls this after each extended command that a track runs (see nwsnd/sequence.h).
+    void OnExtendedCommand(SequenceSoundPlayer& player, int track, uint32_t command, int32_t arg1, int32_t)
+    {
+        if (command == 0xF0E0 && user_procedure_)
+        {
+            user_procedure_(player, track, static_cast<uint16_t>(arg1));
+        }
     }
 
 private:
@@ -249,16 +279,23 @@ private:
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
     Files files_;
 
+    // The add-on archives (AddArchive), with their banks and waves, and the archive of each player, by its place: 0
+    // for the engine's archive, or an add-on's number.
+    std::vector<const sar::SoundArchive*> addon_archives_;
+    std::vector<std::unique_ptr<Files>> addon_files_;
+    std::vector<int> player_archives_;
+
     // The streams that stream sounds play. Their channels stay while the engine runs, through a restore too.
     std::vector<std::unique_ptr<const sar::StreamFile>> streams_;
 
     std::set<std::pair<int, uint32_t>> endless_loops_;
+    UserProcedureHook user_procedure_;
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track
     int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
 };
 
-// The voices at each level, the channels, the players and the starts that wait, the random numbers, the global
-// variables and the effects. The voices point into the engine that saved them.
+// The voices at each level, the channels, the players and the starts that wait, the archive of each player, the random
+// numbers, the global variables and the effects. The voices point into the engine that saved them.
 struct Engine::Snapshot
 {
     const Engine* owner = nullptr;
@@ -269,6 +306,7 @@ struct Engine::Snapshot
     Random random;
     std::array<int16_t, 16> global_vars{};
     Players::Snapshot players;
+    std::vector<int> player_archives;
     std::array<std::vector<std::shared_ptr<const EffectAux>>, 4> effects;           // by bus, as the engine holds them
     std::array<std::vector<std::shared_ptr<const EffectBase>>, 4> renderer_effects; // the same
 };

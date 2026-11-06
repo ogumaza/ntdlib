@@ -11,13 +11,16 @@
 #include <numeric>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "ntdlib/nx/audio/delay.h"
 #include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/light_limiter.h"
+#include "ntdlib/nx/audio/reverb.h"
 #include "ntdlib/nx/audio/voice.h"
+
 #include "nx/audio/arithmetic.h"
 
 namespace ntdlib::nx::audio
@@ -874,6 +877,169 @@ void Renderer::SetDelayEnabled(int delay, bool enabled)
     }
 }
 
+int Renderer::AddReverb(int mix, int channel_count)
+{
+    // The client's ReverbType (AddReverb): the channel counts in 16 bits, and the mix's rate in kHz in Q14.
+    Reverb reverb;
+    const int channels = static_cast<uint16_t>(channel_count);
+    reverb.parameter.channel_count = channels;
+    reverb.parameter.max_channel_count = channels;
+    const int32_t kilohertz = mixes_.at(static_cast<std::size_t>(mix)).sample_rate / 1000;
+    reverb.parameter.sample_rate = static_cast<int32_t>(static_cast<uint32_t>(kilohertz) << 14);
+    reverbs_.push_back(std::move(reverb));
+
+    const int id = static_cast<int>(reverbs_.size()) - 1;
+    mixes_[static_cast<std::size_t>(mix)].effects.push_back({EffectKind::kReverb, id});
+    if (observer_ != nullptr)
+    {
+        observer_->AddReverb(mix, channel_count, id);
+    }
+
+    return id;
+}
+
+void Renderer::SetReverbInputOutput(int reverb, std::span<const int8_t> inputs, std::span<const int8_t> outputs)
+{
+    Reverb& r = reverbs_.at(static_cast<std::size_t>(reverb));
+    r.state = kStart;
+    SetEffectBuffers(r.inputs, r.outputs, r.parameter.channel_count, r.parameter.max_channel_count, inputs, outputs);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbInputOutput(reverb, inputs, outputs);
+    }
+}
+
+Renderer::Reverb& Renderer::ChangeReverb(int reverb)
+{
+    Reverb& r = reverbs_.at(static_cast<std::size_t>(reverb));
+    r.state = r.state == kStart ? kStart : kNewGains;
+
+    return r;
+}
+
+void Renderer::SetReverbEarlyMode(int reverb, int mode)
+{
+    if (mode < 0 || mode >= kReverbModes)
+    {
+        throw std::invalid_argument("SetReverbEarlyMode: no early mode " + std::to_string(mode));
+    }
+
+    ChangeReverb(reverb).parameter.early_mode = mode;
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbEarlyMode(reverb, mode);
+    }
+}
+
+void Renderer::SetReverbLateMode(int reverb, int mode)
+{
+    if (mode < 0 || mode >= kReverbModes)
+    {
+        throw std::invalid_argument("SetReverbLateMode: no late mode " + std::to_string(mode));
+    }
+
+    ChangeReverb(reverb).parameter.late_mode = mode;
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbLateMode(reverb, mode);
+    }
+}
+
+void Renderer::SetReverbPredelayTime(int reverb, int64_t time)
+{
+    const float milliseconds = static_cast<float>(time / 1000) / 1000.0f;
+    ChangeReverb(reverb).parameter.predelay = ToFixed(milliseconds, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbPredelayTime(reverb, time);
+    }
+}
+
+void Renderer::SetReverbDecayTime(int reverb, int64_t time)
+{
+    const float seconds = static_cast<float>(time / 1000000) / 1000.0f;
+    ChangeReverb(reverb).parameter.decay_time = ToFixed(seconds, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbDecayTime(reverb, time);
+    }
+}
+
+void Renderer::SetReverbEarlyGain(int reverb, float gain)
+{
+    ChangeReverb(reverb).parameter.early_gain = ToFixed(gain, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbEarlyGain(reverb, gain);
+    }
+}
+
+void Renderer::SetReverbLateGain(int reverb, float gain)
+{
+    ChangeReverb(reverb).parameter.late_gain = ToFixed(gain, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbLateGain(reverb, gain);
+    }
+}
+
+void Renderer::SetReverbHighFrequencyDecayRatio(int reverb, float ratio)
+{
+    ChangeReverb(reverb).parameter.high_frequency_decay_ratio = ToFixed(ratio, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbHighFrequencyDecayRatio(reverb, ratio);
+    }
+}
+
+void Renderer::SetReverbColoration(int reverb, float coloration)
+{
+    ChangeReverb(reverb).parameter.coloration = ToFixed(coloration, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbColoration(reverb, coloration);
+    }
+}
+
+void Renderer::SetReverbReverbGain(int reverb, float gain)
+{
+    ChangeReverb(reverb).parameter.reverb_gain = ToFixed(gain, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbReverbGain(reverb, gain);
+    }
+}
+
+void Renderer::SetReverbOutGain(int reverb, float gain)
+{
+    ChangeReverb(reverb).parameter.out_gain = ToFixed(gain, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbOutGain(reverb, gain);
+    }
+}
+
+void Renderer::SetReverbDryGain(int reverb, float gain)
+{
+    ChangeReverb(reverb).parameter.dry_gain = ToFixed(gain, 14);
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbDryGain(reverb, gain);
+    }
+}
+
+void Renderer::SetReverbEnabled(int reverb, bool enabled)
+{
+    // An enabled reverb starts again. A disabled one works out its delays and gains again once it's enabled.
+    Reverb& r = reverbs_.at(static_cast<std::size_t>(reverb));
+    r.enabled = enabled;
+    r.state = enabled ? kStart : kNewGains;
+    if (observer_ != nullptr)
+    {
+        observer_->SetReverbEnabled(reverb, enabled);
+    }
+}
+
 int Renderer::AddLightLimiter(int mix, int64_t max_look_ahead, int channel_count)
 {
     // The client's LightLimiterType (AddLightLimiter): the longest look-ahead in samples from the time in
@@ -1039,6 +1205,7 @@ Renderer::Snapshot Renderer::Save() const
     snapshot.mixes = mixes_;
     snapshot.auxes = auxes_;
     snapshot.delays = delays_;
+    snapshot.reverbs = reverbs_;
     snapshot.limiters = limiters_;
     snapshot.mixes_changed = mixes_changed_;
     snapshot.sinks = sinks_;
@@ -1092,6 +1259,7 @@ void Renderer::Restore(const Snapshot& snapshot)
     mixes_ = snapshot.mixes;
     auxes_ = snapshot.auxes;
     delays_ = snapshot.delays;
+    reverbs_ = snapshot.reverbs;
     limiters_ = snapshot.limiters;
     mixes_changed_ = snapshot.mixes_changed;
     sinks_ = snapshot.sinks;
@@ -1246,9 +1414,10 @@ void Renderer::Update()
     UpdateRendererEffects();
 }
 
-// The renderer's copies of the delays and the limiters. A delay's update leaves out a delay whose longest channel count
-// isn't 1, 2, 4 or 6. It replaces another channel count with the longest. It keeps its state until a command has taken
-// it (DelayInfo::Update, 0x2188b8). A limiter's update takes the client's state each time (LightLimiterInfo::Update,
+// The renderer's copies of the delays, the reverbs and the limiters. A delay's update leaves out a delay whose longest
+// channel count isn't 1, 2, 4 or 6. It replaces another channel count with the longest. It keeps its state until a
+// command has taken it (DelayInfo::Update, 0x2188b8). A reverb's update does the same (ReverbInfo::Update, 0x218b9c).
+// A limiter's update takes the client's state each time (LightLimiterInfo::Update,
 // 0x219614). A new effect starts again. The client's states then become 2.
 void Renderer::UpdateRendererEffects()
 {
@@ -1272,6 +1441,28 @@ void Renderer::UpdateRendererEffects()
 
         delay.state = kUnchanged;
         delay.is_new = false;
+    }
+
+    for (Reverb& reverb : reverbs_)
+    {
+        if (ProcessedChannels(reverb.parameter.max_channel_count))
+        {
+            const uint8_t kept = reverb.server_state;
+            reverb.server_parameter = reverb.parameter;
+            if (!ProcessedChannels(reverb.server_parameter.channel_count))
+            {
+                reverb.server_parameter.channel_count = reverb.server_parameter.max_channel_count;
+            }
+
+            reverb.server_inputs = reverb.inputs;
+            reverb.server_outputs = reverb.outputs;
+            reverb.server_enabled = reverb.enabled;
+            reverb.server_state = reverb.is_new ? kStart : kept != kUnchanged ? kept : reverb.state;
+            reverb.server_taken = true;
+        }
+
+        reverb.state = kUnchanged;
+        reverb.is_new = false;
     }
 
     for (LightLimiter& limiter : limiters_)
@@ -1954,6 +2145,9 @@ void Renderer::RenderEffects(const Mix& mix)
         case EffectKind::kDelay:
             RenderDelay(mix, delays_[index]);
             break;
+        case EffectKind::kReverb:
+            RenderReverb(mix, reverbs_[index]);
+            break;
         case EffectKind::kLightLimiter:
             RenderLightLimiter(mix, limiters_[index]);
             break;
@@ -2058,6 +2252,47 @@ void Renderer::RenderDelay(const Mix& mix, Delay& delay)
     GiveEffectBuffers(mix, outputs, std::span(out.data(), channels));
 }
 
+// A reverb's command (GenerateReverbCommand, 0x20e368, and its processing). An enabled reverb first starts again, or
+// works out its delays and gains again, when its state asks. The renderer's revision 3 and later give it the long
+// pre-delay line.
+void Renderer::RenderReverb(const Mix& mix, Reverb& reverb)
+{
+    if (!reverb.server_taken)
+    {
+        return;
+    }
+
+    const ReverbParameter& parameter = reverb.server_parameter;
+    const auto channels = static_cast<std::size_t>(parameter.channel_count);
+    const std::span<const int8_t> inputs(reverb.server_inputs.data(), channels);
+    const std::span<const int8_t> outputs(reverb.server_outputs.data(), channels);
+    if (!InRange(mix, inputs, outputs))
+    {
+        return;
+    }
+    if (!reverb.server_enabled)
+    {
+        PassThrough(mix, inputs, outputs);
+        return;
+    }
+
+    if (reverb.server_state == kStart)
+    {
+        InitializeReverb(parameter, reverb.dsp, true);
+    }
+    else if (reverb.server_state == kNewGains)
+    {
+        UpdateReverb(parameter, reverb.dsp);
+    }
+
+    std::array<const int32_t*, kMaxEffectChannels> in{};
+    std::array<int32_t*, kMaxEffectChannels> out{};
+    TakeEffectBuffers(mix, inputs, outputs, in, out);
+    ApplyReverb(parameter, reverb.dsp, std::span(in.data(), channels), std::span(out.data(), channels),
+                parameter_.sample_count);
+    GiveEffectBuffers(mix, outputs, std::span(out.data(), channels));
+}
+
 // A light limiter's command (the processing at 0x2226f0). A limiter whose channel count isn't 1, 2, 4 or 6 has a
 // command without channels (GenerateLightLimiterEffectCommand, 0x20ec24). The model leaves that command out. An
 // enabled limiter first starts again if its state says so.
@@ -2127,6 +2362,26 @@ void Renderer::StartRendererEffects()
                     SetDelayGains(delay.server_parameter, delay.dsp);
                 }
             }
+            else if (effect.kind == EffectKind::kReverb)
+            {
+                Reverb& reverb = reverbs_[index];
+                const auto channels = static_cast<std::size_t>(reverb.server_parameter.channel_count);
+                if (!reverb.server_taken || !reverb.server_enabled ||
+                    !InRange(mix, std::span(reverb.server_inputs.data(), channels),
+                             std::span(reverb.server_outputs.data(), channels)))
+                {
+                    continue;
+                }
+
+                if (reverb.server_state == kStart)
+                {
+                    InitializeReverb(reverb.server_parameter, reverb.dsp, true);
+                }
+                else if (reverb.server_state == kNewGains)
+                {
+                    UpdateReverb(reverb.server_parameter, reverb.dsp);
+                }
+            }
             else if (effect.kind == EffectKind::kLightLimiter)
             {
                 LightLimiter& limiter = limiters_[index];
@@ -2154,6 +2409,11 @@ void Renderer::FinishRendererEffects()
     for (Delay& delay : delays_)
     {
         delay.server_state = kUnchanged;
+    }
+
+    for (Reverb& reverb : reverbs_)
+    {
+        reverb.server_state = kUnchanged;
     }
 
     for (LightLimiter& limiter : limiters_)

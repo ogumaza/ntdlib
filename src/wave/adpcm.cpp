@@ -18,9 +18,15 @@ namespace
 constexpr std::size_t kDspAdpcmFrameBytes = 8;
 constexpr std::size_t kDspAdpcmFrameSamples = 14;
 
-// AFC: 16 samples in each 9-byte frame, after a byte that holds the scale and the predictor.
+// AFC: 16 samples in each 9-byte frame, after a byte that holds the scale and the predictor. The 2-bit form packs the
+// 16 samples in 4 bytes, so its frames are 5 bytes.
 constexpr std::size_t kAfcFrameBytes = 9;
+constexpr std::size_t kAfc2FrameBytes = 5;
 constexpr uint32_t kAfcFrameSamples = 16;
+
+// A 2-bit sample stands for the top two bits of a 4-bit one. Its left shift before the frame's scale is therefore 13,
+// where a 4-bit sample's is 11.
+constexpr int kAfc2SampleShift = 13;
 
 // The predictor pairs that JAudio2 gives the GameCube's DSP program for AFC, in 2048ths.
 constexpr std::array<std::array<int32_t, 2>, 16> kAfcCoefficients{{
@@ -161,6 +167,38 @@ std::vector<int16_t> DecodeAfc(std::span<const uint8_t> data, uint32_t samples, 
             const uint8_t byte = data[base + 1 + i / 2];
             const int32_t nibble = SignedNibble((i & 1) ? (byte & 0x0f) : (byte >> 4));
             const int64_t v = (int64_t{nibble} << shift << 11) + int64_t{c1} * h1 + int64_t{c2} * h2;
+            const auto s = static_cast<int16_t>(std::clamp<int64_t>(v >> 11, -32768, 32767));
+            h2 = h1;
+            h1 = s;
+            out.push_back(s);
+        }
+    }
+
+    return out;
+}
+
+std::vector<int16_t> DecodeAfc2(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2)
+{
+    // The frame's first byte is the 4-bit form's. Sixteen signed 2-bit samples follow, four to a byte, the high bits of
+    // each byte first.
+    std::vector<int16_t> out;
+    out.reserve(samples);
+    int32_t h1 = hist1, h2 = hist2;
+    for (std::size_t frame = 0; out.size() < samples; frame++)
+    {
+        const std::size_t base = frame * kAfc2FrameBytes;
+        if (base + kAfc2FrameBytes > data.size())
+        {
+            break;
+        }
+
+        const int32_t shift = data[base] >> 4;
+        const auto& [c1, c2] = kAfcCoefficients[data[base] & 0x0f];
+        for (uint32_t i = 0; i < kAfcFrameSamples && out.size() < samples; i++)
+        {
+            const int32_t bits = data[base + 1 + i / 4] >> (6 - 2 * (i & 3)) & 3;
+            const int32_t value = bits >= 2 ? bits - 4 : bits;
+            const int64_t v = (int64_t{value} << shift << kAfc2SampleShift) + int64_t{c1} * h1 + int64_t{c2} * h2;
             const auto s = static_cast<int16_t>(std::clamp<int64_t>(v >> 11, -32768, 32767));
             h2 = h1;
             h1 = s;

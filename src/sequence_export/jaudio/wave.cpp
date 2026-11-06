@@ -19,9 +19,18 @@ namespace ntdlib::sequence_export::jaudio
 namespace
 {
 
-// Samples in each 9-byte frame of 4-bit ADPCM.
+// Samples in each frame of ADPCM: 9 bytes in the 4-bit form, 5 in the 2-bit form.
 constexpr uint32_t kFrameSamples = 16;
-constexpr std::size_t kFrameBytes = 9;
+constexpr std::size_t kFrameBytes4 = 9;
+constexpr std::size_t kFrameBytes2 = 5;
+
+// Decodes ADPCM of either form.
+std::vector<int16_t> DecodeAdpcm(WaveFormat format, std::span<const uint8_t> data, uint32_t samples, int16_t hist1,
+                                 int16_t hist2)
+{
+    return format == WaveFormat::kAdpcm2 ? ntdlib::wave::DecodeAfc2(data, samples, hist1, hist2)
+                                         : ntdlib::wave::DecodeAfc(data, samples, hist1, hist2);
+}
 
 } // namespace
 
@@ -42,10 +51,9 @@ Pcm DecodeWave(const WaveInfo& info, std::span<const uint8_t> aw)
     switch (info.format)
     {
     case WaveFormat::kAdpcm4:
-        samples = ntdlib::wave::DecodeAfc(data, length, 0, 0);
-        break;
     case WaveFormat::kAdpcm2:
-        throw FormatError("2-bit ADPCM waves aren't supported");
+        samples = DecodeAdpcm(info.format, data, length, 0, 0);
+        break;
     case WaveFormat::kPcm8:
         samples = ntdlib::wave::DecodePcm8(data, length);
         break;
@@ -64,7 +72,7 @@ Pcm DecodeWave(const WaveInfo& info, std::span<const uint8_t> aw)
 
     pcm.loop_start = info.loop_start;
     pcm.loop_end = info.loop_end;
-    if (info.format != WaveFormat::kAdpcm4)
+    if (info.format != WaveFormat::kAdpcm4 && info.format != WaveFormat::kAdpcm2)
     {
         return pcm;
     }
@@ -73,7 +81,8 @@ Pcm DecodeWave(const WaveInfo& info, std::span<const uint8_t> aw)
     // gives: the two samples before that frame. Where that history leads to other samples than the first pass, play the
     // first pass once and loop on a repeat.
     const uint32_t skip = info.loop_start % kFrameSamples;
-    const std::size_t loop_frame = std::size_t{info.loop_start} / kFrameSamples * kFrameBytes;
+    const std::size_t frame_bytes = info.format == WaveFormat::kAdpcm2 ? kFrameBytes2 : kFrameBytes4;
+    const std::size_t loop_frame = std::size_t{info.loop_start} / kFrameSamples * frame_bytes;
     if (loop_frame > data.size())
     {
         return pcm;
@@ -81,7 +90,7 @@ Pcm DecodeWave(const WaveInfo& info, std::span<const uint8_t> aw)
 
     const uint32_t loop_length = info.loop_end - info.loop_start;
     std::vector<int16_t> repeat =
-        ntdlib::wave::DecodeAfc(data.subspan(loop_frame), skip + loop_length, info.loop_last, info.loop_penult);
+        DecodeAdpcm(info.format, data.subspan(loop_frame), skip + loop_length, info.loop_last, info.loop_penult);
     if (repeat.size() < skip + loop_length)
     {
         return pcm;

@@ -1562,13 +1562,14 @@ void TestWiiEnvelopeRange()
 
 // The Wii's track volume (SeqPlayer::SetTrackVolume, 0x8003e8b0 in Wii Sports' main.dol). Track 0 plays two notes. A
 // track volume of 0.5 halves the volume of the track's channels: the product with 0.5 is exact. A track volume of 0
-// silences them. A track whose bit isn't set keeps its volume. Track 1 isn't allocated.
+// silences them. A track whose bit isn't set keeps its volume. Track 1 isn't allocated. A volume set before Start
+// reaches the track that Start allocates, as one set after it does.
 void TestWiiTrackVolume()
 {
     using Policy = TestPolicy<ntdlib::nwsnd::RevolutionPolicy>;
     using Player = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
 
-    const auto volume = [](uint32_t track_flags, float track_volume)
+    const auto volume = [](uint32_t track_flags, float track_volume, bool before_start = false)
     {
         typename Policy::Engine engine;
         const typename Policy::SoundInfo kInfo;
@@ -1576,8 +1577,15 @@ void TestWiiTrackVolume()
         Player player(0, kInfo, data);
         engine.player = &player;
 
+        if (before_start)
+        {
+            player.SetTrackVolume(track_flags, track_volume);
+        }
         player.Start();
-        player.SetTrackVolume(track_flags, track_volume);
+        if (!before_start)
+        {
+            player.SetTrackVolume(track_flags, track_volume);
+        }
         player.Update(engine);
 
         return engine.pool.channels.empty() ? -1.0f : engine.pool.channels[0].track_volume;
@@ -1589,6 +1597,118 @@ void TestWiiTrackVolume()
                            "the Wii: a track volume of 0.5 halves the channel's volume");
     xsflib::testing::Check(volume(1, 0.0f) == 0.0f, "the Wii: a track volume of 0 silences the track");
     xsflib::testing::Check(volume(2, 0.0f) == full, "the Wii: a track whose bit isn't set keeps its volume");
+    xsflib::testing::Check(volume(1, 0.5f, true) == full * 0.5f && volume(1, 0.0f, true) == 0.0f,
+                           "the Wii: a track volume set before Start reaches the track that Start allocates");
+    xsflib::testing::Check(volume(2, 0.0f, true) == full,
+                           "the Wii: before Start, a track whose bit isn't set keeps its volume");
+}
+
+// A game's mute and silence of tracks through the sound's handle (SequenceSoundHandle::SetTrackMute and
+// SetTrackSilence), set after Start, as a game sets them when the sound starts. Track 0 plays two notes. A mute in any
+// mode keeps both notes from starting (the track's mute, SeqTrack::SetMute). A silence lets them start at a silence of
+// 0, with no ramp. A silence over 10 frames on sounding notes ramps from where their silence stands. Bits of tracks
+// that aren't allocated change nothing. The expected values follow the library's rules, which the sequence's mute
+// command already follows.
+template <typename Console>
+void TestTrackMuteAndSilence(const std::string& name)
+{
+    using Policy = TestPolicy<Console>;
+    using Player = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
+    const typename Policy::SoundInfo kInfo;
+    const std::vector<uint8_t> data = KeyGroupSequence(Console::kLittleEndianArguments, false);
+
+    for (const int mode : {1, 2, 3})
+    {
+        typename Policy::Engine engine;
+        Player player(0, kInfo, data);
+        engine.player = &player;
+        player.Start();
+        player.SetTrackMute(engine, 0x1, mode);
+        player.Update(engine);
+        xsflib::testing::Check(engine.pool.channels.empty(),
+                               name + ": a mute in mode " + std::to_string(mode) + " starts no note");
+    }
+
+    {
+        typename Policy::Engine engine;
+        Player player(0, kInfo, data);
+        engine.player = &player;
+        player.Start();
+        player.SetTrackMute(engine, 0x2, 1);
+        player.SetTrackSilence(engine, 0x2, true, 0);
+        player.Update(engine);
+        xsflib::testing::Check(engine.pool.channels.size() == 2 && engine.pool.channels[1].silence_to == 255,
+                               name + ": the bits of a track that isn't allocated change nothing");
+    }
+
+    {
+        typename Policy::Engine engine;
+        Player player(0, kInfo, data);
+        engine.player = &player;
+        player.Start();
+        player.SetTrackSilence(engine, 0x1, true, 10);
+        player.Update(engine);
+        const auto& channels = engine.pool.channels;
+        const bool silent = channels.size() == 2 && channels[1].silence_to == 0 && channels[1].silence_duration == 0;
+        xsflib::testing::Check(silent, name + ": a silenced track's notes start at a silence of 0, with no ramp");
+    }
+
+    {
+        typename Policy::Engine engine;
+        Player player(0, kInfo, data);
+        engine.player = &player;
+        player.Start();
+        player.Update(engine);
+        player.SetTrackSilence(engine, 0x1, true, 10);
+        const auto& channels = engine.pool.channels;
+        const bool ramp = channels.size() == 2 && channels[1].silence_from == 255 && channels[1].silence_to == 0 &&
+                          channels[1].silence_duration == 10 && channels[1].silence_counter == 0;
+        xsflib::testing::Check(ramp, name + ": a silence over 10 frames ramps a sounding note from 255 to 0");
+    }
+}
+
+// Track 0 ends at its first tick unless its variable 47 holds 1, and then plays C4. A game sets the variable through
+// the sound's handle after the start (SequenceSoundPlayer::SetTrackVariable), as amiibo Festival's SQ_SE_ACT_HUMMING
+// requires. A write before Start, which allocates the tracks, takes effect there.
+void TestCafeTrackVariable()
+{
+    using Policy = TestPolicy<ntdlib::nwsnd::CafePolicy>;
+    using Player = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
+    using xsflib::testing::Check;
+    const std::vector<uint8_t> kWaiting = {0xFE, 0x00, 0x01, 0xF0, 0x95, 0x2F, 0x00,
+                                           0x01, 0xA2, 0xFF, 0x3C, 0x64, 0x18, 0xFF};
+
+    const auto keys = [&kWaiting](int track, int index, int16_t value, bool before_start = false)
+    {
+        typename Policy::Engine engine;
+        const typename Policy::SoundInfo kInfo;
+        Player player(0, kInfo, kWaiting);
+        engine.player = &player;
+
+        if (before_start)
+        {
+            player.SetTrackVariable(track, index, value);
+        }
+        player.Start();
+        if (!before_start)
+        {
+            player.SetTrackVariable(track, index, value);
+        }
+        for (int i = 0; i < 30; ++i)
+        {
+            player.Update(engine);
+        }
+
+        return engine.notes;
+    };
+
+    Check(keys(0, 15, -1).empty(), "the Wii U: a track variable at its default of -1 ends the track");
+    Check(keys(0, 15, 1) == std::vector<int>{60}, "the Wii U: track 0's variable 47 at 1 plays the note");
+    Check(keys(0, 15, 1, true) == std::vector<int>{60}, "the Wii U: a track variable written before Start");
+    Check(keys(1, 15, 1, true).empty(), "the Wii U: a track that Start doesn't allocate takes no variable");
+    Check(keys(0, 14, 1).empty(), "the Wii U: another of the track's variables leaves variable 47");
+    Check(keys(1, 15, 1).empty(), "the Wii U: a track that isn't allocated takes no variable");
+    Check(keys(0, 16, 1).empty() && keys(0, -1, 1).empty(), "the Wii U: an index out of range changes nothing");
 }
 
 } // namespace
@@ -1630,6 +1750,7 @@ int main()
     TestWiiTempo();
     TestWiiTempoRatio();
     TestWiiTrackVolume();
+    TestCafeTrackVariable();
     TestNoteOn<ntdlib::nwsnd::CafePolicy>("the Wii U");
     TestNoteOn<ntdlib::nwsnd::NxPolicy>("the Switch");
     TestNoteOn<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
@@ -1637,6 +1758,10 @@ int main()
     TestHold<ntdlib::nwsnd::NxPolicy>("the Switch");
     TestHold<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
     TestWiiEnvelopeRange();
+    TestTrackMuteAndSilence<ntdlib::nwsnd::CtrPolicy>("the 3DS");
+    TestTrackMuteAndSilence<ntdlib::nwsnd::CafePolicy>("the Wii U");
+    TestTrackMuteAndSilence<ntdlib::nwsnd::NxPolicy>("the Switch");
+    TestTrackMuteAndSilence<ntdlib::nwsnd::RevolutionPolicy>("the Wii");
 
     return xsflib::testing::Summary("nwsnd_sequence");
 }

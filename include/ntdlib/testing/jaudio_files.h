@@ -404,6 +404,7 @@ struct SoundSpec
     uint8_t volume = 127;
     uint16_t file = 0;
     std::string name;
+    uint16_t switches = 0; // the halfword at +6 of an entry in the later layout
 };
 
 // A group of a sound table's section, with its name in the name table.
@@ -428,7 +429,7 @@ struct SoundTableBlocks
 };
 
 // A sound table of `sections`, and its name table. Each sound's entry is 12 bytes. A type with bit 0x40 set has the
-// later layout: the volume at +1 and the sequence archive's file at +2. Any other type has the earlier one: the volume
+// later layout: the volume at +1, the sequence archive's file at +2 and the switches at +6. Any other type has the earlier one: the volume
 // at +2 and the file in the low half of the word at +8. With `first_layouts`, every entry has the first layouts: the
 // volume at +8 and no file. A group gives each sound's type in a byte and its entry's offset in the 24 bits after it.
 // Each file number is a 16-bit field.
@@ -476,7 +477,7 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, boo
                 }
                 else if (sounds[i].type & 0x40)
                 {
-                    t.U8(0).U8(sounds[i].volume).U16(sounds[i].file).U32(0).U32(0);
+                    t.U8(0).U8(sounds[i].volume).U16(sounds[i].file).U16(0).U16(sounds[i].switches).U32(0);
                 }
                 else
                 {
@@ -609,6 +610,23 @@ inline std::vector<uint8_t> AwFile()
     return aw.Data();
 }
 
+// `data` compressed with Yaz0, every byte as a literal: groups of eight chunks after a flag byte of 0xff.
+inline std::vector<uint8_t> LiteralYaz0(const std::vector<uint8_t>& data)
+{
+    Bytes yaz0;
+    yaz0.Tag("Yaz0").U32(static_cast<uint32_t>(data.size())).U32(0).U32(0);
+    for (std::size_t i = 0; i < data.size(); i++)
+    {
+        if (i % 8 == 0)
+        {
+            yaz0.U8(0xff);
+        }
+        yaz0.U8(data[i]);
+    }
+
+    return yaz0.Data();
+}
+
 // A file of an RARC archive: its id, its name and its data.
 struct RarcFileSpec
 {
@@ -719,7 +737,9 @@ inline std::vector<uint8_t> BarcFile(const std::vector<AafSequenceSpec>& sequenc
 }
 
 // JAudio1's start-up archive (AAF) with a sound table of `sounds`, one bank, and a wave system (WaveSystemFile) of one
-// wave for each name in `archives`. Wave system n has the id n. The systems' load types alternate: 1 (at start-up),
+// wave for each name in `archives`. The bank is `bank`, after the other blocks. Without one, the bank is only its tag.
+// Wave system n has the id system_ids[n], or n without one. The bank's value in the list is `bank_system`, the wave
+// system that the bank plays. The systems' load types alternate: 1 (at start-up),
 // then 2 (for a scene). The table lists the sounds of each category in the order given. The sequences' entries come
 // first. The Wind Waker's table has them first too. The table's header gives the effects and the streams format 6, and
 // the sequences `sequence_format`. The Wind Waker's sequences have format 5, whose bit 0 makes an entry give the file.
@@ -731,7 +751,8 @@ inline std::vector<uint8_t> BarcFile(const std::vector<AafSequenceSpec>& sequenc
 // have wide records of their archives.
 inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, const std::vector<std::string>& archives,
                                     uint8_t sequence_format = 5, const std::vector<AafSequenceSpec>& index = {},
-                                    bool big_endian = true)
+                                    bool big_endian = true, const std::vector<uint8_t>& bank = {},
+                                    const std::vector<uint32_t>& system_ids = {}, uint32_t bank_system = 0)
 {
     std::vector<uint8_t> b;
     const auto put32 = [&b, big_endian](std::size_t at, uint32_t value)
@@ -754,6 +775,9 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     constexpr std::size_t kSystemSize = 0x200;
     const std::size_t index_at = kSystems + archives.size() * kSystemSize;
     const std::size_t index_size = 0x20 + 0x20 * index.size();
+    const std::vector<uint8_t> barc =
+        index.empty() ? std::vector<uint8_t>() : BarcFile(index, "JaiArcS.arc", big_endian);
+    const std::size_t bank_at = (index_at + barc.size() + 0x1f) & ~std::size_t{0x1f};
 
     // A list entry, or the block of type 5: the offset, the size and the value. A little-endian archive widens the
     // offset to 64 bits.
@@ -773,7 +797,14 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
         block(kTable, 0x10, 0);
     }
     chunks.push_back(2);
-    block(kBank, 0x10, 0);
+    if (bank.empty())
+    {
+        block(kBank, 0x10, 0);
+    }
+    else
+    {
+        block(static_cast<uint32_t>(bank_at), static_cast<uint32_t>(bank.size()), bank_system);
+    }
     chunks.insert(chunks.end(), {0, 3});
     for (std::size_t s = 0; s < archives.size(); s++)
     {
@@ -825,8 +856,8 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
 
     for (std::size_t s = 0; s < archives.size(); s++)
     {
-        const std::vector<uint8_t> system =
-            WaveSystemFile(static_cast<uint32_t>(s), 1, archives[s], big_endian, big_endian ? 0x70 : 0x8c);
+        const uint32_t id = s < system_ids.size() ? system_ids[s] : static_cast<uint32_t>(s);
+        const std::vector<uint8_t> system = WaveSystemFile(id, 1, archives[s], big_endian, big_endian ? 0x70 : 0x8c);
         const std::size_t at = kSystems + s * kSystemSize;
         b.resize(std::max(b.size(), at + system.size()));
         std::copy(system.begin(), system.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
@@ -835,9 +866,13 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     b.resize(std::max(b.size(), index_at));
     if (!index.empty())
     {
-        const std::vector<uint8_t> barc = BarcFile(index, "JaiArcS.arc", big_endian);
         b.resize(index_at);
         b.insert(b.end(), barc.begin(), barc.end());
+    }
+    if (!bank.empty())
+    {
+        b.resize(bank_at);
+        b.insert(b.end(), bank.begin(), bank.end());
     }
 
     return b;

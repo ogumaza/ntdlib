@@ -2,7 +2,8 @@
 
 // Checks the model of nn::atk's voices, channels and sequence player on the model of the renderer, without game data: a
 // low-level voice on the renderer, its queue of wave buffers, and small archives that play notes through the engine,
-// with effects on aux bus A, in the console's mode and in the enhanced mixing mode.
+// with effects on aux bus A, in the console's mode and in the enhanced mixing mode, and an add-on archive beside the
+// engine's archive.
 
 #include <algorithm>
 #include <array>
@@ -491,6 +492,61 @@ void TestSnapshotPlayers()
 
     XSFLIB_CHECK(next != nullptr && next->Id() == 1);
     XSFLIB_CHECK(Sounds(first) && second == first);
+}
+
+// The frames, from the start, in which a channel sounds: until a note's one-shot wave ends.
+int SoundingFrames(atk::ArchiveModel& model, int frames)
+{
+    int sounding = 0;
+    for (int i = 0; i < frames; ++i)
+    {
+        model.engine->RunFrame();
+        sounding += model.engine->Channels().ActiveCount() > 0 ? 1 : 0;
+    }
+
+    return sounding;
+}
+
+// An add-on archive's sequence plays the notes of its bank beside the engine's archive. Its global variables are the
+// engine's. The engine's archive plays a note on a wave of 100 ms, and the add-on the same note on a wave of 50 ms,
+// after it writes 5 to the global variable 20. Each note sounds for its wave and the same few frames of release. The
+// engine's note therefore sounds 10 frames (50 ms) longer. An archive past the add-ons starts nothing. A snapshot keeps each
+// player's archive: after a restore to before the add-on's start, the player in the add-on's place plays the engine's
+// archive again.
+void TestAddonArchive()
+{
+    const std::vector<uint8_t> kNote = {0xB0, 48, 0xE1, 120, 0x00, 60, 127, 24, 0xFF};
+    const std::vector<uint8_t> kWriteAndNote = {0xB0, 48,   0xE1, 120, 0x00, 0xF0, 0x80,
+                                                20,   0x05, 0x00, 60,  127,  24,   0xFF};
+    const ntdlib::sar::SoundArchive archive = ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, kNote, {ConstantPcmWave(kBigEndian, 4800)}), kSarOptions);
+    const ntdlib::sar::SoundArchive addon = ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, kWriteAndNote, {ConstantPcmWave(kBigEndian, 2400)}), kSarOptions);
+
+    atk::ArchiveModel model(archive);
+    atk::Engine& engine = *model.engine;
+    XSFLIB_CHECK(engine.AddArchive(addon) == 1);
+    XSFLIB_CHECK(engine.StartSequence(0, 2) == nullptr && engine.StartSequence(0, -1) == nullptr &&
+                 engine.StartSequence(1, 1) == nullptr);
+
+    XSFLIB_CHECK(engine.StartSequence(0) != nullptr);
+    const int own = SoundingFrames(model, 60);
+    const atk::ArchiveModel::Snapshot before = model.Save();
+    const atk::SequenceSoundPlayer* added = engine.StartSequence(0, 1);
+    const int added_place = added ? added->Id() : -1;
+    const int addon_frames = SoundingFrames(model, 60);
+    const int16_t written = engine.GlobalVariables()[4];
+
+    model.Restore(before);
+    const atk::SequenceSoundPlayer* again = engine.StartSequence(0);
+    const int restored = SoundingFrames(model, 60);
+
+    Check(own - addon_frames == 10 && addon_frames >= 10 && addon_frames <= 13,
+          "the engine's archive and the add-on each play their wave: " + std::to_string(own) + " and " +
+              std::to_string(addon_frames) + " frames");
+    Check(added_place == 1 && written == 5, "the add-on's sequence writes the engine's global variable");
+    Check(again != nullptr && again->Id() == added_place && restored == own,
+          "after a restore, the player in the add-on's place plays the engine's archive");
 }
 
 // A model refuses another model's snapshot. It also refuses a snapshot that combines the state of its engine with the
@@ -1320,6 +1376,51 @@ void TestEnhancedSnapshots()
     Check(mismatches == 0, std::to_string(mismatches) + " of 100 snapshots render other frames when restored");
 }
 
+// The command 0xF0E0 calls the engine's user procedure hook with the procedure's number and the track. A write to a
+// variable in the hook reaches the track's next command. The sequence sets its variable 14 to 4, calls procedure 2,
+// then plays its note only if the variable holds -1. A hook that writes -1 there lets the note play. Without a hook,
+// the command changes nothing, and the sequence stays silent. A condition that fails skips the call.
+void TestUserProcedureHook()
+{
+    const std::vector<uint8_t> kAsks = {0xB0, 48,   0xE1, 120,  0x00, 0xF0, 0x80, 14,   0x04, 0x00,
+                                        0xF0, 0xE0, 0x02, 0x00, 0xF0, 0x90, 14,   0xFF, 0xFF, 0xA2,
+                                        0xF0, 0xE0, 0x07, 0x00, 0xA2, 60,   127,  24,   0xFF};
+    const ntdlib::sar::SoundArchive archive = ntdlib::sar::SoundArchive::Load(
+        ProgramArchive(kBigEndian, kAsks, {ConstantPcmWave(kBigEndian, 4800)}), kSarOptions);
+
+    atk::ArchiveModel hooked(archive);
+    std::vector<std::pair<int, uint16_t>> calls;
+    hooked.engine->SetUserProcedureHook(
+        [&hooked, &calls](atk::SequenceSoundPlayer& player, int track, uint16_t procedure)
+        {
+            calls.push_back({track, procedure});
+            player.SetVariable(*hooked.engine, 14, -1);
+        });
+    XSFLIB_CHECK(hooked.engine->StartSequence(0) != nullptr);
+    const int heard = SoundingFrames(hooked, 60);
+
+    atk::ArchiveModel quiet(archive);
+    std::vector<std::pair<int, uint16_t>> quiet_calls;
+    quiet.engine->SetUserProcedureHook([&quiet_calls](atk::SequenceSoundPlayer&, int track, uint16_t procedure)
+                                       { quiet_calls.push_back({track, procedure}); });
+    XSFLIB_CHECK(quiet.engine->StartSequence(0) != nullptr);
+    const int unwritten = SoundingFrames(quiet, 60);
+
+    atk::ArchiveModel plain(archive);
+    XSFLIB_CHECK(plain.engine->StartSequence(0) != nullptr);
+    const int silent = SoundingFrames(plain, 60);
+
+    const std::vector<std::pair<int, uint16_t>> kBoth = {{0, 2}, {0, 7}};
+    const std::vector<std::pair<int, uint16_t>> kFirst = {{0, 2}};
+    Check(calls == kBoth, "the hook gets procedure 2, then procedure 7 behind the condition that its write met: " +
+                              std::to_string(calls.size()) + " calls");
+    Check(quiet_calls == kFirst,
+          "a hook that writes nothing gets procedure 2 only: " + std::to_string(quiet_calls.size()) + " calls");
+    Check(heard > 0 && unwritten == 0 && silent == 0, "the hook's write lets the note play: " + std::to_string(heard) +
+                                                          ", " + std::to_string(unwritten) + " and " +
+                                                          std::to_string(silent) + " frames");
+}
+
 } // namespace
 
 int main()
@@ -1354,6 +1455,8 @@ int main()
     TestEnhancedVoices();
     TestEnhancedAuxSend();
     TestEnhancedSnapshots();
+    TestAddonArchive();
+    TestUserProcedureHook();
 
     return xsflib::testing::Summary("nx_atk_engine");
 }

@@ -141,7 +141,7 @@ void CheckClosest(std::span<const int16_t> samples)
     }
     XSFLIB_CHECK(farther == std::size_t{0});
     XSFLIB_CHECK(DecodeImaAdpcm(channel.data, static_cast<uint32_t>(samples.size()), channel.start.sample,
-                         channel.start.index) == decoded);
+                                channel.start.index) == decoded);
 }
 
 void TestClosest()
@@ -214,6 +214,23 @@ void TestLoop()
     }
 }
 
+// A step that sets the sample to 1,000 times the nibble, whatever the state.
+ImaAdpcmState Thousands(ImaAdpcmState state, uint8_t nibble)
+{
+    return {static_cast<int16_t>(1000 * nibble), state.index};
+}
+
+// The encoder decodes each nibble with the step that it's given. With Thousands, each sample's nibble gives the
+// nearest thousand.
+void TestStep()
+{
+    const std::vector<int16_t> samples = {3000, 7400, 14600, 0};
+
+    const ImaAdpcmChannel channel = EncodeImaAdpcm(samples, 4, Thousands);
+
+    XSFLIB_CHECK(channel.data == (std::vector<uint8_t>{0x73, 0x0F}));
+}
+
 } // namespace
 
 int main()
@@ -223,6 +240,7 @@ int main()
     TestClosest();
     TestOpening();
     TestLoop();
+    TestStep();
 
     return xsflib::testing::Summary("IMA-ADPCM encoder");
 }

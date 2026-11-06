@@ -8,6 +8,7 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <regex>
 #include <span>
 #include <string>
 #include <system_error>
@@ -55,7 +57,8 @@ struct ArchiveRipTool
     // The archive reader's options for the format's archives.
     sar::Options sar_options;
 
-    // Works out the timings of `jobs` by playing them with `settings` on the format's model, on `threads` threads.
+    // Works out the timings of `jobs` by playing them with `settings` on the format's model, on `threads` threads. A
+    // job's volume scales what the analysis counts as sound. The player scales the output by the mini's volume tag.
     std::function<void(std::vector<Job>& jobs, sar::SoundArchive archive, const Settings& settings, unsigned threads)>
         analyze_lengths;
 
@@ -82,6 +85,30 @@ struct ArchiveRipTool
         return false;
     };
 
+    // The factor that the game's code gives a sound, outside the sound archive. The sound's mini holds it as its volume
+    // tag. Null for none.
+    std::function<float(const Rip&, const Job&)> sound_volume;
+
+    // The variants of a sound that waits for variables that the game sets when it starts the sound, such as the
+    // material of the ground under a footstep. Each variant gives the variables that it plays with, by their numbers in
+    // the format's tag (variables_tag). A sound with variants is ripped once for each of them, and not without them.
+    // A variant's label is the sound's label, a space and its variables as format_variables writes them, such as
+    // "SE_STEP 15=1". Its mini holds the variables in variables_tag. The length analysis gets them in Job::variables.
+    // By default no sound has variants.
+    std::function<std::vector<xsflib::psf::Variables>(const Rip&, const Job&)> variants = [](const Rip&, const Job&)
+    {
+        return std::vector<xsflib::psf::Variables>();
+    };
+
+    // The tag that holds a variant's variables in its mini, such as "csf_var". A format whose tool gives variants
+    // requires it. A format that holds a job's variables in the mini's reserved area (mini_reserved) leaves it empty.
+    // Its minis then get no tag for them.
+    std::string variables_tag;
+
+    // The text of a variant's variables in its label and in variables_tag. By default, the form of 3SF's 3sf_var
+    // (xsflib::psf::FormatVariables).
+    std::function<std::string(const xsflib::psf::Variables&)> format_variables = xsflib::psf::FormatVariables;
+
     // The library of a rip that plays the sequences at `sounds`, by their indices in the archive, with `tags`. By
     // default it's an archive-mode library (BuildArchiveLibrary). The default doesn't use `sounds`.
     std::function<std::vector<uint8_t>(const Rip&, std::span<const uint32_t> sounds, const xsflib::psf::Tags& tags)>
@@ -89,7 +116,53 @@ struct ArchiveRipTool
     {
         return BuildArchiveLibrary<Format>(to_rip.archive, to_rip.groups, to_rip.settings, tags);
     };
+
+    // The states that a rip plays the selected sounds in, where the game's code sets the volumes of their tracks: the
+    // jobs that take the place of `selected`, each with the track volumes of one state. Each sound comes in the state
+    // that the game starts it in, under its label, followed by its later states, each under a label that names the
+    // state. --only then picks the jobs by their labels. By default, `selected` as it is.
+    std::function<std::vector<Job>(const Rip&, const std::vector<Job>& selected)> sound_states =
+        [](const Rip&, const std::vector<Job>& selected)
+    {
+        return selected;
+    };
+
+    // The reserved area of a job's mini: a descriptor that takes the place of the library's, or nothing. A job whose
+    // tracks aren't all at 1 has to have one. By default nothing.
+    std::function<std::vector<uint8_t>(const Rip&, const Job& job)> mini_reserved = [](const Rip&, const Job&)
+    {
+        return std::vector<uint8_t>{};
+    };
 };
+
+// Sets the volume tag to `volume`, unless it's 1, as the shortest decimal that reads back as the same float.
+inline void SetVolumeTag(float volume, xsflib::psf::Tags& tags)
+{
+    if (volume == 1.0f)
+    {
+        return;
+    }
+
+    char text[48];
+    const auto [end, error] = std::to_chars(text, text + sizeof(text), volume, std::chars_format::fixed);
+    if (error == std::errc())
+    {
+        tags["volume"] = std::string(text, end);
+    }
+}
+
+// The jobs that rip `selected` in the states that `tool` gives them (ArchiveRipTool::sound_states), in order. A job is
+// left out when its label doesn't match `only`. --only can therefore pick a later state alone, or a sound without its
+// later states.
+template <typename Format, typename Rip>
+std::vector<Job> WithSoundStates(const ArchiveRipTool<Format, Rip>& tool, const Rip& to_rip,
+                                 const std::vector<Job>& selected, const std::regex& only)
+{
+    std::vector<Job> jobs = tool.sound_states(to_rip, selected);
+    std::erase_if(jobs, [&only](const Job& job) { return !std::regex_search(job.label, only); });
+
+    return jobs;
+}
 
 // Adds `to_rip`'s group files to `archive` when the rip plays with them.
 template <typename Format, typename Rip>
@@ -102,6 +175,33 @@ void AddGroupFiles(const ArchiveRipTool<Format, Rip>& tool, const Rip& to_rip, s
             archive.AddGroupFile(group.data);
         }
     }
+}
+
+// `jobs`, with each job whose sound has variants (ArchiveRipTool::variants) replaced by a job for each variant, in the
+// order that the variants come.
+template <typename Format, typename Rip>
+std::vector<Job> AddVariants(const ArchiveRipTool<Format, Rip>& tool, const Rip& to_rip, std::vector<Job> jobs)
+{
+    std::vector<Job> ripped;
+    for (Job& job : jobs)
+    {
+        const std::vector<xsflib::psf::Variables> variants = tool.variants(to_rip, job);
+        if (variants.empty())
+        {
+            ripped.push_back(std::move(job));
+            continue;
+        }
+
+        for (const xsflib::psf::Variables& variables : variants)
+        {
+            Job variant = job;
+            variant.label += " " + tool.format_variables(variables);
+            variant.variables = variables;
+            ripped.push_back(std::move(variant));
+        }
+    }
+
+    return ripped;
 }
 
 // Cuts `to_rip`'s archive down to the files that `jobs` play, and its group files down to those that hold any of them
@@ -135,7 +235,7 @@ void KeepJobsData(const sar::SoundArchive& archive, const std::vector<Job>& jobs
     to_rip.groups = std::move(groups);
 }
 
-// Rips one sound archive into `out_dir`, and adds the number of sounds that --only and --bgm picked to `matched`.
+// Rips one sound archive into `out_dir`, and adds the number of jobs that --only and --bgm picked to `matched`.
 // `names` is the registry of file names for `out_dir`. Returns the number of minis written, or -1 on an error.
 template <typename Format, typename Rip>
 int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::path& out_dir,
@@ -162,17 +262,28 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
 
     AddGroupFiles(tool, to_rip, *archive);
 
-    std::vector<Job> jobs = SelectSounds(*archive, o.only, o.bgm);
+    // --only picks from the sounds' states (WithSoundStates), whose labels can differ from the sounds'.
+    const std::vector<Job> selected = SelectSounds(*archive, std::regex(""), o.bgm);
+    std::vector<Job> jobs = WithSoundStates(tool, to_rip, selected, o.only);
     matched += jobs.size();
     if (jobs.empty())
     {
         return 0;
     }
 
-    // The sounds to rip: those that have all their data and make a sound. The length analysis finds the silent
-    // sequences whose volume isn't 0.
+    if (tool.sound_volume)
+    {
+        for (Job& job : jobs)
+        {
+            job.volume = tool.sound_volume(to_rip, job);
+        }
+    }
+
+    // The sounds to rip: those that have all their data and make a sound, each variant of a sound that has variants.
+    // The length analysis finds the silent sequences whose volume isn't 0, and the variants that play nothing.
     Skipped skipped;
-    std::vector<Job> complete = SkipIncomplete(*archive, std::move(jobs), tool.sar_options, skipped);
+    std::vector<Job> complete =
+        AddVariants(tool, to_rip, SkipIncomplete(*archive, std::move(jobs), tool.sar_options, skipped));
     if (o.lengths && !complete.empty())
     {
         tool.analyze_lengths(complete, std::move(*archive), to_rip.settings, o.jobs);
@@ -201,10 +312,14 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
         archive.reset();
     }
 
+    // A sound's variants share its files.
     std::vector<uint32_t> sounds;
     for (const Job& job : complete)
     {
-        sounds.push_back(job.index);
+        if (sounds.empty() || sounds.back() != job.index)
+        {
+            sounds.push_back(job.index);
+        }
     }
 
     const xsflib::psf::Tags common = xsflib::cli::RipTags(o, game_name, tool.format, tool.mode(to_rip));
@@ -218,9 +333,15 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
     }
     std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
 
-    const auto build_mini = [&lib_name](const Job& job, const xsflib::psf::Tags& tags)
+    const auto build_mini = [&tool, &to_rip, &lib_name](const Job& job, xsflib::psf::Tags tags)
     {
-        return BuildMini<Format>(job.index, lib_name, tags);
+        SetVolumeTag(job.volume, tags);
+        if (!job.variables.empty() && !tool.variables_tag.empty())
+        {
+            tags[tool.variables_tag] = tool.format_variables(job.variables);
+        }
+
+        return BuildMini<Format>(job.index, lib_name, std::move(tags), tool.mini_reserved(to_rip, job));
     };
     const int count = xsflib::cli::WriteMinis(out_dir, names, complete, common, tool.format + "_sound", build_mini);
     if (count >= 0)

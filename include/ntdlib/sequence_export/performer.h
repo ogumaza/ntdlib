@@ -35,7 +35,8 @@ Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, Rsa
 // Performs sequences `sound_indices` from the Wii's `archive` as one piece, with their bank in `banks`. A game can
 // start several sequences in one sound frame and play them as one piece. One example is a sequence for each channel of
 // the sound chip that the music was written for. The sequences share their bank and their pan mode. Each plays as it
-// does alone, with `options`, from the frame where the piece starts.
+// does alone, with `options`, from the frame where the piece starts. The same function for a CSAR or FSAR archive
+// follows.
 //
 // The piece holds each sequence's tracks with notes, in the order of `sound_indices`, each named after its sequence
 // and its track ("<label> Track <n>"). It takes the tempo of the first sequence with notes. Another sequence's events
@@ -48,6 +49,11 @@ Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, Rsa
 // share their bank and pan mode.
 Performance PerformTogether(const rsar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
                             RsarBankSet& banks, const PerformOptions& options, const Settings& settings);
+
+// The same for sequences `sound_indices` of a CSAR or FSAR archive, with the banks of the first in `banks`. The
+// sequences share their list of banks and their pan mode.
+Performance PerformTogether(const sar::SoundArchive& archive, std::span<const uint32_t> sound_indices, BankSet& banks,
+                            const PerformOptions& options, const Settings& settings);
 
 // The preset key of a note of `program` of the bank in slot 0, on a track that keeps the settings that it starts with:
 // no envelope overrides, an LFO of depth 0 and the centre as its initial pan.

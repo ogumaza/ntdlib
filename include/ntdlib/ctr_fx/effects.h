@@ -15,7 +15,8 @@
 //
 // nw::snd's FxDelay and nn::snd's FxDelay compute the same: Delay models both. nn::snd's FxReverb comes in two
 // versions. Both process two channels. The later one computes as nw::snd's FxReverb does. The earlier one's damping
-// filter subtracts its last output where the later one adds it. The libraries read the early reflection at different
+// filter subtracts its last output where the later one adds it. nw::snd's FxReverb has an earlier version too. It
+// differs from the later one only in that damping filter. The libraries read the early reflection at different
 // points of each sample. That can't change the output: each buffer holds a frame at least, and no two buffers share
 // memory.
 
@@ -45,6 +46,7 @@ enum class Library
     kNwSnd,     // nw::snd's FxReverb
     kNnSnd,     // nn::snd's FxReverb as games from 2013 on link it, such as Pokémon X and Majora's Mask 3D
     kNnSnd2011, // nn::snd's FxReverb as Ocarina of Time 3D links it (2011)
+    kNwSnd2011, // nw::snd's FxReverb as StreetPass Mii Plaza links it, in its system title (2011) and its updates
 };
 
 // The reverb's parameters: nw::snd's FxReverb::Param, with the filter sizes in place of the pointer to them. The
@@ -66,8 +68,8 @@ struct ReverbParam
     float fused_gain = 0.4f;      // from 0 to 1
     bool enable_surround = false; // all four channels, nw::snd only
 
-    // The damping filter keeps the highs in place of the lows. nn::snd of 2011 has no such option: its filter always
-    // keeps the highs.
+    // The damping filter keeps the highs in place of the lows. The libraries of 2011 have no such option: their filter
+    // always keeps the highs.
     bool high_pass_damping = false;
 };
 

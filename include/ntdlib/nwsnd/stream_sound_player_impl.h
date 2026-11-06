@@ -102,6 +102,20 @@ void StreamSoundPlayer<Policy>::Start(Engine& engine)
 }
 
 template <typename Policy>
+void StreamSoundPlayer<Policy>::SetTrackVolume(uint32_t tracks, float volume)
+{
+    // fsel at 0x022C2824: a volume that isn't at least 0, NaN included, becomes 0.
+    const float raised = volume >= 0.0f ? volume : 0.0f;
+    for (std::size_t index = 0; index < tracks_.size() && index < 32; ++index)
+    {
+        if ((tracks >> index & 1) != 0)
+        {
+            tracks_[index].volume = raised;
+        }
+    }
+}
+
+template <typename Policy>
 void StreamSoundPlayer<Policy>::Update(Engine& engine)
 {
     if (!started_ || finished_)

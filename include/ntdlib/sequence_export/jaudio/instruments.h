@@ -32,6 +32,7 @@ struct NoteSound
     float volume = 1.0f;                        // amplitude, before the velocity
     float pitch = 1.0f;                         // a ratio, before the key
     float pan = 0.5f;                           // 0 left, 1 right
+    float effect_pan = 0.0f;                    // the instrument effects' share of `pan`
     std::vector<const Oscillator*> oscillators; // at most two
     uint16_t direct_release = 0;                // drums: their release
     bool drum = false;                          // plays its wave at its rate whatever the key
@@ -98,16 +99,17 @@ struct PresetZone
     double cents = 0.0;       // tuning
     double volume = 1.0;      // amplitude, before the velocity
     double pan = 0.5;         // 0 left, 1 right
+    double effect_pan = 0.0;  // the instrument effects' share of `pan`
     bool fixed_pitch = false; // every key plays the wave `cents` above its rate: the DSP's pitch limit
     EnvelopeCurve envelope;
 };
 
-// The zones of `program` in `bank`, whose waves are in `waves`, played with `volume_override` and `pitch_override` in
+// The zones of `program` in `bank`, whose waves are in `archive`, played with `volume_override` and `pitch_override` in
 // place of the instrument's oscillators (nullptr for none), with the track's `direct_release` (0 for none) and with the
 // game's `default_release` (TraceEnvelope). A drum plays its wave at its rate whatever the key: its zone's root key is
 // its key. An instrument whose effects follow the key gets a zone per key. With `limit_pitch`, the keys that pass the
 // DSP's pitch limit get separate zones. Those zones play at the limit.
-std::vector<PresetZone> PresetZones(const Bank& bank, const WaveSystem* waves, uint32_t program,
+std::vector<PresetZone> PresetZones(const Bank& bank, const SoundArchive& archive, uint32_t program,
                                     const Oscillator* volume_override, const Oscillator* pitch_override,
                                     uint16_t direct_release, uint16_t default_release, bool limit_pitch);
 

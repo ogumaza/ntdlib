@@ -218,12 +218,15 @@ public:
     // stream file that the sound's file entry names beside the archive (SoundArchivePlayer::PrepareStrmImpl,
     // 0x800452a0). The engine keeps the channels that the player keeps in MEM2 (see StrmPlayer::TracksOf). Returns the
     // player, or nullptr if the sound isn't a stream sound or can't play the stream. Throws xsflib::FormatError for a
-    // file that rsar::StreamFile::Read refuses.
-    StrmPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
+    // file that rsar::StreamFile::Read refuses. The tracks whose bits `tracks` leaves clear start at a volume of 0. A
+    // game's code silences tracks that way through the sound's handle (StrmPlayer::SetTrackVolume).
+    // StartingStreamTracks gives a known game's tracks.
+    StrmPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file, uint16_t tracks = kAllTracks);
 
     // The same for a stream sound of `sound`, an entry that the archive's sound table needn't hold, such as an editor's
     // new sound. The game sets no sends on such a sound.
-    StrmPlayer* StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file);
+    StrmPlayer* StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
+                                 uint16_t tracks = kAllTracks);
 
     // A note on the bank in a sequence's bank slot `slot` of `banks` (SeqPlayer::NoteOn, 0x8003f3c8, through
     // SoundArchivePlayer's note-on callback, then Bank::NoteOn, 0x80035b68): the region for the note, and a channel
@@ -306,9 +309,10 @@ private:
     // AX's frame callback: NotifyVoiceUpdate, then the effects' part.
     void OnAxFrame();
 
-    // Starts a stream sound of `sound` with `file` and the game's `sends` (StartStreamSound).
+    // Starts a stream sound of `sound` with `file`, the game's `sends` and the tracks that play, bit N for track N
+    // (StartStreamSound).
     StrmPlayer* StartStream(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
-                            const std::array<float, ax::kAuxBusCount>& sends);
+                            const std::array<float, ax::kAuxBusCount>& sends, uint16_t playing);
 
     // Returns the bank with `bank_id`. The first call loads the bank. Returns nullptr if the archive doesn't hold it.
     const LoadedBank* GetBank(uint32_t bank_id);

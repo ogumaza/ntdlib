@@ -210,6 +210,167 @@ std::unique_ptr<EffectBase> EffectDelay::Clone() const
     return std::make_unique<EffectDelay>(*this);
 }
 
+void EffectReverb::AddEffect(audio::Renderer& renderer, int mix)
+{
+    if (IsAdded())
+    {
+        return;
+    }
+
+    renderer_ = &renderer;
+    index_ = renderer.AddReverb(mix, ChannelCount());
+    renderer.SetReverbEarlyMode(index_, early_mode_);
+    renderer.SetReverbEarlyGain(index_, early_gain_);
+    renderer.SetReverbPredelayTime(index_, predelay_);
+    renderer.SetReverbLateMode(index_, late_mode_);
+    renderer.SetReverbLateGain(index_, late_gain_);
+    renderer.SetReverbDecayTime(index_, decay_);
+    renderer.SetReverbHighFrequencyDecayRatio(index_, high_frequency_decay_ratio_);
+    renderer.SetReverbColoration(index_, coloration_);
+    renderer.SetReverbReverbGain(index_, reverb_gain_);
+    renderer.SetReverbOutGain(index_, out_gain_);
+    renderer.SetReverbDryGain(index_, dry_gain_);
+    renderer.SetReverbEnabled(index_, enabled_);
+}
+
+void EffectReverb::SetEffectInputOutput(std::span<const int8_t> buffers)
+{
+    if (!IsAdded())
+    {
+        return;
+    }
+
+    const std::vector<int8_t> mapped = EffectBuffers(buffers, channels_, ChannelCount());
+    renderer_->SetReverbInputOutput(index_, mapped, mapped);
+}
+
+bool EffectReverb::SetChannelMode(ChannelMode mode)
+{
+    if (static_cast<int>(mode) > 3 || IsAdded())
+    {
+        return false;
+    }
+
+    mode_ = mode;
+    channels_ = {0, 1, 2, 3, 4, 5};
+
+    return true;
+}
+
+void EffectReverb::SetEarlyMode(int mode)
+{
+    early_mode_ = mode;
+    if (IsAdded())
+    {
+        renderer_->SetReverbEarlyMode(index_, early_mode_);
+    }
+}
+
+void EffectReverb::SetEarlyGain(float gain)
+{
+    early_gain_ = Held(gain, 1.0f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbEarlyGain(index_, early_gain_);
+    }
+}
+
+void EffectReverb::SetPredelayTime(int64_t time)
+{
+    predelay_ = HeldTime(time, kMostPredelay);
+    if (IsAdded())
+    {
+        renderer_->SetReverbPredelayTime(index_, predelay_);
+    }
+}
+
+void EffectReverb::SetLateMode(int mode)
+{
+    late_mode_ = mode;
+    if (IsAdded())
+    {
+        renderer_->SetReverbLateMode(index_, late_mode_);
+    }
+}
+
+void EffectReverb::SetLateGain(float gain)
+{
+    late_gain_ = Held(gain, 1.0f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbLateGain(index_, late_gain_);
+    }
+}
+
+void EffectReverb::SetDecayTime(int64_t time)
+{
+    decay_ = kMostDecay < time ? kMostDecay : std::max(time, kLeastDecay);
+    if (IsAdded())
+    {
+        renderer_->SetReverbDecayTime(index_, decay_);
+    }
+}
+
+void EffectReverb::SetHighFrequencyDecayRatio(float ratio)
+{
+    // The ratio's least is 0.1 in single precision (the constant at 0x11a1a70).
+    high_frequency_decay_ratio_ = ratio > 1.0f ? 1.0f : util::Fmax(ratio, 0.1f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbHighFrequencyDecayRatio(index_, high_frequency_decay_ratio_);
+    }
+}
+
+void EffectReverb::SetColoration(float coloration)
+{
+    coloration_ = Held(coloration, 1.0f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbColoration(index_, coloration_);
+    }
+}
+
+void EffectReverb::SetReverbGain(float gain)
+{
+    reverb_gain_ = Held(gain, 1.0f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbReverbGain(index_, reverb_gain_);
+    }
+}
+
+void EffectReverb::SetOutGain(float gain)
+{
+    out_gain_ = Held(gain, 1.0f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbOutGain(index_, out_gain_);
+    }
+}
+
+void EffectReverb::SetDryGain(float gain)
+{
+    dry_gain_ = Held(gain, 1.0f);
+    if (IsAdded())
+    {
+        renderer_->SetReverbDryGain(index_, dry_gain_);
+    }
+}
+
+void EffectReverb::SetEnabled(bool enabled)
+{
+    enabled_ = enabled;
+    if (IsAdded())
+    {
+        renderer_->SetReverbEnabled(index_, enabled_);
+    }
+}
+
+std::unique_ptr<EffectBase> EffectReverb::Clone() const
+{
+    return std::make_unique<EffectReverb>(*this);
+}
+
 void EffectLightLimiter::AddEffect(audio::Renderer& renderer, int mix)
 {
     if (IsAdded())

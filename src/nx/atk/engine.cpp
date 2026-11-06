@@ -89,9 +89,21 @@ Engine::Engine(audio::Renderer& renderer, const sar::SoundArchive& archive, cons
     global_vars_.fill(-1);
 }
 
+int Engine::AddArchive(const sar::SoundArchive& archive)
+{
+    addon_archives_.push_back(&archive);
+    addon_files_.push_back(std::make_unique<Files>(archive, kSarOptions));
+
+    return static_cast<int>(addon_archives_.size());
+}
+
 Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const NoteOnInfo& info)
 {
-    const std::optional<Files::Note> note = files_.FindNote(banks, slot, info.prg_no, info.key, info.velocity);
+    const int archive = info.owner_player >= 0 && static_cast<std::size_t>(info.owner_player) < player_archives_.size()
+                            ? player_archives_[static_cast<std::size_t>(info.owner_player)]
+                            : 0;
+    Files& files = archive == 0 ? files_ : *addon_files_[static_cast<std::size_t>(archive - 1)];
+    const std::optional<Files::Note> note = files.FindNote(banks, slot, info.prg_no, info.key, info.velocity);
     if (!note)
     {
         return nullptr;
@@ -135,28 +147,41 @@ void Engine::VoiceEvent(const ntdlib::nwsnd::VoiceOwner& owner, ntdlib::nwsnd::V
     }
 }
 
-SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
+SequenceSoundPlayer* Engine::StartSequence(uint32_t index, int archive)
 {
-    if (index >= archive_->Sounds().size())
+    if (archive < 0 || static_cast<std::size_t>(archive) > addon_archives_.size())
     {
         return nullptr;
     }
 
-    const sar::SoundInfo& info = archive_->Sounds()[index];
+    const sar::SoundArchive& from = archive == 0 ? *archive_ : *addon_archives_[static_cast<std::size_t>(archive - 1)];
+    if (index >= from.Sounds().size())
+    {
+        return nullptr;
+    }
+
+    const sar::SoundInfo& info = from.Sounds()[index];
     if (info.type != sar::SoundType::kSequence)
     {
         return nullptr;
     }
 
-    const std::span<const uint8_t> file = archive_->FileData(info.file_id);
+    const std::span<const uint8_t> file = from.FileData(info.file_id);
     if (file.empty())
     {
         return nullptr;
     }
 
     const sar::Sequence sequence = sar::Sequence::Parse(file, kSarOptions);
+    SequenceSoundPlayer& player = players_.Add<SequenceSoundPlayer>(1, info, sequence.data, receiver_);
+    const auto place = static_cast<std::size_t>(player.Id());
+    if (archive != 0 || place < player_archives_.size())
+    {
+        player_archives_.resize(std::max(player_archives_.size(), place + 1), 0);
+        player_archives_[place] = archive;
+    }
 
-    return &players_.Add<SequenceSoundPlayer>(1, info, sequence.data, receiver_);
+    return &player;
 }
 
 WaveSoundPlayer* Engine::StartWaveSound(uint32_t index)
@@ -457,8 +482,8 @@ void Engine::MeterVoices()
 
 Engine::Snapshot Engine::Save() const
 {
-    Snapshot snapshot{this,    allocator_.Save(), voice_renderer_.Save(), voices_, channels_,
-                      random_, global_vars_,      players_.Save(),        {},      {}};
+    Snapshot snapshot{this,         allocator_.Save(), voice_renderer_.Save(), voices_, channels_, random_,
+                      global_vars_, players_.Save(),   player_archives_,       {},      {}};
     for (std::size_t bus = 0; bus < effects_.size(); ++bus)
     {
         for (const AttachedEffect& attached : effects_[bus])
@@ -495,8 +520,9 @@ void Engine::Restore(const Snapshot& snapshot)
         }
     }
 
-    // The players and the starts that wait.
+    // The players and the starts that wait, and each player's archive.
     players_.Restore(snapshot.players);
+    player_archives_ = snapshot.player_archives;
 
     // The voices, the channels and the rest. The restore replaces each effect with a copy of the snapshot's effect. The
     // snapshot keeps its copy for the next restore.

@@ -64,8 +64,12 @@ struct GameWatch
     bool relative_positions = false;
     uint32_t interrupt_offset = 0;
 
-    // With `idle_in_calls`, a track can idle in a loop inside a call (see LoopFinder).
+    // With `idle_in_calls`, a track can idle in a loop inside a call (see LoopFinder). With `restarts_as_passes`, a
+    // track that has finished and starts again from its first command has played a pass of a loop (see LoopFinder).
+    // Mario Kart: Double Dash!!'s game starts a level sound again each frame. Some of the game's level sounds finish
+    // each pass, and the next start plays the pass again.
     bool idle_in_calls = false;
+    bool restarts_as_passes = false;
 
     // A sequence's and an effect's JAISound, by their vtables, and where each holds its root track. The handle points
     // at the JAISound. Its vtable pointer is at `vtable_offset`: 0 where the compiler puts it first, after the members
@@ -454,7 +458,7 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
             {
                 root = *track;
                 finder.emplace(root, rules.sample_rate, watch.jaudio1 ? JAudio1ChangesSound : ChangesSound,
-                               watch.idle_in_calls);
+                               watch.idle_in_calls, watch.restarts_as_passes);
             }
         }
 

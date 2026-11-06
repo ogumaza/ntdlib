@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "ntdlib/cafe/axfx/reverb_hi.h"
 #include "ntdlib/cafe/axfx/reverb_std.h"
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "ntdlib/cafe/snd/nintendo_land_effects.h"
 #include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/nwsnd/console.h"
 
@@ -45,6 +47,12 @@ float PreDelay(float time, float max)
 {
     return time > max ? max : CafePolicy::AtLeastZero(time);
 }
+
+// Whether a model's UpdateBuffer skips the frame while the device mixes for Dolby Pro Logic II: nw::snd's classes do,
+// and Nintendo Land's don't.
+template <typename Effect>
+constexpr bool kSkipsDpl2 =
+    !std::is_same_v<Effect, nintendo_land::Reverb> && !std::is_same_v<Effect, nintendo_land::Delay>;
 
 } // namespace
 
@@ -153,6 +161,12 @@ Effects::Effects(ax::System& system, const std::vector<EffectSetup>& setups, con
         case EffectType::kDelay:
             initialized = model.emplace<axfx::DelayExp>().Init(DelayParams(setup.params), rate);
             break;
+        case EffectType::kNintendoLandReverb:
+            initialized = model.emplace<nintendo_land::Reverb>().Init(setup.params);
+            break;
+        case EffectType::kNintendoLandDelay:
+            initialized = model.emplace<nintendo_land::Delay>().Init(setup.params);
+            break;
         }
         if (!initialized)
         {
@@ -221,15 +235,23 @@ void Effects::Restore(const Snapshot& snapshot)
 
 void Effects::Run(Bus& bus, std::span<int32_t* const> channels, uint32_t samples)
 {
-    if (bus.skip || channels.size() < axfx::kChannelCount)
+    if (channels.size() < axfx::kChannelCount)
     {
         return;
     }
 
     const axfx::Buffers frame{channels[0], channels[1], channels[2]};
+    const bool skip = bus.skip;
     for (Model& model : bus.models)
     {
-        std::visit([&frame, samples](auto& effect) { effect.Process(frame, samples); }, model);
+        const auto process = [&frame, samples, skip]<typename Effect>(Effect& effect)
+        {
+            if (!skip || !kSkipsDpl2<Effect>)
+            {
+                effect.Process(frame, samples);
+            }
+        };
+        std::visit(process, model);
     }
 }
 

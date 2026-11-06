@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of sequence_export's performance types: the envelope overrides, the LFO units of each engine, the Performance
-// that seqlib's MIDI writer takes, and how FitParts fits a Performance's parts into MIDI's channels.
+// that seqlib's MIDI writer takes, how FitParts fits a Performance's parts into MIDI's channels, and how
+// RepeatsAsTheGame takes a part's pitch before its first pitch event.
 
 #include <algorithm>
 #include <array>
@@ -183,6 +184,29 @@ void TestFitPartsGivesPartsTheChannelsThatLayersLeave()
 
 } // namespace
 
+// A track whose notes go on to its second part after the first pass, with no pitch event there. The recorder sends a
+// part no pitch of 0 before it has sent the part another pitch. Every MIDI channel starts with its pitch bend at the
+// centre. A MIDI player that loops on the first pass then plays each repeat at the pitch of the game's next pass. With
+// a pitch of 1 semitone on the second part, it doesn't.
+void TestRepeatOnAPartWithoutAPitch()
+{
+    Performance perf;
+    perf.tempo = {{0, 120.0}};
+    for (uint32_t pass = 0; pass < 3; pass++)
+    {
+        const auto part = static_cast<uint8_t>(pass == 0 ? 0 : 1);
+        perf.tracks[0].push_back({100 * pass, EventKind::kNoteOn, 60, 100, 0, 0.0f, pass + 1, part});
+        perf.tracks[0].push_back({100 * pass + 50, EventKind::kNoteOff, 60, 0, 0, 0.0f, pass + 1, part});
+    }
+    perf.end_tick = 300;
+    const std::vector<PartSwitch> switches = {{100, 0, 1}};
+
+    XSFLIB_CHECK(RepeatsAsTheGame(perf, switches, 0, 100, LoopRules{}));
+
+    perf.tracks[0].insert(perf.tracks[0].begin() + 2, {100, EventKind::kPitch, 0, 0, 0, 1.0f, 0, 1});
+    XSFLIB_CHECK(!RepeatsAsTheGame(perf, switches, 0, 100, LoopRules{}));
+}
+
 int main()
 {
     TestOverridesReplaceOnlyTheSetValues();
@@ -191,6 +215,7 @@ int main()
     TestPerformanceWritesAsMidi();
     TestFitPartsKeepsAChannelForALayer();
     TestFitPartsGivesPartsTheChannelsThatLayersLeave();
+    TestRepeatOnAPartWithoutAPitch();
 
     return xsflib::testing::Summary("sequence_export_performance");
 }

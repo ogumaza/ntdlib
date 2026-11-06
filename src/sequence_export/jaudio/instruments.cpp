@@ -85,6 +85,7 @@ void ApplyEffects(const std::vector<InstEffect>& effects, int key, int velocity,
             break;
         case 2:
             sound.pan += y - 0.5f;
+            sound.effect_pan += y - 0.5f;
             break;
         default:
             break;
@@ -312,6 +313,10 @@ std::optional<NoteSound> FindSound(const Bank& bank, uint32_t program, int key, 
     sound.volume *= region->volume;
     sound.pitch *= region->pitch;
     sound.wave_id = region->wave_id;
+    if (const auto named = bank.named_systems.find(region->system_id); named != bank.named_systems.end())
+    {
+        sound.wave_system = named->second;
+    }
 
     return sound;
 }
@@ -485,6 +490,7 @@ void ZoneBuilder::Add(const NoteSound& sound, const WaveInfo* wave, const Played
     z.cents = sound.pitch > 0.0f ? 1200.0 * std::log2(static_cast<double>(sound.pitch)) : 0.0;
     z.volume = sound.volume;
     z.pan = sound.pan;
+    z.effect_pan = sound.effect_pan;
 
     std::vector<const Oscillator*> volume;
     for (const Oscillator* osc : oscs)
@@ -540,7 +546,7 @@ void ZoneBuilder::Add(const NoteSound& sound, const WaveInfo* wave, const Played
 
 } // namespace
 
-std::vector<PresetZone> PresetZones(const Bank& bank, const WaveSystem* waves, uint32_t program,
+std::vector<PresetZone> PresetZones(const Bank& bank, const SoundArchive& archive, uint32_t program,
                                     const Oscillator* volume_override, const Oscillator* pitch_override,
                                     uint16_t direct_release, uint16_t default_release, bool limit_pitch)
 {
@@ -570,13 +576,8 @@ std::vector<PresetZone> PresetZones(const Bank& bank, const WaveSystem* waves, u
                 continue;
             }
 
-            const WaveInfo* wave = nullptr;
-            if (waves != nullptr)
-            {
-                const auto w = waves->waves.find(sound->wave_id);
-                wave = w != waves->waves.end() ? &w->second : nullptr;
-            }
-            builder.Add(*sound, wave, {low, high, region.low_velocity, region.high_velocity, sound->wave_id});
+            builder.Add(*sound, FindWave(archive, sound->wave_system, sound->wave_id),
+                        {low, high, region.low_velocity, region.high_velocity, sound->wave_id});
         }
     }
 

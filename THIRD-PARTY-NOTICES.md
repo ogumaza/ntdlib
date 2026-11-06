@@ -1,7 +1,8 @@
 # Third-party notices
 
-ntdlib is under the MIT licence (`LICENSE`). One file is the exception: `src/disc/cp932.h` contains data from Unicode
-and is under the Unicode License v3 (see "Data from Unicode" below). The libraries that ntdlib uses have the following
+ntdlib is under the MIT licence (`LICENSE`). Two files are the exceptions. `src/disc/cp932.h` contains data from
+Unicode and is under the Unicode License v3 (see "Data from Unicode" below). `src/agb/inflate.cpp` is adapted from
+Mark Adler's puff and is under the zlib licence (see "puff" below). The libraries that ntdlib uses have the following
 licences. Teakra's code is stored in `externals/teakra`, under its MIT licence. None of the others' code is stored
 here.
 
@@ -15,12 +16,13 @@ here.
 | seqlib | MIT | MIDI, SoundFont 2 and SFZ files in `ntdlib::sequence_export` (`NTDLIB_SEQUENCE_EXPORT`). The project that uses ntdlib supplies it. |
 | [Teakra](https://github.com/wwylele/teakra), Copyright (c) 2018 Weiyi Wang | MIT (`externals/teakra/LICENSE`) | The 3DS's DSP in `ntdlib::ctr` (`NTDLIB_CTR`). In `externals/teakra`: upstream commit 3d697a1 with changes, offered under Teakra's MIT licence. |
 | [Catch2](https://github.com/catchorg/Catch2) v2.13.8, Copyright (c) 2022 Two Blue Cubes Ltd | BSL-1.0 | Teakra's unit tests use it (`externals/teakra/externals/catch`). ntdlib doesn't build those tests, and no library of ntdlib contains Catch2. |
+| puff 2.3, Copyright (C) 2002-2013 Mark Adler | zlib | The DEFLATE decoder of GSF files in `ntdlib::agb` (`src/agb/inflate.cpp`). puff is the reference inflate in zlib's sources (`contrib/puff`). The copy is altered: the decoder is rewritten as a C++ class, with the zlib header's and Adler-32's checks. |
 
 Binary distributions must include ntdlib's MIT notice and xsflib's MIT notice. They must also include the Unicode
 License v3's notice when `ntdlib::disc` is linked in, Teakra's MIT notice when `ntdlib::ctr` is linked in, and the
 Zstandard notice when Zstandard is linked in. Shipping
 ntdlib's `LICENSE`, xsflib's `LICENSE` and this file does that. The licence texts are at the end of this file. The
-licences of zlib, liblzma and bzip2 require no notice in binaries. A program that links `ntdlib::sequence_export`
+licences of zlib, puff, liblzma and bzip2 require no notice in binaries. A program that links `ntdlib::sequence_export`
 also includes seqlib's MIT notice.
 
 ## Data from Unicode
@@ -209,6 +211,31 @@ Copyright notice:
 
   Jean-loup Gailly        Mark Adler
   jloup@gzip.org          madler@alumni.caltech.edu
+```
+
+### puff
+
+```
+  Copyright (C) 2002-2013 Mark Adler, all rights reserved
+  version 2.3, 21 Jan 2013
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the author be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Mark Adler    madler@alumni.caltech.edu
 ```
 
 ### liblzma (0BSD)

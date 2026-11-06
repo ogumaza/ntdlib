@@ -7,8 +7,10 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "seqlib/midi/performance.h"
@@ -66,6 +68,12 @@ struct PresetKey
     // fit the note's level to the game's (MidiRecorder::VolumeLfoFits).
     uint8_t lfo_swing = 16;
     int16_t lfo_cut = 0;
+
+    // On the Wii U and the Switch: the notes start past one of the console's pitch limits and hold their pitch. No
+    // sweep, no LFO bend and no bend moves them (PassFindings::pitch_moves). The console plays them at the limit. Their
+    // zones and regions play the keys past a limit there (ResamplingRegion::at_limits). Other notes play every key at
+    // its pitch. A bend or a sweep then moves them as in MIDI, past the limits too.
+    bool at_pitch_limits = false;
 };
 
 // Applies the track envelope overrides in `key` to `env`.
@@ -161,6 +169,10 @@ struct Performance : PerformanceBase
     std::array<std::vector<Stretch>, 16> stretches;
     std::vector<NoteCommand> note_commands;
 
+    // Whether a track drew a random number before the performance stopped. A sound that draws can play otherwise when
+    // the game starts it in another frame: the sound library steps its random numbers once a frame (PerformOptions::seed).
+    bool draws = false;
+
     // For an editor: each track's changes of its volume, pan and sends, in the order of their ticks. A ramp changes
     // its setting in each tick until it ends.
     std::array<std::vector<MixChange>, 16> mix;
@@ -171,13 +183,41 @@ constexpr uint32_t kMaxVoiceLimit = 1024;
 
 // A game's change of a variable while the sequence plays, through the sound's handle. Variable `index` takes `value` at
 // the start of sound frame `frame`, before the frame's ticks. Frame 0 is the frame of the sequence's first tick.
-// Indices 0 to 15 are the player's variables, and 16 to 31 the global ones. Other indices change nothing.
+// Indices 0 to 15 are the player's variables, and 16 to 31 the global ones. 32 to 47 set track variable `index` - 32
+// of every track. Other indices change nothing.
 struct VariableChange
 {
     uint64_t frame = 0;
     uint8_t index = 0;
     int16_t value = -1;
 };
+
+// A game's write of a variable inside a user procedure: a function of the game that the sequence calls with the command
+// 0xF0E0 and a number (nn::atk's SequenceUserProcCallback). From the start of sound frame `frame`, the write waits for
+// the sequence's next call of procedure `procedure`, on any track. Variable `index` then takes `value` inside the call,
+// before the track's next command. Frame 0 is the frame of the sequence's first tick. Indices 0 to 15 are the player's
+// variables, and 16 to 31 the global ones. Other indices change nothing.
+struct ProcedureChange
+{
+    uint64_t frame = 0;
+    uint16_t procedure = 0;
+    uint8_t index = 0;
+    int16_t value = -1;
+};
+
+// A value that a game gives a track's variable through the sound's handle as the sequence starts. Variable `index`, 0 to
+// 15, of track `track` is the variable that the track's commands number 32 + `index`.
+struct TrackVariable
+{
+    uint8_t track = 0;
+    uint8_t index = 0;
+    int16_t value = -1;
+};
+
+// A model of a game's user procedures (PerformOptions::user_procedures). It takes a procedure's number and the
+// variables that the procedure sees: the player's 16, the 16 global ones and the 16 of the track that calls it.
+using UserProcedureModel = std::function<bool(uint16_t procedure, std::span<int16_t, 16> local,
+                                              std::span<int16_t, 16> global, std::span<int16_t, 16> track)>;
 
 // Options for playing a sequence.
 struct PerformOptions
@@ -191,13 +231,30 @@ struct PerformOptions
     uint32_t seed = 0x12345678;
 
     // Values for player variables (0-15) and global variables (16-31), set before the sequence starts. Some sequences
-    // play nothing until the game sets one of their variables.
+    // play nothing until the game sets one of their variables. 32 to 47 set track variable N - 32 of every track. The
+    // performer sets them after the player allocates the tracks and before the first tick.
     std::map<uint8_t, int16_t> variables = {};
 
-    // The game's changes of player and global variables while the sequence plays. Changes in one frame come in this
-    // order. A loop's passes before a change can play otherwise than the passes after it. The main loop is therefore
-    // a pass that starts after the last change. The performance plays on to find it.
+    // Values for the tracks' variables, set after the start and before the first tick. A track that the sequence's
+    // start doesn't allocate takes none (nw::snd's SequenceSoundPlayer::SetTrackVariable).
+    std::vector<TrackVariable> track_variables = {};
+
+    // The game's changes of player, global and track variables while the sequence plays. Changes in one frame come in
+    // this order. A loop's passes before a change can play otherwise than the passes after it. The main loop is
+    // therefore a pass that starts after the last change. The performance plays on to find it.
     std::vector<VariableChange> changes = {};
+
+    // The game's writes of variables inside user procedures. The writes that wait for the same call take effect in this
+    // order. As with `changes`, the main loop is a pass that starts after the last write that takes effect, and the
+    // performance plays on until every write's frame has come.
+    std::vector<ProcedureChange> procedure_changes = {};
+
+    // A model of the game's user procedures, or none. The model changes the variables as the game's procedure does,
+    // inside the call, before the writes of `procedure_changes`. It returns whether the call changed state that the
+    // variables don't show, such as a random generator's. The search for loops then counts the call as a random draw.
+    // Each pass of the performance starts from a copy of the model. A model that holds its state by value therefore
+    // starts each pass from the same state. Without a model, a call changes only what `procedure_changes` writes.
+    UserProcedureModel user_procedures = {};
 
     // The voices for the notes that the game drops when no voice is free, from --voices: a count, or 0 to keep every
     // note. Without --voices, every note is kept.
@@ -214,6 +271,35 @@ struct PerformOptions
     // takes the sum on bus A, and on the Wii, CC93 takes the sum on bus B. On the Switch, the sends on buses B and C
     // add to the dry level (Sends::kReverbDry). By default, the 3DS's conversion leaves the sends out (Sends::kNone).
     std::array<float, 3> fx_sends = {};
+
+    // The tempo ratio that the game sets through the sound's handle (nw::snd's SetTempoRatio). The core's ticks come at
+    // the sequence's tempo times the ratio, and so do the MIDI file's tempo events.
+    float tempo_ratio = 1.0f;
+
+    // The pitch that the game sets through the sound's handle (nw::snd's SetPitch), a ratio of frequencies. The core's
+    // voices play at their pitch times the ratio. Another pitch tunes every MIDI channel at tick 0, by RPN 2 (coarse
+    // tuning) and RPN 1 (fine tuning), both in the MIDI specification.
+    float pitch = 1.0f;
+
+    // The volume that the game sets through the sound's handle (nw::snd's SoundHandle::SetVolume), a factor of
+    // amplitude. It multiplies the sound's volume from the archive, and the MIDI file's levels take it in the same way.
+    float volume = 1.0f;
+
+    // The banks that the game gives the sequence's bank slots in place of the archive's, as item IDs (nw::snd's
+    // SeqSoundInfo, which a StartInfo with flag 0x10 holds). The four replace all of the archive's slots, and
+    // 0xFFFFFFFF leaves a slot empty. Without a value, the archive's banks hold. The 3DS's conversion reads them. The
+    // other consoles' conversions ignore them.
+    std::optional<std::array<uint32_t, 4>> banks = std::nullopt;
+    // The reverbs that a game's code puts on aux buses A, B and C while the sound plays: each one's dry gain, the share
+    // of its input that it passes on unchanged, from 0 to 1. None for a bus without a reverb. On the Switch
+    // (Sends::kReverbDry), a send to bus B or C without a reverb adds to the dry level in full. With a reverb, it adds
+    // at the reverb's dry gain, and CC91 takes it with the send on bus A. Bus A's entry isn't used: CC91 always stands
+    // in for bus A's effect, unless bus_a_delay says that the effect is a delay.
+    std::array<std::optional<float>, 3> bus_reverbs = {};
+
+    // Whether the game keeps a delay on aux bus A (sar::ArchiveRules::bus_a_delay). CC91 stands in for one kind of
+    // effect. Where a reverb on bus B or C takes CC91, the send on bus A then leaves it.
+    bool bus_a_delay = false;
 };
 
 } // namespace ntdlib::sequence_export

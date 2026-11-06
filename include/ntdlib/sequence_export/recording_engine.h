@@ -89,8 +89,8 @@ struct ChannelRules : NwSndChannelRules
 
 // The 3DS keeps a note's whole volume in velocity_volume: the velocity squared times the region's volume, times
 // code.bin's 1/127^3 (Bank::NoteOn, 0x48f954). Its init_volume stays 1. The pan multiplies by code.bin's 1/63. A track
-// gives its channels the bytecode's pan, surround pan and two sends as they are (SequenceTrack::UpdateChannelParam,
-// 0x31de18).
+// gives its channels the bytecode's pan and surround pan as they are, and the bytecode's two sends plus the player's
+// (SequenceTrack::UpdateChannelParam, 0x31de18; the sends at 0x31e03c to 0x31e068).
 template <>
 struct ChannelRules<nwsnd::CtrPolicy> : NwSndChannelRules
 {
@@ -106,7 +106,7 @@ struct ChannelRules<nwsnd::CtrPolicy> : NwSndChannelRules
     }
 
     template <typename Outputs>
-    static Outputs CombineOutputs(const Outputs&, const Outputs&, float pan, float span, float main_send,
+    static Outputs CombineOutputs(const Outputs& player, const Outputs&, float pan, float span, float main_send,
                                   const std::array<float, 3>& fx_send)
     {
         Outputs param;
@@ -115,7 +115,7 @@ struct ChannelRules<nwsnd::CtrPolicy> : NwSndChannelRules
         param.main_send = main_send;
         for (std::size_t bus = 0; bus < static_cast<std::size_t>(nwsnd::CtrPolicy::kFxSendCount); ++bus)
         {
-            param.fx_send[bus] = fx_send[bus];
+            param.fx_send[bus] = player.fx_send[bus] + fx_send[bus];
         }
 
         return param;

@@ -221,21 +221,13 @@ Conversion ConvertTogether(const rsar::SoundArchive& archive, std::span<const ui
     Performance performance = PerformTogether(archive, sound_indices, banks, options, settings);
 
     // The SoundFont's comment lists the sequences: "sequences A, B and C together".
-    std::string source = sound_indices.size() == 1 ? "sequence " : "sequences ";
-    for (std::size_t k = 0; k < sound_indices.size(); k++)
+    std::vector<std::string> labels;
+    for (const uint32_t index : sound_indices)
     {
-        if (k > 0)
-        {
-            source += k + 1 == sound_indices.size() ? " and " : ", ";
-        }
-        source += archive.Sounds()[sound_indices[k]].name;
-    }
-    if (sound_indices.size() > 1)
-    {
-        source += " together";
+        labels.push_back(archive.Sounds()[index].name);
     }
 
-    return ConvertPerformance(std::move(performance), banks, name, source, settings, program);
+    return ConvertPerformance(std::move(performance), banks, name, SequencesText(labels), settings, program);
 }
 
 BankConversion ConvertBank(const rsar::SoundArchive& archive, std::size_t bank, uint8_t pan_mode,

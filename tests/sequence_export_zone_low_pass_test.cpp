@@ -236,11 +236,12 @@ std::pair<int, int> CutoffOf(const sf2::Zone& zone)
 // the one-pole's cutoff takes the lower of the two low-passes at the original key. A fitted 7000 cents beats it, and a
 // fitted 12000 cents loses to it. Without a fitted cutoff, the zone compares the preset's 11000 cents and keeps the
 // preset's low-pass. A preset with a biquad's cutoff takes the resampling low-pass, as ZoneSpans gives it. The spans of
-// a preset with the one-pole's cutoff aren't split by the track's cutoff.
+// a preset with the one-pole's cutoff aren't split by the track's cutoff. The keys from 97 play at the Wii U's rate
+// limit, in a span of their own.
 void TestZonesTakeTheLowerLowPassAtTheOriginalKey()
 {
     const Settings settings = CafeSettings();
-    const ResamplingRegion kRegion = {60, 1.0f, 32000, 0};
+    const ResamplingRegion kRegion = {60, 1.0f, 32000, 0, true};
     const ResamplingFilter* above_4_thirds = &settings.resampling->filters[0];
     PresetKey one_pole;
     one_pole.filter = {11000, 0, 160};
@@ -261,7 +262,8 @@ void TestZonesTakeTheLowerLowPassAtTheOriginalKey()
     XSFLIB_CHECK((CutoffOf(high) == std::pair{5934, 12800}));
     XSFLIB_CHECK((CutoffOf(kept) == std::pair{-1, -1}));
     XSFLIB_CHECK((CutoffOf(other) == std::pair{5934, 12800}));
-    XSFLIB_CHECK((spans.size() == 3 && spans[2].keys == std::pair{65, 127} && spans[2].filter == above_4_thirds));
+    XSFLIB_CHECK((spans.size() == 4 && spans[2].keys == std::pair{65, 96} && spans[2].filter == above_4_thirds &&
+                  spans[3].keys == std::pair{97, 127} && spans[3].limit_cents == 3600));
 }
 
 } // namespace

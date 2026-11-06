@@ -16,7 +16,10 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/files.h"
+
 #include "ntdlib/jaudio/aaf.h"
+#include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/jaudio/convert.h"
 #include "ntdlib/sequence_export/jaudio/game.h"
@@ -54,6 +57,20 @@ bool IsStartUpArchiveFile(const std::filesystem::path& path)
     if (!f || !f.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size())))
     {
         return false;
+    }
+
+    // Donkey Kong Jungle Beat compresses its start-up archive with Yaz0.
+    std::vector<uint8_t> data;
+    if (ntdlib::jaudio::IsYaz0(header) && xsflib::ReadFile(path, data))
+    {
+        try
+        {
+            return IsStartUpArchive(ntdlib::jaudio::DecodeYaz0(data));
+        }
+        catch (const FormatError&)
+        {
+            return false;
+        }
     }
 
     return IsStartUpArchive(header);

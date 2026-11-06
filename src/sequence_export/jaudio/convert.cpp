@@ -31,6 +31,7 @@
 #include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/sfz.h"
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
+#include "ntdlib/sequence_export/jaudio/track_filter.h"
 #include "ntdlib/sequence_export/jaudio/wave.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -65,12 +66,13 @@ sf2::Zone GlobalZone(const PresetKey& key)
     return global;
 }
 
-// Build a zone for `z` with `sample`. Add `quieter` centibels of attenuation. A zone at the DSP's pitch limit plays
-// every key at its tuning (a scaleTuning of 0).
-sf2::Zone RegionZone(const PresetZone& z, double quieter, uint16_t sample, bool loop)
+// Build a zone for `z` with `sample`, as `layer` of the track's filter. Add `quieter` centibels of attenuation. A zone at
+// the DSP's pitch limit plays every key at its tuning (a scaleTuning of 0).
+sf2::Zone RegionZone(const PresetZone& z, const FilterLayer& layer, double quieter, uint16_t sample, bool loop)
 {
     const Sf2Envelope e = ConvertEnvelope(z.envelope);
-    const double level_db = (z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0) + e.peak_db;
+    const double level_db =
+        (z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0) + e.peak_db + 20.0 * std::log10(layer.gain);
     const int cents = static_cast<int>(std::lround(std::clamp(z.cents, -12000.0, 12000.0)));
 
     sf2::ZoneValues values;
@@ -99,6 +101,11 @@ sf2::Zone RegionZone(const PresetZone& z, double quieter, uint16_t sample, bool 
     if (z.fixed_pitch)
     {
         zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(sf2::kScaleTuning, 0));
+    }
+    if (layer.cutoff_cents)
+    {
+        zone.generators.insert(zone.generators.end() - 1,
+                               sf2::Generator::Value(sf2::kInitialFilterFc, *layer.cutoff_cents));
     }
 
     return zone;
@@ -150,6 +157,7 @@ void SoundFontBuilder::Add(uint32_t index, const std::string& name)
         warnings_.push_back(name + ": there is no bank " + std::to_string(key.bank));
     }
 
+    const std::vector<FilterLayer>& layers = perf_.filter_layers.at(key.track_filter);
     for (const PresetZone& z : ZonesOf(index, perf_, banks_))
     {
         const std::optional<SoundFontSamples::Sample> sample = samples_.Get(
@@ -161,7 +169,10 @@ void SoundFontBuilder::Add(uint32_t index, const std::string& name)
             continue;
         }
 
-        inst.zones.push_back(RegionZone(z, quieter_, sample->id, sample->loop));
+        for (const FilterLayer& layer : layers)
+        {
+            inst.zones.push_back(RegionZone(z, layer, quieter_, sample->id, sample->loop));
+        }
     }
 
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));
@@ -172,16 +183,22 @@ void SoundFontBuilder::AddChannel10Copy(uint32_t index)
     sf2::AddChannel10Copy(sf_, index, warnings_);
 }
 
-// The loudest zone of the presets that `perf` plays, as amplitude: its volume times its envelope's peak.
+// The loudest zone of the presets that `perf` plays, as amplitude: its volume times its filter zone's gain and its
+// envelope's peak.
 double LoudestZone(const Performance& perf, BankSet& banks)
 {
     double loudest = 0.0;
     for (std::size_t p = 0; p < perf.presets.size(); p++)
     {
+        double layer_gain = 0.0;
+        for (const FilterLayer& layer : perf.filter_layers.at(perf.presets[p].track_filter))
+        {
+            layer_gain = std::max(layer_gain, layer.gain);
+        }
         for (const PresetZone& z : ZonesOf(p, perf, banks))
         {
             const Sf2Envelope e = ConvertEnvelope(z.envelope);
-            loudest = std::max(loudest, z.volume * std::pow(10.0, e.peak_db / 20.0));
+            loudest = std::max(loudest, z.volume * layer_gain * std::pow(10.0, e.peak_db / 20.0));
         }
     }
 
@@ -251,8 +268,18 @@ std::vector<PresetZone> ZonesOf(std::size_t preset, const Performance& perf, Ban
         return {};
     }
 
-    return PresetZones(*bank, banks.Archive().FindWaveSystem(bank->wave_system), key.program, volume, pitch,
-                       key.direct_release, perf.default_release, limit_pitch);
+    std::vector<PresetZone> zones = PresetZones(*bank, banks.Archive(), key.program, volume, pitch, key.direct_release,
+                                                perf.default_release, limit_pitch);
+
+    // The note's pan rule weights the bank's pan and the instrument effects' share of it (PresetKey).
+    for (PresetZone& z : zones)
+    {
+        const double bank_pan = z.pan - z.effect_pan;
+        z.effect_pan *= static_cast<double>(key.effect_pan_weight);
+        z.pan = 0.5 + static_cast<double>(key.bank_pan_weight) * (bank_pan - 0.5) + z.effect_pan;
+    }
+
+    return zones;
 }
 
 Conversion ConvertSequence(const SequenceSound& sound, BankSet& banks, const PerformOptions& options,

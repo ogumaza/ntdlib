@@ -101,10 +101,16 @@ std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uin
 // Throws FormatError if the archive or a wave system is damaged.
 std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf);
 
-// The AAF's banks, in the order of its list. Each bank plays the wave system that its block's value gives. A sequence
-// selects a bank by the number in the bank's header (JASBankMgr::registBankBNK maps that number to the bank's place in
-// the list). Bank::number holds that number. A bank that can't be read is left out, and `warnings` gets a message for
-// it. Throws FormatError if the archive is damaged.
+// The AAF's banks, in the order of its list. Each bank plays the wave system that its block's value gives. The earlier
+// JAudio1's archive, the one with a sequence index, works another way. That's Luigi's Mansion's. Each block's value is
+// 0 there. The high half of a wave's id names the wave's system by the id in the system's header. A bank can then play
+// the waves of more than one system (Bank::named_systems). An archive whose systems share an id keeps to the block's
+// values: Super Mario Sunshine's has a sequence index, and its systems all give the id 0. A later JAudio1 keeps to the
+// block's value too. In Pikmin 2's
+// Wii and Switch releases, one bank's waves name system 0 while its value gives system 1. A sequence selects a
+// bank by the number in the bank's header (JASBankMgr::registBankBNK maps that number to the bank's place in the list).
+// Bank::number holds that number. A bank that can't be read is left out, and `warnings` gets a message for it. Throws
+// FormatError if the archive is damaged.
 std::vector<Bank> ReadAafBanks(std::span<const uint8_t> aaf, std::vector<std::string>& warnings);
 
 // The file names of the wave archives that the AAF's wave systems name, each once, in the order that the systems give

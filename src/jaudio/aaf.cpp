@@ -6,10 +6,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "xsflib/binary.h"
@@ -49,8 +51,10 @@ constexpr uint32_t kWideBlockType = 5;
 // of its first entry: 16 categories of effects, then the sequences, then the streams. An entry gives the sound's volume
 // and, with bit 0 of its format, its offset number (for a sequence, its file's number in the sequence archive).
 // Without that bit, the offset number is the sound's index in its category. With bit 1, the sound library plays the
-// sound at the pitch that the entry gives at +8 (JAIBasic::setSeExtParameter, 0x80291034 in The Wind Waker's
-// main.dol).
+// sound at the pitch that the entry gives at +8, and with bit 2 at the volume that it gives at +0xc
+// (JAIBasic::setSeExtParameter, 0x80291034 in The Wind Waker's main.dol). Without bit 2, the sound plays at full
+// volume. Pac-Man Vs. (0x8003aaec) and Luigi's Mansion (0x801908d8) test the same bits. Luigi's Mansion's sequences
+// have format 0, and every entry gives 255 there.
 constexpr std::size_t kTableHeader = 0x50;
 constexpr std::size_t kEntrySize = 0x10;
 constexpr std::size_t kEffectFormat = 0;
@@ -58,6 +62,8 @@ constexpr std::size_t kSequenceFormat = 1;
 constexpr std::size_t kPitch = 8;
 constexpr uint8_t kGivesOffsetNumber = 1;
 constexpr uint8_t kGivesPitch = 2;
+constexpr uint8_t kGivesVolume = 4;
+constexpr uint8_t kFullVolume = 127;
 constexpr uint32_t kEffectCategories = 16;
 constexpr uint32_t kSequenceCategory = 16;
 constexpr uint32_t kMaxPerCategory = 0x400;
@@ -220,6 +226,80 @@ std::vector<std::string> ArchiveNames(std::span<const uint8_t> aaf, bool staying
     return names;
 }
 
+// The places in the list of the AAF's wave systems, by the id in each system's header. Only the earlier JAudio1 finds
+// a wave's system that way. Luigi's Mansion's sound library registers each system under the id in its header, from 0
+// to 0xff. The first system with an id keeps it (0x801a25a0 and 0x801a2d80 in the USA release's main.dol). The high
+// half of a wave's id names the system. With 0xffff, the wave is in the bank's system (0x801a2680). The later sound
+// libraries register each system under its place in the list. Each bank plays the system that its value in the list
+// gives. A note takes its wave from its bank's system. The USA releases' main.dol files show it: Super Mario
+// Sunshine's at 0x8030151c, 0x803015f8 and 0x8030dda8, The Wind Waker's at 0x80291388 and 0x80291410, Pac-Man Vs.'s
+// at 0x8003b084 and 0x8003b108, and Pikmin 2's at 0x800abee4.
+//
+// The AAF doesn't name the library's build. Two conditions stand in for it. The archive has a sequence index, as
+// Luigi's Mansion's and Sunshine's have. The others above have none. And no two systems share an id. Luigi's
+// Mansion's systems give 0, 8, 1 and 2. Sunshine's three all give 0. Each of the five games gets its library's way.
+// The Wind Waker's and Pac-Man Vs.'s systems give distinct ids that differ from their places. The sequence index alone
+// keeps them to their places. An archive that fails either condition gets no places.
+std::map<uint16_t, uint32_t> WaveSystemPlaces(const xsflib::Reader& r, const Blocks& blocks)
+{
+    constexpr std::size_t kIdAt = 8;
+    constexpr uint32_t kIds = 0x100;
+    std::map<uint16_t, uint32_t> places;
+    for (std::size_t s = 0; blocks.sequence_index && s < blocks.wave_systems.size(); s++)
+    {
+        const uint32_t id = r.U32(blocks.wave_systems[s].offset + kIdAt);
+        if (id < kIds && !places.try_emplace(static_cast<uint16_t>(id), static_cast<uint32_t>(s)).second)
+        {
+            return {};
+        }
+    }
+
+    return places;
+}
+
+// Fills `bank`'s named_systems from `places` (WaveSystemPlaces) if a velocity region names a system other than the
+// bank's.
+void NameSystems(Bank& bank, const std::map<uint16_t, uint32_t>& places)
+{
+    bool other = false;
+    const auto name = [&](const std::vector<VelocityRegion>& regions)
+    {
+        for (const VelocityRegion& region : regions)
+        {
+            if (const auto found = places.find(region.system_id); found != places.end())
+            {
+                bank.named_systems[region.system_id] = found->second;
+                other = other || found->second != bank.wave_system;
+            }
+        }
+    };
+    for (const auto& [program, sound] : bank.programs)
+    {
+        if (const auto* inst = std::get_if<Instrument>(&sound))
+        {
+            for (const KeyRegion& keys : inst->keys)
+            {
+                name(keys.velocities);
+            }
+        }
+        else
+        {
+            for (const std::optional<Drum>& drum : std::get<DrumSet>(sound).keys)
+            {
+                if (drum)
+                {
+                    name(drum->velocities);
+                }
+            }
+        }
+    }
+
+    if (!other)
+    {
+        bank.named_systems.clear();
+    }
+}
+
 } // namespace
 
 bool IsAaf(std::span<const uint8_t> data)
@@ -240,6 +320,8 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
     const bool gives_offset_number = (r.U8(table + kSequenceFormat) & kGivesOffsetNumber) != 0;
     const bool gives_effect_number = (r.U8(table + kEffectFormat) & kGivesOffsetNumber) != 0;
     const bool gives_effect_pitch = (r.U8(table + kEffectFormat) & kGivesPitch) != 0;
+    const bool gives_effect_volume = (r.U8(table + kEffectFormat) & kGivesVolume) != 0;
+    const bool gives_sequence_volume = (r.U8(table + kSequenceFormat) & kGivesVolume) != 0;
     std::vector<SoundEntry> sounds;
     for (uint32_t category = 0; category <= kSequenceCategory; category++)
     {
@@ -258,7 +340,8 @@ std::vector<SoundEntry> ReadAafSounds(std::span<const uint8_t> aaf)
             sound.group = static_cast<uint8_t>(id >> 16);
             sound.index = static_cast<uint16_t>(id);
             sound.type = sound.section;
-            sound.volume = r.U8(entry + kAafItemLayout.volume);
+            const bool gives_volume = category == kSequenceCategory ? gives_sequence_volume : gives_effect_volume;
+            sound.volume = gives_volume ? r.U8(entry + kAafItemLayout.volume) : kFullVolume;
             sound.offset = static_cast<uint32_t>(entry);
             if (category == kSequenceCategory)
             {
@@ -370,13 +453,17 @@ std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf)
 std::vector<Bank> ReadAafBanks(std::span<const uint8_t> aaf, std::vector<std::string>& warnings)
 {
     const xsflib::Reader r = AafReader(aaf);
+    const Blocks blocks = FindBlocks(r);
+    const std::map<uint16_t, uint32_t> places = WaveSystemPlaces(r, blocks);
     std::vector<Bank> banks;
-    for (const auto& [offset, wave_system] : FindBlocks(r).banks)
+    for (const auto& [offset, wave_system] : blocks.banks)
     {
         try
         {
             r.Sub(offset, 1);
-            banks.push_back(Bank::Parse(aaf.subspan(offset), wave_system));
+            Bank bank = Bank::Parse(aaf.subspan(offset), wave_system);
+            NameSystems(bank, places);
+            banks.push_back(std::move(bank));
         }
         catch (const xsflib::FormatError& e)
         {

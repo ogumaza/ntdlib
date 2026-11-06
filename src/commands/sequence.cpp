@@ -88,6 +88,23 @@ constexpr std::array<std::string_view, kKindCount> kNames = {
     "compare_less",
     "compare_not_equal",
     "user_procedure",
+    "note_off",
+    "repeat",
+    "jump_if_equal",
+    "jump_if_not_equal",
+    "jump_if_greater",
+    "jump_if_greater_or_equal",
+    "jump_if_less_or_equal",
+    "jump_if_less",
+    "tune",
+    "register",
+    "sample_wave",
+    "voice_type",
+    "echo_volume",
+    "echo_length",
+    "psg_length",
+    "sweep",
+    "sample_offset",
     "other",
     "data",
 };
@@ -114,7 +131,8 @@ std::optional<Kind> KindNamed(std::string_view name)
 
 bool HasTarget(Kind kind)
 {
-    return kind == Kind::kOpenTrack || kind == Kind::kJump || kind == Kind::kCall;
+    return kind == Kind::kOpenTrack || kind == Kind::kJump || kind == Kind::kCall || kind == Kind::kRepeat ||
+           (kind >= Kind::kJumpIfEqual && kind <= Kind::kJumpIfLess);
 }
 
 } // namespace ntdlib::commands

@@ -98,7 +98,8 @@ std::vector<OscPoint> ReadPoints(const xsflib::Reader& r, std::size_t offset)
 }
 
 // Reads a velocity region: its high velocity in the top byte of the first word, the wave id in the low half of the
-// second, then its volume and pitch. `wave_systems`, unless it's null, gets the high half of the second word.
+// second, then its volume and pitch. The high half of the second word goes into the region's system_id. `wave_systems`,
+// unless it's null, gets it too.
 VelocityRegion ReadVelocityRegion(const xsflib::Reader& r, std::size_t offset, std::set<uint16_t>* wave_systems)
 {
     const uint8_t high_velocity = r.U8(offset);
@@ -108,7 +109,8 @@ VelocityRegion ReadVelocityRegion(const xsflib::Reader& r, std::size_t offset, s
         wave_systems->insert(static_cast<uint16_t>(wave >> 16));
     }
 
-    return {high_velocity, static_cast<uint16_t>(wave & 0xffff), r.F32(offset + 8), r.F32(offset + 12)};
+    return {high_velocity, static_cast<uint16_t>(wave & 0xffff), r.F32(offset + 8), r.F32(offset + 12),
+            static_cast<uint16_t>(wave >> 16)};
 }
 
 InstEffect RandomEffect(uint8_t target, float base, float width)

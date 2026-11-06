@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -141,13 +142,13 @@ std::vector<ResamplingSpan> ZoneSpans(std::pair<int, int> keys, const Resampling
 {
     if (key.filter_controller)
     {
-        return {{keys, nullptr}};
+        return PitchLimitSpans(keys, region, settings);
     }
 
     std::vector<ResamplingSpan> spans;
     const auto add = [&spans](std::pair<int, int> span_keys, const ResamplingFilter* filter)
     {
-        if (!spans.empty() && spans.back().filter == filter)
+        if (!spans.empty() && spans.back().filter == filter && !spans.back().limit_cents)
         {
             spans.back().keys.second = span_keys.second;
         }
@@ -159,6 +160,12 @@ std::vector<ResamplingSpan> ZoneSpans(std::pair<int, int> keys, const Resampling
 
     for (const ResamplingSpan& span : ResamplingSpans(keys, region, settings))
     {
+        if (span.limit_cents)
+        {
+            spans.push_back(span);
+            continue;
+        }
+
         // From key `split` on, the track's fixed filter has the lower cutoff.
         int split = span.keys.first;
         if (span.filter && key.filter.cutoff != kFilterOpen && !FitsTrackLowPass(key, settings))
@@ -255,29 +262,96 @@ void AddZoneLowPass(sf2::Zone& zone, const ResamplingFilter* filter, const std::
     }
 }
 
+void PlayAtFixedPitch(sf2::Zone& zone, int cents)
+{
+    std::erase_if(zone.generators,
+                  [](const sf2::Generator& g) { return g.oper == sf2::kCoarseTune || g.oper == sf2::kFineTune; });
+
+    std::vector<sf2::Generator> tuning;
+    if (cents / 100 != 0)
+    {
+        tuning.push_back(sf2::Generator::Value(sf2::kCoarseTune, cents / 100));
+    }
+    if (cents % 100 != 0)
+    {
+        tuning.push_back(sf2::Generator::Value(sf2::kFineTune, cents % 100));
+    }
+    tuning.push_back(sf2::Generator::Value(sf2::kScaleTuning, 0));
+
+    // The sample's generator stays last.
+    const auto at = zone.generators.empty() ? zone.generators.end() : zone.generators.end() - 1;
+    zone.generators.insert(at, tuning.begin(), tuning.end());
+}
+
 void AddRegionZones(std::vector<sf2::Zone>& zones, uint32_t index, const PresetKey& key,
                     const std::vector<std::pair<int, int>>& keys, const std::vector<std::pair<int, int>>& velocities,
                     std::size_t channels, const ResamplingRegion& region, std::pair<uint32_t, uint32_t> wave_key,
                     const wave::Pcm& wave, ZoneLowPass& low_pass, const Settings& settings,
-                    const ChannelZoneFunction& zone)
+                    const ChannelZoneFunction& zone, const ZoneFilter& keep)
 {
     for (const std::pair<int, int>& range : keys)
     {
         for (const ResamplingSpan& span : ZoneSpans(range, region, key, settings))
         {
             const std::optional<FittedCutoff> fitted =
-                low_pass.Fit(index, key, span.keys, region.original_key, region.tune, wave_key, wave);
+                span.limit_cents
+                    ? std::nullopt
+                    : low_pass.Fit(index, key, span.keys, region.original_key, region.tune, wave_key, wave);
             for (const std::pair<int, int>& v : velocities)
             {
+                if (keep && !keep(span.keys, v))
+                {
+                    continue;
+                }
+
                 for (std::size_t c = 0; c < channels; c++)
                 {
                     sf2::Zone channel_zone = zone(c, span.keys, v);
+                    if (span.limit_cents)
+                    {
+                        PlayAtFixedPitch(channel_zone, *span.limit_cents);
+                    }
                     AddZoneLowPass(channel_zone, span.filter, fitted, region, key, settings);
                     zones.push_back(std::move(channel_zone));
                 }
             }
         }
     }
+}
+
+PlayedNotes::PlayedNotes(const seqlib::midi::Performance& perf)
+{
+    for (const std::vector<TrackEvent>& events : perf.tracks)
+    {
+        std::array<std::optional<uint32_t>, 256> preset{}; // per part
+        for (const TrackEvent& e : events)
+        {
+            if (e.kind == EventKind::kPreset)
+            {
+                preset[e.part] = e.preset;
+            }
+            else if (e.kind == EventKind::kNoteOn && preset[e.part])
+            {
+                notes_[*preset[e.part]].insert({e.key, e.value});
+            }
+        }
+    }
+}
+
+bool PlayedNotes::Picks(uint32_t index, std::pair<int, int> keys, std::pair<int, int> velocities) const
+{
+    const auto found = notes_.find(index);
+    if (found == notes_.end())
+    {
+        return false;
+    }
+
+    return std::ranges::any_of(found->second,
+                               [&keys, &velocities](const std::pair<int, int>& note)
+                               {
+                                   return note.first >= keys.first && note.first <= keys.second &&
+                                          note.second >= velocities.first && note.second <= velocities.second;
+                               });
 }
 
 std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys, bool bank_slots)
@@ -289,6 +363,25 @@ std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys, bool ba
     }
 
     return sf2::PresetNames(banks_and_programs, bank_slots);
+}
+
+std::string SequencesText(std::span<const std::string> labels)
+{
+    std::string text = labels.size() == 1 ? "sequence " : "sequences ";
+    for (std::size_t k = 0; k < labels.size(); k++)
+    {
+        if (k > 0)
+        {
+            text += k + 1 == labels.size() ? " and " : ", ";
+        }
+        text += labels[k];
+    }
+    if (labels.size() > 1)
+    {
+        text += " together";
+    }
+
+    return text;
 }
 
 int LoudestRegion(const Performance& perf, const RegionVolumeFunction& volume_of)
@@ -437,6 +530,23 @@ std::vector<std::size_t> SoundFontRuns(const sf2::SoundFont& sf)
 }
 
 } // namespace
+
+bool FitsSoundFont(const sf2::SoundFont& sf)
+{
+    ZoneCount instruments;
+    ZoneCount presets;
+    bool fits = true;
+    for (const sf2::Instrument& instrument : sf.instruments)
+    {
+        fits = AddZones(instruments, instrument.zones) && fits;
+    }
+    for (const sf2::Preset& preset : sf.presets)
+    {
+        fits = AddZones(presets, preset.zones) && fits;
+    }
+
+    return fits;
+}
 
 std::vector<BankSoundFont> BankSoundFonts(sf2::SoundFont& whole, std::span<const uint32_t> programs,
                                           const std::function<sf2::SoundFont(std::span<const uint32_t>)>& part,

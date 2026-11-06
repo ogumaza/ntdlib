@@ -37,8 +37,12 @@ bool JAudio1ChangesSound(uint8_t command)
            (command >= 0xeb && command <= 0xf4) || command == 0xf9 || command >= 0xfd;
 }
 
-LoopFinder::LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command), bool idle_in_calls)
-    : sample_rate_(sample_rate), changes_sound_(changes_sound), idle_in_calls_(idle_in_calls)
+LoopFinder::LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command), bool idle_in_calls,
+                       bool restarts_as_passes)
+    : sample_rate_(sample_rate),
+      changes_sound_(changes_sound),
+      idle_in_calls_(idle_in_calls),
+      restarts_as_passes_(restarts_as_passes)
 {
     order_.push_back(root);
     tracks_[root] = {};
@@ -51,6 +55,13 @@ LoopFinder::Verdict LoopFinder::Take(const TrackEvent& event, const Sounded& sou
     switch (event.kind)
     {
     case TrackEvent::Kind::kCommand:
+        if (restarts_as_passes_ && track.finished && event.depth == 0 && event.at == track.first_at)
+        {
+            const Verdict verdict = Restart(track, event, sounded);
+            Command(track, event);
+            return verdict;
+        }
+
         Command(track, event);
         break;
     case TrackEvent::Kind::kJump:
@@ -101,6 +112,11 @@ LoopFinder::Track& LoopFinder::Find(uint32_t track, uint64_t frame)
 void LoopFinder::Command(Track& track, const TrackEvent& event)
 {
     track.last_command = event.frame;
+    if (!track.first_at)
+    {
+        track.first_at = event.at;
+    }
+
     if (event.depth == 0)
     {
         track.call_site = event.at;
@@ -206,6 +222,30 @@ LoopFinder::Verdict LoopFinder::Jump(Track& track, const TrackEvent& event, cons
     track.counted = Loop{event.to, event.at};
 
     return track.loops == 2 ? Verdict::kLoops : Verdict::kNone;
+}
+
+// With restarts_as_passes: a track that has finished runs its first command again. The pass started when the track
+// last ran that command. The pass judges all of the track's moves. It always changes the sound: it finished the track.
+// It counts as the pass of a jump back does, but apart from the loops inside it. They don't start its count again.
+LoopFinder::Verdict LoopFinder::Restart(Track& track, const TrackEvent& event, const Sounded& sounded)
+{
+    const auto start = track.reached.find(event.at);
+    track.pass_start = start != track.reached.end() ? start->second.frame : track.first_command;
+    track.judged_move = LastMove(track);
+    track.moves.clear();
+    if (!sounded.any || HeldBack(event.track, track, event.frame))
+    {
+        track.restarts = 0;
+        return Verdict::kNone;
+    }
+
+    if (track.restarts > 0 && sounded.last < track.pass_start)
+    {
+        return Verdict::kEnded;
+    }
+
+    track.restarts++;
+    return track.restarts == 2 ? Verdict::kLoops : Verdict::kNone;
 }
 
 // With idle_in_calls: a jump back inside a call. The pass started when the track last reached the jump's target. A pass

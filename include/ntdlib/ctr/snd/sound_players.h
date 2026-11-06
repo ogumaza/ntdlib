@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "ntdlib/ctr/snd/sequence.h"
+#include "ntdlib/ctr/snd/starting_tracks.h"
 #include "ntdlib/ctr/snd/voice.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/sar/formats.h"
@@ -189,6 +190,13 @@ public:
     {
         return channel >= 0 && channel < ChannelCount() ? voices_[static_cast<std::size_t>(channel)] : kNoVoice;
     }
+
+    // Sets the volume of each track whose bit `tracks` sets, bit N for track N, from the player's next update: the
+    // volume that a game's code sets through the sound's handle (+0x14 of the track). StreamSound::SetTrackVolume
+    // (0x271470 in Mario Kart 7) raises a volume below 0 to 0 and sets no upper limit. It moves the track's volume
+    // there over a number of frames. The model sets it at once. The game's routine keeps a NaN. The model makes it 0.
+    // So does the Wii U's routine. A bit past the player's tracks changes nothing.
+    void SetTrackVolume(uint32_t tracks, float volume);
 
 private:
     // A track (+0x1adc, 32 bytes each): whether it plays, its settings, and what the game sets through the sound's

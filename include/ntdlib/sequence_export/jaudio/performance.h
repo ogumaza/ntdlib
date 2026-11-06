@@ -22,7 +22,10 @@
 
 #include "seqlib/midi/performance.h"
 
+#include "ntdlib/sequence_export/jaudio/conductor.h"
+#include "ntdlib/sequence_export/jaudio/envelope.h"
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
+#include "ntdlib/sequence_export/jaudio/track_filter.h"
 #include "ntdlib/sequence_export/performance_base.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -52,6 +55,16 @@ struct PresetKey
     // The vibrato's speed and delay at note-on. Its depth goes by CC1.
     float vibrato_rate = 1.0f;  // in 72nds of a cycle per sub-frame
     uint16_t vibrato_delay = 0; // in sub-frames
+
+    // How a JAudio1 note's pan takes the bank's pan and the instrument effects' share of it (TChannel::calcPan). 0
+    // leaves a value out and 1 adds it. A weight between comes from the pan powers. Pikmin 2's build counts the
+    // effects' share as part of the bank's pan (0x80099464 in its main.dol). No note of Pikmin 2 on the GameCube
+    // weights the two apart.
+    float bank_pan_weight = 1.0f;
+    float effect_pan_weight = 1.0f;
+
+    // The entry of the track's IIR filter at note-on, where the zones play it (SequenceSound::zone_filters).
+    uint8_t track_filter = kOpenTrackFilter;
 };
 
 // The events of a performance's tracks, from seqlib.
@@ -68,6 +81,11 @@ struct Performance : ntdlib::sequence_export::PerformanceBase
 
     // The indexes in `presets` of the presets that play a key past the DSP's pitch limit (PresetZones's limit_pitch).
     std::set<uint32_t> pitch_limited_presets;
+
+    // The zones that a region becomes under each PresetKey::track_filter of `presets`, in the SoundFont and in SFZ
+    // (TrackFilterLayers).
+    std::map<uint8_t, std::vector<FilterLayer>> filter_layers;
+    std::map<uint8_t, std::vector<FilterLayer>> sfz_filter_layers;
 };
 
 // Options for playing a sequence.
@@ -77,7 +95,9 @@ struct PerformOptions
     int loops = 1;
 
     // The state the game's random generator starts in (JMath::TRandom_fast_, which JAudio2's register command seeds
-    // with 0).
+    // with 0). A JAudio1 sequence draws from JAudio1's generator instead. That one starts in the game's state at
+    // start-up, and the seed doesn't change it (see SequenceSound::draws). A sound with SequenceSound::timed_random
+    // draws from JAudio2's generator.
     uint32_t seed = 0;
 
     // Values for the sequence's ports (0-15), set before it starts. Games write ports to steer their music, and some
@@ -115,10 +135,24 @@ inline constexpr TrackMask kEveryTrack = {0xffff, 0xffff, 0xffff, 0xffff, 0xffff
 // wait for the distance (0 without a camera), 6, the low half of the map's information (0 without a map), 4, the
 // effect's number, and 0, the value 1. The slot's track then plays the effect. The slot is free again when its port 2
 // holds 0 and its port 0 doesn't hold 1.
+//
+// Pikmin's sound library makes another request (EffectRequest::kPort). Its track for the effect's kind is the first
+// track's child `slot`. The library writes the effect's number to the track's port `port`. The track's interrupt for
+// the write reads the number and opens a track below it that plays the effect. The request counts as taken once the
+// track has read the port. The effect has ended when no track below the track is open. The library can write other
+// ports of the track first (SequenceSound::ports).
+enum class EffectRequest : uint8_t
+{
+    kSlot,
+    kPort,
+};
+
 struct EffectStart
 {
     uint8_t slot = 0;
     uint16_t number = 0; // the effect's offset number (JAIBasic::getSoundOffsetNumberFromID)
+    EffectRequest request = EffectRequest::kSlot;
+    uint8_t port = 0; // for kPort
 };
 
 // A sequence to play: its data, the offset its first track starts at, the sound's volume from the sound table and its
@@ -132,17 +166,110 @@ struct SequenceSound
     float volume = 1.0f;
     uint16_t default_release = 0;                // GameRules::default_release
     std::optional<EchoLine> echo = std::nullopt; // GameRules::echo
+    float mix_level = 1.0f;                      // GameRules::mix_level
 
     // The sequence is JAudio1's: its first command set, with the registers, interrupts and tracks of JAudio1's player
     // (JASystem::TSeqParser and TTrack in The Wind Waker's main.dol).
     bool jaudio1 = false;
 
-    // The tracks that play (GameRules::tracks). JAISeq::getChildTrack numbers the same tracks: 16 * n + m for child m
-    // of the root's child n. A game's code can mute such a track through the sound's handle after startSound, before
-    // the sound's first tick (JASTrack::mute). The track keeps the mute when the sequence opens it. A muted track and
-    // the tracks below it start no notes. When the sequence opens the track again, JASTrack::openChild clears the
-    // mute.
+    // The tracks that play (GameRules::start_states). JAISeq::getChildTrack numbers the same tracks: 16 * n + m for
+    // child m of the root's child n. A game's code can mute such a track through the sound's handle after startSound,
+    // before the sound's first tick (JASTrack::mute). The track keeps the mute when the sequence opens it. A muted
+    // track and the tracks below it start no notes. When the sequence opens the track again, JASTrack::openChild clears
+    // the mute.
     TrackMask tracks = kEveryTrack;
+
+    // The volumes that the game's code gives tracks through the sound's handle (GameRules::start_states). A track that
+    // the map leaves out plays at 1. Index n is the root track's child n in a JAudio1 sequence
+    // (JAISound::setTrackVolume, 0x802999f4 in The Wind Waker's main.dol). In a JAudio2 sequence it is the track that
+    // JAISeq::getChildTrack(n) finds: child n % 16 of the root's child n / 16 (Z2SeqMgr::setChildTrackVolume,
+    // 0x802b3fec in Twilight Princess's main.dol). The volume belongs to the sound, not to the track. It holds each
+    // time the sequence opens the track. A track at 0 stays silent, and so do the tracks below it. In JAudio2, another
+    // volume multiplies the track's squared volume (JASTrack::updateTrack reads it from the track's external buffer).
+    // In JAudio1, a volume between 0 and 1 plays as 1.
+    //
+    // In a sequence of Pikmin's library (SequenceSound::jac), index n is child n of the first track. Pikmin's code
+    // gives each child an external buffer that holds its volume (Jam_AssignExtBufferP and Jam_SetExtParamP). The
+    // child's volume is multiplied by the buffer's (Jam_UpdateTrack, 0x80010e20 in the USA release's main.dol). The
+    // product then reaches the tracks below the child. A child at 0 starts no notes. A child without a value keeps its
+    // volume. GameRules::child_volumes sets these.
+    std::map<uint8_t, float> child_volumes = {};
+
+    // The tempo ratio that the game's code gives the sound (JAISound::setTempoProportion, 0x80298acc). The ticks run
+    // that much faster.
+    float tempo_ratio = 1.0f;
+
+    // The ports that the game's code writes to the root track once the sequence runs (JAISound::setPortData,
+    // 0x80298b74). A game writes them while its music plays, such as when a boss fight moves on. The performance
+    // writes them after the first tick, the soonest a game's write can reach a sequence that clears the port in its
+    // first commands. PerformOptions::ports are set before the first tick.
+    std::map<uint8_t, uint16_t> game_ports = {};
+
+    // The statuses that the game's code writes to port 9 of the root track in each of its frames, by the value of port
+    // 10. A sequence may give its section on port 10. Z2SeqMgr::fieldBgmFramework (0x802b594c) works this way. A game
+    // that starts a sound writes in the same frame, so the first tick reads a status for port 10's first value, 0.
+    std::map<uint16_t, uint16_t> status_by_section = {};
+
+    // The game's frames over which the sound fades in from silence as its sequence starts, or 0 for none. A start can
+    // give a sound a fade time. JAudio reads it once the sequence's data is in (JAInter::SequenceMgr::checkReadSeq,
+    // 0x8029706c). The Wind Waker's subBgmStart and bgmNowBattle give some of its music 60 frames, 2 seconds.
+    uint16_t fade_in = 0;
+
+    // Whether the game's JASystem squares a JAudio1 track's volume in volume mode 0 (GameRules::squared_track_volume).
+    bool squared_track_volume = true;
+    // Whether a JAudio1 track's routes give its notes its oscillators (GameRules::track_oscillator_routes).
+    bool track_oscillator_routes = true;
+
+    // The answers of the game's sequence callback to JAudio2's command 0xf9, by the command's argument
+    // (GameRules::callback). The callback answers 0 to an argument that isn't here. Without a callback, the command's
+    // handler writes 0xffff.
+    std::optional<std::map<uint16_t, uint16_t>> callback = std::nullopt;
+
+    // The JAudio1 sequence is Pikmin's, for its earlier sound library. Addresses are in the USA release's main.dol. The
+    // library's table of commands (0x80225124) gives 0xd0 two 16-bit arguments and 0xd3 two registers. It gives 0xe5,
+    // 0xe6, 0xf3 and 0xf4 none. 0xd0 and 0xe5 give the track a name that the game's code finds it by, and 0xe6 takes
+    // the name away (0x80010500 and 0x800105c0). The other three do nothing. A track has 32 registers of 16 bits
+    // (0x800100a0). Each of the address registers 0x28 to 0x2b holds two of them (0x80010280): 0x28 holds 16 in its
+    // high half and 17 in its low half, 0x29 holds 18 and 19, and so on.
+    bool jac = false;
+
+    // The JAudio1 sequence plays under the later JAudio1 of Pikmin 2 (JASTrack, in the USA release's main.dol). Its
+    // tracks have 32 registers, and the address registers hold registers 16 to 23 as Pikmin's library's do
+    // (SequenceSound::jac). JASTrack keeps its registers at +0x268 and reads address register 0x28 from +0x288, where
+    // registers 16 and 17 are (JASTrack::writeRegDirect, 0x800a1a24, and readReg32, 0x800a1778). The cave music opens
+    // a phrase at the offset that registers 16 and 17 hold. A track's tick also counts down the wait that a running
+    // interrupt put aside (JASTrack::mainProc, 0x8009f544). The Wind Waker's library leaves that wait as it is. The
+    // root tracks of Pikmin 2's music wait between their polls while an interrupt runs every tick. A tempo or a timebase
+    // reaches the tracks' tick rates at once, and a child opens with its parent's rate (JASTrack::setTempo, 0x800a259c,
+    // and openChild, 0x800a155c). The lengths of the notes follow those rates. GameRules::later_jaudio1 sets this.
+    bool later_jaudio1 = false;
+
+    // The game's sequence callback mutes child 15 of any track when the child calls it with ID 0 (command 0xe7). Super
+    // Mario Sunshine's callback does so (0x80015bc0 in the USA release's main.dol). The child then starts no notes
+    // (0x8031a83c). The tracks that the child opens later take its mute (0x8031cb44). When the sequence opens the
+    // child again, the mute is cleared (0x8031a3b4). GameRules::mute_child_15 sets this.
+    bool mute_child_15 = false;
+
+    // The answers that the game's code gives the sequence's calls to the game (command 0xe7), by the call's ID. A call
+    // that isn't listed gets 0, as from The Wind Waker's callback (JAIBasic::setParameterSeqSync). Pikmin 2's sound
+    // layer answers through the object that it makes for each piece (PSGame::seqCpuSync, 0x803372e0 in the USA
+    // release's main.dol). GameRules::sync_answers sets these.
+    std::map<uint16_t, uint16_t> sync_answers{};
+
+    // The children of the first track that the game's code mutes as they start, a bit for each child's number. A muted
+    // child and the tracks below it start no notes. Pikmin 2's directors mute the tracks of the layers that follow the
+    // game's action when each track first calls the game (TrackOnDirectorBase::onPlayInit, 0x8045732c in the USA
+    // release's main.dol). The tracks stay muted until the game's action turns them on. GameRules::muted_children sets
+    // these.
+    uint16_t muted_children = 0;
+
+    // The conductor of one of Pikmin 2's pieces of cave music (PSAutoBgm::AutoBgm), or nothing. The conductor answers
+    // the calls of the piece's tracks before SequenceSound::sync_answers does. It gives the first track its tempo and
+    // the time between its calls. For each child of the first track, it picks the phrases and rests that the child
+    // plays, at random, and sets the child's bank, program, volume, pan and transpose. The game draws its random
+    // numbers from PSSystem::oRandom (0x80515edc in the USA release's main.dol). Nothing else draws from it, and it
+    // starts at 0. GameRules::conductors sets this.
+    std::optional<Conductor> conductor = std::nullopt;
 
     // The effect that the sequence plays, for an effects sequence. The sequence then plays from its start. The effect
     // starts after the tick that opens its slot's track. That tick has to come in the first sub-frame that runs ticks.
@@ -155,6 +282,29 @@ struct SequenceSound
     // A factor on the pitch of every note: a JAudio1 effect's pitch in the sound table (ntdlib::jaudio::SoundEntry's
     // pitch). The sound library gives it to the effect's track. It moves the notes' pitch as a bend does.
     float pitch = 1.0f;
+
+    // The numbers that the sound library draws from its random generator before the sound starts. In the game, other
+    // sounds draw numbers too, and the sound's first draw comes later in the generator's run.
+    uint32_t draws = 0;
+
+    // Whether the game's JAudio1 generator mixes the CPU's time base into each number (GameRules::timed_random). A
+    // JAudio1 sound then draws from JAudio2's generator, from PerformOptions::seed.
+    bool timed_random = false;
+
+    // The bank that a JAudio1 sequence's root track starts with, in the high byte of register 6. The program keeps its
+    // first value. The sound library starts the track with bank 0. Pikmin's code gives a piece another (GameRules).
+    uint16_t bank = 0;
+
+    // The values that the game's code writes to the root track's ports as it starts the sequence. PerformOptions::ports
+    // take the place of these. For an effect of EffectRequest::kPort, the values go to the effect's track before the
+    // effect's number.
+    std::map<uint8_t, uint16_t> ports{};
+
+    // Whether the zones play the tracks' IIR filters. Music does. A sound effect leaves them out and reports them.
+    bool zone_filters = false;
+
+    // The rate at which the game runs those filters, in Hz (GameRules::filter_rate).
+    double filter_rate = kOutputRate;
 };
 
 // Play `sound`. `program` is the name that the messages give the program, such as "xyz2midi". Throw FormatError if

@@ -30,10 +30,26 @@
 // the other consoles, a bend, a sweep or an LFO can move a note's rate across a threshold. The game then plays the note
 // through another filter for a time. A zone's low-pass stays fixed and can't follow that. The performer doesn't report
 // such notes.
+//
+// Two consoles limit a voice's pitch. nw::snd on the Wii U gives AX a starting rate of 8 or less (AxVoice::UpdateSrc,
+// amiibo Festival's bbq.rpx 0x022A3954). AX holds later rates to 8 (AXSetVoiceSrcRatio). A note whose pitch asks for
+// more plays at 8. nn::atk on the Switch holds a voice's pitch ratio between 1/16 and 16 (LowLevelVoice::UpdateParam,
+// WarioWare: Get It Together!'s main 0xc270b0). The rule's limits give both. A note whose key starts past a limit and
+// whose pitch holds still gets a preset of its own (PresetKey::at_pitch_limits). The preset's keys past a limit take a
+// separate zone or region. That plays every key at the limit: a scale tuning of 0 in the SoundFont and pitch_keytrack=0
+// in the SFZ files. At the Wii U's limit, the filters' cutoffs lie above 45 kHz. At the Switch's floor of 1/16, the
+// rate stays below 1. At its ceiling of 16, the cutoffs lie above 24 kHz for every wave of 9 kHz or more. A span at a
+// limit therefore takes no low-pass. A zone at a limit takes the
+// preset's track low-pass without a fit (zone_low_pass.h): the fit follows each key's pitch. A note whose pitch moves,
+// by a sweep, an LFO in its part's bends or a bend, keeps every key at its pitch. A zone at the limit would move it
+// away from the limit. In the game, the note stays at the limit while its pitch would pass it, and follows its pitch
+// inside the limits. In the files, it plays past the limit. Only a pitch held to the limit in each frame of the part's
+// bends could follow the game.
 
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -53,11 +69,15 @@ struct ResamplingFilter
 };
 
 // A console's resampling filters: the rate in hertz at which the console mixes its voices, and the low-passes for its
-// filters from the highest rate down.
+// filters from the highest rate down. Then the limits on a voice's pitch, each 0 for none: the highest rate, and the
+// lowest and the highest pitch ratio.
 struct ResamplingRule
 {
     double output_rate = 32000.0;
     std::span<const ResamplingFilter> filters;
+    double rate_limit = 0.0;
+    double pitch_floor = 0.0;
+    double pitch_ceiling = 0.0;
 };
 
 // The rule of each console.
@@ -67,13 +87,15 @@ extern const ResamplingRule kCafeResampling;
 extern const ResamplingRule kSwitchResampling;
 
 // What decides the low-pass of a region's notes: the region's original key, tuning ratio and interpolation, and its
-// wave's sample rate.
+// wave's sample rate. `at_limits`: the preset's notes start past one of the console's pitch limits and hold their
+// pitch (PresetKey::at_pitch_limits). Only then do the keys past a limit play at the limit (PitchLimitSpans).
 struct ResamplingRegion
 {
     uint8_t original_key = 60;
     float tune = 1.0f;
     uint32_t sample_rate = 32000;
     uint8_t interpolation = 0; // 0 the default, 1 linear, 2 none
+    bool at_limits = false;
 };
 
 // The rate of a note at `key` on `region`, without bend, sweep or LFO: the wave's sample rate times the note's pitch
@@ -88,15 +110,34 @@ const ResamplingFilter* ResamplingFilterOf(int key, const ResamplingRegion& regi
 // note's pitch ratio.
 double ResamplingCutoffHz(double fraction, int key, const ResamplingRegion& region);
 
-// A span of a region's keys whose notes take the same low-pass, or none.
+// A span of a region's keys whose notes take the same low-pass, or none. The notes of a span with `limit_cents` start
+// past one of the console's pitch limits. Every key of the span plays at the limit: that many cents above the wave's
+// rate.
 struct ResamplingSpan
 {
     std::pair<int, int> keys;
     const ResamplingFilter* filter = nullptr;
+    std::optional<int> limit_cents = std::nullopt;
 };
 
-// Splits a region's `keys` into spans by their low-pass (ResamplingFilterOf). The rate rises with the key. Each
-// low-pass therefore takes one span at most.
+// The lowest and the highest pitch ratio at which the console plays a note on `region`. The Wii U's highest is its rate
+// limit times the output rate, over the wave's sample rate. The Switch's are 1/16 and 16. A console without limits
+// gives 0 and infinity.
+std::pair<double, double> PitchLimits(const ResamplingRegion& region, const Settings& settings);
+
+// True if a note at `key` on `region` starts past one of the console's pitch limits (PitchLimits), without bend, sweep
+// or LFO.
+bool PastPitchLimit(int key, const ResamplingRegion& region, const Settings& settings);
+
+// Splits a region's `keys` at the console's pitch limits (PitchLimits), without low-passes. The pitch rises with the
+// key. The keys below the lowest pitch therefore take one span at that pitch. The keys above the highest pitch take one
+// at that pitch. The keys between them take the span between. Any of the spans can be missing. A region whose notes
+// don't hold their pitch (ResamplingRegion::at_limits) keeps one span.
+std::vector<ResamplingSpan> PitchLimitSpans(std::pair<int, int> keys, const ResamplingRegion& region,
+                                            const Settings& settings);
+
+// Splits a region's `keys` into spans by their low-pass (ResamplingFilterOf), between the pitch limits
+// (PitchLimitSpans). Each low-pass therefore takes one span at most. A span at a limit takes no low-pass.
 std::vector<ResamplingSpan> ResamplingSpans(std::pair<int, int> keys, const ResamplingRegion& region,
                                             const Settings& settings);
 

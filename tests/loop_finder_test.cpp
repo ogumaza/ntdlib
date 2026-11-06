@@ -22,6 +22,7 @@ constexpr uint8_t kNote = 0x3c;
 constexpr uint8_t kReadRegister = 0xda;
 constexpr uint8_t kJumpIf = 0xc8;
 constexpr uint8_t kWait = 0xf0;
+constexpr uint8_t kOpenTrack = 0xc1;
 
 // The frames' rate: the GameCube's output rate. 32 frames are about 1 ms.
 constexpr uint32_t kRate = 32028;
@@ -38,10 +39,10 @@ public:
     {
     }
 
-    // `track` runs the command at `at`, `depth` calls deep.
-    void Command(uint32_t track, uint32_t at, uint8_t command, uint32_t depth = 0)
+    // `track` runs the command at `at`, `depth` calls deep. Returns the command's verdict.
+    Verdict Command(uint32_t track, uint32_t at, uint8_t command, uint32_t depth = 0)
     {
-        Take({TrackEvent::Kind::kCommand, track, at, 0, depth, command, frame_});
+        return Take({TrackEvent::Kind::kCommand, track, at, 0, depth, command, frame_});
     }
 
     // `track` jumps back to `to` from the jump command that ends at `at`, `depth` calls deep. Returns the jump's
@@ -304,6 +305,74 @@ void TestJAudio1Commands()
     XSFLIB_CHECK(poll(ChangesSound) == (std::vector{Verdict::kNone, Verdict::kLoops}));
 }
 
+// A track that plays a note, waits and finishes, and then starts again from its first command. With
+// restarts_as_passes, each start after a finish ends a pass of the whole track. The third start ends the second pass.
+// Without the option, the track never loops. Nor does a finished track that runs other commands: another track in the
+// same place.
+void TestRestartAsPass()
+{
+    const auto restarts = [](bool restarts_as_passes)
+    {
+        LoopFinder finder(kRoot, kRate, ChangesSound, false, restarts_as_passes);
+        Feeder feeder(finder);
+        std::vector<Verdict> verdicts;
+        for (int pass = 0; pass < 3; pass++)
+        {
+            verdicts.push_back(feeder.Command(kRoot, 0x10, kNote));
+            feeder.Command(kRoot, 0x13, kWait);
+            feeder.Command(kRoot, 0x16, kFinishCommand);
+        }
+
+        return verdicts;
+    };
+
+    XSFLIB_CHECK(restarts(true) == (std::vector{Verdict::kNone, Verdict::kNone, Verdict::kLoops}));
+    XSFLIB_CHECK(restarts(false) == std::vector(3, Verdict::kNone));
+
+    LoopFinder finder(kRoot, kRate, ChangesSound, false, true);
+    Feeder feeder(finder);
+    feeder.Command(kRoot, 0x10, kNote);
+    feeder.Command(kRoot, 0x16, kFinishCommand);
+    std::vector<Verdict> others;
+    for (int pass = 0; pass < 3; pass++)
+    {
+        others.push_back(feeder.Command(kRoot, 0x40, kNote));
+        feeder.Command(kRoot, 0x46, kFinishCommand);
+    }
+
+    XSFLIB_CHECK(others == std::vector(3, Verdict::kNone));
+}
+
+// Mario Kart: Double Dash!!'s level sounds: the root track starts at 0x100, opens a track that plays a note, and jumps
+// to a routine at 0x12 that polls until that track finishes. The root then finishes at 0x22, before the place where it
+// starts. The game starts the sound again, and both tracks start again. The root's restarts count as passes, and the
+// polls' jumps back don't start the count again. The later track's restarts don't count: the root moved in each pass.
+void TestRestartBeforeStart()
+{
+    LoopFinder finder(kRoot, kRate, ChangesSound, false, true);
+    Feeder feeder(finder);
+    std::vector<Verdict> verdicts;
+    for (int pass = 0; pass < 3; pass++)
+    {
+        verdicts.push_back(feeder.Command(kRoot, 0x100, kOpenTrack));
+        verdicts.push_back(feeder.Jump(kRoot, 0x105, 0x12));
+        verdicts.push_back(feeder.Command(kLater, 0x200, kNote));
+        feeder.Command(kLater, 0x203, kWait);
+        feeder.Command(kLater, 0x206, kFinishCommand);
+        for (int poll = 0; poll < 3; poll++)
+        {
+            verdicts.push_back(PollPass(feeder, kRoot));
+        }
+
+        LeavePoll(feeder, kRoot);
+        feeder.Command(kRoot, 0x22, kFinishCommand);
+    }
+
+    std::vector<Verdict> expected(verdicts.size(), Verdict::kNone);
+    expected[12] = Verdict::kLoops;
+    XSFLIB_CHECK(verdicts == expected);
+}
+
 } // namespace
 
 int main()
@@ -315,6 +384,8 @@ int main()
     TestLaterTrack();
     TestIdleInCall();
     TestJAudio1Commands();
+    TestRestartAsPass();
+    TestRestartBeforeStart();
 
     return xsflib::testing::Summary("loop finder");
 }

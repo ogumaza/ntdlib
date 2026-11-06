@@ -21,8 +21,8 @@ namespace ntdlib::sequence_export::jaudio
 
 // Runs the command line of `archive_converter` with `argc` and `argv` as RunArchiveConverter does, with JAudio games
 // among the inputs (ArchiveProgramGames). A game takes the program's options. Of those beyond the frame's, only
-// --voices applies to its sequences (ArchiveProgramOptions). `game_options` says which sounds of each game to list.
-// Returns the exit status for main() to return.
+// --voices applies to its sequences (ArchiveProgramOptions). `game_options` says which sounds of each game to list,
+// and whether the games run on the Wii U. Returns the exit status for main() to return.
 template <typename Archive>
 int RunArchiveConverterWithGames(int argc, char** argv, const ArchiveConverter<Archive>& archive_converter,
                                  const GameOptions& game_options = {})

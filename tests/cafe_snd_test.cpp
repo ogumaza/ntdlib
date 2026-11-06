@@ -16,6 +16,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -409,6 +410,58 @@ void TestEngineEffects()
     XSFLIB_CHECK(first_sound == 3 && first_difference == first_sound + 2 + 10);
     XSFLIB_CHECK(last_wet == last_dry + 2 + 10 && rang_out == last_wet + 334);
     XSFLIB_CHECK(!dry.engine->IsBusy() && !wet.engine->IsBusy() && !dry.engine->EffectsRinging());
+}
+
+// Nintendo Land's delay on the TV's aux A (nintendo_land::Delay) at one sample, without feedback and at full level. The
+// threaded path puts each frame out 3 frames late. AX returns the bus 2 frames later.
+void TestNintendoLandEffects()
+{
+    const ntdlib::sar::SoundArchive archive = NoteArchive({0xD9, 127, 0xB0, 48, 0xE1, 0x00, 120, 60, 127, 24, 0xFF});
+    const EffectSetup nintendo_land{ntdlib::cafe::snd::kEffectDeviceTv,
+                                    0,
+                                    EffectType::kNintendoLandDelay,
+                                    {Bits(0.04f), Bits(0.0f), Bits(1.0f), Bits(1.0f), 1, 0x01000000, 8, 4},
+                                    {}};
+    const EffectSetup nw_snd{ntdlib::cafe::snd::kEffectDeviceTv,
+                             0,
+                             EffectType::kDelay,
+                             {Bits(30.0f), Bits(0.0f), Bits(1.0f), Bits(50.0f), Bits(1.0f)},
+                             {}};
+
+    // The frames from the first with sound to the first in which `effect` changes the TV's output, or -1.
+    const auto lag = [&archive](const EffectSetup& effect)
+    {
+        ntdlib::cafe::snd::EngineOptions options;
+        ntdlib::cafe::snd::ArchiveModel dry(archive, options);
+        options.effects = {effect};
+        ntdlib::cafe::snd::ArchiveModel wet(archive, options);
+        if (!dry.engine->StartSequence(0) || !wet.engine->StartSequence(0))
+        {
+            return -1;
+        }
+
+        int first_sound = -1;
+        for (int frame = 0; frame < 100; ++frame)
+        {
+            dry.engine->RunFrame();
+            wet.engine->RunFrame();
+            const std::span<const int16_t> a = dry.system.Output();
+            const std::span<const int16_t> b = wet.system.Output();
+            if (first_sound < 0 && xsflib::rip::Audible(a))
+            {
+                first_sound = frame;
+            }
+            if (!std::equal(a.begin(), a.end(), b.begin(), b.end()))
+            {
+                return first_sound < 0 ? -1 : frame - first_sound;
+            }
+        }
+
+        return -1;
+    };
+
+    XSFLIB_CHECK(lag(nintendo_land) == 2 + 3);
+    XSFLIB_CHECK(lag(nw_snd) == 2 + 10);
 }
 
 namespace snd = ntdlib::cafe::snd;
@@ -1048,13 +1101,14 @@ ntdlib::sar::SoundArchive StreamSoundOf(std::vector<ntdlib::sar::StreamTrackInfo
     return ntdlib::sar::SoundArchive::Load(StreamArchive(kBigEndian, stream, volume), kSarOptions);
 }
 
-// The output of the archive's stream sound with the stream file `file`, a frame at a time, until it ends or for
-// `limit` frames.
+// The output of the archive's stream sound with the stream file `file` and the tracks `tracks`, a frame at a time,
+// until it ends or for `limit` frames.
 std::vector<std::vector<int16_t>> StreamFrames(const ntdlib::sar::SoundArchive& archive,
-                                               const std::vector<uint8_t>& file, std::size_t limit = 600)
+                                               const std::vector<uint8_t>& file, std::size_t limit = 600,
+                                               uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks)
 {
     snd::ArchiveModel model(archive);
-    model.engine->StartStreamSound(0, file);
+    model.engine->StartStreamSound(0, file, tracks);
     std::vector<std::vector<int16_t>> frames;
     while (model.engine->IsBusy() && frames.size() < limit)
     {
@@ -1176,6 +1230,173 @@ void TestStreamSnapshot()
     XSFLIB_CHECK(mapped && model.memory.Read8(0x10000000) == 0);
 }
 
+// A ramp of `length` samples: it climbs by `step` from `step * period / -2` and starts again every `period` samples.
+std::vector<int16_t> Ramp(std::size_t length, int period, int step)
+{
+    std::vector<int16_t> ramp(length);
+    for (std::size_t i = 0; i < ramp.size(); ++i)
+    {
+        ramp[i] =
+            static_cast<int16_t>(static_cast<int>(i % static_cast<std::size_t>(period)) * step - step * period / 2);
+    }
+
+    return ramp;
+}
+
+// A stream of 400 ms with a ramp on each of its two channels, of different periods.
+std::vector<uint8_t> TwoRamps()
+{
+    return PcmStream(ntdlib::sar::Flavor::kCafe, {Ramp(19200, 400, 40), Ramp(19200, 300, -50)});
+}
+
+// The archive of a stream sound whose two tracks both play, each on one channel. The second track's volume is
+// `second_volume`.
+ntdlib::sar::SoundArchive TwoTracks(uint8_t second_volume = 127)
+{
+    ntdlib::sar::StreamTrackInfo second = StreamTrack({1});
+    second.volume = second_volume;
+
+    return StreamSoundOf({StreamTrack({0}), second}, 0x3);
+}
+
+// The frames of `model` from frame `from` to frame `to`, after a start.
+std::vector<std::vector<int16_t>> FramesOf(snd::ArchiveModel& model, int from, int to)
+{
+    std::vector<std::vector<int16_t>> frames;
+    for (int frame = 0; frame < to; ++frame)
+    {
+        std::vector<int16_t> output = RunFrames(model, 1);
+        if (frame >= from)
+        {
+            frames.push_back(std::move(output));
+        }
+    }
+
+    return frames;
+}
+
+// The volumes that a game's code sets on a stream's tracks through the sound's handle (R-540). UpdateVoiceParams
+// multiplies the volume of each track's voices by the track's volume (0x022B5024). The default tracks, the mask of
+// every track and the mask of the two tracks alone play the same frames: a bit past the tracks changes nothing. A track
+// that the start leaves out plays as a track whose volume in the archive is 0, and the other track plays on. The start
+// of an info takes the mask too. A later volume below 0 plays at 0, and one of 0.5 plays at half the level
+// (StreamSound::SetTrackVolume, 0x022C2814). A snapshot keeps the tracks' volumes.
+void TestStreamTrackVolumes()
+{
+    constexpr uint16_t kAll = ntdlib::nwsnd::kAllStreamTracks;
+    const std::vector<uint8_t> file = TwoRamps();
+    const ntdlib::sar::SoundArchive archive = TwoTracks();
+    const std::vector<std::vector<int16_t>> every = StreamFrames(archive, file);
+    const std::vector<std::vector<int16_t>> first_only = StreamFrames(archive, file, 600, 0x1);
+    const ntdlib::sar::SoundArchive quiet_archive = TwoTracks(0);
+    const std::vector<std::vector<int16_t>> quiet_second = StreamFrames(quiet_archive, file);
+
+    snd::ArchiveModel outside(archive);
+    outside.engine->StartStreamSound(archive.Sounds()[0], file, 0x1);
+    const std::vector<std::vector<int16_t>> outside_frames = FramesOf(outside, 0, 100);
+
+    // A later volume. The fourth frame after the change is the first whose output changes. From the fifth on, the
+    // output is the quiet output.
+    snd::ArchiveModel later(archive);
+    snd::StreamSoundPlayer* player = later.engine->StartStreamSound(0, file);
+    RunFrames(later, 20);
+    player->SetTrackVolume(0x2, -1.0f);
+    const std::vector<std::vector<int16_t>> after_below = FramesOf(later, 4, 60);
+    snd::ArchiveModel quiet(quiet_archive);
+    quiet.engine->StartStreamSound(0, file);
+    RunFrames(quiet, 20);
+    const std::vector<std::vector<int16_t>> quiet_after = FramesOf(quiet, 4, 60);
+
+    snd::ArchiveModel half(archive);
+    half.engine->StartStreamSound(0, file, 0x2)->SetTrackVolume(0x2, 0.5f);
+    const std::vector<std::vector<int16_t>> half_frames = FramesOf(half, 0, 20);
+    const std::vector<std::vector<int16_t>> second_only = StreamFrames(archive, file, 20, 0x2);
+
+    // A restore brings back the volumes of the snapshot's moment.
+    snd::ArchiveModel restored(archive);
+    snd::StreamSoundPlayer* silenced = restored.engine->StartStreamSound(0, file, 0x1);
+    RunFrames(restored, 10);
+    const snd::ArchiveModel::Snapshot snapshot = restored.Save();
+    const std::vector<int16_t> silent_after = RunFrames(restored, 50);
+    silenced->SetTrackVolume(0x2, 1.0f);
+    restored.Restore(snapshot);
+    const std::vector<int16_t> again = RunFrames(restored, 50);
+
+    XSFLIB_CHECK(AnySound(every) && StreamFrames(archive, file, 600, kAll) == every &&
+                 StreamFrames(archive, file, 600, 0x3) == every);
+    XSFLIB_CHECK(AnySound(first_only) && first_only == quiet_second && first_only != every);
+    XSFLIB_CHECK(outside_frames == std::vector(first_only.begin(), first_only.begin() + 100));
+    XSFLIB_CHECK(after_below == quiet_after);
+    XSFLIB_CHECK(half_frames.size() == 20 && second_only.size() == 20 && AnySound(second_only) &&
+                 LevelIs(SteadyPeaks(half_frames), SteadyPeaks(second_only), 0.5));
+    XSFLIB_CHECK(Sounds(silent_after) && again == silent_after);
+}
+
+// The tracks that Nintendo Land, Game & Wario and amiibo Festival play of their stream sounds as they start, by the
+// archives of the USA releases and the sounds' names. Each game's code plays track 0 alone as these start: Nintendo
+// Land's 25, Game & Wario's 4 and amiibo Festival's board BGMs. Nintendo Land's Twister Race starts a section on track
+// 1 and then fades track 0 in: its streams play every track. So does every stream sound that the games leave alone,
+// every sound of an unknown archive, and a name in other letters.
+void TestStartingStreamTracks()
+{
+    constexpr std::string_view kNintendoLand = "1379ab0c17a80e0c38e0c9e90aaf92e971f2c1a4";
+    constexpr std::string_view kGameAndWario = "4d2c7f19370a0eea57de309b950c6af937e6e01f";
+    constexpr std::string_view kAmiiboFestival = "5784acb45299369f8388246f0ba4311610c709bc";
+    constexpr uint16_t kAll = ntdlib::nwsnd::kAllStreamTracks;
+    const std::initializer_list<std::string_view> nintendo_land = {"BGM_TTL_MAIN_DAYTIME",
+                                                                   "BGM_TTL_MAIN_EVENING",
+                                                                   "BGM_TTL_MAIN_NIGHT",
+                                                                   "BGM_BLF_MAIN_MORNING",
+                                                                   "BGM_BLF_MAIN_NOON",
+                                                                   "BGM_BLF_MAIN_EVENING",
+                                                                   "BGM_BLF_MAIN_NIGHT",
+                                                                   "BGM_DKB_DEMO_OPENING",
+                                                                   "BGM_DKB_RESULT",
+                                                                   "BGM_MTR_STAGE_01",
+                                                                   "BGM_MTR_STAGE_02",
+                                                                   "BGM_MTR_STAGE_03",
+                                                                   "BGM_MTR_STAGE_05",
+                                                                   "BGM_MTR_STAGE_06",
+                                                                   "BGM_MTR_STAGE_07",
+                                                                   "BGM_PKM_MAIN_SPRING",
+                                                                   "BGM_PKM_MAIN_SUMMER",
+                                                                   "BGM_PKM_MAIN_AUTUMN",
+                                                                   "BGM_PKM_MAIN_WINTER",
+                                                                   "BGM_PKM_MAIN_UNDER",
+                                                                   "BGM_ZLD_YAMA",
+                                                                   "BGM_ZLD_YAMA_YUGATA",
+                                                                   "BGM_ZLD_YAMA_YUGATA_FIELD_6",
+                                                                   "BGM_ZLD_TATEMONO",
+                                                                   "BGM_ZLD_TATEMONO_PRE_BOSS"};
+    const std::initializer_list<std::string_view> twister_race = {"BGM_FZR_MAIN_1_4",    "BGM_FZR_MAIN_5_8",
+                                                                  "BGM_FZR_MAIN_9_12",   "BGM_FZR_MAIN_EX_1_4",
+                                                                  "BGM_FZR_MAIN_EX_5_8", "BGM_FZR_MAIN_EX_9_12"};
+
+    for (const std::string_view sound : nintendo_land)
+    {
+        Check(snd::StartingStreamTracks(kNintendoLand, sound) == 0x1, std::string(sound) + " plays track 0");
+    }
+    for (const std::string_view sound : twister_race)
+    {
+        Check(snd::StartingStreamTracks(kNintendoLand, sound) == kAll, std::string(sound) + " plays every track");
+    }
+    for (const std::string_view sound : {"BGM_AR_01", "BGM_MM_01", "BGM_SK_ENDLESS1", "BGM_BO_CHALLENGE"})
+    {
+        Check(snd::StartingStreamTracks(kGameAndWario, sound) == 0x1, std::string(sound) + " plays track 0");
+    }
+    for (const std::string_view sound : {"SM_BGM_BD_TH_01_SUNNY", "SM_BGM_BD_TH_02_SUNNY"})
+    {
+        Check(snd::StartingStreamTracks(kAmiiboFestival, sound) == 0x1, std::string(sound) + " plays track 0");
+    }
+
+    XSFLIB_CHECK(snd::StartingStreamTracks(kNintendoLand, "BGM_PKM_DEMO_KAERU") == kAll);
+    XSFLIB_CHECK(snd::StartingStreamTracks(kGameAndWario, "BGM_SH_MU_AR") == kAll);
+    XSFLIB_CHECK(snd::StartingStreamTracks(kAmiiboFestival, "SM_BGM_LOUNGE") == kAll);
+    XSFLIB_CHECK(snd::StartingStreamTracks(kGameAndWario, "BGM_TTL_MAIN_DAYTIME") == kAll);
+    XSFLIB_CHECK(snd::StartingStreamTracks(kNintendoLand, "bgm_ttl_main_daytime") == kAll);
+    XSFLIB_CHECK(snd::StartingStreamTracks("0000000000000000000000000000000000000000", "BGM_TTL_MAIN_DAYTIME") == kAll);
+}
+
 // A region of AX's memory reads as its bytes until it's unmapped. It then reads as 0, and the other regions stay.
 void TestMemoryUnmap()
 {
@@ -1229,6 +1450,7 @@ int main()
     TestEffectsFor();
     TestEffectParams();
     TestEngineEffects();
+    TestNintendoLandEffects();
     TestSnapshotRenders();
     TestSnapshotEveryFrame();
     TestSnapshotPlayers();
@@ -1246,6 +1468,8 @@ int main()
     TestStreamTracks();
     TestStreamSnapshot();
     TestSnapshotPlayersOfOtherKinds();
+    TestStreamTrackVolumes();
+    TestStartingStreamTracks();
     TestMemoryUnmap();
 
     return xsflib::testing::Summary("cafe_snd");

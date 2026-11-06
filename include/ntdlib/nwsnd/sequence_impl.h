@@ -285,6 +285,30 @@ void SequenceTrack<Policy>::SetMute(Player& player, Engine& engine, int mode)
 }
 
 template <typename Policy>
+void SequenceTrack<Policy>::SetSilence(Engine& engine, bool silence, int frames)
+{
+    silence_ = silence;
+    const uint8_t target = silence ? 0 : 255;
+    for (Channel* channel = First(engine); channel; channel = Next(engine, *channel))
+    {
+        // The ramp starts over from where it stands, as at a note's start.
+        if (channel->silence_counter >= channel->silence_duration)
+        {
+            channel->silence_from = channel->silence_to;
+        }
+        else
+        {
+            const int32_t change = (static_cast<int32_t>(channel->silence_to) - channel->silence_from) *
+                                   channel->silence_counter / channel->silence_duration;
+            channel->silence_from = static_cast<uint8_t>(channel->silence_from + change);
+        }
+        channel->silence_to = target;
+        channel->silence_counter = 0;
+        channel->silence_duration = static_cast<uint16_t>(frames > 0 ? frames : 0);
+    }
+}
+
+template <typename Policy>
 void SequenceTrack<Policy>::UpdateChannelLength(Player& player, Engine& engine)
 {
     if (!open_)
@@ -1065,7 +1089,7 @@ void SequenceTrack<Policy>::Jump(Player& player, Engine& engine, uint32_t target
     // subroutine that bends a held note's pitch for ever is an example. Under the policy's length rules
     // (jump_loops_without_condition), it's a loop too when the track has run no conditional command since the jump's
     // target. Nothing can then leave the loop. A melody that steps through its notes this way and leaves through a
-    // conditional command isn't a loop.
+    // conditional command isn't a loop. A pass of such a jump can still be idle (CountPoll).
     if (target < current_ && target < run_.size() && run_[target] != 0)
     {
         const auto call = [](const CallStackEntry& entry)
@@ -1077,6 +1101,10 @@ void SequenceTrack<Policy>::Jump(Player& player, Engine& engine, uint32_t target
         if (!in_call || (!conditional_ && (HoldsSustainedNote(engine) || unconditioned)))
         {
             CountLoop(player, engine, target);
+        }
+        else
+        {
+            CountPoll(player, target);
         }
     }
 
@@ -1203,7 +1231,12 @@ void SequenceTrack<Policy>::ExtendedCommandProc(Player& player, Engine& engine, 
         {
             MarkRead(player, arg1);
         }
+        const int16_t before = *variable;
         VariableCommand(player, engine, op, *variable, arg2);
+        if (*variable != before)
+        {
+            set_at_ = player.commands_run_;
+        }
     }
 
     if constexpr (requires { engine.OnExtendedCommand(player, index_, command, arg1, arg2); })
@@ -1372,7 +1405,8 @@ void SequenceTrack<Policy>::CountLoop(Player& player, Engine& engine, uint32_t t
 {
     // The pass began when the track last ran `target`. A still pass also left the variables that tracks read with the
     // values that the pass before left. The first pass compares them with 0. A variable that no track reads doesn't
-    // count. The game reads some, such as the beats that a timing track marks.
+    // count. The game reads some, such as the beats that a timing track marks. The loop's pass is now the track's last
+    // pass, and the idle pass of a poll before it no longer counts.
     const uint64_t begun = target < run_.size() ? run_[target] : 0;
     std::array<int16_t, 48> variables{};
     for (int i = 0; i < static_cast<int>(variables.size()); ++i)
@@ -1384,6 +1418,7 @@ void SequenceTrack<Policy>::CountLoop(Player& player, Engine& engine, uint32_t t
     still_ = idle_ && drew_at_ < begun && variables == loop_variables_;
     loop_variables_ = variables;
     looped_at_ = player.commands_run_;
+    polled_at_ = 0;
 
     // The pass played a note if the track has played one since the pass began. A loop inside the pass doesn't hide the
     // notes before that loop.
@@ -1413,6 +1448,15 @@ void SequenceTrack<Policy>::CountLoop(Player& player, Engine& engine, uint32_t t
 }
 
 template <typename Policy>
+void SequenceTrack<Policy>::CountPoll(Player& player, uint32_t target)
+{
+    // After a pass that isn't idle, IsIdle follows the track's loops again.
+    const uint64_t begun = target < run_.size() ? run_[target] : 0;
+    const bool idle = changed_at_ < begun && set_at_ < begun && drew_at_ < begun;
+    polled_at_ = idle ? player.commands_run_ : 0;
+}
+
+template <typename Policy>
 bool SequenceTrack<Policy>::LoopsForEver(Player& player, Engine& engine, uint32_t address) const
 {
     if constexpr (requires { engine.LoopsForEver(player, index_, address); })
@@ -1430,6 +1474,12 @@ void SequenceTrack<Policy>::MarkChange(Player& player)
 {
     changed_at_ = player.commands_run_;
     player.changed_at_ = changed_at_;
+}
+
+template <typename Policy>
+void SequenceTrack<Policy>::MarkPlayerChange(Player& player)
+{
+    player.changed_at_ = player.commands_run_;
 }
 
 template <typename Policy>
@@ -1561,8 +1611,13 @@ bool SequenceTrack<Policy>::NoteOn(Player& player, Engine& engine, int key, int 
         return Policy::VelocityVolume(scaled);
     };
 
+    // Whether the newest note sounds at the volume of this note's velocity, and whether this note has the velocity of
+    // the note that started or last continued the newest channel. The second can hold without the first where the
+    // channel keeps the region's volume.
     const Channel* newest = First(engine);
-    const bool same = newest && newest->key == key && newest->velocity_volume == velocity_volume();
+    const bool same_volume = newest && newest->velocity_volume == velocity_volume();
+    const bool same_velocity = newest && newest->place == note_channel_ && note_velocity_ == scaled;
+    const bool same = newest && newest->key == key && (same_volume || same_velocity);
     Channel* channel = nullptr;
     if (tie)
     {
@@ -1714,7 +1769,17 @@ bool SequenceTrack<Policy>::NoteOn(Player& player, Engine& engine, int key, int 
         }
     }
 
-    return channel != newest || !same || sweep != 0.0f;
+    // The newest channel now plays this note.
+    note_channel_ = channel->place;
+    note_velocity_ = scaled;
+
+    const bool changes = channel != newest || !same || sweep != 0.0f;
+    if (!changes && !same_volume)
+    {
+        MarkPlayerChange(player);
+    }
+
+    return changes;
 }
 
 template <typename Policy>
@@ -1823,8 +1888,18 @@ void SequenceSoundPlayer<Policy>::Start()
         if (allocate_track_flags_ & (1u << i))
         {
             tracks_[i].emplace(i);
+            tracks_[i]->volume_ = start_track_volumes_[static_cast<std::size_t>(i)];
         }
     }
+
+    for (const TrackVariable& write : pending_track_variables_)
+    {
+        if (TrackType* owner = GetTrack(write.track))
+        {
+            owner->vars_[static_cast<std::size_t>(write.index)] = write.value;
+        }
+    }
+    pending_track_variables_.clear();
 
     if (tracks_[0])
     {

@@ -162,7 +162,7 @@ std::vector<Job> SelectSounds(const sar::SoundArchive& archive, const std::regex
         if (sounds[i].type == sar::SoundType::kSequence && std::regex_search(sounds[i].name, only) &&
             (!bgm || IsMusic(archive, index)))
         {
-            jobs.push_back({index, sounds[i].name, std::nullopt});
+            jobs.push_back({.index = index, .label = sounds[i].name});
         }
     }
 
@@ -404,13 +404,35 @@ std::optional<Layout> ReadLayout(std::span<const uint8_t> bytes)
 }
 
 // The files that the sequence sounds `sounds` of `archive` play: each sound's sequence file, the files of the banks in
-// its slots, and the files of the wave archives that those banks name. Nothing for a sound that isn't one of the
-// archive's sequence sounds. Throws xsflib::FormatError for a bank that can't be read.
-std::optional<std::set<uint32_t>> FilesPlayed(const sar::SoundArchive& archive, std::span<const uint32_t> sounds)
+// its slots and of the banks `start_banks`, and the files of the wave archives that those banks name. Nothing for a
+// sound that isn't one of the archive's sequence sounds. Throws xsflib::FormatError for a bank that can't be read.
+std::optional<std::set<uint32_t>> FilesPlayed(const sar::SoundArchive& archive, std::span<const uint32_t> sounds,
+                                              std::span<const uint32_t> start_banks = {})
 {
     std::set<uint32_t> files;
     std::set<uint32_t> banks;
     std::set<uint32_t> wave_archives;
+    const auto add_bank = [&](uint32_t item)
+    {
+        const std::optional<std::size_t> bank = ItemIndex(item, kBankItem, archive.Banks().size());
+        if (!bank || !banks.insert(archive.Banks()[*bank].file_id).second)
+        {
+            return; // an empty slot, or a bank read already
+        }
+
+        const std::span<const uint8_t> file = archive.FileData(archive.Banks()[*bank].file_id);
+        if (file.empty())
+        {
+            return; // a model plays nothing from it
+        }
+
+        const sar::Bank read = sar::Bank::Parse(file, archive.ReadOptions());
+        for (const sar::WaveId& wave : read.waves)
+        {
+            wave_archives.insert(wave.wave_archive_item);
+        }
+    };
+
     for (const uint32_t index : sounds)
     {
         if (index >= archive.Sounds().size() || archive.Sounds()[index].type != sar::SoundType::kSequence)
@@ -422,24 +444,12 @@ std::optional<std::set<uint32_t>> FilesPlayed(const sar::SoundArchive& archive, 
         files.insert(sound.file_id);
         for (const uint32_t item : sound.banks)
         {
-            const std::optional<std::size_t> bank = ItemIndex(item, kBankItem, archive.Banks().size());
-            if (!bank || !banks.insert(archive.Banks()[*bank].file_id).second)
-            {
-                continue; // an empty slot, or a bank read already
-            }
-
-            const std::span<const uint8_t> file = archive.FileData(archive.Banks()[*bank].file_id);
-            if (file.empty())
-            {
-                continue; // a model plays nothing from it
-            }
-
-            const sar::Bank read = sar::Bank::Parse(file, archive.ReadOptions());
-            for (const sar::WaveId& wave : read.waves)
-            {
-                wave_archives.insert(wave.wave_archive_item);
-            }
+            add_bank(item);
         }
+    }
+    for (const uint32_t item : start_banks)
+    {
+        add_bank(item);
     }
 
     files.insert(banks.begin(), banks.end());
@@ -837,7 +847,8 @@ bool SameFiles(const sar::SoundArchive& archive, const std::vector<uint8_t>& cut
 
 } // namespace
 
-std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive, std::span<const uint32_t> sounds)
+std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive, std::span<const uint32_t> sounds,
+                                               std::span<const uint32_t> start_banks)
 {
     try
     {
@@ -848,7 +859,7 @@ std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive,
         }
 
         // The bytes that the models read, and the group files beside the archive that they read too.
-        const std::optional<std::set<uint32_t>> files = FilesPlayed(archive, sounds);
+        const std::optional<std::set<uint32_t>> files = FilesPlayed(archive, sounds, start_banks);
         std::set<std::size_t> beside;
         const std::optional<std::vector<Span>> spans =
             files ? SpansRead(archive, *layout, *files, beside) : std::nullopt;
@@ -876,11 +887,12 @@ std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive,
 
 std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::SoundArchive& archive,
                                                                  const LibraryArchive& library,
-                                                                 std::span<const uint32_t> sounds)
+                                                                 std::span<const uint32_t> sounds,
+                                                                 std::span<const uint32_t> start_banks)
 {
     try
     {
-        const std::optional<std::set<uint32_t>> files = FilesPlayed(archive, sounds);
+        const std::optional<std::set<uint32_t>> files = FilesPlayed(archive, sounds, start_banks);
         if (!files)
         {
             return std::nullopt;

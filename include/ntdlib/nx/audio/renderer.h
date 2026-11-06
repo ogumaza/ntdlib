@@ -2,13 +2,15 @@
 
 // The Switch's audio renderer, as a game's nn::audio sets it up: voices, the final mix and sub-mixes, and a device
 // sink, and the frames it renders from them. This follows the build of the renderer for the CPU in WarioWare: Get It
-// Together!'s sdk (nn::audio::server and nn::audio::dsp). Its delay and light limiter follow the build in WarioWare:
-// Move It!'s sdk. That build renders the voices and mixes as the other build does, apart from a voice with both
-// biquads on. The calls change the game's copy of the parameters. Each frame then sends them to the renderer. The
+// Together!'s sdk (nn::audio::server and nn::audio::dsp). Its delay, reverb and light limiter follow the build in
+// WarioWare: Move It!'s sdk. That build renders the voices and mixes as the other build does, apart from a voice with
+// both biquads on. The calls change the game's copy of the parameters. Each frame then sends them to the renderer. The
 // renderer takes them in, reports the voices' state from two frames before, generates the frame's command list and runs
-// it. An aux effect in a mix sends the mix's samples to the game and receives what the game makes of them. A delay or a
-// light limiter runs in the renderer. Not modelled yet: the renderer's reverb, I3DL2 reverb, compressor and other
-// effects, splitters, voice dropping, the downmix and the upsampler for a 32 kHz renderer.
+// it. An aux effect in a mix sends the mix's samples to the game and receives what the game makes of them. A delay, a
+// reverb or a light limiter runs in the renderer. Not modelled yet: the renderer's I3DL2 reverb, compressor and other
+// effects, splitters, voice dropping, the downmix, the upsampler for a 32 kHz renderer, and the exchange of a
+// 6-channel effect's buffers 2 and 3 with 4 and 5 before REV11. That exchange leaves the front left and right as they
+// are.
 
 #pragma once
 
@@ -22,6 +24,7 @@
 #include "ntdlib/nx/audio/delay.h"
 #include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/light_limiter.h"
+#include "ntdlib/nx/audio/reverb.h"
 #include "ntdlib/nx/audio/voice.h"
 
 namespace ntdlib::nx::audio
@@ -122,6 +125,20 @@ public:
     virtual void SetDelayChannelSpread(int delay, float spread) = 0;
     virtual void SetDelayLowPassAmount(int delay, float amount) = 0;
     virtual void SetDelayEnabled(int delay, bool enabled) = 0;
+    virtual void AddReverb(int mix, int channel_count, int reverb) = 0;
+    virtual void SetReverbInputOutput(int reverb, std::span<const int8_t> inputs, std::span<const int8_t> outputs) = 0;
+    virtual void SetReverbEarlyMode(int reverb, int mode) = 0;
+    virtual void SetReverbEarlyGain(int reverb, float gain) = 0;
+    virtual void SetReverbPredelayTime(int reverb, int64_t time) = 0;
+    virtual void SetReverbLateMode(int reverb, int mode) = 0;
+    virtual void SetReverbLateGain(int reverb, float gain) = 0;
+    virtual void SetReverbDecayTime(int reverb, int64_t time) = 0;
+    virtual void SetReverbHighFrequencyDecayRatio(int reverb, float ratio) = 0;
+    virtual void SetReverbColoration(int reverb, float coloration) = 0;
+    virtual void SetReverbReverbGain(int reverb, float gain) = 0;
+    virtual void SetReverbOutGain(int reverb, float gain) = 0;
+    virtual void SetReverbDryGain(int reverb, float gain) = 0;
+    virtual void SetReverbEnabled(int reverb, bool enabled) = 0;
     virtual void AddLightLimiter(int mix, int64_t max_look_ahead, int channel_count, int limiter) = 0;
     virtual void SetLightLimiterInputOutput(int limiter, std::span<const int8_t> inputs,
                                             std::span<const int8_t> outputs) = 0;
@@ -290,11 +307,13 @@ public:
     // (WriteAuxReturnBuffer, 0x3fc90, through WriteAuxBuffer, 0x3d950). Returns how many.
     int32_t WriteAuxReturnBuffer(int aux, std::span<const int32_t> samples);
 
-    // The delay and the light limiter follow Move It!'s sdk. Their times are in nanoseconds (nn::TimeSpan). Each runs
-    // after the effects added to its mix before it, on the mix's buffers that SetDelayInputOutput or
-    // SetLightLimiterInputOutput gives it. A call that changes the delay's channels or time, or that enables it, starts
-    // it again: its lines are cleared at the next frame. A call that changes a gain gives it new gains at the next
-    // frame. A disabled delay or limiter passes its inputs through.
+    // The delay, the reverb and the light limiter follow Move It!'s sdk. Their times are in nanoseconds
+    // (nn::TimeSpan). Each runs after the effects added to its mix before it, on the mix's buffers that
+    // SetDelayInputOutput, SetReverbInputOutput or SetLightLimiterInputOutput gives it. A call that changes the delay's
+    // channels or time, or that enables it, starts it again: its lines are cleared at the next frame. A call that
+    // changes a gain gives it new gains at the next frame. The reverb starts again for a change of its channels or an
+    // enable. Any other call works out its delays and gains again at the next frame, and starts its feedback lines
+    // again from their first cells. A disabled delay, reverb or limiter passes its inputs through.
 
     // A delay on a mix of up to `max_delay` on `channel_count` channels (AddDelay, 0x1cf680). It starts enabled, with
     // no delay, no input and no feedback, and full dry and wet gains. Returns the delay.
@@ -314,6 +333,37 @@ public:
     void SetDelayChannelSpread(int delay, float spread);
     void SetDelayLowPassAmount(int delay, float amount);
     void SetDelayEnabled(int delay, bool enabled);
+
+    // A reverb on a mix of `channel_count` channels (AddReverb, 0x1d2c10). Its sample rate is the mix's rate in kHz,
+    // towards zero. It starts enabled, with no early reflections (early mode 4), late mode 0, a decay time and a
+    // high-frequency decay ratio of 0x666 in Q14 (about 0.1), a full dry gain, and the other gains, the pre-delay and
+    // the coloration at 0. Returns the reverb.
+    int AddReverb(int mix, int channel_count);
+
+    // The mix's buffers that the reverb takes and gives, one for each channel, at most its channel count and 6
+    // (SetReverbInputOutput, 0x1d2f30).
+    void SetReverbInputOutput(int reverb, std::span<const int8_t> inputs, std::span<const int8_t> outputs);
+
+    // The modes, 0 to 4 (SetReverbEarlyMode, 0x1d35a0, and SetReverbLateMode, 0x1d3650). Nintendo's client stops on
+    // another mode. The model throws std::invalid_argument.
+    void SetReverbEarlyMode(int reverb, int mode);
+    void SetReverbLateMode(int reverb, int mode);
+
+    // The pre-delay: the time in microseconds towards zero, over 1,000 in single precision, in Q14 towards zero
+    // (SetReverbPredelayTime, 0x1d30a0). The decay time: the time in milliseconds towards zero, over 1,000, in Q14
+    // (SetReverbDecayTime, 0x1d31a0).
+    void SetReverbPredelayTime(int reverb, int64_t time);
+    void SetReverbDecayTime(int reverb, int64_t time);
+
+    // The gains and ratios in Q14, towards zero (SetReverbReverbGain, 0x1d3020, and the setters after it).
+    void SetReverbEarlyGain(int reverb, float gain);
+    void SetReverbLateGain(int reverb, float gain);
+    void SetReverbHighFrequencyDecayRatio(int reverb, float ratio);
+    void SetReverbColoration(int reverb, float coloration);
+    void SetReverbReverbGain(int reverb, float gain);
+    void SetReverbOutGain(int reverb, float gain);
+    void SetReverbDryGain(int reverb, float gain);
+    void SetReverbEnabled(int reverb, bool enabled);
 
     // A light limiter on a mix with a look-ahead of up to `max_look_ahead` on `channel_count` channels
     // (AddLightLimiter, 0x1d1890). It starts enabled, with a look-ahead of a sample, instant attack and release, and a
@@ -463,6 +513,7 @@ private:
     {
         kAux,
         kDelay,
+        kReverb,
         kLightLimiter,
     };
 
@@ -509,17 +560,17 @@ private:
         uint32_t receive_read = 0;  // the renderer's offset
     };
 
-    // The parameter state that the delay and the light limiter keep: 0 starts the effect again, 1 gives it new gains,
-    // and 2 leaves it as it is.
+    // The parameter state that the delay, the reverb and the light limiter keep: 0 starts the effect again, 1 gives it
+    // new gains (and the reverb new delays), and 2 leaves it as it is.
     static constexpr uint8_t kStart = 0;
     static constexpr uint8_t kNewGains = 1;
     static constexpr uint8_t kUnchanged = 2;
 
-    // The most channels a delay or a light limiter has.
-    static constexpr int kMaxEffectChannels = std::max(kDelayChannels, kLightLimiterChannels);
+    // The most channels a delay, a reverb or a light limiter has.
+    static constexpr int kMaxEffectChannels = std::max({kDelayChannels, kReverbChannels, kLightLimiterChannels});
 
-    // A delay or a light limiter: the client's settings, and the renderer's copy of them with its state. `parameter`
-    // holds the channels' count. The renderer has a copy once an update has taken the effect.
+    // A delay, a reverb or a light limiter: the client's settings, and the renderer's copy of them with its state.
+    // `parameter` holds the channels' count. The renderer has a copy once an update has taken the effect.
     template <typename Parameter, typename State, std::size_t kChannels>
     struct RendererEffect
     {
@@ -541,6 +592,11 @@ private:
 
     // A delay, with the times and gains as the client set them.
     struct Delay : RendererEffect<DelayParameter, DelayState, kDelayChannels>
+    {
+    };
+
+    // A reverb, with the times, gains and ratios in Q14 that the client works out.
+    struct Reverb : RendererEffect<ReverbParameter, ReverbState, kReverbChannels>
     {
     };
 
@@ -584,10 +640,14 @@ private:
     void RenderEffects(const Mix& mix);
     void RenderAux(const Mix& mix, Aux& aux);
 
-    // The delays' and the limiters' updates, their commands, the steps of the commands before the processing in a
-    // frame without mixing, and their states after the frame's commands.
+    // The delays', the reverbs' and the limiters' updates, their commands, the steps of the commands before the
+    // processing in a frame without mixing, and their states after the frame's commands.
     void UpdateRendererEffects();
     void RenderDelay(const Mix& mix, Delay& delay);
+    void RenderReverb(const Mix& mix, Reverb& reverb);
+
+    // The reverb that a setter changes, with its state at 1 unless it's 0.
+    Reverb& ChangeReverb(int reverb);
     void RenderLightLimiter(const Mix& mix, LightLimiter& limiter);
     void StartRendererEffects();
     void FinishRendererEffects();
@@ -615,6 +675,7 @@ private:
     std::vector<Mix> mixes_;
     std::vector<Aux> auxes_;
     std::vector<Delay> delays_;
+    std::vector<Reverb> reverbs_;
     std::vector<LightLimiter> limiters_;
     bool mixes_changed_ = true;
     std::vector<int> sinks_;       // the device sink's inputs
@@ -667,6 +728,7 @@ struct Renderer::Snapshot
     std::vector<Mix> mixes;
     std::vector<Aux> auxes;
     std::vector<Delay> delays;
+    std::vector<Reverb> reverbs;
     std::vector<LightLimiter> limiters;
     bool mixes_changed = true;
     std::vector<int> sinks;

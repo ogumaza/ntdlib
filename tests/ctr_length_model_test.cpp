@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 
 // Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
+// Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
 // (ntdlib/testing/length_cases.h), on the 3DS's model: archive mode on the model of the DSP's audio firmware. The
 // analysis waits for the loops of the tracks other than the main track. A tie gives its channel the velocity's volume
-// without the region's. Counted loops that run past the limit follow. The analysis then takes each track's outermost
-// counted loop as endless.
+// without the region's. The cases take the lengths that the Wii U and the Switch give them: a pass that only drops the
+// region's volume isn't a loop. Counted loops that run past the limit follow. The analysis then takes each track's
+// outermost counted loop as endless.
 
 #include <cmath>
 #include <cstdint>
@@ -128,7 +130,7 @@ void TestCases()
     const std::vector<uint8_t> bytes = length_cases::Archive(ntdlib::sar::Flavor::kCtr);
     const auto archive = ntdlib::sar::SoundArchive::Load(bytes, ntdlib::ctr::kSarOptions);
 
-    length_cases::CheckCases([&archive](uint32_t index) { return Measure(archive, index); }, true, true);
+    length_cases::CheckCases([&archive](uint32_t index) { return Measure(archive, index); }, true);
 }
 
 // The loops that run past the limit loop for ever, and the fade starts after two passes. Of the nested loops, only the

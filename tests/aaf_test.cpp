@@ -8,6 +8,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -104,6 +105,11 @@ void TestSequenceFormat()
         XSFLIB_CHECK(sounds[3].Id() == 0x80000001 && sounds[3].resource == 1);
         XSFLIB_CHECK(sounds[4].Id() == 0x80000002 && sounds[4].resource == 2);
         XSFLIB_CHECK(sounds[0].resource == 0 && sounds[0].source == jaudio::SoundEntry::Source::kCollection);
+
+        // Without bit 2, a sequence plays at full volume, whatever its entry holds. The effects' format, 6, has the
+        // bit. They keep their volumes.
+        XSFLIB_CHECK(sounds[3].volume == 127 && sounds[4].volume == 127);
+        XSFLIB_CHECK(sounds[0].volume == 80 && sounds[1].volume == 81);
     }
 
     XSFLIB_CHECK(jaudio::AafEffectsSequenceFile(aaf) == 0);
@@ -128,6 +134,12 @@ void TestEffectFormat()
     aaf[0x100] = 4;
     const std::vector<jaudio::SoundEntry> plain = jaudio::ReadAafSounds(aaf);
     XSFLIB_CHECK(plain.size() == 2 && plain[1].pitch == 1.0f);
+
+    // With bit 2, as in formats 4 and 6, an effect plays at the volume of its entry. Without it, at full volume.
+    XSFLIB_CHECK(plain.size() == 2 && plain[0].volume == 80 && plain[1].volume == 81);
+    aaf[0x100] = 2;
+    const std::vector<jaudio::SoundEntry> full = jaudio::ReadAafSounds(aaf);
+    XSFLIB_CHECK(full.size() == 2 && full[0].volume == 127 && full[1].volume == 127 && full[1].pitch == 1.5f);
 }
 
 // The sequences of TestSequenceIndex: their names and where they lie in a 0x100-byte archive.
@@ -226,6 +238,46 @@ void TestBanks()
 
     XSFLIB_CHECK(banks.empty());
     XSFLIB_CHECK(warnings.size() == 1 && warnings[0].starts_with("bank at offset 1792: "));
+}
+
+void TestNamedWaveSystems()
+{
+    const std::vector<files::AafSequenceSpec> no_index;
+
+    // Luigi's Mansion's archive has a sequence index. Its first three wave systems have the ids 0, 8 and 1. Each bank's
+    // value in the list is 0. The high half of a wave's id names the wave's system by that id: here 1, the third
+    // system.
+    const std::vector<std::string> archives = {"a_0.aw", "b_0.aw", "c_0.aw"};
+    const auto banks_naming = [&archives](uint16_t named, const std::vector<files::AafSequenceSpec>& index)
+    {
+        std::vector<std::string> warnings;
+        const std::vector<uint8_t> bank = files::BankV0File(0, 100, true, 4, named);
+        std::vector<jaudio::Bank> banks =
+            jaudio::ReadAafBanks(files::AafFile(kSounds, archives, 0, index, true, bank, {0, 8, 1}), warnings);
+        XSFLIB_CHECK(warnings.empty() && banks.size() == 1);
+        return banks;
+    };
+
+    const std::vector<jaudio::Bank> named = banks_naming(1, kIndex);
+    XSFLIB_CHECK(!named.empty() && named[0].wave_system == 0);
+    XSFLIB_CHECK(!named.empty() && named[0].named_systems == (std::map<uint16_t, uint32_t>{{1, 2}}));
+
+    // A bank whose waves name its system, or an id that no system has, plays the waves of its system. So does a bank
+    // of an archive without a sequence index, the later JAudio1's.
+    for (const auto& [id, index] : {std::pair{0, kIndex}, std::pair{5, kIndex}, std::pair{1, no_index}})
+    {
+        const std::vector<jaudio::Bank> banks = banks_naming(static_cast<uint16_t>(id), index);
+        XSFLIB_CHECK(!banks.empty() && banks[0].wave_system == 0 && banks[0].named_systems.empty());
+    }
+
+    // Super Mario Sunshine's archive has a sequence index, and its three wave systems all give the id 0. Its banks play
+    // the systems that their values give, here the third. The waves' id 0 names no system.
+    std::vector<std::string> warnings;
+    const std::vector<jaudio::Bank> shared = jaudio::ReadAafBanks(
+        files::AafFile(kSounds, archives, 0, kIndex, true, files::BankV0File(0, 100, true, 4, 0), {0, 0, 0}, 2),
+        warnings);
+    XSFLIB_CHECK(warnings.empty() && shared.size() == 1);
+    XSFLIB_CHECK(!shared.empty() && shared[0].wave_system == 2 && shared[0].named_systems.empty());
 }
 
 // A name file of `sounds`: the 16-byte header with the count, 18 records for the categories, then a record for each
@@ -446,6 +498,7 @@ int main()
     TestWaveSystems();
     TestIsAaf();
     TestBanks();
+    TestNamedWaveSystems();
     TestAsnSounds();
     TestLittleEndian();
 

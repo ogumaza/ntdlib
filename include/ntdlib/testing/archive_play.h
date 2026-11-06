@@ -23,6 +23,9 @@
 //   Option(name, value, options)  applies one of the console's options to `options`. Returns false for an unknown
 //                                 option or a bad value.
 //
+// A console may also supply Started(player, engine, options). It runs once the sound has started, before the first
+// frame, as a game's code sets a sound up through its handle.
+//
 // The model's `engine` points to the engine. The engine supplies StartSequence(index), RunFrame(), Rng().State(),
 // Channels() and Voices(). StartSequence gives the sound's player, or nullptr. Channels() and Voices() are those that
 // the channels' model requires (see ntdlib/nwsnd/channel.h). The player gives its tracks by Track(index). Each track
@@ -157,10 +160,14 @@ int ArchivePlay(int argc, char** argv)
         }
 
         typename Console::Model model(archive, options);
-        const auto* player = model.engine->StartSequence(*index);
+        auto* player = model.engine->StartSequence(*index);
         if (!Check(player != nullptr, std::string(argv[2]) + " starts"))
         {
             return 1;
+        }
+        if constexpr (requires { Console::Started(*player, *model.engine, options); })
+        {
+            Console::Started(*player, *model.engine, options);
         }
 
         const int frames = Console::Frames(std::atoi(argv[3]));

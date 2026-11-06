@@ -529,24 +529,27 @@ struct SequenceSound
     std::optional<uint32_t> channel_priority = std::nullopt; // the channels' priority | release priority fix << 8
 };
 
-// Test archive tables: sequences, and the files of the bank and wave archive items. Defaults allow partial designated
-// initializers without warnings.
+// Test archive tables: sequences, and the files of the bank and wave archive items, and the sequences' labels. Defaults
+// allow partial designated initializers without warnings.
 struct ArchiveLists
 {
     std::vector<SequenceSound> sequences = {};
     std::vector<uint32_t> banks = {}, wave_archives = {};
+    std::vector<std::string> names = {}; // the sequences' labels, in order
 };
 
 // Builds a sound archive with `archive_files` in order and metadata from `lists`. Each sequence plays at volume 127,
-// with its pan mode and curve, its start offset, its banks and the channel priority that it sets, if any. The archive
-// has no names.
+// with its pan mode and curve, its start offset, its banks and the channel priority that it sets, if any. Without
+// `lists.names`, the archive has no names.
 inline std::vector<uint8_t> Fsar(const std::vector<ArchiveFile>& archive_files, const ArchiveLists& lists = {})
 {
     files::ArchiveSpec spec;
-    spec.names = false;
-    for (const SequenceSound& s : lists.sequences)
+    spec.names = !lists.names.empty();
+    for (std::size_t i = 0; i < lists.sequences.size(); i++)
     {
+        const SequenceSound& s = lists.sequences[i];
         files::SoundSpec sound;
+        sound.name = i < lists.names.size() ? lists.names[i] : "";
         sound.file = s.file_id;
         sound.volume = 127;
         sound.pan = s.pan_mode | uint32_t{s.pan_curve} << 8;

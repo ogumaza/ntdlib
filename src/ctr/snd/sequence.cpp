@@ -14,14 +14,14 @@
 namespace ntdlib::ctr::snd
 {
 
-Outputs Policy::CombineOutputs(const Outputs&, const Outputs&, float pan, float span, float main_send,
+Outputs Policy::CombineOutputs(const Outputs& player, const Outputs&, float pan, float span, float main_send,
                                const std::array<float, 3>& fx_send)
 {
     Outputs outputs;
     outputs.pan = pan;
     outputs.span = span;
     outputs.main_send = main_send;
-    outputs.fx_send = {fx_send[0], fx_send[1]};
+    outputs.fx_send = {player.fx_send[0] + fx_send[0], player.fx_send[1] + fx_send[1]};
 
     return outputs;
 }

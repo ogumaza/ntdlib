@@ -60,7 +60,13 @@ bool InRange(float gain)
 
 bool IsNnSnd(Library library)
 {
-    return library != Library::kNwSnd;
+    return library == Library::kNnSnd || library == Library::kNnSnd2011;
+}
+
+// The libraries of 2011 take the damping times the sum of the input and the last output from the input.
+bool HasEarlierDamping(Library library)
+{
+    return library == Library::kNnSnd2011 || library == Library::kNwSnd2011;
 }
 
 // The damping, taken as 0.95 above that, and the damping filter's two gains in 128ths: of the input, and of the last
@@ -100,7 +106,7 @@ bool Acceptable(Library library, const ReverbParam& param)
     {
         return false;
     }
-    if ((IsNnSnd(library) && param.enable_surround) || (library == Library::kNnSnd2011 && param.high_pass_damping))
+    if ((IsNnSnd(library) && param.enable_surround) || (HasEarlierDamping(library) && param.high_pass_damping))
     {
         return false;
     }
@@ -269,8 +275,7 @@ void Reverb::Process(const Channels& channels, std::size_t samples)
             all_pass[n] = fed;
             const int32_t passed = Minus(held, Scaled(fed, all_pass_gain_));
 
-            // nn::snd of 2011 takes the damping times the sum of the input and the last output from the input.
-            if (library_ == Library::kNnSnd2011)
+            if (HasEarlierDamping(library_))
             {
                 damped = Minus(passed, Times(damping_feedback_, Plus(damped, passed)) >> 7);
             }

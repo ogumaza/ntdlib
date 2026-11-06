@@ -1201,6 +1201,30 @@ void TestHeldNoteHoldsUntilStopped()
     XSFLIB_CHECK(!played.holds && played.seconds > 99.0);
 }
 
+void TestLateChangeAfterTheSoundIsLeftOut()
+{
+    // Key 60 for 48 ticks (0.5 s at tempo 120), a wait, then tempo 60 and the end. In the first sequence the wait
+    // takes 944 ticks: the change comes 9.8 s after the sound and ends the performance, at 10.3 s. In the second it
+    // takes 1,200 ticks: the change comes 12.5 s after the sound, more than kHoldSeconds (EndsAtLastSound). The
+    // performance then ends with the sound, and nothing lies after its end.
+    const Performance near = PerformOnBank(Code({0x3c, 0x64, 0x30, 0x80, 0x87, 0x30, 0xe1, U16(60), 0xff}),
+                                           OneRegionFbnk({{0x05000000, 0}}));
+    const Performance far = PerformOnBank(Code({0x3c, 0x64, 0x30, 0x80, 0x89, 0x30, 0xe1, U16(60), 0xff}),
+                                          OneRegionFbnk({{0x05000000, 0}}));
+
+    const auto after_end = [&far](const TrackEvent& e)
+    {
+        return e.tick > far.end_tick;
+    };
+    XSFLIB_CHECK(!near.loop && !near.holds && std::fabs(near.seconds - 10.333) < 0.02);
+    XSFLIB_CHECK(!far.loop && !far.holds && !far.truncated && NoteCount(far) == 1 && far.seconds < 1.0);
+    XSFLIB_CHECK(far.tempo.empty() || far.tempo.back().tick <= far.end_tick);
+    for (const std::vector<TrackEvent>& events : far.tracks)
+    {
+        XSFLIB_CHECK(std::ranges::none_of(events, after_end));
+    }
+}
+
 // Performs `commands` as PerformOnBank does. The console's settings apply, with `sends` and `reverb_moves_loops`.
 Performance PerformWithSends(const std::vector<uint8_t>& commands, Sends sends, bool reverb_moves_loops)
 {
@@ -1650,6 +1674,52 @@ void TestVariableOptionSetsAVariableBeforeTheStart()
     XSFLIB_CHECK(note_ons(unset) == 0 && note_ons(set) == 1);
 }
 
+void TestTrackVariableOptionSetsATracksVariableBeforeTheStart()
+{
+    // The same sequence, waiting for track 0's variable 0 (index 32) to hold 1. Track variables start at -1.
+    // PerformOptions::track_variables sets it after the start, before the first tick. A value for track 1, which the
+    // sequence's start doesn't allocate, and a value for another of track 0's variables change nothing.
+    const std::vector<uint8_t> code =
+        Code({0xf0, 0x95, 0x20, U16(0x0001), 0xa2, 0x80, 0x01, 0xa2, 0x89, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0xff});
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
+    const auto note_ons = [&code, &bank](const std::vector<TrackVariable>& variables)
+    {
+        PerformOptions options;
+        options.track_variables = variables;
+        const Performance p = PerformOnBank(code, bank, 1, options);
+        return std::ranges::count_if(p.tracks[0], [](const TrackEvent& e) { return e.kind == EventKind::kNoteOn; });
+    };
+
+    XSFLIB_CHECK(note_ons({}) == 0);
+    XSFLIB_CHECK(note_ons({{.track = 0, .index = 0, .value = 1}}) == 1);
+    XSFLIB_CHECK(note_ons({{.track = 1, .index = 0, .value = 1}}) == 0);
+    XSFLIB_CHECK(note_ons({{.track = 0, .index = 1, .value = 1}}) == 0);
+}
+
+void TestTrackVariableOptionSetsTheTracksVariable()
+{
+    // Wait a tick and check again while track variable 2 (34 in the commands) isn't 1. Then play key 60 and end. Super
+    // Mario 3D Land's note melodies wait at each beat in the same way. Track variables start at -1.
+    // PerformOptions::variables sets the variable of every track after the player allocates the tracks and before the
+    // first tick. A change in a later frame sets it too: tick 21 sees a change in the frame that holds 216 ms.
+    const std::vector<uint8_t> code =
+        Code({0xf0, 0x95, 0x22, U16(0x0001), 0xa2, 0x80, 0x01, 0xa2, 0x89, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0xff});
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
+    PerformOptions at_start;
+    at_start.variables[34] = 1;
+    PerformOptions later;
+    later.changes = {{static_cast<uint64_t>(216.0 / console->settings.frame_ms), 34, 1}};
+
+    const auto first_note = [](const Performance& p)
+    {
+        const auto note = std::ranges::find(p.tracks[0], EventKind::kNoteOn, &TrackEvent::kind);
+        return note != p.tracks[0].end() ? std::optional<uint32_t>(note->tick) : std::nullopt;
+    };
+    XSFLIB_CHECK(!first_note(PerformOnBank(code, bank)));
+    XSFLIB_CHECK(first_note(PerformOnBank(code, bank, 1, at_start)) == 0u);
+    XSFLIB_CHECK(first_note(PerformOnBank(code, bank, 1, later)) == 21u);
+}
+
 void TestVariableChangeComesBeforeTheTicksOfItsFrame()
 {
     // Wait a tick and check again while variable `variable` isn't 1, then play key 60 and end. A tick lasts 10.4 ms at
@@ -1690,6 +1760,89 @@ void TestMainLoopStartsAfterTheLastVariableChange()
     XSFLIB_CHECK(unchanged.loop && unchanged.loop->start == 0 && unchanged.loop->end == 48);
     XSFLIB_CHECK(changed.loop && changed.loop->start == 1968 && changed.loop->end == 2016 && changed.loops == 1);
     XSFLIB_CHECK(keys.size() == 42 && keys[40] == 60 && keys[41] == 72);
+}
+
+void TestProcedureChangeComesInsideTheCall()
+{
+    // In each tick, set variable 14 to 4, call user procedure 2, play key 60 if variable 14 then holds -1, wait a tick
+    // and jump back. A write of -1 in procedure 2 from the frame that holds 216 ms takes effect in the call of tick 21,
+    // and key 60 plays once. The next tick sets the variable to 4 again. A change before the frame of 216 ms comes
+    // before tick 21's set, and the set replaces it. A write in another procedure never takes effect. The idle passes
+    // before a write at 15.005 s don't end the performance. Tick 1441 takes that one.
+    const std::vector<uint8_t> code = Code({0xf0, 0x80, 0x0e, U16(0x0004), 0xf0, 0xe0, U16(0x0002), 0xf0, 0x90, 0x0e,
+                                            U16(0xffff), 0xa2, 0x3c, 0x64, 0x18, 0x80, 0x01, 0x89, U24(0x000000)});
+    const auto notes = [&code](const PerformOptions& options)
+    {
+        const Performance p = PerformOnBank(code, OneRegionFbnk({{0x05000000, 0}}), 1, options);
+        std::vector<uint32_t> ticks;
+        for (const TrackEvent& e : p.tracks[0])
+        {
+            if (e.kind == EventKind::kNoteOn)
+            {
+                ticks.push_back(e.tick);
+            }
+        }
+        return ticks;
+    };
+    const auto frame = [](double ms)
+    {
+        return static_cast<uint64_t>(ms / console->settings.frame_ms);
+    };
+
+    PerformOptions in_procedure;
+    in_procedure.procedure_changes = {{frame(216.0), 2, 14, -1}};
+    PerformOptions timed;
+    timed.changes = {{frame(216.0), 14, -1}};
+    PerformOptions other;
+    other.procedure_changes = {{frame(216.0), 3, 14, -1}};
+    PerformOptions late;
+    late.procedure_changes = {{frame(15005.0), 2, 14, -1}};
+
+    XSFLIB_CHECK(notes(in_procedure) == std::vector<uint32_t>{21});
+    XSFLIB_CHECK(notes(timed).empty() && notes(other).empty());
+    XSFLIB_CHECK(notes(late) == std::vector<uint32_t>{1441});
+}
+
+void TestProcedureModelRunsInsideTheCall()
+{
+    // Set track variable 14 to 5, call user procedure 0, and play key 60 if the variable then holds 7. The model of the
+    // procedure writes 7 inside the call. Without the model, the call changes nothing, and nothing plays.
+    const std::vector<uint8_t> draw = Code({0xf0, 0x80, 0x2e, U16(0x0005), 0xf0, 0xe0, U16(0x0000), 0xf0, 0x90, 0x2e,
+                                            U16(0x0007), 0xa2, 0x3c, 0x64, 0x18, 0x80, 0x18, 0xff});
+    PerformOptions with_model;
+    with_model.user_procedures =
+        [](uint16_t procedure, std::span<int16_t, 16>, std::span<int16_t, 16>, std::span<int16_t, 16> track)
+    {
+        if (procedure == 0 && track[14] == 5)
+        {
+            track[14] = 7;
+        }
+        return false;
+    };
+    XSFLIB_CHECK(NoteKeys(PerformOnBank(draw, OneRegionFbnk({{0x05000000, 0}}), 1, with_model)) ==
+                 std::vector<int>{60});
+    XSFLIB_CHECK(NoteKeys(PerformOnBank(draw, OneRegionFbnk({{0x05000000, 0}}))).empty());
+
+    // Set variable 3 to 0, call procedure 2, then play key 60 if variable 3 holds 2 and key 62 if global variable 1
+    // holds 9. The model writes 1 to variable 3 and 9 to global variable 1. The game's write of 2 to variable 3 in the
+    // same call comes after the model's.
+    const std::vector<uint8_t> order =
+        Code({0xf0, 0x80, 0x03, U16(0x0000), 0xf0, 0xe0, U16(0x0002), 0xf0, 0x90, 0x03, U16(0x0002), 0xa2,
+              0x3c, 0x64, 0x18, 0xf0,        0x90, 0x11, U16(0x0009), 0xa2, 0x3e, 0x64, 0x18,        0xff});
+    PerformOptions both;
+    both.procedure_changes = {{0, 2, 3, 2}};
+    both.user_procedures =
+        [](uint16_t procedure, std::span<int16_t, 16> local, std::span<int16_t, 16> global, std::span<int16_t, 16>)
+    {
+        if (procedure == 2)
+        {
+            local[3] = 1;
+            global[1] = 9;
+        }
+        return false;
+    };
+    XSFLIB_CHECK(NoteKeys(PerformOnBank(order, OneRegionFbnk({{0x05000000, 0}}), 1, both)) ==
+                 (std::vector<int>{60, 62}));
 }
 
 void TestWaitingForAVariableIsNoLoop()
@@ -1779,6 +1932,30 @@ void TestCountedLoopPastTheTimeLimitPlaysAsAnEndlessLoop()
                  WriteMidi(counted, "test", report) == WriteMidi(endless, "test", report));
     XSFLIB_CHECK(!twice.loop && twice.loops == 0 && !twice.truncated && NoteCount(twice) == 2 &&
                  twice.seconds >= 40.0 && twice.seconds < 41.0);
+}
+
+void TestNestedCountedLoopsPastTheTimeLimit()
+{
+    // Play key 60 for 960 ticks (10 s) in an inner loop of 2 passes, inside an outer loop of 64 passes, then end. The
+    // outer passes take 21 minutes and 20 s, past the time limit. The performance reaches the limit inside both loops.
+    // It runs again with the track's outermost counted loop endless. The length analysis takes the same loop (R-409).
+    // The inner loop still ends after 2 passes. The main loop is a pass of the outer loop, 1920 ticks long. The
+    // sequence plays as the same outer loop with a count of 0. With every counted loop endless, the inner loop would be
+    // the main loop.
+    const auto loops = [](uint8_t outer)
+    {
+        return PerformOnBank(Code({0xd4, outer, 0xd4, 0x02, 0x3c, 0x64, 0x87, 0x40, 0xfc, 0xfc, 0xff}),
+                             OneRegionFbnk({{0x05000000, 0}}));
+    };
+    const Performance counted = loops(64);
+    const Performance endless = loops(0);
+
+    MidiReport report;
+    XSFLIB_CHECK(endless.loop && endless.loop->start == 0 && endless.loop->end == 1920 && !endless.truncated &&
+                 NoteCount(endless) == 2);
+    XSFLIB_CHECK(!counted.truncated && counted.loop && counted.loop->end == 1920 &&
+                 counted.seconds == endless.seconds &&
+                 WriteMidi(counted, "test", report) == WriteMidi(endless, "test", report));
 }
 
 void TestTiedMelodyBelowHearingIsNoLoop()
@@ -2048,6 +2225,22 @@ void TestTrackCountingDownInASubroutinePlaysOn()
                       OneRegionFbnk({{0x05000000, 0}}));
 
     XSFLIB_CHECK(NoteOnTicks(p).size() == 12 && p.loop && p.loop->start > 11 * 96 && p.loop->end - p.loop->start == 24);
+}
+
+void TestTrackPollingInASubroutineLetsALaterTrackLoop()
+{
+    // Track 0 opens track 1, then calls a subroutine that waits a tick, ends the track if variable 0 holds 1, and jumps
+    // back, for ever. Nothing sets the variable. The poll's passes can leave their loop, and they don't count. They
+    // change nothing, no variable included, and draw no random number. Track 0 is therefore idle, and track 1's loop is
+    // the main loop. Track 1 plays key 60 for 24 ticks every 48 ticks. The rhythm pieces of Super Mario Party and of
+    // Jamboree poll the game's variables in such a subroutine on track 0.
+    const Performance p = PerformOnBank(
+        Code({0xfe, U16(0x0003), 0x88, 0x01,        U24(0x00001b), 0x8a, U24(0x00000d), 0xff,          0x80, 0x01,
+              0xf0, 0x90,        0x00, U16(0x0001), 0xa2,          0xff, 0x89,          U24(0x00000d), 0xfd, 0xc7,
+              0x00, 0x3c,        0x64, 0x18,        0x80,          0x30, 0x89,          U24(0x00001d)}),
+        OneRegionFbnk({{0x05000000, 0}}), 3);
+
+    XSFLIB_CHECK(p.seconds < 15.0 && p.loop && p.loop->end - p.loop->start == 48);
 }
 
 void TestJumpBackIntoAFinishedCallEndsNoPass()
@@ -3237,6 +3430,94 @@ void TestLargeBankSplitsItsSoundFont()
     }
 }
 
+// A sequence that plays programs 0 to `programs` - 1, a note each: key 60 or 61 at velocity 100. Each instrument has a
+// region for each key, and each key's velocities split at 64. Each region plays a mono wave. Key 100 plays the second
+// wave, and the other keys play the first. A hundred programs pass the SoundFont format's limit of 65,535 generators.
+SoundArchive LargeSequenceArchive(int programs)
+{
+    files::VelocityTable velocities{files::VelocityTable::kRange, 0, {{64, files::Region{}}, {127, files::Region{}}}};
+    files::KeyTable keys{files::KeyTable::kIndex, 0, {}};
+    for (int key = 0; key < 128; key++)
+    {
+        if (key == 100)
+        {
+            files::VelocityTable other = velocities;
+            other.entries[0].second->wave = 1;
+            other.entries[1].second->wave = 1;
+            keys.entries.emplace_back(key, other);
+            continue;
+        }
+
+        keys.entries.emplace_back(key, velocities);
+    }
+
+    std::vector<uint8_t> code;
+    for (int p = 0; p < programs; p++)
+    {
+        const std::array<uint8_t, 5> note = {0x81, static_cast<uint8_t>(p), static_cast<uint8_t>(60 + p % 2), 0x64,
+                                             0x30};
+        code.insert(code.end(), note.begin(), note.end());
+    }
+    code.push_back(0xff);
+
+    std::vector<ArchiveFile> archive_files(3);
+    archive_files[0].data = Fseq(code);
+    archive_files[1].data =
+        files::Bank(console->settings.archive.flavor,
+                    {{{0x05000000, 0}, {0x05000000, 1}}, std::vector<std::optional<files::KeyTable>>(programs, keys)});
+    archive_files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true),
+                                  Pcm16Fwav(32, std::vector<int16_t>(32, -2000), 1, true)});
+
+    return SoundArchive::Load(
+        Fsar(archive_files, {.sequences = {{.banks = {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
+        console->settings.archive);
+}
+
+// A sequence's SoundFont past the format's limits holds only the zones that its notes pick, and the waves of those
+// zones, and says so. A SoundFont within the limits holds every zone of its presets, and says nothing. The MIDI file
+// plays the same notes on the same presets either way.
+void TestLargeSequenceKeepsThePlayedZones()
+{
+    const auto starts_with = [](const std::string& text)
+    {
+        return text.starts_with("the SoundFont holds only the zones");
+    };
+
+    const Conversion large = ConvertSequence(LargeSequenceArchive(100), 0);
+    const seqlib::sf2::Records v = seqlib::sf2::Read(large.sf2);
+    XSFLIB_CHECK(Sf2Problem(large.sf2).empty());
+    XSFLIB_CHECK(v.Count("inst", 22) == 101 && v.Count("phdr", 38) == 101);
+    XSFLIB_CHECK(v.Count("ibag", 4) == 201); // each instrument: its global zone and one zone
+    XSFLIB_CHECK(v.Count("shdr", 46) == 2);  // one wave, and the terminal record
+    XSFLIB_CHECK(std::ranges::count_if(large.warnings, starts_with) == 1);
+    XSFLIB_CHECK(!large.sfz.files.empty());
+
+    const Conversion small = ConvertSequence(LargeSequenceArchive(10), 0);
+    const seqlib::sf2::Records w = seqlib::sf2::Read(small.sf2);
+    XSFLIB_CHECK(Sf2Problem(small.sf2).empty());
+    XSFLIB_CHECK(w.Count("ibag", 4) == 10 * (1 + 128 * 2) + 1);
+    XSFLIB_CHECK(w.Count("shdr", 46) == 3); // both waves, and the terminal record
+    XSFLIB_CHECK(std::ranges::none_of(small.warnings, starts_with));
+
+    auto note_ons = [](const Performance& p)
+    {
+        std::vector<std::pair<int, int>> notes;
+        for (const TrackEvent& e : p.tracks[0])
+        {
+            if (e.kind == EventKind::kNoteOn)
+            {
+                notes.emplace_back(e.key, e.value);
+            }
+        }
+
+        return notes;
+    };
+    const std::vector<std::pair<int, int>> large_notes = note_ons(large.performance);
+    const std::vector<std::pair<int, int>> small_notes = note_ons(small.performance);
+    XSFLIB_CHECK(large_notes.size() == 100 && small_notes.size() == 10);
+    XSFLIB_CHECK(std::equal(small_notes.begin(), small_notes.end(), large_notes.begin()));
+}
+
 void TestDirectVelocityTableTakesVelocitiesAbove127()
 {
     // With velocity range 255 (0xb3), key 60 at velocity 127 plays at velocity 255, and at velocity 255 at 512. Like
@@ -3357,6 +3638,113 @@ void TestSfzCommentKeepsTheNameOnItsLine()
     }
 }
 
+// An archive of the sequences `commands`, labelled A, B, C and so on, that play one bank. A sequence after the first
+// has the pan mode of `second_pan_mode`.
+SoundArchive PieceArchive(const std::vector<std::vector<uint8_t>>& commands, uint8_t second_pan_mode = 0)
+{
+    std::vector<ArchiveFile> files;
+    ArchiveLists lists;
+    const std::vector<uint32_t> kBanks = {0x03000000};
+    for (std::size_t k = 0; k < commands.size(); k++)
+    {
+        files.push_back({Fseq(commands[k])});
+        lists.sequences.push_back(
+            {.file_id = static_cast<uint32_t>(k), .banks = kBanks, .pan_mode = k == 0 ? uint8_t{0} : second_pan_mode});
+        lists.names.push_back(std::string(1, static_cast<char>('A' + k)));
+    }
+    files.push_back({OneRegionFbnk({{0x05000000, 0}})});
+    files.push_back({Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)})});
+    lists.banks = {static_cast<uint32_t>(commands.size())};
+    lists.wave_archives = {static_cast<uint32_t>(commands.size() + 1)};
+
+    return SoundArchive::Load(Fsar(files, lists), console->settings.archive);
+}
+
+// A plays key 60 on track 0. B waits a tick and plays key 64. C plays nothing.
+const std::vector<std::vector<uint8_t>> kPieceOfTwoNotes = {
+    {0x3c, 0x64, 0x30, 0xff},
+    {0x80, 0x01, 0x40, 0x64, 0x30, 0xff},
+    {0x80, 0x30, 0xff},
+};
+
+// The ticks and keys of the notes that track `t` of `p` plays.
+std::vector<std::pair<uint32_t, int>> NoteStarts(const Performance& p, int t)
+{
+    std::vector<std::pair<uint32_t, int>> notes;
+    for (const TrackEvent& e : p.tracks[t])
+    {
+        if (e.kind == EventKind::kNoteOn)
+        {
+            notes.emplace_back(e.tick, e.key);
+        }
+    }
+
+    return notes;
+}
+
+void TestPieceOfSequencesKeepsTheirTracksWithNotes()
+{
+    // The piece holds A's track 0 and B's, in that order, named after their sequences and tracks. C plays no note and
+    // adds no track. Both notes play the bank's instrument with the same settings. They share one preset. B's note
+    // keeps its tick.
+    const SoundArchive archive = PieceArchive(kPieceOfTwoNotes);
+    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const std::vector<uint32_t> kAll = {0, 1, 2};
+
+    const Performance p = PerformTogether(archive, kAll, banks, {}, console->settings);
+
+    const std::vector<std::pair<uint32_t, int>> kFirst = {{0, 60}};
+    const std::vector<std::pair<uint32_t, int>> kSecond = {{1, 64}};
+    XSFLIB_CHECK(NoteStarts(p, 0) == kFirst && NoteStarts(p, 1) == kSecond && p.tracks[2].empty());
+    XSFLIB_CHECK(p.track_names[0] == "A Track 0" && p.track_names[1] == "B Track 0" && p.track_names[2].empty());
+    XSFLIB_CHECK(p.presets.size() == 1 && !p.loop && p.warnings.empty());
+}
+
+void TestPieceOfSequencesConvertsToOneSetOfFiles()
+{
+    // The piece's MIDI tracks and SFZ files take the names of its tracks. The SoundFont's comment lists the sequences
+    // and the banks. A sequence converted alone keeps its comment.
+    const SoundArchive archive = PieceArchive(kPieceOfTwoNotes);
+    const std::vector<uint32_t> kTwo = {0, 1};
+
+    const Conversion c = ConvertTogether(archive, kTwo, "Piece", {}, console->settings, console->program);
+    const Conversion alone = ConvertSequence(archive, 0);
+
+    const std::vector<std::string> tracks = seqlib::midi::TrackNames(seqlib::midi::Read(c.midi));
+    std::vector<std::string> files;
+    for (const SfzFile& f : c.sfz.files)
+    {
+        files.push_back(f.name);
+    }
+    const auto comment = [](const Conversion& conversion)
+    {
+        const seqlib::sf2::Records records = seqlib::sf2::Read(conversion.sf2);
+        const auto found = records.chunks.find("ICMT");
+        return found == records.chunks.end() ? std::string() : std::string(found->second.begin(), found->second.end());
+    };
+    const std::vector<std::string> kTracks = {"Piece", "A Track 0", "B Track 0"};
+    const std::vector<std::string> kFiles = {"A Track 0.sfz", "B Track 0.sfz"};
+    XSFLIB_CHECK(ntdlib::testing::CheckConversion(c, "Piece") == 0 && c.channels == 2);
+    XSFLIB_CHECK(tracks == kTracks && files == kFiles);
+    XSFLIB_CHECK(
+        comment(c).starts_with("Converted by " + console->program + " from sequences A and B together. Banks:"));
+    XSFLIB_CHECK(comment(alone).starts_with("Converted by " + console->program + " from sequence A. Banks:"));
+}
+
+void TestPieceOfSequencesRequiresOneBankListAndPanMode()
+{
+    // A and B play one bank, but B's sound places stereo waves in another pan mode. A piece also requires a sequence.
+    const SoundArchive archive = PieceArchive({{0x3c, 0x64, 0x30, 0xff}, {0x3c, 0x64, 0x30, 0xff}}, 1);
+    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const auto message = [&archive, &banks](const std::vector<uint32_t>& indices)
+    {
+        return ErrorOf<std::invalid_argument>([&] { PerformTogether(archive, indices, banks, {}, console->settings); });
+    };
+
+    XSFLIB_CHECK(message({0, 1}) == "A and B differ in banks or pan mode");
+    XSFLIB_CHECK(message({}) == "no sequences to perform together");
+}
+
 // The tests that hold on every console, the Wii included: those that build no archive.
 // sequence_export_revolution_test.cpp builds the Wii's RSAR archives for its tests.
 const Test kEveryConsoleTests[] = {
@@ -3379,6 +3767,9 @@ const Test kEveryConsoleTests[] = {
 
 // The tests that hold on the Wii U, the Switch and the 3DS.
 const Test kWiiUSwitchAndCtrTests[] = {
+    TestPieceOfSequencesKeepsTheirTracksWithNotes,
+    TestPieceOfSequencesConvertsToOneSetOfFiles,
+    TestPieceOfSequencesRequiresOneBankListAndPanMode,
     TestEnvelopeValuesMatchTheGame,
     TestEnvelopeSimulationSustainsAndReleases,
     TestTrackFiltersFollowTheGame,
@@ -3427,6 +3818,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestTimedSweepMovesEveryFrame,
     TestTimedSweepGoesOnAfterItsTrackCloses,
     TestHeldNoteHoldsUntilStopped,
+    TestLateChangeAfterTheSoundIsLeftOut,
     TestReverbOutOfTheSearchesMovesNoEnd,
     TestLfoSetAfterANoteInItsTickReachesItsPreset,
     TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
@@ -3441,12 +3833,17 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestPassOnAnotherPartPlaysAsTheNext,
     TestSequenceThatFinishesHasNoLoop,
     TestVariableOptionSetsAVariableBeforeTheStart,
+    TestTrackVariableOptionSetsATracksVariableBeforeTheStart,
+    TestTrackVariableOptionSetsTheTracksVariable,
     TestVariableChangeComesBeforeTheTicksOfItsFrame,
     TestMainLoopStartsAfterTheLastVariableChange,
+    TestProcedureChangeComesInsideTheCall,
+    TestProcedureModelRunsInsideTheCall,
     TestWaitingForAVariableIsNoLoop,
     TestPollingInASubroutineAfterAOneShotIsNoLoop,
     TestLoopLeftBeforeASilentTimeLimitIsDropped,
     TestCountedLoopPastTheTimeLimitPlaysAsAnEndlessLoop,
+    TestNestedCountedLoopsPastTheTimeLimit,
     TestTiedMelodyBelowHearingIsNoLoop,
     TestLegatoBelowHearingKeepsItsMidiNote,
     TestPollAfterTheSoundIsNoLoop,
@@ -3461,6 +3858,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestTrackThatLeavesItsLoopForAnIdleLoopEnds,
     TestLoopOfAnEndedTrackIsNoLoop,
     TestTrackCountingDownInASubroutinePlaysOn,
+    TestTrackPollingInASubroutineLetsALaterTrackLoop,
     TestJumpBackIntoAFinishedCallEndsNoPass,
     TestInnerLoopCountsAgainOnceTheOuterLoopTakesLong,
     TestSoundsOwnPanCurveIsReported,
@@ -3474,6 +3872,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestBankProgramsAbove127TakeTheNextBank,
     TestLoudBankIsAttenuatedAndAMissingBankThrows,
     TestLargeBankSplitsItsSoundFont,
+    TestLargeSequenceKeepsThePlayedZones,
 };
 
 // The tests that hold on the Wii U and the Switch.

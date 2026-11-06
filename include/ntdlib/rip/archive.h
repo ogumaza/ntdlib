@@ -10,6 +10,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +27,7 @@
 #include "xsflib/rip/length.h"
 
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/game_rules.h"
 #include "ntdlib/sar/sarc.h"
 
 namespace ntdlib::rip
@@ -58,12 +60,42 @@ std::vector<std::string> MissingData(const sar::SoundArchive& archive, uint32_t 
 // has the word SE plays sound effects.
 bool IsMusic(const sar::SoundArchive& archive, uint32_t index);
 
-// A sound to rip: its index in the archive, its label, and its timing once the length analysis has worked it out.
+// The tracks of a sequence: 16.
+constexpr std::size_t kSequenceTracks = 16;
+
+// The volumes of a sequence's tracks that the game's code sets through the sound's handle (the sequence player's
+// SetTrackVolume), track 0 first. A volume of 1 leaves a track as the sequence plays it.
+using TrackVolumes = std::array<float, kSequenceTracks>;
+
+// Every track at 1: what the sound library gives a sequence's tracks as the sound starts.
+constexpr TrackVolumes kFullTrackVolumes = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                            1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+// A sound to rip: its index in the archive, its label, its timing once the length analysis has worked it out, the
+// volumes that the game's code gives its tracks, and the reverb that the game's code keeps on aux bus B while the sound
+// plays. A game can play a sound in more than one state, each with other track volumes or another reverb
+// (ArchiveRipTool::sound_states). Each state is a separate job, under a label that names the state. A job can also give
+// the variables that the game sets as it starts the sound, by their numbers: a variant of a sound that waits for them
+// (ArchiveRipTool::variants in archive_mode.h), or a state. The length analysis sets them before the sequence's first
+// tick. A sound that never sounds when the game starts it at once can sound in another state that the game can give it.
+// A tool's length analysis may then give the job the first of `start_states` in which it sounds, the archive's rules
+// for its variables (sar::StartsOf). Or the analysis may give the job the frames that the game's sound system runs
+// before the start (`start_frame`): the sound library steps its random numbers once a frame. The same tool's minis
+// start the sound that way. The other tools leave both alone.
 struct Job
 {
     uint32_t index;
     std::string label;
     std::optional<Timing> timing;
+    float volume = 1.0f; // the factor that the game's code gives the sound (ArchiveRipTool::sound_volume)
+    TrackVolumes track_volumes = kFullTrackVolumes;
+    xsflib::psf::Variables variables = {};
+    std::span<const sar::VariableValues> start_states = {};
+    uint32_t start_frame = 0;
+
+    // The reverb, one of the archive's rules (sar::ArchiveRules::bus_b_presets), or none to leave bus B as the tool's
+    // settings have it.
+    const sar::ReverbPreset* bus_b_reverb = nullptr;
 };
 
 // The sequence sounds whose labels match `only`, and with `bgm` only those that are music (IsMusic). Streams and wave
@@ -182,8 +214,10 @@ struct LibraryArchive
 
 // The part of `archive` that a library of the sequence sounds `sounds` holds. `archive` holds the group files that the
 // rip plays with. The archive mode's models read only the files that a sequence plays: its sequence file, the files of
-// the banks in its slots, and the files of the wave archives that those banks name. A file that the archive holds only
-// as a copy in a group's file is read from the first group's file that holds it, in the archive or beside it.
+// the banks in its slots, and the files of the wave archives that those banks name. `start_banks` lists the item IDs
+// of other banks that a game gives the sequences as it starts them (ctr::snd::SequenceStart::banks). The models read
+// their files and the files of the wave archives that they name too. A file that the archive holds only as a copy in a
+// group's file is read from the first group's file that holds it, in the archive or beside it.
 //
 // The library's archive keeps those files, and the group files in the archive that hold the copies that the models
 // read. It drops every other file. The header, the STRG block and the INFO block keep their places and their bytes,
@@ -197,16 +231,18 @@ struct LibraryArchive
 // differ, when a bank can't be read, when one of `sounds` isn't a sequence sound of the archive, when the FILE block
 // doesn't follow the archive's other blocks, or when the file table puts a file's place among the FILE block's files or
 // before the archive's start. The library then holds the whole archive.
-std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive, std::span<const uint32_t> sounds);
+std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive, std::span<const uint32_t> sounds,
+                                               std::span<const uint32_t> start_banks = {});
 
 // The group files beside the archive that `library` holds, cut down to the copies that the models read. `library` is
-// KeepSequenceData's part of `archive` for the sequence sounds `sounds`. A cut group file keeps its header, its INFO
-// block and the blocks after its FILE block, such as INFX, with their bytes. Its FILE block holds the copies that the
-// models read, in the group file's order. Each starts on a multiple of 32 bytes from the file's start, or of 64 bytes
-// on the Switch, as KeepSequenceData lays out the archive's files. The FILE block ends on such a multiple. The first
-// item of each kept copy gives the copy's new place. Every other item with a copy becomes a link to the archive's file,
-// as NintendoWare's tools write a link: a reference of type 0, with 0xFFFFFFFF for its offset and the size. The blocks
-// after the FILE block follow it. The header and the table of blocks give the new sizes and places.
+// KeepSequenceData's part of `archive` for the sequence sounds `sounds` and the banks `start_banks`. A cut group file
+// keeps its header, its INFO block and the blocks after its FILE block, such as INFX, with their bytes. Its FILE block
+// holds the copies that the models read, in the group file's order. Each starts on a multiple of 32 bytes from the
+// file's start, or of 64 bytes on the Switch, as KeepSequenceData lays out the archive's files. The FILE block ends on
+// such a multiple. The first item of each kept copy gives the copy's new place. Every other item with a copy becomes a
+// link to the archive's file, as NintendoWare's tools write a link: a reference of type 0, with 0xFFFFFFFF for its
+// offset and the size. The blocks after the FILE block follow it. The header and the table of blocks give the new sizes
+// and places.
 //
 // The cut group files come in the order of `library.group_files`. Each kept file is read back from the library's
 // archive with them, and compared with the file in `archive`. Nothing when the two differ, when a bank can't be read,
@@ -215,7 +251,8 @@ std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive,
 // and the rest after it. The library then holds the whole group files.
 std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::SoundArchive& archive,
                                                                  const LibraryArchive& library,
-                                                                 std::span<const uint32_t> sounds);
+                                                                 std::span<const uint32_t> sounds,
+                                                                 std::span<const uint32_t> start_banks = {});
 
 // The archive that a game mode's library holds for the sequence sounds `sounds`. The game's sound library reads the
 // archive's header and its INFO block. For each sound that it loads, it then reads the files that the sound plays: the
@@ -263,16 +300,17 @@ std::vector<uint8_t> BuildArchiveLibrary(const typename Format::FileChunk& archi
     return program.WritePsf(Format::kPsfVersion, settings.Serialize(), tags);
 }
 
-// A mini that plays sound `index` from the library `lib_name`. Rips of the 3DS's sound archives build their minis
-// with it too.
+// A mini that plays sound `index` from the library `lib_name`, with `reserved` as its reserved area. A descriptor
+// there takes the place of the library's. Rips of the 3DS's sound archives build their minis with it too.
 template <typename Format>
-std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, xsflib::psf::Tags tags)
+std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, xsflib::psf::Tags tags,
+                               const std::vector<uint8_t>& reserved = {})
 {
     typename Format::ProgramBuilder program;
     program.AddSound(kSoundItem << 24 | index);
     tags["_lib"] = lib_name;
 
-    return program.WritePsf(Format::kPsfVersion, {}, tags);
+    return program.WritePsf(Format::kPsfVersion, reserved, tags);
 }
 
 } // namespace ntdlib::rip

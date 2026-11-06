@@ -66,6 +66,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -390,18 +391,19 @@ public:
 
     // Whether the track's last pass of a loop changed nothing in the sound, and nothing has changed since (for a rip
     // tool's length analysis while the engine follows loops). A track that polls or counts a variable once a tick makes
-    // such idle passes. See CountLoop.
+    // such idle passes. See CountLoop. A track that polls in a subroutine is idle too after an idle pass of its poll
+    // (see CountPoll).
     bool IsIdle() const
     {
-        return idle_ && changed_at_ < looped_at_;
+        return (idle_ && changed_at_ < looped_at_) || (polled_at_ != 0 && changed_at_ < polled_at_);
     }
 
-    // Whether the track is idle, its last pass left the variables that tracks read as the pass before did, and it has
-    // drawn no random number since that pass began. Such a track does the same on every pass until the game changes a
-    // variable.
+    // Whether the track's last pass of a loop changed nothing in the sound and left the variables that tracks read as
+    // the pass before did, nothing has changed since, and the track has drawn no random number since that pass began.
+    // Such a track does the same on every pass until the game changes a variable. A poll's passes don't count.
     bool IsStill() const
     {
-        return IsIdle() && still_ && drew_at_ < looped_at_;
+        return idle_ && changed_at_ < looped_at_ && still_ && drew_at_ < looped_at_;
     }
 
     // Whether the track's last pass of a loop played no note. A track after track 0 whose passes play no notes doesn't
@@ -528,7 +530,11 @@ private:
     void FreeAllChannel(Player& player, Engine& engine);                 // 0x022B6114
     void StopAllChannel(Player& player, Engine& engine);                 // 0x022CAAA4
     void SetMute(Player& player, Engine& engine, int mode);              // 0x022CB34C
-    void OnChannelEvent(Engine& engine, Channel& channel);               // ChannelCallbackFunc, 0x022CB06C
+
+    // The track's silence (SeqTrack::SetSilence): its new notes start silent while it holds. Each channel of the track
+    // ramps from where its silence stands to the new one over `frames` frames, or at once for 0.
+    void SetSilence(Engine& engine, bool silence, int frames);
+    void OnChannelEvent(Engine& engine, Channel& channel); // ChannelCallbackFunc, 0x022CB06C
 
     // A channel of the track stopped at once and freed, or released. Each calls the engine's hook, OnStop or OnRelease.
     void StopChannel(Player& player, Engine& engine, Channel& channel);
@@ -542,7 +548,10 @@ private:
 
     // 0x022C9A4C. Returns whether the note changes the sound (for a rip tool's length analysis). A note changes the
     // sound unless it continues the newest note at the same key and velocity, with no sweep. Only a tie or a monophonic
-    // note continues the newest note.
+    // note continues the newest note. On the 3DS and the Wii, a new note's channel holds the region's volume in its
+    // velocity's volume. The first note that continues it at the same velocity drops the region's volume. That changes
+    // the player's sound (MarkPlayerChange) but not the track's. A pass that only drops it is idle. It doesn't repeat
+    // the pass before it, and the passes after it change nothing.
     bool NoteOn(Player& player, Engine& engine, int key, int velocity, int32_t length, bool tie);
 
     // The track went back to `target`, the start of a loop. The pass that ended there began at the track's last run of
@@ -554,11 +563,22 @@ private:
     // volume or pitch. The engine's OnTrackLoop gets every pass.
     void CountLoop(Player& player, Engine& engine, uint32_t target);
 
+    // The track went back to `target` inside a subroutine, in a jump that isn't a loop (see Jump). The pass that ended
+    // there began at the track's last run of `target`. The pass is idle when it changed nothing in the sound, changed
+    // no variable and drew no random number. The track then does the same on every pass until another track or the
+    // game changes a variable. A track that polls the game's variables once a tick, while later tracks play the music,
+    // makes such passes. A countdown between a track's notes changes its counter on each pass. The pass is never a
+    // loop: the engine's OnLoop and OnTrackLoop don't get it.
+    void CountPoll(Player& player, uint32_t target);
+
     // Whether the engine takes the counted loop whose body starts at `address` as endless (its LoopsForEver).
     bool LoopsForEver(Player& player, Engine& engine, uint32_t address) const;
 
     // The command being run changed the track's sound.
     void MarkChange(Player& player);
+
+    // The command being run changed the player's sound but left the track's pass as it was (see NoteOn).
+    void MarkPlayerChange(Player& player);
 
     // A number from the engine's random generator, for a random argument or the random command (0x86). The track
     // records the draw. Then the engine's OnRandomDraw, if it has one, is called.
@@ -638,7 +658,9 @@ private:
     uint64_t changed_at_ = 0;                  // when the track last changed the sound
     uint64_t drew_at_ = 0;                     // when the track last drew a random number
     uint64_t conditional_at_ = 0;              // when the track last ran a conditional command
+    uint64_t set_at_ = 0;                      // when the track last changed a variable's value
     uint64_t looped_at_ = 0;                   // when the track last went back to the start of a loop
+    uint64_t polled_at_ = 0; // when the track last ended an idle pass of a poll after its last loop, or 0 (CountPoll)
     uint64_t noted_at_ = 0;                    // when the track last played a note
     uint16_t variables_read_ = 0;              // the track's variables it has read, a bit each
     std::array<int16_t, 48> loop_variables_{}; // the variables that tracks read, at the last loop (0 for the others)
@@ -648,6 +670,8 @@ private:
     bool conditional_ = false; // whether the command being run is conditional
     bool holds_ = false;       // whether the track's last note is a held one (see kHeldTicks)
     bool held_wait_ = false;   // whether the track waits out a held note
+    ChannelId note_channel_ = kNoChannel; // the channel that the track's last note started or continued
+    int note_velocity_ = -1;              // that note's velocity, after the velocity range
 };
 
 // What a player gets from its sound: the sound's info in the archive, its sequence's bytecode, and its banks by slot.
@@ -772,33 +796,127 @@ public:
 
     // Sets variable `index` to `value`. A game can do that through the sound's handle, before the sequence starts or
     // while it plays. 0 to 15 are the player's variables, and 16 to 31 the global ones. `engine` holds the global
-    // variables. Other indices change nothing.
+    // variables. 32 to 47 set track variable `index` - 32 of every allocated track. A game does the same with one write
+    // (SequenceSoundHandle::WriteTrackVariable) for each track. Start allocates the tracks. Such a write before Start
+    // therefore changes nothing. Other indices change nothing.
     void SetVariable(Engine& engine, int index, int16_t value)
     {
+        if (index >= 32 && index < 48)
+        {
+            for (std::optional<TrackType>& track : tracks_)
+            {
+                if (track)
+                {
+                    track->vars_[static_cast<std::size_t>(index - 32)] = value;
+                }
+            }
+
+            return;
+        }
+
         if (int16_t* variable = Variable(engine, index))
         {
             *variable = value;
         }
     }
 
+    // Sets variable `index`, 0 to 15, of track `track`: the variable that the track's commands number 32 + `index`. A
+    // game can do that through the sound's handle, once it has started the sound or while the sound plays (the sound
+    // thread's command 0x17, 0x02299578 in amiibo Festival). The game's write reaches only an allocated track. The
+    // sequence's set-up (Setup, 0x022C8654) allocates the tracks when the sound thread starts the sound, before it runs
+    // the game's later commands. The model allocates them at Start. A write before Start therefore takes effect there.
+    // Other indices change nothing.
+    void SetTrackVariable(int track, int index, int16_t value)
+    {
+        if (index < 0 || index >= kTrackVariableCount)
+        {
+            return;
+        }
+
+        if (!started_)
+        {
+            pending_track_variables_.push_back({track, index, value});
+        }
+        else if (TrackType* owner = GetTrack(track))
+        {
+            owner->vars_[static_cast<std::size_t>(index)] = value;
+        }
+    }
+
     // Sets the tempo ratio, by which the clock multiplies the tempo. It starts at 1. A game sets it through the sound's
-    // handle (SeqPlayer::SetTempoRatio, 0x8003e818 in Wii Sports' main.dol). The 3DS's library has no tempo ratio.
+    // handle (SeqPlayer::SetTempoRatio, 0x8003e818 in Wii Sports' main.dol; driver command 0x0F, built at 0x33E740 in
+    // StreetPass Mii Plaza's update v14.6.0).
     void SetTempoRatio(float ratio)
     {
         tempo_ratio_ = ratio;
     }
 
+    // Sets the sound's pitch, a ratio of frequencies by which every channel's pitch is multiplied. It starts at 1. A
+    // game sets it through the sound's handle (SoundHandle::SetPitch).
+    void SetPitch(float pitch)
+    {
+        pitch_ = pitch;
+    }
+
+    // The output parameters that BasicSound gives the player, such as the sends on the aux buses that the sound's
+    // handle and its sound player set. Policy::CombineOutputs combines them with each track's. They start at the
+    // policy's defaults.
+    typename Policy::Outputs& PlayerOutputs()
+    {
+        return outputs_;
+    }
+
     // Sets the volume of each allocated track whose bit is set in `track_flags`, bit 0 for track 0. Policy::TrackVolume
-    // multiplies it into the volume of the track's channels. It starts at 1, and opening a track keeps it. Set it after
-    // Start, which allocates the tracks. A game sets it through the sound's handle (SeqPlayer::SetTrackVolume,
-    // 0x8003e8b0 in Wii Sports' main.dol). The 3DS's policy leaves it out.
+    // multiplies it into the volume of the track's channels. It starts at 1, and opening a track keeps it. A game sets
+    // it through the sound's handle (SeqPlayer::SetTrackVolume, 0x8003e8b0 in Wii Sports' main.dol). The 3DS's policy
+    // leaves it out. Before Start, the volume goes to each of those tracks that Start allocates. The sound library
+    // allocates a sound's tracks as it sets the sound up, before the commands that the game sends with the start. A
+    // volume that the game sets as it starts the sound therefore reaches the tracks before the first tick.
     void SetTrackVolume(uint32_t track_flags, float volume)
+    {
+        for (int i = 0; i < kTrackCount; ++i)
+        {
+            if ((track_flags & (1u << i)) == 0)
+            {
+                continue;
+            }
+
+            if (tracks_[i])
+            {
+                tracks_[i]->volume_ = volume;
+            }
+            else if (!started_)
+            {
+                start_track_volumes_[static_cast<std::size_t>(i)] = volume;
+            }
+        }
+    }
+
+    // Mutes each allocated track whose bit is set in `track_flags`, bit 0 for track 0, in `mode` (SeqTrack::SetMute): 0
+    // plays the track again, 1 skips its notes from the next one on, 2 also releases its channels, and 3 also stops
+    // them at once. A game sets it through the sound's handle (SequenceSoundHandle::SetTrackMute). Set it after Start,
+    // which allocates the tracks. Before the first tick, each mode keeps every note of the track from starting.
+    void SetTrackMute(Engine& engine, uint32_t track_flags, int mode)
     {
         for (int i = 0; i < kTrackCount; ++i)
         {
             if ((track_flags & (1u << i)) != 0 && tracks_[i])
             {
-                tracks_[i]->volume_ = volume;
+                tracks_[i]->SetMute(*this, engine, mode);
+            }
+        }
+    }
+
+    // Silences each allocated track whose bit is set in `track_flags`, or lets it sound again, over `frames` frames
+    // (SequenceSoundHandle::SetTrackSilence). A silenced track's notes start and take their voices, at a volume of 0.
+    // Set it after Start. Before the first tick, a track has no channels to fade, and its first note starts silent.
+    void SetTrackSilence(Engine& engine, uint32_t track_flags, bool silence, int frames)
+    {
+        for (int i = 0; i < kTrackCount; ++i)
+        {
+            if ((track_flags & (1u << i)) != 0 && tracks_[i])
+            {
+                tracks_[i]->SetSilence(engine, silence, frames);
             }
         }
     }
@@ -913,6 +1031,20 @@ private:
     std::array<int16_t, 16> local_vars_;                       // +0x208
     bool started_ = false;                                     // +0x25
     bool finished_ = false;                                    // +0x27
+
+    // The volumes that SetTrackVolume gives the tracks before Start, for the tracks that Start allocates.
+    std::array<float, kTrackCount> start_track_volumes_ = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                                           1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+    // The tracks' variables that the game wrote before Start (SetTrackVariable).
+    struct TrackVariable
+    {
+        int track;
+        int index;
+        int16_t value;
+    };
+    static constexpr int kTrackVariableCount = 16;
+    std::vector<TrackVariable> pending_track_variables_;
 
     // What BasicSound gives the player from the sound's info and what the game sets (BasicSoundPlayer's parameters).
     float volume_ = 1.0f;              // +0x2C

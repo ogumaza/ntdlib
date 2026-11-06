@@ -38,7 +38,8 @@ xsflib_add_project_library(ntdlib ctr src/ctr/dsp/firmware_audio.cpp src/ctr/dsp
                            src/ctr/nnsnd/sound_system.cpp src/ctr/nnsnd/voice.cpp src/ctr/snd/engine.cpp
                            src/ctr/snd/sequence.cpp src/ctr/snd/sound_players.cpp src/ctr/snd/util.cpp
                            src/ctr/snd/voice.cpp)
-target_link_libraries(ntdlib_ctr PUBLIC ntdlib::nwsnd ntdlib::sar PRIVATE ntdlib::wave teakra)
+target_link_libraries(ntdlib_ctr PUBLIC ntdlib::ctr_starting_tracks ntdlib::nwsnd ntdlib::sar
+                      PRIVATE ntdlib::wave teakra)
 
 # Teakra's checks of its bounds, its state and its two ways of running, and the glue's checks on small firmwares.
 # Archive mode's test plays on the model of the firmware, and also on Teakra running a firmware that the environment

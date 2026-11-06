@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -212,6 +213,26 @@ constexpr std::array<CommandInfo, 64> MakeCommands1()
 
 constexpr std::array<CommandInfo, 64> kCommands1 = MakeCommands1();
 
+// Pikmin's commands from 0xc0 (SequenceSound::jac).
+constexpr std::array<CommandInfo, 64> MakeCommandsJac()
+{
+    std::array<CommandInfo, 64> c = kCommands1;
+    c[0xd0 - 0xc0] = {2, 0x0005};
+    c[0xd3 - 0xc0] = {2, 0x000f};
+    for (const int cmd : {0xe5, 0xe6, 0xf3, 0xf4})
+    {
+        c[static_cast<std::size_t>(cmd - 0xc0)] = {};
+    }
+
+    return c;
+}
+
+constexpr std::array<CommandInfo, 64> kCommandsJac = MakeCommandsJac();
+
+// The registers of a JAudio1 track: The Wind Waker's 14, and Pikmin's 32.
+constexpr std::size_t kRegisters1 = 14;
+constexpr std::size_t kRegistersJac = 32;
+
 // The interrupts of a JAudio1 track (JASystem::TIntrMgr's requests): a write to port 0 or 1, its timer, a tick.
 constexpr int kIntr1Port0 = 3;
 constexpr int kIntr1Port1 = 4;
@@ -239,29 +260,95 @@ float PanCalc(float value, float parent, float weight, uint8_t type)
     }
 }
 
+// JASystem::Driver::calc_sw_table (0x80398c28 in The Wind Waker's main.dol): how each of cmdPanSwSet's 27 rules makes
+// a note's pan or effect send from the bank's value, the instrument effects' value and the track's value. 0 leaves a
+// value out, 1 adds it, and 2 weights it by its pan power. Pikmin 2's main.dol holds the same table (0x80478e18).
+constexpr std::array<std::array<uint8_t, 3>, 27> kCalcRules{{
+    {0, 0, 0}, {0, 0, 1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 1}, {0, 1, 2}, {0, 1, 0}, {0, 2, 1}, {0, 2, 2},
+    {1, 0, 0}, {1, 0, 1}, {1, 0, 2}, {1, 1, 0}, {1, 1, 1}, {1, 1, 2}, {1, 2, 0}, {1, 2, 1}, {1, 2, 2},
+    {1, 0, 0}, {2, 0, 1}, {2, 0, 2}, {2, 1, 0}, {2, 1, 1}, {2, 1, 2}, {2, 2, 0}, {2, 2, 1}, {2, 2, 2},
+}};
+
+// The weights that rule `rule` gives a JAudio1 note's bank value, effects' value and track value, with the pan powers
+// `powers` of the note's track (JASystem::TChannel::calcPan and calcEffect). setPanPower (0x8028bdbc) divides each
+// power by their sum, or by 1 when they sum to 0. A rule past the table adds all three.
+std::array<float, 3> CalcWeights(uint8_t rule, const std::array<uint16_t, 3>& powers)
+{
+    if (rule >= kCalcRules.size())
+    {
+        return {1.0f, 1.0f, 1.0f};
+    }
+
+    float sum = 0.0f;
+    for (const uint16_t power : powers)
+    {
+        sum += static_cast<float>(power);
+    }
+    if (sum == 0.0f)
+    {
+        sum = 1.0f;
+    }
+
+    std::array<float, 3> weights{};
+    for (std::size_t i = 0; i < weights.size(); i++)
+    {
+        switch (kCalcRules[rule][i])
+        {
+        case 1:
+            weights[i] = 1.0f;
+            break;
+        case 2:
+            weights[i] = static_cast<float>(powers[i]) / sum;
+            break;
+        default:
+            break;
+        }
+    }
+
+    return weights;
+}
+
 // The interrupts a track can take (JASSeqCtrl::IntrType): pause, unpause, a write to port 0 or 1, its timer, a tick.
 constexpr int kIntrPort0 = 2;
 constexpr int kIntrPort1 = 3;
 constexpr int kIntrTimer = 5;
 constexpr int kIntrTick = 6;
 
-// The game's fast random generator (JMath::TRandom_fast_).
+// The sound library's random numbers. JAudio2 draws them from the game's fast generator (JMath::TRandom_fast_). That
+// generator starts in `seed`. JAudio1 has another generator, with a state of two words (JASystem::Player::getRandomS32,
+// 0x8027e250 in The Wind Waker's USA main.dol). Its words start at 0x1000 and 0x5555 in every game that has it: The
+// Wind Waker, Pikmin 2 (0x8009c6a4) and Pac-Man Vs. (0x8002a0a4). The next number is the second word times 0x98765432,
+// plus the first word times 0x13579bde shifted right by 4 as a signed number, plus 1. The second word then moves to the
+// first, and the number becomes the second. Luigi's Mansion's earlier JAudio1 mixes the time base into its numbers. Its
+// sounds draw from JAudio2's generator (SequenceSound::timed_random).
 class Random
 {
 public:
-    explicit Random(uint32_t seed) : state_(seed)
+    Random(bool jaudio1, uint32_t seed) : jaudio1_(jaudio1), state_(jaudio1 ? 0x5555u : seed), previous_(0x1000u)
     {
     }
 
     uint32_t Next()
     {
-        state_ = state_ * 0x19660du + 0x3c6ef35fu;
+        if (!jaudio1_)
+        {
+            state_ = state_ * 0x19660du + 0x3c6ef35fu;
+
+            return state_;
+        }
+
+        const auto shifted = static_cast<uint32_t>(static_cast<int32_t>(previous_ * 0x13579bdeu) >> 4);
+        const uint32_t next = state_ * 0x98765432u + shifted + 1u;
+        previous_ = state_;
+        state_ = next;
 
         return state_;
     }
 
 private:
+    bool jaudio1_;
     uint32_t state_;
+    uint32_t previous_; // JAudio1's first word
 };
 
 // A track parameter that moves linearly to a target over a number of ticks (JASTrack::MoveParam_).
@@ -355,6 +442,7 @@ struct Channel
     uint32_t sweep_count = 0; // sub-frames left in the sweep
     float init_pitch = 1.0f;  // the instrument's pitch times the wave's rate over the output rate
     std::array<const Oscillator*, 2> osc_data{};
+    std::array<const Oscillator*, 2> track_osc{}; // the track's oscillators that play in place of the instrument's
     std::array<OscillatorState, 2> osc{};
     Lfo vibrato, tremolo;
     uint32_t update_timer = 0; // sub-frames until a gate note's release
@@ -498,6 +586,13 @@ uint16_t RegisterTypes(uint8_t mask, int count)
     return types;
 }
 
+// A JAudio1 track's oscillator as TTrack::init sets it (the template at 0x80367568 in The Wind Waker's main.dol): a
+// volume oscillator with no attack table, and a release table that falls to 0 over 10 units and stops.
+const Oscillator kTrackOscillator1{0, 1.0f, {}, {{0, 10, 0}, {15, 1, 0}}, false, 1.0f, 0.0f};
+
+// A JAudio1 track oscillator's route when it has none (TTrack::init).
+constexpr uint8_t kNoRoute = 0xf;
+
 // A JASTrack with its sequence control (JASSeqCtrl) and reader (JASSeqReader).
 struct Track
 {
@@ -507,7 +602,10 @@ struct Track
     std::array<int, kChildren> children{};
     int slot = -1; // the MIDI track it records into
     std::string name;
-    bool muted = false; // JASTrack::mute's flag (SequenceSound::tracks)
+    bool muted = false;         // JASTrack::mute's flag (SequenceSound::tracks)
+    bool silent = false;        // at a volume of 0 through the sound's handle (SequenceSound::child_volumes)
+    float handle_volume = 1.0f; // its volume through the sound's handle, other than 0 (SequenceSound::child_volumes)
+    int conductor_track = -1;   // the conductor's track whose module its last call 0x800 started
 
     // The reader.
     uint32_t pc = 0;
@@ -526,8 +624,8 @@ struct Track
     uint32_t timer = 0;
     uint32_t timer_reload = 0;
 
-    // Registers and ports.
-    std::array<uint16_t, 14> regs{};
+    // Registers and ports. JAudio1 tracks have kRegisters1 or kRegistersJac of them.
+    std::array<uint16_t, kRegistersJac> regs{};
     std::array<uint16_t, 16> ports{};
     uint16_t imported = 0, exported = 0;
 
@@ -552,6 +650,7 @@ struct Track
     bool tied = false;                         // the next gate note continues the last (flag4)
     bool dirty = true;                         // settings to recompute (flag5)
     bool iir = false;                          // an IIR filter other than the open one
+    uint8_t filter_entry = kOpenTrackFilter;   // the IIR filter's entry of the table, or the open one's for others
     std::array<int, kNoteIds> slots{};
     ChannelParams params;
 
@@ -568,6 +667,24 @@ struct Track
     int32_t intr_wait = 0;                    // the wait that a running interrupt put aside
     bool gate_ends = false;                   // a gate note's wait frees note slot 0 when it runs out (endProcess)
     bool time_relate = true;                  // a gate note's length is in ticks, not in sub-frames
+    // The rules (kCalcRules) for its notes' pan, effect send and surround (TTrack +0x15a). TTrack::init gives 13.
+    std::array<uint8_t, 3> channel_calc{13, 13, 13};
+    // Its two oscillators (TTrack +0x2cc) and their routes to its notes' oscillators (TTrack +0x2fc).
+    std::array<Oscillator, 2> osc1{kTrackOscillator1, kTrackOscillator1};
+    std::array<uint8_t, 2> osc_routes{kNoRoute, kNoRoute};
+    // Whether the performer follows each of those oscillators: false once a command or a parameter that it leaves out
+    // has changed the oscillator.
+    std::array<bool, 2> osc1_known{true, true};
+
+    // Pikmin's tempo of the track (SequenceSound::jac). A child takes its parent's when it opens. A child that sets one
+    // runs a tick for each whole step of its count. Each of its parent's ticks adds the share of the parent's tempo, at
+    // most 1.
+    uint16_t tempo = 120;
+    bool own_tempo = false;
+    float tempo_count = 0.0f;
+
+    // The volume of the track's external buffer (SequenceSound::child_volumes).
+    float ext_volume = 1.0f;
 
     // MIDI state.
     seqlib::midi::TrackOutput output; // the MIDI track and part it records into, and each part's last values
@@ -595,6 +712,32 @@ Track FreshTrack(int parent)
 
     return tr;
 }
+
+// What the game's sound layer keeps for a module of a track of a conductor (PSAutoBgm::Module and its two rounds,
+// PSAutoBgm::OnCycle and OffCycle). Offsets are the fields' in the module.
+struct ConductorModuleState
+{
+    bool tables = false;               // the lists below are set (+0x2c1)
+    uint32_t phrase_list = 0;          // the module's list of phrases' offsets, 3 bytes each (+0x2a8)
+    uint8_t phrase_count = 0;          // (+0x2ac)
+    uint32_t length_list = 0;          // its list of lengths, 2 bytes each (+0x2b0)
+    uint8_t length_count = 0;          // (+0x2b4)
+    uint16_t beats = 0;                // the beats since the module started (+0x2a4)
+    uint8_t cycle = 0;                 // 0 in the round of phrases (OnCycle), 1 in the round of rests (+0x2c0)
+    std::array<uint8_t, 2> steps{};    // each round's step (+0x8 of each round)
+    std::array<uint8_t, 2> taken{};    // the lengths that each round has taken in order (+0x3c of each round)
+    uint16_t length = 0;               // the last length (+0x2b6)
+    uint16_t phrase = 0xffff;          // the last phrase (+0x2c2)
+    std::array<uint16_t, 2> history{}; // the round of phrases' last two phrases, the older first
+    uint8_t history_count = 0;
+};
+
+// What it keeps for a track of a conductor (PSAutoBgm::Track): the module that plays, or 0xff before the first.
+struct ConductorTrackState
+{
+    uint8_t module = 0xff; // (+0x99)
+    std::vector<ConductorModuleState> modules;
+};
 
 // A command run's outcome.
 enum class Outcome
@@ -631,18 +774,34 @@ public:
     // program `program`.
     Performer(const SequenceSound& sound, BankSet& banks, const PerformOptions& options, const std::string& program,
               double level_scale, const std::array<uint8_t, 16>& part_limits,
-              const std::vector<LoopChoice>& loop_choices, const std::map<uint32_t, uint8_t>& tie_velocities)
+              const std::vector<LoopChoice>& loop_choices, const std::map<uint32_t, uint8_t>& tie_velocities,
+              const std::set<int>& swept_filters)
         : sound_(sound),
           banks_(banks),
           options_(options),
           program_(program),
-          rng_(options.seed),
+          rng_(sound.jaudio1 && !sound.timed_random, options.seed),
           recorder_(kRecorderOptions),
+          tempo_rate_(sound.tempo_ratio),
           main_loop_(loop_choices),
-          tie_velocities_in_(tie_velocities)
+          tie_velocities_in_(tie_velocities),
+          swept_filters_in_(swept_filters)
     {
         recorder_.SetLevelScale(level_scale);
         recorder_.SetPartLimits(part_limits);
+        for (uint32_t i = 0; i < sound.draws; i++)
+        {
+            rng_.Next();
+        }
+        fade_ = sound.fade_in > 0 ? 0.0f : 1.0f;
+        if (sound.conductor)
+        {
+            for (const ConductorTrack& track : sound.conductor->tracks)
+            {
+                conductor_tracks_.push_back(
+                    {.module = 0xff, .modules = std::vector<ConductorModuleState>(track.modules.size())});
+            }
+        }
     }
 
     Performance Run();
@@ -672,6 +831,12 @@ public:
         return tie_velocities_;
     }
 
+    // The tracks whose notes played under more than one entry of the IIR filter's table (ZoneFilter).
+    const std::set<int>& SweptFilters() const
+    {
+        return swept_filters_;
+    }
+
 private:
     // How a pass of the main loop starts: each part's settings and the tempo after the commands of its first tick, and
     // the part each MIDI track's new notes go to.
@@ -699,7 +864,8 @@ private:
 
     int NewTrack(int parent, int number);
 
-    // True if track `t` or a track above it is muted (JASTrack::isMute, 0x800385ac).
+    // True if track `t` or a track above it is muted (JASTrack::isMute, 0x800385ac), or is at a volume of 0 through the
+    // sound's handle (SequenceSound::child_volumes).
     bool Muted(int t) const;
 
     void CloseTrack(int t);
@@ -730,6 +896,14 @@ private:
     uint32_t Data8(uint32_t offset) const;
     uint32_t Data16(uint32_t offset) const;
     uint32_t Data24(uint32_t offset) const;
+    int ChildNumber(int t) const;
+    uint32_t ConductorRandom(uint32_t n);
+    std::optional<uint16_t> ConductorCall(int t, uint16_t id);
+    uint16_t ConductorLength(int t, std::size_t number, bool in_order);
+    void ConductorTip(int t, std::size_t number);
+    uint16_t ConductorPlay(int t, std::size_t number);
+    bool ConductorDone() const;
+    std::size_t Registers1() const;
     uint32_t Data32(uint32_t offset) const;
     void Jump(int t, uint32_t target);
     bool Call(int t, uint32_t target);
@@ -780,6 +954,12 @@ private:
     void StoreRegister1(int t, uint32_t reg, uint16_t value, uint16_t flag);
     void CheckInterrupt1(int t);
     void UpdateTrack1(int t);
+    // Whether the game squares the volume of track `tr`: in volume mode 0, where its JASystem squares a track's volume.
+    // Pikmin's library squares none (UpdateTrack1).
+    bool SquaresVolume(const Track& tr) const
+    {
+        return tr.volume_mode == 0 && sound_.squared_track_volume && !sound_.jac;
+    }
     void SkipPrint(int t);
 
     // Run one sub-frame: the channels, then the ticks that are due. Return false when the first track finishes.
@@ -788,6 +968,7 @@ private:
     // --- Channels ---
     std::optional<std::size_t> StartChannel(int t, int key, int velocity, uint32_t timer, float sweep = 0.0f,
                                             uint32_t sweep_subframes = 0, bool bends = false);
+    void RouteOscillators1(Track& tr, Channel& ch);
     void NoteOn(int t, uint32_t note_id, int key, int velocity);
     void GateOn(int t, int key, int velocity, float time, uint32_t flags);
     void NoteOff(int t, uint32_t note_id, uint16_t release);
@@ -834,6 +1015,9 @@ private:
     // --- Effects (SequenceSound::effect) ---
     // The track of the effect's slot, or -1 while it hasn't opened.
     int EffectSlotTrack() const;
+
+    // The share of its parent's tempo that Pikmin's child track `t` runs at, at most 1 (Track::tempo).
+    float TempoShare(int t) const;
 
     // Whether track `t` plays the effect, for the loops and the end: a track below the slot's track, or the slot's
     // track while it runs the effect's routine. Without an effect, every track does.
@@ -890,7 +1074,15 @@ private:
     void Approximate(const std::string& what);
     void RecordTickTime();
     double TrackLevel(int t) const;
+    float SoundVolume() const;
+    void MoveFade();
+
+    // The entry of the IIR filter that the zones play for track `t`'s notes, or the open one. A track whose notes play
+    // under more than one entry gets the open one: a zone's filter can't move during a note. So does an entry that
+    // nobody would hear.
+    uint8_t ZoneFilter(int t) const;
     int ChannelsTrack(int t) const;
+    std::array<float, 3> NoteWeights(int t, std::size_t value) const;
     bool AnySounding() const;
     bool TrackSounds(int t) const;
     void Changed(int t);
@@ -911,7 +1103,8 @@ private:
     float accumulator_ = 1.0f; // ticks due (JASTrack's field_0x1d8)
     uint16_t tempo_ = 120;
     uint16_t timebase_ = 48;
-    float tempo_rate_ = 1.0f;
+    float tempo_rate_ = 1.0f; // the game's tempo ratio (SequenceSound::tempo_ratio)
+    float fade_ = 1.0f;       // the level of the game's fade-in so far (SequenceSound::fade_in)
     uint64_t subframe_ = 0;
     uint32_t tick_ = 0;
     bool ticked_ = false; // the first tick has run
@@ -939,6 +1132,18 @@ private:
     int effect_track_ = -1;                         // the track of the effect's slot, once it has opened
     std::map<uint32_t, uint8_t> tie_velocities_in_; // an earlier run's TieVelocities
     std::map<uint32_t, uint8_t> tie_velocities_;
+
+    // A conductor's state (SequenceSound::conductor): its tracks, the sequence's tables of lists of phrases and of
+    // lengths, PSSystem::oRandom, and the first track's beat (SeqTrackRoot +0x3c).
+    std::vector<ConductorTrackState> conductor_tracks_;
+    uint32_t conductor_phrases_ = 0;
+    uint32_t conductor_lengths_ = 0;
+    uint32_t conductor_random_ = 0;
+    bool beat_top_ = false;
+
+    std::set<int> swept_filters_in_; // an earlier run's SweptFilters
+    std::set<int> swept_filters_;
+    std::map<int, uint8_t> filter_seen_; // the first entry that each track's notes played under
 };
 
 // --- Tracks ---
@@ -957,11 +1162,45 @@ int Performer::NewTrack(int parent, int number)
     // Child `number` of the root's child n opens muted if its bit of SequenceSound::tracks is clear. The game's code
     // muted it before the sound's first tick, and the first open keeps the mute.
     const int grandparent = parent < 0 ? -1 : TrackAt(parent).parent;
+    std::optional<std::size_t> handle_index;
     if (grandparent >= 0 && TrackAt(grandparent).parent < 0)
     {
         const std::array<int, kChildren>& top = TrackAt(grandparent).children;
         const auto n = static_cast<std::size_t>(std::find(top.begin(), top.end(), parent) - top.begin());
         tr.muted = n < top.size() && (sound_.tracks[n] >> number & 1) == 0;
+        if (!sound_.jaudio1 && n < top.size())
+        {
+            handle_index = 16 * n + static_cast<std::size_t>(number);
+        }
+    }
+
+    // The sound's handle reaches the root's children in JAudio1, and child m of the root's child n, as 16 * n + m, in
+    // JAudio2 (SequenceSound::child_volumes). A track at 0 is silent. A silent track starts no notes, and its
+    // controllers stay as they are at full volume. In a sequence of Pikmin's library, the volumes go to the root's
+    // children through their external buffers instead (OpenChild).
+    if (sound_.jaudio1 && !sound_.jac && parent >= 0 && TrackAt(parent).parent < 0)
+    {
+        handle_index = static_cast<std::size_t>(number);
+    }
+    const auto volume = handle_index && *handle_index < 256
+                            ? sound_.child_volumes.find(static_cast<uint8_t>(*handle_index))
+                            : sound_.child_volumes.end();
+    if (volume != sound_.child_volumes.end())
+    {
+        // setChildTrackVolume (0x802b3fec in Twilight Princess's main.dol) keeps a volume between 0 and 1.
+        const float level = std::clamp(volume->second, 0.0f, 1.0f);
+        tr.silent = level == 0.0f;
+        if (level > 0.0f && level < 1.0f)
+        {
+            if (sound_.jaudio1)
+            {
+                Approximate("a track volume between 0 and 1 through the sound's handle played as 1");
+            }
+            else
+            {
+                tr.handle_volume = level;
+            }
+        }
     }
 
     tracks_.push_back(std::move(tr));
@@ -973,7 +1212,7 @@ bool Performer::Muted(int t) const
 {
     for (int u = t; u >= 0; u = TrackAt(u).parent)
     {
-        if (TrackAt(u).muted)
+        if (TrackAt(u).muted || TrackAt(u).silent)
         {
             return true;
         }
@@ -1006,6 +1245,8 @@ int Performer::OpenChild(int t, uint32_t number, uint32_t start)
         fresh.children = c.children;
         fresh.slot = c.slot;
         fresh.name = c.name;
+        fresh.silent = c.silent;
+        fresh.handle_volume = c.handle_volume;
         fresh.output = c.output;
         fresh.visited = c.visited;
         c = std::move(fresh);
@@ -1013,12 +1254,30 @@ int Performer::OpenChild(int t, uint32_t number, uint32_t start)
 
     Track& c = TrackAt(child);
     const Track& p = TrackAt(t);
+    // The later JAudio1's openChild copies the parent's tick rate (0x800a155c in Pikmin 2's main.dol).
+    if (sound_.later_jaudio1)
+    {
+        c.tick_rate = p.tick_rate;
+    }
+    // Jaq_OpenTrack (0x80014780 in Pikmin's main.dol) gives a child the external buffer that its parent holds for its
+    // number, each time the child opens.
+    const auto ext = sound_.child_volumes.find(static_cast<uint8_t>(number));
+    if (sound_.jac && p.parent < 0 && ext != sound_.child_volumes.end())
+    {
+        c.ext_volume = ext->second;
+        c.muted = c.muted || ext->second == 0.0f;
+    }
+    if (p.parent < 0 && (sound_.muted_children >> number & 1) != 0)
+    {
+        c.muted = true;
+    }
     c.bank = p.bank;
     c.program = p.program;
     c.note_on_prio = p.note_on_prio;
     c.release_prio = p.release_prio;
     c.skip_samples = p.skip_samples;
     c.iir = p.iir;
+    c.filter_entry = p.filter_entry;
     c.opened = tick_;
     c.pc = start;
     c.open = true;
@@ -1064,6 +1323,19 @@ void Performer::CloseChild(int t, uint32_t number)
 
 int Performer::TickProc(int t)
 {
+    // Pikmin's child track with a tempo of its own skips the parent's ticks that leave its count below 1 (0x80012ec0 in
+    // the USA release's main.dol).
+    if (sound_.jac && TrackAt(t).parent >= 0 && TrackAt(t).own_tempo)
+    {
+        Track& tr = TrackAt(t);
+        tr.tempo_count += TempoShare(t);
+        if (tr.tempo_count < 1.0f)
+        {
+            return 0;
+        }
+        tr.tempo_count -= 1.0f;
+    }
+
     // JASTrack::tickProc: run the track's tick, move its timed parameters, then its children's ticks.
     const int ret = SeqTick(t);
     UpdateTimedParams(t);
@@ -1341,7 +1613,7 @@ bool Performer::Condition(int t, uint32_t condition)
 uint32_t Performer::ReadRegister(int t, uint32_t reg)
 {
     // JASRegisterParam::read: 14 registers, and pairs of them read together.
-    const std::array<uint16_t, 14>& r = TrackAt(t).regs;
+    const auto& r = TrackAt(t).regs;
     if (reg < 14)
     {
         return r[reg];
@@ -1375,7 +1647,7 @@ uint32_t Performer::ReadRegister(int t, uint32_t reg)
 
 void Performer::WriteRegister(int t, uint32_t reg, uint32_t value)
 {
-    std::array<uint16_t, 14>& r = TrackAt(t).regs;
+    auto& r = TrackAt(t).regs;
     if (reg < 14)
     {
         r[reg] = static_cast<uint16_t>(reg <= 2 ? (value & 0xff) : (value & 0xffff));
@@ -1723,6 +1995,12 @@ void Performer::SetParam(int t, uint32_t target, float value, uint32_t count)
     // JASTrack::setParam: move to the value over `count` ticks, or at once.
     if (target >= 6)
     {
+        // JAudio1's targets 6 to 10 change the width, the rate and the vertex of the track's oscillators (0x80281850 in
+        // The Wind Waker's main.dol). The performer leaves those out.
+        if (sound_.jaudio1 && target <= 10)
+        {
+            TrackAt(t).osc1_known[target <= 8 ? 0 : 1] = false;
+        }
         return;
     }
 
@@ -1793,7 +2071,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
     ChannelParams p;
     if (tr.parent < 0)
     {
-        p.volume = volume * sound_.volume;
+        p.volume = volume * SoundVolume();
         p.pitch = 1.0f;
         p.pan = pan;
         p.fx_mix = tr.move[2].value;
@@ -1802,7 +2080,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
     else
     {
         const ChannelParams& up = TrackAt(tr.parent).params;
-        p.volume = up.volume * volume;
+        p.volume = up.volume * volume * tr.handle_volume;
         p.pitch = up.pitch;
         p.pan = (up.pan - 0.5f) + pan;
         p.fx_mix = up.fx_mix + tr.move[2].value;
@@ -2253,10 +2531,12 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xeb:
         tr.iir = a[0] < 127;
+        tr.filter_entry = tr.iir ? static_cast<uint8_t>(a[0]) : kOpenTrackFilter;
         break;
 
     case 0xec:
         tr.iir = !(static_cast<int16_t>(a[0]) == 0x7fff && a[1] == 0 && a[2] == 0 && a[3] == 0);
+        tr.filter_entry = kOpenTrackFilter;
         break;
 
     case 0xf0:
@@ -2300,9 +2580,17 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xf9:
-        // A game can answer through a callback. Four Swords Adventures registers none. The command's handler
-        // (0x80034654) then writes 0xffff to the flag register.
-        WriteRegister(t, 3, 0xffff);
+        // A game can answer through a callback (SequenceSound::callback). The command's handler writes the answer to
+        // the flag register. Four Swords Adventures registers none. Its handler (0x80034654) then writes 0xffff.
+        if (sound_.callback)
+        {
+            const auto answer = sound_.callback->find(static_cast<uint16_t>(a[0]));
+            WriteRegister(t, 3, answer != sound_.callback->end() ? answer->second : 0);
+        }
+        else
+        {
+            WriteRegister(t, 3, 0xffff);
+        }
         break;
 
     case 0xfd:
@@ -2383,7 +2671,7 @@ void Performer::OnJumpBack(int t, uint32_t target)
     }
 
     main_loop_.CountPass(out_, owner, start, tick_);
-    if (out_.loops >= options_.loops && TickSeconds(tick_) >= kMinLoopSeconds)
+    if (out_.loops >= options_.loops && TickSeconds(tick_) >= kMinLoopSeconds && ConductorDone())
     {
         pending_loop_ = PendingLoop{t, start, tick_};
     }
@@ -2421,6 +2709,9 @@ int Performer::OpenChild1(int t, uint32_t mode_and_number, uint32_t start)
     const Track& p = TrackAt(t);
     c.open_mode = mode;
     c.volume_mode = p.volume_mode;
+    c.tempo = p.tempo;
+    c.own_tempo = false;
+    c.tempo_count = 0.0f;
     if (!(mode & 2))
     {
         for (std::size_t i = 6; i < 14; i++)
@@ -2428,6 +2719,7 @@ int Performer::OpenChild1(int t, uint32_t mode_and_number, uint32_t start)
             c.regs[i] = p.regs[i];
         }
         c.parent_calc = p.parent_calc;
+        c.channel_calc = p.channel_calc;
         c.bank = p.bank;
         c.program = p.program;
         c.bend_sense = p.bend_sense;
@@ -2453,7 +2745,12 @@ int Performer::SeqTick1(int t)
         return 0;
     }
 
+    // The later JAudio1 counts down the wait that a running interrupt put aside too (SequenceSound::later_jaudio1).
     Track& tr = TrackAt(t);
+    if (sound_.later_jaudio1 && tr.intr_wait > 0)
+    {
+        tr.intr_wait--;
+    }
     if (tr.wait > 0)
     {
         if (--tr.wait > 0)
@@ -2564,6 +2861,7 @@ Outcome Performer::Parse1(int t)
             if (target >= 12 && target <= 15)
             {
                 TrackAt(t).iir = true;
+                TrackAt(t).filter_entry = kOpenTrackFilter;
             }
             SetParam(t, target, static_cast<float>(data) / 32767.0f, time > 0 ? static_cast<uint32_t>(time) : 0);
             return Outcome::kContinue;
@@ -2737,9 +3035,16 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         return Outcome::kContinue;
     }
 
-    const std::array<uint32_t, 8> a = ReadArguments(t, kCommands1[cmd - 0xc0u], override_types, &Performer::ReadReg1);
+    const auto& commands = sound_.jac ? kCommandsJac : kCommands1;
+    const std::array<uint32_t, 8> a = ReadArguments(t, commands[cmd - 0xc0u], override_types, &Performer::ReadReg1);
 
+    // Pikmin's track names, and its commands that do nothing.
     Track& tr = TrackAt(t);
+    if (sound_.jac && (cmd == 0xd0 || cmd == 0xd3 || cmd == 0xe5 || cmd == 0xe6 || cmd == 0xf3 || cmd == 0xf4))
+    {
+        return Outcome::kContinue;
+    }
+
     switch (cmd)
     {
     case 0xc1:
@@ -2812,15 +3117,61 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xd6:
     case 0xd7:
-    case 0xd8:
-    case 0xf0:
     case 0xf2:
-        // The track's oscillators reach its notes only through a route (oscroute). No route is set at first, and a new
-        // bank or program clears the routes.
+        // TTrack's simpleosc (0x8027ee5c in The Wind Waker's main.dol), envtable (0x8027ee8c) and osc (0x8027f65c)
+        // give one of the track's oscillators other templates and tables from the sequence's data. The performer
+        // leaves those out. A note that a route gives that oscillator keeps the instrument's (RouteOscillators1).
+        // simpleosc 1 sets oscillator 0, and 0 and 2 set oscillator 1 (0x80281900). envtable 0 and 1 change
+        // oscillator 0 (0x802817e4). Bit 4 of osc's first argument picks the oscillator (0x80281708).
         Approximate("oscillators that tracks set omitted");
-        if (cmd == 0xd8)
+        if (cmd == 0xd6 && a[0] < 3)
         {
+            tr.osc1_known[a[0] == 1 ? 0 : 1] = false;
+        }
+        else if (cmd == 0xd7 && a[0] < 2)
+        {
+            tr.osc1_known[0] = false;
+        }
+        else if (cmd == 0xf2)
+        {
+            tr.osc1_known[(a[0] >> 4) & 1] = false;
+        }
+        break;
+
+    case 0xd8:
+        if (!sound_.track_oscillator_routes)
+        {
+            Approximate("oscillators that tracks set omitted");
             tr.direct_release = static_cast<uint16_t>(a[4]);
+            break;
+        }
+        {
+            // TTrack's simple ADSR (0x8027eec0 in The Wind Waker's main.dol): oscillator 0 becomes a volume oscillator
+            // with no release table (the template at 0x80367550). Its attack table (TTrack +0x304, from the template at
+            // 0x80398370) rises to full over the first argument and holds there for the second. It then moves to the
+            // fourth over the third, and holds. The fifth is the notes' direct release.
+            const auto arg = [&](std::size_t i)
+            {
+                return static_cast<int16_t>(a[i]);
+            };
+            Oscillator osc;
+            osc.attack = {{0, arg(0), 0x7fff}, {0, arg(1), 0x7fff}, {0, arg(2), arg(3)}, {14, 0, 0}};
+            tr.osc1[0] = std::move(osc);
+            tr.osc1_known[0] = true;
+            tr.direct_release = static_cast<uint16_t>(a[4]);
+            break;
+        }
+
+    case 0xf0:
+        // TTrack's oscillator route (0x8027f460): the high four bits pick the track's oscillator, and the low four give
+        // its route (RouteOscillators1).
+        if (!sound_.track_oscillator_routes)
+        {
+            Approximate("oscillators that tracks set omitted");
+        }
+        else if ((a[0] >> 4) < tr.osc_routes.size())
+        {
+            tr.osc_routes[a[0] >> 4] = static_cast<uint8_t>(a[0] & 15);
         }
         break;
 
@@ -2899,8 +3250,23 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xe7:
-        // The Wind Waker's callback (JAIBasic::setParameterSeqSync) answers 0.
-        StoreRegister1(t, 3, 0, 0);
+        {
+            // The Wind Waker's callback (JAIBasic::setParameterSeqSync) answers 0. Another game's callback may give
+            // other answers (SequenceSound::sync_answers), or mute the track (SequenceSound::mute_child_15).
+            // A conductor answers its calls first (SequenceSound::conductor).
+            const auto id = static_cast<uint16_t>(a[0]);
+            std::optional<uint16_t> value = sound_.conductor ? ConductorCall(t, id) : std::nullopt;
+            if (!value)
+            {
+                const auto answer = sound_.sync_answers.find(id);
+                value = answer != sound_.sync_answers.end() ? answer->second : 0;
+            }
+            StoreRegister1(t, 3, *value, *value);
+        }
+        if (sound_.mute_child_15 && a[0] == 0 && tr.parent >= 0 && TrackAt(tr.parent).children[15] == t)
+        {
+            tr.muted = true;
+        }
         break;
 
     case 0xe8:
@@ -2915,8 +3281,8 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
         break;
 
     case 0xeb:
-        // cmdPanPowSet: the bank's, the effects' and the oscillators' pan powers, then the parent's and the track's in
-        // hundredths.
+        // cmdPanPowSet: the pan powers of a note's bank value, effects' value and track value (CalcWeights), then the
+        // parent's and the track's in hundredths.
         tr.regs[8] = static_cast<uint16_t>(a[0]);
         tr.regs[9] = static_cast<uint16_t>(a[1]);
         tr.regs[10] = static_cast<uint16_t>(a[2]);
@@ -2927,19 +3293,22 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xec:
         tr.iir = !(static_cast<int16_t>(a[0]) == 0x7fff && a[1] == 0 && a[2] == 0 && a[3] == 0);
+        tr.filter_entry = kOpenTrackFilter;
         break;
 
     case 0xef:
         {
-            // cmdPanSwSet: the top three bits of each byte pick how the track's value takes its parent's. The low five
-            // bits pick how a note's values combine. Only the first of those choices is followed. It adds them all.
+            // cmdPanSwSet (0x8027f3bc): the top three bits of each byte pick how the track's value takes its parent's.
+            // The low five bits pick the rule for its notes' values (kCalcRules). The game reads a rule past the table
+            // from the bytes after it.
             constexpr std::array<uint8_t, 8> kParentCalc{0, 1, 2, 0, 2, 0, 2, 0};
             for (std::size_t i = 0; i < 3; i++)
             {
                 tr.parent_calc[i] = kParentCalc[(a[i] >> 5) & 7];
-                if ((a[i] & 0x1f) != 13)
+                tr.channel_calc[i] = static_cast<uint8_t>(a[i] & 0x1f);
+                if (i < 2 && tr.channel_calc[i] >= kCalcRules.size())
                 {
-                    Approximate("notes' pan and effect send that don't add the instrument's and the track's");
+                    Approximate("notes' pan and effect send by a rule past the game's table taken as the sum");
                 }
             }
             tr.dirty = true;
@@ -2948,6 +3317,7 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xf1:
         tr.iir = a[0] < 127;
+        tr.filter_entry = tr.iir ? static_cast<uint8_t>(a[0]) : kOpenTrackFilter;
         break;
 
     case 0xf3:
@@ -2967,12 +3337,17 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xfd:
         // A child track's tempo runs its ticks at a share of its parent's (TTrack +0x388). Only the first track's tempo
-        // counts here.
+        // counts here, but in Pikmin's library (TickProc).
+        tr.tempo = static_cast<uint16_t>(a[0]);
         if (tr.parent < 0)
         {
             tempo_ = static_cast<uint16_t>(a[0]);
             tr.dirty = true;
             EmitTempo();
+        }
+        else if (sound_.jac)
+        {
+            tr.own_tempo = true;
         }
         else if (a[0] != tempo_)
         {
@@ -3181,7 +3556,15 @@ void Performer::RegisterCommand1(int t, uint8_t low)
     case 0x29:
     case 0x2a:
     case 0x2b:
-        tr.addresses[reg - 0x28] = loaded;
+        if (sound_.jac || sound_.later_jaudio1)
+        {
+            tr.regs[16 + 2 * (reg - 0x28)] = static_cast<uint16_t>(loaded >> 16);
+            tr.regs[17 + 2 * (reg - 0x28)] = static_cast<uint16_t>(loaded);
+        }
+        else
+        {
+            tr.addresses[reg - 0x28] = loaded;
+        }
         return;
     default:
         break;
@@ -3241,8 +3624,13 @@ uint16_t Performer::ReadReg16(int t, uint32_t reg)
     case 0x30:
         return tr.depth > 0 ? tr.loop_count[static_cast<std::size_t>(tr.depth - 1)] : 0;
     default:
-        return reg < tr.regs.size() ? tr.regs[reg] : 0;
+        return reg < Registers1() ? tr.regs[reg] : 0;
     }
+}
+
+std::size_t Performer::Registers1() const
+{
+    return sound_.jac || sound_.later_jaudio1 ? kRegistersJac : kRegisters1;
 }
 
 uint32_t Performer::ReadReg32(int t, uint32_t reg)
@@ -3254,6 +3642,11 @@ uint32_t Performer::ReadReg32(int t, uint32_t reg)
     case 0x29:
     case 0x2a:
     case 0x2b:
+        if (sound_.jac || sound_.later_jaudio1)
+        {
+            const Track& tr = TrackAt(t);
+            return static_cast<uint32_t>(tr.regs[16 + 2 * (reg - 0x28)]) << 16 | tr.regs[17 + 2 * (reg - 0x28)];
+        }
         return TrackAt(t).addresses[reg - 0x28];
     case 0x23:
         return static_cast<uint32_t>(ReadReg16(t, 4)) << 16 | ReadReg16(t, 5);
@@ -3291,7 +3684,7 @@ void Performer::StoreRegister1(int t, uint32_t reg, uint16_t value, uint16_t fla
     // The write, then the flag. A new bank and program select what the track's notes play, and the bend sense moves its
     // pitch. Register 13 holds the notes' priority.
     Track& tr = TrackAt(t);
-    if (reg < tr.regs.size())
+    if (reg < Registers1())
     {
         tr.regs[reg] = value;
     }
@@ -3299,8 +3692,10 @@ void Performer::StoreRegister1(int t, uint32_t reg, uint16_t value, uint16_t fla
     switch (reg)
     {
     case 6:
+        // A new bank or program clears the oscillators' routes (0x8028369c in The Wind Waker's main.dol).
         tr.bank = static_cast<uint16_t>(value >> 8);
         tr.program = static_cast<uint16_t>(value & 0xff);
+        tr.osc_routes.fill(kNoRoute);
         break;
     case 7:
         tr.bend_sense = static_cast<uint8_t>(value);
@@ -3342,25 +3737,28 @@ void Performer::CheckInterrupt1(int t)
 
 void Performer::UpdateTrack1(int t)
 {
-    // JASystem::TTrack::updateTrack: the volume, squared in volume mode 0, and the bend. Both follow JAudio2's
+    // JASystem::TTrack::updateTrack: the volume, squared in volume mode 0 where the game's JASystem squares it
+    // (SequenceSound::squared_track_volume), and the bend. Both follow JAudio2's
     // (Player::pitchToCent's table follows equal temperament within a cent). A track's pan and effect send take its
     // parent's by the track's calc type, with the track's pan power as the weight. By default a track keeps its values.
-    // A track opened in a mode with bit 0 set takes nothing from its parent.
+    // A track opened in a mode with bit 0 set takes nothing from its parent. Pikmin's library (SequenceSound::jac)
+    // plays the volume as it is: Jam_UpdateTrack (0x80010e20 in the USA release's main.dol) and Jam_UpdateTrackAll
+    // (0x80010ae0) multiply the volume parameter (+0x14c) into the parent's volume and square nothing.
     Track& tr = TrackAt(t);
     float volume = tr.move[0].value;
-    if (tr.volume_mode == 0)
+    if (SquaresVolume(tr))
     {
         volume *= volume;
     }
     const float bend = tr.move[1].value * static_cast<float>(tr.bend_sense) * (1.0f / 3.0f);
     ChannelParams p;
-    p.volume = volume;
+    p.volume = volume * tr.ext_volume;
     p.pan = tr.move[3].value;
     p.fx_mix = tr.move[2].value;
     p.bend = bend;
     if (tr.parent < 0)
     {
-        p.volume *= sound_.volume;
+        p.volume *= SoundVolume();
         if (sound_.pitch != 1.0f)
         {
             p.bend += std::log2(sound_.pitch);
@@ -3378,6 +3776,18 @@ void Performer::UpdateTrack1(int t)
     }
     tr.params = p;
     tr.tick_rate = tr.parent < 0 ? TicksPerSubFrame() : TrackAt(tr.parent).tick_rate;
+    if (sound_.jac && tr.parent >= 0 && tr.own_tempo)
+    {
+        tr.tick_rate *= TempoShare(t);
+    }
+}
+
+float Performer::TempoShare(int t) const
+{
+    const Track& tr = TrackAt(t);
+    const uint16_t parent = TrackAt(tr.parent).tempo;
+
+    return parent == 0 ? 1.0f : std::min(static_cast<float>(tr.tempo) / static_cast<float>(parent), 1.0f);
 }
 
 void Performer::SkipPrint(int t)
@@ -3413,6 +3823,359 @@ void Performer::SkipPrint(int t)
     {
         ReadByte(t);
     }
+}
+
+// --- Pikmin 2's conductors ---
+// PSAutoBgm in Pikmin 2's main.dol (the USA release's addresses). PSGame::seqCpuSync (0x803372e0) passes calls
+// 0x300, 0x600 and 0x800 to the conductor (Conductor::seqCpuSync_AutoBgm, 0x803392e8). It passes 0x900 to 0xd00 to the
+// module that the calling track's last call 0x800 started, and 0x2e00 to the first track's beat (0x8033d374).
+int Performer::ChildNumber(int t) const
+{
+    const Track& tr = TrackAt(t);
+    if (tr.parent < 0)
+    {
+        return -1;
+    }
+    const std::array<int, kChildren>& siblings = TrackAt(tr.parent).children;
+    const auto it = std::ranges::find(siblings, t);
+    return it != siblings.end() ? static_cast<int>(it - siblings.begin()) : -1;
+}
+
+uint32_t Performer::ConductorRandom(uint32_t n)
+{
+    // PSSystem::oRandom steps as a linear congruential generator. Its top 23 bits make a float in [0, 1), and the
+    // product with n, in single precision, gives the draw (0x8033b13c).
+    last_draw_ = tick_;
+    conductor_random_ = conductor_random_ * 0x19660du + 0x3c6ef35fu;
+    const float unit = std::bit_cast<float>(conductor_random_ >> 9 | 0x3f800000u) - 1.0f;
+    return static_cast<uint32_t>(static_cast<float>(n) * unit);
+}
+
+std::optional<uint16_t> Performer::ConductorCall(int t, uint16_t id)
+{
+    const Conductor& conductor = *sound_.conductor;
+    Track& tr = TrackAt(t);
+    switch (id)
+    {
+    case 0x300:
+        {
+            // The first track's tempo, and the sequence's two tables of lists, from the track's ports 2 to 5
+            // (Conductor::createTables, 0x80339404). The answer is the number of tracks to open.
+            tr.tempo = conductor.tempo;
+            if (tr.parent < 0)
+            {
+                tempo_ = conductor.tempo;
+                tr.dirty = true;
+                EmitTempo();
+            }
+            conductor_phrases_ = static_cast<uint32_t>(tr.ports[2]) << 16 | tr.ports[3];
+            conductor_lengths_ = static_cast<uint32_t>(tr.ports[4]) << 16 | tr.ports[5];
+            return static_cast<uint16_t>(conductor.tracks.size());
+        }
+
+    case 0x600:
+    case 0x800:
+        {
+            const int number = ChildNumber(t);
+            if (number < 0 || static_cast<std::size_t>(number) >= conductor.tracks.size())
+            {
+                throw FormatError("a track that the conductor doesn't list calls it");
+            }
+            const ConductorTrack& track = conductor.tracks[static_cast<std::size_t>(number)];
+            ConductorTrackState& state = conductor_tracks_[static_cast<std::size_t>(number)];
+            const ConductorTrack* followed = nullptr;
+            if (track.follows != 0x10)
+            {
+                if (track.follows >= number)
+                {
+                    throw FormatError("a track of the conductor follows a later track");
+                }
+                followed = &conductor.tracks[track.follows];
+            }
+
+            if (id == 0x600)
+            {
+                // Track::seqCpuSync_AutoBgm_Track (0x80339c38): the track starts before its first module, and its
+                // modules find their lists again. The answer is the wait before the track starts.
+                state.module = 0xff;
+                for (ConductorModuleState& m : state.modules)
+                {
+                    m.tables = false;
+                }
+                const uint8_t half = followed != nullptr ? followed->half_beat : track.half_beat;
+                return static_cast<uint16_t>((half == 1 ? 60 : 0) + track.start_beats * 120);
+            }
+
+            // The track's next module, or its last again (Track::incCurModule, 0x80339da8). Without one, the answer
+            // is 0.
+            if (state.module == 0xff)
+            {
+                state.module = 0;
+            }
+            else if (state.module + 1u < track.modules.size())
+            {
+                state.module++;
+            }
+            if (state.module >= track.modules.size())
+            {
+                return 0;
+            }
+            tr.conductor_track = number;
+
+            // Module::seqCpuSync_AutoBgm_Module (0x8033ab20): the module's bank and program at port 3, its volume and
+            // pan, its transpose, and the start of its rounds. The answer is the wait before the module starts.
+            const ConductorModule& mod = track.modules[state.module];
+            ConductorModuleState& m = state.modules[state.module];
+            WritePortApp(t, 3, static_cast<uint32_t>(mod.bank) << 8 | mod.program);
+            SetParam(t, 0, static_cast<float>(std::min<uint8_t>(mod.volume, 127)) / 127.0f, 0);
+            SetParam(t, 3, static_cast<float>(std::min<uint8_t>(mod.pan, 127)) / 127.0f, 0);
+            tr.transpose = static_cast<int8_t>(mod.transpose);
+            m.beats = 0;
+            m.cycle = 0;
+            m.phrase = 0xffff;
+            m.steps = {};
+            if (mod.phrases == 0 && mod.rests == 0)
+            {
+                throw FormatError("a module of the conductor has no phrases and no rests");
+            }
+            if (!m.tables)
+            {
+                // Module::setTableAddress (0x8033ad38): the module's lists, and the entries before each list's end.
+                m.phrase_list = Data24(conductor_phrases_ + 3u * static_cast<uint16_t>(mod.phrase_list));
+                m.phrase_count = 0;
+                while (Data24(m.phrase_list + 3u * m.phrase_count) != 0xffffff)
+                {
+                    if (++m.phrase_count == 0xff)
+                    {
+                        throw FormatError("a list of phrases of the conductor has no end");
+                    }
+                }
+                m.length_list = Data24(conductor_lengths_ + 3u * static_cast<uint16_t>(mod.length_list));
+                m.length_count = 0;
+                while (Data16(m.length_list + 2u * m.length_count) != 0xffff)
+                {
+                    if (++m.length_count == 0xff)
+                    {
+                        throw FormatError("a list of lengths of the conductor has no end");
+                    }
+                }
+                m.tables = true;
+            }
+            uint8_t half = mod.half_beat;
+            if (followed != nullptr)
+            {
+                half = followed->modules.empty() ? uint8_t{0} : followed->modules[0].half_beat;
+            }
+            return static_cast<uint16_t>((half == 1 ? 60 : 0) + mod.start_beats * 120);
+        }
+
+    case 0x900:
+    case 0xa00:
+    case 0xb00:
+    case 0xc00:
+    case 0xd00:
+        {
+            if (tr.conductor_track < 0)
+            {
+                throw FormatError("a track calls the conductor's module before the module starts");
+            }
+            // The calls move the conductor on. A pass that only rests still changes what the track plays next.
+            Changed(t);
+            const std::size_t number = static_cast<std::size_t>(tr.conductor_track);
+            const ConductorTrack& track = conductor.tracks[number];
+            ConductorTrackState& state = conductor_tracks_[number];
+            const ConductorModule& mod = track.modules[state.module];
+            ConductorModuleState& m = state.modules[state.module];
+            const uint8_t count = m.cycle == 0 ? mod.phrases : mod.rests;
+            switch (id)
+            {
+            case 0x900:
+                // Module::cycleLoop (0x8033aef4): 1 moves on to the next module once the module's beats have passed.
+                // Otherwise the round takes its next step. 2 starts the other round, 3 starts a round of phrases and
+                // 0 takes another step.
+                if (state.module + 1u < track.modules.size() && m.beats >= mod.beats)
+                {
+                    return 1;
+                }
+                if (count != 0)
+                {
+                    m.steps[m.cycle]++;
+                    if (m.steps[m.cycle] > count)
+                    {
+                        m.steps[m.cycle] = 0;
+                    }
+                }
+                if (count == 0 || m.steps[m.cycle] == 0)
+                {
+                    m.cycle = static_cast<uint8_t>(m.cycle ^ 1);
+                    return 2;
+                }
+                return m.steps[m.cycle] == 1 && m.cycle == 0 ? 3 : 0;
+            case 0xa00:
+                // CycleBase::cycleTop (0x8033b048).
+                m.taken[m.cycle] = 0;
+                return 0;
+            case 0xb00:
+                m.length = 0xffff;
+                return 0;
+            case 0xc00:
+                return ConductorPlay(t, number);
+            default:
+                // CycleBase::checkCloser (0x8033b214): 1 lets the round's last phrase sound on.
+                if (mod.in_order == 1 && m.taken[m.cycle] != m.length_count)
+                {
+                    return 0;
+                }
+                return m.steps[m.cycle] == count && m.cycle == 0 ? 1 : 0;
+            }
+        }
+
+    case 0x2e00:
+        {
+            // AutoBgmSeqTrackRoot::beatUpdate (0x8033d374): every other call is a beat, and each track's module counts
+            // it. The answer is the conductor's time between calls.
+            beat_top_ = !beat_top_;
+            if (beat_top_)
+            {
+                for (std::size_t i = 0; i < conductor_tracks_.size(); i++)
+                {
+                    ConductorTrackState& state = conductor_tracks_[i];
+                    if (state.module < state.modules.size())
+                    {
+                        state.modules[state.module].beats++;
+                    }
+                }
+            }
+            return conductor.poll;
+        }
+
+    case 0xe00:
+        // SeqTrackRoot::init (0x803426b0) clears the beat.
+        if (tr.parent < 0)
+        {
+            beat_top_ = false;
+        }
+        return std::nullopt;
+
+    default:
+        return std::nullopt;
+    }
+}
+
+uint16_t Performer::ConductorLength(int t, std::size_t number, bool in_order)
+{
+    // A length for the round: the next of the module's list, or one at random, or the followed track's last. No code
+    // of the game makes a melody arrangement (PSAutoBgm::MeloArr_RandomAvoid has no constructor), so the bit that
+    // would skip a phrase (OnCycle::avoidCheck, 0x8033ba98) stays clear.
+    const ConductorTrack& track = sound_.conductor->tracks[number];
+    ConductorTrackState& state = conductor_tracks_[number];
+    ConductorModuleState& m = state.modules[state.module];
+    uint16_t length = 0;
+    if (track.follows != 0x10)
+    {
+        if (in_order)
+        {
+            m.taken[m.cycle]++;
+        }
+        const ConductorTrackState& other = conductor_tracks_[track.follows];
+        length = other.module < other.modules.size() ? other.modules[other.module].length : 0;
+    }
+    else
+    {
+        const uint32_t index = in_order ? m.taken[m.cycle]++ : ConductorRandom(m.length_count) & 0xffff;
+        length = static_cast<uint16_t>(Data16(m.length_list + 2u * index));
+    }
+    m.length = length;
+    WritePortApp(t, 8, length);
+    return length;
+}
+
+void Performer::ConductorTip(int t, std::size_t number)
+{
+    // OnCycle::setTip (0x8033b7c8): the phrase to play, at random, or the followed track's last. A phrase that the
+    // last two draws both gave is drawn again from the others. The phrase's offset goes to ports 6 and 7.
+    const ConductorTrack& track = sound_.conductor->tracks[number];
+    ConductorTrackState& state = conductor_tracks_[number];
+    ConductorModuleState& m = state.modules[state.module];
+    uint16_t phrase = 0;
+    if (track.follows != 0x10)
+    {
+        const ConductorTrackState& other = conductor_tracks_[track.follows];
+        phrase = other.module < other.modules.size() ? other.modules[other.module].phrase : 0;
+    }
+    else if (m.phrase_count > 1)
+    {
+        phrase = static_cast<uint16_t>(ConductorRandom(m.phrase_count));
+        if (m.history_count == 2 && m.history[0] == m.history[1] && m.history[0] == phrase)
+        {
+            const uint16_t same = m.history[0];
+            phrase = static_cast<uint16_t>(ConductorRandom(m.phrase_count - 1u));
+            if (phrase >= same)
+            {
+                phrase++;
+            }
+        }
+        m.history[0] = m.history_count == 2 ? m.history[1] : m.history[0];
+        m.history[m.history_count == 0 ? 0 : 1] = phrase;
+        m.history_count = static_cast<uint8_t>(std::min(m.history_count + 1, 2));
+    }
+    m.phrase = phrase;
+    const uint32_t offset = Data24(m.phrase_list + 3u * phrase);
+    WritePortApp(t, 6, offset >> 16);
+    WritePortApp(t, 7, offset & 0xffff);
+}
+
+uint16_t Performer::ConductorPlay(int t, std::size_t number)
+{
+    // CycleBase::play (0x8033b058) and OnCycle::play (0x8033b468). A round of phrases answers 2 or 0, after it sets a
+    // phrase and a length. A round of rests answers 3 or 1, after it sets a length. A round that takes its lengths in
+    // order answers 4 once it has taken them all.
+    const ConductorModule& mod = sound_.conductor->tracks[number].modules[conductor_tracks_[number].module];
+    ConductorModuleState& m = conductor_tracks_[number].modules[conductor_tracks_[number].module];
+    const bool in_order = mod.in_order == 1;
+    if (in_order && m.taken[m.cycle] == m.length_count)
+    {
+        return 4;
+    }
+    if (m.cycle == 0)
+    {
+        if (in_order)
+        {
+            ConductorLength(t, number, true);
+            ConductorTip(t, number);
+            return 2;
+        }
+        ConductorTip(t, number);
+        ConductorLength(t, number, false);
+        return 0;
+    }
+    ConductorLength(t, number, in_order);
+    return in_order ? 3 : 1;
+}
+
+bool Performer::ConductorDone() const
+{
+    // A conductor moves each track through its modules, then draws its last module's phrases at random without end. A
+    // piece with a conductor plays on until each track has played its last module for the module's beats.
+    if (!sound_.conductor)
+    {
+        return true;
+    }
+    for (std::size_t i = 0; i < conductor_tracks_.size(); i++)
+    {
+        const ConductorTrack& track = sound_.conductor->tracks[i];
+        const ConductorTrackState& state = conductor_tracks_[i];
+        if (track.modules.empty())
+        {
+            continue;
+        }
+        if (state.module + 1u != track.modules.size() ||
+            state.modules[state.module].beats < track.modules[state.module].beats)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 // --- Channels ---
@@ -3457,6 +4220,55 @@ std::optional<std::size_t> Performer::AllocateVoice(uint8_t priority)
     EndChannel(stolen);
 
     return static_cast<std::size_t>(best);
+}
+
+void Performer::RouteOscillators1(Track& tr, Channel& ch)
+{
+    // JASystem::TTrack's routes (0x802814ac in The Wind Waker's main.dol). Each of the track's oscillators that has a
+    // route plays in place of one of the note's oscillators: bits 0 and 1 pick which. With bit 3, the track's
+    // oscillator first takes a copy of the note's (0x8028bb98). With bit 2 alone, it takes the copy but keeps its
+    // release table. Either bit leaves the note as it is if the note has no such oscillator (0x8028bb14). The note then
+    // plays the track's (0x8028bc78). The channel reads the track's oscillator as it plays. Pac-Man Vs. and Pikmin 2
+    // route the track's oscillator even when the note has none to copy (0x8002d3bc in Pac-Man Vs.'s main.dol). None of
+    // the three games' sequences routes with bit 2 or 3. A note keeps its oscillator when the track's has changed in a
+    // way that the performer leaves out (Track::osc1_known), unless bit 3 replaces the track's with a copy.
+    for (std::size_t k = 0; k < tr.osc_routes.size(); k++)
+    {
+        const uint8_t route = tr.osc_routes[k];
+        if (route == kNoRoute)
+        {
+            continue;
+        }
+
+        const std::size_t slot = route & 3u;
+        if (slot >= ch.osc_data.size())
+        {
+            Approximate("oscillators that tracks route to a note's third or fourth oscillator omitted");
+            continue;
+        }
+        if (!tr.osc1_known[k] && (route & 8) == 0)
+        {
+            continue;
+        }
+        if ((route & 0xc) != 0)
+        {
+            if (ch.osc_data[slot] == nullptr)
+            {
+                continue;
+            }
+
+            Oscillator copy = *ch.osc_data[slot];
+            if ((route & 8) == 0)
+            {
+                copy.release = tr.osc1[k].release;
+                copy.release_is_attack = tr.osc1[k].release_is_attack;
+            }
+            tr.osc1[k] = std::move(copy);
+            tr.osc1_known[k] = true;
+        }
+        ch.osc_data[slot] = &tr.osc1[k];
+        ch.track_osc[slot] = &tr.osc1[k];
+    }
 }
 
 std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity, uint32_t timer, float sweep,
@@ -3555,11 +4367,22 @@ std::optional<std::size_t> Performer::StartChannel(int t, int key, int velocity,
         ch.osc_data[0] = &kDrumOscillator;
         ch.osc_data[1] = nullptr;
     }
-    for (std::size_t i = 0; i < 2; i++)
+    if (sound_.jaudio1)
     {
-        if (tr.osc[i])
+        if (sound_.track_oscillator_routes)
         {
-            ch.osc_data[i] = &*tr.osc[i];
+            RouteOscillators1(tr, ch);
+        }
+    }
+    else
+    {
+        for (std::size_t i = 0; i < 2; i++)
+        {
+            if (tr.osc[i])
+            {
+                ch.osc_data[i] = &*tr.osc[i];
+                ch.track_osc[i] = ch.osc_data[i];
+            }
         }
     }
     for (std::size_t i = 0; i < 2; i++)
@@ -3621,7 +4444,8 @@ void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
 
     // JASTrack::seqTimeToDspTime (0x80037bc8) divides the length by the track's tick rate. A track opens with the
     // default rate (tempo 120, timebase 48). updateTrack sets the rate at the end of each sub-frame. So a note in the
-    // tick that opens its track, or in a tick that changes the tempo, keeps the earlier rate.
+    // tick that opens its track, or in a tick that changes the tempo, keeps the earlier rate. The later JAudio1 gives
+    // the track the current rate at once (OpenChild and EmitTempo).
     const auto subframes = static_cast<uint32_t>(time / tr.tick_rate);
     const uint32_t timer = (flags & 6) ? 0 : subframes;
     const bool sweeps = (flags & 1) != 0;
@@ -3649,7 +4473,16 @@ void Performer::GateOn(int t, int key, int velocity, float time, uint32_t flags)
         // hears.
         Channel& ch = channels_[static_cast<std::size_t>(tr.slots[0])];
         const bool heard = !BelowHearing(ch);
+        const float old_offset = ch.key_offset;
         ch.key_offset = static_cast<float>(from - ch.base_key);
+        if (sound_.jaudio1)
+        {
+            // JASystem::TChannel sets a tied note's pitch at its key (0x80288e44 in The Wind Waker's main.dol). A sweep
+            // keeps its target as a pitch (0x8028bd10). A sweep under way goes on from the new key toward that target.
+            // A sweep that has ended adds nothing. JAudio2's JASChannel keeps the sweep's semitones on top of the key.
+            ch.sweep_target = ch.sweep_count != 0 ? old_offset + ch.sweep_target - ch.key_offset : 0.0f;
+            ch.key_sweep = 0.0f;
+        }
         ch.velocity = static_cast<uint8_t>(std::clamp(velocity, 0, 127));
         ch.cc11_velocity = heard ? ch.velocity : std::min(ch.velocity, ch.midi_velocity);
         if (ch.midi_on && heard && ch.velocity > ch.midi_velocity)
@@ -3753,10 +4586,10 @@ void Performer::EndChannel(std::size_t c)
 float Performer::ChannelVolume(const Channel& ch, float osc_volume) const
 {
     // JASChannel::updateEffectorParam: velocity squared, the instrument's volume, the oscillators, the track's volume
-    // and the tremolo.
+    // and the tremolo. The game's level of the mix applies to every channel.
     const float v = static_cast<float>(ch.velocity) / 127.0f;
     const float volume = ch.sound.volume * osc_volume * ch.params.volume * (ch.tremolo.Value() + 1.0f) * (v * v) *
-                         (ch.auto_mixer ? kAutoMixerLevel : 1.0f);
+                         (ch.auto_mixer ? kAutoMixerLevel : 1.0f) * sound_.mix_level;
     return std::max(volume, 0.0f);
 }
 
@@ -4024,6 +4857,16 @@ void Performer::EmitTempo()
         out_.timebase = std::max<uint16_t>(timebase_, 1);
     }
     recorder_.SetTempo(out_, tick_, static_cast<double>(tempo_) * timebase_ / out_.timebase * tempo_rate_);
+
+    // In the later JAudio1, setTempo and setTimebase run updateTempo at once (0x800a259c and 0x800a25d8 in Pikmin 2's
+    // main.dol). The first track works out its tick rate, and each open child copies its parent's (0x800a06d0).
+    if (sound_.later_jaudio1)
+    {
+        for (Track& tr : tracks_)
+        {
+            tr.tick_rate = tr.parent < 0 ? TicksPerSubFrame() : TrackAt(tr.parent).tick_rate;
+        }
+    }
 }
 
 bool Performer::Audible(const Channel& ch) const
@@ -4195,17 +5038,63 @@ void Performer::SweepBetweenTicks()
     }
 }
 
+float Performer::SoundVolume() const
+{
+    return sound_.volume * fade_;
+}
+
+void Performer::MoveFade()
+{
+    // JAInter::SequenceMgr::checkReadSeq (0x8029706c in The Wind Waker's main.dol) sets the sound's inter volume 7 to 0
+    // once the sequence's data is in, then moves it to 1 over the fade's frames. Each of the game's frames moves it by
+    // the same step. The game's frames come 30 a second. The level reaches the tracks as the sound's volume does.
+    constexpr double kGameFramesPerSecond = 30.0;
+    if (fade_ >= 1.0f)
+    {
+        return;
+    }
+
+    const double frames = std::floor(static_cast<double>(subframe_) * kSubFrameSeconds * kGameFramesPerSecond);
+    const auto level = static_cast<float>(std::min(frames / static_cast<double>(sound_.fade_in), 1.0));
+    if (level != fade_)
+    {
+        fade_ = level;
+        TrackAt(0).dirty = true;
+    }
+}
+
+uint8_t Performer::ZoneFilter(int t) const
+{
+    const uint8_t entry = TrackAt(t).filter_entry;
+    if (!sound_.zone_filters || swept_filters_in_.contains(t) || !TrackFilterHeard(entry, sound_.filter_rate))
+    {
+        return kOpenTrackFilter;
+    }
+
+    return entry;
+}
+
 double Performer::TrackLevel(int t) const
 {
-    // CC11 holds the square root of the parents' volumes and the sound's volume, and of kAutoMixerLevel for notes on
-    // the DSP's automatic mixer. CC11 acts squared.
+    // CC11 holds the square root of the parents' volumes and the sound's volume, of the track's volume through the
+    // sound's handle, its external volume and the game's level of the mix, and of kAutoMixerLevel for notes on the
+    // DSP's automatic mixer. CC11 acts squared.
     const Track& tr = TrackAt(t);
-    float above = tr.parent < 0 ? sound_.volume : TrackAt(tr.parent).params.volume;
+    float above = (tr.parent < 0 ? SoundVolume() : TrackAt(tr.parent).params.volume) * tr.handle_volume *
+                  tr.ext_volume * sound_.mix_level;
     if (TrackAt(ChannelsTrack(t)).auto_mixer)
     {
         above *= kAutoMixerLevel;
     }
     return 127.0 * std::sqrt(std::max(static_cast<double>(above), 0.0));
+}
+
+std::array<float, 3> Performer::NoteWeights(int t, std::size_t value) const
+{
+    // TTrack::noteOn: a note takes its rule from the channels' track and its pan powers from its track
+    // (TChannel::setPanPower). `value` is 0 for the pan and 1 for the effect send.
+    const Track& tr = TrackAt(t);
+    return CalcWeights(TrackAt(ChannelsTrack(t)).channel_calc[value], {tr.regs[8], tr.regs[9], tr.regs[10]});
 }
 
 int Performer::ChannelsTrack(int t) const
@@ -4234,13 +5123,21 @@ void Performer::RecordOutputs(int t)
         level *= static_cast<double>(ch.cc11_velocity) / static_cast<double>(ch.midi_velocity);
     }
     recorder_.RaiseLevelPeak(level);
-    // CC7 acts squared. The game squares the track's volume in volume mode 0 too. In mode 1, it plays the volume as it
-    // is, and CC7 holds the volume's square root.
+    // CC7 acts squared. The game squares the track's volume in volume mode 0 too (SquaresVolume). Otherwise it plays
+    // the volume as it is, and CC7 holds the volume's square root.
     const double track_volume = std::abs(static_cast<double>(tr.move[0].value));
-    const double cc7 = tr.volume_mode == 0 ? track_volume : std::sqrt(track_volume);
+    const double cc7 = SquaresVolume(tr) ? track_volume : std::sqrt(track_volume);
     const int volume = std::clamp(static_cast<int>(std::lround(127.0 * cc7)), 0, 127);
     const int expression = recorder_.Expression(level);
-    const int pan = std::clamp(static_cast<int>(std::lround(127.0 * std::clamp(tr.params.pan, 0.0f, 1.0f))), 0, 127);
+    // A JAudio1 note weights the track's pan and effect send by its rules (NoteWeights).
+    double track_pan = static_cast<double>(tr.params.pan);
+    double send = static_cast<double>(tr.params.fx_mix);
+    if (sound_.jaudio1)
+    {
+        track_pan = 0.5 + static_cast<double>(NoteWeights(t, 0)[2]) * (track_pan - 0.5);
+        send *= static_cast<double>(NoteWeights(t, 1)[2]);
+    }
+    const int pan = std::clamp(static_cast<int>(std::lround(127.0 * std::clamp(track_pan, 0.0, 1.0))), 0, 127);
     const double vibrato_cents = 1200.0 * std::abs(tr.vib_depth);
     if (vibrato_cents > kVibratoRangeCents)
     {
@@ -4249,15 +5146,14 @@ void Performer::RecordOutputs(int t)
     // CC1 holds 128 times the depth over kVibratoRangeCents. The SoundFont's and SFZ's modulators read it that way.
     const int modulation =
         std::clamp(static_cast<int>(std::lround(128.0 * vibrato_cents / kVibratoRangeCents)), 0, 127);
-    const int reverb =
-        std::clamp(static_cast<int>(std::lround(127.0 * std::clamp(tr.params.fx_mix, 0.0f, 1.0f))), 0, 127);
+    const int reverb = std::clamp(static_cast<int>(std::lround(127.0 * std::clamp(send, 0.0, 1.0))), 0, 127);
     if (tr.trem_depth != 0.0f)
     {
         Approximate("tremolo omitted");
     }
     if (tr.iir)
     {
-        Approximate("track filters omitted");
+        Approximate(ZoneFilter(t) != kOpenTrackFilter ? "track filters played by zones" : "track filters omitted");
     }
 
     SendSetting(t, EventKind::kVolume, volume);
@@ -4282,36 +5178,59 @@ void Performer::MidiNoteOn(std::size_t c)
     PresetKey key;
     key.bank = ch.sound.bank;
     key.program = ch.sound.program;
-    auto same_point = [](const OscPoint& a, const OscPoint& b)
+    auto same_points = [](const std::vector<OscPoint>& a, const std::vector<OscPoint>& b)
     {
-        return a.mode == b.mode && a.time == b.time && a.value == b.value;
+        return std::ranges::equal(a, b, [](const OscPoint& x, const OscPoint& y)
+                                  { return x.mode == y.mode && x.time == y.time && x.value == y.value; });
     };
     for (std::size_t i = 0; i < 2; i++)
     {
-        if (tr.osc[i])
+        // A JAudio1 note plays the track's oscillators that its routes give (RouteOscillators1). A JAudio2 note plays
+        // the track's tables.
+        const Oscillator* osc = sound_.jaudio1 ? ch.track_osc[i] : (tr.osc[i] ? &*tr.osc[i] : nullptr);
+        if (osc == nullptr)
         {
-            int index = -1;
-            for (std::size_t k = 0; k < out_.oscillators.size(); k++)
-            {
-                const Oscillator& o = out_.oscillators[k];
-                if (o.target == tr.osc[i]->target && o.scale == tr.osc[i]->scale &&
-                    o.attack.size() == tr.osc[i]->attack.size() &&
-                    std::equal(o.attack.begin(), o.attack.end(), tr.osc[i]->attack.begin(), same_point))
-                {
-                    index = static_cast<int>(k);
-                }
-            }
-            if (index < 0)
-            {
-                out_.oscillators.push_back(*tr.osc[i]);
-                index = static_cast<int>(out_.oscillators.size() - 1);
-            }
-            (i == 0 ? key.volume_oscillator : key.pitch_oscillator) = index;
+            continue;
         }
+        if (sound_.jaudio1 && osc->target > 1)
+        {
+            Approximate("oscillators that tracks set for a note's pan, effect send or surround omitted");
+            continue;
+        }
+
+        int index = -1;
+        for (std::size_t k = 0; k < out_.oscillators.size(); k++)
+        {
+            const Oscillator& o = out_.oscillators[k];
+            if (o.target == osc->target && o.rate == osc->rate && o.scale == osc->scale && o.vertex == osc->vertex &&
+                o.release_is_attack == osc->release_is_attack && same_points(o.attack, osc->attack) &&
+                same_points(o.release, osc->release))
+            {
+                index = static_cast<int>(k);
+            }
+        }
+        if (index < 0)
+        {
+            out_.oscillators.push_back(*osc);
+            index = static_cast<int>(out_.oscillators.size() - 1);
+        }
+        (i == 0 ? key.volume_oscillator : key.pitch_oscillator) = index;
+    }
+    if (sound_.jaudio1)
+    {
+        const std::array<float, 3> weights = NoteWeights(t, 0);
+        key.bank_pan_weight = weights[0];
+        key.effect_pan_weight = weights[1];
     }
     key.direct_release = tr.direct_release;
     key.vibrato_rate = tr.vib_pitch;
     key.vibrato_delay = tr.vib_delay;
+    key.track_filter = ZoneFilter(t);
+    if (key.track_filter != kOpenTrackFilter &&
+        filter_seen_.try_emplace(t, key.track_filter).first->second != key.track_filter)
+    {
+        swept_filters_.insert(t);
+    }
     const uint32_t preset = seqlib::midi::PresetIndex(out_.presets, key);
 
     // A note whose key starts it past the DSP's pitch limit plays at the limit. The preset then plays that key and the
@@ -4497,6 +5416,12 @@ bool Performer::Stuck() const
 int Performer::EffectSlotTrack() const
 {
     const EffectStart& e = *sound_.effect;
+    if (e.request == EffectRequest::kPort)
+    {
+        const int track = tracks_.empty() ? -1 : tracks_[0].children[static_cast<std::size_t>(e.slot & 15)];
+        return track >= 0 && TrackAt(track).open ? track : -1;
+    }
+
     const int owner = tracks_.empty() ? -1 : tracks_[0].children[static_cast<std::size_t>(e.slot >> 4)];
     if (owner < 0 || !TrackAt(owner).open)
     {
@@ -4519,7 +5444,7 @@ bool Performer::InEffect(int t) const
     }
     if (t == effect_track_)
     {
-        return TrackAt(t).depth > 0;
+        return sound_.effect->request == EffectRequest::kSlot && TrackAt(t).depth > 0;
     }
 
     for (int u = TrackAt(t).parent; u >= 0; u = TrackAt(u).parent)
@@ -4535,12 +5460,41 @@ bool Performer::InEffect(int t) const
 
 bool Performer::EffectTaken() const
 {
-    return effect_track_ >= 0 && TrackAt(effect_track_).ports[0] != 1;
+    if (effect_track_ < 0)
+    {
+        return false;
+    }
+
+    const Track& tr = TrackAt(effect_track_);
+    if (sound_.effect->request == EffectRequest::kPort)
+    {
+        return ((tr.imported >> (sound_.effect->port & 15)) & 1) == 0;
+    }
+
+    return tr.ports[0] != 1;
 }
 
 bool Performer::EffectFree() const
 {
-    return EffectTaken() && TrackAt(effect_track_).ports[2] == 0;
+    if (!EffectTaken())
+    {
+        return false;
+    }
+
+    if (sound_.effect->request == EffectRequest::kPort)
+    {
+        for (std::size_t t = 0; t < tracks_.size(); t++)
+        {
+            if (static_cast<int>(t) != effect_track_ && tracks_[t].open && InEffect(static_cast<int>(t)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    return TrackAt(effect_track_).ports[2] == 0;
 }
 
 void Performer::StartEffect()
@@ -4550,6 +5504,27 @@ void Performer::StartEffect()
     effect_track_ = EffectSlotTrack();
     if (effect_track_ < 0)
     {
+        return;
+    }
+
+    // Pikmin's library writes the number alone. Values for the track's other ports go first: the sound's, with the
+    // options' in their place.
+    const EffectStart& e = *sound_.effect;
+    if (e.request == EffectRequest::kPort)
+    {
+        std::map<uint8_t, uint16_t> ports = sound_.ports;
+        for (const auto& [port, value] : options_.ports)
+        {
+            ports[port] = value;
+        }
+        for (const auto& [port, value] : ports)
+        {
+            if ((port & 15u) != (e.port & 15u))
+            {
+                WritePortApp(effect_track_, port & 15u, value);
+            }
+        }
+        WritePortApp(effect_track_, e.port & 15u, e.number);
         return;
     }
 
@@ -4682,6 +5657,13 @@ void Performer::DecideLoop()
         stop_ = true;
         stop_tick_ = pending.end;
         held_sound_end_ = HeldSoundEnd(pending.start);
+
+        // A conductor draws its last modules' phrases at random without end (ConductorDone). No pass plays as the next
+        // one does, so the file has no loop.
+        if (sound_.conductor)
+        {
+            out_.DropLoop();
+        }
     }
 }
 
@@ -4767,6 +5749,18 @@ void Performer::EndPerformance(bool finished)
                 }
             }
         }
+
+        // Changes that come more than kHoldSeconds after the last sound can't be heard (EndsAtLastSound). The
+        // performance then ends with the sound, including the echo. A note below hearing that sounds on keeps its
+        // note-off, at the end.
+        if (EndsAtLastSound(sound_end_, TickSeconds(last_event)))
+        {
+            const uint32_t end = SecondsToTick(sound_end_);
+            seqlib::midi::ClampNoteOffs(out_, end);
+            seqlib::midi::CutAt(out_, end);
+            std::erase_if(out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
+            last_event = std::min(last_event, end);
+        }
         out_.seconds = std::max(sound_end_, TickSeconds(last_event));
         out_.end_tick = std::max(last_event, SecondsToTick(out_.seconds));
     }
@@ -4782,6 +5776,17 @@ void Performer::EndPerformance(bool finished)
 
 bool Performer::Advance()
 {
+    // The game's writes by section (SequenceSound::status_by_section). The root track is track 0.
+    if (!sound_.status_by_section.empty())
+    {
+        const auto status = sound_.status_by_section.find(TrackAt(0).ports[10]);
+        if (status != sound_.status_by_section.end())
+        {
+            WritePortApp(0, 9, status->second);
+        }
+    }
+
+    MoveFade();
     UpdateChannels();
     if (accumulator_ < 1.0f)
     {
@@ -4857,23 +5862,49 @@ Performance Performer::Run()
     Track& tr = TrackAt(root);
     tr.pc = sound_.start;
     tr.open = true;
+    if (sound_.jaudio1 && sound_.bank != 0)
+    {
+        tr.bank = sound_.bank;
+        tr.regs[6] = static_cast<uint16_t>(sound_.bank << 8 | (tr.regs[6] & 0xff));
+    }
     if (!sound_.effect)
     {
+        // The game's values first, then the options'. An option takes the place of the game's value.
+        std::map<uint8_t, uint16_t> ports;
+        for (const auto& [port, value] : sound_.ports)
+        {
+            ports[port & 15] = value;
+        }
         for (const auto& [port, value] : options_.ports)
         {
-            tr.ports[port & 15] = value;
-            tr.imported = static_cast<uint16_t>(tr.imported | (1u << (port & 15)));
+            ports[port & 15] = value;
+        }
+        for (const auto& [port, value] : ports)
+        {
+            tr.ports[port] = value;
+            tr.imported = static_cast<uint16_t>(tr.imported | (1u << port));
         }
     }
 
     bool finished = false;
     double steady_since = -1.0;
+    bool game_ports_written = sound_.game_ports.empty();
     for (;;)
     {
         if (!Advance())
         {
             finished = true;
             break;
+        }
+
+        // The game's writes to the root track's ports come after the first tick (SequenceSound::game_ports).
+        if (!game_ports_written && ticked_)
+        {
+            for (const auto& [port, value] : sound_.game_ports)
+            {
+                WritePortApp(root, port & 15u, value);
+            }
+            game_ports_written = true;
         }
 
         if (pending_loop_)
@@ -4966,12 +5997,22 @@ Performance Perform(const SequenceSound& sound, BankSet& banks, const PerformOpt
     std::vector<Performer::LoopChoice> loop_choices;
     std::map<uint32_t, uint8_t> tie_velocities;
     bool ties_known = false;
+    std::set<int> swept_filters;
     Performance performance;
     for (int pass = 0; pass < 4; pass++)
     {
-        Performer performer(sound, banks, options, program, LevelScale(peak), part_limits, loop_choices,
-                            tie_velocities);
+        Performer performer(sound, banks, options, program, LevelScale(peak), part_limits, loop_choices, tie_velocities,
+                            swept_filters);
         performance = performer.Run();
+
+        // A run that finds swept filters has given their entries presets. The next run leaves them out. This run
+        // doesn't count.
+        if (swept_filters.empty() && !performer.SweptFilters().empty())
+        {
+            swept_filters = performer.SweptFilters();
+            pass--;
+            continue;
+        }
         applied = peak;
         loop_choices = performer.LoopChoices();
         if (!ties_known)
@@ -5008,6 +6049,17 @@ Performance Perform(const SequenceSound& sound, BankSet& banks, const PerformOpt
     }
 
     ntdlib::sequence_export::SetLevelCut(performance, applied);
+
+    for (const PresetKey& key : performance.presets)
+    {
+        if (!performance.filter_layers.contains(key.track_filter))
+        {
+            performance.filter_layers[key.track_filter] =
+                TrackFilterLayers(key.track_filter, sound.filter_rate, FilterFormat::kSoundFont);
+            performance.sfz_filter_layers[key.track_filter] =
+                TrackFilterLayers(key.track_filter, sound.filter_rate, FilterFormat::kSfz);
+        }
+    }
 
     return performance;
 }

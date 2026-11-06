@@ -357,25 +357,26 @@ WaveSoundPlayer* Engine::StartWaveSound(uint32_t index)
     return StartNow<WaveSoundPlayer>(info, sound, wave);
 }
 
-StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file)
+StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file, uint16_t tracks)
 {
     if (index >= archive_.Sounds().size() || archive_.Sounds()[index].type != ntdlib::sar::SoundType::kStream)
     {
         return nullptr;
     }
 
-    return StartStreamSound(archive_.Sounds()[index], file);
+    return StartStreamSound(archive_.Sounds()[index], file, tracks);
 }
 
-StreamSoundPlayer* Engine::StartStreamSound(const ntdlib::sar::SoundInfo& info, std::span<const uint8_t> file)
+StreamSoundPlayer* Engine::StartStreamSound(const ntdlib::sar::SoundInfo& info, std::span<const uint8_t> file,
+                                            uint16_t tracks)
 {
     const ntdlib::sar::StreamFile stream = ntdlib::sar::StreamFile::Read(file);
-    const StreamTracks tracks = StreamTracksOf(info.stream, stream);
+    const StreamTracks stream_tracks = StreamTracksOf(info.stream, stream);
 
     // The player's channels: the sound's, up to 8 (0x180898). The model plays no more than the stream holds.
     const std::size_t count =
         std::min({std::size_t{info.stream.channel_count}, StreamSoundPlayer::kMaxChannels, stream.channels.size()});
-    if (tracks.tracks.empty() || count == 0)
+    if (stream_tracks.tracks.empty() || count == 0)
     {
         return nullptr;
     }
@@ -387,7 +388,13 @@ StreamSoundPlayer* Engine::StartStreamSound(const ntdlib::sar::SoundInfo& info, 
         waves.push_back(StreamChannelWave(stream, channel, fcram_.Store(samples.data(), samples.size())));
     }
 
-    return StartNow<StreamSoundPlayer>(info, tracks, std::move(waves));
+    // The sound starts at once. Its voices take the tracks' volumes in the player's first update, in the next frame.
+    StreamSoundPlayer* player = StartNow<StreamSoundPlayer>(info, stream_tracks, std::move(waves));
+
+    // What the game sets through the sound's handle as the sound starts.
+    player->SetTrackVolume(static_cast<uint16_t>(~tracks), 0.0f);
+
+    return player;
 }
 
 void Engine::FrameProcess()

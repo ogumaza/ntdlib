@@ -71,6 +71,13 @@ bool JAudio1ChangesSound(uint8_t command);
 // pass belongs to the pass. A track idles in a loop whose passes poll or change nothing. It moves when it runs a
 // command outside that loop.
 //
+// With `restarts_as_passes`, a track that has finished (kFinishCommand) and runs its first command again starts a new
+// pass. The pass before it ran the whole track, from that command to the finish. The track's code can finish before
+// the place where it starts. These passes count apart from the loops inside them. Mario Kart: Double Dash!!'s game
+// starts a level sound again each frame. Once a level sound's tracks have finished, that start runs them again from
+// their first commands. The root track of such a sound jumps back to a routine that waits for the other tracks to
+// finish, and finishes there.
+//
 // A loop inside a call never counts. With `idle_in_calls`, a track can still idle in one. Pikmin 2's root tracks call
 // a routine that polls the game once a beat and never returns. Without the option, every poll is a move, and the root
 // track holds back the loops of the tracks after it.
@@ -89,7 +96,7 @@ public:
     // events' frames count at `sample_rate` frames a second: the rate of the output. `changes_sound` is the test of
     // whether a command changes the sound.
     LoopFinder(uint32_t root, uint32_t sample_rate, bool (*changes_sound)(uint8_t command) = ChangesSound,
-               bool idle_in_calls = false);
+               bool idle_in_calls = false, bool restarts_as_passes = false);
 
     // Takes one event, in the order in which the events happened.
     Verdict Take(const TrackEvent& event, const Sounded& sounded);
@@ -127,10 +134,12 @@ private:
         std::map<uint32_t, Time> reached;   // where it ran commands outside any call, and when it last did
         std::map<uint32_t, Time> reached_in_calls; // with idle_in_calls: the same for its commands in calls
         uint64_t first_command = 0;
+        std::optional<uint32_t> first_at; // where the track ran its first command
         uint64_t last_command = 0;
         uint64_t pass_start = 0;     // the frame at which the track last reached the command that it jumps back to
         std::optional<Loop> counted; // the loop whose passes the track counts
         int loops = 0;
+        int restarts = 0; // with restarts_as_passes: the passes of the whole track that count, in a row
         bool finished = false;
         TrackWait wait = {};
     };
@@ -142,6 +151,7 @@ private:
     static uint64_t LastMove(const Track& track);
 
     Verdict Jump(Track& track, const TrackEvent& event, const Sounded& sounded);
+    Verdict Restart(Track& track, const TrackEvent& event, const Sounded& sounded);
     void JumpInCall(Track& track, const TrackEvent& event);
 
     // Whether a track can't move by itself: it idles, it has finished (kFinishCommand), or it has run no command for
@@ -157,6 +167,7 @@ private:
     uint32_t sample_rate_;
     bool (*changes_sound_)(uint8_t command);
     bool idle_in_calls_;
+    bool restarts_as_passes_;
 };
 
 } // namespace ntdlib::jaudio

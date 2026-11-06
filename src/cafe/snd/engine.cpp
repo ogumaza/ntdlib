@@ -194,21 +194,21 @@ WaveSoundPlayer* Engine::StartWaveSound(uint32_t index)
     return &players_.Add<WaveSoundPlayer>(1, info, sound, wave);
 }
 
-StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file)
+StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file, uint16_t tracks)
 {
     if (index >= archive_->Sounds().size() || archive_->Sounds()[index].type != sar::SoundType::kStream)
     {
         return nullptr;
     }
 
-    return StartStreamSound(archive_->Sounds()[index], file);
+    return StartStreamSound(archive_->Sounds()[index], file, tracks);
 }
 
-StreamSoundPlayer* Engine::StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file)
+StreamSoundPlayer* Engine::StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file, uint16_t tracks)
 {
     auto stream = std::make_unique<const sar::StreamFile>(sar::StreamFile::Read(file));
-    const ntdlib::nwsnd::StreamTracks tracks = ntdlib::nwsnd::StreamTracksOf(info.stream, *stream);
-    if (tracks.tracks.empty())
+    const ntdlib::nwsnd::StreamTracks stream_tracks = ntdlib::nwsnd::StreamTracksOf(info.stream, *stream);
+    if (stream_tracks.tracks.empty())
     {
         return nullptr;
     }
@@ -225,7 +225,12 @@ StreamSoundPlayer* Engine::StartStreamSound(const sar::SoundInfo& info, std::spa
     }
     streams_.push_back(std::move(stream));
 
-    return &players_.Add<StreamSoundPlayer>(1, info, tracks, std::move(waves));
+    StreamSoundPlayer& player = players_.Add<StreamSoundPlayer>(1, info, stream_tracks, std::move(waves));
+
+    // What the game sets through the sound's handle as the sound starts.
+    player.SetTrackVolume(static_cast<uint16_t>(~tracks), 0.0f);
+
+    return &player;
 }
 
 void Engine::FrameProcess()

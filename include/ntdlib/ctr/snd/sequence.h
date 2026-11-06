@@ -49,8 +49,9 @@ struct Policy : ntdlib::nwsnd::CtrPolicy
         function(outputs...);
     }
 
-    // The 3DS's players and tracks give no output parameters beyond the track's pan, surround pan and sends. Those go
-    // to the channels as they are (SequenceTrack::UpdateChannelParam, 0x31de18).
+    // The 3DS's players and tracks give no output parameters beyond the track's pan, surround pan and sends, and the
+    // player's sends. The pan and the surround pan go to the channels as they are. Each send is the track's plus the
+    // player's (SequenceTrack::UpdateChannelParam, 0x31de18; the sends at 0x31e03c to 0x31e068).
     static Outputs CombineOutputs(const Outputs& player, const Outputs& track, float pan, float span, float main_send,
                                   const std::array<float, 3>& fx_send);
 

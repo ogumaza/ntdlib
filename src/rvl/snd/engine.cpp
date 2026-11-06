@@ -197,23 +197,24 @@ WsdPlayer* Engine::StartWaveSound(uint32_t index)
     return player;
 }
 
-StrmPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file)
+StrmPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file, uint16_t tracks)
 {
     if (index >= archive_.Sounds().size())
     {
         return nullptr;
     }
 
-    return StartStream(archive_.Sounds()[index], file, SendsOf(sends_, index));
+    return StartStream(archive_.Sounds()[index], file, SendsOf(sends_, index), tracks);
 }
 
-StrmPlayer* Engine::StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file)
+StrmPlayer* Engine::StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
+                                     uint16_t tracks)
 {
-    return StartStream(sound, file, {});
+    return StartStream(sound, file, {}, tracks);
 }
 
 StrmPlayer* Engine::StartStream(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
-                                const std::array<float, ax::kAuxBusCount>& sends)
+                                const std::array<float, ax::kAuxBusCount>& sends, uint16_t playing)
 {
     if (sound.type != ntdlib::rsar::SoundType::kStream)
     {
@@ -259,6 +260,9 @@ StrmPlayer* Engine::StartStream(const ntdlib::rsar::SoundInfo& sound, std::span<
     update_order_.push_back(id);
     StrmPlayer* player = stream_players_.back().get();
     player->Start();
+
+    // What the game sets through the sound's handle as the sound starts.
+    player->SetTrackVolume(static_cast<uint16_t>(~playing), 0.0f);
 
     return player;
 }

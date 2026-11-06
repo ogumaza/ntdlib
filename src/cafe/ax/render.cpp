@@ -179,6 +179,23 @@ void ApplyEnvelope(VolumeRamp& ve, std::span<int16_t> samples)
         static_cast<uint16_t>(ve.volume + static_cast<uint32_t>(static_cast<int32_t>(samples.size() / 2) * step));
 }
 
+// The envelope as Cemu applies it to a voice without a filter (`unsaturated_envelope`): the same gains, with each
+// product kept whole in `out`.
+void ApplyUnsaturatedEnvelope(VolumeRamp& ve, std::span<const int16_t> samples, std::span<int32_t> out)
+{
+    const auto delta = static_cast<uint16_t>(ve.delta);
+    const auto step = static_cast<int16_t>(static_cast<uint16_t>(2 * delta));
+    for (std::size_t i = 0; i < samples.size(); ++i)
+    {
+        const uint32_t start = i % 2 == 0 ? ve.volume : ve.volume + uint32_t{delta};
+        const auto gain = static_cast<uint16_t>(start + static_cast<uint32_t>(static_cast<int32_t>(i / 2) * step));
+        out[i] = static_cast<int32_t>((2 * int64_t{samples[i]} * gain) >> 16);
+    }
+
+    ve.volume =
+        static_cast<uint16_t>(ve.volume + static_cast<uint32_t>(static_cast<int32_t>(samples.size() / 2) * step));
+}
+
 // The one-pole low-pass filter (0x05AF), y = a0 x + b0 y1, with a0 taken as unsigned. Each output saturates to 16 bits
 // and feeds back that way.
 void ApplyLpf(Lpf& lpf, std::span<int16_t> samples)
@@ -243,7 +260,9 @@ HostGains HostRamp(uint16_t from, uint16_t to, std::size_t samples)
 // Adds the samples into one bus channel (0x0796 and 0x07B1). Each product is rounded down to a whole sample. The volume
 // is constant, or it starts at the block's volume with the first sample and moves by the delta each sample. A host's
 // gains, if any, scale each product in 1.15, rounded down again. A meter's channel, if any, takes the same products.
-void Mix(std::span<const int16_t> samples, VolumeRamp& mix, bool ramp, Buses::Channel& bus,
+// The samples are 16 bits wide unless Cemu's `unsaturated_envelope` applies.
+template <typename Sample>
+void Mix(std::span<const Sample> samples, VolumeRamp& mix, bool ramp, Buses::Channel& bus,
          const HostGains* host = nullptr, Buses::Channel* meter = nullptr)
 {
     const auto delta = static_cast<uint16_t>(mix.delta);
@@ -391,25 +410,10 @@ float MixGainAfter(VolumeRamp& mix, int bits)
     return bits != 0 ? static_cast<float>(mix.volume) / 32768.0f : 0.0f;
 }
 
-} // namespace
-
-void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const CemuDepartures& cemu,
-                 const HostMix& host)
+// Adds a voice's samples into every bus and channel of its masks.
+template <typename Sample>
+void MixVoice(std::span<const Sample> x, Pb& pb, Buses& buses, const HostMix& host)
 {
-    if (pb.state != VoiceState::kRun)
-    {
-        return;
-    }
-
-    std::array<int16_t, kMaxSamplesPerFrame> buffer;
-    const std::span<int16_t> x(buffer.data(), static_cast<std::size_t>(samples));
-    Accelerator accelerator(pb, memory, cemu.loop_keeps_history);
-    Fetch(pb, accelerator, cemu, x.size(), x.data());
-    accelerator.Store();
-    ApplyEnvelope(pb.ve, x);
-    ApplyLpf(pb.lpf, x);
-    ApplyBiquad(pb.biquad, x);
-
     // The host's mute scales every product of the frame. Without a mute, the products stay as they are.
     HostGains host_gains{};
     const bool scaled = host.was_muted || host.muted;
@@ -430,7 +434,7 @@ void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const 
             {
                 Buses::Channel* meter =
                     bus == 0 && channel < 2 && host.meter != nullptr ? &(*host.meter)[channel] : nullptr;
-                Mix(x, pb.tv_mix[channel][bus], bits == 3, buses.tv[bus][channel], gains, meter);
+                Mix<Sample>(x, pb.tv_mix[channel][bus], bits == 3, buses.tv[bus][channel], gains, meter);
             }
         }
     }
@@ -443,11 +447,41 @@ void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const 
                 const int bits = (pb.drc_mask[drc][bus] >> (2 * channel)) & 3;
                 if (bits != 0)
                 {
-                    Mix(x, pb.drc_mix[drc][channel][bus], bits == 3, buses.drc[drc][bus][channel], gains);
+                    Mix<Sample>(x, pb.drc_mix[drc][channel][bus], bits == 3, buses.drc[drc][bus][channel], gains);
                 }
             }
         }
     }
+}
+
+} // namespace
+
+void RenderVoice(Pb& pb, const Memory& memory, int samples, Buses& buses, const CemuDepartures& cemu,
+                 const HostMix& host)
+{
+    if (pb.state != VoiceState::kRun)
+    {
+        return;
+    }
+
+    std::array<int16_t, kMaxSamplesPerFrame> buffer;
+    const std::span<int16_t> x(buffer.data(), static_cast<std::size_t>(samples));
+    Accelerator accelerator(pb, memory, cemu.loop_keeps_history);
+    Fetch(pb, accelerator, cemu, x.size(), x.data());
+    accelerator.Store();
+    if (cemu.unsaturated_envelope && pb.lpf.on == 0 && pb.biquad.on == 0)
+    {
+        std::array<int32_t, kMaxSamplesPerFrame> whole;
+        const std::span<int32_t> y(whole.data(), x.size());
+        ApplyUnsaturatedEnvelope(pb.ve, x, y);
+        MixVoice<int32_t>(y, pb, buses, host);
+
+        return;
+    }
+    ApplyEnvelope(pb.ve, x);
+    ApplyLpf(pb.lpf, x);
+    ApplyBiquad(pb.biquad, x);
+    MixVoice<int16_t>(x, pb, buses, host);
 }
 
 void AdvanceVoice(Pb& pb, const Memory& memory, int samples, const CemuDepartures& cemu)

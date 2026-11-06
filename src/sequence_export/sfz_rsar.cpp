@@ -57,11 +57,12 @@ std::string PresetRegions(const PresetKey& key, RsarBankSet& banks, SfzSampleSet
                                     SfzEnvelopeOpcodes(key, RegionEnvelope(r, since_march_2008),
                                                        since_march_2008 && r.note_off_type == 1, wave, settings);
         const ResamplingRegion resampling = {r.original_key, r.tune, wave.sample_rate, 0};
-        const auto line = [&](std::size_t c, std::pair<int, int> keys, std::pair<int, int> velocities)
+        // The Wii has no pitch limits (resampling.h). No span is at a limit.
+        const auto line = [&](std::size_t c, const ResamplingSpan& span, std::pair<int, int> velocities)
         {
             const ChannelPan place = WaveChannelPan(pan, c, wave.names.size(), balance);
             // A note whose volume LFO the voice holds at full level plays lower (PresetKey::lfo_cut).
-            return SfzRegionStart(wave.names[c], keys, velocities, place.pan) +
+            return SfzRegionStart(wave.names[c], span.keys, velocities, place.pan) +
                    SfzVolumeOpcode(r.volume, gain_db + place.gain_db - key.lfo_cut / 10.0, place.gain_db <= -144.0,
                                    key.lift) +
                    opcodes;

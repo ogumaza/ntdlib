@@ -42,11 +42,15 @@ bool IsTrackSetting(EventKind kind)
 
 std::map<SettingKey, TrackEvent> SettingsAt(const seqlib::midi::Performance& perf, uint32_t tick)
 {
-    // A track's first part starts at its key's pitch without an event (seqlib::midi::TrackOutput::pitch).
+    // Each part starts at its key's pitch without an event. The recorder sends a part no pitch of 0 before it has sent
+    // the part another pitch (seqlib::midi::TrackOutput::pitch).
     std::map<SettingKey, TrackEvent> settings;
     for (int t = 0; t < 16; t++)
     {
-        settings[{t, 0, EventKind::kPitch}] = TrackEvent{0, EventKind::kPitch};
+        for (uint8_t part = 0; part < 16; part++)
+        {
+            settings[{t, part, EventKind::kPitch}] = TrackEvent{0, EventKind::kPitch};
+        }
         for (const TrackEvent& e : perf.tracks[t])
         {
             if (e.tick > tick || (e.tick == tick && e.after > 0))
@@ -139,9 +143,13 @@ TrackPasses PassesOfTrack(const seqlib::midi::Performance& perf, std::size_t tra
     std::array<std::map<EventKind, TrackEvent>, 16> settings{}; // each part's settings so far in the events
     std::array<std::map<EventKind, TrackEvent>, 16> sent{};     // each part's settings sent since the loop's start
 
-    // A track's first part starts at its key's pitch, and with the settings of `rules.seeded` at 0, without events
-    // (seqlib::midi::TrackOutput::pitch, and the SFZ filters that MidiRecorder's constructor seeds in performer.cpp).
-    settings[0][EventKind::kPitch] = TrackEvent{0, EventKind::kPitch};
+    // Each part starts at its key's pitch without an event (seqlib::midi::TrackOutput::pitch, as in SettingsAt). A
+    // track's first part also starts with the settings of `rules.seeded` at 0, without events (the SFZ filters that
+    // MidiRecorder's constructor seeds in performer.cpp).
+    for (std::map<EventKind, TrackEvent>& part : settings)
+    {
+        part[EventKind::kPitch] = TrackEvent{0, EventKind::kPitch};
+    }
     for (const EventKind kind : rules.seeded)
     {
         settings[0][kind] = TrackEvent{0, kind};

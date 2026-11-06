@@ -21,13 +21,13 @@ constexpr int kLastIndex = 88;              // the last entry of the table of st
 constexpr std::size_t kOpeningSamples = 64; // the samples that choose the first step
 
 // The nibble whose decoded sample from `state` comes closest to `target`, and the state after it.
-ImaAdpcmState Closest(ImaAdpcmState state, int32_t target, uint8_t& nibble)
+ImaAdpcmState Closest(ImaAdpcmStep step, ImaAdpcmState state, int32_t target, uint8_t& nibble)
 {
     ImaAdpcmState best;
     int64_t best_error = std::numeric_limits<int64_t>::max();
     for (uint8_t n = 0; n < 16; n++)
     {
-        const ImaAdpcmState next = ImaAdpcmNext(state, n);
+        const ImaAdpcmState next = step(state, n);
         const int64_t error = int64_t{target - next.sample} * (target - next.sample);
         if (error < best_error)
         {
@@ -41,13 +41,13 @@ ImaAdpcmState Closest(ImaAdpcmState state, int32_t target, uint8_t& nibble)
 }
 
 // The squared error of the encoding of `samples` from `state`.
-double ErrorFrom(ImaAdpcmState state, std::span<const int16_t> samples)
+double ErrorFrom(ImaAdpcmStep step, ImaAdpcmState state, std::span<const int16_t> samples)
 {
     double error = 0.0;
     uint8_t nibble = 0;
     for (const int16_t sample : samples)
     {
-        state = Closest(state, sample, nibble);
+        state = Closest(step, state, sample, nibble);
         const double difference = static_cast<double>(sample) - state.sample;
         error += difference * difference;
     }
@@ -62,7 +62,7 @@ std::size_t ImaAdpcmBytes(std::size_t samples)
     return (samples + 1) / 2;
 }
 
-ImaAdpcmChannel EncodeImaAdpcm(std::span<const int16_t> samples, uint32_t loop_start)
+ImaAdpcmChannel EncodeImaAdpcm(std::span<const int16_t> samples, uint32_t loop_start, ImaAdpcmStep step)
 {
     if (samples.size() > std::numeric_limits<uint32_t>::max())
     {
@@ -78,7 +78,7 @@ ImaAdpcmChannel EncodeImaAdpcm(std::span<const int16_t> samples, uint32_t loop_s
         for (int index = 0; index <= kLastIndex; index++)
         {
             const ImaAdpcmState state{samples[0], static_cast<uint8_t>(index)};
-            const double error = ErrorFrom(state, opening);
+            const double error = ErrorFrom(step, state, opening);
             if (error < least)
             {
                 least = error;
@@ -99,7 +99,7 @@ ImaAdpcmChannel EncodeImaAdpcm(std::span<const int16_t> samples, uint32_t loop_s
         }
 
         uint8_t nibble = 0;
-        state = Closest(state, samples[i], nibble);
+        state = Closest(step, state, samples[i], nibble);
         channel.data[i / 2] |= static_cast<uint8_t>(i % 2 == 0 ? nibble : nibble << 4);
     }
     if (loop_start >= samples.size())

@@ -178,6 +178,29 @@ void TestAfc()
     Check(cut.size() == 16, "a frame that the data cuts short isn't decoded");
 }
 
+void TestAfc2()
+{
+    // A 2-bit sample stands for the 4-bit sample whose top two bits it is. So a 2-bit frame decodes as the 4-bit frame
+    // with each sample moved into the top of its nibble, at every scale, predictor and history.
+    const std::vector<uint8_t> kSamples = {0x1b, 0xe4, 0x72, 0x8d};
+    for (const uint8_t header : std::array<uint8_t, 5>{0x00, 0x34, 0x47, 0x9b, 0xcd})
+    {
+        std::vector<uint8_t> two = {header};
+        two.insert(two.end(), kSamples.begin(), kSamples.end());
+        std::vector<uint8_t> four = {header};
+        for (uint32_t i = 0; i < 16; i += 2)
+        {
+            const auto top = [&](uint32_t n) { return (kSamples[n / 4] >> (6 - 2 * (n & 3)) & 3) << 2; };
+            four.push_back(static_cast<uint8_t>(top(i) << 4 | top(i + 1)));
+        }
+        Check(DecodeAfc2(two, 16, 1200, -800) == DecodeAfc(four, 16, 1200, -800),
+              "a 2-bit frame decodes as the 4-bit frame of its samples' top bits");
+    }
+
+    const std::vector<int16_t> cut = DecodeAfc2(std::vector<uint8_t>(9, 0), 32, 0, 0);
+    Check(cut.size() == 16, "a 2-bit frame that the data cuts short isn't decoded");
+}
+
 void TestPcm()
 {
     const std::vector<uint8_t> kBytes = {0x80, 0x7f, 0x01};
@@ -359,6 +382,7 @@ int main()
     TestDspAdpcmStopsWhereTheDataEnds();
     TestImaAdpcm();
     TestAfc();
+    TestAfc2();
     TestPcm();
     TestDecodeWaveEncodings();
     TestDecodeWaveDspAdpcm();

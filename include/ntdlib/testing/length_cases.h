@@ -108,6 +108,12 @@ public:
         return Byte(0xF0).Byte(0x80).Byte(variable).U16(value);
     }
 
+    // A random set (the prefix 0xA0): the variable takes a number from `low` to `high`.
+    Code& SetRandomVariable(uint8_t variable, uint16_t low, uint16_t high)
+    {
+        return Byte(0xA0).Byte(0xF0).Byte(0x80).Byte(variable).U16(low).U16(high);
+    }
+
     Code& AddVariable(uint8_t variable, uint16_t value)
     {
         return Byte(0xF0).Byte(0x81).Byte(variable).U16(value);
@@ -182,8 +188,7 @@ private:
 // allocates, and the timing that the analysis gives it. The length lies from min_ms to max_ms, or equals the length of
 // case `same_length_as` when that's 0 or more. Where others_min_ms is set, an analysis that waits for the loops of the
 // tracks other than the main track (a model with xsflib's OthersLooped) gives a length from others_min_ms to
-// others_max_ms instead. Where tie_min_ms is set, the 3DS gives a length from tie_min_ms to tie_max_ms instead. Its
-// ties give their channels the velocity's volume without the region's.
+// others_max_ms instead.
 struct Case
 {
     const char* name;
@@ -198,8 +203,6 @@ struct Case
     int same_length_as = -1;
     long long others_min_ms = -1;
     long long others_max_ms = -1;
-    long long tie_min_ms = -1;
-    long long tie_max_ms = -1;
 };
 
 // Every case, by its sound's index in the archive. The comment on each case says what its sequence does, then why the
@@ -258,15 +261,15 @@ inline const std::vector<Case>& Cases()
 
         // Track 0 polls as in SEQ_POLL_MUSIC. Track 1 ties a note of a tick on program 1 to itself over and over. The
         // note sounds on, and no track changes anything after the first ticks. The tied note's wave of 0.1 s loops
-        // twice. On the 3DS, the first tie changes the note's volume: the channel loses the region's volume. The tie's
-        // pass is then a second loop, two ticks in.
+        // twice. On the 3DS, the first tie drops the region's volume from the note's channel. The sound changes once,
+        // and the tie's pass isn't a loop.
         {"SEQ_POLL_HOLD",
          [](Code& c)
          {
              c.OpenTrack(1, 27).CompareEqual(0, 1).If().Jump(26).Wait(1).Jump(10).End();
              c.Program(1).Tie(true).Note(60, 127, 1).Jump(31).End();
          },
-         0, 127, 3, 190, 260, 10000, false, -1, -1, -1, 20, 30},
+         0, 127, 3, 190, 260, 10000},
 
         // Track 0 polls as in SEQ_POLL_MUSIC. Track 1 plays a note of 12 ticks, rests for 48 ticks, plays the note
         // again and ends. The second note ends at 750 ms, and 500 ms of tail follow. Track 0's polls during the rest
@@ -330,10 +333,10 @@ inline const std::vector<Case>& Cases()
         // Ties notes of 36 ticks on program 0 to one another over and over (from 10). The wave ends after 1 s, during
         // the third pass, and the next pass starts a new note at 1,125 ms. A track whose passes play notes isn't stuck.
         // That pass is the first loop. The pass that starts the note again at 2,250 ms is the second. On the 3DS, the
-        // first tie after each new note changes the note's volume. The tie's pass, which ends at 750 ms, is then the
-        // first loop, and the pass of the new note at 1,125 ms the second.
+        // first tie after each new note drops the region's volume from the note's channel. The passes of those ties
+        // aren't loops.
         {"SEQ_RESTART", [](Code& c) { c.Tie(true).Note(60, 127, 36).Note(60, 127, 36).Jump(10).End(); }, 0, 127, 1,
-         2620, 2640, 10000, false, -1, -1, -1, 1495, 1510},
+         2620, 2640, 10000},
 
         // Plays a note of 48 ticks on program 1 without waiting for it, then waits a tick and jumps back, over and over
         // (from 12). The note runs out at 500 ms, and 500 ms of tail follow. Its track polls, but isn't settled while
@@ -489,6 +492,33 @@ inline const std::vector<Case>& Cases()
         // the Wii U and the Switch, an open clears the track's wait, and the track starts its part again at once.
         {"SEQ_REOPEN", [](Code& c) { c.OpenTrack(1, 17).Wait(48).Jump(5).End().Note(60, 127, 24).Wait(96).End(); }, 0,
          127, 3, 995, 1015, 10000},
+
+        // Track 0 opens track 1 at 29 and calls a subroutine at 15. The subroutine polls variable 0 once a tick: it
+        // compares the variable with 1, would end the track if they were equal, waits a tick and jumps back. Track 1
+        // plays a note of 24 ticks over and over. The poll's passes could leave their loop, and they change nothing.
+        // Track 1's loops are the sequence's loops: two loops of 24 ticks.
+        {"SEQ_SUB_POLL_MUSIC",
+         [](Code& c)
+         {
+             c.OpenTrack(1, 29).Call(15).End();
+             c.CompareEqual(0, 1).If().End().Wait(1).Jump(15).Return();
+             c.Note(60, 127, 24).Jump(29).End();
+         },
+         0, 127, 3, 495, 515, 10000},
+
+        // Track 0 opens track 1 at 49. Then it plays a note of 24 ticks and calls a subroutine at 22 that counts 48
+        // ticks in variable 0 and returns, and jumps back to the note (from 17), over and over. Track 1 plays a note of
+        // 12 ticks over and over. With note wait on, each note waits for its length. A pass of track 0 therefore takes
+        // 72 ticks. The count's passes change the variable, and they don't make track 0 idle. Track 0's loops at 72
+        // and 144 ticks are the sequence's loops.
+        {"SEQ_SUB_COUNT_MUSIC",
+         [](Code& c)
+         {
+             c.OpenTrack(1, 49).Note(60, 127, 24).Call(22).Jump(10).End();
+             c.SetVariable(0, 0).Wait(1).AddVariable(0, 1).CompareAtLeast(0, 48).If().Jump(48).Jump(27).Return();
+             c.Note(62, 127, 12).Jump(49).End();
+         },
+         0, 127, 3, 1495, 1515, 10000},
     };
 
     return kCases;
@@ -555,10 +585,9 @@ inline std::vector<uint8_t> Archive(bool big_endian)
 
 // Checks every case's timing. `analyze(index)` gives the timing of the archive's sound `index` (with length_ms, fade_ms
 // and silent), or nothing. A sound past the last case has no timing. `waits_for_others` says whether the analysis waits
-// for the other tracks' loops, and `ties_lose_region_volume` whether a tie gives its channel the velocity's volume
-// without the region's (see Case).
+// for the other tracks' loops (see Case).
 template <typename Analyze>
-void CheckCases(const Analyze& analyze, bool waits_for_others = false, bool ties_lose_region_volume = false)
+void CheckCases(const Analyze& analyze, bool waits_for_others = false)
 {
     for (std::size_t i = 0; i < Cases().size(); ++i)
     {
@@ -576,11 +605,6 @@ void CheckCases(const Analyze& analyze, bool waits_for_others = false, bool ties
         {
             min_ms = item.others_min_ms;
             max_ms = item.others_max_ms;
-        }
-        if (ties_lose_region_volume && item.tie_min_ms >= 0)
-        {
-            min_ms = item.tie_min_ms;
-            max_ms = item.tie_max_ms;
         }
 
         if (item.same_length_as >= 0)

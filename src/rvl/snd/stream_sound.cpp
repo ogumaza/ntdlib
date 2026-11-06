@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -157,6 +158,18 @@ StrmPlayer::StrmPlayer(int id, const ntdlib::rsar::SoundInfo& info, std::vector<
     volume_ = ntdlib::nwsnd::RevolutionPolicy::PlayerVolume(info.volume);
 }
 
+void StrmPlayer::SetTrackVolume(uint32_t tracks, float volume)
+{
+    const float clamped = std::clamp(volume, 0.0f, 1.0f);
+    for (std::size_t index = 0; index < tracks_.size(); index++)
+    {
+        if ((tracks >> index & 1) != 0)
+        {
+            tracks_[index].handle_volume = clamped;
+        }
+    }
+}
+
 void StrmPlayer::Update(Engine& engine)
 {
     if (!started_ || finished_)
@@ -186,9 +199,9 @@ void StrmPlayer::Update(Engine& engine)
     }
 
     // The voices' parameters. The builds before March 2008 give the one voice the player's values. The later builds
-    // give each track's voice the track's volume and pan on top. Archive mode leaves the player's pitch at 1, its pan
-    // and surround pan at 0, its low-pass filter at 0 and its main send at 0. The sends are those that the game sets
-    // on the sound.
+    // give each track's voice the track's volume and pan on top, then the volume that the game's code sets on the
+    // track (UpdateVoiceParams, 0x800a6ff0). Archive mode leaves the player's pitch at 1, its pan and surround pan at
+    // 0, its low-pass filter at 0 and its main send at 0. The sends are those that the game sets on the sound.
     const std::array<float, ax::kAuxBusCount> sends = engine.SoundSends(id_);
     for (std::size_t index = 0; index < tracks_.size(); index++)
     {
@@ -204,6 +217,7 @@ void StrmPlayer::Update(Engine& engine)
         if (build_.SinceMarch2008())
         {
             volume *= static_cast<float>(track.volume) / 127.0f;
+            volume *= track.handle_volume;
             pan += ntdlib::nwsnd::PanOfSoundValue(track.pan);
         }
 
@@ -297,6 +311,55 @@ void StrmPlayer::Stop(Engine& engine)
     }
 
     finished_ = true;
+}
+
+namespace
+{
+
+struct StartingTracks
+{
+    std::string_view archive_sha1;
+    std::string_view sound;
+    uint16_t tracks;
+};
+
+// Mario Kart Wii: the SHA-1 of the USA release's sound archive.
+constexpr std::string_view kMarioKartWii = "93d5c0c61d4fe47d730915be0ea451e45e9be4e1";
+
+// Six courses play streams of several tracks. Each time one of the streams starts, for the first laps or for the final
+// lap, the game's mixer of the music's tracks sets each track to its volume in the course's first state (.text +
+// 0x1e834c of the game's relocatable module). Each volume is 1 or 0 (the tables at .rodata + 0x114e8). In every frame,
+// the mixer then gives StrmSound::SetTrackVolume (0x800a8960) each track's volume. As a kart enters another area of the
+// course, the race's code (.text + 0x205144) fades the tracks to another state's volumes over 30 to 180 frames. Every
+// course starts in an area of the first state. The list gives the first state.
+constexpr std::array<StartingTracks, 12> kStartingTracks = {{
+    {kMarioKartWii, "STRM_N_FACTORY_N", 0x1}, // Toad's Factory
+    {kMarioKartWii, "STRM_N_FACTORY_F", 0x1},
+    {kMarioKartWii, "STRM_N_TRUCK_N", 0x1}, // Wario's Gold Mine
+    {kMarioKartWii, "STRM_N_TRUCK_F", 0x1},
+    {kMarioKartWii, "STRM_N_WATER_N", 0x9}, // Koopa Cape: tracks 0 and 3
+    {kMarioKartWii, "STRM_N_WATER_F", 0x9},
+    {kMarioKartWii, "STRM_N_DESERT_N", 0x1}, // Dry Dry Ruins
+    {kMarioKartWii, "STRM_N_DESERT_F", 0x1},
+    {kMarioKartWii, "STRM_N_RIDGEHIGHWAY_N", 0x1}, // Moonview Highway
+    {kMarioKartWii, "STRM_N_RIDGEHIGHWAY_F", 0x1},
+    {kMarioKartWii, "STRM_N_KOOPA_N", 0x1}, // Bowser's Castle
+    {kMarioKartWii, "STRM_N_KOOPA_F", 0x1},
+}};
+
+} // namespace
+
+uint16_t StartingStreamTracks(std::string_view archive_sha1, std::string_view sound)
+{
+    for (const StartingTracks& entry : kStartingTracks)
+    {
+        if (entry.archive_sha1 == archive_sha1 && entry.sound == sound)
+        {
+            return entry.tracks;
+        }
+    }
+
+    return kAllTracks;
 }
 
 } // namespace ntdlib::rvl::snd

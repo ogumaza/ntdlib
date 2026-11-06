@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -373,6 +374,72 @@ void TestNoteTakesTheVoiceOfTheLowestPriority()
     XSFLIB_CHECK(PlayedNotes(PerformOnVoices(kReleased, 2, kReleasePriorityFix)) == kReleasedHeldTaken);
 }
 
+// A note's level in the MIDI file: the product of the track's CC7 and CC11 at the note's start. The two hold the
+// channel's level between them.
+int NoteLevel(const Performance& p)
+{
+    int volume = 127;
+    int expression = 127;
+    for (const TrackEvent& e : p.tracks[0])
+    {
+        if (e.kind == EventKind::kVolume)
+        {
+            volume = e.value;
+        }
+        else if (e.kind == EventKind::kExpression)
+        {
+            expression = e.value;
+        }
+        else if (e.kind == EventKind::kNoteOn)
+        {
+            break;
+        }
+    }
+
+    return volume * expression;
+}
+
+void TestHandleVolumeMultipliesTheSoundsVolume()
+{
+    // A volume of 0.25 from the sound's handle quarters the channel's amplitude, as a sound's volume of 32 from the
+    // archive would. The MIDI file's level is the square root of the amplitude, so the note's CC7 times CC11 halves.
+    const std::vector<uint8_t> kNote = {0x3c, 0x64, 0x30, 0xff};
+    const Performance full = PerformOnBank(kNote, OneRegionFbnk({{0x05000000, 0}}));
+    const Performance quarter = PerformOnBank(kNote, OneRegionFbnk({{0x05000000, 0}}), 1, {.volume = 0.25f});
+
+    const double ratio = static_cast<double>(NoteLevel(quarter)) / NoteLevel(full);
+    XSFLIB_CHECK(ratio > 0.49 && ratio < 0.51);
+}
+
+// An archive whose sequence lists `first_bank` in slot 0. Bank 0x03000000 plays its region at volume 127 and bank
+// 0x03000001 at 64.
+SoundArchive TwoBankArchive(uint32_t first_bank)
+{
+    std::vector<ArchiveFile> files(4);
+    files[0].data = Fseq({0x3c, 0x64, 0x30, 0xff});
+    files[1].data = OneRegionFbnk({{0x05000000, 0}});
+    files[2].data = OneRegionFbnk({{0x05000000, 0}}, 64);
+    files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
+
+    return SoundArchive::Load(
+        Fsar(files, {.sequences = {{.banks = {first_bank}}}, .banks = {1, 2}, .wave_archives = {3}}),
+        console->settings.archive);
+}
+
+void TestStartBanksReplaceTheArchives()
+{
+    // The game's StartInfo can give the sequence's slot 0 another bank (PerformOptions::banks). The conversion is then
+    // the one of a sequence that lists that bank.
+    constexpr uint32_t kEmpty = 0xffffffff;
+    const SoundArchive archive = TwoBankArchive(0x03000000);
+    const Conversion archives = ConvertSequence(archive, 0);
+    const Conversion started = ConvertSequence(archive, 0, {.banks = {{0x03000001, kEmpty, kEmpty, kEmpty}}});
+    const Conversion listed = ConvertSequence(TwoBankArchive(0x03000001), 0);
+
+    XSFLIB_CHECK(started.sf2 == listed.sf2 && started.midi == listed.midi);
+    XSFLIB_CHECK(started.sf2 != archives.sf2);
+}
+
 const Test kTests[] = {
     TestLegatoLeavesOutTheRegionsVolume,
     TestLegatoKeepsTheChannelsEnvelope,
@@ -384,6 +451,8 @@ const Test kTests[] = {
     TestRandomArgumentDrawsAfterTheStepsBeforeTheStart,
     TestEffectSendsReachNothing,
     TestSfzRegionFollowsTheDspsInterpolation,
+    TestHandleVolumeMultipliesTheSoundsVolume,
+    TestStartBanksReplaceTheArchives,
 };
 
 } // namespace

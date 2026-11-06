@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the models of the audio renderer's delay and light limiter without game data. The values come from the
-// formulas in delay.h and light_limiter.h, worked out by hand on impulses and steady signals: a delay's length, its
-// feedback and spread with 1, 2, 4 and 6 channels, its low-pass filter and its dry gain, and a limiter's look-ahead,
-// envelope, gain, reciprocals and output holds, with the sdk's expf against the exponential function. Both effects then
-// run on a voice through the renderer: a delay of a frame, the calls that start it again or give it new gains, a
-// disabled delay, frames without mixing, a snapshot, a new limiter, and the enhanced mixing mode.
+// Checks the models of the audio renderer's delay, reverb and light limiter without game data. The values come from the
+// formulas in delay.h, reverb.h and light_limiter.h, worked out by hand on impulses and steady signals: a delay's
+// length, its feedback and spread with 1, 2, 4 and 6 channels, its low-pass filter and its dry gain, a reverb's dry
+// path and its pass-through, and a limiter's look-ahead, envelope, gain, reciprocals and output holds, with the sdk's
+// expf against the exponential function. The effects then run on a voice through the renderer: a delay of a frame, the
+// calls that start it again or give it new gains, a disabled delay, frames without mixing, a new reverb and a disabled
+// one, the modes that the renderer refuses, a snapshot, a new limiter, and the enhanced mixing mode. Nintendo's code is
+// the anchor for the reverb's sums. HSF's oracle test runs it.
 
 #include <algorithm>
 #include <array>
@@ -17,14 +19,15 @@
 #include <initializer_list>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
-
-#include "xsflib/testing/check.h"
 
 #include "ntdlib/nx/audio/delay.h"
 #include "ntdlib/nx/audio/light_limiter.h"
 #include "ntdlib/nx/audio/renderer.h"
+#include "ntdlib/nx/audio/reverb.h"
+#include "xsflib/testing/check.h"
 
 using namespace xsflib::testing;
 
@@ -230,6 +233,74 @@ void TestDelayPassesThrough()
     }
 
     audio::PassDelay(Line(2, 5), from, to, 2);
+
+    XSFLIB_CHECK(applied);
+    XSFLIB_CHECK(out[0] == in[0] && out[1] == in[1] && out[2] == std::vector<int32_t>({0, 0}));
+}
+
+// A reverb of `channels` channels at 48 kHz with the client's defaults: a full dry gain and no reverb. Its output is
+// the dry gain times the input, in Q14, plus the out gain times the reverb.
+audio::ReverbParameter DryReverb(int channels)
+{
+    audio::ReverbParameter parameter;
+    parameter.channel_count = channels;
+    parameter.max_channel_count = channels;
+    parameter.sample_rate = 48 << 14;
+
+    return parameter;
+}
+
+// Starts a reverb and runs the channels through it. Each output is its input: the dry gain of 1 keeps it, and an out
+// gain of 0 adds nothing.
+void TestReverbDryOnly()
+{
+    bool kept = true;
+    for (const int channels : {1, 2, 4, 6})
+    {
+        const audio::ReverbParameter parameter = DryReverb(channels);
+        audio::ReverbState state;
+        audio::InitializeReverb(parameter, state, true);
+        Channels in;
+        for (int k = 0; k < channels; ++k)
+        {
+            in.push_back({1, -2, 30000, -32768, 8388607, -8388608, 0, k});
+        }
+        Channels out = in;
+        std::vector<const int32_t*> from;
+        std::vector<int32_t*> to;
+        for (int k = 0; k < channels; ++k)
+        {
+            from.push_back(in[static_cast<std::size_t>(k)].data());
+            to.push_back(out[static_cast<std::size_t>(k)].data());
+            std::fill(out[static_cast<std::size_t>(k)].begin(), out[static_cast<std::size_t>(k)].end(), 0);
+        }
+
+        audio::ApplyReverb(parameter, state, from, to, static_cast<int>(in[0].size()));
+        kept = kept && out == in;
+    }
+
+    XSFLIB_CHECK(kept);
+}
+
+// A reverb of 3 channels passes its inputs through, and PassReverb copies the channels that the parameter has.
+void TestReverbPassesThrough()
+{
+    const audio::ReverbParameter parameter = DryReverb(3);
+    audio::ReverbState state;
+    audio::InitializeReverb(parameter, state, true);
+    const std::array<std::vector<int32_t>, 3> in = {{{1, 2}, {3, 4}, {5, 6}}};
+    std::array<std::vector<int32_t>, 3> out = {{{0, 0}, {0, 0}, {0, 0}}};
+    const std::array<const int32_t*, 3> from = {in[0].data(), in[1].data(), in[2].data()};
+    const std::array<int32_t*, 3> to = {out[0].data(), out[1].data(), out[2].data()};
+
+    audio::ApplyReverb(parameter, state, from, to, 2);
+    const bool applied = out == in;
+    for (std::vector<int32_t>& channel : out)
+    {
+        std::fill(channel.begin(), channel.end(), 0);
+    }
+
+    audio::PassReverb(DryReverb(2), from, to, 2);
 
     XSFLIB_CHECK(applied);
     XSFLIB_CHECK(out[0] == in[0] && out[1] == in[1] && out[2] == std::vector<int32_t>({0, 0}));
@@ -615,6 +686,53 @@ void TestRendererDelayWithoutMixing()
     XSFLIB_CHECK(kept.Left() == last && Silent(timed.Left()));
 }
 
+// A reverb on the final mix's first buffer. Returns the reverb.
+int AddReverb(audio::Renderer& renderer)
+{
+    const int reverb = renderer.AddReverb(audio::Renderer::kFinalMix, 1);
+    renderer.SetReverbInputOutput(reverb, kFirstBuffer, kFirstBuffer);
+
+    return reverb;
+}
+
+// A new reverb keeps its buffer as it is: a dry gain of 1 and an out gain of 0. So does a disabled one with gains that
+// would change it, and the modes outside 0 to 4 are refused.
+void TestRendererReverb()
+{
+    NoiseVoice plain;
+    NoiseVoice dry;
+    NoiseVoice disabled;
+    AddReverb(dry.renderer);
+    const int reverb = AddReverb(disabled.renderer);
+    disabled.renderer.SetReverbEarlyMode(reverb, 0);
+    disabled.renderer.SetReverbEarlyGain(reverb, 1.0f);
+    disabled.renderer.SetReverbReverbGain(reverb, 1.0f);
+    disabled.renderer.SetReverbOutGain(reverb, 1.0f);
+    disabled.renderer.SetReverbDryGain(reverb, 0.0f);
+    disabled.renderer.SetReverbEnabled(reverb, false);
+    bool same = true;
+    bool sounds = false;
+    for (int frame = 0; frame < 4; ++frame)
+    {
+        const std::vector<double> now = plain.Left();
+        same = same && dry.Left() == now && disabled.Left() == now;
+        sounds = sounds || !Silent(now);
+    }
+
+    bool refused = false;
+    try
+    {
+        dry.renderer.SetReverbLateMode(0, 5);
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+
+    XSFLIB_CHECK(same && sounds);
+    XSFLIB_CHECK(refused);
+}
+
 // A new limiter has a threshold and gains of 0, and its output is silent. With a threshold and gains of 1, it gives
 // its buffer a sample late, at the look-ahead of a sample that it starts with. Its first sample then comes from the
 // silent input before.
@@ -645,12 +763,22 @@ void TestRendererLimiter()
     XSFLIB_CHECK(out == expected);
 }
 
-// A snapshot keeps the delay's line and the limiter's envelope, gain and look-ahead. The frames after a restore repeat
-// those after the save.
+// A snapshot keeps the delay's line, the reverb's lines and filters, and the limiter's envelope, gain and look-ahead.
+// The frames after a restore repeat those after the save.
 void TestRendererEffectsSnapshot()
 {
     NoiseVoice voice;
     AddLine(voice.renderer);
+    const int reverb = AddReverb(voice.renderer);
+    voice.renderer.SetReverbEarlyMode(reverb, 1);
+    voice.renderer.SetReverbEarlyGain(reverb, 0.7f);
+    voice.renderer.SetReverbLateGain(reverb, 0.7f);
+    voice.renderer.SetReverbPredelayTime(reverb, kFrameTime);
+    voice.renderer.SetReverbDecayTime(reverb, kSecond);
+    voice.renderer.SetReverbHighFrequencyDecayRatio(reverb, 0.8f);
+    voice.renderer.SetReverbReverbGain(reverb, 0.5f);
+    voice.renderer.SetReverbOutGain(reverb, 1.0f);
+    voice.renderer.SetReverbDryGain(reverb, 0.5f);
     const int limiter = voice.renderer.AddLightLimiter(audio::Renderer::kFinalMix, 1000000, 1);
     voice.renderer.SetLightLimiterInputOutput(limiter, kFirstBuffer, kFirstBuffer);
     voice.renderer.SetLightLimiterReleaseTime(limiter, 2000000);
@@ -722,6 +850,8 @@ int main()
     TestDelayLowPass();
     TestDelayDryGain();
     TestDelayPassesThrough();
+    TestReverbDryOnly();
+    TestReverbPassesThrough();
     TestLimiterBelowThreshold();
     TestLimiterLimits();
     TestLimiterRelease();
@@ -733,6 +863,7 @@ int main()
     TestRendererDelayStartsAgain();
     TestRendererDelayDisabled();
     TestRendererDelayWithoutMixing();
+    TestRendererReverb();
     TestRendererLimiter();
     TestRendererEffectsSnapshot();
     TestRendererEnhancedDelay();

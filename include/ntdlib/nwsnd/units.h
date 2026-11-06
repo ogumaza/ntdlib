@@ -16,13 +16,10 @@
 namespace ntdlib::nwsnd
 {
 
-struct Scale
-{
-    friend bool operator==(const Scale&, const Scale&) = default;
-
-    commands::Fixed step = commands::kOne;
-    commands::Fixed offset = 0;
-};
+// The scale and its conversions are the commands' (commands/units.h).
+using commands::FromUnit;
+using commands::Scale;
+using commands::ToUnit;
 
 // The scale of the value of a command of `kind` (commands::UnitOf) on the grammar's console. A note's velocity takes
 // kLevelScale below, and a time kTicksScale.
@@ -31,12 +28,5 @@ Scale ScaleOf(commands::Kind kind, const Grammar& grammar);
 // The scales of a note's velocity and of a time: unchanged.
 inline constexpr Scale kLevelScale{};
 inline constexpr Scale kTicksScale{};
-
-// The console's value `value` in its unit.
-commands::Fixed ToUnit(int64_t value, const Scale& scale);
-
-// The console's value nearest `unit`. Of two values at the same distance, the one whose unit lies further from zero.
-// The value that gave `unit` comes back.
-int64_t FromUnit(commands::Fixed unit, const Scale& scale);
 
 } // namespace ntdlib::nwsnd

@@ -1013,10 +1013,12 @@ struct CtrPolicy
         return value * value;
     }
 
-    // The sequence's ticks in a millisecond, from its timebase and tempo. The 3DS has no tempo ratio.
-    static float TicksPerMs(int timebase, int tempo, float)
+    // The sequence's ticks in a millisecond, from its timebase, tempo and tempo ratio: the product of timebase and
+    // tempo, times the ratio, times 1/60000, in that order (StreetPass Mii Plaza's update v14.6.0, 0x342444). The ratio
+    // stays 1 unless the game sets it, and a ratio of 1 changes nothing.
+    static float TicksPerMs(int timebase, int tempo, float tempo_ratio)
     {
-        return static_cast<float>(static_cast<uint32_t>(timebase * tempo)) * kOneOver60000;
+        return static_cast<float>(static_cast<uint32_t>(timebase * tempo)) * tempo_ratio * kOneOver60000;
     }
 
     // The envelope's release rate and its level in decibels. The Wii U's code divides by 5 and by 10 instead.
