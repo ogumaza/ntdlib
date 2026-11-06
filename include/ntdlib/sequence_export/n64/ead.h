@@ -91,6 +91,7 @@ struct EadPerformSettings
     int variation = -1;           // the value of the sequence's variation commands
     uint16_t silent_channels = 0; // the channels that the game's code fades to nothing
     int tempo_change = 0;         // the later engine's change of tempo that the game's code sets, in beats a minute
+    EadGameCall call;             // what the game's code changes while the sequence plays, in the later engine
 
     // What the game's code writes to the later engine's ports before the sequence starts. -1 stands for nothing.
     std::array<int, 8> ports = {-1, -1, -1, -1, -1, -1, -1, -1};

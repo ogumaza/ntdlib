@@ -385,6 +385,8 @@ private:
     void SendPans(std::size_t index);
     void SendLevels(std::size_t index);
     void SendEveryLevel();
+    void ApplyCallPanWeights();
+    void ApplyCallVolume();
     void SendReverb(std::size_t index);
     void AdvanceTime();
     void SetVolume(int value);
@@ -419,6 +421,7 @@ private:
     std::vector<uint8_t> bank_set_;
     int sequence_number_ = -1; // the sequence that a script started, or -1 for the first
     int update_of_frame_ = 0;
+    int frame_ = 0; // the audio frames that have started
     int tempo_count_ = 0;
     std::vector<uint8_t> velocities_;
     std::vector<uint8_t> gates_;
@@ -843,6 +846,45 @@ void Performer::SendLevels(std::size_t index)
             recorder_.SendSetting(out_.performance, outputs_[index], tick_, midi::EventKind::kExpression, expression,
                                   layer.part);
         }
+    }
+}
+
+void Performer::ApplyCallPanWeights()
+{
+    for (std::size_t index = 0; index < kChannels && settings_.call.pan_weight >= 0; index++)
+    {
+        channels_[index].pan_weight = settings_.call.pan_weight;
+        SendPans(index);
+    }
+}
+
+// The call's second part, in the order of Ocarina of Time's code at 0x800C5D84. The louder the music, the less reverb.
+void Performer::ApplyCallVolume()
+{
+    const EadGameCall& call = settings_.call;
+    if (call.volume >= 0)
+    {
+        fade_scale_ = call.volume / 127.0;
+        SendEveryLevel();
+    }
+
+    if (call.io_channel >= 0)
+    {
+        channels_[static_cast<std::size_t>(call.io_channel)].io[static_cast<std::size_t>(call.io_port)] = call.io_value;
+    }
+
+    for (std::size_t index = 0; index < kChannels && call.reverb_port >= 0; index++)
+    {
+        Channel& channel = channels_[index];
+        const int value = channel.io[static_cast<std::size_t>(call.reverb_port)];
+        if (!channel.used || value == -1)
+        {
+            continue;
+        }
+
+        const int reverb = value - call.volume + 127;
+        channel.reverb = reverb >= 0 && reverb < 128 ? reverb : 127;
+        SendReverb(index);
     }
 }
 
@@ -2194,6 +2236,18 @@ void Performer::RunFramesToTick()
     {
         if (update_of_frame_ == 0)
         {
+            // The game's commands take effect at the start of a frame.
+            const EadGameCall& call = settings_.call;
+            if (call.frame >= 0 && frame_ == call.frame)
+            {
+                ApplyCallPanWeights();
+            }
+            if (call.frame >= 0 && frame_ == call.frame + call.volume_delay)
+            {
+                ApplyCallVolume();
+            }
+            frame_++;
+
             random_ ^= random_ << 13;
             random_ ^= random_ >> 17;
             random_ ^= random_ << 5;
@@ -3130,6 +3184,7 @@ Conversion EadGame::ConvertTrack(const EadTrack& track, const std::string& name,
     settings.silent_channels = track.silent_channels;
     settings.tempo_change = track.tempo_change;
     std::ranges::copy(track.ports, settings.ports.begin());
+    settings.call = track.call;
     settings.sequences = sequences_;
     settings.bank_sets = bank_sets_;
     if (later_files_)

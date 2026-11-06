@@ -113,6 +113,22 @@ struct LibultraProfile
     std::span<const LibultraRateChange> rate_changes;
 };
 
+// A call of the game's code that changes a sequence while it plays, at an audio frame after its start. Ocarina of
+// Time's function at 0x800C5CD8 sets Ganon's Tower's music for each room in this way. The call sets every channel's
+// pan weight. Its second part, at 0x800C5D84, sets the player's volume scale, writes a channel's IO port and gives a
+// reverb to each channel whose IO port holds a value. -1 leaves a setting out.
+struct EadGameCall
+{
+    int frame = -1;       // the audio frame of the call
+    int volume_delay = 0; // the audio frames that the second part waits after the first
+    int pan_weight = -1;  // every channel's pan weight
+    int volume = -1;      // the player's volume scale, out of 127
+    int io_channel = -1;  // the channel whose IO port the second part writes
+    int io_port = 0;
+    int io_value = 0;
+    int reverb_port = -1; // the IO port whose value v gives a channel a reverb of v - volume + 127, or 127 out of range
+};
+
 // A way that an EAD game's code plays a sequence, where it has more than one.
 struct EadTrack
 {
@@ -124,6 +140,8 @@ struct EadTrack
 
     // What the game's code writes to the later engine's ports before it starts the sequence. -1 stands for nothing.
     std::array<int8_t, 8> ports = {-1, -1, -1, -1, -1, -1, -1, -1};
+
+    EadGameCall call; // what the game's code changes while the sequence plays
 };
 
 // A track's ports, with a value in one of them or two.

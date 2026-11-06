@@ -368,6 +368,50 @@ void TestFifoTimers()
     XSFLIB_CHECK(std::all_of(more.begin(), more.end(), [](int16_t s) { return s == -13 * 4 * 64; }));
 }
 
+void TestFifoTimerChange()
+{
+    // A note on a running timer gives the timer a new period, and the FIFO doesn't start again. The timer's reload
+    // takes effect at the next overflow, and that overflow stays where the old period put it. Overflows of 0x400
+    // cycles come from the first frame's stores on. A frame holds 274 of them and 0x140 cycles, so the second frame's
+    // stores come 0x2C0 cycles before the next one. A sample comes each 512 cycles, and the bytes alternate, so each
+    // overflow moves the output.
+    Image m;
+    m.OneTrack(4, {0x00, 0xBC, 0x01, 0x01, 0x9C, 0x01, 0x3C, 0xFD}, Revision::kDungeonDiceMonsters);
+    m.PutBytes(kMap, {0x00, 0x05});
+    m.Put16(kPeriods, 0x400);
+    m.Put16(kPeriods + 2 * 17, 0x800);
+    std::vector<int8_t> bytes;
+    for (int i = 0; i < 64 * 16; i++)
+    {
+        bytes.push_back(int8_t(i % 2 == 0 ? 64 : -64));
+    }
+    FifoSample(m, 5, 64, 0x4000, bytes);
+    const Rom rom = m.ToRom();
+
+    ArchivePlayer player(rom, FifoInfo());
+    player.Start(0);
+    Frames(player, 1);
+    XSFLIB_CHECK(player.Driver().TimerChanges().size() == 1);
+    XSFLIB_CHECK(player.Driver().TimerChanges()[0].period == 0x400 && player.Driver().TimerChanges()[0].first == 0x400);
+
+    const std::vector<int16_t> out = Frames(player, 1);
+    XSFLIB_CHECK(!player.Driver().FifoRestarted(0));
+    XSFLIB_CHECK(player.Driver().TimerChanges().size() == 1);
+    XSFLIB_CHECK(player.Driver().TimerChanges()[0].cycle == 0 && player.Driver().TimerChanges()[0].period == 0x800);
+    XSFLIB_CHECK(player.Driver().TimerChanges()[0].first == 0x2C0);
+
+    // The next overflow moves the output at the first sample at or after its cycle. Each later one comes 0x800 cycles
+    // on, 4 samples apart.
+    const size_t first = (kStore + 0x2C0 + 511) / 512;
+    XSFLIB_CHECK(first > 1 && 2 * (first + 4) < out.size());
+    XSFLIB_CHECK(out[2 * (first - 1)] != out[2 * first]);
+    for (size_t i = first + 1; i < first + 4; i++)
+    {
+        XSFLIB_CHECK(out[2 * (i - 1)] == out[2 * i]);
+    }
+    XSFLIB_CHECK(out[2 * (first + 3)] != out[2 * (first + 4)]);
+}
+
 void TestBusy()
 {
     // Track 4 stops the song after 2 frames. The frame after the stop stops every voice. A block mixer's FIFOs then
@@ -395,6 +439,35 @@ void TestBusy()
     XSFLIB_CHECK(!player.Busy());
     const std::vector<int16_t> out = Frames(player, 2);
     XSFLIB_CHECK(std::all_of(out.begin(), out.end(), [](int16_t s) { return s == 0; }));
+}
+
+void TestBusyOnRing()
+{
+    // Track 4 stops the song after 2 frames, and the frame after the stop stops every voice. A ring's lead of 480
+    // points takes 2 frames and a bit more. The song stays busy until those points have played. Nothing moves after.
+    Image m;
+    m.Mixer(0);
+    m.Song(0, kBase, 0x100, {{4, 0x00}, {5, 0x10}}, Revision::kEternalDuelist);
+    m.PutBytes(kBase, {0x02, 0xFF, 0x00});
+    m.PutBytes(kBase + 0x10, {0x00, 0xAF, 0x00, 0x7F, 0xFD});
+    m.PutBytes(kBase + 0x100, kWaitingTrack);
+    m.Sample(0, 0x1000, 16, 0, Constant(32));
+    const Rom rom = m.ToRom();
+
+    ArchivePlayer player(rom, InfoOf(Revision::kEternalDuelist));
+    player.Start(0);
+    std::vector<int16_t> out;
+    int frames = 0;
+    while (player.Busy() && frames < 32)
+    {
+        player.RunFrame(out);
+        frames++;
+    }
+    XSFLIB_CHECK(!player.Busy());
+    XSFLIB_CHECK(std::any_of(out.begin(), out.end(), [](int16_t s) { return s == 32 * 4 * 64; }));
+    XSFLIB_CHECK(out.back() == 0);
+    const std::vector<int16_t> after = Frames(player, 4);
+    XSFLIB_CHECK(std::all_of(after.begin(), after.end(), [](int16_t s) { return s == 0; }));
 }
 
 void TestFramesWithoutSamples()
@@ -1077,7 +1150,9 @@ int main()
     TestRingOutput();
     TestFifoRestart();
     TestFifoTimers();
+    TestFifoTimerChange();
     TestBusy();
+    TestBusyOnRing();
     TestFramesWithoutSamples();
     TestSnapshots();
     TestSeekFifoTimers();

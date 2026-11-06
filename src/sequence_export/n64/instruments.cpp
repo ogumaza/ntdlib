@@ -305,15 +305,38 @@ std::string SfzRegion(const Zone& z, const SfzSamples::File& file, double gain_d
     return s + "\n";
 }
 
-// The SoundFont holds zones below full level. A zone above it makes every zone quieter. SFZ keeps the levels.
+// The SoundFont holds zones below full level. A zone above it that a note plays makes every zone quieter. A zone that
+// no note plays doesn't count. SFZ keeps the levels.
 double LoudestZone(const Performance& performance)
 {
     double loudest = 0.0;
-    for (const Instrument& instrument : performance.presets)
+    for (const std::vector<seqlib::midi::TrackEvent>& track : performance.tracks)
     {
-        for (const Zone& zone : instrument.zones)
+        // A part plays preset 0 until it sends another, as a player does.
+        std::map<uint8_t, uint32_t> presets;
+        for (const seqlib::midi::TrackEvent& event : track)
         {
-            loudest = std::max(loudest, zone.gain);
+            if (event.kind == seqlib::midi::EventKind::kPreset)
+            {
+                presets[event.part] = event.preset;
+                continue;
+            }
+
+            const auto found = presets.find(event.part);
+            const uint32_t preset = found != presets.end() ? found->second : 0;
+            if (event.kind != seqlib::midi::EventKind::kNoteOn || preset >= performance.presets.size())
+            {
+                continue;
+            }
+
+            for (const Zone& zone : performance.presets[preset].zones)
+            {
+                if (event.key >= zone.low_key && event.key <= zone.high_key && event.value >= zone.low_velocity &&
+                    event.value <= zone.high_velocity)
+                {
+                    loudest = std::max(loudest, zone.gain);
+                }
+            }
         }
     }
 

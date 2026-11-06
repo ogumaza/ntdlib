@@ -443,6 +443,33 @@ constexpr std::array<std::size_t, 3> kOcarinaOfTimeEffects = {0x00, 0x01, 0x6D};
 //
 // The file select starts sequence 0x57 with 1 for port 7. Sequence 0x57 points to sequence 0x28. With the port at 1,
 // the sequence leaves out the harp's introduction. The Great Fairy's Fountain plays it with -1.
+//
+// Each room of Ganon's Tower calls the function at 0x800C5CD8 with a level, from 7 at the entrance to 0 in
+// Ganondorf's lair. The game never plays sequence 0x2E without it. The function sets every channel's pan weight: 0x7F
+// in the lair and 0 elsewhere. It then calls the function at 0x800C5D84 with the level's volume from the table at
+// 0x80101F48. The entrance waits 2 game frames for that call. The second function sets the player's volume scale and
+// writes a low-pass cutoff to IO port 4 of channel 15: 0x10 below a volume of 0x40, and otherwise a byte of
+// ((volume - 0x40) / 4 + 1) * 16, which comes to 0 at 127. Each channel whose IO port 5 holds a value then gets a
+// reverb from it. The tracks call the function on the 10th game frame, once the channels play. A game frame lasts 3
+// audio frames.
+constexpr int kGameFrame = 3;
+
+constexpr EadGameCall GanonsTowerCall(int level)
+{
+    constexpr std::array<int, 8> kVolumes = {127, 80, 75, 73, 70, 68, 65, 60};
+    const int volume = kVolumes[static_cast<std::size_t>(level)];
+    const int cutoff = volume < 0x40 ? 0x10 : ((((volume - 0x40) >> 2) + 1) << 4) & 0xFF;
+
+    return {.frame = 10 * kGameFrame,
+            .volume_delay = level == 7 ? 2 * kGameFrame : 0,
+            .pan_weight = level == 0 ? 0x7F : 0,
+            .volume = volume,
+            .io_channel = 15,
+            .io_port = 4,
+            .io_value = cutoff,
+            .reverb_port = 5};
+}
+
 constexpr std::array kOcarinaOfTimeTracks = {
     EadTrack{.sequence = 0x02, .name = "Hyrule Field, moving", .ports = EadPorts(2, 0)},
     EadTrack{.sequence = 0x02, .name = "Hyrule Field, enemies near", .ports = EadPorts(2, 1)},
@@ -450,6 +477,14 @@ constexpr std::array kOcarinaOfTimeTracks = {
     EadTrack{.sequence = 0x2F, .name = "Lon Lon Ranch, Malon away"},
     EadTrack{.sequence = 0x2F, .name = "Lon Lon Ranch, far from Malon", .silent_channels = 0x0003},
     EadTrack{.sequence = 0x2F, .name = "Lon Lon Ranch, close to Malon", .silent_channels = 0x2000},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, entrance", .call = GanonsTowerCall(7)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, level 6", .call = GanonsTowerCall(6)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, level 5", .call = GanonsTowerCall(5)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, level 4", .call = GanonsTowerCall(4)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, level 3", .call = GanonsTowerCall(3)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, level 2", .call = GanonsTowerCall(2)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, level 1", .call = GanonsTowerCall(1)},
+    EadTrack{.sequence = 0x2E, .name = "Ganon's Tower, Ganondorf's lair", .call = GanonsTowerCall(0)},
     EadTrack{.sequence = 0x28},
     EadTrack{.sequence = 0x28, .name = "file select, without the harp's introduction", .ports = EadPorts(7, 1)},
 };

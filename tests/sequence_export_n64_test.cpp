@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <string>
@@ -2297,7 +2298,8 @@ void TestLaterChannelLayers()
     Check(six.size() == 4, "number 4 is a layer of its own among six");
 }
 
-ntdlib::sequence_export::n64::EadPerformance PlayLater(const std::vector<uint8_t>& bytes)
+ntdlib::sequence_export::n64::EadPerformance PlayLater(const std::vector<uint8_t>& bytes,
+                                                       const ntdlib::sequence_export::n64::EadGameCall& call = {})
 {
     const n64::EadLaterFiles files = LaterFiles({bytes});
     std::map<int, n64::EadBank> banks;
@@ -2312,6 +2314,7 @@ ntdlib::sequence_export::n64::EadPerformance PlayLater(const std::vector<uint8_t
     settings.sequences = sequences;
     settings.bank_sets = files.bank_sets;
     settings.banks = &banks;
+    settings.call = call;
 
     return ntdlib::sequence_export::n64::PerformEad(settings, {});
 }
@@ -2358,6 +2361,92 @@ void TestLaterStopOtherChannel()
     };
     Check(off_of(1) == 16, "the other channel stops");
     Check(off_of(0) == 24, "the channel that stops it plays on");
+}
+
+void TestLaterGameCall()
+{
+    // Channel 0 sets its pan to 0 and its reverb to 0x10, and writes 0x40 to its IO port 5. Layer 0 holds a note with a
+    // pan of 127. 96 ticks in, the channel reads IO port 4 of channel 15. Unless that's -1, layer 1 plays a second
+    // note. The call of Ganon's Tower's level 1 comes on audio frame 30, about 48 ticks in (Ocarina of Time's code at
+    // 0x800C5CD8 and 0x800C5D84). Its pan weight of 0 takes the pan from the layer. The volume of 80 gives the player a
+    // scale of 80/127, and a reverb of 0x40 - 80 + 127 for the channel's port. Its cutoff of 0x50 goes to channel 15.
+    const std::vector<uint8_t> bytes = {
+        0xD7, 0x00, 0x01, 0x90, 0x00, 0x0C, 0xDD, 0x78, 0xFD, 0x82, 0x00, 0xFF,                         // the sequence
+        0xC1, 0x00, 0xDD, 0x00, 0xCC, 0x40, 0x75, 0xD4, 0x10, 0x88, 0x00, 0x26, 0xFD, 0x60, 0x4F, 0x04, // channel 0
+        0xF9, 0x00, 0x25, 0x89, 0x00, 0x30, 0xFD, 0x81, 0x00, 0xFF,                                     //
+        0xC1, 0x64, 0xC9, 0x80, 0xCA, 0x7F, 0x27, 0x82, 0x00, 0xFF,                                     // layer 0
+        0xC1, 0x64, 0xC9, 0x80, 0x29, 0x81, 0x00, 0xFF};                                                // layer 1
+    const ntdlib::sequence_export::n64::EadGameCall level_1 = {
+        .frame = 30, .pan_weight = 0, .volume = 80, .io_channel = 15, .io_port = 4, .io_value = 0x50, .reverb_port = 5};
+
+    const ntdlib::sequence_export::n64::Performance plain = PlayLater(bytes).performance;
+    const ntdlib::sequence_export::n64::Performance called = PlayLater(bytes, level_1).performance;
+
+    const std::vector<midi::TrackEvent> reverbs = EventsOfKind(called, midi::EventKind::kReverb);
+    const std::vector<midi::TrackEvent> pans = EventsOfKind(called, midi::EventKind::kPan);
+    const std::vector<midi::TrackEvent> levels = EventsOfKind(called, midi::EventKind::kExpression);
+    Check(!reverbs.empty() && reverbs.front().value == 0x10 && reverbs.back().value == 0x40 - 80 + 127,
+          "the call gives the reverb from IO port 5");
+    Check(pans.size() >= 2 && pans[0].value == 0 && pans[1].value == 127, "a pan weight of 0 takes the layer's pan");
+    Check(levels.size() >= 2 && levels[1].value == 80, "the player's volume scale");
+    Check(levels.size() >= 2 && pans.size() >= 2 && levels[1].tick == pans[1].tick && pans[1].tick > 40 &&
+              pans[1].tick < 56,
+          "the call comes on frame 30");
+    Check(EventsOfKind(called, midi::EventKind::kNoteOn).size() == 2, "the call writes IO port 4 of channel 15");
+    Check(EventsOfKind(plain, midi::EventKind::kNoteOn).size() == 1, "without the call, the port stays at -1");
+    Check(EventsOfKind(plain, midi::EventKind::kReverb).back().value == 0x10, "without the call, the reverb stays");
+
+    // The entrance's level, 7, sets the pan weight and waits 2 game frames, 6 audio frames, for the rest.
+    ntdlib::sequence_export::n64::EadGameCall level_7 = level_1;
+    level_7.volume = 60;
+    level_7.volume_delay = 6;
+    const ntdlib::sequence_export::n64::Performance entrance = PlayLater(bytes, level_7).performance;
+    const std::vector<midi::TrackEvent> entrance_pans = EventsOfKind(entrance, midi::EventKind::kPan);
+    const std::vector<midi::TrackEvent> entrance_levels = EventsOfKind(entrance, midi::EventKind::kExpression);
+    Check(entrance_levels.size() >= 2 && entrance_pans.size() >= 2 && entrance_levels[1].value == 60 &&
+              entrance_levels[1].tick > entrance_pans[1].tick,
+          "the entrance's volume comes later");
+    Check(EventsOfKind(entrance, midi::EventKind::kReverb).back().value == 127, "a reverb past 127 stays at 127");
+}
+
+void TestLoudZoneThatNoNotePlays()
+{
+    // Preset 0 plays at full level below velocity 64 and 10.4 dB above it there. A note at velocity 40 plays the first
+    // zone only, so the SoundFont keeps its level. A note at velocity 100 plays the loud zone, and every zone then
+    // takes the cut.
+    const auto build = [](uint8_t velocity)
+    {
+        ntdlib::sequence_export::n64::Performance performance;
+        performance.timebase = 48;
+        ntdlib::sequence_export::n64::Instrument preset;
+        preset.name = "p0";
+        auto wave = std::make_shared<ntdlib::sequence_export::n64::Wave>();
+        wave->name = "w";
+        wave->rate = 32000;
+        wave->pcm.channels = {std::vector<int16_t>(64, 1000)};
+        ntdlib::sequence_export::n64::Zone quiet;
+        quiet.wave = wave;
+        quiet.high_velocity = 63;
+        ntdlib::sequence_export::n64::Zone loud;
+        loud.wave = wave;
+        loud.low_velocity = 64;
+        loud.gain = 3.31;
+        preset.zones = {quiet, loud};
+        performance.presets.push_back(preset);
+        performance.tracks[0] = {{.tick = 0, .kind = midi::EventKind::kPreset, .preset = 0},
+                                 {.tick = 0, .kind = midi::EventKind::kNoteOn, .key = 60, .value = velocity, .note = 1},
+                                 {.tick = 48, .kind = midi::EventKind::kNoteOff, .key = 60, .note = 1}};
+
+        return ntdlib::sequence_export::n64::BuildFiles(performance, "test", "test").performance.approximations;
+    };
+    const auto cut = [](const auto& approximations)
+    {
+        return std::ranges::any_of(approximations, [](const auto& entry)
+                                   { return entry.first.starts_with("instrument volume above full level"); });
+    };
+
+    Check(!cut(build(40)), "a loud zone that no note plays cuts nothing");
+    Check(cut(build(100)), "a loud zone that a note plays cuts every zone");
 }
 
 void TestMiddleFadeIn()
@@ -2487,6 +2576,8 @@ int main()
                                         TestLaterChannelLayers();
                                         TestLaterFilter();
                                         TestLaterStopOtherChannel();
+                                        TestLaterGameCall();
+                                        TestLoudZoneThatNoNotePlays();
                                         TestMiddleFadeIn();
                                         TestLaterZones();
                                         TestLibmusNote();
