@@ -109,6 +109,7 @@ struct Channel
     uint8_t sweep = 0;    // channel 1's sweep, for NR10
     uint8_t n4 = 0;       // NRx4's high bits: the length's enable, and the wave channel's restart
     uint8_t step = 0;     // the envelope's step time and direction that the frame writes to NRx2's low 4 bits
+    uint8_t lag = 0;      // the levels by which the hardware envelope trails the Metroid games' count of the level
     uint32_t pattern = 0; // the wave pattern in the wave channel's RAM
 
     // The conversion's view of the channel: its note has got louder than silence.
@@ -581,7 +582,7 @@ private:
     // Ends a channel's note. `taken` says that a later note takes the channel.
     void EndNote(int channel, bool sounded, bool taken = false);
 
-    // Records that a channel's note is audible, the first time its envelope is above 0.
+    // Records that a channel's note is audible, the first time the level that the hardware plays it at is above 0.
     void CheckAudible(int channel);
 
     void Warn(const std::string& message);

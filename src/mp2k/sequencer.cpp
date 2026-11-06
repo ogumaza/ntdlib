@@ -303,6 +303,211 @@ Next StepEnvelope(Channel& c)
     return Next::kStep;
 }
 
+// The Metroid games' PSG routine (0x080011DC in Metroid Fusion) counts a channel's envelope a level at a time, once
+// every `attack`, `decay` or `release` frames, with no extra step every 15th frame. It writes a square's or the noise
+// channel's envelope only when a phase starts or the track's volume changes, and restarts the channel each time. The
+// hardware envelope moves the level in between. The wave channel takes its volume at each step of the count, and
+// restarts only when its note starts or its volume changes.
+
+// Asks for the frame's write of the channel's level at the start of a phase, with the hardware envelope's step time and
+// direction `step`. A square or the noise channel restarts. The wave channel restarts only if `restart`.
+void MetroidPhase(Channel& c, uint8_t step, bool restart = false)
+{
+    c.modify |= kModifyVolume;
+    c.lag = 0;
+    if (!IsWaveChannel(c))
+    {
+        c.step = step;
+    }
+    else if (restart)
+    {
+        c.n4 |= 0x80;
+    }
+}
+
+// Asks for the frame's write of the wave channel's level after a step of the count. The hardware envelope moves the
+// other channels' levels.
+void MetroidStep(Channel& c)
+{
+    if (IsWaveChannel(c))
+    {
+        c.modify |= kModifyVolume;
+    }
+}
+
+// Starts the echo after a PSG note's release, at its level with a step time of 0. Without both an echo volume and an
+// echo length, the note ends (0x080014F0).
+Next MetroidEcho(Channel& c)
+{
+    c.status &= uint8_t(~kStatusEnvelope);
+    if (!c.echo_volume || !c.echo_length)
+    {
+        return Next::kOff;
+    }
+
+    c.envelope = uint8_t((c.goal * c.echo_volume + 0xFF) >> 8);
+    c.counter = c.echo_length;
+    c.status |= kStatusEcho;
+    MetroidPhase(c, 0);
+
+    return Next::kStep;
+}
+
+// Starts a PSG channel's sustain, at the sustain level with a step time of 0 (0x08001474). The count goes back to the
+// sustain level every frame.
+Next MetroidSustain(Channel& c)
+{
+    c.status = uint8_t((c.status & ~kStatusEnvelope) | kPhaseSustain);
+    c.envelope = c.sustain_goal;
+    c.counter = 1;
+    MetroidPhase(c, 0);
+
+    return Next::kStep;
+}
+
+// Counts a level down in a PSG channel's decay. The sustain starts once the count reaches the sustain level
+// (0x08001452).
+Next MetroidDecayStep(Channel& c)
+{
+    c.envelope--;
+    if (int8_t(c.envelope) <= int8_t(c.sustain_goal))
+    {
+        return MetroidSustain(c);
+    }
+
+    c.counter = c.decay;
+    MetroidStep(c);
+
+    return Next::kStep;
+}
+
+// Starts a PSG channel's decay, or its sustain if the voice's decay is 0. The count goes to the full level, then a
+// level down at once, so the hardware restarts a level below the full level and falls (0x08001414).
+Next MetroidDecay(Channel& c)
+{
+    if (!c.decay)
+    {
+        return MetroidSustain(c);
+    }
+
+    c.status = uint8_t((c.status & ~kStatusEnvelope) | kPhaseDecay);
+    c.envelope = c.goal;
+    MetroidPhase(c, c.decay);
+
+    return MetroidDecayStep(c);
+}
+
+// Counts a level up in a PSG channel's attack. The decay starts once the count reaches the full level (0x08001402).
+Next MetroidAttackStep(Channel& c)
+{
+    c.envelope++;
+    if (int8_t(c.envelope) >= int8_t(c.goal))
+    {
+        return MetroidDecay(c);
+    }
+
+    c.counter = c.attack;
+    MetroidStep(c);
+
+    return Next::kStep;
+}
+
+// Counts a level down in a PSG channel's release. The echo starts once the count reaches 0 (0x080014D2).
+Next MetroidReleaseStep(Channel& c)
+{
+    c.envelope--;
+    if (int8_t(c.envelope) <= 0)
+    {
+        return MetroidEcho(c);
+    }
+
+    c.counter = c.release;
+    MetroidStep(c);
+
+    return Next::kStep;
+}
+
+// Starts a PSG note in the Metroid games (0x08001362). A voice with a sound length plays at the sustain level until
+// the hardware's length counter stops it. Otherwise an attack restarts the hardware at 0, rising, while the count
+// starts at 1, a level ahead of the hardware. Without an attack, the decay starts at once.
+Next MetroidStart(Channel& c)
+{
+    if (c.length)
+    {
+        c.envelope = c.sustain_goal;
+        c.status = uint8_t((c.status & ~kStatusEnvelope) | kPhaseSustain);
+        c.counter = 0xFF;
+        MetroidPhase(c, 0);
+        return Next::kStep;
+    }
+    if (!c.attack)
+    {
+        return MetroidDecay(c);
+    }
+
+    c.envelope = 0;
+    MetroidPhase(c, uint8_t(c.attack + kEnvelopeUp));
+    if (!IsWaveChannel(c))
+    {
+        c.lag = 1;
+    }
+
+    return MetroidAttackStep(c);
+}
+
+// Moves a PSG channel's envelope on by a frame in the Metroid games, after its first. A change of the track's volume
+// restarts the hardware at the count, with a step time of 0. A release restarts the hardware a level below the count,
+// falling. A voice with a sound length has no release (0x080011DC).
+Next StepMetroidEnvelope(Channel& c)
+{
+    if (c.modify & kModifyVolume)
+    {
+        SetPsgVolume(c);
+        MetroidPhase(c, 0, true);
+    }
+
+    if (c.status & kStatusEcho)
+    {
+        return c.counter ? Next::kStep : Next::kOff;
+    }
+    if ((c.status & kStatusStop) && (c.status & kStatusEnvelope))
+    {
+        if (!c.release || c.length)
+        {
+            return MetroidEcho(c);
+        }
+
+        c.status &= uint8_t(~kStatusEnvelope);
+        MetroidPhase(c, c.release);
+        return MetroidReleaseStep(c);
+    }
+    if (c.counter)
+    {
+        return Next::kStep;
+    }
+
+    switch (c.status & kStatusEnvelope)
+    {
+    case kPhaseAttack:
+        return MetroidAttackStep(c);
+    case kPhaseDecay:
+        return MetroidDecayStep(c);
+    case kPhaseSustain:
+        if (c.length)
+        {
+            c.counter = 0xFF;
+        }
+        else
+        {
+            c.envelope = c.sustain_goal;
+            c.counter = 1;
+        }
+        return Next::kStep;
+    default:
+        return MetroidReleaseStep(c);
+    }
+}
+
 } // namespace
 
 uint32_t KeyToFrequency(uint32_t frequency, int key, int fine)
@@ -1766,7 +1971,12 @@ void Sequencer::RunPsg()
             SetPsgVolume(c);
             StartPsgRegisters(n, c);
             c.counter = c.attack;
-            if (c.attack)
+            c.lag = 0;
+            if (info_.metroid_sequencer)
+            {
+                next = MetroidStart(c);
+            }
+            else if (c.attack)
             {
                 c.envelope = 0;
             }
@@ -1774,6 +1984,10 @@ void Sequencer::RunPsg()
             {
                 next = StartDecay(c);
             }
+        }
+        else if (info_.metroid_sequencer)
+        {
+            next = StepMetroidEnvelope(c);
         }
         else if (c.status & kStatusEcho)
         {
@@ -1798,8 +2012,13 @@ void Sequencer::RunPsg()
             next = StepEnvelope(c);
         }
 
-        // The counter steps once a frame, and twice every 15th frame.
+        // The counter steps once a frame, and twice every 15th frame. The Metroid games' counter steps once a frame.
         int c15 = c15_;
+        if (info_.metroid_sequencer && next == Next::kStep)
+        {
+            c.counter--;
+            next = Next::kDone;
+        }
         while (next == Next::kStep)
         {
             c.counter--;
@@ -1916,9 +2135,10 @@ void Sequencer::WritePsgRegisters(int n, Channel& c)
         }
         else
         {
-            // The other channels restart at the envelope's level, and the hardware envelope moves on from there.
+            // The other channels restart at the envelope's level, and the hardware envelope moves on from there. The
+            // Metroid games' count can run a level ahead of the hardware (see MetroidStart()).
             // Channel 1 restarts a second time unless NR10 has its sweep lower the pitch.
-            WriteSound(at(r.nrx2), 1, (c.step & 0x0F) + (uint32_t(c.envelope) << 4));
+            WriteSound(at(r.nrx2), 1, (c.step & 0x0F) + (uint32_t(c.envelope - c.lag) << 4));
             WriteSound(at(r.nrx4), 1, c.n4 | 0x80);
             if (n == 1 && !(SoundRegister(at(r.nrx0)) & 0x08))
             {
@@ -3232,7 +3452,7 @@ void Sequencer::EndNote(int channel, bool sounded, bool taken)
 void Sequencer::CheckAudible(int channel)
 {
     Channel& c = channels_[size_t(channel)];
-    if (!c.audible && c.envelope > 0)
+    if (!c.audible && c.envelope > c.lag)
     {
         c.audible = true;
         Action a;

@@ -4793,6 +4793,90 @@ void TestMetroidSequencer()
     SEQLIB_CHECK(fusion_info.metroid_short_notes && keys == std::vector<int>({60, 50}));
 }
 
+// The Metroid games' PSG routine counts a square's envelope a level every `attack`, `decay` or `release` frames, with no
+// extra step every 15th frame, and writes NR12 (0x63) only when a phase starts, each time with a restart in NR14
+// (0x65). The attack restarts the channel at 0, rising every 6/64 s, while the count starts at 1. When the count
+// reaches the full level, the decay restarts the channel a level below it, falling. The sustain restarts it at the
+// sustain level with a step time of 0. The release restarts it a level below the count, falling every 2/64 s, and the
+// note ends when the count reaches 0: NR12 = 8, then NR14 = 0x80. A change of volume restarts the channel at the count
+// with a step time of 0. Metroid Fusion and Metroid: Zero Mission play these stores as mGBA 0.11.0 records them.
+void TestMetroidPsgEnvelope()
+{
+    Cart cart;
+    cart.WriteMetroid(16);
+    const uint32_t voices = cart.VoiceGroup({{0, Cart::Voice(1, 2, 60, {6, 6, 4, 2})}});
+    cart.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdVol, 64).Note(96, 60, 127).Wait(96).Fine()},
+              voices);
+    cart.Song({Track()
+                   .Cmd(kCmdTempo, 75)
+                   .Cmd(kCmdVoice, 0)
+                   .Cmd(kCmdVol, 64)
+                   .Note(96, 60, 127)
+                   .Wait(10)
+                   .Cmd(kCmdVol, 32)
+                   .Wait(86)
+                   .Fine()},
+              voices);
+    const Rom rom = cart.ToRom();
+    const DriverInfo info = Detect(rom);
+
+    // The frames that store to NR12, with the value and whether NR14 restarts the channel in the same frame.
+    struct Envelope
+    {
+        int frame;
+        uint32_t nr12;
+        bool restart;
+        Channel channel;
+    };
+    const auto envelopes = [&](int song)
+    {
+        Sequencer seq(rom, info, song);
+        std::vector<Envelope> out;
+        for (int f = 0; f < 140; f++)
+        {
+            seq.Step();
+            std::optional<uint32_t> nr12;
+            bool restart = false;
+            for (const ntdlib::agb::RegisterWrite& w : seq.SoundWrites())
+            {
+                nr12 = (w.address & 0xFF) == 0x63 ? std::optional<uint32_t>(w.value) : nr12;
+                restart = restart || ((w.address & 0xFF) == 0x65 && (w.value & 0x80));
+            }
+            if (nr12)
+            {
+                out.push_back({f, *nr12, restart, seq.GetChannel(kFirstPsgChannel)});
+            }
+        }
+        return out;
+    };
+
+    const std::vector<Envelope> plain = envelopes(0);
+    SEQLIB_REQUIRE(plain.size() >= 4);
+    const int goal = plain[0].channel.goal;
+    const int sustain = plain[0].channel.sustain_goal;
+    SEQLIB_REQUIRE(goal > sustain + 2 && sustain > 1);
+    SEQLIB_CHECK(plain[0].nr12 == 0x0E && plain[0].restart && plain[0].channel.envelope == 1);
+    SEQLIB_CHECK(plain[1].frame == plain[0].frame + 6 * (goal - 1) && plain[1].restart);
+    SEQLIB_CHECK_EQ(plain[1].nr12, uint32_t(((goal - 1) << 4) | 6));
+    SEQLIB_CHECK(plain[2].frame == plain[1].frame + 6 * (goal - 1 - sustain) && plain[2].restart);
+    SEQLIB_CHECK_EQ(plain[2].nr12, uint32_t(sustain << 4));
+    SEQLIB_CHECK_EQ(plain[3].nr12, uint32_t(((sustain - 1) << 4) | 2));
+    SEQLIB_CHECK(plain[3].restart && plain[3].frame == plain[0].frame + 96);
+    SEQLIB_REQUIRE_EQ(plain.size(), 5);
+    SEQLIB_CHECK(plain[4].nr12 == 0x08 && plain[4].frame == plain[3].frame + 2 * (sustain - 1));
+    SEQLIB_CHECK_EQ(plain[4].channel.status, 0);
+
+    // The fall of volume in the attack holds the channel at the count, 2 after 10 frames. The decay then starts from
+    // the new full level.
+    const std::vector<Envelope> quieter = envelopes(1);
+    SEQLIB_REQUIRE(quieter.size() >= 2);
+    SEQLIB_CHECK(quieter[1].frame == quieter[0].frame + 10 && quieter[1].nr12 == 0x20 && quieter[1].restart);
+    const int new_goal = quieter[1].channel.goal;
+    SEQLIB_CHECK(new_goal < goal);
+    SEQLIB_REQUIRE(quieter.size() >= 3);
+    SEQLIB_CHECK_EQ(quieter[2].nr12, uint32_t(((new_goal - 1) << 4) | 6));
+}
+
 // The Metroid games' LFO leaves its swing as it is when the triangle wave's value, before the depth scales it, equals
 // the old swing: at a speed of 32 and a depth of 63, the swing goes 16, 32, 32 and 0 rather than 16, 32, 16 and 0.
 void TestMetroidLfo()
@@ -6109,6 +6193,7 @@ int RunTests()
     TestMetroidDetection();
     TestMetroidSequencer();
     TestMetroidLfo();
+    TestMetroidPsgEnvelope();
     TestPlayerFifo();
     TestPlayerStoreCycle();
     TestPlayerFramesWithoutSamples();
