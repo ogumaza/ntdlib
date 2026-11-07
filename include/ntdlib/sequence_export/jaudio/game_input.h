@@ -53,10 +53,16 @@ public:
     // Convert the game's sequence `index` as `program`, with the banks' errors since the last conversion as warnings.
     Conversion Convert(std::size_t index, const PerformOptions& perform, const std::string& program);
 
+    // Whether the game's sequence `index` gets a conversion. A variant of the sound before it
+    // (SequenceSound::variant_ports) gets one only if its sequence reads one of the variant's ports. The check plays
+    // the sequence once, with banks of its own. Their errors aren't reported. The conversion reports them.
+    bool Converts(std::size_t index, const std::string& program);
+
 private:
     Game game_;
     BankSet banks_;
     std::size_t errors_reported_ = 0;
+    std::unique_ptr<BankSet> check_banks_; // for Converts, made at its first check
 };
 
 using GameConverter = Converter<PerformOptions, std::unique_ptr<GameInput>, Conversion>;

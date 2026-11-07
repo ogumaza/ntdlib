@@ -121,6 +121,7 @@ struct DriverOverrides
     int song_count = 0;
     uint32_t sample_table = 0;
     double mix_rate = 0;
+    std::string program = "ntdlib"; // the name that the messages of what can't be read give
 };
 
 // Finds the driver's tables in `rom`. Returns false and sets `error` if the driver's tables are unusable, or missing

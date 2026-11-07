@@ -48,7 +48,7 @@ Synth SynthOf(const Rom& rom, const DriverInfo& info, const Voice& voice);
 std::vector<int16_t> RenderSynth(const Rom& rom, const DriverInfo& info, Synth synth, uint32_t data, uint32_t frequency,
                                  uint32_t count);
 
-// Builds SoundFont samples and instruments from the ROM, reusing any already built. The converter adds the presets.
+// Builds SoundFont samples and instruments from the ROM, reusing any already built. The conversion adds the presets.
 class SoundfontBuilder
 {
 public:

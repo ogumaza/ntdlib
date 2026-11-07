@@ -805,6 +805,44 @@ void TestPortsAndRegisters()
           "--port takes the place of the game's value for the same port");
 }
 
+// The root track's ports that a sequence reads while they hold their first values (Performance::ports_read). A variant
+// of a sound's ports (GameRules::port_variants) converts only if its sequence reads one of them so
+// (GameInput::Converts).
+void TestPortsRead()
+{
+    // The sound gives port 0xc the value 20. A child of the root track reads the root's port `port` into register 0.
+    // With `own`, the root reads it instead. With `write_first`, the root writes port 0xc before that.
+    auto ports_read = [](uint8_t port, bool own, bool write_first)
+    {
+        Sequence s;
+        if (write_first)
+        {
+            s.Byte(0xd1).Byte(0x0c).Byte(0); // write register 0's value to port 0xc
+        }
+        if (own)
+        {
+            s.Byte(0xd0).Byte(port).Byte(0); // read the port into register 0
+        }
+        s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+        s.Bank(0).Program(0);
+        if (!own)
+        {
+            s.Byte(0xd6).Byte(port).Byte(0); // read the parent's port into register 0
+        }
+        s.NoteOn(60, 1, 100).Wait(10).NoteOff(1).Finish();
+        TestGame game(files::BankV0File(0, 60), {s.Data()});
+        SequenceSound sound = game.Sound(0);
+        sound.ports[0xc] = 20;
+
+        return Perform(sound, game.banks, {}, kProgram).ports_read;
+    };
+
+    Check(ports_read(0xc, false, false) == 1u << 0xc, "a child's read of the root's port counts");
+    Check(ports_read(0xc, true, false) == 1u << 0xc, "so does the root's read of its port");
+    Check(ports_read(0xb, false, false) == 0, "a read of a port without a first value doesn't count");
+    Check(ports_read(0xc, false, true) == 0, "nor does a read after the sequence wrote the port");
+}
+
 void TestDrumAndVolume()
 {
     // Track 0 plays the drum set at volume 0x40.
@@ -1757,6 +1795,14 @@ void TestGameRules()
     Check(galaxy2.echo && galaxy2.echo->delay == 69 && galaxy2.echo->feedback == 0.5135f &&
               galaxy2.echo->volume == 0x7fff / 32768.0f && galaxy2.echo->voice_level == 0.732421875f,
           "Galaxy 2's echo has a delay of 69 sub-frames, its filter's largest gain and a volume of 0x7fff");
+    const auto luigi_voices = [](const GameRules& rules)
+    {
+        return rules.port_variants.size() == 1 && rules.port_variants[0].group == 0x0001 &&
+               rules.port_variants[0].suffix == "_Luigi" &&
+               rules.port_variants[0].ports == std::map<uint8_t, uint16_t>{{0xc, 20}};
+    };
+    Check(luigi_voices(galaxy) && luigi_voices(galaxy2) && usa.port_variants.empty(),
+          "both Galaxy games list the player's voices again with port 0xc at 20, as Luigi's");
     Check(galaxy.rhythm_mutes_child_0 && galaxy2.rhythm_mutes_child_0 && !usa.rhythm_mutes_child_0,
           "both Galaxy games' rhythm mutes child 0 of a rhythm piece's track 0");
     Check(galaxy.start_states.size() == 18 && galaxy.start_states.at(0x01000008).tracks[0] == 0x3ffe &&
@@ -3766,6 +3812,7 @@ int main()
     TestLoop();
     TestJumpToTheNextCommand();
     TestPortsAndRegisters();
+    TestPortsRead();
     TestDrumAndVolume();
     TestTailsKeepTheirSettings();
     TestHeldNoteKeepsItsPart();

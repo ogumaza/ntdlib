@@ -849,6 +849,27 @@ void Apu::Advance(Psg& psg, uint32_t cycles)
     }
 }
 
+bool Apu::PsgSilent() const
+{
+    const auto silent = [](bool on, const Envelope& envelope)
+    {
+        return !on || (envelope.level == 0 && !(envelope.up && envelope.period != 0));
+    };
+
+    for (const Psg& psg : psgs_)
+    {
+        constexpr uint8_t kWaveVolumeBits = 0xE0;
+        if (!silent(psg.squares[0].on, psg.squares[0].envelope) ||
+            !silent(psg.squares[1].on, psg.squares[1].envelope) || !silent(psg.noise.on, psg.noise.envelope) ||
+            (psg.wave.on && (psg.registers[kNr32] & kWaveVolumeBits) != 0))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 int Apu::Level(const Psg& psg, int channel)
 {
     switch (channel)

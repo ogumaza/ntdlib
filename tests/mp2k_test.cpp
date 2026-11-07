@@ -84,6 +84,7 @@ using ntdlib::mp2k::kVoiceDrumKit;
 using ntdlib::mp2k::kVoiceFixed;
 using ntdlib::mp2k::kVoiceKeySplit;
 using ntdlib::mp2k::kVoiceReverse;
+using ntdlib::mp2k::NoteArguments;
 using ntdlib::mp2k::ReadSong;
 using ntdlib::mp2k::RunningStatus;
 using ntdlib::mp2k::ScanTrack;
@@ -1650,6 +1651,42 @@ void TestNoteChannels()
         }
     }
     SEQLIB_CHECK_EQ(end, 24);
+}
+
+void TestPsgNoteTakenBeforeItSounds()
+{
+    // Voice 0 plays the square wave of PSG channel 2 with the slowest attack. The channel starts the first note at a
+    // level of 0. The second note takes the channel a tick later, before the level rises, and the first note never
+    // sounds. The performance lists it among the notes that never started, and the MIDI file leaves it out.
+    Cart cart;
+    const uint32_t voices = cart.VoiceGroup({{0, Cart::Voice(2, 2, 60, {7, 0, 15, 0})}});
+    Track t;
+    t.Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100);
+    const size_t taken = t.Here();
+    t.Note(24, 60, 100).Wait(1).Note(24, 62, 100).Wait(24).Fine();
+    cart.Song({t}, voices);
+    const Rom rom = cart.ToRom();
+    const DriverInfo info = Detect(rom);
+    ntdlib::mp2k::SongHeader header;
+    SEQLIB_REQUIRE(ReadSong(rom, info, 0, header) && header.tracks.size() == 1);
+
+    const Performance perf = PerformSong(rom, info, 0, TempSettings("psg_taken"));
+
+    constexpr int8_t kSquare = kFirstPsgChannel + 1;
+    SEQLIB_REQUIRE_EQ(perf.note_channels.size(), 1);
+    SEQLIB_CHECK(perf.note_channels[0] == (NoteChannel{kSquare, 2, std::nullopt}));
+    const uint32_t offset = header.tracks[0] + uint32_t(taken) - perf.base;
+    SEQLIB_REQUIRE_EQ(perf.unstarted.size(), 1);
+    SEQLIB_CHECK(perf.unstarted[0] == (UnstartedNote{0, 24, 0, 60, 100, 2, offset}));
+    std::vector<int> keys;
+    for (const TrackEvent& event : perf.tracks[0])
+    {
+        if (event.kind == EventKind::kNoteOn)
+        {
+            keys.push_back(event.key);
+        }
+    }
+    SEQLIB_CHECK(keys == std::vector<int>{62});
 }
 
 void TestPerformance()
@@ -4791,6 +4828,20 @@ void TestMetroidSequencer()
         keys.push_back(a.key);
     }
     SEQLIB_CHECK(fusion_info.metroid_short_notes && keys == std::vector<int>({60, 50}));
+
+    // The scan of a track reads the same two notes, each of 24 ticks, where a wait of 96 ticks follows them. The SDK's
+    // library would read one note of 74 ticks.
+    Cart longer;
+    longer.WriteMetroid(16, true);
+    longer.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Note(24, 60, 100, 50).Wait(96).Fine()},
+                longer.VoiceGroup({{0, Cart::Voice(0, longer.Wave(Saw(), 13379, 0))}}));
+    const Rom longer_rom = longer.ToRom();
+    const DriverInfo longer_info = Detect(longer_rom);
+    ntdlib::mp2k::SongHeader longer_header;
+    SEQLIB_REQUIRE(ReadSong(longer_rom, longer_info, 0, longer_header));
+    const uint32_t track = longer_header.tracks[0];
+    SEQLIB_CHECK_EQ(ScanTrack(longer_rom, track, NoteArguments(longer_info)).last_command, 24u);
+    SEQLIB_CHECK_EQ(ScanTrack(longer_rom, track).last_command, 74u);
 }
 
 // The Metroid games' PSG routine counts a square's envelope a level every `attack`, `decay` or `release` frames, with
@@ -6144,6 +6195,7 @@ int RunTests()
     TestSongFiles();
     TestVoiceGroupFiles();
     TestNoteChannels();
+    TestPsgNoteTakenBeforeItSounds();
     TestPerformance();
     TestLevels();
     TestMonoLevels();

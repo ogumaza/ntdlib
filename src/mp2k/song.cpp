@@ -76,7 +76,8 @@ uint64_t WaitTicks(const Event& e)
 }
 
 // A walk through a track in the order that the driver plays its commands. The walk counts the ticks of the waits and
-// follows the pattern calls and the counted repeats. The code that walks the track handles jumps, loops and the end.
+// follows the pattern calls and the counted repeats. The code that walks the track handles jumps, loops and the end. A
+// note reads up to `note_arguments` bytes.
 class TrackWalk
 {
 public:
@@ -84,14 +85,14 @@ public:
     // call returns to.
     using Place = std::tuple<uint32_t, int, uint32_t>;
 
-    explicit TrackWalk(uint32_t address) : address_(address)
+    TrackWalk(uint32_t address, int note_arguments) : address_(address), note_arguments_(note_arguments)
     {
     }
 
     // Decodes the command at the walk's address. Returns false if DecodeEvent() does.
     bool Decode(const Rom& rom, Event& e) const
     {
-        return DecodeEvent(rom, address_, running_, e);
+        return DecodeEvent(rom, address_, running_, e, note_arguments_);
     }
 
     // Moves past `e`: sets the running status, goes on to the next command and counts the ticks of a wait.
@@ -177,6 +178,7 @@ public:
 
 private:
     uint32_t address_;
+    int note_arguments_ = 3;
     uint8_t running_ = 0;
     uint64_t tick_ = 0;
     std::array<uint32_t, 3> stack_ = {};
@@ -366,7 +368,7 @@ std::vector<int32_t> DecodeCamelotSteps(const Rom& rom, const Wave& wave, uint32
     return points;
 }
 
-bool DecodeEvent(const Rom& rom, uint32_t address, uint8_t running, Event& event)
+bool DecodeEvent(const Rom& rom, uint32_t address, uint8_t running, Event& event, int note_arguments)
 {
     event = Event();
     if (!rom.Contains(address))
@@ -397,7 +399,7 @@ bool DecodeEvent(const Rom& rom, uint32_t address, uint8_t running, Event& event
     int args = 0;
     if (c >= kCmdTie || c == kCmdEot)
     {
-        const int most = c == kCmdEot ? 1 : 3;
+        const int most = c == kCmdEot ? 1 : note_arguments;
         while (args < most && rom.Contains(at + uint32_t(args)) && rom.U8(at + uint32_t(args)) < 0x80)
         {
             args++;
@@ -567,11 +569,11 @@ std::string DescribeEvent(const Event& e)
     return b;
 }
 
-TrackLayout ScanTrack(const Rom& rom, uint32_t address)
+TrackLayout ScanTrack(const Rom& rom, uint32_t address, int note_arguments)
 {
     TrackLayout layout;
     std::array<uint8_t, kMemAccSize> memory = {};
-    TrackWalk walk(address);
+    TrackWalk walk(address, note_arguments);
 
     // The tick at which each command was first played, by its place.
     std::map<TrackWalk::Place, uint64_t> first;
@@ -690,7 +692,7 @@ bool DumpSong(const Rom& rom, const DriverInfo& info, int song, const std::strin
         text += line;
 
         // Follow the track as the driver plays it, through its patterns, repeats and jumps.
-        TrackWalk walk(h.tracks[size_t(t)]);
+        TrackWalk walk(h.tracks[size_t(t)], NoteArguments(info));
         std::set<TrackWalk::Place> played;
         for (int n = 0; n < kMaxListedCommands; n++)
         {

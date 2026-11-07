@@ -986,7 +986,7 @@ bool Sequencer::RunCommand(int t)
     const uint32_t address = track.position;
     const PlayedCommand played =
         ReadPlayedCommand([this](uint32_t at) { return rom_.U8(at); }, address,
-                          RunningState{track.running, track.key, track.velocity}, info_.metroid_short_notes ? 2 : 3);
+                          RunningState{track.running, track.key, track.velocity}, NoteArguments(info_));
     if (!played.valid)
     {
         Warn("track " + std::to_string(t) +

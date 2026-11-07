@@ -23,7 +23,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,9 +32,11 @@ jobs:
             os: windows-2025
             cmake: -A x64 -T ClangCL -DNTDLIB_SEQUENCE_EXPORT=ON
             tests: true
+            timeout: 45
           - name: macOS ARM64 (Apple Clang)
             os: macos-15
             cmake: -DNTDLIB_TESTS=OFF
+            timeout: 30
     defaults:
       run:
         shell: bash

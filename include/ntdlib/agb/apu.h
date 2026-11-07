@@ -133,6 +133,11 @@ public:
         return int(psgs_.size());
     }
 
+    // Returns true if none of the PSG's channels, in any unit, can change the output any more: each one is off, or
+    // plays at a level of 0 without an envelope that rises from there. A stopped wave channel holds a level, and that
+    // level doesn't change.
+    bool PsgSilent() const;
+
     // Sets the frame sequencer's phase: its step `step` (0 to 7) comes `cycles` (1 to kSequencerCycles) from now. When
     // the sound is switched on, step 0 comes kSequencerCycles later. The phase at a song's start depends on when the
     // game switched the sound on. Throws std::invalid_argument for a step or a number of cycles out of range.

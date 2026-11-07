@@ -5,13 +5,12 @@
 // The filter's command takes an entry of a table of 128 coefficient sets (0x80397f70 in the USA release of The Wind
 // Waker's main.dol, 0x804a38f8 in Pikmin 2's). Each set holds four 16-bit values. They run linearly from entry 0 to
 // entry 127. Entry 127 passes the signal through. The filter is y[n] = (c0 x[n] + c1 x[n-1] + c2 y[n-1] + c3 y[n-2]) /
-// 32768 at the game's output rate. GCSF's game mode, which runs the game's code, fits that form within 0.06 dB rms.
+// 32768 at the game's output rate.
 //
 // The filter falls to a shelf above a few kilohertz. A zone's low-pass goes on falling. A region therefore becomes two
 // zones: one unfiltered and one low-passed, with gains that together follow the filter's curve. In a model of
 // FluidSynth 2.6.1's low-pass, entry 64 comes within 0.7 dB rms of the curve this way, and within 2.9 dB with the
-// low-pass alone. Rendered through FluidSynth 2.6.1 against GCSF's game mode, The Wind Waker's goma_a went from 3.9 dB
-// to 1.2 dB in spectrum with the two zones, and to 2.6 dB with the low-pass alone.
+// low-pass alone.
 //
 // The fit takes the low-pass that each format gives a zone at a resonance of 0. FluidSynth and the other SoundFont
 // players read 0 cB as a Q of 1/sqrt(2), 3 dB down at the cutoff. sfzformat.com gives SFZ's resonance as the gain at

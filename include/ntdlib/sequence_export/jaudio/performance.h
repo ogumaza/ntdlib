@@ -86,6 +86,11 @@ struct Performance : ntdlib::sequence_export::PerformanceBase
     // (TrackFilterLayers).
     std::map<uint8_t, std::vector<FilterLayer>> filter_layers;
     std::map<uint8_t, std::vector<FilterLayer>> sfz_filter_layers;
+
+    // A bit for each port of the root track that the sequence read while the port held its first value: the sound's
+    // (SequenceSound::ports) or the options' (PerformOptions::ports). A read by another track of the root's port
+    // counts. Once the sequence writes a port, a read of it doesn't.
+    uint16_t ports_read = 0;
 };
 
 // Options for playing a sequence.
@@ -271,6 +276,11 @@ struct SequenceSound
     // numbers from PSSystem::oRandom (0x80515edc in the USA release's main.dol). Nothing else draws from it, and it
     // starts at 0. GameRules::conductors sets this.
     std::optional<Conductor> conductor = std::nullopt;
+
+    // For a variant of a sound that differs only in some of `ports` (GameRules::port_variants): a bit for each of those
+    // ports. The variant counts only if its sequence reads one of them (Performance::ports_read). Otherwise it plays as
+    // the sound does. 0 for a sound that isn't such a variant.
+    uint16_t variant_ports = 0;
 
     // The effect that the sequence plays, for an effects sequence. The sequence then plays from its start. The effect
     // starts after the tick that opens its slot's track. That tick has to come in the first sub-frame that runs ticks.

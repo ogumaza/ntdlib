@@ -700,7 +700,7 @@ UltimateMastersSequencer::Next UltimateMastersSequencer::RunCommand(int track, c
         // F6 xx up to 63 picks entry xx of the table of samples that the game's request gives the driver. A request
         // gives one only in the live stage of B3MJ. Each later note of the track then plays the entry's sample (see
         // kNote). F6 with a higher value changes the playing note's sample at once. No song with a table uses that,
-        // and agbsf2 leaves it out.
+        // and the model leaves it out.
         if (c.value <= 0x63)
         {
             t.sample_entry = int8_t(c.value);
@@ -933,7 +933,7 @@ Wct2004Sequencer::Next Wct2004Sequencer::RunCommand(int track, const Command& c,
             return Next::kRestart;
         }
 
-        // The driver silences every track on the next frame, and agbsf2 ends the song here.
+        // The driver silences every track on the next frame, and the model ends the song here.
         stopped_ = true;
         Silence(t, o);
         return Next::kStop;
@@ -1036,7 +1036,7 @@ Wct2004Sequencer::Next Wct2004Sequencer::RunCommand(int track, const Command& c,
         // F6 xx up to 63 picks entry xx of the table of samples that the game's request gives the driver. A request
         // gives one only in the live stage of BMAJ. Each later note of the track then plays the entry's sample (see
         // kNote). F6 with a higher value changes the playing note's sample at once. No song with a table uses that,
-        // and agbsf2 leaves it out.
+        // and the model leaves it out.
         if (c.value <= 0x63)
         {
             t.sample_entry = int8_t(c.value);
@@ -1272,7 +1272,7 @@ DungeonDiceSequencer::Next DungeonDiceSequencer::RunCommand(int track, const Com
             return Next::kRestart;
         }
 
-        // The driver silences every track on the next frame, and agbsf2 ends the song here. The track ends first.
+        // The driver silences every track on the next frame, and the model ends the song here. The track ends first.
         stopped_ = true;
         [[fallthrough]];
 

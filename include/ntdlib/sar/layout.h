@@ -116,10 +116,11 @@ struct Layout
 // file's writer adds them back. Any other file becomes a run of its own when it lies whole in the archive, when zeros
 // pad it to the alignment or it ends the archive, and when no field lies in it or points inside it. A group holds
 // fields, and stays in the bytes. The files in it can still become runs. A sequence file that stays in the bytes can
-// become a run too. Padding follows each sequence piece and each run of a file. Its alignment is the largest that
-// every file of the archive keeps, up to 64 bytes. The padding after a file that ends the archive aligns to 1 byte. It
-// adds no bytes. In an archive cut short, a group that lies partly past the end stays in the bytes whole. An archive
-// whose fields can't all be placed becomes one run. Throws xsflib::FormatError if the archive's tables can't be read.
+// become a run too. Padding follows each sequence piece and each run of a file. Its alignment is the largest that every
+// file of the archive keeps. That alignment is at most 64 bytes on the Switch and 32 on the 3DS and the Wii U. The
+// padding after a file that ends the archive aligns to 1 byte. It adds no bytes. In an archive cut short, a group that
+// lies partly past the end stays in the bytes whole. An archive whose fields can't all be placed becomes one run.
+// Throws xsflib::FormatError if the archive's tables can't be read.
 Layout Cut(std::span<const uint8_t> archive, const Options& options);
 
 // The commands of sequence files, by their file IDs, for a cut. A program that laid an archive out from its sequences

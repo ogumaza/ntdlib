@@ -32,7 +32,7 @@ inline bool IsPsgTrack(int t)
     return t < kPsgTracks;
 }
 
-// The revisions of the driver that agbsf2 reads. They differ in their commands and delays, and in how they play them.
+// The revisions of the driver that ntdlib reads. They differ in their commands and delays, and in how they play them.
 enum class Revision
 {
     kUltimateMasters,     // Yu-Gi-Oh! Ultimate Masters Edition, and the games whose driver reads its commands
@@ -49,7 +49,7 @@ enum class Revision
     kDungeonDiceMonsters, // Yu-Gi-Oh! Dungeon Dice Monsters
 };
 
-// Returns the revision's name, as --info prints it.
+// Returns the revision's name, for messages and detection results.
 const char* RevisionName(Revision r);
 
 // Returns true if revision `r` is the Ultimate Masters revision or one of its later builds, Live Start and Prince of

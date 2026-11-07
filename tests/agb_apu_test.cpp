@@ -921,6 +921,62 @@ void TestGrownUnits()
     }
 }
 
+// PsgSilent(): a channel that's off holds no sound. Nor does one at a level of 0, unless its envelope rises from there.
+// A wave channel holds its volume in NR32.
+void TestPsgSilent()
+{
+    Apu off = PoweredOn();
+    XSFLIB_CHECK(off.PsgSilent());
+
+    // A note at a level of 15, without an envelope.
+    Apu square = PoweredOn();
+    square.Store(kNr11, 1, 0x80);
+    square.Store(kNr12, 1, 0xF0);
+    square.Store(kNr13, 2, 0x8400);
+    XSFLIB_CHECK(!square.PsgSilent());
+
+    // At a period of 1, the envelope falls by 1 every 8 of the frame sequencer's steps: 15 times from a level of 15.
+    Apu falling = PoweredOn();
+    falling.Store(kNr21, 1, 0x80);
+    falling.Store(kNr22, 1, 0xF1);
+    falling.Store(kNr23, 2, 0x8400);
+    XSFLIB_CHECK(!falling.PsgSilent());
+    falling.Run(14 * 8 * kSequencerCycles);
+    XSFLIB_CHECK(!falling.PsgSilent());
+    falling.Run(2 * 8 * kSequencerCycles);
+    XSFLIB_CHECK(falling.PsgSilent());
+
+    // From a level of 0, an envelope with a period rises. Without a period, it stays at 0. NR42's bit 3 keeps the
+    // channel on at that level.
+    Apu rising = PoweredOn();
+    rising.Store(kNr42, 1, 0x09);
+    rising.Store(kNr43, 2, 0x8000);
+    XSFLIB_CHECK(!rising.PsgSilent());
+    Apu stopped = PoweredOn();
+    stopped.Store(kNr42, 1, 0x08);
+    stopped.Store(kNr43, 2, 0x8000);
+    XSFLIB_CHECK(stopped.PsgSilent());
+
+    // A wave channel plays at the volume of NR32's high bits, and a volume of 0 holds it at a constant.
+    Apu wave = PoweredOn();
+    wave.Store(kNr30, 1, 0x80);
+    wave.Store(kNr32, 1, 0x20);
+    wave.Store(kNr33, 2, 0x8400);
+    XSFLIB_CHECK(!wave.PsgSilent());
+    wave.Store(kNr32, 1, 0x00);
+    XSFLIB_CHECK(wave.PsgSilent());
+    wave.Store(kNr32, 1, 0x80);
+    XSFLIB_CHECK(!wave.PsgSilent());
+    wave.Store(kNr30, 1, 0x00);
+    XSFLIB_CHECK(wave.PsgSilent());
+
+    // A grown unit's channels count too.
+    Apu grown = PoweredOn();
+    StoreGrownNotes(grown, 1);
+    XSFLIB_CHECK(grown.PsgUnits() == 2);
+    XSFLIB_CHECK(!grown.PsgSilent());
+}
+
 void TestSequencerRange()
 {
     Apu apu;
@@ -960,6 +1016,7 @@ int main()
                                         TestPower();
                                         TestRegisters();
                                         TestMutes();
+                                        TestPsgSilent();
                                         TestSequencerRange();
                                         TestGrownUnits();
                                         TestEnhancedSamples();

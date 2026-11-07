@@ -19,7 +19,6 @@
 
 namespace ntdlib::mp2k
 {
-
 namespace
 {
 
@@ -45,10 +44,10 @@ constexpr Kind kExtendedKinds[kXcmdCount] = {
 // The number of length codes: TIE's 0, then N01 to N96.
 constexpr int kLengthCodes = 49;
 
-// The bytes that a note and an end of a tie hold at most after their code.
-int MostArguments(Kind kind)
+// The bytes that a note and an end of a tie hold at most after their code, where a note reads up to `note_arguments`.
+int MostArguments(Kind kind, int note_arguments)
 {
-    return kind == Kind::kNoteOff ? 1 : 3;
+    return kind == Kind::kNoteOff ? 1 : note_arguments;
 }
 
 // The length code of the longest length up to `length`.
@@ -219,8 +218,9 @@ uint8_t CodeOf(const Command& command)
     throw std::invalid_argument("MP2K has no command for " + std::string(commands::Name(command.kind)));
 }
 
-// Appends the bytes of `command`, whose target lies at address `target`. Its values are the console's.
-void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t target)
+// Appends the bytes of `command`, whose target lies at address `target`, for a driver whose notes read up to
+// `note_arguments` bytes. Its values are the console's.
+void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t target, int note_arguments)
 {
     if (command.kind == Kind::kData)
     {
@@ -272,10 +272,16 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
                     throw std::invalid_argument("a note of " + std::to_string(value) +
                                                 " ticks, which its length code can't give");
                 }
+                if (extra != 0 && note_arguments < 3)
+                {
+                    throw std::invalid_argument("a note of " + std::to_string(value) +
+                                                " ticks, which no length code gives without an extra length");
+                }
             }
             const int usual = command.kind == Kind::kNoteOff ? 1 : extra != 0 ? 3 : 2;
             const int count = command.encoding.arguments ? *command.encoding.arguments : usual;
-            if (count > MostArguments(command.kind) || (command.kind == Kind::kNote && extra != 0 && count < 3))
+            if (count > MostArguments(command.kind, note_arguments) ||
+                (command.kind == Kind::kNote && extra != 0 && count < 3))
             {
                 throw std::invalid_argument(std::string(commands::Name(command.kind)) + " with " +
                                             std::to_string(count) + " arguments");
@@ -398,15 +404,16 @@ RunningState StateOf(const Command& command, uint8_t code)
     return state;
 }
 
-// Whether the driver reads `bytes` as `command`, with the state that the command takes. Its values are the console's,
-// and its target lies at address `target`. A byte from 0x80 up follows the bytes.
-bool ReadsBack(std::span<const uint8_t> bytes, const Command& command, uint32_t target)
+// Whether the driver reads `bytes` as `command`, with the state that the command takes, where a note reads up to
+// `note_arguments` bytes. Its values are the console's, and its target lies at address `target`. A byte from 0x80 up
+// follows the bytes.
+bool ReadsBack(std::span<const uint8_t> bytes, const Command& command, uint32_t target, int note_arguments)
 {
     const auto byte_at = [bytes](uint32_t address)
     {
         return address < bytes.size() ? bytes[address] : uint8_t{kCmdFine};
     };
-    const PlayedCommand played = ReadPlayedCommand(byte_at, 0, StateOf(command, CodeOf(command)));
+    const PlayedCommand played = ReadPlayedCommand(byte_at, 0, StateOf(command, CodeOf(command)), note_arguments);
     Command read = played.command;
     if (commands::HasTarget(read.kind) && read.target == target)
     {
@@ -441,11 +448,12 @@ struct Found
     std::vector<Cover> cover;
 };
 
-// The bytes of a song from address `base`.
+// The bytes of a song from address `base`, for a driver whose notes read up to `note_arguments` bytes.
 struct Bytes
 {
     std::span<const uint8_t> data;
     uint32_t base = 0;
+    int note_arguments = 3;
 
     bool Inside(uint32_t address) const
     {
@@ -463,8 +471,8 @@ struct Bytes
 // status that the state lacks.
 std::optional<Read> ReadAt(const Bytes& bytes, uint32_t at, const RunningState& state)
 {
-    const PlayedCommand played =
-        ReadPlayedCommand([&bytes](uint32_t address) { return bytes.At(address); }, bytes.base + at, state);
+    const PlayedCommand played = ReadPlayedCommand([&bytes](uint32_t address) { return bytes.At(address); },
+                                                   bytes.base + at, state, bytes.note_arguments);
     if (!played.valid || played.next - bytes.base > bytes.data.size())
     {
         return std::nullopt;
@@ -476,7 +484,7 @@ std::optional<Read> ReadAt(const Bytes& bytes, uint32_t at, const RunningState& 
     read.after = played.after;
 
     std::vector<uint8_t> again;
-    AppendCommand(again, read.command, read.command.target);
+    AppendCommand(again, read.command, read.command.target, bytes.note_arguments);
     read.raw = !std::equal(again.begin(), again.end(), bytes.data.begin() + at, bytes.data.begin() + at + read.size);
     Convert(read.command, commands::ToUnit);
 
@@ -846,9 +854,10 @@ commands::Scale ScaleOf(Kind kind)
     }
 }
 
-Decoded DecodeSequence(std::span<const uint8_t> data, uint32_t base, std::span<const uint32_t> entries)
+Decoded DecodeSequence(std::span<const uint8_t> data, uint32_t base, std::span<const uint32_t> entries,
+                       int note_arguments)
 {
-    const Bytes bytes{data, base};
+    const Bytes bytes{data, base, note_arguments};
     std::set<uint32_t> cuts;
     std::vector<uint32_t> offsets;
     for (const uint32_t entry : entries)
@@ -895,7 +904,7 @@ Decoded DecodeSequence(std::span<const uint8_t> data, uint32_t base, std::span<c
     return decoded;
 }
 
-Decoded DecodeSong(const Rom& rom, const SongHeader& header)
+Decoded DecodeSong(const Rom& rom, const SongHeader& header, int note_arguments)
 {
     if (header.tracks.empty())
     {
@@ -908,7 +917,8 @@ Decoded DecodeSong(const Rom& rom, const SongHeader& header)
         throw std::invalid_argument("a song whose tracks don't lie in the ROM before its header");
     }
 
-    return DecodeSequence(std::span<const uint8_t>(rom.Ptr(first), header.address - first), first, header.tracks);
+    return DecodeSequence(std::span<const uint8_t>(rom.Ptr(first), header.address - first), first, header.tracks,
+                          note_arguments);
 }
 
 bool FallsThrough(const commands::Command& command)
@@ -925,7 +935,7 @@ bool FallsThrough(const commands::Command& command)
     }
 }
 
-Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base)
+Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base, int note_arguments)
 {
     // The console's values nearest the units.
     std::vector<commands::Command> items = sequence.items;
@@ -943,7 +953,7 @@ Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base)
     {
         encoded.offsets.push_back(at);
         scratch.clear();
-        AppendCommand(scratch, item, 0);
+        AppendCommand(scratch, item, 0, note_arguments);
         at += static_cast<uint32_t>(scratch.size());
     }
     encoded.offsets.push_back(at);
@@ -964,8 +974,9 @@ Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base)
         }
 
         const auto start = encoded.bytes.size();
-        AppendCommand(encoded.bytes, item, target);
-        if (item.kind != Kind::kData && !ReadsBack(std::span(encoded.bytes).subspan(start), item, target))
+        AppendCommand(encoded.bytes, item, target, note_arguments);
+        if (item.kind != Kind::kData &&
+            !ReadsBack(std::span(encoded.bytes).subspan(start), item, target, note_arguments))
         {
             throw std::invalid_argument("the driver would read other commands from the bytes of " +
                                         std::string(commands::Name(item.kind)));
@@ -984,7 +995,8 @@ Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base)
         const uint32_t end = encoded.offsets[i + 1];
         const uint32_t start = encoded.offsets[i];
         const int count = static_cast<int>(end - start) - (item.encoding.repeated ? 0 : 1);
-        if (count < MostArguments(item.kind) && (end >= encoded.bytes.size() || encoded.bytes[end] < 0x80))
+        if (count < MostArguments(item.kind, note_arguments) &&
+            (end >= encoded.bytes.size() || encoded.bytes[end] < 0x80))
         {
             throw std::invalid_argument(
                 "a note or an end of a tie that leaves out its arguments before a byte below "

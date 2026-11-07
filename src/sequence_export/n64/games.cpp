@@ -6,7 +6,6 @@
 
 namespace ntdlib::sequence_export::n64
 {
-
 namespace
 {
 
@@ -743,8 +742,8 @@ constexpr std::array kHeyYouPikachuNames = {
     SongName{0x2A, "Trumpet 2"},    SongName{0x2B, "Sea noise"},     SongName{0x2C, "Doing well"},
 };
 
-// The game's scripts slow some cues through 0x8011D768, which passes a rate to 0x800231F4. A run of those areas in
-// usf's core shows where each slide stops: 0.798 past an area's time limit, and 0.79 in the fishing areas. The rate
+// The game's scripts slow some cues through 0x8011D768, which passes a rate to 0x800231F4. A run of the game's code in
+// those areas shows where each slide stops: 0.798 past an area's time limit, and 0.79 in the fishing areas. The rate
 // reaches a cue through 0x8001FF84, which leaves out cue 2, Mamma mia!. Each track holds the rate where the slide
 // stops.
 constexpr std::array kHeyYouPikachuRates = {

@@ -59,11 +59,12 @@ uint64_t FreeSpace(const std::vector<uint8_t>& image)
     return run < image.size() ? AlignUp(run + kFreeSpaceMargin, kFreeSpaceMargin) : AlignUp(image.size(), 4);
 }
 
-// The bytes of a ROM that the driver reads, as FillerRuns finds them.
+// The bytes of a ROM that the driver reads, as FillerRuns finds them. A note reads up to `note_arguments` bytes.
 class Reached
 {
 public:
-    explicit Reached(const agb::Rom& rom) : rom_(rom), bytes_(rom.Size(), false)
+    Reached(const agb::Rom& rom, int note_arguments)
+        : rom_(rom), note_arguments_(note_arguments), bytes_(rom.Size(), false)
     {
     }
 
@@ -100,7 +101,7 @@ public:
             while (rom_.Contains(at) && seen.insert(at).second)
             {
                 Event event;
-                if (!DecodeEvent(rom_, at, running, event))
+                if (!DecodeEvent(rom_, at, running, event, note_arguments_))
                 {
                     break;
                 }
@@ -178,6 +179,7 @@ private:
     }
 
     const agb::Rom& rom_;
+    int note_arguments_ = 3;
     std::vector<bool> bytes_;
 };
 
@@ -252,13 +254,13 @@ Layout Cut(const agb::Rom& rom, const DriverInfo& info)
         song.base = *std::min_element(header.tracks.begin(), header.tracks.end());
         try
         {
-            song.decoded = DecodeSong(rom, header);
+            song.decoded = DecodeSong(rom, header, NoteArguments(info));
             if (song.decoded.opaque)
             {
                 continue;
             }
 
-            const Encoded encoded = EncodeSequence(song.decoded.sequence, song.base);
+            const Encoded encoded = EncodeSequence(song.decoded.sequence, song.base, NoteArguments(info));
             if (!std::equal(encoded.bytes.begin(), encoded.bytes.end(), rom.Ptr(song.base),
                             rom.Ptr(song.base) + (header.address - song.base)))
             {
@@ -292,6 +294,7 @@ Layout Cut(const agb::Rom& rom, const DriverInfo& info)
 
     // The runs between the songs, and the fields of the headers and of the song table.
     Layout layout;
+    layout.note_arguments = NoteArguments(info);
     uint32_t at = kRomBase;                   // where the next run starts
     std::map<uint32_t, uint32_t> header_runs; // each header's run, by the header's address
     const auto add_run = [&](uint32_t end)
@@ -351,7 +354,7 @@ Layout Cut(const agb::Rom& rom, const DriverInfo& info)
 std::vector<Span> FillerRuns(const agb::Rom& rom, const DriverInfo& info)
 {
     // The bytes that the driver reads: its tables, and each song with what it plays.
-    Reached reached(rom);
+    Reached reached(rom, NoteArguments(info));
     reached.Mark(info.song_table, 8 * uint64_t(std::max(info.song_count, 0)));
     reached.Mark(info.player_table, 12 * uint64_t(info.players.size()));
     std::set<uint32_t> groups; // the voice groups that the songs name
@@ -477,7 +480,8 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
             image[starts[p + 1]] = uint8_t(tracks[p]);
         }
 
-        const Encoded encoded = EncodeSequence(sequences[sequence->sequence], uint32_t(kRomBase + starts[p]));
+        const Encoded encoded =
+            EncodeSequence(sequences[sequence->sequence], uint32_t(kRomBase + starts[p]), options.note_arguments);
         if (encoded.bytes.size() > sequence->room || grows)
         {
             moving.push_back(p);
@@ -594,7 +598,9 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
         // The free space at the ROM's end, or else the first filler run with room. A song's encoding takes the same
         // size wherever it lies.
         const auto& sequence = std::get<sar::SequencePiece>(pieces[p]);
-        const uint64_t song_size = EncodeSequence(sequences[sequence.sequence], uint32_t(kRomBase + free)).bytes.size();
+        const uint64_t song_size =
+            EncodeSequence(sequences[sequence.sequence], uint32_t(kRomBase + free), options.note_arguments)
+                .bytes.size();
         const uint32_t header_size = HeaderSize(tracks[p]);
         uint64_t at = free;
         bool at_end = AlignUp(free + song_size, 4) + header_size <= kLargestRom;
@@ -624,7 +630,8 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
             filled[run] = AlignUp(at + song_size, 4) + header_size;
         }
 
-        const Encoded encoded = EncodeSequence(sequences[sequence.sequence], uint32_t(kRomBase + at));
+        const Encoded encoded =
+            EncodeSequence(sequences[sequence.sequence], uint32_t(kRomBase + at), options.note_arguments);
         const uint64_t copy = AlignUp(at + encoded.bytes.size(), 4);
         const uint64_t end = copy + header_size;
         if (end > image.size())

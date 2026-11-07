@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 3.2.0 LANGUAGES C CXX)
+project(ntdlib VERSION 3.3.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -220,6 +220,12 @@ target_link_libraries(ntdlib_ntr_archive_player PUBLIC ntdlib::ntr ntdlib::ntr_s
 xsflib_add_project_test(ntdlib ntr_archive_player ntdlib::ntr_archive_player)
 xsflib_add_project_test(ntdlib ntr_archive_source ntdlib::ntr_archive_player)
 
+# What known DS games' code sets as it starts a sequence of their sound archives (the archive player's settings and
+# commands), and the states of a sequence that the code keeps set while it plays.
+xsflib_add_project_library(ntdlib ntr_profiles src/ntr/game_profiles.cpp)
+target_link_libraries(ntdlib_ntr_profiles PUBLIC ntdlib::ntr_archive_player)
+xsflib_add_project_test(ntdlib ntr_game_profiles ntdlib::ntr_profiles)
+
 # The length analysis of a sound archive's sequence on the model of the DS's sound driver, with xsflib's analysis.
 xsflib_add_project_library(ntdlib ntr_lengths src/ntr/length_model.cpp)
 target_link_libraries(ntdlib_ntr_lengths PUBLIC ntdlib::ntr_archive_player xsflib::rip)
@@ -311,10 +317,73 @@ xsflib_add_project_library(ntdlib konami src/konami/commands.cpp src/konami/driv
 target_link_libraries(ntdlib_konami PUBLIC ntdlib::agb ntdlib::commands PRIVATE ntdlib::wave)
 xsflib_add_project_test(ntdlib konami_commands ntdlib::konami)
 xsflib_add_project_test(ntdlib konami_layout ntdlib::konami)
+xsflib_add_project_test(ntdlib brownie_commands ntdlib::brownie)
+xsflib_add_project_test(ntdlib brownie_layout ntdlib::brownie)
 
 # A song of a ROM with Konami's driver on the models of the driver and the sound hardware.
 xsflib_add_project_library(ntdlib konami_player src/konami/archive_player.cpp)
 target_link_libraries(ntdlib_konami_player PUBLIC ntdlib::konami ntdlib::agb_apu)
+
+# Rare's GBA driver: detection, the tunes' commands and instruments, the decoder and the encoder of its track commands
+# in the form of ntdlib::commands, the cut and the join of a ROM's tunes for an editor, and the model of the driver's
+# per-frame routine.
+xsflib_add_project_library(ntdlib rare src/rare/commands.cpp src/rare/driver.cpp src/rare/layout.cpp
+                           src/rare/sequencer.cpp src/rare/song.cpp)
+target_link_libraries(ntdlib_rare PUBLIC ntdlib::agb ntdlib::commands)
+xsflib_add_project_test(ntdlib rare_commands ntdlib::rare)
+xsflib_add_project_test(ntdlib rare_layout ntdlib::rare)
+
+# A tune of a ROM with Rare's driver on the models of the driver and the sound hardware.
+xsflib_add_project_library(ntdlib rare_player src/rare/archive_player.cpp)
+target_link_libraries(ntdlib_rare_player PUBLIC ntdlib::rare ntdlib::agb_apu)
+
+# Quintet's GBA driver: detection, the songs' commands, the decoder and the encoder of its channel commands in the form
+# of ntdlib::commands, the cut and the join of a ROM's songs for an editor, and the model of the driver's play routine
+# and its writes to the sound registers.
+xsflib_add_project_library(ntdlib quintet src/quintet/commands.cpp src/quintet/driver.cpp src/quintet/instruments.cpp
+                           src/quintet/layout.cpp src/quintet/sequencer.cpp src/quintet/song.cpp)
+target_link_libraries(ntdlib_quintet PUBLIC ntdlib::agb ntdlib::commands)
+xsflib_add_project_test(ntdlib quintet_commands ntdlib::quintet)
+xsflib_add_project_test(ntdlib quintet_layout ntdlib::quintet)
+# quintet::ArchivePlayer: the model of the driver on the model of the GBA's sound hardware.
+xsflib_add_project_library(ntdlib quintet_player src/quintet/archive_player.cpp)
+target_link_libraries(ntdlib_quintet_player PUBLIC ntdlib::quintet ntdlib::agb_apu)
+
+# Krawall, the GBA's player of XM and S3M modules: detection of its builds, the modules' patterns, their commands, the
+# cut and join of a ROM, the instruments and samples, and the model of the player and its mixer.
+xsflib_add_project_library(ntdlib krawall src/krawall/commands.cpp src/krawall/driver.cpp src/krawall/instruments.cpp
+                           src/krawall/layout.cpp src/krawall/player.cpp src/krawall/player_v1.cpp src/krawall/song.cpp
+                           src/krawall/unpack.cpp)
+target_link_libraries(ntdlib_krawall PUBLIC ntdlib::agb ntdlib::commands)
+
+# Nintendo R&D2's GBA driver: detection, the commands of its revisions and the model of the driver.
+xsflib_add_project_library(ntdlib rd2 src/rd2/commands.cpp src/rd2/driver.cpp src/rd2/layout.cpp src/rd2/output.cpp
+                           src/rd2/sequencer.cpp src/rd2/song.cpp)
+target_link_libraries(ntdlib_rd2 PUBLIC ntdlib::agb ntdlib::commands PRIVATE ntdlib::wave)
+xsflib_add_project_test(ntdlib rd2_commands ntdlib::rd2)
+xsflib_add_project_test(ntdlib rd2_layout ntdlib::rd2)
+
+# Brownie Brown's GBA driver: detection, the commands of its two revisions and the model of the driver.
+xsflib_add_project_library(ntdlib brownie src/brownie/commands.cpp src/brownie/driver.cpp src/brownie/layout.cpp
+                           src/brownie/sequencer.cpp src/brownie/song.cpp)
+target_link_libraries(ntdlib_brownie PUBLIC ntdlib::agb ntdlib::commands PRIVATE ntdlib::wave)
+xsflib_add_project_library(ntdlib brownie_game src/brownie/game_driver.cpp)
+target_link_libraries(ntdlib_brownie_game PUBLIC ntdlib::brownie ntdlib::agb_system)
+xsflib_add_project_library(ntdlib brownie_player src/brownie/archive_player.cpp)
+target_link_libraries(ntdlib_brownie_player PUBLIC ntdlib::brownie ntdlib::agb_apu)
+
+# Ubisoft Milan's GBA driver: detection and a model of its sequencer.
+xsflib_add_project_library(ntdlib ubimilan src/ubimilan/commands.cpp src/ubimilan/driver.cpp src/ubimilan/layout.cpp
+                           src/ubimilan/output.cpp src/ubimilan/sequencer.cpp src/ubimilan/song.cpp)
+target_link_libraries(ntdlib_ubimilan PUBLIC ntdlib::agb ntdlib::commands PRIVATE ntdlib::wave)
+xsflib_add_project_test(ntdlib ubimilan_commands ntdlib::ubimilan)
+xsflib_add_project_test(ntdlib ubimilan_layout ntdlib::ubimilan)
+xsflib_add_project_test(ntdlib ubimilan_output ntdlib::ubimilan)
+
+# A piece of a ROM with Ubisoft Milan's driver on the models of the driver and the sound hardware.
+xsflib_add_project_library(ntdlib ubimilan_player src/ubimilan/archive_player.cpp)
+target_link_libraries(ntdlib_ubimilan_player PUBLIC ntdlib::ubimilan ntdlib::agb_apu)
+xsflib_add_project_test(ntdlib ubimilan_player ntdlib::ubimilan_player)
 
 # Enough of a GBA to run a game's sound driver on the ARM interpreter: the memories, the I/O registers, the DMA's
 # immediate transfers and the BIOS's calls that the drivers make. A game's MP2K driver runs on it (mp2k_game), as the
@@ -326,8 +395,26 @@ xsflib_add_project_library(ntdlib mp2k_game src/mp2k/game_driver.cpp)
 target_link_libraries(ntdlib_mp2k_game PUBLIC ntdlib::mp2k ntdlib::agb_system)
 xsflib_add_project_library(ntdlib konami_game src/konami/game_driver.cpp)
 target_link_libraries(ntdlib_konami_game PUBLIC ntdlib::konami ntdlib::agb_system)
+xsflib_add_project_library(ntdlib rare_game src/rare/game_driver.cpp)
+target_link_libraries(ntdlib_rare_game PUBLIC ntdlib::rare ntdlib::agb_system)
+xsflib_add_project_library(ntdlib quintet_game src/quintet/game_driver.cpp)
+target_link_libraries(ntdlib_quintet_game PUBLIC ntdlib::quintet ntdlib::agb_system)
+xsflib_add_project_library(ntdlib ubimilan_game src/ubimilan/game_driver.cpp)
+target_link_libraries(ntdlib_ubimilan_game PUBLIC ntdlib::ubimilan ntdlib::agb_system)
 xsflib_add_project_test(ntdlib konami_output ntdlib::konami_game)
+xsflib_add_project_library(ntdlib krawall_game src/krawall/game_driver.cpp)
+target_link_libraries(ntdlib_krawall_game PUBLIC ntdlib::krawall ntdlib::agb_system)
+# krawall::ArchivePlayer: a piece of a ROM with Krawall on the models of the player and the sound hardware.
+xsflib_add_project_library(ntdlib krawall_player src/krawall/archive_player.cpp)
+target_link_libraries(ntdlib_krawall_player PUBLIC ntdlib::krawall ntdlib::agb_apu)
+xsflib_add_project_library(ntdlib rd2_game src/rd2/game_driver.cpp)
+target_link_libraries(ntdlib_rd2_game PUBLIC ntdlib::rd2 ntdlib::agb_system)
+xsflib_add_project_library(ntdlib rd2_player src/rd2/archive_player.cpp)
+target_link_libraries(ntdlib_rd2_player PUBLIC ntdlib::rd2 ntdlib::agb_apu)
+xsflib_add_project_test(ntdlib rd2_output ntdlib::rd2)
+xsflib_add_project_test(ntdlib rd2_player ntdlib::rd2_player)
 xsflib_add_project_test(ntdlib konami_player ntdlib::konami_player)
+xsflib_add_project_test(ntdlib brownie_player ntdlib::brownie_player)
 
 # The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files: NintendoWare's sound archives
 # (sequence_export), JAudio's sound data (sequence_export_jaudio, in src/sequence_export/jaudio), the DS's sound
@@ -399,7 +486,8 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/ntr/sfz.cpp)
     target_link_libraries(ntdlib_sequence_export_ntr PUBLIC ntdlib::sequence_export ntdlib::ntr_archive_player
                                                             ntdlib::sequence_export_dse)
-    # The GBA's conversions: what every driver's conversion shares (sequence_export_agb), MP2K's and Konami's.
+    # The GBA's conversions: what every driver's conversion shares (sequence_export_agb), MP2K's, Konami's, Rare's,
+    # Quintet's, Krawall's, Nintendo R&D2's, Brownie Brown's and Ubisoft Milan's.
     xsflib_add_project_library(ntdlib sequence_export_agb
         src/sequence_export/agb/beat_grid.cpp
         src/sequence_export/agb/beat_midi.cpp
@@ -418,10 +506,49 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/konami/performance.cpp
         src/sequence_export/konami/soundfont.cpp)
     target_link_libraries(ntdlib_sequence_export_konami PUBLIC ntdlib::sequence_export_agb ntdlib::konami)
+    xsflib_add_project_library(ntdlib sequence_export_rare
+        src/sequence_export/rare/convert.cpp
+        src/sequence_export/rare/performance.cpp
+        src/sequence_export/rare/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_rare PUBLIC ntdlib::sequence_export_agb ntdlib::rare)
+    xsflib_add_project_library(ntdlib sequence_export_quintet
+        src/sequence_export/quintet/convert.cpp
+        src/sequence_export/quintet/performance.cpp
+        src/sequence_export/quintet/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_quintet PUBLIC ntdlib::sequence_export_agb ntdlib::quintet)
+    xsflib_add_project_library(ntdlib sequence_export_krawall
+        src/sequence_export/krawall/convert.cpp
+        src/sequence_export/krawall/performance.cpp
+        src/sequence_export/krawall/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_krawall PUBLIC ntdlib::sequence_export_agb ntdlib::krawall)
+    xsflib_add_project_library(ntdlib sequence_export_rd2
+        src/sequence_export/rd2/convert.cpp
+        src/sequence_export/rd2/performance.cpp
+        src/sequence_export/rd2/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_rd2 PUBLIC ntdlib::sequence_export_agb ntdlib::rd2)
+    xsflib_add_project_library(ntdlib sequence_export_brownie
+        src/sequence_export/brownie/convert.cpp
+        src/sequence_export/brownie/performance.cpp
+        src/sequence_export/brownie/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_brownie PUBLIC ntdlib::sequence_export_agb ntdlib::brownie)
+    xsflib_add_project_library(ntdlib sequence_export_ubimilan
+        src/sequence_export/ubimilan/convert.cpp
+        src/sequence_export/ubimilan/performance.cpp
+        src/sequence_export/ubimilan/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_ubimilan PUBLIC ntdlib::sequence_export_agb ntdlib::ubimilan)
     xsflib_add_project_test(ntdlib sequence_export_agb ntdlib::sequence_export_agb)
     xsflib_add_project_test(ntdlib mp2k ntdlib::sequence_export_mp2k ntdlib::mp2k_player)
     xsflib_add_project_test(ntdlib konami ntdlib::sequence_export_konami)
+    xsflib_add_project_test(ntdlib rare ntdlib::sequence_export_rare ntdlib::rare_player)
+    xsflib_add_project_test(ntdlib quintet ntdlib::sequence_export_quintet ntdlib::quintet_player)
+    xsflib_add_project_test(ntdlib krawall ntdlib::sequence_export_krawall ntdlib::krawall_player)
+    xsflib_add_project_test(ntdlib rd2 ntdlib::sequence_export_rd2)
+    xsflib_add_project_test(ntdlib rd2_performance ntdlib::sequence_export_rd2)
+    xsflib_add_project_test(ntdlib brownie ntdlib::sequence_export_brownie)
+    xsflib_add_project_test(ntdlib brownie_performance ntdlib::sequence_export_brownie)
     xsflib_add_project_test(ntdlib konami_performance ntdlib::sequence_export_konami)
+    xsflib_add_project_test(ntdlib ubimilan ntdlib::sequence_export_ubimilan)
+    xsflib_add_project_test(ntdlib ubimilan_performance ntdlib::sequence_export_ubimilan)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_frame ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export ntdlib::sequence_export)

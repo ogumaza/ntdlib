@@ -44,7 +44,7 @@ enum class Kind
 // Returns the name of the sample of wave `wave` at volume `volume` (0-15). Its preset has the same name.
 std::string WaveName(int wave, int volume);
 
-// Builds and caches SoundFont samples from a ROM. The converter adds presets and instruments to the same file.
+// Builds and caches SoundFont samples from a ROM. The conversion adds presets and instruments to the same file.
 class SoundfontBuilder
 {
 public:

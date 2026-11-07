@@ -194,9 +194,10 @@ struct Event
     uint32_t target = 0;
 };
 
-// Decodes the command at `address`, after commands that left `running` as the running status (0 for none). Returns
-// false if the command is unknown or runs past the end of the ROM, or needs the running status when there's none.
-bool DecodeEvent(const Rom& rom, uint32_t address, uint8_t running, Event& event);
+// Decodes the command at `address`, after commands that left `running` as the running status (0 for none). A note
+// reads up to `note_arguments` bytes (NoteArguments). Returns false if the command is unknown or runs past the end of
+// the ROM, or requires the running status when there's none.
+bool DecodeEvent(const Rom& rom, uint32_t address, uint8_t running, Event& event, int note_arguments = 3);
 
 // Returns true if a decoded command ends the track: a command that EndsTrack(uint8_t) accepts, or extended command 00
 // or 03. The driver handles those two as it handles kCmdFine.
@@ -212,7 +213,7 @@ std::string DescribeEvent(const Event& event);
 // back to a command played before. Conditional jumps read the memory area as the driver leaves it at the start, with
 // every byte 0. For a track without a loop, the layout's last command is the tick by which the track has played its
 // last command other than a wait and released its notes.
-TrackLayout ScanTrack(const Rom& rom, uint32_t address);
+TrackLayout ScanTrack(const Rom& rom, uint32_t address, int note_arguments = 3);
 
 // Writes a text listing of every command of every track of a song. Returns false and sets `error` on failure.
 bool DumpSong(const Rom& rom, const DriverInfo& info, int song, const std::string& path, std::string& error);

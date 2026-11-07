@@ -930,6 +930,11 @@ private:
     // track's port interrupt.
     void WritePortOf(int t, int other, uint32_t port, uint32_t value);
 
+    // Record track `t`'s read and write of port `port`. The root track's read of a port that still holds its first
+    // value counts in Performance::ports_read. The root track's write of the port ends that.
+    void NotePortRead(int t, uint32_t port);
+    void NotePortWrite(int t, uint32_t port);
+
     void CheckInterrupt(int t);
     void TimerProcess(int t);
     void SetParam(int t, uint32_t target, float value, uint32_t count);
@@ -1130,6 +1135,8 @@ private:
     std::optional<uint32_t> last_draw_;             // the last tick a track drew a random number in
     std::array<int, 16> slot_tracks_{};             // the track recorded in each MIDI track, or -1
     int effect_track_ = -1;                         // the track of the effect's slot, once it has opened
+    int root_track_ = -1;                           // the root track, once Run has opened it
+    uint16_t first_ports_ = 0;                      // the root's ports that hold their first values (ports_read)
     std::map<uint32_t, uint8_t> tie_velocities_in_; // an earlier run's TieVelocities
     std::map<uint32_t, uint8_t> tie_velocities_;
 
@@ -1717,6 +1724,7 @@ uint32_t Performer::ReadReg(int t, uint32_t reg)
     }
     if (reg < 0x50)
     {
+        NotePortRead(t, reg - 0x40);
         return tr.ports[reg - 0x40];
     }
 
@@ -1813,6 +1821,7 @@ void Performer::WriteReg(int t, uint32_t reg, uint32_t value)
     }
     if (reg < 0x50)
     {
+        NotePortWrite(t, reg - 0x40);
         tr.ports[reg - 0x40] = static_cast<uint16_t>(value);
         return;
     }
@@ -1950,8 +1959,25 @@ void Performer::WritePortOf(int t, int other, uint32_t port, uint32_t value)
     WritePortApp(other, port, value);
 }
 
+void Performer::NotePortRead(int t, uint32_t port)
+{
+    if (t == root_track_ && ((first_ports_ >> port) & 1) != 0)
+    {
+        out_.ports_read = static_cast<uint16_t>(out_.ports_read | (1u << port));
+    }
+}
+
+void Performer::NotePortWrite(int t, uint32_t port)
+{
+    if (t == root_track_)
+    {
+        first_ports_ = static_cast<uint16_t>(first_ports_ & ~(1u << port));
+    }
+}
+
 void Performer::WritePortApp(int t, uint32_t port, uint32_t value)
 {
+    NotePortWrite(t, port);
     Track& tr = TrackAt(t);
     tr.imported = static_cast<uint16_t>(tr.imported | (1u << port));
     tr.ports[port] = static_cast<uint16_t>(value);
@@ -2302,11 +2328,13 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
 
     case 0xd0:
         tr.imported = static_cast<uint16_t>(tr.imported & ~(1u << (a[0] & 15)));
+        NotePortRead(t, a[0] & 15);
         WriteReg(t, a[1], tr.ports[a[0] & 15]);
         break;
 
     case 0xd1:
         tr.exported = static_cast<uint16_t>(tr.exported | (1u << (a[0] & 15)));
+        NotePortWrite(t, a[0] & 15);
         tr.ports[a[0] & 15] = static_cast<uint16_t>(a[1]);
         break;
 
@@ -2335,6 +2363,7 @@ Outcome Performer::Command(int t, uint8_t cmd, uint16_t override_types)
             const uint32_t port = a[0] & 15;
             Track& o = TrackAt(other);
             o.exported = static_cast<uint16_t>(o.exported & ~(1u << port));
+            NotePortRead(other, port);
             WriteReg(t, a[1], o.ports[port]);
         }
         break;
@@ -3077,11 +3106,13 @@ Outcome Performer::Command1(int t, uint8_t cmd, uint16_t override_types)
     case 0xcb:
         // cmdReadPort: the port's value goes to the register, and its import flag clears.
         tr.imported = static_cast<uint16_t>(tr.imported & ~(1u << (a[0] & 15)));
+        NotePortRead(t, a[0] & 15);
         WriteRegDirect1(t, a[1], tr.ports[a[0] & 15]);
         break;
 
     case 0xcc:
         tr.exported = static_cast<uint16_t>(tr.exported | (1u << (a[0] & 15)));
+        NotePortWrite(t, a[0] & 15);
         tr.ports[a[0] & 15] = static_cast<uint16_t>(a[1]);
         break;
 
@@ -3580,7 +3611,13 @@ uint32_t Performer::ReadReg1(int t, uint32_t reg)
         return ReadReg32(t, reg);
     }
 
-    return reg - 0x40 < 16 ? TrackAt(t).ports[reg - 0x40] : 0;
+    if (reg - 0x40 >= 16)
+    {
+        return 0;
+    }
+
+    NotePortRead(t, reg - 0x40);
+    return TrackAt(t).ports[reg - 0x40];
 }
 
 uint16_t Performer::ReadReg16(int t, uint32_t reg)
@@ -5883,8 +5920,10 @@ Performance Performer::Run()
         {
             tr.ports[port] = value;
             tr.imported = static_cast<uint16_t>(tr.imported | (1u << port));
+            first_ports_ = static_cast<uint16_t>(first_ports_ | (1u << port));
         }
     }
+    root_track_ = root;
 
     bool finished = false;
     double steady_since = -1.0;

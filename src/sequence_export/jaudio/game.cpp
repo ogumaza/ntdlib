@@ -863,9 +863,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.effects_sequence = "se.bms";
 
         // Three effects draw a random number (JASPlayer::getRandomS32, 0x8009c6a4 in the GameCube's main.dol and
-        // 0x8004e508 in the Wii's) and end at once on some draws. The first draw ends all three. GCSF's renders of the
-        // GameCube's code after 0 to 15 draws play each one first after 3, 1 and 1 draws. Each plays the same sound on
-        // every draw that doesn't end it.
+        // 0x8004e508 in the Wii's) and end at once on some draws. The first draw ends all three. Renders of a run of
+        // the GameCube's code after 0 to 15 draws play each one first after 3, 1 and 1 draws. Each plays the same sound
+        // on every draw that doesn't end it.
         rules.random_starts = {{0x5829, 3}, {0x58fc, 1}, {0x58fe, 1}};
 
         // The game's sound layer gives the sound table's sequences their data as it plays them. The files that the
@@ -1308,6 +1308,15 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.echo = archive_sha1 == kGalaxy
                          ? EchoLine{64, 0x4fff / 32768.0f, 0x7000 / 32768.0f, 2.0f * 12000.0f / 32768.0f}
                          : EchoLine{69, 0.5135f, 0x7fff / 32768.0f, 2.0f * 12000.0f / 32768.0f};
+
+        // When the player plays as Luigi, AudSceneMgr::setPlayerModeLuigi (0x80031fc8 in Galaxy's main.dol, 0x800858d0
+        // in Galaxy 2's) sets the scene manager's player mode to 2. Once AudSystem::startSound (0x80026d54, 0x80078cc0)
+        // has started a sound, it calls AudSystem::switchToLuigi (0x80027024, 0x80079000). In that mode, for a sound of
+        // group 1, the function writes 20 to port 0xc of the sound's track (JASTrack::writePort). Group 1 of section 0
+        // holds the player's voices (SE_PV_*). A voice that reads the port plays Luigi's waves. The scene manager loads
+        // them in place of Mario's in that mode (AudSceneMgr::loadPlayerResource, 0x80031fd4 in Galaxy).
+        // AudSystem::startLevelSound doesn't call switchToLuigi.
+        rules.port_variants.push_back({.group = 0x0001, .suffix = "_Luigi", .ports = {{0xc, 20}}});
     }
 
     if (archive_sha1 == kGalaxy2)
@@ -1957,6 +1966,22 @@ void Game::FindSequences()
                 other.name += "_" + arrangement.suffix;
                 SetState(other, arrangement.state);
                 sequences_.push_back(std::move(other));
+            }
+        }
+
+        // Then its other values at ports (GameRules::port_variants).
+        for (const GameRules::PortVariant& variant : rules_.port_variants)
+        {
+            if (variant.group == static_cast<uint16_t>(s.Id() >> 16))
+            {
+                SequenceSound again = seq;
+                again.name += variant.suffix;
+                for (const auto& [port, value] : variant.ports)
+                {
+                    again.ports[port] = value;
+                    again.variant_ports = static_cast<uint16_t>(again.variant_ports | (1u << (port & 15)));
+                }
+                sequences_.push_back(std::move(again));
             }
         }
     }

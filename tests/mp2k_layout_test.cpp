@@ -31,6 +31,7 @@ using ntdlib::agb::kRomBase;
 using ntdlib::agb::Rom;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
+using ntdlib::commands::kOne;
 using ntdlib::mp2k::Cut;
 using ntdlib::mp2k::DecodeSong;
 using ntdlib::mp2k::DetectDriver;
@@ -153,7 +154,7 @@ Rom RomOf(std::vector<uint8_t> bytes)
 
 std::vector<uint8_t> JoinOf(const Layout& layout)
 {
-    return Join(layout.sequences, layout.pieces, layout.fields);
+    return Join(layout.sequences, layout.pieces, layout.fields, {.note_arguments = layout.note_arguments});
 }
 
 // The piece of the sequence piece that holds sequence `sequence`.
@@ -741,6 +742,62 @@ void TestHeaderTracks()
     SEQLIB_CHECK_EQ(header.tracks.size(), 16);
 }
 
+// Metroid Fusion's notes read a key and a velocity alone. The cut reads the bytes of Note(24, 60, 100, 50) as two
+// notes, the second a repeated note of key 50, and keeps the count for the join. The SDK's library reads the same bytes
+// as one note with an extra length. A note of 25 ticks has no code, and the join refuses it.
+void TestShortNotes()
+{
+    Cart cart;
+    cart.WriteMetroid(16, true);
+    cart.Song({Track().Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Note(24, 60, 100, 50).Wait(24).Fine()},
+              cart.VoiceGroup({{0, Cart::Voice(0, cart.Wave(Saw(), 13379, 0))}}));
+    const Rom rom = cart.ToRom();
+    const DriverInfo info = Detect(rom);
+    SEQLIB_REQUIRE(info.metroid_short_notes);
+    const Layout layout = Cut(rom, info);
+    SEQLIB_CHECK_EQ(layout.note_arguments, 2);
+    SEQLIB_REQUIRE_EQ(layout.sequences.size(), 1);
+
+    const auto keys = [](const ntdlib::commands::Sequence& sequence)
+    {
+        std::vector<int> found;
+        for (const Command& item : sequence.items)
+        {
+            if (item.kind == Kind::kNote)
+            {
+                found.push_back(int(item.key));
+            }
+        }
+        return found;
+    };
+    SEQLIB_CHECK(keys(layout.sequences[0]) == std::vector<int>({60, 50}));
+    SEQLIB_CHECK(JoinOf(layout) == Bytes(rom));
+
+    SongHeader header;
+    SEQLIB_REQUIRE(ReadSong(rom, info, 0, header));
+    SEQLIB_CHECK(keys(DecodeSong(rom, header).sequence) == std::vector<int>({60}));
+
+    Layout longer = layout;
+    for (Command& item : longer.sequences[0].items)
+    {
+        if (item.kind == Kind::kNote)
+        {
+            item.value.value = 25 * kOne;
+            break;
+        }
+    }
+    bool refused = false;
+    try
+    {
+        JoinOf(longer);
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+    SEQLIB_CHECK(refused);
+}
+
 void TestRefusals()
 {
     const Rom rom = TwoSongs();
@@ -797,6 +854,7 @@ int main()
     TestFillerRuns();
     TestFiller();
     TestHeaderTracks();
+    TestShortNotes();
     TestRefusals();
 
     return seqlib::testing::Summary("mp2k layout");

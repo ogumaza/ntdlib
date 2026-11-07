@@ -57,11 +57,11 @@ bool EncodesBack(const Decoded& decoded, const std::vector<uint8_t>& bytes)
     return EncodeSequence(decoded.sequence, kBase).bytes == bytes;
 }
 
-bool Throws(const ntdlib::commands::Sequence& sequence)
+bool Throws(const ntdlib::commands::Sequence& sequence, int note_arguments = 3)
 {
     try
     {
-        static_cast<void>(EncodeSequence(sequence, kBase));
+        static_cast<void>(EncodeSequence(sequence, kBase, note_arguments));
     }
     catch (const std::invalid_argument&)
     {
@@ -288,6 +288,58 @@ void TestOpaque()
     Check(!same.opaque && same.sequence.items[4].key == 60, "the note at 16 plays one key");
 }
 
+// Metroid Fusion's notes, which read a key and a velocity alone. A byte below 0x80 after a note's velocity starts a
+// note of the running status. The SDK's library reads the same byte as the first note's extra length. With 2 note
+// arguments, a note takes the length of its code alone: N28's code is 0xE8, and 25, 27, 29 and 97 ticks have no code.
+void TestShortNotes()
+{
+    const std::vector<uint8_t> bytes = {
+        0xBD, 0x05,       // VOICE 5
+        0xE7, 0x3C, 0x64, // N24 Cn3 v100
+        0x3E, 0x50,       // N24 Dn3 v080, repeated
+        0x98,             // W24
+        0xE7, 0x40,       // N24 En3, with the last velocity
+        0x98,             // W24
+        0xB1,             // FINE
+    };
+    const Decoded decoded = DecodeSequence(bytes, kBase, std::vector<uint32_t>{kBase}, 2);
+    const std::vector<Command>& items = decoded.sequence.items;
+    Check(!decoded.opaque && items.size() == 7, "the short notes' items: " + std::to_string(items.size()));
+    if (items.size() != 7)
+    {
+        return;
+    }
+
+    Check(items[1].kind == Kind::kNote && items[1].key == 60 && items[1].velocity == 100 * kOne &&
+              items[1].value.value == 24 * kOne && !items[1].encoding.arguments,
+          "N24 Cn3 v100 reads no extra length");
+    Check(items[2].kind == Kind::kNote && items[2].key == 62 && items[2].velocity == 80 * kOne &&
+              items[2].value.value == 24 * kOne && items[2].encoding.repeated && !items[2].encoding.arguments,
+          "the byte after the velocity starts a repeated note");
+    Check(items[4].kind == Kind::kNote && items[4].key == 64 && items[4].velocity == 80 * kOne &&
+              items[4].encoding.arguments == std::optional<uint8_t>(1),
+          "a note with a key alone takes the last velocity");
+    Check(EncodeSequence(decoded.sequence, kBase, 2).bytes == bytes, "the short notes encode back");
+
+    const Decoded sdk = Decode(bytes);
+    Check(sdk.sequence.items.size() > 1 && sdk.sequence.items[1].value.value == (24 + 62) * kOne,
+          "the SDK's library reads the byte as an extra length of 62 ticks");
+    Check(Throws(decoded.sequence), "with 3 arguments, a note can't leave out its extra length before a key");
+
+    const auto with_length = [&decoded](int64_t ticks)
+    {
+        ntdlib::commands::Sequence sequence = decoded.sequence;
+        sequence.items[4].value.value = ticks * kOne;
+        return sequence;
+    };
+    const std::vector<uint8_t> n28 = EncodeSequence(with_length(28), kBase, 2).bytes;
+    Check(n28.size() == bytes.size() && n28[8] == 0xE8, "a note of 28 ticks takes N28's code");
+    for (const int64_t ticks : {25, 27, 29, 97})
+    {
+        Check(Throws(with_length(ticks), 2), "no code gives a short note of " + std::to_string(ticks) + " ticks");
+    }
+}
+
 // What the encoder refuses: values its bytes can't hold, a running status that the kind has none of, and a note that
 // leaves out an argument before a byte below 0x80.
 void TestRefusals()
@@ -341,6 +393,7 @@ int main()
 {
     TestTrack();
     TestTie();
+    TestShortNotes();
     TestFlow();
     TestExtended();
     TestUnreached();

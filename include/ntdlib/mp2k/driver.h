@@ -94,6 +94,13 @@ struct DriverInfo
     std::vector<std::string> warnings;      // assumptions detection had to make
 };
 
+// The bytes that a note reads at most after its code: a key, a velocity and an extra length, or only a key and a
+// velocity where the driver has `metroid_short_notes`.
+inline int NoteArguments(const DriverInfo& info)
+{
+    return info.metroid_short_notes ? 2 : 3;
+}
+
 // Finds the driver in `rom`. Returns false and sets `error` if no song could be found, or returns false with `error`
 // empty if the game shows no sign of the driver and no song table is given.
 bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error);

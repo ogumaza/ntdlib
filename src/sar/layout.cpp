@@ -48,10 +48,6 @@ constexpr uint16_t kGroupFileBlock = 0x7801;
 constexpr uint16_t kDataReference = 0x1F00;
 constexpr uint32_t kNone = 0xFFFFFFFF;
 
-// The largest alignment that padding keeps in the archives of the 3DS, the Wii U and the Switch. The Switch's archives
-// align their files to 64 bytes, and those of the 3DS and the Wii U to 32.
-constexpr std::size_t kMostAlignment = 64;
-
 using core::Container;
 using core::Distance;
 using core::Location;
@@ -91,12 +87,21 @@ nwsnd::Grammar GrammarFor(Flavor flavor)
     throw std::invalid_argument("an unknown flavor of sound archive");
 }
 
+// The largest alignment that padding keeps in the archives of `flavor` and in their group files. On the Switch, the
+// tools start each file of an archive and each copy in a group's file on a multiple of 64 bytes. On the 3DS and the
+// Wii U, they start them on a multiple of 32. There, every file can start on a multiple of 64 by chance. Padding to 64
+// bytes would then keep a file that ends 32 bytes past such a multiple in the bytes.
+std::size_t MostAlignmentOf(Flavor flavor)
+{
+    return flavor == Flavor::kNx ? 64 : 32;
+}
+
 // The rules of the archives of `flavor`: CSEQ or FSEQ files, in the console's byte order.
 Container ContainerOf(Flavor flavor)
 {
     Container container;
     std::memcpy(container.sequence_magic.data(), flavor == Flavor::kCtr ? "CSEQ" : "FSEQ", 4);
-    container.most_alignment = kMostAlignment;
+    container.most_alignment = MostAlignmentOf(flavor);
     container.big_endian = flavor == Flavor::kCafe;
     container.grammar = GrammarFor(flavor);
 

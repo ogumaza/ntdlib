@@ -15,6 +15,11 @@
 // items as they say. Their bytes play as the items where each item that leaves something out follows commands that
 // leave the track in the state that the item holds: the decoder then gives the items back.
 //
+// A note reads up to `note_arguments` bytes after its code: the SDK's library reads a key, a velocity and an extra
+// length (3), and Metroid Fusion's sequencer a key and a velocity alone (2, NoteArguments). The decoder and the encoder
+// take the driver's count. With 2, a note's length is the length of its code, and a byte below 0x80 after a note's
+// velocity starts a note of the running status.
+//
 // A note's length is the length of its code (ClockLength) plus its extra length. A note of length 0 sounds until an
 // end of a tie (kNoteOff) with its key: MP2K's TIE is the code of length 0. A wait's length has to be one of the codes'
 // lengths, or come from the extended command of a long wait. Targets are the console's addresses: a target outside the
@@ -79,7 +84,7 @@ commands::Kind KindOfExtended(uint8_t x);
 
 // Reads the command at address `at` as the driver reads it, with the track's state `state`. `byte_at(address)` gives
 // the byte at an address. A note reads up to `note_arguments` bytes: the SDK's library reads a key, a velocity and an
-// extra length, and the Metroid games' sequencer only a key and a velocity.
+// extra length, and Metroid Fusion's sequencer only a key and a velocity.
 template <typename ByteAt>
 PlayedCommand ReadPlayedCommand(const ByteAt& byte_at, uint32_t at, const RunningState& state, int note_arguments = 3)
 {
@@ -321,13 +326,14 @@ struct Decoded
     bool opaque = false;
 };
 
-// Decodes `data`, a song's bytes from address `base`, with its tracks at the addresses `entries`. Throws
-// std::invalid_argument for an entry outside `data`.
-Decoded DecodeSequence(std::span<const uint8_t> data, uint32_t base, std::span<const uint32_t> entries);
+// Decodes `data`, a song's bytes from address `base`, with its tracks at the addresses `entries`. A note reads up to
+// `note_arguments` bytes (NoteArguments). Throws std::invalid_argument for an entry outside `data`.
+Decoded DecodeSequence(std::span<const uint8_t> data, uint32_t base, std::span<const uint32_t> entries,
+                       int note_arguments = 3);
 
 // Decodes the song with `header`: the bytes from its first track's start up to the header. Throws
 // std::invalid_argument where the tracks don't lie in the ROM before the header.
-Decoded DecodeSong(const Rom& rom, const SongHeader& header);
+Decoded DecodeSong(const Rom& rom, const SongHeader& header, int note_arguments = 3);
 
 // Whether a track goes on to the next command after `command`. A jump, a repeat for ever and an end end it. A return
 // goes on where the track runs it outside a pattern.
@@ -341,10 +347,12 @@ struct Encoded
     std::vector<uint32_t> offsets;
 };
 
-// Encodes `sequence` at address `base`, with the console's values nearest its units. Throws std::invalid_argument for
-// a command that the bytes can't hold, such as a wait of no code's length, a value past the console's range, a target
-// past the items, or a note that leaves out its arguments before a byte below 0x80.
-Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base);
+// Encodes `sequence` at address `base`, with the console's values nearest its units, for a driver whose notes read up
+// to `note_arguments` bytes (NoteArguments). Throws std::invalid_argument for a command that the bytes can't hold,
+// such as a wait of no code's length, a value past the console's range, a target past the items, or a note that leaves
+// out its arguments before a byte below 0x80. With 2 note arguments, a note of no code's length throws too: such a
+// note takes a TIE and an end of the tie.
+Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base, int note_arguments = 3);
 
 // The scale of the value of a command of `kind` (commands::UnitOf). A note's velocity takes the unchanged scale.
 commands::Scale ScaleOf(commands::Kind kind);

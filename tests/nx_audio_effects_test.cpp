@@ -7,7 +7,7 @@
 // expf against the exponential function. The effects then run on a voice through the renderer: a delay of a frame, the
 // calls that start it again or give it new gains, a disabled delay, frames without mixing, a new reverb and a disabled
 // one, the modes that the renderer refuses, a snapshot, a new limiter, and the enhanced mixing mode. Nintendo's code is
-// the anchor for the reverb's sums. HSF's oracle test runs it.
+// the anchor for the reverb's sums. A test outside this repository runs it against the model.
 
 #include <algorithm>
 #include <array>

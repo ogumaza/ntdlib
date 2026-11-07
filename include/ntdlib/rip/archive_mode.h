@@ -105,8 +105,8 @@ struct ArchiveRipTool
     // Its minis then get no tag for them.
     std::string variables_tag;
 
-    // The text of a variant's variables in its label and in variables_tag. By default, the form of 3SF's 3sf_var
-    // (xsflib::psf::FormatVariables).
+    // The text of a variant's variables in its label and in variables_tag. By default, the form of the PSF tag
+    // 3sf_var (xsflib::psf::FormatVariables).
     std::function<std::string(const xsflib::psf::Variables&)> format_variables = xsflib::psf::FormatVariables;
 
     // The library of a rip that plays the sequences at `sounds`, by their indices in the archive, with `tags`. By

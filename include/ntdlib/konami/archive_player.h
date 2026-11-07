@@ -196,8 +196,8 @@ public:
         uint64_t mixed_cycles_ = 0;
     };
 
-    // Takes a snapshot. `previous` is there for the interface that the players share: a snapshot stands alone. Throws
-    // std::logic_error before a start.
+    // Takes a snapshot. `previous` is there for the interface that ntdlib's archive players share: a snapshot stands
+    // alone. Throws std::logic_error before a start.
     Snapshot Save(const Snapshot* previous = nullptr) const;
 
     // Goes back to `snapshot`. The next frames give what they gave after the save. The last frame's meters go. Throws

@@ -105,6 +105,31 @@ Conversion GameInput::Convert(std::size_t index, const PerformOptions& perform, 
     return c;
 }
 
+bool GameInput::Converts(std::size_t index, const std::string& program)
+{
+    const SequenceSound& sound = game_.Sequences()[index];
+    if (sound.variant_ports == 0)
+    {
+        return true;
+    }
+
+    if (!check_banks_)
+    {
+        check_banks_ = std::make_unique<BankSet>(
+            game_.Archive(), [this](const std::string& name) { return game_.ReadWaveArchive(name); });
+    }
+
+    try
+    {
+        return (Perform(sound, *check_banks_, PerformOptions{}, program).ports_read & sound.variant_ports) != 0;
+    }
+    catch (const FormatError&)
+    {
+        // The conversion reports the error.
+        return true;
+    }
+}
+
 GameConverter MakeGameConverter(const std::string& program, const std::string& version_line,
                                 OptionHandler<PerformOptions> option, std::function<void()> usage,
                                 const GameOptions& game_options)
@@ -121,12 +146,15 @@ GameConverter MakeGameConverter(const std::string& program, const std::string& v
     {
         return Opened(Game::FromFolder(input, program, game_options), name);
     };
-    converter.sequences = [](const std::unique_ptr<GameInput>& input)
+    converter.sequences = [program](const std::unique_ptr<GameInput>& input)
     {
         std::vector<Sequence> sequences;
         for (std::size_t i = 0; i < input->Files().Sequences().size(); i++)
         {
-            sequences.push_back({i, input->Files().Sequences()[i].name});
+            if (input->Converts(i, program))
+            {
+                sequences.push_back({i, input->Files().Sequences()[i].name});
+            }
         }
 
         return sequences;

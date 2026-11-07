@@ -9,7 +9,8 @@
 // sequence sound, for the fields of the sounds' starts. A fifth holds sounds with some of the options and without
 // them, for the places of the values. The files that stay in the bytes become runs of their own, and take new bytes:
 // in the FILE block, in a group, and in both. A copy with other bytes in a group can take other new bytes than the
-// archive's copy. The last archives come with group files beside them, and the cut takes those too.
+// archive's copy. The last archives come with group files beside them, and the cut takes those too. Another group
+// file's copies all start on multiples of 64 bytes. On the 3DS and the Wii U, the cut still pads them to 32.
 
 #include <algorithm>
 #include <cstddef>
@@ -30,6 +31,7 @@
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/groups.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sar_tools.h"
@@ -1342,6 +1344,96 @@ void TestGroupFilePadding()
     XSFLIB_CHECK(Join(layout) == archive && JoinGroupFiles(layout) == group_files);
 }
 
+// The 3DS and the Wii U start each copy in a group's file on a multiple of 32 bytes. INFX follows the last copy on the
+// next such multiple. In this group's file, every copy starts on a multiple of 64 bytes. The last copy ends 32 bytes
+// past such a multiple, and INFX starts right there. The cut still pads each copy to 32 bytes. Each copy becomes a run
+// of its own. The last copy's file then takes new bytes. The group's file comes out as the tools lay it out with them.
+// `version` gives the group file's version. On the 3DS, version 1.1.0.0 holds INFX.
+void TestGroupFileCopiesOn64(Flavor flavor, uint32_t version)
+{
+    // Three files that only the group holds. INFO takes 96 bytes. The first copy then starts at 192. The copies take
+    // 64, 128 and 96 bytes.
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "Song", .file = 0}};
+    spec.players = {{"PLAYER", 1}};
+    spec.groups = {{"GROUP", ntdlib::sar::kExternalGroupFile}};
+    spec.files = {{.bytes = sar_files::Sequence(flavor, kSong, {{"Song", 0}})},
+                  {.group_only = true},
+                  {.group_only = true},
+                  {.group_only = true}};
+    const std::vector<uint8_t> archive = sar_files::Archive(flavor, spec);
+    const std::vector<ntdlib::sar::GroupMember> members = {
+        {1, std::vector<uint8_t>(64, 0x11)}, {2, std::vector<uint8_t>(128, 0x22)}, {3, std::vector<uint8_t>(96, 0x33)}};
+    const std::vector<ntdlib::sar::GroupItem> items = {{ntdlib::sar::ItemId(ntdlib::sar::kSoundItem, 0)}};
+    const std::vector<std::vector<uint8_t>> group_files = {
+        ntdlib::sar::GroupWith(ntdlib::sar::EmptyGroupFile(flavor, version), flavor, members, items)};
+    const std::vector<uint8_t>& group_file = group_files[0];
+
+    // Every copy starts on a multiple of 64 bytes. The last copy ends 32 bytes past such a multiple. INFX starts there.
+    const std::vector<ntdlib::sar::GroupCopy> copies = ntdlib::sar::GroupCopies(group_file, flavor);
+    XSFLIB_CHECK(copies.size() == members.size());
+    if (copies.size() != members.size())
+    {
+        return;
+    }
+    const std::string_view bytes(reinterpret_cast<const char*>(group_file.data()), group_file.size());
+    const std::size_t end = copies.back().start + copies.back().size;
+    XSFLIB_CHECK(std::ranges::all_of(copies, [](const ntdlib::sar::GroupCopy& copy) { return copy.start % 64 == 0; }));
+    XSFLIB_CHECK(end % 64 == 32 && end + 4 <= bytes.size() && bytes.substr(end, 4) == "INFX");
+
+    const Layout layout = ntdlib::sar::Cut(archive, group_files, OptionsFor(flavor));
+
+    // Each copy is a run of its own, with padding to 32 bytes after it.
+    XSFLIB_CHECK(layout.group_files.size() == 1);
+    if (layout.group_files.size() != 1)
+    {
+        return;
+    }
+    const std::vector<Piece>& pieces = layout.group_files[0].pieces;
+    const std::vector<std::size_t> starts = ntdlib::sar::Starts(group_file, flavor, pieces);
+    const auto alone = [&](const ntdlib::sar::GroupCopy& copy)
+    {
+        const std::vector<uint8_t> copied(group_file.begin() + static_cast<std::ptrdiff_t>(copy.start),
+                                          group_file.begin() + static_cast<std::ptrdiff_t>(copy.start + copy.size));
+        for (std::size_t i = 0; i + 1 < pieces.size(); ++i)
+        {
+            if (pieces[i] == Piece{copied} && starts[i] == copy.start && pieces[i + 1] == Piece{Padding{32}})
+            {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    const auto runs = static_cast<std::size_t>(std::ranges::count_if(copies, alone));
+    XSFLIB_CHECK(runs == copies.size());
+    XSFLIB_CHECK(Join(layout) == archive && JoinGroupFiles(layout) == group_files);
+    if (runs != copies.size())
+    {
+        return;
+    }
+
+    // The last copy's file takes 100 bytes. The archive's pieces stay.
+    const uint32_t file = copies.back().file;
+    const std::vector<uint8_t> kLonger(100, 0x44);
+    const ntdlib::sar::ReplacedPieces replaced = ntdlib::sar::ReplaceFile(
+        flavor, layout.sequences, layout.pieces, layout.fields, layout.group_files, file, kLonger);
+    Layout with = layout;
+    with.pieces = replaced.pieces;
+    with.group_files[0].pieces = replaced.group_files.at(0);
+    const std::vector<std::vector<uint8_t>> joined = JoinGroupFiles(with);
+    const std::vector<ntdlib::sar::GroupMember> longer = {{file, kLonger}};
+
+    XSFLIB_CHECK(with.pieces == layout.pieces && FileOf(ReadWithGroupFiles(with), file) == kLonger);
+    XSFLIB_CHECK(joined.size() == 1);
+    if (joined.size() == 1)
+    {
+        const ntdlib::sar::GroupContents contents = ntdlib::sar::ReadGroupFile(joined[0], flavor);
+        XSFLIB_CHECK(contents.files.size() == members.size() && contents.files.back().copy == kLonger);
+        XSFLIB_CHECK(joined[0] == ntdlib::sar::GroupWithCopies(group_file, flavor, longer));
+    }
+}
+
 // An archive with a group whose file the cut can't read stays one run. So does each group file beside it, and an empty
 // group file gives no pieces.
 void TestOneRun(Flavor flavor)
@@ -1394,6 +1486,8 @@ int main()
         TestOneRun(flavor);
     }
     TestGroupFilePadding();
+    TestGroupFileCopiesOn64(Flavor::kCafe, 0x00010000);
+    TestGroupFileCopiesOn64(Flavor::kCtr, 0x01010000);
 
     return xsflib::testing::Summary("Layout");
 }

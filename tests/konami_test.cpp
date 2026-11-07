@@ -435,8 +435,8 @@ void TestLoopStartLast()
     SEQLIB_CHECK(looped_at == (std::vector<int>{14, 20, 26}));
 }
 
-// Track 5 plays a note of sample F0. Sample numbers above EF select a mode that agbsf2 leaves out. The track stops with
-// a warning that names the sample.
+// Track 5 plays a note of sample F0. Sample numbers above EF select a mode that the model leaves out. The track stops
+// with a warning that names the sample.
 void TestSampleAboveEf()
 {
     Image m = SyntheticImage();
@@ -1675,7 +1675,7 @@ void TestRevisionDetection()
                  "Ultimate Masters revision of the driver (from the command reader at 0x08000800)");
     SEQLIB_CHECK(!older.found);
     SEQLIB_CHECK(older.error ==
-                 "this game has an older revision of Konami's driver with commands that agbsf2 can't read "
+                 "this game has an older revision of Konami's driver with commands that ntdlib can't read "
                  "(its command reader is at 0x08000800)");
     SEQLIB_CHECK(none.found && none.info.revision == Revision::kUltimateMasters);
     SEQLIB_CHECK(none.info.log[0] ==
@@ -2962,8 +2962,8 @@ void TestDungeonDiceConversion()
 void TestDetectionFromCode()
 {
     // A cartridge with the play-song and note-start code, and three songs. Every track of song 0 plays samples 0, 1 and
-    // 2. Sample 1's negative length selects a mode that agbsf2 doesn't support. The tracks of song 1 use F4. agbsf2
-    // doesn't support that command either. Song 2 rests.
+    // 2. Sample 1's negative length selects a mode that the model doesn't support. The tracks of song 1 use F4. The
+    // model doesn't support that command either. Song 2 rests.
     Image m(0x1000);
     constexpr uint32_t kTable = kRomBase + 0x100;
     constexpr uint32_t kSamples = kRomBase + 0x400;
@@ -2993,6 +2993,7 @@ void TestDetectionFromCode()
 
     DriverOverrides rate_only; // so that the mixer rate, which it has no code for, isn't a warning
     rate_only.mix_rate = 16000;
+    rate_only.program = "mytool"; // the name that the messages give
     DriverInfo info;
     std::string err;
 
@@ -3002,7 +3003,7 @@ void TestDetectionFromCode()
     // table holds sample 1 too, whose notes are skipped.
     const std::vector<std::string> kWarnings = {
         "song 1's tracks don't read cleanly, so the song table is taken to end before it (--song-count overrides this)",
-        "agbsf2 can't read these samples and skips their notes: 1"};
+        "mytool can't read these samples and skips their notes: 1"};
     SEQLIB_CHECK(found);
     SEQLIB_CHECK_EQ(info.song_table, kTable);
     SEQLIB_CHECK_EQ(info.song_count, 1);
@@ -3024,7 +3025,7 @@ void TestDetectionFromCode()
 
     SEQLIB_CHECK(!DetectDriver(m.ToRom(), rate_only, info, err));
     SEQLIB_CHECK(err ==
-                 "found the note-start code, but agbsf2 can't read most of the songs' samples in the sample table "
+                 "found the note-start code, but mytool can't read most of the songs' samples in the sample table "
                  "it loads, at 0x08000400 (--sample-table overrides detection)");
 
     // When song 0 only rests, the table the code loads is still taken, although none of the songs counted plays a note.
@@ -3049,7 +3050,7 @@ void TestDetectionFromCode()
 
     SEQLIB_CHECK(!DetectDriver(m.ToRom(), rate_only, info, err));
     SEQLIB_CHECK(err ==
-                 "found the play-song code, but the song table it loads, at 0x08000100, holds no songs agbsf2 can "
+                 "found the play-song code, but the song table it loads, at 0x08000100, holds no songs mytool can "
                  "read (--song-table and --song-count override detection)");
 }
 
@@ -3102,7 +3103,7 @@ void TestSampleTableChoice()
 
     SEQLIB_CHECK(found_half);
     SEQLIB_CHECK_EQ(info.sample_table, kRomBase + 0x400);
-    SEQLIB_CHECK(info.warnings == std::vector<std::string>{"agbsf2 can't read these samples and skips their notes: 1"});
+    SEQLIB_CHECK(info.warnings == std::vector<std::string>{"ntdlib can't read these samples and skips their notes: 1"});
 }
 
 void TestWaveLoaderForms()

@@ -211,7 +211,7 @@ SongCount CountSongs(const Rom& rom, uint32_t table, Revision revision)
         }
 
         // A header that points into the ROM, before any song's data, is most likely a song whose tracks use commands
-        // that agbsf2 doesn't support.
+        // that the model doesn't support.
         const int score = ScoreSong(rom, h, revision);
         if (score < h.tracks / 2)
         {
@@ -454,7 +454,7 @@ bool PlausibleDungeonDiceSample(const Rom& rom, uint32_t entry)
 }
 
 // Returns the header of sample `index` in a table of pointers to sample headers at `table`, with valid = false if
-// agbsf2 can't read it.
+// the model can't read it.
 SampleInfo SampleHeaderAt(const Rom& rom, uint32_t table, int index)
 {
     SampleInfo s;
@@ -473,8 +473,8 @@ SampleInfo SampleHeaderAt(const Rom& rom, uint32_t table, int index)
     return s;
 }
 
-// Returns entry `index` of the Dungeon Dice Monsters revision's sample table at `table`, with valid = false if agbsf2
-// can't read it. The revision's samples have no loop.
+// Returns entry `index` of the Dungeon Dice Monsters revision's sample table at `table`, with valid = false if the
+// model can't read it. The revision's samples have no loop.
 SampleInfo DungeonDiceSampleAt(const Rom& rom, uint32_t table, int index)
 {
     SampleInfo s;
@@ -492,7 +492,7 @@ SampleInfo DungeonDiceSampleAt(const Rom& rom, uint32_t table, int index)
 }
 
 // Returns the header of packed sample `index` in the table of pointers to sample headers at `table`, with valid = false
-// if the sample isn't packed or agbsf2 can't read it. The note start takes the length's low 24 bits. The mixer can't
+// if the sample isn't packed or the model can't read it. The note start takes the length's low 24 bits. The mixer can't
 // loop a packed sample, and the header has to give no loop.
 SampleInfo PackedSampleAt(const Rom& rom, uint32_t table, int index)
 {
@@ -519,7 +519,8 @@ SampleInfo PackedSampleAt(const Rom& rom, uint32_t table, int index)
     return s;
 }
 
-// Returns sample `index` of revision `revision`'s sample table at `table`, with valid = false if agbsf2 can't read it.
+// Returns sample `index` of revision `revision`'s sample table at `table`, with valid = false if the model can't read
+// it.
 SampleInfo SampleAt(const Rom& rom, uint32_t table, int index, Revision revision)
 {
     if (revision == Revision::kDungeonDiceMonsters)
@@ -929,9 +930,10 @@ uint32_t ScanForSongTable(const Rom& rom, Revision revision)
 
 // Finds the song table from the play-song routine's code, or failing that in the data. `code` holds the revision's
 // patterns. `has_reader` says that the ROM holds the driver's command reader. Returns 0 and sets `error` if the code
-// loads a table without songs, or returns 0 with `error` empty if there's no sign of a song table.
+// loads a table without songs, or returns 0 with `error` empty if there's no sign of a song table. `error` names
+// `program`.
 uint32_t FindSongTable(const Rom& rom, Revision revision, const RevisionCode& code, bool has_reader,
-                       std::vector<std::string>& log, std::string& error)
+                       const std::string& program, std::vector<std::string>& log, std::string& error)
 {
     // Choose the candidate table with the most songs. The play-song routine's code gives the table's address, so its
     // table only needs one song that parses. Tables found through other code must also pass the data scan's layout
@@ -993,8 +995,8 @@ uint32_t FindSongTable(const Rom& rom, Revision revision, const RevisionCode& co
     // one.
     if (exact && loaded)
     {
-        error = "found the play-song code, but the song table it loads, at " + Hex(loaded) +
-                ", holds no songs agbsf2 can read (--song-table and --song-count override detection)";
+        error = "found the play-song code, but the song table it loads, at " + Hex(loaded) + ", holds no songs " +
+                program + " can read (--song-table and --song-count override detection)";
         return 0;
     }
 
@@ -1064,9 +1066,11 @@ uint32_t ScanForSampleTable(const Rom& rom, const std::vector<int>& used, std::v
 
 // Finds the sample table of revision `revision` from the note-start routine's code, or failing that in the data, which
 // has to be in the newer revisions' layout. Returns 0 if no song plays a sample, and 0 with `error` set if there's no
-// table it can use. Adds the samples it can't read, or a table that's only a guess, to `warnings`.
+// table it can use. Adds the samples it can't read, or a table that's only a guess, to `warnings`. The messages name
+// `program`.
 uint32_t FindSampleTable(const Rom& rom, const std::vector<int>& used, const TableCode& note_start, Revision revision,
-                         std::vector<std::string>& log, std::vector<std::string>& warnings, std::string& error)
+                         const std::string& program, std::vector<std::string>& log, std::vector<std::string>& warnings,
+                         std::string& error)
 {
     if (used.empty())
     {
@@ -1074,7 +1078,7 @@ uint32_t FindSampleTable(const Rom& rom, const std::vector<int>& used, const Tab
         return 0;
     }
 
-    // Of the tables the code loads, take the one with the fewest samples agbsf2 can't read.
+    // Of the tables the code loads, take the one with the fewest samples the model can't read.
     const uint32_t ldr_offset = 2 * uint32_t(note_start.ldr);
     const std::vector<uint32_t> hits = FindThumb(rom, note_start.code);
     uint32_t best = 0;
@@ -1103,16 +1107,15 @@ uint32_t FindSampleTable(const Rom& rom, const std::vector<int>& used, const Tab
     }
 
     // The code gives the table's address, so a table found in the data instead would be the wrong one. The table only
-    // has to have a header agbsf2 can read for at least half of the samples. The others may be in a mode that agbsf2
-    // doesn't support. A negative length is one such mode.
+    // has to have a header the model can read for at least half of the samples. The others may be in a mode that the
+    // model doesn't support. A negative length is one such mode.
     if (best)
     {
         if (unreadable.size() * 2 > used.size())
         {
-            error =
-                "found the note-start code, but agbsf2 can't read most of the songs' samples in the sample "
-                "table it loads, at " +
-                Hex(best) + " (--sample-table overrides detection)";
+            error = "found the note-start code, but " + program +
+                    " can't read most of the songs' samples in the sample table it loads, at " + Hex(best) +
+                    " (--sample-table overrides detection)";
             return 0;
         }
 
@@ -1125,7 +1128,7 @@ uint32_t FindSampleTable(const Rom& rom, const std::vector<int>& used, const Tab
             {
                 list += (list.empty() ? "" : ", ") + std::to_string(idx);
             }
-            warnings.push_back("agbsf2 can't read these samples and skips their notes: " + list);
+            warnings.push_back(program + " can't read these samples and skips their notes: " + list);
         }
 
         return best;
@@ -1135,9 +1138,8 @@ uint32_t FindSampleTable(const Rom& rom, const std::vector<int>& used, const Tab
                                    : "the sample table that the note-start code loads isn't in the ROM";
     if (revision == Revision::kDungeonDiceMonsters)
     {
-        error = std::string(why) +
-                ", and agbsf2 can't look for this revision's sample table in the data (--sample-table overrides "
-                "detection)";
+        error = std::string(why) + ", and " + program +
+                " can't look for this revision's sample table in the data (--sample-table overrides detection)";
         return 0;
     }
 
@@ -1167,8 +1169,8 @@ double TimerRate(const Rom& rom, uint32_t timer_table)
     return rate >= 4000 && rate <= 65536 ? rate : 0;
 }
 
-// The older revisions of the driver that agbsf2 reads, by the fifth opcode that the command reader compares a command
-// with. The fourth is EF in each of them.
+// The older revisions of the driver that the model reads, by the fifth opcode that the command reader compares a
+// command with. The fourth is EF in each of them.
 constexpr std::pair<int, Revision> kOlderRevisions[] = {{0xFA, Revision::kWct2004},
                                                         {0xF9, Revision::kKitaro},
                                                         {0xFB, Revision::kMinnaNoOujisama},
@@ -1210,10 +1212,10 @@ Revision LaterBuild(const Rom& rom)
 // ldrb rX,[rY] / cmp rX,#0xFC / ble, then FF, and FD in the Ultimate Masters revision or FE in older ones. The older
 // ones go on with EF and an opcode from kOlderRevisions. The later Ultimate Masters builds have a duty command that
 // keeps the opcode's low nibble (see LaterBuild). Sets `reader` to the address of the reader, or to 0 if there's none.
-// Returns false and sets `error` for another older revision that agbsf2 can't read. A ROM without a command reader that
-// this recognises is taken to have the Ultimate Masters revision.
-bool FindRevision(const Rom& rom, Revision& revision, uint32_t& reader, std::vector<std::string>& log,
-                  std::string& error)
+// Returns false and sets `error` for another older revision that the model can't read. A ROM without a command reader
+// that this recognises is taken to have the Ultimate Masters revision. `error` names `program`.
+bool FindRevision(const Rom& rom, const std::string& program, Revision& revision, uint32_t& reader,
+                  std::vector<std::string>& log, std::string& error)
 {
     revision = Revision::kUltimateMasters;
     reader = 0;
@@ -1259,10 +1261,8 @@ bool FindRevision(const Rom& rom, Revision& revision, uint32_t& reader, std::vec
                                          [&](const auto& r) { return r.first == opcodes[4]; });
         if (opcodes[2] == 0xFE && (opcodes[3] != 0xEF || older == std::end(kOlderRevisions)))
         {
-            error =
-                "this game has an older revision of Konami's driver with commands that agbsf2 can't read (its "
-                "command reader is at " +
-                Hex(reader) + ")";
+            error = "this game has an older revision of Konami's driver with commands that " + program +
+                    " can't read (its command reader is at " + Hex(reader) + ")";
             return false;
         }
 
@@ -1361,7 +1361,8 @@ bool CheckOverrides(const Rom& rom, const DriverOverrides& overrides, std::strin
 }
 
 // Finds the song table and counts its songs, unless `overrides` gives them. `reader` is the address of the command
-// reader, or 0 if there's none. Returns false and sets `error` if there's no song table with songs agbsf2 can read.
+// reader, or 0 if there's none. Returns false and sets `error` if there's no song table with songs the model can
+// read.
 bool FindSongs(const Rom& rom, const DriverOverrides& overrides, const RevisionCode& code, uint32_t reader,
                DriverInfo& info, std::string& error)
 {
@@ -1372,7 +1373,7 @@ bool FindSongs(const Rom& rom, const DriverOverrides& overrides, const RevisionC
     }
     else
     {
-        info.song_table = FindSongTable(rom, info.revision, code, reader != 0, info.log, error);
+        info.song_table = FindSongTable(rom, info.revision, code, reader != 0, overrides.program, info.log, error);
         if (!info.song_table)
         {
             // The command reader shows that the game has the driver, so a song table that can't be found is an error.
@@ -1404,8 +1405,8 @@ bool FindSongs(const Rom& rom, const DriverOverrides& overrides, const RevisionC
     }
     if (info.song_count <= 0)
     {
-        error = "the song table at " + Hex(info.song_table) +
-                " holds no songs agbsf2 can read (--song-count overrides this)";
+        error = "the song table at " + Hex(info.song_table) + " holds no songs " + overrides.program +
+                " can read (--song-count overrides this)";
         return false;
     }
 
@@ -1413,7 +1414,7 @@ bool FindSongs(const Rom& rom, const DriverOverrides& overrides, const RevisionC
 }
 
 // Finds the sample table, unless `overrides` gives it. Returns false and sets `error` if the songs play samples and
-// there's no table that agbsf2 can use.
+// there's no table that the model can use.
 bool FindSamples(const Rom& rom, const DriverOverrides& overrides, const RevisionCode& code, DriverInfo& info,
                  std::string& error)
 {
@@ -1425,7 +1426,8 @@ bool FindSamples(const Rom& rom, const DriverOverrides& overrides, const Revisio
     }
 
     const std::vector<int> used = UsedSamples(rom, info.song_table, info.song_count, info.revision, info.sample_map);
-    info.sample_table = FindSampleTable(rom, used, code.note_start, info.revision, info.log, info.warnings, error);
+    info.sample_table =
+        FindSampleTable(rom, used, code.note_start, info.revision, overrides.program, info.log, info.warnings, error);
     return info.sample_table != 0 || used.empty();
 }
 
@@ -1840,7 +1842,7 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
     }
 
     uint32_t reader = 0;
-    if (!FindRevision(rom, info.revision, reader, info.log, error))
+    if (!FindRevision(rom, overrides.program, info.revision, reader, info.log, error))
     {
         return false;
     }

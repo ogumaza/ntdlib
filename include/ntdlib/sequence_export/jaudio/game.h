@@ -106,6 +106,17 @@ struct GameRules
     // draw ends each of them.
     std::map<uint32_t, uint32_t> random_starts;
 
+    // The sounds of a group that the game's code starts with other values at some ports at other times. Each sound of
+    // the group is listed a second time with those values, after the sound and its arrangements. Its name then ends in
+    // `suffix`. The variant counts only if the sound's sequence reads one of the ports (SequenceSound::variant_ports).
+    struct PortVariant
+    {
+        uint16_t group = 0; // the section in the high byte and the group in the low byte, as for unplayed_groups
+        std::string suffix;
+        std::map<uint8_t, uint16_t> ports;
+    };
+    std::vector<PortVariant> port_variants;
+
     // The name of the file in the sequence archive that a JAudio1 game's code starts as its effects sequence. Empty
     // when the effects sequence is the sound table's first sequence.
     std::string effects_sequence;

@@ -829,7 +829,7 @@ private:
     // Mirrors the Dungeon Dice Monsters voice update. Every frame sets the voice's level from its track's volume. A
     // flagged record starts a note at the sample's rate or the rate from the sample period table; volume 0 stops the
     // voice. kOutDungeonDicePeriod instead treats the record's pitch as a timer period and changes the playing note's
-    // rate. On hardware this also changes the other voice sharing the FIFO. agbsf2 doesn't model that change.
+    // rate. On hardware this also changes the other voice sharing the FIFO. The conversion doesn't model that change.
     void Sample(uint32_t f, const TrackOutput& o, std::vector<Event>& out, std::vector<std::string>& warnings)
     {
         const double level = info_.VoiceLevel(rom_, o.vol, 0);

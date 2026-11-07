@@ -104,12 +104,12 @@ constexpr double kLevelTolerance = 1;
 constexpr double kQuietestSide = -60;
 
 // Returns the layouts of a song's first `count` tracks.
-std::vector<TrackLayout> ScanTracks(const Rom& rom, const SongHeader& header, int count)
+std::vector<TrackLayout> ScanTracks(const Rom& rom, const DriverInfo& info, const SongHeader& header, int count)
 {
     std::vector<TrackLayout> layouts;
     for (int t = 0; t < count; t++)
     {
-        layouts.push_back(ScanTrack(rom, header.tracks[size_t(t)]));
+        layouts.push_back(ScanTrack(rom, header.tracks[size_t(t)], ntdlib::mp2k::NoteArguments(info)));
     }
 
     return layouts;
@@ -464,6 +464,7 @@ struct Note
     bool open = true;
     bool audible = false;         // it got louder than silence in the game
     bool removed = false;         // the driver stopped it before it started
+    bool taken = false;           // a later note took a channel that played it
     bool before_programs = false; // it plays with the program from before its track's program changes on its tick
     int step = 0;                 // its step at its tick: it plays after the program change of that step
     int midi_channel = 0;         // the MIDI channel it plays on
@@ -498,7 +499,8 @@ int MidiVelocity(const Note& n)
 
 // The MIDI file's notes, and the number of notes the game didn't play for want of a channel. With a MIDI channel for
 // each track, `unstarted` holds the notes that the driver never started: those that found no channel or whose voice
-// plays nothing, and those whose channel a later note took before the mixer started them.
+// plays nothing, and those whose channel a later note took before they sounded. A PSG channel starts a note at a level
+// of 0 when its voice has an attack. A later note can take the channel in the next frame, before the level rises.
 struct Notes
 {
     std::vector<Note> notes;
@@ -674,6 +676,10 @@ Notes CollectNotes(const Rom& rom, const Simulation& sim, const SongPlan& plan, 
                 {
                     notes[size_t(index)].cut = a.tick;
                 }
+                if (a.taken && index >= 0)
+                {
+                    notes[size_t(index)].taken = true;
+                }
                 let_go(a.channel, a.tick);
             }
 
@@ -681,10 +687,12 @@ Notes CollectNotes(const Rom& rom, const Simulation& sim, const SongPlan& plan, 
         }
     }
 
+    // A note whose channel a later note took before it sounded counts among them too. The MIDI file leaves it out as a
+    // silent note.
     for (size_t i = 0; i < notes.size(); i++)
     {
         close(int(i), plan.end);
-        if (notes[i].removed)
+        if (notes[i].removed || (notes[i].taken && !notes[i].audible))
         {
             result.unstarted.push_back(notes[i]);
         }
@@ -2036,7 +2044,7 @@ SongReport Run(const Rom& rom, const DriverInfo& info, int song, const ConvertSe
         return report;
     }
 
-    const std::vector<TrackLayout> layouts = ScanTracks(rom, header, played);
+    const std::vector<TrackLayout> layouts = ScanTracks(rom, info, header, played);
     SongPlan plan = PlanConversion(rom, info, song, layouts, settings.loops);
     const Simulation sim = Simulate(rom, info, song, plan);
 
@@ -2409,7 +2417,7 @@ Performance PerformSong(const Rom& rom, const DriverInfo& info, int song, const 
         return perf;
     }
 
-    const std::vector<TrackLayout> layouts = ScanTracks(rom, header, played);
+    const std::vector<TrackLayout> layouts = ScanTracks(rom, info, header, played);
     SongPlan plan = PlanConversion(rom, info, song, layouts, settings.loops);
     const Simulation sim = Simulate(rom, info, song, plan, true);
     if (sim.cut_off)

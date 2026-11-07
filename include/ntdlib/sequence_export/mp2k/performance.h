@@ -32,7 +32,7 @@ struct NoteChannel
 };
 
 // A note that the driver never started, for an editor: it found no channel, its voice plays nothing, or a later note
-// took its channel before the mixer started it.
+// took its channel before it sounded.
 struct UnstartedNote
 {
     bool operator==(const UnstartedNote&) const = default;
@@ -50,7 +50,8 @@ struct UnstartedNote
 //
 // The ticks are the driver's: 24 to a quarter note. A tempo change comes at each tick where the driver's ticks take
 // another time. Each of the song's tracks plays on the track of the same number. Offsets count from `base`, the
-// address of the song's first byte. ntdlib::mp2k::DecodeSong decodes the bytes from there.
+// address of the song's first byte. ntdlib::mp2k::DecodeSong decodes the bytes from there, with the note arguments that
+// ntdlib::mp2k::NoteArguments gives.
 struct Performance : PerformanceBase
 {
     uint32_t base = 0;
