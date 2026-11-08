@@ -940,19 +940,25 @@ void TestEnhancedRate()
     XSFLIB_CHECK(std::abs(half - kFrames * 7 / 2) <= 2);
 }
 
-void TestEnhancedEcho()
+// Track 4: feedback `feedback` on bus 0, a delay of 2 blocks, voice 0 on bus 0. Twelve frames later, the track starts a
+// short note.
+Rom EchoSong(uint8_t feedback)
 {
-    // Track 4: feedback 0x40 on bus 0, a delay of 2 blocks, voice 0 on bus 0. The feedback moves 8 towards its goal
-    // each frame. Twelve frames later, a short note goes in. The bus's line gives it back a delay later at a quarter of
-    // its level, and a quarter of that after the next delay. 2 blocks last 2 * 16 * 1254 cycles: 114.86 samples,
-    // rounded.
     Image m;
     m.Mixer(kRecords24);
-    m.OneTrack(4, {0x00, 0xF7, 0x40, 0x00, 0xF8, 0x01, 0x00, 0xF9, 0x01, 0x0C, 0xA8, 0x10, 0x00, 0x7F, 0xFD},
+    m.OneTrack(4, {0x00, 0xF7, feedback, 0x00, 0xF8, 0x01, 0x00, 0xF9, 0x01, 0x0C, 0xA8, 0x10, 0x00, 0x7F, 0xFD},
                Revision::kUltimateMasters);
     m.Put8(kVolumes + 16 * 64 + 0x3F, 128);
     m.Sample(0, 0x1000, 8, -1, std::vector<int8_t>(8, 64));
-    const Rom rom = m.ToRom();
+    return m.ToRom();
+}
+
+void TestEnhancedEcho()
+{
+    // A feedback of 0x40 moves 8 towards its goal each frame. The bus's line returns the note a delay later at a
+    // quarter of its level, and a quarter of that after the next delay. 2 blocks last 2 * 16 * 1254 cycles: 114.86
+    // samples, rounded.
+    const Rom rom = EchoSong(0x40);
 
     ArchivePlayer player(rom, Blocks());
     player.Start(0, EnhancedOptions());
@@ -970,6 +976,80 @@ void TestEnhancedEcho()
         XSFLIB_CHECK(Near(out[2 * (i + 2 * kDelay)], 0.0625 * double(out[2 * i]), 0.001));
     }
     XSFLIB_CHECK(out[2 * (start + 14)] > 0.4f && out[2 * (start + 14)] < 0.6f);
+}
+
+void TestEchoLeftOut()
+{
+    // A bus whose feedback stays 0 outputs only its input: the voice plays dry. Without the echo, the song with
+    // feedback plays the same, in both modes. With the echo, it plays otherwise.
+    const Rom echo = EchoSong(0x40);
+    const Rom dry = EchoSong(0x00);
+    ArchivePlayerOptions without;
+    without.echo = false;
+    ArchivePlayerOptions enhanced_without = EnhancedOptions();
+    enhanced_without.echo = false;
+
+    ArchivePlayer with_echo(echo, Blocks());
+    ArchivePlayer left_out(echo, Blocks());
+    ArchivePlayer reference(dry, Blocks());
+    with_echo.Start(0);
+    left_out.Start(0, without);
+    reference.Start(0);
+    const std::vector<int16_t> heard = Frames(with_echo, 16);
+    const std::vector<int16_t> out = Frames(left_out, 16);
+    const std::vector<int16_t> expected = Frames(reference, 16);
+
+    ArchivePlayer enhanced_echo(echo, Blocks());
+    ArchivePlayer enhanced_left_out(echo, Blocks());
+    ArchivePlayer enhanced_reference(dry, Blocks());
+    enhanced_echo.Start(0, EnhancedOptions());
+    enhanced_left_out.Start(0, enhanced_without);
+    enhanced_reference.Start(0, EnhancedOptions());
+    const std::vector<float> enhanced_heard = EnhancedFrames(enhanced_echo, 16);
+    const std::vector<float> enhanced_out = EnhancedFrames(enhanced_left_out, 16);
+    const std::vector<float> enhanced_expected = EnhancedFrames(enhanced_reference, 16);
+
+    XSFLIB_CHECK(out == expected);
+    XSFLIB_CHECK(heard != expected);
+    XSFLIB_CHECK(std::any_of(expected.begin(), expected.end(), [](int16_t sample) { return sample != 0; }));
+    XSFLIB_CHECK(enhanced_out == enhanced_expected);
+    XSFLIB_CHECK(enhanced_heard != enhanced_expected);
+    XSFLIB_CHECK(left_out.Driver().Echo(0).feedback == with_echo.Driver().Echo(0).feedback);
+}
+
+void TestEchoLeftOutWithoutEcho()
+{
+    // The ring mixer's revisions and the revision without a mixer have no echo. They play the same without it.
+    Image ring_image;
+    ring_image.Mixer(0);
+    ring_image.OneTrack(4, {0x00, 0xAF, 0x00, 0x7F, 0xFD}, Revision::kEternalDuelist);
+    ring_image.Sample(0, 0x1000, 16, 0, Constant(32));
+    const Rom ring = ring_image.ToRom();
+    Image fifo_image;
+    fifo_image.OneTrack(4, {0x00, 0xBC, 0x01, 0x3C, 0xFD}, Revision::kDungeonDiceMonsters);
+    fifo_image.PutBytes(kMap, {0x00, 0x05});
+    fifo_image.Put16(kPeriods, 0x400);
+    FifoSample(fifo_image, 5, 8, 0x4000, std::vector<int8_t>(8 * 16, 32));
+    const Rom fifo = fifo_image.ToRom();
+    ArchivePlayerOptions without;
+    without.echo = false;
+
+    ArchivePlayer ring_with(ring, InfoOf(Revision::kEternalDuelist));
+    ArchivePlayer ring_without(ring, InfoOf(Revision::kEternalDuelist));
+    ArchivePlayer fifo_with(fifo, FifoInfo());
+    ArchivePlayer fifo_without(fifo, FifoInfo());
+    ring_with.Start(0);
+    ring_without.Start(0, without);
+    fifo_with.Start(0);
+    fifo_without.Start(0, without);
+    const std::vector<int16_t> ring_heard = Frames(ring_with, 4);
+    const std::vector<int16_t> ring_out = Frames(ring_without, 4);
+    const std::vector<int16_t> fifo_heard = Frames(fifo_with, 4);
+    const std::vector<int16_t> fifo_out = Frames(fifo_without, 4);
+
+    XSFLIB_CHECK(ring_out == ring_heard);
+    XSFLIB_CHECK(fifo_out == fifo_heard);
+    XSFLIB_CHECK(std::any_of(fifo_heard.begin(), fifo_heard.end(), [](int16_t sample) { return sample != 0; }));
 }
 
 void TestEnhancedFramesWithoutMixing()
@@ -1168,6 +1248,8 @@ int main()
     TestEnhancedRamp();
     TestEnhancedRate();
     TestEnhancedEcho();
+    TestEchoLeftOut();
+    TestEchoLeftOutWithoutEcho();
     TestEnhancedFramesWithoutMixing();
     TestEnhancedSnapshotsAndMutes();
     TestArchiveSource();

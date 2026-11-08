@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 3.4.0 LANGUAGES C CXX)
+project(ntdlib VERSION 3.5.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -563,6 +563,7 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/agb/psg.cpp
         src/sequence_export/agb/settings.cpp
         src/sequence_export/agb/sf2.cpp
+        src/sequence_export/agb/sfz.cpp
         src/sequence_export/agb/song_banks.cpp)
     target_link_libraries(ntdlib_sequence_export_agb PUBLIC seqlib::seqlib ntdlib::agb)
     xsflib_add_project_library(ntdlib sequence_export_mp2k

@@ -328,6 +328,7 @@ struct Output::Impl
 
     std::array<OutputEcho, kEchoBuses> echo{};
     uint32_t echo_mask = 0;
+    bool echo_heard = true; // the echo buses' lines take their input (Output::SetEcho)
     std::vector<int8_t> work;
 
     std::array<uint8_t, 4> channel_tracks = {0, 1, 2, 3}; // the track that plays each PSG channel
@@ -2224,11 +2225,15 @@ void Output::Impl::MixBlock(std::vector<int8_t>& fifo_a, std::vector<int8_t>& fi
                 return value < 0 ? value + 1 : value;
             };
 
+            // Without the echo, the line stays silent, and the bus outputs only its input.
             const int a = wet(work[read + i * 2 + 1]) + in_a[i];
-            work[write + i * 2 + 1] = int8_t(a);
-            sums[0][i] = int16_t(sums[0][i] + a);
             const int b = wet(work[read + i * 2]) + in_b[i];
-            work[write + i * 2] = int8_t(b);
+            if (echo_heard)
+            {
+                work[write + i * 2 + 1] = int8_t(a);
+                work[write + i * 2] = int8_t(b);
+            }
+            sums[0][i] = int16_t(sums[0][i] + a);
             sums[1][i] = int16_t(sums[1][i] + b);
         }
     }
@@ -2779,8 +2784,11 @@ void Output::Impl::MixEnhancedBus(int bus, const OutputEcho& e)
         const size_t read = (write + length - size_t(delay)) % length;
         const float a = line[read] * feedback + in_a[i];
         const float b = line[length + read] * feedback + in_b[i];
-        line[write] = keep(a);
-        line[length + write] = keep(b);
+        if (echo_heard)
+        {
+            line[write] = keep(a);
+            line[length + write] = keep(b);
+        }
         out_a[i] += a;
         out_b[i] += b;
         write = (write + 1) % length;
@@ -3040,6 +3048,17 @@ std::array<uint8_t, agb::kSoundRegisterBytes> Output::SoundRegisters() const
 void Output::SetMutedTracks(uint16_t tracks)
 {
     impl_->muted_tracks = tracks;
+}
+
+void Output::SetEcho(bool on)
+{
+    // The revisions without an echo have no lines: the revision without a mixer has no work buffer.
+    impl_->echo_heard = on;
+    if (!on && impl_->rules.has_echo)
+    {
+        impl_->ClearLine(0);
+        impl_->ClearLine(1);
+    }
 }
 
 void Output::MeterVoices(bool on)

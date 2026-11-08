@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Unit tests for what the GBA's conversions share: safe file names, the SoundFont writer and the banks of a song's
-// programs.
+// Unit tests for what the GBA's conversions share: safe file names, the SoundFont writer, the SFZ files and the banks
+// of a song's programs.
 
 #include <algorithm>
 #include <cstddef>
@@ -12,14 +12,17 @@
 #include <fstream>
 #include <ios>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include "seqlib/testing/check.h"
+#include "seqlib/wav.h"
 
 #include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
+#include "ntdlib/sequence_export/agb/sfz.h"
 #include "ntdlib/sequence_export/agb/song_banks.h"
 #include "ntdlib/testing/agb_cart.h"
 #include "ntdlib/testing/agb_files.h"
@@ -142,6 +145,144 @@ void TestSf2Writer()
     fs::remove(PathFromUtf8(named_path));
 }
 
+// Whether `text` contains `line` as one of its lines.
+bool HasLine(const std::string& text, const std::string& line)
+{
+    return ("\n" + text).find("\n" + line + "\n") != std::string::npos;
+}
+
+// The SoundFont of the SFZ tests: a looped square cycle and a sample without a loop. Preset 0 plays the square on keys
+// 0 to 59, a semitone and 25 cents up, and on keys 60 to 127 with key 72 as its root. Preset 1 of bank 1 plays the
+// sample with its loop mode on, and preset 2 of bank 128 is the drum bank's copy of preset 0.
+Sf2File SfzSoundFont()
+{
+    Sf2File sf;
+    sf2::Sample square;
+    square.name = "Square 50%";
+    square.sample_rate = 8000;
+    square.original_key = 60;
+    for (int i = 0; i < 24; i++)
+    {
+        square.data.push_back(int16_t(i % 8 < 4 ? 8192 : -8192));
+    }
+    square.loop_start = 8;
+    square.loop_end = 16;
+    sf2::Sample sample;
+    sample.name = "Sample 003";
+    sample.sample_rate = 13379;
+    sample.original_key = 57;
+    sample.data = {0, 100, 200, 300, 400};
+    sf.samples = {square, sample};
+
+    sf.instruments.push_back(
+        MakeInstrument("Square", {SampleZone(0, true, 0, 59, 125), RootKeyZone(0, true, 60, 127, 72)}));
+    sf.instruments.push_back(MakeInstrument("Sample", {SampleZone(1, true)}));
+    sf.presets = {MakePreset("Square", 0, 0, 0), MakePreset("Sample", 1, 5, 1), MakePreset("Square", kDrumBank, 0, 0)};
+
+    return sf;
+}
+
+void TestTrackSfz()
+{
+    // The values follow the opcodes of sfzformat.com: a region's keys, its root key (pitch_keycenter), its tuning in
+    // semitones (transpose) and cents (tune), and a loop from loop_start to loop_end, the loop's last sample.
+    const Sf2File sf = SfzSoundFont();
+    const std::vector<SfzTrack> tracks = {{"Square 1", 3, {0}}, {"Voice 0", 2, {1, 0, 1}}, {"Wave", 2, {}}};
+
+    const seqlib::sfz::Instruments sfz = TrackSfz(sf, tracks, "Song 01", "test");
+
+    SEQLIB_CHECK_EQ(sfz.files.size(), size_t(2));
+    SEQLIB_CHECK(sfz.files[0].name == "Square 1.sfz" && sfz.files[1].name == "Voice 0.sfz");
+    const std::string& square = sfz.files[0].text;
+    SEQLIB_CHECK(square.rfind("// Square 1 of Song 01, converted by test.", 0) == 0);
+    SEQLIB_CHECK(HasLine(square, "default_path=../samples/"));
+    SEQLIB_CHECK(HasLine(square, "bend_up=300 bend_down=-300"));
+    SEQLIB_CHECK(HasLine(square, "<master> loprog=0 hiprog=0 locc0=0 hicc0=0"));
+    SEQLIB_CHECK(HasLine(square,
+                         "<region> sample=Square_50.wav lokey=0 hikey=59 pitch_keycenter=60 sample_quality=0 "
+                         "transpose=1 tune=25 ampeg_release=0.000977 loop_mode=loop_continuous loop_start=8 "
+                         "loop_end=15"));
+    SEQLIB_CHECK(HasLine(square,
+                         "<region> sample=Square_50.wav lokey=60 hikey=127 pitch_keycenter=72 "
+                         "sample_quality=0 ampeg_release=0.000977 loop_mode=loop_continuous loop_start=8 "
+                         "loop_end=15"));
+    const std::string& voice = sfz.files[1].text;
+    SEQLIB_CHECK(voice.find("<master> loprog=0 hiprog=0 locc0=0 hicc0=0") <
+                 voice.find("<master> loprog=5 hiprog=5 locc0=1 hicc0=1"));
+    SEQLIB_CHECK(HasLine(voice,
+                         "<region> sample=Sample_003.wav lokey=0 hikey=127 pitch_keycenter=57 "
+                         "sample_quality=0 ampeg_release=0.000977 loop_mode=loop_continuous loop_start=0 "
+                         "loop_end=4"));
+
+    // Each sample's WAV file contains its points at its rate, once.
+    SEQLIB_CHECK_EQ(sfz.samples.size(), size_t(2));
+    SEQLIB_CHECK(sfz.samples[0].name == "Square_50.wav" &&
+                 sfz.samples[0].wav == seqlib::WavFile(sf.samples[0].data, 8000));
+    SEQLIB_CHECK(sfz.samples[1].name == "Sample_003.wav" &&
+                 sfz.samples[1].wav == seqlib::WavFile(sf.samples[1].data, 13379));
+}
+
+void TestTrackSfzRefusals()
+{
+    // A SoundFont of one bank selects no bank. A zone that plays once has no loop.
+    Sf2File sf = SfzSoundFont();
+    sf.presets.resize(1);
+    sf.instruments[0].zones[2] = RootKeyZone(0, false, 60, 127, 72);
+    const std::vector<SfzTrack> tracks = {{"Square 1", 2, {0}}};
+
+    const std::string text = TrackSfz(sf, tracks, "Song 01", "test").files.at(0).text;
+
+    SEQLIB_CHECK(HasLine(text, "<master> loprog=0 hiprog=0"));
+    SEQLIB_CHECK(HasLine(text,
+                         "<region> sample=Square_50.wav lokey=60 hikey=127 pitch_keycenter=72 "
+                         "sample_quality=0 ampeg_release=0.000977 loop_mode=no_loop"));
+
+    // A preset past the SoundFont's, and a zone that contains an envelope, are refused.
+    const std::vector<SfzTrack> past = {{"Square 1", 2, {1}}};
+    bool refused = false;
+    try
+    {
+        TrackSfz(sf, past, "Song 01", "test");
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+    SEQLIB_CHECK(refused);
+
+    AddVolumeEnvelope(sf.instruments[0].zones[1], {.release = 0});
+    refused = false;
+    try
+    {
+        TrackSfz(sf, tracks, "Song 01", "test");
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+    SEQLIB_CHECK(refused);
+}
+
+void TestPresetSfz()
+{
+    // Each preset's file name contains its number: bank 1's preset 5 as 133, padded to the largest's digits.
+    Sf2File sf = SfzSoundFont();
+    sf.presets.resize(2);
+
+    const seqlib::sfz::Instruments sfz = PresetSfz(sf, "Game: Samples", "test");
+
+    SEQLIB_CHECK_EQ(sfz.files.size(), size_t(2));
+    SEQLIB_CHECK(sfz.files[0].name == "Game_ Samples_000.sfz" && sfz.files[1].name == "Game_ Samples_133.sfz");
+    SEQLIB_CHECK(sfz.files[1].text.rfind("// Sample of Game: Samples, converted by test.", 0) == 0);
+    SEQLIB_CHECK(HasLine(sfz.files[1].text, "bend_up=200 bend_down=-200"));
+    SEQLIB_CHECK(sfz.files[1].text.find("<master>") == std::string::npos);
+    SEQLIB_CHECK(HasLine(sfz.files[1].text,
+                         "<region> sample=Sample_003.wav lokey=0 hikey=127 pitch_keycenter=57 "
+                         "sample_quality=0 ampeg_release=0.000977 loop_mode=loop_continuous "
+                         "loop_start=0 loop_end=4"));
+    SEQLIB_CHECK_EQ(sfz.samples.size(), size_t(2));
+}
+
 void TestSongBanks()
 {
     // Three songs share a SoundFont. Song 0 takes bank 0, and song 2's 130 presets take bank 2 and then the free
@@ -194,6 +335,9 @@ int RunTests()
 
     TestFileNames();
     TestSf2Writer();
+    TestTrackSfz();
+    TestTrackSfzRefusals();
+    TestPresetSfz();
     TestSongBanks();
 
     std::error_code ec;

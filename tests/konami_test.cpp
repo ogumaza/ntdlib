@@ -689,6 +689,89 @@ void TestConversion()
     fs::remove_all(dir, ec);
 }
 
+// The programs that each MIDI track of the file at `path` selects.
+std::map<std::string, std::set<int>> TrackPrograms(const std::string& path)
+{
+    std::map<std::string, std::set<int>> programs;
+    for (const MidiEvent& e : ReadEvents(path))
+    {
+        if ((e.status & 0xF0) == 0xC0)
+        {
+            programs[e.track].insert(e.data1);
+        }
+    }
+
+    return programs;
+}
+
+// The programs that the <master> headers of SFZ file `text` select.
+std::set<int> SfzPrograms(const std::string& text)
+{
+    std::set<int> programs;
+    for (size_t at = text.find("<master> loprog="); at != std::string::npos; at = text.find("<master> loprog=", at + 1))
+    {
+        programs.insert(std::stoi(text.substr(at + 16)));
+    }
+
+    return programs;
+}
+
+void TestSfzFiles()
+{
+    // ConvertSongFiles makes an SFZ file for each MIDI track, with a <master> for each program that the track selects,
+    // and a WAV file for each sample that the regions name.
+    const Rom rom = SyntheticRom();
+    DriverInfo info;
+    SEQLIB_CHECK(DetectGiven(rom, kSongTable, 1, info));
+    ConvertSettings opt;
+    opt.frame_timing = true;
+    opt.loops = 1;
+    opt.program = "test";
+
+    const SongFiles files = ConvertSongFiles(rom, info, 0, opt);
+
+    SEQLIB_CHECK(files.report.ok && !files.report.silent);
+    const fs::path midi = TempPath("sfz.mid");
+    std::string error;
+    SEQLIB_CHECK(ntdlib::agb::WriteFile(Utf8(midi), files.midi, error));
+    const std::map<std::string, std::set<int>> programs = TrackPrograms(Utf8(midi));
+    SEQLIB_CHECK_EQ(files.sfz.files.size(), size_t(3));
+    SEQLIB_CHECK_EQ(programs.size(), size_t(3));
+    for (const seqlib::sfz::File& file : files.sfz.files)
+    {
+        const std::string track = file.name.substr(0, file.name.size() - 4);
+        SEQLIB_CHECK(programs.contains(track) && SfzPrograms(file.text) == programs.at(track));
+        SEQLIB_CHECK(file.text.find("<region> sample=") != std::string::npos);
+    }
+
+    // Square 1 plays PSG note 24 on key 60, at its zone's root key.
+    const auto square = std::ranges::find(files.sfz.files, std::string("Square 1.sfz"), &seqlib::sfz::File::name);
+    SEQLIB_CHECK(square != files.sfz.files.end() && square->text.find("pitch_keycenter=60") != std::string::npos);
+
+    // Every region's sample is among the WAV files.
+    std::set<std::string> named;
+    for (const seqlib::sfz::File& file : files.sfz.files)
+    {
+        for (size_t at = file.text.find("sample="); at != std::string::npos; at = file.text.find("sample=", at + 1))
+        {
+            if (file.text.compare(at - 1, 1, " ") == 0)
+            {
+                named.insert(file.text.substr(at + 7, file.text.find(' ', at) - at - 7));
+            }
+        }
+    }
+    std::set<std::string> wavs;
+    for (const seqlib::sfz::Sample& sample : files.sfz.samples)
+    {
+        SEQLIB_CHECK(sample.wav.size() > 44 && sample.wav[0] == 'R');
+        wavs.insert(sample.name);
+    }
+    SEQLIB_CHECK(!named.empty() && named == wavs);
+
+    std::error_code ec;
+    fs::remove(midi, ec);
+}
+
 void TestSilentSongs()
 {
     const Rom rom = SyntheticRom();
@@ -3632,6 +3715,7 @@ int RunTests()
     TestLoopStartEndedTrack();
     TestBendKept();
     TestConversion();
+    TestSfzFiles();
     TestSilentSongs();
     TestSharedSoundfont();
     TestEchoRouting();

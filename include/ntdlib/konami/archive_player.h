@@ -70,6 +70,10 @@ struct ArchivePlayerOptions
     // Plays in the enhanced mixing mode.
     bool enhanced = false;
 
+    // Mixes the driver's echo (Output::SetEcho). Without it, each voice that the driver routes to an echo bus plays
+    // dry, and the rest plays as before.
+    bool echo = true;
+
     // Requests the song as the game's live stage does (DriverInfo::live_songs). The request sets what the F6 and FA
     // commands read. Other songs ignore it.
     bool live = false;

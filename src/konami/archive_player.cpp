@@ -56,6 +56,7 @@ void ArchivePlayer::Start(int song, const ArchivePlayerOptions& options)
     {
         throw std::invalid_argument("song " + std::to_string(song) + " can't be played");
     }
+    output.SetEcho(options.echo);
 
     agb::Apu apu(output.SoundRegisters());
     apu.SetSequencer(options.sequencer_step, options.sequencer_cycles);

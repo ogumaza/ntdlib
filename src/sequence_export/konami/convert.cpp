@@ -13,6 +13,8 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +33,7 @@
 #include "ntdlib/sequence_export/agb/psg.h"
 #include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
+#include "ntdlib/sequence_export/agb/sfz.h"
 #include "ntdlib/sequence_export/agb/song_banks.h"
 #include "ntdlib/sequence_export/konami/soundfont.h"
 
@@ -82,6 +85,7 @@ using ntdlib::sequence_export::agb::MidiFile;
 using ntdlib::sequence_export::agb::MidiTrack;
 using ntdlib::sequence_export::agb::QuarterTick;
 using ntdlib::sequence_export::agb::RootKeyZone;
+using ntdlib::sequence_export::agb::SfzTrack;
 using ntdlib::sequence_export::agb::SongNumber;
 using ntdlib::sequence_export::agb::SquareHz;
 using ntdlib::sequence_export::agb::SquareName;
@@ -1842,10 +1846,11 @@ BeatGrid SongGrid(const std::array<std::vector<Event>, kTracks>& events, const S
 // Writes the song's MIDI file to the folder and under the base name in `settings`, with the version's suffix
 // `suffix`. Writes the SoundFont `sf` there too, titled `title`, unless `sf` is null. Adds each file's path to
 // `report`. Sets report.ok if every file is written. Otherwise adds the error to report.warnings. With `files`, the
-// files' bytes go there instead, and the report names no paths.
+// files' bytes go there instead, with the SFZ files of `tracks`, and the report names no paths. SFZ files that can't
+// be made leave `files->sfz` empty, with a warning.
 void WriteSongFiles(const ConvertSettings& settings, const std::string& number, const std::string& suffix,
-                    const std::string& title, const MidiFile& midi, SoundfontBuilder* sf, SongReport& report,
-                    SongFiles* files)
+                    const std::string& title, const MidiFile& midi, SoundfontBuilder* sf,
+                    std::span<const SfzTrack> tracks, SongReport& report, SongFiles* files)
 {
     std::string error;
     if (files)
@@ -1860,6 +1865,14 @@ void WriteSongFiles(const ConvertSettings& settings, const std::string& number, 
             {
                 report.warnings.push_back(error);
                 return;
+            }
+            try
+            {
+                files->sfz = ntdlib::sequence_export::agb::TrackSfz(file, tracks, title, settings.program);
+            }
+            catch (const std::invalid_argument& e)
+            {
+                report.warnings.push_back(std::string("no SFZ files: ") + e.what());
             }
         }
 
@@ -1889,6 +1902,32 @@ void WriteSongFiles(const ConvertSettings& settings, const std::string& number, 
     }
 
     report.ok = true;
+}
+
+// The SFZ file's view of MIDI track `name`, whose bend range is `range` semitones and whose notes are the note-on
+// events of `events`: the presets of `file` that `sound_of` picks for the notes. The drum bank's copies stay out.
+SfzTrack SfzTrackOf(const std::string& name, int range, const std::vector<Event>& events,
+                    const std::function<NoteSound(const Event&)>& sound_of, const Sf2File& file)
+{
+    SfzTrack track{.name = name, .bend_range = range};
+    std::set<std::pair<int, int>> selected;
+    for (const Event& e : events)
+    {
+        if (e.type == Event::kNoteOn)
+        {
+            const BankProgram program = sound_of(e).program;
+            selected.insert({program.bank, program.program});
+        }
+    }
+    for (size_t p = 0; p < file.presets.size(); p++)
+    {
+        if (selected.contains({file.presets[p].bank, file.presets[p].program}))
+        {
+            track.presets.push_back(p);
+        }
+    }
+
+    return track;
 }
 
 // Returns the state in which a song's version plays. The live stage's version plays in the state that the live stage
@@ -1994,6 +2033,7 @@ SongReport Run(const Rom& rom, const DriverInfo& info, int song, const ConvertSe
     const std::string title = rom.Title() + " #" + number + named;
     WriteConductor(midi.AddTrack(), title, named, ticks, rom, info, song, sim, settings.program.c_str());
 
+    std::vector<SfzTrack> sfz_tracks;
     for (int t = 0; t < kTracks; t++)
     {
         if (!usage.used[size_t(t)])
@@ -2017,9 +2057,11 @@ SongReport Run(const Rom& rom, const DriverInfo& info, int song, const ConvertSe
         };
         WriteTrack(mt, channel[size_t(t)], range, events[size_t(t)], loop, sound_of, tick_of);
         mt.SetEnd(end_tick);
+        sfz_tracks.push_back(SfzTrackOf(TrackName(t), range, events[size_t(t)], sound_of, sf.File()));
     }
 
-    WriteSongFiles(settings, number, versions[version].suffix, title, midi, shared ? nullptr : &sf, report, files);
+    WriteSongFiles(settings, number, versions[version].suffix, title, midi, shared ? nullptr : &sf, sfz_tracks, report,
+                   files);
 
     return report;
 }

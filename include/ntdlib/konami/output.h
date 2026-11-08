@@ -162,6 +162,12 @@ public:
     // it. The backwards loop of a build that adds each side's value to the other's sum leaves the sums uncrossed.
     void SetMutedTracks(uint16_t tracks);
 
+    // From the next Mix() on, feeds the echo buses' lines their input when `on`. The driver always does. When off, the
+    // lines go silent and stay so: each echo bus outputs only the voices that the mask routes to it, and adds no echo.
+    // The buses' records, the mask and the voices go on as before. A voice that the console's mask leaves out of every
+    // sum stays out. On at the start.
+    void SetEcho(bool on);
+
     // From the next Mix() on, keeps each voice's peaks when `on`: the largest part that the voice gives a sum on FIFO A
     // and on FIFO B, on the scale of the FIFOs' bytes. The part leaves out the echo.
     void MeterVoices(bool on);

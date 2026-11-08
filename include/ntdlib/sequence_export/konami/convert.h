@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/sfz/track_file.h"
+
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/konami/driver.h"
 #include "ntdlib/sequence_export/agb/settings.h"
@@ -32,17 +34,19 @@ SongReport InspectSong(const Rom& rom, const DriverInfo& info, int song, const C
 SongReport ConvertSong(const Rom& rom, const DriverInfo& info, int song, const ConvertSettings& settings,
                        SoundfontBuilder* shared);
 
-// A song's files in memory, and the report of their conversion.
+// A song's files in memory, and the report of their conversion. The SFZ files play the MIDI file as the SoundFont
+// does: one for each MIDI track, with the track's presets (agb/sfz.h).
 struct SongFiles
 {
     SongReport report;
     std::vector<uint8_t> midi;
     std::vector<uint8_t> sf2;
+    seqlib::sfz::Instruments sfz;
 };
 
 // Converts one song as ConvertSong() does with a SoundFont of its own, and gives the files' bytes in place of writing
-// them. The report names no paths, and `settings.out_dir` and `settings.base_name` don't matter. The files are whole
-// only when the report is ok and not silent.
+// them, with the SFZ files too. The report names no paths, and `settings.out_dir` and `settings.base_name` don't
+// matter. The files are whole only when the report is ok and not silent.
 SongFiles ConvertSongFiles(const Rom& rom, const DriverInfo& info, int song, const ConvertSettings& settings);
 
 // Writes a text listing of every command of every track of a song. Returns false and sets `error` on failure.
