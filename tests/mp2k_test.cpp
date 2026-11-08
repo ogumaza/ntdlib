@@ -436,25 +436,43 @@ void TestDetection()
     SEQLIB_CHECK_EQ(spyro_info.master_volume, 10);
     SEQLIB_CHECK_EQ(spyro_info.mix_rate, 13379);
 
-    // Rows give the modes that games set after the init with movs and lsls. The cart's init sets 5 channels and a
-    // master volume of 12.
-    struct ModeRow
+    // A game's code can also set the mode straight after the init with movs r0, #imm; lsls r0, r0, #n before each call
+    // of m4aSoundMode, after calls of up to two other routines. The calls apply in order. The cart's init sets 5
+    // channels and a master volume of 12.
+    struct ShiftedCase
     {
-        const char* game_code;
+        std::vector<Cart::ShiftedMode> modes;
+        int other_calls;
         int channels;
         int master_volume;
     };
-    constexpr ModeRow kModeRows[] = {{"B4LJ", 5, 6},  {"BFMJ", 5, 6},  {"BFPJ", 8, 8},
-                                     {"BCQE", 8, 12}, {"BD7E", 6, 12}, {"B4TE", 6, 12}};
-    for (const ModeRow& row : kModeRows)
+    const ShiftedCase kShiftedCases[] = {
+        {{{0xC0, 3}}, 0, 6, 12},            // The Proud Family: 6 channels
+        {{{0xC0, 4}, {0xC0, 7}}, 1, 12, 6}, // Sugar Sugar Rune: 12 channels, then a master volume of 6
+        {{{0x80, 4}, {0x80, 8}}, 2, 8, 8},
+        {{{0xC0, 3}}, 3, 5, 12}, // past the calls that count
+    };
+    for (const ShiftedCase& c : kShiftedCases)
     {
         Cart game;
-        game.GameCode(row.game_code);
+        game.GameShiftedSoundModes(c.modes, c.other_calls);
         game.Song({Track().Fine()}, voices);
+
         const DriverInfo game_info = Detect(game.ToRom());
-        SEQLIB_CHECK_EQ(game_info.max_channels, row.channels);
-        SEQLIB_CHECK_EQ(game_info.master_volume, row.master_volume);
+
+        SEQLIB_CHECK_EQ(game_info.max_channels, c.channels);
+        SEQLIB_CHECK_EQ(game_info.master_volume, c.master_volume);
     }
+
+    // A row gives the mode that Strawberry Shortcake: Sweet Dreams sets each time it starts a song.
+    Cart sweet_dreams;
+    sweet_dreams.GameCode("B4TE");
+    sweet_dreams.Song({Track().Fine()}, voices);
+
+    const DriverInfo sweet_dreams_info = Detect(sweet_dreams.ToRom());
+
+    SEQLIB_CHECK_EQ(sweet_dreams_info.max_channels, 6);
+    SEQLIB_CHECK_EQ(sweet_dreams_info.master_volume, 12);
 
     // Fire Emblem and Kuru Kuru Kururin set the DirectSound channels for the song they start.
     Cart emblem;

@@ -148,6 +148,15 @@ Renderer::Renderer(const RendererParameter& parameter)
       depop_(static_cast<std::size_t>(parameter.mix_buffer_count))
 {
     mixes_[kFinalMix].sample_rate = parameter.sample_rate;
+
+    // The splitters and their destinations start free, in the order of their ids (SplitterInfoManager::Initialize,
+    // 0x453c4).
+    splitters_.resize(static_cast<std::size_t>(std::max(parameter.splitter_count, 0)));
+    splitter_destinations_.resize(static_cast<std::size_t>(std::max(parameter.splitter_destination_count, 0)));
+    free_splitters_.resize(splitters_.size());
+    std::iota(free_splitters_.begin(), free_splitters_.end(), 0);
+    free_splitter_destinations_.resize(splitter_destinations_.size());
+    std::iota(free_splitter_destinations_.begin(), free_splitter_destinations_.end(), 0);
     if (parameter.enhanced)
     {
         enhanced_.resize(resources_.size());
@@ -207,19 +216,19 @@ const Renderer::Mix* Renderer::MixInUse(int id) const
 }
 
 int Renderer::AcquireVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
-                               const AdpcmCoefficients* coefficients)
+                               const AdpcmCoefficients* coefficients, const VoiceBehavior& behavior)
 {
-    const int voice = TakeVoiceSlot(sample_rate, channel_count, format, priority, coefficients);
+    const int voice = TakeVoiceSlot(sample_rate, channel_count, format, priority, coefficients, behavior);
     if (observer_ != nullptr)
     {
-        observer_->AcquireVoiceSlot(sample_rate, channel_count, format, priority, coefficients, voice);
+        observer_->AcquireVoiceSlot(sample_rate, channel_count, format, priority, coefficients, behavior, voice);
     }
 
     return voice;
 }
 
 int Renderer::TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
-                            const AdpcmCoefficients* coefficients)
+                            const AdpcmCoefficients* coefficients, const VoiceBehavior& behavior)
 {
     // A free slot, and the first free channel resources, one for each channel.
     const auto slot = std::find_if(voices_.begin(), voices_.end(), [](const Voice& v) { return !v.in_use; });
@@ -245,6 +254,7 @@ int Renderer::TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat
     voice.sample_rate = sample_rate;
     voice.priority = priority;
     voice.channel_count = channel_count;
+    voice.behavior = behavior;
     if (coefficients != nullptr)
     {
         voice.coefficients = *coefficients;
@@ -352,6 +362,7 @@ void Renderer::SetVoiceBiquadFilterParameter(int voice, int index, const BiquadF
 void Renderer::SetVoiceDestination(int voice, int mix)
 {
     At(voice).mix = mix;
+    At(voice).splitter = kNoSplitter;
     if (observer_ != nullptr)
     {
         observer_->SetVoiceDestination(voice, mix);
@@ -365,6 +376,122 @@ void Renderer::SetVoiceMixVolume(int voice, float volume, int channel, int buffe
     if (observer_ != nullptr)
     {
         observer_->SetVoiceMixVolume(voice, volume, channel, buffer);
+    }
+}
+
+int Renderer::AcquireSplitter(int32_t sample_rate, int channel_count, int destination_count)
+{
+    // A splitter takes a destination for each destination and channel. The renderer has as many destinations as the
+    // parameter gives, shared by every splitter.
+    int splitter = kNoSplitter;
+    const int64_t needed = int64_t{destination_count} * int64_t{channel_count};
+    if (!free_splitters_.empty() && channel_count >= 1 && destination_count >= 0 &&
+        needed <= static_cast<int64_t>(free_splitter_destinations_.size()))
+    {
+        splitter = free_splitters_.front();
+        free_splitters_.erase(free_splitters_.begin());
+        Splitter& taken = splitters_[static_cast<std::size_t>(splitter)];
+        taken.in_use = true;
+        taken.changed = true;
+        taken.channel_count = channel_count;
+        taken.sample_rate = sample_rate;
+        taken.destinations.clear();
+        for (int64_t k = 0; k < needed; ++k)
+        {
+            const int destination = free_splitter_destinations_.front();
+            free_splitter_destinations_.erase(free_splitter_destinations_.begin());
+            SplitterDestination& data = splitter_destinations_[static_cast<std::size_t>(destination)];
+            data.mix = kNoMix;
+            data.volumes = {};
+            data.in_use = false;
+            data.changed = true;
+            taken.destinations.push_back(destination);
+        }
+    }
+    if (observer_ != nullptr)
+    {
+        observer_->AcquireSplitter(sample_rate, channel_count, destination_count, splitter);
+    }
+
+    return splitter;
+}
+
+void Renderer::ReleaseSplitter(int splitter)
+{
+    if (splitter == kNoSplitter)
+    {
+        return;
+    }
+
+    // The destinations and the splitter go to the ends of the free lists.
+    Splitter& released = splitters_.at(static_cast<std::size_t>(splitter));
+    released.in_use = false;
+    released.changed = true;
+    for (const int destination : released.destinations)
+    {
+        SplitterDestination& data = splitter_destinations_[static_cast<std::size_t>(destination)];
+        data.mix = kNoMix;
+        data.volumes = {};
+        data.in_use = false;
+        data.changed = true;
+        free_splitter_destinations_.push_back(destination);
+    }
+    released.destinations.clear();
+    free_splitters_.push_back(splitter);
+    if (observer_ != nullptr)
+    {
+        observer_->ReleaseSplitter(splitter);
+    }
+}
+
+Renderer::SplitterDestination& Renderer::ClientDestination(int splitter, int destination, int channel)
+{
+    const Splitter& owner = splitters_.at(static_cast<std::size_t>(splitter));
+    const int channels = std::max(owner.channel_count, 1);
+    const int index = channels * destination + channel % channels;
+    return splitter_destinations_[static_cast<std::size_t>(owner.destinations.at(static_cast<std::size_t>(index)))];
+}
+
+void Renderer::SetSplitterDestination(int splitter, int destination, int mix)
+{
+    Splitter& owner = splitters_.at(static_cast<std::size_t>(splitter));
+    for (int c = 0; c < owner.channel_count; ++c)
+    {
+        SplitterDestination& data = ClientDestination(splitter, destination, c);
+        data.mix = mix;
+        data.in_use = mix != kNoMix;
+        data.changed = true;
+    }
+    owner.changed = true;
+    if (observer_ != nullptr)
+    {
+        observer_->SetSplitterDestination(splitter, destination, mix);
+    }
+}
+
+void Renderer::SetSplitterMixVolume(int splitter, int destination, float volume, int channel, int buffer)
+{
+    SplitterDestination& data = ClientDestination(splitter, destination, channel);
+    data.volumes.at(static_cast<std::size_t>(buffer)) = volume;
+    data.changed = true;
+    if (observer_ != nullptr)
+    {
+        observer_->SetSplitterMixVolume(splitter, destination, volume, channel, buffer);
+    }
+}
+
+void Renderer::SetVoiceSplitter(int voice, int splitter)
+{
+    if (parameter_.enhanced)
+    {
+        throw std::logic_error("the enhanced mixing mode has no splitters");
+    }
+
+    At(voice).mix = kNoMix;
+    At(voice).splitter = splitter;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoiceSplitter(voice, splitter);
     }
 }
 
@@ -499,6 +626,17 @@ const void* Renderer::TakeReleasedWaveBuffer(int voice)
     return tag;
 }
 
+int Renderer::GetWaveBufferCount(int voice) const
+{
+    const int count = At(voice).buffer_count;
+    if (observer_ != nullptr)
+    {
+        observer_->GetWaveBufferCount(voice, count);
+    }
+
+    return count;
+}
+
 uint64_t Renderer::GetVoicePlayedSampleCount(int voice) const
 {
     const uint64_t count = At(voice).played;
@@ -608,8 +746,18 @@ void Renderer::SetSubMixMixVolume(int sub_mix, float volume, int source, int des
 
 void Renderer::AddDeviceSink(std::span<const int> inputs)
 {
+    // At 32 kHz, the sink's upsampler gives 3 samples for each 2 of the final mix (Upsampler). The enhanced mode has
+    // no upsampler.
+    const bool upsamples = parameter_.sample_rate == 32000;
+    if (upsamples && parameter_.enhanced)
+    {
+        throw std::logic_error("the enhanced mixing mode has no upsampler");
+    }
+
     sinks_.assign(inputs.begin(), inputs.end());
-    output_.assign(static_cast<std::size_t>(parameter_.sample_count) * sinks_.size(), 0);
+    upsamplers_.assign(upsamples ? sinks_.size() : 0, Upsampler{});
+    const auto samples = static_cast<std::size_t>(parameter_.sample_count) * (upsamples ? 3 : 2) / 2;
+    output_.assign(samples * sinks_.size(), 0);
     if (parameter_.enhanced)
     {
         float_output_.assign(output_.size(), 0.0f);
@@ -1202,12 +1350,17 @@ Renderer::Snapshot Renderer::Save() const
     snapshot.resources.assign(resources_.begin(), resources_.begin() + resource_mark_);
     snapshot.order = order_;
     snapshot.mixes = mixes_;
+    snapshot.splitters = splitters_;
+    snapshot.splitter_destinations = splitter_destinations_;
+    snapshot.free_splitters = free_splitters_;
+    snapshot.free_splitter_destinations = free_splitter_destinations_;
     snapshot.auxes = auxes_;
     snapshot.delays = delays_;
     snapshot.reverbs = reverbs_;
     snapshot.limiters = limiters_;
     snapshot.mixes_changed = mixes_changed_;
     snapshot.sinks = sinks_;
+    snapshot.upsamplers = upsamplers_;
     snapshot.buffers = buffers_;
     snapshot.depop = depop_;
     snapshot.output = output_;
@@ -1256,12 +1409,17 @@ void Renderer::Restore(const Snapshot& snapshot)
     resource_mark_ = static_cast<int>(resources);
     order_ = snapshot.order;
     mixes_ = snapshot.mixes;
+    splitters_ = snapshot.splitters;
+    splitter_destinations_ = snapshot.splitter_destinations;
+    free_splitters_ = snapshot.free_splitters;
+    free_splitter_destinations_ = snapshot.free_splitter_destinations;
     auxes_ = snapshot.auxes;
     delays_ = snapshot.delays;
     reverbs_ = snapshot.reverbs;
     limiters_ = snapshot.limiters;
     mixes_changed_ = snapshot.mixes_changed;
     sinks_ = snapshot.sinks;
+    upsamplers_ = snapshot.upsamplers;
     buffers_ = snapshot.buffers;
     depop_ = snapshot.depop;
     output_ = snapshot.output;
@@ -1311,6 +1469,7 @@ void Renderer::Update()
         server.sort_order =
             static_cast<int32_t>(std::find(order_.begin(), order_.end(), static_cast<int>(slot)) - order_.begin());
         server.channel_count = voice.channel_count;
+        server.behavior = voice.behavior;
         server.pitch = voice.pitch;
         server.volume = voice.volume;
         server.muted = voice.muted;
@@ -1318,6 +1477,7 @@ void Renderer::Update()
         server.quality = voice.quality;
         server.biquads = voice.biquads;
         server.mix = voice.mix;
+        server.splitter = voice.splitter;
         server.buffer_count = voice.buffer_count;
 
         // The buffers the client appended since the last update, if their ranges fit (VoiceInfo::UpdateWaveBuffer).
@@ -1347,9 +1507,9 @@ void Renderer::Update()
             buffer.end = info.end;
             buffer.loop = info.loop;
             buffer.end_of_stream = info.end_of_stream;
-            buffer.loop_start = info.start;
-            buffer.loop_end = info.end;
-            buffer.loop_count = info.loop ? -1 : 0;
+            buffer.loop_start = info.loop_fields ? info.loop_start : info.start;
+            buffer.loop_end = info.loop_fields ? info.loop_end : info.end;
+            buffer.loop_count = info.loop_fields ? info.loop_count : info.loop ? -1 : 0;
             buffer.context = nullptr;
             if (info.context != nullptr)
             {
@@ -1400,6 +1560,7 @@ void Renderer::Update()
     }
 
     mutes_at_once_ = false;
+    UpdateSplitters();
 
     // The effects' settings.
     for (Aux& aux : auxes_)
@@ -1411,6 +1572,141 @@ void Renderer::Update()
     }
 
     UpdateRendererEffects();
+}
+
+// The splitters' update (SplitterContext::Update, 0x67aec): the splitters that changed, in the order of their ids,
+// then the destinations that changed. A splitter's list comes apart, and its destinations link up in their new order
+// (SplitterContext::UpdateInfo, 0x67c20). The last one keeps the link it had. A destination takes its mix and mix
+// volumes. One that comes into use takes them as its previous mix volumes too (SplitterDestinationData::Update,
+// 0x673e4). The next frame then doesn't ramp.
+void Renderer::UpdateSplitters()
+{
+    for (Splitter& splitter : splitters_)
+    {
+        if (!splitter.changed)
+        {
+            continue;
+        }
+
+        for (int d = splitter.server_first; d >= 0;)
+        {
+            SplitterDestination& data = splitter_destinations_[static_cast<std::size_t>(d)];
+            d = data.next;
+            data.next = -1;
+        }
+        splitter.server_first = splitter.destinations.empty() ? -1 : splitter.destinations.front();
+        for (std::size_t k = 1; k < splitter.destinations.size(); ++k)
+        {
+            splitter_destinations_[static_cast<std::size_t>(splitter.destinations[k - 1])].next =
+                splitter.destinations[k];
+        }
+        splitter.changed = false;
+    }
+
+    for (SplitterDestination& data : splitter_destinations_)
+    {
+        if (!data.changed)
+        {
+            continue;
+        }
+
+        data.server_mix = data.mix;
+        data.server_volumes = data.volumes;
+        if (!data.server_in_use && data.in_use)
+        {
+            data.previous_volumes = data.volumes;
+            data.mixed = false;
+        }
+        data.server_in_use = data.in_use;
+        data.changed = false;
+    }
+}
+
+int Renderer::ServerDestination(int splitter, int index) const
+{
+    if (splitter < 0 || static_cast<std::size_t>(splitter) >= splitters_.size())
+    {
+        return -1;
+    }
+
+    int d = splitters_[static_cast<std::size_t>(splitter)].server_first;
+    for (int k = 0; k < index && d >= 0; ++k)
+    {
+        d = splitter_destinations_[static_cast<std::size_t>(d)].next;
+    }
+
+    return d;
+}
+
+// A channel's destinations step through the list by the voice's channel count. A destination counts while it's in use
+// with a mix. The depop takes every destination, whatever its channel.
+std::vector<std::pair<Renderer::SplitterDestination*, const Renderer::Mix*>> Renderer::SplitterMixes(
+    const Voice::Server& server, int channel)
+{
+    std::vector<std::pair<SplitterDestination*, const Mix*>> mixes;
+    const int step = std::max(server.channel_count, 1);
+    const auto limit = static_cast<int>(splitter_destinations_.size());
+    for (int index = channel; index < limit; index += step)
+    {
+        const int d = ServerDestination(server.splitter, index);
+        if (d < 0)
+        {
+            break;
+        }
+
+        SplitterDestination& data = splitter_destinations_[static_cast<std::size_t>(d)];
+        const Mix* mix = data.server_in_use ? MixInUse(data.server_mix) : nullptr;
+        if (mix != nullptr)
+        {
+            mixes.emplace_back(&data, mix);
+        }
+    }
+
+    return mixes;
+}
+
+std::vector<std::pair<Renderer::SplitterDestination*, const Renderer::Mix*>> Renderer::SplitterDepopMixes(
+    const Voice::Server& server)
+{
+    std::vector<std::pair<SplitterDestination*, const Mix*>> mixes;
+    const auto limit = static_cast<int>(splitter_destinations_.size());
+    for (int index = 0; index < limit; ++index)
+    {
+        const int d = ServerDestination(server.splitter, index);
+        if (d < 0)
+        {
+            break;
+        }
+
+        SplitterDestination& data = splitter_destinations_[static_cast<std::size_t>(d)];
+        const Mix* mix = data.server_in_use ? MixInUse(data.server_mix) : nullptr;
+        if (mix != nullptr)
+        {
+            mixes.emplace_back(&data, mix);
+        }
+    }
+
+    return mixes;
+}
+
+// After the voices' commands, each destination in a splitter's list that a voice mixed takes its mix volumes as its
+// previous ones (SplitterContext::UpdateInternalState, 0x67ef8, after CommandGenerator::GenerateVoiceCommands).
+void Renderer::FinishSplitters()
+{
+    for (const Splitter& splitter : splitters_)
+    {
+        std::size_t steps = 0;
+        for (int d = splitter.server_first; d >= 0 && steps < splitter_destinations_.size(); ++steps)
+        {
+            SplitterDestination& data = splitter_destinations_[static_cast<std::size_t>(d)];
+            if (data.server_in_use && data.mixed)
+            {
+                data.previous_volumes = data.server_volumes;
+            }
+            data.mixed = false;
+            d = data.next;
+        }
+    }
 }
 
 // The renderer's copies of the delays, the reverbs and the limiters. A delay's update leaves out a delay whose longest
@@ -1556,6 +1852,7 @@ void Renderer::Generate()
     {
         RenderVoice(At(index));
     }
+    FinishSplitters();
 
     MeasureMeters();
 
@@ -1593,6 +1890,7 @@ void Renderer::GenerateWithoutMixing()
             RenderVoice(voice);
         }
     }
+    FinishSplitters();
 
     for (const Mix& mix : mixes_)
     {
@@ -1657,10 +1955,17 @@ void Renderer::Output()
         }
 
         const int32_t* samples = Buffer(final_mix.offset + sinks_[k]);
-        for (int t = 0; t < parameter_.sample_count; ++t)
+        std::span<const int32_t> frame(samples, static_cast<std::size_t>(parameter_.sample_count));
+        std::vector<int32_t> upsampled;
+        if (!upsamplers_.empty())
         {
-            const int32_t x = samples[t];
-            output_[static_cast<std::size_t>(t) * channels + k] = static_cast<int16_t>(std::clamp(x, -32768, 32767));
+            upsampled.resize(frame.size() * 3 / 2);
+            UpsampleFrame(upsamplers_[k], frame, upsampled);
+            frame = upsampled;
+        }
+        for (std::size_t t = 0; t < frame.size(); ++t)
+        {
+            output_[t * channels + k] = static_cast<int16_t>(std::clamp(frame[t], -32768, 32767));
         }
     }
 }
@@ -1791,20 +2096,32 @@ void Renderer::RenderVoice(Voice& voice)
         ChannelResource& resource = Resource(voice, c);
         int32_t* work = Buffer(parameter_.mix_buffer_count + c);
 
-        // The depop preparation: a voice that stops leaves its last samples to fade out.
+        // The depop preparation: a voice that stops leaves its last samples to fade out. A splitter's destinations
+        // share the channel's last samples. The first destination that has a buffer takes its last sample.
         if (server.stopping)
         {
-            if (destination != nullptr)
+            const auto prepare = [&](const Mix& mix)
             {
-                for (int b = 0; b < destination->buffer_count; ++b)
+                for (int b = 0; b < mix.buffer_count; ++b)
                 {
                     int32_t& last = s.last_samples[static_cast<std::size_t>(b)];
                     if (last != 0)
                     {
-                        int32_t& depop = depop_[static_cast<std::size_t>(destination->offset + b)];
+                        int32_t& depop = depop_[static_cast<std::size_t>(mix.offset + b)];
                         depop = WrapAdd(depop, last);
                         last = 0;
                     }
+                }
+            };
+            if (destination != nullptr)
+            {
+                prepare(*destination);
+            }
+            else
+            {
+                for (const auto& target : SplitterDepopMixes(server))
+                {
+                    prepare(*target.second);
                 }
             }
             server.previous_volume = 0.0f;
@@ -1825,8 +2142,9 @@ void Renderer::RenderVoice(Voice& voice)
         args.target_rate = parameter_.sample_rate;
         args.count = count;
         args.coefficients = &voice.coefficients;
+        args.reset_played_at_loop = server.behavior.reset_played_at_loop;
         DecodeFromWaveBuffers(args);
-        if (destination == nullptr)
+        if (destination == nullptr && server.splitter == kNoSplitter)
         {
             continue;
         }
@@ -1859,33 +2177,54 @@ void Renderer::RenderVoice(Voice& voice)
         server.previous_volume = server.volume;
         server.previous_muted = server.muted;
 
-        // The mix volumes, from the last frame's volumes: one command for a destination of more than 6 buffers, which
-        // gives a silent buffer a last sample of 0, else one for each buffer that isn't silent.
-        const bool grouped = destination->buffer_count > 6;
-        for (int b = 0; b < destination->buffer_count; ++b)
+        // The mix volumes, from the last frame's volumes, into the destination, or into each of the splitter's
+        // destinations in turn.
+        if (destination != nullptr)
         {
-            const float before = resource.previous_mix[static_cast<std::size_t>(b)];
-            const float now = resource.mix[static_cast<std::size_t>(b)];
-            int32_t& last = s.last_samples[static_cast<std::size_t>(b)];
-            if (!grouped && before == 0.0f && now == 0.0f)
-            {
-                continue;
-            }
-
-            const int32_t start = ToFixed(before, kGainBits);
-            const int32_t end = before == now ? start : ToFixed(now, kGainBits);
-            if (grouped && start == 0 && end == 0)
-            {
-                last = 0;
-                continue;
-            }
-
-            last = ApplyMixRamp(Buffer(destination->offset + b), work, start, RampStep(start, end, count), count,
-                                kGainBits);
-            AddToMeter(server, b, work, start, end);
+            MixVoiceChannel(server, s, work, *destination, server.mix, resource.previous_mix, resource.mix);
+            resource.previous_mix = resource.mix;
         }
-        resource.previous_mix = resource.mix;
+        else
+        {
+            for (const auto& [data, mix] : SplitterMixes(server, c))
+            {
+                MixVoiceChannel(server, s, work, *mix, data->server_mix, data->previous_volumes, data->server_volumes);
+                data->mixed = true;
+            }
+        }
         server.biquads_were_enabled = {server.biquads[0].enabled, server.biquads[1].enabled};
+    }
+}
+
+// One command for a destination of more than 6 buffers, else one for each buffer that isn't silent. The one command
+// gives a silent buffer a last sample of 0. Each buffer's last sample goes to the channel's last samples at the
+// buffer's place in the mix.
+void Renderer::MixVoiceChannel(const Voice::Server& server, VoiceState& state, const int32_t* work, const Mix& mix,
+                               int mix_id, const std::array<float, kMaxMixBuffers>& from,
+                               const std::array<float, kMaxMixBuffers>& to)
+{
+    const int count = parameter_.sample_count;
+    const bool grouped = mix.buffer_count > 6;
+    for (int b = 0; b < mix.buffer_count; ++b)
+    {
+        const float before = from[static_cast<std::size_t>(b)];
+        const float now = to[static_cast<std::size_t>(b)];
+        int32_t& last = state.last_samples[static_cast<std::size_t>(b)];
+        if (!grouped && before == 0.0f && now == 0.0f)
+        {
+            continue;
+        }
+
+        const int32_t start = ToFixed(before, kGainBits);
+        const int32_t end = before == now ? start : ToFixed(now, kGainBits);
+        if (grouped && start == 0 && end == 0)
+        {
+            last = 0;
+            continue;
+        }
+
+        last = ApplyMixRamp(Buffer(mix.offset + b), work, start, RampStep(start, end, count), count, kGainBits);
+        AddToMeter(server, mix_id, b, work, start, end);
     }
 }
 
@@ -1922,6 +2261,7 @@ void Renderer::AdvanceVoice(Voice& voice, const Mix* destination)
         args.target_rate = parameter_.sample_rate;
         args.count = parameter_.sample_count;
         args.coefficients = &voice.coefficients;
+        args.reset_played_at_loop = server.behavior.reset_played_at_loop;
         if (parameter_.enhanced)
         {
             DecodeFromWaveBuffersEnhanced(args, {enhanced_[r].history, &decoded_, &input_}, nullptr);
@@ -1930,7 +2270,7 @@ void Renderer::AdvanceVoice(Voice& voice, const Mix* destination)
         {
             DecodeFromWaveBuffers(args);
         }
-        if (destination == nullptr)
+        if (destination == nullptr && server.splitter == kNoSplitter)
         {
             continue;
         }
@@ -1943,6 +2283,10 @@ void Renderer::AdvanceVoice(Voice& voice, const Mix* destination)
             }
         }
         resource.previous_mix = resource.mix;
+        for (const auto& target : SplitterMixes(server, c))
+        {
+            target.first->mixed = true;
+        }
 
         // In the console's mode, the voice takes its values for the next frame with each channel.
         if (!parameter_.enhanced)
@@ -1966,9 +2310,10 @@ void Renderer::AdvanceVoice(Voice& voice, const Mix* destination)
 }
 
 // A metered voice's output to buffer `buffer` of the metered mix goes to its meter's channel too, at the same gains.
-void Renderer::AddToMeter(const Voice::Server& server, int buffer, const int32_t* work, int32_t start, int32_t end)
+void Renderer::AddToMeter(const Voice::Server& server, int mix, int buffer, const int32_t* work, int32_t start,
+                          int32_t end)
 {
-    if (server.meter < 0 || server.meter >= meter_count_ || server.mix != meter_mix_ ||
+    if (server.meter < 0 || server.meter >= meter_count_ || mix != meter_mix_ ||
         buffer >= static_cast<int>(meter_channels_.size()) || meter_channels_[static_cast<std::size_t>(buffer)] < 0)
     {
         return;
@@ -2021,6 +2366,7 @@ void Renderer::RenderVoiceEnhanced(Voice& voice, const Mix* destination)
         args.target_rate = parameter_.sample_rate;
         args.count = count;
         args.coefficients = &voice.coefficients;
+        args.reset_played_at_loop = server.behavior.reset_played_at_loop;
         DecodeFromWaveBuffersEnhanced(args, {channel.history, &decoded_, &input_}, work);
         if (destination == nullptr)
         {

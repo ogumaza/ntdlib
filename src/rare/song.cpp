@@ -89,8 +89,9 @@ bool DecodeEvent(const Rom& rom, uint32_t address, Format format, Event& event)
         event.channel = rom.U8(at++) & 0x0F;
     }
 
+    // The whole command has to lie in the ROM. A command without arguments can be the ROM's last byte.
     const uint32_t args = kArgBytes[event.command];
-    if (!rom.Contains(at, args == 0 ? 1 : args))
+    if (!rom.Contains(address, at + args - address))
     {
         return false;
     }

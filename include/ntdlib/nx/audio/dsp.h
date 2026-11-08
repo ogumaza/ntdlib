@@ -125,4 +125,26 @@ int32_t ApplyMixRamp(int32_t* out, const int32_t* in, int32_t gain, int32_t delt
 // `decay` (Q15) before it is added. Returns what is left for the next frame.
 int32_t ApplyDepopMix(int32_t* buffer, int32_t depop, int32_t decay, int count);
 
+// A device sink's upsampler for one channel, from 32 kHz to 48 kHz (UpsamplerState in Skyward Sword HD's sdk): the
+// last 20 inputs, where the next input goes, the place of the input that the next output follows, and the place in
+// the cycle of three outputs.
+struct Upsampler
+{
+    static constexpr int kHistory = 20;
+
+    std::array<int32_t, kHistory> history{};
+    int write = 0;
+    int read = 9;
+    int phase = 0;
+
+    bool operator==(const Upsampler&) const = default;
+};
+
+// Converts `input` to 3 outputs for each 2 inputs (SrcProcessFrame, 0x7b160 in Skyward Sword HD's sdk). The first of
+// each three outputs is an input. The other two are 2/3 and 4/3 of an input past it, from the windowed-sinc tables W4
+// and W2 over 10 inputs on each side. The history keeps the inputs with 8 more bits, in 32 bits. Each side's sum is
+// rounded down to that scale, and the sum of the two sides is rounded down to the output's. The output follows the
+// input by 10 inputs. `output` holds input.size() × 3 / 2 samples, and input.size() is even.
+void UpsampleFrame(Upsampler& state, std::span<const int32_t> input, std::span<int32_t> output);
+
 } // namespace ntdlib::nx::audio

@@ -8,6 +8,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <numbers>
@@ -29,6 +32,7 @@
 #include "ntdlib/sequence_export/n64/ead.h"
 #include "ntdlib/sequence_export/n64/games.h"
 #include "ntdlib/sequence_export/n64/image.h"
+#include "ntdlib/sequence_export/n64/input.h"
 #include "ntdlib/sequence_export/n64/libmus.h"
 #include "ntdlib/sequence_export/n64/libultra.h"
 #include "ntdlib/sequence_export/n64/resampler_low_pass.h"
@@ -153,6 +157,130 @@ void TestImageOrders()
     }
 
     Check(threw, "bytes that start no image throw");
+}
+
+// The CRC-32 of a ZIP archive's entry.
+uint32_t Crc32(const std::vector<uint8_t>& bytes)
+{
+    uint32_t crc = 0xFFFFFFFF;
+    for (const uint8_t byte : bytes)
+    {
+        crc ^= byte;
+        for (int bit = 0; bit < 8; bit++)
+        {
+            crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
+        }
+    }
+
+    return ~crc;
+}
+
+void Put16(std::vector<uint8_t>& out, uint32_t value)
+{
+    out.push_back(static_cast<uint8_t>(value));
+    out.push_back(static_cast<uint8_t>(value >> 8));
+}
+
+void Put32(std::vector<uint8_t>& out, uint32_t value)
+{
+    Put16(out, value & 0xFFFF);
+    Put16(out, value >> 16);
+}
+
+// A ZIP archive that stores each file of `files`, by its name, without compression.
+std::vector<uint8_t> StoredZip(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files)
+{
+    // Each file's local header and bytes: the version 2.0, no flags, no compression, no time and no extra field.
+    std::vector<uint8_t> zip;
+    std::vector<uint32_t> offsets;
+    for (const auto& [name, data] : files)
+    {
+        offsets.push_back(static_cast<uint32_t>(zip.size()));
+        Put32(zip, 0x04034B50);
+        Put16(zip, 20);
+        Put16(zip, 0);
+        Put16(zip, 0);
+        Put32(zip, 0);
+        Put32(zip, Crc32(data));
+        Put32(zip, static_cast<uint32_t>(data.size()));
+        Put32(zip, static_cast<uint32_t>(data.size()));
+        Put16(zip, static_cast<uint32_t>(name.size()));
+        Put16(zip, 0);
+        zip.insert(zip.end(), name.begin(), name.end());
+        zip.insert(zip.end(), data.begin(), data.end());
+    }
+
+    // The central directory, then its end.
+    const auto directory = static_cast<uint32_t>(zip.size());
+    for (std::size_t i = 0; i < files.size(); i++)
+    {
+        const auto& [name, data] = files[i];
+        Put32(zip, 0x02014B50);
+        Put16(zip, 20);
+        Put16(zip, 20);
+        Put16(zip, 0);
+        Put16(zip, 0);
+        Put32(zip, 0);
+        Put32(zip, Crc32(data));
+        Put32(zip, static_cast<uint32_t>(data.size()));
+        Put32(zip, static_cast<uint32_t>(data.size()));
+        Put16(zip, static_cast<uint32_t>(name.size()));
+        Put32(zip, 0);
+        Put32(zip, 0);
+        Put32(zip, 0);
+        Put32(zip, offsets[i]);
+        zip.insert(zip.end(), name.begin(), name.end());
+    }
+
+    const auto directory_size = static_cast<uint32_t>(zip.size()) - directory;
+    Put32(zip, 0x06054B50);
+    Put32(zip, 0);
+    Put16(zip, static_cast<uint32_t>(files.size()));
+    Put16(zip, static_cast<uint32_t>(files.size()));
+    Put32(zip, directory_size);
+    Put32(zip, directory);
+    Put16(zip, 0);
+
+    return zip;
+}
+
+// The message that Input::Open throws for `zip`, written to a file.
+std::string OpenMessage(const std::vector<uint8_t>& zip)
+{
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "ntdlib_sequence_export_n64_test.zip";
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(zip.data()), std::streamsize(zip.size()));
+
+    std::string message;
+    try
+    {
+        ntdlib::sequence_export::n64::Input::Open(path, "test");
+    }
+    catch (const std::exception& e)
+    {
+        message = e.what();
+    }
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+
+    return message;
+}
+
+// A cartridge image in a ZIP archive reads as the image. Images are often kept that way. The image's name in the
+// archive ends in .z64, .v64 or .n64, in capitals or not. An archive with two images still reads as a ROM set.
+void TestZippedImage()
+{
+    std::vector<uint8_t> image(0x40, 0);
+    image[0] = 0x80;
+    image[1] = 0x37;
+    image[2] = 0x12;
+    image[3] = 0x40;
+
+    const std::string one = OpenMessage(StoredZip({{"Game.Z64", image}, {"readme.txt", {'h', 'i'}}}));
+    const std::string two = OpenMessage(StoredZip({{"a.z64", image}, {"b.n64", image}}));
+
+    Check(one == "the converter doesn't know this game's sound engine", "an archive's one image reads: " + one);
+    Check(!two.empty() && two != one, "an archive with two images reads as a set: " + two);
 }
 
 void TestNotesAndTempo()
@@ -1447,6 +1575,78 @@ void TestLibmusRepeats()
     Check(indices == std::vector<std::size_t>({0, 2, 3}), "a song that repeats an earlier one is left out");
 }
 
+void TestLibmusSongTables()
+{
+    // Three songs of 16 bytes, each with another first byte, and a bank of no waves.
+    constexpr std::size_t kTable = 0x100;
+    constexpr std::size_t kSongFiles = 0x140;
+    constexpr std::size_t kEnds = 0x160;
+    constexpr std::size_t kBase = 0x180;
+    constexpr std::size_t kBank = 0x200;
+    std::vector<uint8_t> image(0x300, 0);
+    const auto put_word = [&image](std::size_t at, uint32_t word)
+    {
+        for (std::size_t i = 0; i < 4; i++)
+        {
+            image[at + i] = static_cast<uint8_t>(word >> (24 - 8 * i));
+        }
+    };
+
+    for (std::size_t song = 0; song < 3; song++)
+    {
+        image[kBase + 16 * song] = static_cast<uint8_t>(song + 1);
+    }
+
+    namespace n64_export = ntdlib::sequence_export::n64;
+    const std::array kBanks = {n64_export::LibmusBankPlace{.pointers = kBank, .samples = kBank + 0x80}};
+
+    const auto indices = [](const n64_export::LibmusGame& game)
+    {
+        std::vector<std::size_t> found;
+        for (const auto& sequence : game.Sequences())
+        {
+            found.push_back(sequence.index);
+        }
+
+        return found;
+    };
+
+    // A table of files: file 0 is no song, and files 1 to 3 start at 0x00, 0x10 and 0x20 from the base. The game's
+    // songs 1 to 4 play files 3, 1, 3 and 2. Song 3 repeats song 1.
+    for (std::size_t file = 1; file < 4; file++)
+    {
+        put_word(kTable + 8 * file, static_cast<uint32_t>(16 * (file - 1)));
+        put_word(kTable + 8 * file + 4, 16);
+    }
+
+    const std::array<uint16_t, 5> kNumbers = {0, 3, 1, 3, 2};
+    for (std::size_t i = 0; i < kNumbers.size(); i++)
+    {
+        image[kSongFiles + 2 * i] = static_cast<uint8_t>(kNumbers[i] >> 8);
+        image[kSongFiles + 2 * i + 1] = static_cast<uint8_t>(kNumbers[i]);
+    }
+
+    const n64_export::LibmusProfile files = {
+        .song_count = 4,
+        .cartridge_files = {.table = kTable, .base = kBase, .song_files = kSongFiles, .first_song = 1},
+        .banks = kBanks};
+
+    Check(indices(*n64_export::LibmusGame::Open(image, files)) == std::vector<std::size_t>({1, 2, 4}),
+          "the songs of a table of files keep their numbers in the game");
+
+    // A table of starts and a table of ends.
+    for (std::size_t song = 0; song < 3; song++)
+    {
+        put_word(kTable + 4 * song, static_cast<uint32_t>(kBase + 16 * song));
+        put_word(kEnds + 4 * song, static_cast<uint32_t>(kBase + 16 * song + 16));
+    }
+
+    const n64_export::LibmusProfile ends = {.songs = kTable, .song_count = 3, .song_ends = kEnds, .banks = kBanks};
+
+    Check(indices(*n64_export::LibmusGame::Open(image, ends)) == std::vector<std::size_t>({0, 1, 2}),
+          "a table of starts and a table of ends");
+}
+
 void TestLibmusSend()
 {
     // A send of 60 goes to CC91. The mixer takes its share from the dry level, and CC11 acts squared.
@@ -2691,6 +2891,7 @@ int main()
                                     []()
                                     {
                                         TestImageOrders();
+                                        TestZippedImage();
                                         TestNotesAndTempo();
                                         TestLibultraRate();
                                         TestUnusedInstrumentsStayOut();
@@ -2743,6 +2944,7 @@ int main()
                                         TestUnpackDirectoryFile();
                                         TestLibmusTempoScale();
                                         TestLibmusRepeats();
+                                        TestLibmusSongTables();
                                         TestLibmusSend();
                                         TestSbnClock();
                                         TestSbnShortNote();

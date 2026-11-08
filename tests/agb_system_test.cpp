@@ -42,7 +42,12 @@ constexpr uint32_t kStack = kRomBase + 0x090;      // mov r0, sp; bx lr
 constexpr uint32_t kArmDiv = kRomBase + 0x0A0;     // ARM: swi 0x60000; bx lr
 constexpr uint32_t kArmCpsr = kRomBase + 0x0B0;    // ARM: mrs r0, cpsr; bx lr
 constexpr uint32_t kChecksum = kRomBase + 0x0C0;   // swi 0x0D; bx lr
+constexpr uint32_t kSwiF0 = kRomBase + 0x0D0;      // push {lr}; swi 0xF0; pop {r1}; bx r1
+constexpr uint32_t kLz77 = kRomBase + 0x0E0;       // swi 0x11; bx lr
+constexpr uint32_t kLz77Vram = kRomBase + 0x0F0;   // swi 0x12; bx lr
 constexpr uint32_t kData = kRomBase + 0x100;       // 16 words: 0x11111111 times 1 to 16
+constexpr uint32_t kPacked = kRomBase + 0x200;     // LZ77 data of "ABCABCABCX"
+constexpr uint32_t kNotLz77 = kRomBase + 0x220;    // a header of type 2
 constexpr uint32_t kImageSize = 0x1100;            // the image ends partway through a page
 
 constexpr uint32_t kDma0 = 0x040000B0;
@@ -77,6 +82,9 @@ Rom TestRom()
     Put16(image, kDivArm, {0xDF07, 0x4770});
     Put16(image, kVBlankWait, {0xDF05, 0x4770});
     Put16(image, kChecksum, {0xDF0D, 0x4770});
+    Put16(image, kSwiF0, {0xB500, 0xDFF0, 0xBC02, 0x4708});
+    Put16(image, kLz77, {0xDF11, 0x4770});
+    Put16(image, kLz77Vram, {0xDF12, 0x4770});
     // str r0, [r3]; str r1, [r3, #4]; str r2, [r3, #8]; bx lr
     Put16(image, kDma, {0x6018, 0x6059, 0x609A, 0x4770});
     Put16(image, kLoad16, {0x8800, 0x4770});
@@ -89,6 +97,16 @@ Rom TestRom()
     {
         Put32(image, kData + 4 * i, {0x11111111 * (i + 1)});
     }
+
+    // The header: LZ77 and 10 bytes. A flag byte of 0x10 makes the fourth unit a back-reference of 6 bytes from 3
+    // bytes back.
+    const std::array<uint8_t, 11> kPackedBytes = {0x10, 0x0A, 0x00, 0x00, 0x10, 'A', 'B', 'C', 0x30, 0x02, 'X'};
+    for (size_t i = 0; i < kPackedBytes.size(); i++)
+    {
+        image[kPacked - kRomBase + i] = kPackedBytes[i];
+    }
+
+    Put32(image, kNotLz77, {0x00000A20});
 
     Rom rom;
     rom.Assign(std::move(image));
@@ -185,6 +203,27 @@ void TestBiosChecksum()
     const Rom rom = TestRom();
     System system(rom);
     XSFLIB_CHECK(CallThumb(system, kChecksum, {}) == 0xBAAE187F);
+}
+
+void TestLz77()
+{
+    const Rom rom = TestRom();
+    System system(rom);
+
+    CallThumb(system, kLz77, {kPacked, kEwramBase});
+    CallThumb(system, kLz77Vram, {kPacked, kIwramBase});
+
+    const std::string kExpected = "ABCABCABCX";
+    for (uint32_t i = 0; i < kExpected.size(); i++)
+    {
+        XSFLIB_CHECK(system.Load(kEwramBase + i, 1) == uint8_t(kExpected[i]));
+        XSFLIB_CHECK(system.Load(kIwramBase + i, 1) == uint8_t(kExpected[i]));
+    }
+    XSFLIB_CHECK(system.Load(kEwramBase + 10, 1) == 0);
+
+    const std::string error =
+        xsflib::testing::ErrorOf<std::runtime_error>([&] { CallThumb(system, kLz77, {kNotLz77, kEwramBase}); });
+    XSFLIB_CHECK(error == "the BIOS's LZ77UnComp was called on data that isn't LZ77");
 }
 
 void TestCpuSet()
@@ -286,6 +325,86 @@ void TestIo()
     XSFLIB_CHECK(CallThumb(system, kLoad16, {kRegSoundCntH}) == 0x9A0C);
 }
 
+void TestSwiHook()
+{
+    const Rom rom = TestRom();
+    System system(rom);
+
+    // Without a handler, the call fails as for any BIOS call that isn't modelled.
+    std::string error = xsflib::testing::ErrorOf<std::runtime_error>([&] { CallThumb(system, kSwiF0, {}); });
+    XSFLIB_CHECK(error == "BIOS call 240 isn't modelled");
+
+    // A handler takes the SWI and calls a routine on the stack where the SWI left it. The routine's r0 stays.
+    std::vector<uint32_t> numbers;
+    uint32_t stack = 0;
+    system.on_swi = [&](uint32_t number)
+    {
+        numbers.push_back(number);
+        if (number != 0xF0)
+        {
+            return false;
+        }
+
+        stack = system.Cpu().Call(kStack | 1, {}, System::kCallCycles);
+        const std::array<uint32_t, 1> kArgs = {kData};
+        system.Cpu().Call(kLoad32 | 1, kArgs, System::kCallCycles);
+
+        return true;
+    };
+
+    XSFLIB_CHECK(CallThumb(system, kSwiF0, {}) == 0x11111111);
+
+    XSFLIB_CHECK(numbers == std::vector<uint32_t>{0xF0});
+    XSFLIB_CHECK(stack == System::kStack - 4);
+
+    // A number that the handler turns down still fails.
+    error = xsflib::testing::ErrorOf<std::runtime_error>([&] { CallThumb(system, kVBlankWait, {}); });
+
+    XSFLIB_CHECK(error == "BIOS call 5 isn't modelled");
+    XSFLIB_CHECK(numbers == (std::vector<uint32_t>{0xF0, 5}));
+}
+
+void TestSnapshot()
+{
+    const Rom rom = TestRom();
+    System system(rom);
+    system.Store(kEwramBase + 0x100, 4, 0x12345678);
+    system.Store(kIwramBase + 0x7000, 2, 0xBEEF);
+    system.Store(kRegSoundCntH, 2, 0x9A0C);
+    system.HoldVcount(150);
+
+    const System::Snapshot first = system.Save();
+
+    // A snapshot after another shares its pages, and each one gives back its state.
+    system.Store(kEwramBase + 0x100, 4, 0x87654321);
+    system.Store(kEwramBase + 0x3F000, 1, 0x5A);
+    system.HoldVcount(std::nullopt);
+
+    const System::Snapshot second = system.Save(&first);
+
+    system.Store(kIwramBase + 0x7000, 2, 0);
+    system.Store(kRegSoundCntH, 2, 0);
+
+    system.Restore(first);
+
+    XSFLIB_CHECK(system.Load(kEwramBase + 0x100, 4) == 0x12345678);
+    XSFLIB_CHECK(system.Load(kEwramBase + 0x3F000, 1) == 0);
+    XSFLIB_CHECK(system.Load(kIwramBase + 0x7000, 2) == 0xBEEF);
+    XSFLIB_CHECK(system.Load(kRegSoundCntH, 2) == 0x9A0C);
+    XSFLIB_CHECK(system.Load(kRegVcount, 2) == 150 && system.Load(kRegVcount, 2) == 150);
+
+    system.Restore(second);
+
+    XSFLIB_CHECK(system.Load(kEwramBase + 0x100, 4) == 0x87654321);
+    XSFLIB_CHECK(system.Load(kEwramBase + 0x3F000, 1) == 0x5A);
+    XSFLIB_CHECK(system.Load(kIwramBase + 0x7000, 2) == 0xBEEF);
+    XSFLIB_CHECK(system.Load(kRegSoundCntH, 2) == 0x9A0C);
+
+    // Calls go on after a restore.
+    XSFLIB_CHECK(CallThumb(system, kLoad32, {kEwramBase + 0x100}) == 0x87654321);
+    XSFLIB_CHECK(CallThumb(system, kStack, {}) == System::kStack);
+}
+
 } // namespace
 
 int main()
@@ -294,9 +413,12 @@ int main()
     TestCall();
     TestDiv();
     TestBiosChecksum();
+    TestLz77();
     TestCpuSet();
     TestDma();
     TestIo();
+    TestSwiHook();
+    TestSnapshot();
 
     return xsflib::testing::Summary("GBA system");
 }

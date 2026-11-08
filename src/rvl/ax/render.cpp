@@ -374,8 +374,8 @@ bool Renderer::RunFrame(ntdlib::dsp::WiiMemory& memory, uint32_t command_list, u
             {
                 // The build of October 2006 has no master volume. Its OUTPUT takes the buses as they are.
                 const uint16_t volume = build_ == Build::kOctober2006 ? 0x8000 : dram_[at++];
-                const uint32_t surround = Arg32(at);
-                Output(volume, surround, Arg32(at));
+                const uint32_t surround_address = Arg32(at);
+                Output(volume, surround_address, Arg32(at));
                 break;
             }
         case kWmOutput:

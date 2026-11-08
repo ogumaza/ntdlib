@@ -141,11 +141,10 @@ struct Event
 };
 
 // A stretch of a channel's commands that ran one after another (Sequencer::RecordPerformance). A stretch begins where
-// its channel starts, where FF goes back to the loop point, and where D7 goes back to the start of its repeat. On a
-// channel whose tempo differs from the first channel's, a stretch also begins after each note, rest and wait. Such a
-// stretch holds at most one wait, at its end. It keeps `loop` from the stretch that it splits. 7F starts a channel's
-// count of ticks again, and the first channel's 7F starts every channel's. A stretch also begins after that, on a
-// channel that has waited since its count last started. Such a stretch keeps `loop` too.
+// its channel starts, where FF goes back to the loop point, and where D7 goes back to the start of its repeat. A
+// stretch also begins after each note, rest and wait, and keeps `loop` from the stretch before it. A stretch therefore
+// holds at most one wait, at its end. Its commands run in the frame where it begins. The notes or rests that D4 ties to
+// that wait end the stretch.
 struct TrackStretch
 {
     uint8_t channel = 0;
@@ -155,7 +154,7 @@ struct TrackStretch
     uint32_t last = 0;  // the address of its last command
     uint8_t depth = 0;  // the repeats that the channel was in at its first command
     bool loop = false;  // it began where FF or D7 went back
-    bool split = false; // it began after a note, a rest or a wait, at a tempo other than the first channel's
+    bool split = false; // it began after a note, a rest or a wait
 };
 
 // The sound registers that the driver's register image holds, in order: SOUND1CNT_L to SOUNDCNT_H.
@@ -334,8 +333,9 @@ private:
     void StartNote(int c, int note);
 
     // Returns the ticks that a note lasts with its dot and the notes that D4 ties to it, where `first` is the note's
-    // first byte and `value` its note value. Moves the channel past the dot and the ties.
-    uint16_t NoteTicks(Channel& ch, uint8_t first, int value);
+    // first byte and `value` its note value. Moves the channel past the dot and the ties. Sets `last` to the address of
+    // the last dot or the last note that a tie adds, and leaves it alone without either.
+    uint16_t NoteTicks(Channel& ch, uint8_t first, int value, uint32_t& last);
 
     // Writes a hardware register, as the driver does.
     void Write(uint32_t address, int size, uint32_t value);
@@ -345,10 +345,6 @@ private:
 
     // Adds an event of channel `c` at its tick count.
     void AddEvent(int c, Event::Kind kind, int index = 0, uint32_t address = 0);
-
-    // Records that 7F started channel `c`'s count of ticks again. After a wait, the channel's next read begins a
-    // stretch.
-    void Restart(int c);
 
     // Adds the read of channel `c`'s command at `address` to the channel's stretches, while the sequencer records them.
     void RecordRead(int c, uint32_t address);
@@ -404,9 +400,7 @@ private:
     std::vector<TrackStretch> stretches_;
     std::array<size_t, kChannels> stretch_ = {}; // each channel's stretch in stretches_, plus 1, or 0 before the first
     std::array<bool, kChannels> jumped_ = {};    // the channel went back: its next read begins a stretch
-    std::array<bool, kChannels> split_ = {};     // the channel waited at another tempo: its next read begins a stretch
-    std::array<bool, kChannels> waited_ = {};    // the channel waited since its count of ticks last started
-    std::array<bool, kChannels> restarted_ = {}; // 7F started the count after a wait: the next read begins a stretch
+    std::array<bool, kChannels> split_ = {};     // the channel waited: its next read begins a stretch
 };
 
 } // namespace ntdlib::quintet

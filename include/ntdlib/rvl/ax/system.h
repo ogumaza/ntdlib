@@ -72,6 +72,22 @@ struct Frame
     ntdlib::PAddr output = 0;
 };
 
+// The layer that a port of AX to another console puts in place of AX's mixing. The port keeps AX's voices and their
+// PBs, and mixes them on that console. Skyward Sword HD's layer on nn::audio is one (rvl::nx::Layer). With a layer,
+// the layer's functions replace AX's for the voices' allocation and priorities. A voice's SetState goes to the layer.
+class VoiceLayer
+{
+public:
+    virtual Voice* AcquireVoice(uint32_t priority, Voice::Callback callback) = 0;
+    virtual void FreeVoice(Voice& voice) = 0;
+    virtual void SetVoicePriority(Voice& voice, uint32_t priority) = 0;
+    virtual uint32_t VoicePriority(const Voice& voice) const = 0;
+    virtual void SetVoiceState(Voice& voice, VoiceState state) = 0;
+
+protected:
+    ~VoiceLayer() = default;
+};
+
 // A copy of a System is a snapshot of AX's state. Assigning the copy back to the original System restores that state.
 // The voice links and callbacks in the copy still point at the voices of the original System and at their owners.
 class System
@@ -83,6 +99,47 @@ public:
     // state. Writes the compressor table to the address where the microcode reads it. Builds the first command list
     // (__AXOutInit, 0x80106068). The model then follows `build`.
     void Init(Build build = Build::kDecember2006);
+
+    // Hands the voices to `layer` (see VoiceLayer) in place of Init: `count` voices, each with its index, a PB of
+    // zeros and the layer. StartFrame and FinishFrame aren't for a layer. The layer runs the frame callback itself
+    // (RunFrameCallback). The master volume and the aux buses' callbacks and return volumes stay for the layer to read.
+    void UseLayer(VoiceLayer& layer, uint32_t count);
+
+    // The voice at `index`, for a layer.
+    Voice& VoiceAt(uint32_t index)
+    {
+        return voices_.at(index);
+    }
+
+    const Voice& VoiceAt(uint32_t index) const
+    {
+        return voices_.at(index);
+    }
+
+    // Runs the callback that RegisterCallback registered, if any.
+    void RunFrameCallback()
+    {
+        if (frame_callback_)
+        {
+            frame_callback_();
+        }
+    }
+
+    // The master volume (SetMasterVolume), and whether aux bus `bus` has a callback and its return volume.
+    uint16_t MasterVolume() const
+    {
+        return master_volume_;
+    }
+
+    bool HasAuxCallback(int bus) const
+    {
+        return static_cast<bool>(aux_callbacks_[static_cast<std::size_t>(bus)]);
+    }
+
+    uint16_t AuxReturnVolume(int bus) const
+    {
+        return aux_volume_[static_cast<std::size_t>(bus)];
+    }
 
     // The number of voices: 96, or 64 in the build of October 2006.
     uint32_t VoiceCount() const
@@ -110,7 +167,7 @@ public:
     // The voice's priority, or 0 for a free voice.
     uint32_t VoicePriority(const Voice* voice) const
     {
-        return allocation_.Priority(voice->index);
+        return layer_ != nullptr ? layer_->VoicePriority(*voice) : allocation_.Priority(voice->index);
     }
 
     // AXSetMasterVolume (0x80105bd0): sets the volume of the OUTPUT command. The next command list built uses it.
@@ -186,6 +243,7 @@ private:
     void NextFrame(ntdlib::PAddr surround, ntdlib::PAddr output, const std::array<ntdlib::PAddr, kRemoteCount>& remote);
 
     ntdlib::dsp::WiiMemory* memory_;
+    VoiceLayer* layer_ = nullptr;
     Build build_ = Build::kDecember2006;
     uint32_t voice_count_ = kVoiceCount;
     std::function<void()> frame_callback_;

@@ -200,6 +200,22 @@ void TestDecoding()
     Event e;
 
     SEQLIB_CHECK(!DecodeEvent(cart.ToRom(), at, Format::kChannelByte, e));
+
+    // A track's end can be the image's last byte. A command whose arguments or channel byte pass the end can't be read.
+    for (Format format : {Format::kChannelByte, Format::kChannelNibble})
+    {
+        Rom end;
+        end.Assign({0x00, 0x0B});
+        SEQLIB_CHECK(DecodeEvent(end, kRomBase + 1, format, e) && e.command == kCmdEnd && e.size == 1);
+
+        Rom wait;
+        wait.Assign({0x00, 0x01});
+        SEQLIB_CHECK(!DecodeEvent(wait, kRomBase + 1, format, e));
+    }
+
+    Rom program;
+    program.Assign({0x00, 0x08});
+    SEQLIB_CHECK(!DecodeEvent(program, kRomBase + 1, Format::kChannelByte, e));
 }
 
 void TestDetection()

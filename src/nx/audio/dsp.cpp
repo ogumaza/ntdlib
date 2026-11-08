@@ -509,4 +509,62 @@ int32_t ApplyDepopMix(int32_t* buffer, int32_t depop, int32_t decay, int count)
     return negative ? WrapSub(0, lanes[1]) : lanes[1];
 }
 
+void UpsampleFrame(Upsampler& state, std::span<const int32_t> input, std::span<int32_t> output)
+{
+    // The windowed-sinc tables W2 and W4 in Q15. Tap 0 is for the input nearest the output.
+    static constexpr std::array<int32_t, 10> kW2 = {26971, -6279, 3062, -1668, 903, -460, 212, -83, 26, -4};
+    static constexpr std::array<int32_t, 10> kW4 = {13295, -4813, 2491, -1365, 728, -361, 159, -58, 16, -1};
+    constexpr int kSize = Upsampler::kHistory;
+
+    // The history keeps 8 more bits than the inputs, in 32 bits.
+    const auto push = [&state](int32_t x)
+    {
+        state.history[static_cast<std::size_t>(state.write)] = static_cast<int32_t>(static_cast<uint32_t>(x) << 8);
+        state.write = (state.write + 1) % kSize;
+        state.read = (state.read + 1) % kSize;
+    };
+    const auto at = [&state](int place)
+    {
+        return int64_t{state.history[static_cast<std::size_t>(((place % kSize) + kSize) % kSize)]};
+    };
+    // Each side's 10 taps are summed in 64 bits and rounded down to the history's scale. The sum of the two sides, in
+    // 32 bits, is rounded down to the output's.
+    const auto filter = [&](const std::array<int32_t, 10>& before, const std::array<int32_t, 10>& after)
+    {
+        int64_t earlier = 0;
+        int64_t later = 0;
+        for (int k = 0; k < 10; ++k)
+        {
+            earlier += at(state.read - k) * before[static_cast<std::size_t>(k)];
+            later += at(state.read + 1 + k) * after[static_cast<std::size_t>(k)];
+        }
+
+        const uint32_t sum = static_cast<uint32_t>(earlier >> 15) + static_cast<uint32_t>(later >> 15);
+
+        return static_cast<int32_t>(sum) >> 8;
+    };
+
+    std::size_t next = 0;
+    for (int32_t& out : output)
+    {
+        switch (state.phase)
+        {
+        case 0:
+            push(input[next++]);
+            out = static_cast<int32_t>(at(state.read)) >> 8;
+            break;
+
+        case 1:
+            out = filter(kW4, kW2);
+            break;
+
+        default:
+            push(input[next++]);
+            out = filter(kW2, kW4);
+            break;
+        }
+        state.phase = (state.phase + 1) % 3;
+    }
+}
+
 } // namespace ntdlib::nx::audio

@@ -410,8 +410,28 @@ void System::WritePb(uint32_t index, const Pb& pb)
     traits.store_pb(pb, memory_->At(PbAddress(index), traits.pb_size));
 }
 
+void System::UseLayer(VoiceLayer& layer, uint32_t count)
+{
+    // The layer's aux buses return nothing until the game sets their volumes. Its master volume starts at 1.
+    layer_ = &layer;
+    voice_count_ = std::min<uint32_t>(count, kVoiceCount);
+    aux_volume_ = {0, 0, 0};
+    master_volume_ = kMaxVolume;
+    for (uint32_t i = 0; i < voice_count_; i++)
+    {
+        voices_[i] = Voice{};
+        voices_[i].index = i;
+        voices_[i].layer = &layer;
+    }
+}
+
 Voice* System::AcquireVoice(uint32_t priority, Voice::Callback callback)
 {
+    if (layer_ != nullptr)
+    {
+        return layer_->AcquireVoice(priority, std::move(callback));
+    }
+
     // With no free voice, steal the oldest voice of the lowest priority below this one. Call its owner's callback
     // first.
     const std::optional<ntdlib::ax::Voices::Taken> taken = allocation_.Take(priority);
@@ -444,6 +464,13 @@ Voice* System::AcquireVoice(uint32_t priority, Voice::Callback callback)
 
 void System::FreeVoice(Voice* voice)
 {
+    if (layer_ != nullptr)
+    {
+        layer_->FreeVoice(*voice);
+
+        return;
+    }
+
     allocation_.Remove(voice->index);
     if (voice->IsRunning())
     {
@@ -456,6 +483,13 @@ void System::FreeVoice(Voice* voice)
 
 void System::SetVoicePriority(Voice* voice, uint32_t priority)
 {
+    if (layer_ != nullptr)
+    {
+        layer_->SetVoicePriority(*voice, priority);
+
+        return;
+    }
+
     allocation_.Remove(voice->index);
     allocation_.Push(voice->index, priority);
 }

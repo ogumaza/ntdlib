@@ -25,6 +25,7 @@
 
 #include "ntdlib/n64/bank_file.h"
 #include "ntdlib/n64/midi.h"
+#include "ntdlib/n64/seq_file.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/n64/games.h"
 #include "ntdlib/sequence_export/n64/instruments.h"
@@ -84,17 +85,30 @@ public:
     Conversion Convert(std::size_t index, const PerformOptions& options);
 
 private:
+    // A bank file, the place in the image of its samples, and its waves, each decoded once.
+    struct Banks
+    {
+        ntdlib::n64::BankFile file;
+        std::size_t samples = 0;
+        std::map<int32_t, std::shared_ptr<const Wave>> waves;
+    };
+
     LibultraGame() = default;
 
-    // Decodes wave `index` of the bank file. A game's waves are decoded once.
-    std::shared_ptr<const Wave> WaveAt(int32_t index);
+    // Reads the bank file at `offset` and finds its samples.
+    Banks ReadBanks(std::size_t offset) const;
+
+    // Decodes wave `index` of `banks`.
+    std::shared_ptr<const Wave> WaveAt(Banks& banks, int32_t index) const;
+
+    // The number of songs that `set` holds.
+    std::size_t SetSize(const LibultraSongSet& set) const;
 
     std::span<const uint8_t> image_;
     LibultraProfile profile_;
     std::vector<std::vector<uint8_t>> songs_;
-    ntdlib::n64::BankFile file_;
-    std::size_t samples_ = 0;
-    std::map<int32_t, std::shared_ptr<const Wave>> waves_;
+    std::vector<ntdlib::n64::HudsonSongRecord> records_; // each song's bank and volume, in Hudson's sequence bank
+    std::vector<Banks> banks_;                           // the bank file of the profile, then of each other set
 };
 
 } // namespace ntdlib::sequence_export::n64

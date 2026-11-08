@@ -230,6 +230,13 @@ private:
 class Cart : public agb_files::CartImage
 {
 public:
+    // A mode that a game's code puts in r0 with `movs r0, #value; lsls r0, r0, #shift`.
+    struct ShiftedMode
+    {
+        uint8_t value;
+        int shift;
+    };
+
     // Makes a cartridge whose init gives the driver `mode`, with music players of the given track counts. Without
     // `code`, it has neither the init nor the routine that starts a song, and without `special`, its mixer doesn't play
     // reversed or compressed samples.
@@ -489,6 +496,29 @@ public:
         Put16(kGameCall + 4, uint16_t(0x4800 | ((kGamePool - ((kGameCall + 8) & ~3u)) / 4)));
         PutBl(kGameCall + 6, kInit + 6);
         Put32(kGamePool, mode);
+    }
+
+    // Writes a game's calls of m4aSoundMode straight after its call of m4aSoundInit, each with a mode from movs and
+    // lsls. Before them, the game calls `other_calls` other routines.
+    void GameShiftedSoundModes(const std::vector<ShiftedMode>& modes, int other_calls)
+    {
+        uint32_t at = kRomBase + 0x160;
+        PutBl(at, kInit);
+        at += 4;
+
+        for (int i = 0; i < other_calls; i++)
+        {
+            PutBl(at, kRomBase + 0x1F0);
+            at += 4;
+        }
+
+        for (const ShiftedMode& m : modes)
+        {
+            Put16(at, uint16_t(0x2000 | m.value));
+            Put16(at + 2, uint16_t(m.shift << 6));
+            PutBl(at + 4, kInit + 6);
+            at += 8;
+        }
     }
 
 private:

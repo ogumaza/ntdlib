@@ -1438,11 +1438,42 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
         }
     }
 
-    for (std::size_t i = 0; i < profile.song_count; i++)
+    const LibmusFileTable& files = profile.cartridge_files;
+    if (files.table != 0)
     {
-        const std::size_t at = profile.songs + i * 8;
+        constexpr std::size_t kFileEntry = 8;
+
+        // The numbers below the first song name no song.
+        game->songs_.resize(files.first_song);
+        for (std::size_t i = 0; i < profile.song_count; i++)
+        {
+            const std::size_t at = files.table + kFileEntry * xsflib::LoadBe16(image.data() + files.song_files +
+                                                                               std::size_t{2} * (files.first_song + i));
+            if (at + kFileEntry > image.size())
+            {
+                throw xsflib::FormatError("a song's file isn't in the game's table of files");
+            }
+
+            const std::size_t start = files.base + xsflib::LoadBe32(image.data() + at);
+            const std::size_t size = xsflib::LoadBe32(image.data() + at + 4);
+            if (size == 0 || start + size > image.size())
+            {
+                throw xsflib::FormatError("a song isn't in the image");
+            }
+
+            game->songs_.push_back(image.subspan(start, size));
+        }
+    }
+
+    // Each entry of the table holds the start and the end of a song, or only its start if the ends are in a separate
+    // table.
+    const std::size_t stride = profile.song_ends != 0 ? 4 : 8;
+    for (std::size_t i = 0; files.table == 0 && i < profile.song_count; i++)
+    {
+        const std::size_t at = profile.songs + i * stride;
+        const std::size_t end_at = profile.song_ends != 0 ? profile.song_ends + i * 4 : at + 4;
         const uint32_t start = xsflib::LoadBe32(image.data() + at);
-        const uint32_t end = xsflib::LoadBe32(image.data() + at + 4);
+        const uint32_t end = xsflib::LoadBe32(image.data() + end_at);
         if (end <= start || end > image.size())
         {
             throw xsflib::FormatError("a song isn't in the image");
@@ -1535,7 +1566,9 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
     {
         Bank bank;
         bank.first_song = place.first_song;
-        bank.pointers = image.subspan(place.pointers, place.samples - place.pointers);
+        // The table of waves ends where the samples start, if they follow it.
+        bank.pointers = place.samples > place.pointers ? image.subspan(place.pointers, place.samples - place.pointers)
+                                                       : image.subspan(place.pointers);
         bank.samples = image.subspan(place.samples);
         read_waves(bank);
         game->banks_.push_back(std::move(bank));
@@ -1558,7 +1591,7 @@ std::vector<ntdlib::sequence_export::Sequence> LibmusGame::Sequences() const
     std::vector<ntdlib::sequence_export::Sequence> sequences;
     for (std::size_t i = 0; i < songs_.size(); i++)
     {
-        if (!repeats_[i])
+        if (!repeats_[i] && !songs_[i].empty())
         {
             sequences.push_back({i, NameOf(i)});
         }

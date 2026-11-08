@@ -105,6 +105,16 @@ Engine::~Engine()
     ax_.RegisterCallback(nullptr);
 }
 
+void Engine::SetOutputMode(ntdlib::nwsnd::OutputMode mode)
+{
+    if (mode != ntdlib::nwsnd::OutputMode::kStereo && mode != ntdlib::nwsnd::OutputMode::kDpl2)
+    {
+        throw std::invalid_argument("the model of NW4R SND mixes only in stereo and Dolby Pro Logic II");
+    }
+
+    output_mode_ = mode;
+}
+
 SeqPlayer* Engine::StartSequence(uint32_t index, const Arrangement& arrangement)
 {
     // SoundArchivePlayer's PrepareSeqImpl: the sequence file and its bank must be in the archive.

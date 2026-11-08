@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// What the converter knows about each game: what the game's code changes in its sound. The sound files say nothing of
-// it. Each image with a profile is found by its hash.
+// The profiles of the games: what each game's code changes in its sound. The sound files say nothing of it. Each image
+// with a profile is found by its hash.
 
 #pragma once
 
@@ -11,6 +11,8 @@
 #include <span>
 #include <string>
 #include <vector>
+
+#include "xsflib/rip/rom_set.h"
 
 #include "ntdlib/n64/ead_script.h"
 
@@ -72,6 +74,16 @@ struct LibultraRateChange
     const char* beside = nullptr;
 };
 
+// Another set of songs, on a separate bank file, for a mode that the game code picks. The name of each song in the
+// set ends with the name of the set.
+struct LibultraSongSet
+{
+    const char* name = nullptr;
+    std::size_t first_song = 0;
+    std::size_t song_count = 0;
+    std::size_t bank = 0; // the offset in the image of the set's bank file
+};
+
 struct LibultraProfile
 {
     // The rate that the game gives the synthesizer. A sample plays at this rate at its key map's base key.
@@ -83,6 +95,18 @@ struct LibultraProfile
 
     // The songs are in a table of Rare's compressed blocks, which the image's bytes lead to.
     bool rare_sequences = false;
+
+    // The songs are in Hudson's sequence bank of revision S2. Each song's record gives its bank in the bank file and
+    // its volume.
+    bool hudson_sequences = false;
+
+    // The game's songs are `song_count` sequences of the file from `first_song` on. A count of 0 takes every sequence
+    // from there. The songs keep their numbers in the file.
+    std::size_t first_song = 0;
+    std::size_t song_count = 0;
+
+    // The other sets of songs. They come after the songs above.
+    std::span<const LibultraSongSet> other_sets;
 
     // The songs are this many standard MIDI files, one after the other, from `sequences`.
     std::size_t midi_files = 0;
@@ -142,6 +166,10 @@ struct EadTrack
     std::array<int8_t, 8> ports = {-1, -1, -1, -1, -1, -1, -1, -1};
 
     EadGameCall call; // what the game's code changes while the sequence plays
+
+    // The volume out of 127 that the game's code gives the sequence in place of the volume of the game's table. -1
+    // keeps the table's.
+    int song_volume = -1;
 };
 
 // A track's ports, with a value in one of them or two.
@@ -245,6 +273,16 @@ struct LibmusFiles
     uint32_t file_address = 0; // the address where the game's code loads the table's file
 };
 
+// A game that reads its songs as files of the cartridge. A table holds the start of each file, from `base`, and its
+// size, in a word each. A table of halfwords gives the file of each song, by its number in the game.
+struct LibmusFileTable
+{
+    std::size_t table = 0;
+    std::size_t base = 0;
+    std::size_t song_files = 0; // the table of halfwords, as an offset in the image
+    std::size_t first_song = 0; // the number of the game's first song
+};
+
 // A change that the game's code makes to a song's tempo, from a time after the song's start.
 struct LibmusTempoChange
 {
@@ -266,9 +304,17 @@ struct LibmusProfile
     // The game's compressed directory of a bank and songs, as an offset in the image, or 0 if it has none.
     std::size_t directory = 0;
 
-    // The game's table of songs: the offsets in the image of each song's start and end.
+    // The game's table of songs: the offsets in the image of each song's start and end, or of each start alone where
+    // `song_ends` is set.
     std::size_t songs = 0;
     std::size_t song_count = 0;
+
+    // The ends of the songs, if the game keeps them in a table apart from the starts at `songs`.
+    std::size_t song_ends = 0;
+
+    // The game's files on the cartridge, if it reads its songs that way. The songs are `song_count` songs from the
+    // first song of the table. The songs keep their numbers in the game.
+    LibmusFileTable cartridge_files;
 
     // The game's table of music volumes, as an offset in the image: the byte after the first of each entry.
     std::size_t song_volumes = 0;
@@ -333,7 +379,16 @@ struct GameProfile
     const EadProfile* ead = nullptr;       // the game's engine is one of EAD's, if it isn't null
     const LibmusProfile* libmus = nullptr; // the game's engine is the N64 Music Tools, if it isn't null
     const SbnProfile* sbn = nullptr;       // the game's engine is Intelligent Systems', if it isn't null
+
+    // The chips of an arcade game's ROM set. Put together, they make the image with `sha1`.
+    std::span<const xsflib::rip::RomChip> chips;
+
+    // The game streams its music from the cartridge as waves. It has no sequences to convert.
+    bool streamed_music = false;
 };
+
+// Every game with a profile.
+std::span<const GameProfile> Profiles();
 
 // The profile of the image with `sha1`, or nullptr.
 const GameProfile* FindProfile(const std::string& sha1);

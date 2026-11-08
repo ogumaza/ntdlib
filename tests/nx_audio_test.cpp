@@ -3,8 +3,8 @@
 // Checks the model of the audio renderer without game data: the decoders on hand-made buffers, the sample-rate
 // converter's filters at a ratio of 1, the biquad on filters whose output is known, the gains, mixes and depop against
 // their formulas, a voice's frames through the renderer (its samples, what the updates report and when, the fade when
-// it stops, and a host's mutes, meters and peaks of a mix), and the I3DL2 reverb with a density below 0 and with each
-// of nn::audio's presets.
+// it stops, a host's mutes, meters and peaks of a mix, splitters, and wave buffers' loop fields), the upsampler from
+// 32 to 48 kHz, and the I3DL2 reverb with a density below 0 and with each of nn::audio's presets.
 
 #include <algorithm>
 #include <array>
@@ -197,6 +197,8 @@ struct OneVoice
         parameter.mix_buffer_count = 2 + 2 * sub_mixes;
         parameter.sub_mix_count = sub_mixes;
         parameter.voice_count = 4;
+        parameter.splitter_count = 2;
+        parameter.splitter_destination_count = 4;
 
         return parameter;
     }
@@ -541,6 +543,232 @@ void TestRendererMixPeaks()
     XSFLIB_CHECK(refused);
 }
 
+// A renderer like OneVoice's with a sub-mix whose left buffer goes to the final mix's right buffer, and room for two
+// splitters of two destinations each. The voice goes to the final mix's left buffer at `direct`, and to the sub-mix's
+// left buffer at `sent`: through a splitter when `split` is set, else straight to the final mix alone (for a `sent` of
+// 0) or the sub-mix alone (for a `direct` of 0).
+struct SplitVoice
+{
+    SplitVoice(bool split, float direct, float sent) : one(1), sub_mix(0)
+    {
+        sub_mix = one.renderer.AcquireSubMix(48000, 2);
+        one.renderer.SetSubMixDestination(sub_mix, audio::Renderer::kFinalMix);
+        one.renderer.SetSubMixMixVolume(sub_mix, 1.0f, 0, 1);
+        if (split)
+        {
+            splitter = one.renderer.AcquireSplitter(48000, 1, 2);
+            one.renderer.SetSplitterDestination(splitter, 0, audio::Renderer::kFinalMix);
+            one.renderer.SetSplitterDestination(splitter, 1, sub_mix);
+            one.renderer.SetSplitterMixVolume(splitter, 0, direct, 0, 0);
+            one.renderer.SetSplitterMixVolume(splitter, 1, sent, 0, 0);
+            one.renderer.SetVoiceSplitter(one.voice, splitter);
+        }
+        else if (sent == 0.0f)
+        {
+            one.renderer.SetVoiceMixVolume(one.voice, direct, 0, 0);
+        }
+        else
+        {
+            one.renderer.SetVoiceDestination(one.voice, sub_mix);
+            one.renderer.SetVoiceMixVolume(one.voice, sent, 0, 0);
+        }
+        one.Append(0, kFrame * 8, nullptr);
+        one.renderer.SetVoicePlayState(one.voice, audio::PlayState::kStarted);
+    }
+
+    // The device's left and right channels in the next frame.
+    std::array<std::vector<int16_t>, 2> Next()
+    {
+        one.renderer.RenderFrame();
+        const std::span<const int16_t> out = one.renderer.DeviceOutput();
+        std::array<std::vector<int16_t>, 2> channels;
+        for (std::size_t t = 0; t < out.size(); ++t)
+        {
+            channels[t % 2].push_back(out[t]);
+        }
+
+        return channels;
+    }
+
+    OneVoice one;
+    int sub_mix;
+    int splitter = audio::Renderer::kNoSplitter;
+};
+
+void TestRendererSplitter()
+{
+    // A voice through a splitter mixes into each destination as it would straight into the destination's mix, at the
+    // same gains. A gain that changes ramps across the next frame. When the voice stops, its channel's last sample is
+    // the one mixed into the last destination. The depop takes it into the first destination's buffer. The sub-mix
+    // gets none of it (GenerateDataSourceCommand, 0x5c0c0 in Skyward Sword HD's sdk). The left channel then fades from
+    // the sub-mix's last sample. A voice straight to the final mix at the sub-mix's gain fades the same way. The right
+    // channel stops at once.
+    SplitVoice split(true, 1.0f, 0.5f);
+    SplitVoice direct(false, 1.0f, 0.0f);
+    SplitVoice sent(false, 0.0f, 0.5f);
+    SplitVoice half(false, 0.5f, 0.0f);
+    const auto renders = [](SplitVoice& voice)
+    {
+        return voice.Next();
+    };
+    std::vector<std::array<std::vector<int16_t>, 2>> frames[4];
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        frames[0].push_back(renders(split));
+        frames[1].push_back(renders(direct));
+        frames[2].push_back(renders(sent));
+        frames[3].push_back(renders(half));
+    }
+    split.one.renderer.SetSplitterMixVolume(split.splitter, 0, 0.25f, 0, 0);
+    direct.one.renderer.SetVoiceMixVolume(direct.one.voice, 0.25f, 0, 0);
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        frames[0].push_back(renders(split));
+        frames[1].push_back(renders(direct));
+        frames[2].push_back(renders(sent));
+        frames[3].push_back(renders(half));
+    }
+    for (SplitVoice* voice : {&split, &direct, &sent, &half})
+    {
+        voice->one.renderer.SetVoicePlayState(voice->one.voice, audio::PlayState::kStopped);
+    }
+    frames[0].push_back(renders(split));
+    frames[3].push_back(renders(half));
+
+    bool mixed = true;
+    for (std::size_t frame = 0; frame < 4; ++frame)
+    {
+        mixed = mixed && frames[0][frame][0] == frames[1][frame][0] && frames[0][frame][1] == frames[2][frame][1];
+    }
+    XSFLIB_CHECK(mixed);
+    XSFLIB_CHECK(frames[0][2][0] != frames[0][1][0] && frames[0][3][0].back() == frames[0][3][0].front());
+    XSFLIB_CHECK(frames[0][4][0] == frames[3][4][0] && frames[0][4][0][0] != 0);
+    const std::vector<int16_t>& right = frames[0][4][1];
+    XSFLIB_CHECK(std::all_of(right.begin(), right.end(), [](int16_t s) { return s == 0; }));
+}
+
+void TestRendererSplitterPools()
+{
+    // The renderer takes the splitter and the destinations that were freed first. A splitter that needs more
+    // destinations than are free isn't taken. The enhanced mode has no splitters.
+    audio::RendererParameter parameter = OneVoice::Parameter(0);
+    audio::Renderer renderer(parameter);
+    const int first = renderer.AcquireSplitter(48000, 1, 2);
+    const int second = renderer.AcquireSplitter(48000, 1, 2);
+    const int none = renderer.AcquireSplitter(48000, 1, 1);
+    renderer.ReleaseSplitter(first);
+    const int again = renderer.AcquireSplitter(48000, 2, 2);
+    renderer.ReleaseSplitter(second);
+    const int last = renderer.AcquireSplitter(48000, 2, 2);
+
+    parameter.enhanced = true;
+    audio::Renderer enhanced(parameter);
+    const int voice = enhanced.AcquireVoiceSlot(48000, 1, audio::SampleFormat::kPcmInt16, 0, nullptr);
+    const int splitter = enhanced.AcquireSplitter(48000, 1, 1);
+    const bool refused = !ErrorOf<std::logic_error>([&] { enhanced.SetVoiceSplitter(voice, splitter); }).empty();
+
+    XSFLIB_CHECK(first == 0 && second == 1 && none == audio::Renderer::kNoSplitter);
+    XSFLIB_CHECK(again == audio::Renderer::kNoSplitter && last == 0);
+    XSFLIB_CHECK(refused);
+}
+
+void TestRendererEnhancedUpsampler()
+{
+    // The enhanced mode has no upsampler. A device sink at 32 kHz is refused. One at 48 kHz is taken.
+    audio::RendererParameter parameter = OneVoice::Parameter(0);
+    parameter.enhanced = true;
+    const std::array<int, 2> inputs = {0, 1};
+    audio::Renderer at_48(parameter);
+    const bool taken = ErrorOf<std::logic_error>([&] { at_48.AddDeviceSink(inputs); }).empty();
+    parameter.sample_rate = 32000;
+    audio::Renderer at_32(parameter);
+    const bool refused = !ErrorOf<std::logic_error>([&] { at_32.AddDeviceSink(inputs); }).empty();
+
+    XSFLIB_CHECK(taken && at_48.DeviceOutputFloat().size() == 2 * 240);
+    XSFLIB_CHECK(refused);
+}
+
+// The device's left channel over `frames` frames of a voice that plays `buffers`, each sample of whose wave is 100
+// times its place. `behavior` is the voice's behaviour. The samples played, as each update reports them, go to
+// `played`.
+std::vector<int16_t> PlayBuffers(std::span<const audio::WaveBufferInfo> buffers, int frames,
+                                 const audio::VoiceBehavior& behavior = {}, std::vector<uint64_t>* played = nullptr)
+{
+    OneVoice one;
+    one.samples.clear();
+    for (int i = 0; i < kFrame * 8; ++i)
+    {
+        const auto value = static_cast<uint16_t>(100 * i);
+        one.samples.push_back(static_cast<uint8_t>(value & 0xFF));
+        one.samples.push_back(static_cast<uint8_t>(value >> 8));
+    }
+    one.renderer.ReleaseVoiceSlot(one.voice);
+    one.voice = one.renderer.AcquireVoiceSlot(48000, 1, audio::SampleFormat::kPcmInt16, 0, nullptr, behavior);
+    one.renderer.SetVoiceDestination(one.voice, audio::Renderer::kFinalMix);
+    one.renderer.SetVoiceMixVolume(one.voice, 1.0f, 0, 0);
+    for (audio::WaveBufferInfo buffer : buffers)
+    {
+        buffer.buffer = one.samples;
+        one.renderer.AppendWaveBuffer(one.voice, buffer);
+    }
+    one.renderer.SetVoicePlayState(one.voice, audio::PlayState::kStarted);
+
+    std::vector<int16_t> left;
+    for (int frame = 0; frame < frames; ++frame)
+    {
+        const std::vector<int16_t> next = NextLeft(one.renderer);
+        left.insert(left.end(), next.begin(), next.end());
+        if (played != nullptr)
+        {
+            played->push_back(one.renderer.GetVoicePlayedSampleCount(one.voice));
+        }
+    }
+
+    return left;
+}
+
+void TestRendererLoopFields()
+{
+    // A buffer with its loop fields plays its range once, then its loop range as many more times as its loop count
+    // gives: as the same ranges appended one after another. A loop count of -1 over the buffer's range loops as a
+    // buffer without the fields does. With the voice's behaviour, the samples played start again from 0 at each loop.
+    audio::WaveBufferInfo once;
+    once.start = 0;
+    once.end = kFrame * 2;
+    once.loop = true;
+    once.loop_fields = true;
+    once.loop_start = kFrame;
+    once.loop_end = kFrame * 2;
+    once.loop_count = 1;
+    audio::WaveBufferInfo whole;
+    whole.start = 0;
+    whole.end = kFrame * 2;
+    audio::WaveBufferInfo tail = whole;
+    tail.start = kFrame;
+    const audio::WaveBufferInfo kOnce[] = {once};
+    const audio::WaveBufferInfo kAppended[] = {whole, tail};
+    const audio::WaveBufferInfo kWhole[] = {whole};
+
+    audio::WaveBufferInfo endless = once;
+    endless.loop_start = 0;
+    endless.loop_count = -1;
+    audio::WaveBufferInfo plain = whole;
+    plain.loop = true;
+    const audio::WaveBufferInfo kEndless[] = {endless};
+    const audio::WaveBufferInfo kPlain[] = {plain};
+
+    std::vector<uint64_t> counted;
+    std::vector<uint64_t> reset;
+    const std::vector<int16_t> looped = PlayBuffers(kPlain, 6, {}, &counted);
+    PlayBuffers(kPlain, 6, {.reset_played_at_loop = true}, &reset);
+
+    XSFLIB_CHECK(PlayBuffers(kOnce, 5) == PlayBuffers(kAppended, 5));
+    XSFLIB_CHECK(PlayBuffers(kOnce, 5) != PlayBuffers(kWhole, 5));
+    XSFLIB_CHECK(PlayBuffers(kEndless, 6) == looped);
+    XSFLIB_CHECK(counted == std::vector<uint64_t>({0, 0, 240, 480, 720, 960}));
+    XSFLIB_CHECK(reset == std::vector<uint64_t>({0, 0, 240, 0, 240, 0}));
+}
+
 // The output of a new reverb with `parameters`, for 64 frames (320 ms) from a click. The feedback lines' longest delays
 // reach 272 ms.
 std::vector<int32_t> I3dl2Click(const audio::I3dl2ReverbParameterSet& parameters)
@@ -575,6 +803,35 @@ std::vector<int32_t> I3dl2Click(float density)
     parameters.dry_gain = 1.0f;
 
     return I3dl2Click(parameters);
+}
+
+// The device sink's upsampler from 32 to 48 kHz, against the arithmetic of SrcProcessFrame in Skyward Sword HD's sdk:
+// an impulse comes out 10 inputs later, at the first of a cycle's three outputs. Its neighbours take W4[0] and W2[1],
+// rounded down, and the first outputs take the tables' last taps. A constant input comes out unchanged.
+void TestUpsampler()
+{
+    audio::Upsampler state;
+    std::vector<int32_t> input(160);
+    input[0] = 16384;
+    std::vector<int32_t> output(240);
+    audio::UpsampleFrame(state, input, output);
+    const std::vector<int32_t> around(output.begin() + 13, output.begin() + 18);
+    Check(around == std::vector<int32_t>{-3140, 6647, 16384, 6647, -3140}, "an impulse 10 inputs later");
+    Check(output[0] == 0 && output[1] == -2 && output[2] == 8, "the first outputs take W2[9] and W4[8]");
+
+    audio::Upsampler steady;
+    const std::vector<int32_t> constant(160, 1000);
+    bool unchanged = true;
+    for (int frame = 0; frame < 3; frame++)
+    {
+        audio::UpsampleFrame(steady, constant, output);
+        if (frame > 0)
+        {
+            unchanged = unchanged && std::all_of(output.begin(), output.end(), [](int32_t x) { return x == 1000; });
+        }
+    }
+
+    Check(unchanged, "a constant input comes out unchanged");
 }
 
 void TestI3dl2NegativeDelay()
@@ -631,6 +888,11 @@ int main()
     TestRendererRestoreMuted();
     TestRendererMeters();
     TestRendererMixPeaks();
+    TestRendererSplitter();
+    TestRendererSplitterPools();
+    TestRendererEnhancedUpsampler();
+    TestRendererLoopFields();
+    TestUpsampler();
     TestI3dl2NegativeDelay();
     TestI3dl2Presets();
 

@@ -15,6 +15,8 @@
 namespace ntdlib::rvl::ax
 {
 
+class VoiceLayer;
+
 struct Voice
 {
     // Called when AX takes the voice away. AX does this in two cases: to free the voice for one of higher priority
@@ -23,10 +25,12 @@ struct Voice
     using Callback = std::function<void(Voice* voice)>;
 
     // AXSetVoiceState (main.dol 0x80107374). Stopping a running voice fades out the last samples it added to the mix.
+    // For a voice of a layer (System::UseLayer), the layer sets the state (VoiceLayer::SetVoiceState).
     void SetState(VoiceState state);
 
     // AXSetVoiceAddr (0x801073e4). For PCM it also sets the ADPCM block to the identity: no coefficients and a gain of
-    // 0x800 (PCM16) or 0x100 (PCM8).
+    // 0x800 (PCM16) or 0x100 (PCM8). A voice of a layer takes the addresses alone, and the end address as `loop_end`
+    // too, with no sync bits.
     void SetAddr(const PbAddr& address);
 
     bool IsRunning() const
@@ -44,6 +48,11 @@ struct Voice
     bool depop = false;           // + 0x20
     ntdlib::PAddr itd_buffer = 0; // + 0x24
     Pb pb;                        // + 0x28
+
+    // For a voice of a layer: the layer, and the end of the loop for the layer's wave buffers. Skyward Sword HD keeps
+    // the end after the PB's addresses (the record's + 0xe8).
+    VoiceLayer* layer = nullptr;
+    uint32_t loop_end = 0;
 };
 
 using ntdlib::ax::LpfCoefs;

@@ -1275,11 +1275,11 @@ std::vector<std::vector<int16_t>> FramesOf(snd::ArchiveModel& model, int from, i
     return frames;
 }
 
-// The volumes that a game's code sets on a stream's tracks through the sound's handle (R-540). UpdateVoiceParams
-// multiplies the volume of each track's voices by the track's volume (0x022B5024). The default tracks, the mask of
-// every track and the mask of the two tracks alone play the same frames: a bit past the tracks changes nothing. A track
-// that the start leaves out plays as a track whose volume in the archive is 0, and the other track plays on. The start
-// of an info takes the mask too. A later volume below 0 plays at 0, and one of 0.5 plays at half the level
+// The volumes that a game's code sets on a stream's tracks through the sound's handle. UpdateVoiceParams multiplies the
+// volume of each track's voices by the track's volume (0x022B5024). The default tracks, the mask of every track and the
+// mask of the two tracks alone play the same frames: a bit past the tracks changes nothing. A track that the start
+// leaves out plays as a track whose volume in the archive is 0, and the other track plays on. The start of an info
+// takes the mask too. A later volume below 0 plays at 0, and one of 0.5 plays at half the level
 // (StreamSound::SetTrackVolume, 0x022C2814). A snapshot keeps the tracks' volumes.
 void TestStreamTrackVolumes()
 {

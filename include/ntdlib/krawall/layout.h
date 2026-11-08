@@ -66,8 +66,8 @@ struct FreeSpace
     // 0xFF or of zeros at the ROM's end, on a multiple of 256 bytes, and past every byte of that run that the player
     // reads. Without such a run, it lies at the ROM's end, on a multiple of 4 bytes. It can lie past the ROM's end.
     // It lies past the bytes past the ROM's end that the player reads, as it does the bytes of the run: an entry of
-    // the game's table of samples near the ROM's end, for one of an instrument's notes that no row plays, can lie
-    // there.
+    // the game's table of samples near the ROM's end can lie there. It can be the entry for one of an instrument's
+    // notes that no row plays, or for a note past the instrument's map.
     uint32_t start = 0;
     uint8_t padding = 0xFF;   // what fills the bytes that the ROM grows by, up to a sequence
     std::vector<Span> filler; // FillerRuns
@@ -99,8 +99,10 @@ struct Layout
 // reads them without keeping them as data, when their encoding gives their bytes back, and when their bytes lie in the
 // ROM, clear of every other sequence's and of the player's other data: the tables of modules and of what the game
 // plays, the modules' headers, the samples and instruments that their rows name, and the player's tables of waves,
-// periods, fine tunes and linear frequencies. A sequence piece's room is the size of its bytes. A ROM without such a
-// sequence becomes one run.
+// periods, fine tunes and linear frequencies. Through its sample's relative note, a note without an instrument can
+// reach past an XM instrument's map of 96 notes. A note off with an instrument reads past the map too. The halfwords
+// that such notes read there, and the samples that they name, count as the player's data too. A sequence piece's room
+// is the size of its bytes. A ROM without such a sequence becomes one run.
 Layout Cut(const Rom& rom, const DriverInfo& info);
 
 // The ROM's bytes from its pieces and its fields. See the top of this file for where each sequence goes. Throws

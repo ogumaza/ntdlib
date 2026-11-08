@@ -11,6 +11,7 @@
 #include <numbers>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "seqlib/midi/recorder.h"
@@ -1156,6 +1157,15 @@ int SongVolume(std::span<const uint8_t> image, const LibultraProfile& profile, s
     return xsflib::LoadBe16(image.data() + place);
 }
 
+// The volume that Hudson's sound code gives the player for a song's volume byte v, read as signed: (v << 8) + 0xFF, or
+// nothing for v <= 0. In Eleven Beat, the function at 0x80004268 reads the byte from the song's record, and the
+// function at 0x80003358 makes the volume.
+int HudsonVolume(uint8_t byte)
+{
+    const int value = static_cast<int8_t>(byte);
+    return value > 0 ? (value << 8) + 0xFF : 0;
+}
+
 } // namespace
 
 std::shared_ptr<const Wave> DecodeWave(std::span<const uint8_t> bytes, const n64::VadpcmBook* book,
@@ -1390,7 +1400,15 @@ std::unique_ptr<LibultraGame> LibultraGame::Open(std::span<const uint8_t> image,
     }
     else
     {
-        const n64::SeqFile sequences = n64::SeqFile::Parse(image.subspan(game->profile_.sequences));
+        const std::span<const uint8_t> file = image.subspan(game->profile_.sequences);
+        const bool hudson = game->profile_.hudson_sequences;
+        const n64::SeqFile sequences =
+            n64::SeqFile::Parse(file, hudson ? n64::kHudsonSeqFileRevision : n64::kSeqFileRevision);
+        if (hudson)
+        {
+            game->records_ = n64::ReadHudsonRecords(file);
+        }
+
         for (const n64::SeqFile::Entry& entry : sequences.Entries())
         {
             const std::span<const uint8_t> bytes = image.subspan(game->profile_.sequences + entry.offset, entry.length);
@@ -1398,37 +1416,68 @@ std::unique_ptr<LibultraGame> LibultraGame::Open(std::span<const uint8_t> image,
         }
     }
 
-    game->file_ = n64::BankFile::Parse(image.subspan(game->profile_.bank));
-    if (game->profile_.program_bend_range != 0)
+    game->banks_.push_back(game->ReadBanks(game->profile_.bank));
+    for (const LibultraSongSet& set : game->profile_.other_sets)
     {
-        for (const n64::Bank& bank : game->file_.banks)
+        game->banks_.push_back(game->ReadBanks(set.bank));
+    }
+
+    for (std::size_t i = 0; i < game->records_.size(); i++)
+    {
+        if (game->records_[i].bank >= game->banks_[0].file.banks.size())
+        {
+            throw xsflib::FormatError("song " + std::to_string(i) + " plays bank " +
+                                      std::to_string(game->records_[i].bank) + ", which the bank file doesn't hold");
+        }
+    }
+
+    return game;
+}
+
+LibultraGame::Banks LibultraGame::ReadBanks(std::size_t offset) const
+{
+    Banks banks;
+    banks.file = n64::BankFile::Parse(image_.subspan(offset));
+    if (profile_.program_bend_range != 0)
+    {
+        for (const n64::Bank& bank : banks.file.banks)
         {
             for (const int32_t object : bank.instruments)
             {
                 if (object != n64::kNoObject)
                 {
-                    game->file_.instruments[static_cast<std::size_t>(object)].bend_range =
-                        static_cast<int16_t>(game->profile_.program_bend_range);
+                    banks.file.instruments[static_cast<std::size_t>(object)].bend_range =
+                        static_cast<int16_t>(profile_.program_bend_range);
                 }
             }
         }
     }
 
-    const std::optional<std::size_t> samples = n64::FindBankSamples(image, game->file_);
+    const std::optional<std::size_t> samples = n64::FindBankSamples(image_, banks.file);
     if (!samples)
     {
         throw xsflib::FormatError("the place of the bank's samples can't be found");
     }
 
-    game->samples_ = *samples;
+    banks.samples = *samples;
 
-    return game;
+    return banks;
+}
+
+std::size_t LibultraGame::SetSize(const LibultraSongSet& set) const
+{
+    const std::size_t first = std::min(set.first_song, songs_.size());
+    return set.song_count != 0 ? std::min(set.song_count, songs_.size() - first) : songs_.size() - first;
 }
 
 std::vector<ntdlib::sequence_export::Sequence> LibultraGame::Sequences() const
 {
+    // The songs that the profile lists, by their numbers in the file.
+    const std::size_t first = std::min(profile_.first_song, songs_.size());
+    const std::size_t end =
+        profile_.song_count != 0 ? std::min(first + profile_.song_count, songs_.size()) : songs_.size();
     std::vector<ntdlib::sequence_export::Sequence> sequences;
-    for (std::size_t i = 0; i < songs_.size(); i++)
+    for (std::size_t i = first; i < end; i++)
     {
         sequences.push_back({i, SequenceName(i, profile_.names)});
     }
@@ -1439,40 +1488,78 @@ std::vector<ntdlib::sequence_export::Sequence> LibultraGame::Sequences() const
         sequences.push_back({index++, SequenceName(change.song, profile_.names, change.beside)});
     }
 
+    for (const LibultraSongSet& set : profile_.other_sets)
+    {
+        for (std::size_t i = 0; i < SetSize(set); i++)
+        {
+            sequences.push_back({index++, SequenceName(set.first_song + i, profile_.names, set.name)});
+        }
+    }
+
     return sequences;
 }
 
-std::shared_ptr<const Wave> LibultraGame::WaveAt(int32_t index)
+std::shared_ptr<const Wave> LibultraGame::WaveAt(Banks& banks, int32_t index) const
 {
-    const auto found = waves_.find(index);
-    if (found != waves_.end())
+    const auto found = banks.waves.find(index);
+    if (found != banks.waves.end())
     {
         return found->second;
     }
 
-    const n64::BankWave& wave = file_.waves[static_cast<std::size_t>(index)];
+    const n64::BankFile& file = banks.file;
+    const n64::BankWave& wave = file.waves[static_cast<std::size_t>(index)];
     const n64::BankLoop* loop =
-        wave.loop == n64::kNoObject ? nullptr : &file_.loops[static_cast<std::size_t>(wave.loop)];
+        wave.loop == n64::kNoObject ? nullptr : &file.loops[static_cast<std::size_t>(wave.loop)];
     const n64::VadpcmBook* book =
-        wave.type == n64::kWaveVadpcm ? &file_.books.at(static_cast<std::size_t>(wave.book)).book : nullptr;
-    std::shared_ptr<const Wave> out = DecodeWave(image_.subspan(samples_ + wave.base, wave.length), book, loop,
+        wave.type == n64::kWaveVadpcm ? &file.books.at(static_cast<std::size_t>(wave.book)).book : nullptr;
+    std::shared_ptr<const Wave> out = DecodeWave(image_.subspan(banks.samples + wave.base, wave.length), book, loop,
                                                  HexName(wave.base), profile_.output_rate);
-    waves_[index] = out;
+    banks.waves[index] = out;
 
     return out;
 }
 
 Conversion LibultraGame::Convert(std::size_t index, const PerformOptions& options)
 {
-    // A rate change's track comes after the songs.
-    const LibultraRateChange* change = index < songs_.size() ? nullptr : &profile_.rate_changes[index - songs_.size()];
-    const std::size_t song_index = change != nullptr ? change->song : index;
+    // A rate change's track comes after the songs, and the other sets' songs after the rate changes.
+    const LibultraRateChange* change = nullptr;
+    std::size_t song_index = index;
+    std::size_t set_index = 0;
+    const char* beside = nullptr;
+    if (index >= songs_.size() && index - songs_.size() < profile_.rate_changes.size())
+    {
+        change = &profile_.rate_changes[index - songs_.size()];
+        song_index = change->song;
+        beside = change->beside;
+    }
+    else if (index >= songs_.size())
+    {
+        std::size_t place = index - songs_.size() - profile_.rate_changes.size();
+        for (const LibultraSongSet& set : profile_.other_sets)
+        {
+            set_index++;
+            if (place < SetSize(set))
+            {
+                song_index = set.first_song + place;
+                beside = set.name;
+                break;
+            }
+            place -= SetSize(set);
+        }
+    }
+
     const LibultraSong song = ReadSong(songs_.at(song_index));
+    Banks& banks = banks_.at(set_index);
+
+    // Hudson's sequence bank gives each song its bank and its volume.
+    const n64::HudsonSongRecord* record = records_.empty() ? nullptr : &records_.at(song_index);
+    const n64::Bank& bank = banks.file.banks.at(record != nullptr ? record->bank : 0);
 
     LibultraSettings settings;
     settings.player = profile_.player;
     settings.line_ramps = profile_.line_ramps;
-    settings.volume = SongVolume(image_, profile_, song_index);
+    settings.volume = record != nullptr ? HudsonVolume(record->volume) : SongVolume(image_, profile_, song_index);
     settings.oscillators = profile_.oscillators;
     settings.effect = profile_.effect;
     if (change != nullptr)
@@ -1480,7 +1567,7 @@ Conversion LibultraGame::Convert(std::size_t index, const PerformOptions& option
         settings.rate = change->rate;
     }
 
-    LibultraPerformance played = PerformLibultra(song, file_, file_.banks.at(0), settings, options);
+    LibultraPerformance played = PerformLibultra(song, banks.file, bank, settings, options);
     for (const int32_t instrument : played.instruments)
     {
         char name[32];
@@ -1489,16 +1576,16 @@ Conversion LibultraGame::Convert(std::size_t index, const PerformOptions& option
         Instrument preset;
         preset.name = name;
         std::vector<int32_t> waves;
-        preset.zones = LibultraZones(file_, instrument, settings, waves);
+        preset.zones = LibultraZones(banks.file, instrument, settings, waves);
         for (std::size_t i = 0; i < preset.zones.size(); i++)
         {
-            preset.zones[i].wave = WaveAt(waves[i]);
+            preset.zones[i].wave = WaveAt(banks, waves[i]);
         }
 
         played.performance.presets.push_back(std::move(preset));
     }
 
-    const std::string name = SequenceName(song_index, profile_.names, change != nullptr ? change->beside : nullptr);
+    const std::string name = SequenceName(song_index, profile_.names, beside);
     return BuildFiles(std::move(played.performance), name, options.program);
 }
 

@@ -7,7 +7,9 @@
 // no release priority fix. A wave sound that lacks its note or its wave ends in its first update. A wave that doesn't
 // loop ends the sound in the frame after its voice ends, and a wave that loops plays on. A snapshot keeps the wave
 // sound's player. The expected values are the ones that NW4R SND's WsdPlayer and WsdFileReader give in the code of Wii
-// Sports, Mario Kart Wii and WarioWare: Smooth Moves (see wave_sound.h).
+// Sports, Mario Kart Wii and WarioWare: Smooth Moves (see wave_sound.h). Skyward Sword HD's mix for Dolby Pro Logic II
+// (CalcMix) matches the stereo mix in front for a pan between the sides. A pan beyond a side moves part of the voice to
+// the rear. A voice at the rear plays at half its pan.
 
 #include <cmath>
 #include <cstddef>
@@ -16,6 +18,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/testing/check.h"
@@ -23,6 +26,7 @@
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/snd/driver.h"
 #include "ntdlib/rvl/snd/engine.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/rvl/snd/wave_sound.h"
@@ -368,6 +372,50 @@ void CheckSnapshots()
 
 } // namespace
 
+void CheckDpl2Mix()
+{
+    namespace snd = ntdlib::rvl::snd;
+    using ntdlib::nwsnd::OutputMode;
+    const ntdlib::SndBuild build{.date = 20111007};
+    snd::MixInput input;
+    input.main_out_volume = 0.8f;
+    input.fx_send = {0.5f, 0.25f, 0.0f};
+    bool front = true;
+    for (const auto& [channels, pan] : {std::pair{1, 0.0f}, {1, 0.5f}, {1, -1.0f}, {1, 1.0f}, {2, 0.0f}})
+    {
+        input.channel_count = channels;
+        input.pan = pan;
+        for (int channel = 0; channel < channels; channel++)
+        {
+            const snd::AxVoice::MixParam stereo = snd::CalcMix(input, channel, build, OutputMode::kStereo);
+            const snd::AxVoice::MixParam dpl2 = snd::CalcMix(input, channel, build, OutputMode::kDpl2);
+            front &= dpl2.l == stereo.l && dpl2.r == stereo.r && dpl2.aux_a_l == stereo.aux_a_l &&
+                     dpl2.aux_a_r == stereo.aux_a_r && dpl2.aux_b_l == stereo.aux_b_l && dpl2.aux_b_r == stereo.aux_b_r;
+            front &= dpl2.s == 0 && dpl2.aux_a_s == 0 && dpl2.aux_b_s == 0 && dpl2.aux_c_l == 0 && dpl2.aux_c_r == 0 &&
+                     dpl2.aux_c_s == 0;
+        }
+    }
+    Check(front, "a voice panned between the sides plays in front at the stereo mix's volumes");
+
+    input.channel_count = 2;
+    input.pan = -0.5f;
+    const snd::AxVoice::MixParam stereo = snd::CalcMix(input, 0, build, OutputMode::kStereo);
+    const snd::AxVoice::MixParam dpl2 = snd::CalcMix(input, 0, build, OutputMode::kDpl2);
+    Check(dpl2.l < stereo.l && dpl2.s > 0 && dpl2.aux_a_s > 0 && dpl2.aux_c_l == 0,
+          "a channel beyond the left side moves part of its level to the rear left");
+
+    snd::MixInput rear;
+    rear.pan = 0.5f;
+    rear.surround_pan = 2.0f;
+    snd::MixInput narrower = rear;
+    narrower.pan = 0.25f;
+    narrower.surround_pan = 0.0f;
+    const snd::AxVoice::MixParam behind = snd::CalcMix(rear, 0, build, OutputMode::kDpl2);
+    const snd::AxVoice::MixParam ahead = snd::CalcMix(narrower, 0, build, OutputMode::kStereo);
+    Check(behind.l == 0 && behind.r == 0 && behind.s == ahead.l && behind.aux_c_l == ahead.r,
+          "a voice at the rear plays at half its pan, on the rear channels alone");
+}
+
 int main()
 {
     const auto tests = []
@@ -378,6 +426,7 @@ int main()
         CheckEnds();
         CheckMissing();
         CheckSnapshots();
+        CheckDpl2Mix();
     };
 
     return xsflib::testing::RunTest("rvl_snd", tests);

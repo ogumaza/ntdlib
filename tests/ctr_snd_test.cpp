@@ -700,9 +700,9 @@ std::vector<int16_t> PlayStream(const sar::SoundArchive& archive, const sar::Sou
     return out;
 }
 
-// The volumes that a game's code sets on a stream's tracks through the sound's handle (R-540). With the mask of every
-// track, sound 9 plays as Teakra played it before the tracks' volumes: its first 2.5 s hash to the record. The start of
-// an info plays the same. Of a sound whose two tracks play a channel each, a track that the start leaves out plays as a
+// The volumes that a game's code sets on a stream's tracks through the sound's handle. With the mask of every track,
+// sound 9 plays as Teakra played it before the tracks' volumes: its first 2.5 s hash to the record. The start of an
+// info plays the same. Of a sound whose two tracks play a channel each, a track that the start leaves out plays as a
 // track whose volume in the archive is 0, and the other track plays on. A later volume below 0 plays at 0.
 void TestStreamTrackVolumes(const sar::SoundArchive& archive)
 {

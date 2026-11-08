@@ -18,9 +18,11 @@
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/voice.h"
+#include "ntdlib/sound_build.h"
 #include "ntdlib/types.h"
 
 namespace ntdlib::rvl::snd
@@ -203,6 +205,24 @@ private:
     MixParam mix_prev_;                                  // + 0x1e
     Callback callback_;                                  // + 0x38
 };
+
+// What a channel's mix comes from (Voice::CalcMixParam): the voice's main output volume, its main send and its sends to
+// the aux buses, each held to 0 and 1, its pan and surround pan, and its wave's channels, pan mode and pan curve.
+struct MixInput
+{
+    float main_out_volume = 1.0f;
+    float main_send = 1.0f;
+    std::array<float, ax::kAuxBusCount> fx_send{};
+    float pan = 0.0f;
+    float surround_pan = 0.0f;
+    int channel_count = 1;
+    PanMode pan_mode = PanMode::kDual;
+    uint8_t pan_curve = 0;
+};
+
+// The mix of channel `channel` on the main line in `build`'s CalcMixParam (0x8004d590), in AxManager's output mode
+// `mode` (see Engine::GetOutputMode).
+AxVoice::MixParam CalcMix(const MixInput& input, int channel, const SndBuild& build, ntdlib::nwsnd::OutputMode mode);
 
 // The pool of AxVoices (AxVoiceManager): 96 for AX's voices and 16 more. The extra ones let a voice that AX has dropped
 // wait to be freed while its AX voice is reused.

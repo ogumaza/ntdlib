@@ -251,18 +251,6 @@ constexpr GameMode kGameModes[] = {
     // at 0x080039E6: 8 DirectSound channels, a master volume of 10 and 13379 Hz. Its call with 10512 Hz at 0x08004112
     // finds SoundInfo locked in an mGBA run, and the rate stays.
     {"ASYE", 0x00D4A880},
-    // These games set the mode after the init with `movs r0, #imm; lsls r0, r0, #n`, which FindGameSoundMode() doesn't
-    // read. The sound init of Sugar Sugar Rune: Heart ga Ippai! Moegi Gakuen, at 0x080064E4, sets a master volume of 6
-    // at 0x080064FE. The sound init of Futari wa Precure Max Heart: Maji Maji! Fight de IN Janai, at 0x08004EC4, sets 6
-    // at 0x08004EDE. The sound init of Futari wa Precure: Arienaai Yume no Kuni wa Daimeikyuu, at 0x0800F9A8, sets 8
-    // DirectSound channels at 0x0800F9BA and a master volume of 8 at 0x0800F9C2. The Cheetah Girls' sound init at
-    // 0x08035EE0 sets 8 channels at 0x08035EEA. The Proud Family's sound init at 0x080078B0 sets 6 at 0x080078BA. A
-    // routine of that game sets 12 at 0x080DB5E8 for a scene, and 6 again at 0x080DB6F8.
-    {"B4LJ", 0x00006000},
-    {"BFMJ", 0x00006000},
-    {"BFPJ", 0x00008800},
-    {"BCQE", 0x00000800},
-    {"BD7E", 0x00000600},
     // Strawberry Shortcake: Sweet Dreams' music routine at 0x0800172C sets 6 channels at 0x08001760 each time it starts
     // a song. The init sets 8.
     {"B4TE", 0x00000600},
@@ -328,11 +316,30 @@ constexpr SongSettingRow kSongSettings[] = {
 constexpr uint32_t kKururinChannels = 0x0801EF6C;
 constexpr int kKururinSongs = 24;
 
-// Finds the mode that a game's code sets straight after the init: `bl m4aSoundInit; ldr r0, =mode; bl m4aSoundMode`.
-// The init's call of m4aSoundMode with `init_mode` gives the two routines. Returns 0 if there's none. Guilty Gear X:
-// Advance Edition sets a master volume of 8 that way, at 0x0802C230, and F-Zero: GP Legend sets 6 DirectSound channels,
-// at 0x08000E34.
-uint32_t FindGameSoundMode(const Rom& rom, uint32_t init_mode)
+// The most calls of other routines that FindGameSoundModes() steps over between a game's call of m4aSoundInit and its
+// first call of m4aSoundMode.
+constexpr int kCallsBeforeMode = 2;
+
+// Returns true if the Thumb instruction `lsls r0, r0, #n` with an n of 1 or more is `code`.
+bool IsShiftOfR0(uint16_t code)
+{
+    return (code & 0xF83F) == 0 && code >> 6 != 0;
+}
+
+// Finds the modes that a game's code sets straight after the init, in the order of its calls of m4aSoundMode. After
+// `bl m4aSoundInit`, the code may call other routines. Then each call of m4aSoundMode takes its mode from
+// `ldr r0, =mode` or from `movs r0, #imm; lsls r0, r0, #n` just before it. The init's call of m4aSoundMode with
+// `init_mode` gives the two routines. Returns none if there's no such call.
+//
+// Guilty Gear X: Advance Edition sets a master volume of 8 with a literal, at 0x0802C230, and F-Zero: GP Legend sets 6
+// DirectSound channels, at 0x08000E34. The sound init of Sugar Sugar Rune: Heart ga Ippai! Moegi Gakuen, at 0x080064E4,
+// calls another routine after the init. It then sets 12 channels at 0x080064F6 and a master volume of 6 at 0x080064FE,
+// with movs and lsls. The sound init of Futari wa Precure Max Heart: Maji Maji! Fight de IN Janai, at 0x08004EC4, does
+// the same at 0x08004ED6 and 0x08004EDE. The sound init of Futari wa Precure: Arienaai Yume no Kuni wa Daimeikyuu, at
+// 0x0800F9A8, sets 8 channels at 0x0800F9BA and a master volume of 8 at 0x0800F9C2. The Cheetah Girls' sound init at
+// 0x08035EE0 sets 8 channels at 0x08035EEA. The Proud Family's sound init at 0x080078B0 sets 6 at 0x080078BA. A routine
+// of that game sets 12 at 0x080DB5E8 for a scene, and 6 again at 0x080DB6F8.
+std::vector<uint32_t> FindGameSoundModes(const Rom& rom, uint32_t init_mode)
 {
     uint32_t init_call = 0;
     uint32_t sound_mode = 0;
@@ -347,27 +354,70 @@ uint32_t FindGameSoundMode(const Rom& rom, uint32_t init_mode)
     }
     if (!init_call)
     {
-        return 0;
+        return {};
     }
 
-    for (uint32_t at = kRomBase; at + 10 <= rom.End(); at += 2)
+    for (uint32_t at = kRomBase; at + 4 <= rom.End(); at += 2)
     {
-        if (!IsBl(rom, at) || (rom.U16(at + 4) >> 8) != 0x48 || !IsBl(rom, at + 6) ||
-            BlTarget(rom, at + 6) != sound_mode)
+        if (!IsBl(rom, at))
         {
             continue;
         }
 
         const uint32_t init = BlTarget(rom, at);
-        const uint32_t literal = ((at + 8) & ~3u) + (rom.U16(at + 4) & 0xFFu) * 4;
-        if (init <= init_call && init_call - init < kInitReach && rom.Contains(literal, 4) &&
-            rom.U32(literal) >> 24 == 0)
+        if (init > init_call || init_call - init >= kInitReach)
         {
-            return rom.U32(literal);
+            continue;
+        }
+
+        std::vector<uint32_t> modes;
+        int calls = 0;
+        uint32_t next = at + 4;
+        while (next + 4 <= rom.End())
+        {
+            const uint16_t code = rom.U16(next);
+            uint64_t mode = 0;
+            uint32_t length = 0;
+            if ((code >> 8) == 0x48 && next + 6 <= rom.End() && IsBl(rom, next + 2) &&
+                BlTarget(rom, next + 2) == sound_mode)
+            {
+                const uint32_t literal = ((next + 4) & ~3u) + (code & 0xFFu) * 4;
+                if (!rom.Contains(literal, 4))
+                {
+                    break;
+                }
+
+                mode = rom.U32(literal);
+                length = 6;
+            }
+            else if ((code >> 8) == 0x20 && next + 8 <= rom.End() && IsShiftOfR0(rom.U16(next + 2)) &&
+                     IsBl(rom, next + 4) && BlTarget(rom, next + 4) == sound_mode)
+            {
+                mode = uint64_t(code & 0xFFu) << (rom.U16(next + 2) >> 6);
+                length = 8;
+            }
+            else if (modes.empty() && calls < kCallsBeforeMode && IsBl(rom, next) && BlTarget(rom, next) != sound_mode)
+            {
+                calls++;
+                next += 4;
+                continue;
+            }
+
+            if (!length || mode >> 24 != 0)
+            {
+                break;
+            }
+
+            modes.push_back(uint32_t(mode));
+            next += length;
+        }
+        if (!modes.empty())
+        {
+            return modes;
         }
     }
 
-    return 0;
+    return {};
 }
 
 // Applies the driver's mode setting, as m4aSoundMode does: each field that isn't 0 replaces the driver's setting.
@@ -716,7 +766,10 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         if (info.sound_mode)
         {
             ApplySoundMode(info.sound_mode, info);
-            ApplySoundMode(FindGameSoundMode(rom, info.sound_mode), info);
+            for (const uint32_t mode : FindGameSoundModes(rom, info.sound_mode))
+            {
+                ApplySoundMode(mode, info);
+            }
             for (const GameMode& row : kGameModes)
             {
                 if (rom.GameCode() == row.game_code)

@@ -331,7 +331,8 @@ struct Converter
     std::string program;        // the program's name. An input's output folder is <input>_<program> beside it.
     std::string version_line;   // what --version prints, such as "xyz2midi 1.0.0"
     std::string input_word;     // "archive" or "input", in the message for --output with several inputs
-    std::string folder_message; // follows an input's path when the input is a folder
+    std::string folder_message; // follows an input's path when the input is a folder that the program doesn't read
+    bool reads_folders = false; // the program reads folders as inputs, such as the folder of a ROM set's chips
     std::string samples_folder; // the SFZ files' shared folder of samples, in the sfz folder
 
     // Prints the usage and options.
@@ -367,14 +368,32 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
                  std::vector<std::pair<std::filesystem::path, std::string>>& used_folders,
                  const Converter<Perform, Source, Conversion>& converter)
 {
-    const std::filesystem::path input = PathFromUtf8(path);
+    std::filesystem::path input = PathFromUtf8(path);
 
     // Some systems allow opening directories as empty files. Report those explicitly.
     std::error_code error;
     if (std::filesystem::is_directory(input, error))
     {
-        std::fprintf(stderr, "%s%s\n", path.c_str(), converter.folder_message.c_str());
-        return 1;
+        if (!converter.reads_folders)
+        {
+            std::fprintf(stderr, "%s%s\n", path.c_str(), converter.folder_message.c_str());
+            return 1;
+        }
+
+        // A folder's path may end in a separator, "." or "..". Its name and its output folder come from the folder
+        // itself.
+        if (!input.has_filename())
+        {
+            input = input.parent_path();
+        }
+        if (input.filename() == "." || input.filename() == "..")
+        {
+            input = std::filesystem::absolute(input, error).lexically_normal();
+            if (!input.has_filename())
+            {
+                input = input.parent_path();
+            }
+        }
     }
 
     const std::string name = Utf8(input.filename());

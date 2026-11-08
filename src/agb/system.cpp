@@ -3,12 +3,15 @@
 #include "ntdlib/agb/system.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ntdlib::agb
 {
@@ -116,6 +119,69 @@ void System::Store(uint32_t address, int size, uint32_t value)
 void System::HoldVcount(std::optional<int> line)
 {
     held_vcount_ = line;
+}
+
+System::Snapshot System::Save(const Snapshot* previous) const
+{
+    Snapshot snapshot;
+    size_t index = 0;
+    const auto add = [&](const std::vector<uint8_t>& memory)
+    {
+        for (size_t at = 0; at < memory.size(); at += kPageSize, index++)
+        {
+            const size_t size = std::min<size_t>(kPageSize, memory.size() - at);
+            const auto first = memory.begin() + ptrdiff_t(at);
+            if (previous && index < previous->pages_.size() && previous->pages_[index]->size() == size &&
+                std::equal(first, first + ptrdiff_t(size), previous->pages_[index]->begin()))
+            {
+                snapshot.pages_.push_back(previous->pages_[index]);
+            }
+            else
+            {
+                snapshot.pages_.push_back(std::make_shared<const std::vector<uint8_t>>(first, first + ptrdiff_t(size)));
+            }
+        }
+    };
+
+    add(ewram_);
+    add(iwram_);
+    add(io_);
+    for (int r = 0; r < 13; r++)
+    {
+        snapshot.registers_[size_t(r)] = cpu_->Reg(r);
+    }
+    snapshot.registers_[13] = cpu_->Reg(14);
+    snapshot.vcount_ = vcount_;
+    snapshot.held_vcount_ = held_vcount_;
+    snapshot.unmapped_ = unmapped_;
+
+    return snapshot;
+}
+
+void System::Restore(const Snapshot& snapshot)
+{
+    size_t index = 0;
+    const auto take = [&](std::vector<uint8_t>& memory)
+    {
+        for (size_t at = 0; at < memory.size(); at += kPageSize, index++)
+        {
+            const std::vector<uint8_t>& page = *snapshot.pages_.at(index);
+            std::copy(page.begin(), page.end(), memory.begin() + ptrdiff_t(at));
+        }
+    };
+
+    take(ewram_);
+    take(iwram_);
+    take(io_);
+    cpu_->SetCpsr(uint32_t(arm::Mode::kSystem) | arm::psr::kI | arm::psr::kF);
+    for (int r = 0; r < 13; r++)
+    {
+        cpu_->SetReg(r, snapshot.registers_[size_t(r)]);
+    }
+    cpu_->SetReg(14, snapshot.registers_[13]);
+    vcount_ = snapshot.vcount_;
+    held_vcount_ = snapshot.held_vcount_;
+    unmapped_ = snapshot.unmapped_;
 }
 
 uint64_t System::UnmappedAccesses() const
@@ -284,7 +350,20 @@ bool System::Swi(arm::Cpu& cpu, uint32_t comment)
     case 0x0C: // CpuFastSet
         CpuSet(cpu.Reg(0), cpu.Reg(1), cpu.Reg(2), number == 0x0C);
         return true;
+    case 0x11: // LZ77UnCompWram
+    case 0x12: // LZ77UnCompVram: the same bytes, written in halfwords
+        if (!Lz77(cpu.Reg(0), cpu.Reg(1)))
+        {
+            failure_ = "the BIOS's LZ77UnComp was called on data that isn't LZ77";
+            return false;
+        }
+        return true;
     default:
+        if (on_swi && on_swi(number))
+        {
+            return true;
+        }
+
         failure_ = "BIOS call " + std::to_string(number) + " isn't modelled";
         return false;
     }
@@ -309,6 +388,45 @@ void System::CpuSet(uint32_t source, uint32_t destination, uint32_t control, boo
     {
         Store(destination + i * uint32_t(unit), unit, fill ? first : Load(source + i * uint32_t(unit), unit));
     }
+}
+
+bool System::Lz77(uint32_t source, uint32_t destination)
+{
+    // The header's bits 4 to 7 give the type, 1 for LZ77, and bits 8 to 31 the decompressed size. Then each flag byte
+    // tells, from bit 7 down, whether each of the next 8 units is a byte to copy (0) or a back-reference (1). A
+    // back-reference's two bytes give its length less 3 in the first's top 4 bits, and its distance less 1 in the rest.
+    const uint32_t header = Load(source, 4);
+    if ((header >> 4 & 0xF) != 1)
+    {
+        return false;
+    }
+
+    const uint32_t size = header >> 8;
+    uint32_t in = source + 4;
+    uint32_t out = 0;
+    while (out < size)
+    {
+        const uint32_t flags = Load(in++, 1);
+        for (int bit = 7; bit >= 0 && out < size; bit--)
+        {
+            if (!(flags >> bit & 1))
+            {
+                Store(destination + out++, 1, Load(in++, 1));
+                continue;
+            }
+
+            const uint32_t first = Load(in++, 1);
+            const uint32_t second = Load(in++, 1);
+            const uint32_t length = (first >> 4) + 3;
+            const uint32_t distance = ((first & 0xF) << 8 | second) + 1;
+            for (uint32_t i = 0; i < length && out < size; i++, out++)
+            {
+                Store(destination + out, 1, Load(destination + out - distance, 1));
+            }
+        }
+    }
+
+    return true;
 }
 
 } // namespace ntdlib::agb

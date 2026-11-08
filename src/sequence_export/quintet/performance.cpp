@@ -100,6 +100,7 @@ Performance PerformSong(const Rom& rom, const DriverInfo& info, int song, const 
         stretch.last = s.last - perf.base;
         stretch.entry = s.loop ? Entry::kLoop : Entry::kOpen;
         stretch.depth = uint8_t(s.depth);
+        stretch.note_wait = true;
         stretches.push_back(stretch);
     }
 

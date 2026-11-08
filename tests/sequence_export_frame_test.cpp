@@ -425,6 +425,44 @@ void TestBatchInputs()
     Check(fake.before_inputs == 5, "the hook runs for each run with inputs, after the options are checked");
 }
 
+void TestFolderInputs()
+{
+    // A program that reads folders gets them as inputs. A folder's output goes beside it, with or without a separator,
+    // "." or ".." at the end of its path.
+    const TempFolder folder("sequence_export_frame_test");
+    const fs::path set = folder.Path() / "set";
+    fs::create_directories(set / "sub");
+    WriteFile(set / "names.txt", std::string("One\n"));
+    FakeConverter fake;
+    fake.converter.reads_folders = true;
+    const auto open = fake.converter.open;
+    fake.converter.open = [open](const fs::path& input, const std::string& name)
+    {
+        return open(input / "names.txt", name);
+    };
+
+    const int separator = Run({"fake", "--quiet", Utf8(set) + "/"}, fake.converter);
+    const bool beside = fs::exists(folder.Path() / "set_fake" / "One.mid") && !fs::exists(set / "_fake");
+    fs::remove_all(folder.Path() / "set_fake");
+    const int dot = Run({"fake", "--quiet", Utf8(set) + "/."}, fake.converter);
+    const bool dot_beside = fs::exists(folder.Path() / "set_fake" / "One.mid") && !fs::exists(set / "._fake");
+    fs::remove_all(folder.Path() / "set_fake");
+    const int dot_separator = Run({"fake", "--quiet", Utf8(set) + "/./"}, fake.converter);
+    const bool dot_separator_beside = fs::exists(folder.Path() / "set_fake" / "One.mid") && !fs::exists(set / "._fake");
+    fs::remove_all(folder.Path() / "set_fake");
+    const int parent = Run({"fake", "--quiet", Utf8(set / "sub") + "/.."}, fake.converter);
+    const bool parent_beside =
+        fs::exists(folder.Path() / "set_fake" / "One.mid") && !fs::exists(set / "sub" / ".._fake");
+    fs::remove_all(folder.Path() / "set_fake");
+    const int plain = Run({"fake", "--quiet", Utf8(set)}, fake.converter);
+
+    Check(plain == 0 && Text(ReadFile(folder.Path() / "set_fake" / "One.mid")) == "MIDI One", "a folder converts");
+    Check(separator == 0 && beside, "a folder's path that ends in a separator");
+    Check(dot == 0 && dot_beside, "a folder's path that ends in .");
+    Check(dot_separator == 0 && dot_separator_beside, "a folder's path that ends in . and a separator");
+    Check(parent == 0 && parent_beside, "a folder's path that ends in ..");
+}
+
 void TestOnlyPicksAPieceByItsLabels()
 {
     // A piece of several sequences answers --only to its name and to the label of each of its sequences.
@@ -551,6 +589,7 @@ int main()
     TestSwitchHasNoVoices();
     TestBatch();
     TestBatchInputs();
+    TestFolderInputs();
     TestOnlyPicksAPieceByItsLabels();
     TestOtherInputs();
     TestRunMain();

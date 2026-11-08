@@ -41,6 +41,13 @@ inline float CalcPanRatio(float pan, const PanInfo& info)
     return ntdlib::nwsnd::CalcPanRatio<ntdlib::nwsnd::RevolutionPolicy>(pan, info, ntdlib::nwsnd::OutputMode::kStereo);
 }
 
+// The ratio for the front at a surround pan of 0 (front) to 2 (rear), and for the rear at 2 less the surround pan, in
+// Skyward Sword HD's mix for Dolby Pro Logic II (main 0x102a7f8 to 0x102a874): the pan curve's ratio, held to 0 and 2.
+inline float CalcSurroundPanRatio(float span, const PanInfo& info)
+{
+    return ntdlib::nwsnd::CalcSurroundPanRatio<ntdlib::nwsnd::RevolutionPolicy>(span, info);
+}
+
 // The low-pass filter's cutoff in Hz for a scale of 0..1 in `build` (Util::CalcLpfFreq, 0x8004eb98):
 // 32000 * 2^(10 (scale - 1)). The game computes the power with its C library's pow in double precision. Builds from
 // November 2008 on take the cutoff from a table instead (SndBuild::SinceNovember2008). The Wii U's library reads the

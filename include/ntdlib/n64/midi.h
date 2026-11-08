@@ -13,7 +13,8 @@
 // (0x2D) holds a count, a running count and a 32-bit offset, and an end of track (0x2F) holds nothing. And a byte of
 // 0xFE starts a block code. 0xFE 0xFE stands for one byte of 0xFE. Otherwise a 16-bit distance back from the code's
 // first byte and a length follow, and the player reads that many raw bytes from there. Those bytes hold no further
-// codes. A block can reach back into earlier tracks.
+// codes. A block can reach back into earlier tracks. The player reads a loop end's six bytes as they stand: a 0xFE
+// among them starts no code.
 //
 // A loop end's offset leads back, in the file's bytes, from the end of the event to the bytes after its loop start.
 //

@@ -6,7 +6,8 @@
 // bytes. The bytes between two sequences are padding. Some of them hold stale bytes from the tool.
 //
 // Nintendo EAD's early sound engine uses the same layout for its files of sequences, banks and samples, with revisions
-// 3, 1 and 2 in place of "S1".
+// 3, 1 and 2 in place of "S1". Hudson's sound code reads a revision "S2" of the file, with a record for each sequence
+// after the table (see ReadHudsonRecords).
 //
 // The reader keeps every byte up to the end of the last sequence. The writer gives them back byte for byte.
 
@@ -24,6 +25,7 @@ constexpr uint16_t kSeqFileRevision = 0x5331; // "S1"
 constexpr uint16_t kEarlyBankFileRevision = 1;
 constexpr uint16_t kEarlySampleFileRevision = 2;
 constexpr uint16_t kEarlySequenceFileRevision = 3;
+constexpr uint16_t kHudsonSeqFileRevision = 0x5332; // "S2"
 
 class SeqFile
 {
@@ -58,5 +60,21 @@ private:
     std::vector<Entry> entries_;
     std::vector<uint8_t> bytes_;
 };
+
+// What Hudson's sequence bank of revision S2 gives a sequence.
+struct HudsonSongRecord
+{
+    friend bool operator==(const HudsonSongRecord&, const HudsonSongRecord&) = default;
+
+    uint8_t bank = 0;       // the index of the sequence's bank in the bank file
+    uint8_t volume = 0;     // the sequence's volume byte
+    uint32_t bank_file = 0; // the offset of the bank file from the start of the sequence bank
+};
+
+// Reads the records of Hudson's sequence bank at the start of `data`. A record of 16 bytes for each sequence follows
+// the table: the index of the sequence's bank, its volume byte, 0xFFFF, the offset of the bank file and two more
+// offsets. A word of 0xFFFFFFFF follows the records. A file of another revision, or whose records leave `data`, throws
+// xsflib::FormatError.
+std::vector<HudsonSongRecord> ReadHudsonRecords(std::span<const uint8_t> data);
 
 } // namespace ntdlib::n64

@@ -95,6 +95,7 @@ using ntdlib::testing::krawall_cart::kPeriodTable;
 using ntdlib::testing::krawall_cart::kPlay;
 using ntdlib::testing::krawall_cart::kPortaUp;
 using ntdlib::testing::krawall_cart::kRampTable;
+using ntdlib::testing::krawall_cart::kSampleData;
 using ntdlib::testing::krawall_cart::kSampleTable;
 using ntdlib::testing::krawall_cart::kSetSpeed;
 using ntdlib::testing::krawall_cart::kSineTable;
@@ -1203,6 +1204,93 @@ void TestLayout()
     SEQLIB_CHECK(ntdlib::krawall::Join(ntdlib::krawall::Cut(grown, grown_info)) == grown_bytes);
 }
 
+// A note without an instrument looks its sample up again at the note plus the relative note of the channel's sample.
+// Sample 0 has a relative note of 4. B-7 (96) without an instrument then reads entry 99 of instrument 1, past its map
+// of 96 notes. Entry 99 names a sample whose entry of the game's table is in the zeros at the ROM's end. The free
+// space starts past it. With the instrument on B-7's row, the note reads entry 95, and the free space stays where it
+// was.
+void TestLayoutPastInstrumentMap()
+{
+    constexpr uint32_t kInstrument = kRomBase + 0x3800;
+    constexpr uint32_t kSize = 0x20000;
+    constexpr uint32_t kFarEntry = kRomBase + 0x1F000;
+    const auto free_start = [](int instrument_on_b7)
+    {
+        Cart cart;
+        const uint32_t header = cart.Module(1, 4, {{0, 0, 49, 1}, {1, 0, 96, instrument_on_b7}});
+        cart.Put8(header + ntdlib::krawall::kModuleFlags, 1);
+        cart.Put32(kInstrumentTable, kInstrument);
+        cart.Put16(kInstrument + 2 * 99, uint16_t((kFarEntry - kSampleTable) / 4));
+        cart.Put8(kSampleData + ntdlib::krawall::kSampleRelativeNote, 4);
+        cart.Resize(kSize);
+        const Rom rom = cart.ToRom();
+        const DriverInfo info = Detect(rom);
+
+        return ntdlib::krawall::Cut(rom, info).free.start;
+    };
+
+    const uint32_t past = free_start(0);
+    const uint32_t within = free_start(1);
+
+    SEQLIB_CHECK(past > kFarEntry + 4 - kRomBase && past <= kSize);
+    SEQLIB_CHECK(within < kFarEntry - kRomBase);
+}
+
+// A note off with an instrument looks its sample up at its note of 127 less 1: entry 126 of the instrument, past its
+// map. Entry 126 names a sample whose entry of the game's table is in the zeros at the ROM's end. The free space
+// starts past it. A note off without an instrument reads no entry, and the free space stays where it was.
+void TestLayoutNoteOffPastInstrumentMap()
+{
+    constexpr uint32_t kInstrument = kRomBase + 0x3800;
+    constexpr uint32_t kSize = 0x20000;
+    constexpr uint32_t kFarEntry = kRomBase + 0x1F000;
+    const auto free_start = [](int instrument_on_note_off)
+    {
+        Cart cart;
+        const uint32_t header = cart.Module(1, 4, {{0, 0, 49, 1}, {1, 0, 127, instrument_on_note_off}});
+        cart.Put8(header + ntdlib::krawall::kModuleFlags, 1);
+        cart.Put32(kInstrumentTable, kInstrument);
+        cart.Put16(kInstrument + 2 * 126, uint16_t((kFarEntry - kSampleTable) / 4));
+        cart.Resize(kSize);
+        const Rom rom = cart.ToRom();
+        const DriverInfo info = Detect(rom);
+
+        return ntdlib::krawall::Cut(rom, info).free.start;
+    };
+
+    const uint32_t with = free_start(1);
+    const uint32_t without = free_start(0);
+
+    SEQLIB_CHECK(with > kFarEntry + 4 - kRomBase && with <= kSize);
+    SEQLIB_CHECK(without < kFarEntry - kRomBase);
+}
+
+// The sample that a note without an instrument picks inside the map moves the next notes by its relative note. Note 25
+// with instrument 1 picks sample 0 at entry 24. B-4 (60) without an instrument then picks sample 1 at entry 59. Sample
+// 1 has a relative note of 40, and the next B-4 reads entry 99, past the map. Entry 99 names a sample whose entry of
+// the game's table is in the zeros at the ROM's end. The free space starts past it.
+void TestLayoutChainPastInstrumentMap()
+{
+    constexpr uint32_t kInstrument = kRomBase + 0x3800;
+    constexpr uint32_t kSize = 0x20000;
+    constexpr uint32_t kFarEntry = kRomBase + 0x1F000;
+    Cart cart;
+    const uint32_t header = cart.Module(1, 4, {{0, 0, 25, 1}, {1, 0, 60, 0}, {2, 0, 60, 0}});
+    cart.Put8(header + ntdlib::krawall::kModuleFlags, 1);
+    cart.Put32(kInstrumentTable, kInstrument);
+    cart.Put16(kInstrument + 2 * 59, 1);
+    cart.Put16(kInstrument + 2 * 99, uint16_t((kFarEntry - kSampleTable) / 4));
+    const uint32_t one_shot = cart.ToRom().U32(kSampleTable + 4);
+    cart.Put8(one_shot + ntdlib::krawall::kSampleRelativeNote, 40);
+    cart.Resize(kSize);
+    const Rom rom = cart.ToRom();
+    const DriverInfo info = Detect(rom);
+
+    const uint32_t start = ntdlib::krawall::Cut(rom, info).free.start;
+
+    SEQLIB_CHECK(start > kFarEntry + 4 - kRomBase && start <= kSize);
+}
+
 // A module without instruments plays the game's samples by number: instrument 3 is sample 2, over every note. A
 // sample's C-4 plays at 8363 Hz. The lookup adds the sample's relative note to the note's key.
 void TestInstruments()
@@ -1439,6 +1527,9 @@ int RunTests()
     TestShortLoop();
     TestCommands();
     TestLayout();
+    TestLayoutPastInstrumentMap();
+    TestLayoutNoteOffPastInstrumentMap();
+    TestLayoutChainPastInstrumentMap();
     TestInstruments();
     TestAudition();
     TestSongFiles();

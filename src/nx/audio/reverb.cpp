@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "nx/audio/arithmetic.h"
@@ -396,6 +398,101 @@ void ApplyReverb(const ReverbParameter& parameter, ReverbState& state, std::span
             outputs[k][t] = WrapAdd(MulQ14(x[k], parameter.dry_gain), reverb);
         }
     }
+}
+
+AuxReverb::AuxReverb(int32_t sample_rate, int channels)
+{
+    parameter_.channel_count = channels;
+    parameter_.max_channel_count = channels;
+    parameter_.sample_rate = static_cast<int32_t>(static_cast<uint32_t>(sample_rate / 1000) << 14);
+    parameter_.early_mode = 0;
+    parameter_.decay_time = 0;
+    parameter_.high_frequency_decay_ratio = 0;
+    parameter_.dry_gain = 0;
+}
+
+void AuxReverb::SetInputOutput(std::span<const int8_t> inputs, std::span<const int8_t> outputs)
+{
+    status_ = 0;
+    const int most = std::min(parameter_.max_channel_count, kReverbChannels);
+    const int count = std::min(most, static_cast<int>(inputs.size()));
+    for (int k = 0; k < count; ++k)
+    {
+        inputs_[static_cast<std::size_t>(k)] = inputs[static_cast<std::size_t>(k)];
+        outputs_[static_cast<std::size_t>(k)] = outputs[static_cast<std::size_t>(k)];
+    }
+    parameter_.channel_count = count;
+}
+
+void AuxReverb::SetParameters(const ReverbParameterSet& parameters)
+{
+    // AArch64's fcvtzs with 14 fraction bits: the value times 2^14, towards zero, held to 32 bits. NaN gives 0.
+    const auto q14 = [](float value)
+    {
+        const double scaled = static_cast<double>(value) * 16384.0;
+        if (!(scaled == scaled))
+        {
+            return 0;
+        }
+
+        return static_cast<int32_t>(std::clamp(std::trunc(scaled), -2147483648.0, 2147483647.0));
+    };
+
+    if (status_ != 0)
+    {
+        status_ = 1;
+    }
+    if (parameters.early_mode < 0 || parameters.early_mode >= kReverbModes || parameters.late_mode < 0 ||
+        parameters.late_mode >= kReverbModes)
+    {
+        throw std::invalid_argument("the reverb's modes are 0 to 4");
+    }
+
+    parameter_.early_mode = parameters.early_mode;
+    parameter_.early_gain = q14(parameters.early_gain);
+    parameter_.predelay = q14(parameters.predelay);
+    parameter_.late_mode = parameters.late_mode;
+    parameter_.late_gain = q14(parameters.late_gain);
+    parameter_.decay_time = q14(parameters.decay_time);
+    parameter_.high_frequency_decay_ratio = q14(parameters.high_frequency_decay_ratio);
+    parameter_.coloration = q14(parameters.coloration);
+    parameter_.reverb_gain = q14(parameters.reverb_gain);
+    parameter_.out_gain = q14(parameters.out_gain);
+    parameter_.dry_gain = q14(parameters.dry_gain);
+}
+
+void AuxReverb::Reset()
+{
+    status_ = 0;
+}
+
+void AuxReverb::Process(int32_t* output, const int32_t* input, uint32_t sample_count)
+{
+    // The sdk's reverb takes a 6-channel reverb's centre and LFE as its channels 4 and 5, after the rears. The model
+    // takes them as channels 2 and 3.
+    constexpr std::array<std::size_t, kReverbChannels> kCentreLast = {0, 1, 4, 5, 2, 3};
+    std::array<const int32_t*, kReverbChannels> ins{};
+    std::array<int32_t*, kReverbChannels> outs{};
+    const auto channels = static_cast<std::size_t>(std::clamp(parameter_.channel_count, 0, kReverbChannels));
+    for (std::size_t k = 0; k < channels; ++k)
+    {
+        const std::size_t channel = channels == kReverbChannels ? kCentreLast[k] : k;
+        ins[k] = input + static_cast<std::ptrdiff_t>(inputs_[channel]) * sample_count;
+        outs[k] = output + static_cast<std::ptrdiff_t>(outputs_[channel]) * sample_count;
+    }
+
+    if (status_ == 0)
+    {
+        InitializeReverb(parameter_, state_, true);
+    }
+    else if (status_ == 1)
+    {
+        UpdateReverb(parameter_, state_);
+    }
+    status_ = 2;
+
+    ApplyReverb(parameter_, state_, std::span(ins.data(), channels), std::span(outs.data(), channels),
+                static_cast<int>(sample_count));
 }
 
 } // namespace ntdlib::nx::audio

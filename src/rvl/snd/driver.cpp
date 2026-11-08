@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -60,6 +61,44 @@ uint16_t MixVolume(float volume)
     return static_cast<uint16_t>(std::min<uint32_t>(0xffff, ToUnsigned(static_cast<float>(ax::kMaxVolume) * volume)));
 }
 
+// The warp's constants in the game's code.
+constexpr float kWarpNear = 0x1.33333p-3f; // 0.14999998
+constexpr float kWarpFar = 0x1.666668p-2f; // 0.35000002
+static_assert(std::bit_cast<uint32_t>(kWarpNear) == 0x3e199998 && std::bit_cast<uint32_t>(kWarpFar) == 0x3eb33334);
+
+// The warp of a voice's pan and surround pan for Dolby Pro Logic II, in Skyward Sword HD's NW4R SND (CalcMixParam,
+// main 0x102a530 to 0x102a73c). d is the surround pan less 1: -1 at the front, 1 at the rear. Where the pan is further
+// from the centre than d, the pan's size becomes 0.85 times its size less 0.15 times d (0.35 times d behind). The
+// surround pan then comes from the pan. In front, it takes 1.12 times the size of a pan on the left, and 0.88 times the
+// size of one on the right. Elsewhere, the surround pan comes from d, and a pan behind halves.
+void WarpDpl2(float& pan, float& span)
+{
+    const float d = span + -1.0f;
+    const float pan_size = pan < 0.0f ? -pan : pan;
+    const float d_size = d < 0.0f ? -d : d;
+    const bool rear = !(d <= 0.0f);
+    float shifted = 0.0f;
+    if (!(pan_size <= d_size))
+    {
+        const float ratio = -d / pan;
+        const bool right = pan >= 0.0f;
+        const float factor = (rear ? kWarpFar : kWarpNear) * ratio + (right ? 0.85f : -0.85f);
+        const float scaled = pan * (right && !rear ? 0.88f : right ? 1.12f : -1.12f);
+        pan = pan_size * factor;
+        shifted = rear ? scaled + -0.12f : (d + d + scaled) + -0.12f;
+    }
+    else
+    {
+        if (rear)
+        {
+            pan = pan * 0.5f;
+        }
+        shifted = d * (rear ? 1.12f : 0.88f) + -0.12f;
+    }
+
+    span = shifted + 1.0f;
+}
+
 // Voice::SetVolume (0x8004c830), SetVeVolume and SetMainOutVolume hold a gain from the channel to 0 and 1. Builds from
 // September 2009 on hold it only to 0. The gain can then go above full level.
 float HeldGain(float gain, const SndBuild& build)
@@ -88,6 +127,85 @@ ax::PbMix StillMix(const AxVoice::MixParam& mix)
 }
 
 } // namespace
+
+AxVoice::MixParam CalcMix(const MixInput& input, int channel, const SndBuild& build, ntdlib::nwsnd::OutputMode mode)
+{
+    // CalcMixParam (0x8004d590) on the main line. The Wii's policy places each channel of the wave: its pan, the sides
+    // that it reaches, and the pan curve.
+    using Policy = ntdlib::nwsnd::RevolutionPolicy;
+    const Policy::WavePlacement placement = Policy::PlacementOfWaveChannel(
+        input.pan, channel, input.channel_count, static_cast<uint32_t>(input.pan_mode), input.pan_curve, build);
+    const PanInfo info = ntdlib::nwsnd::PanInfoOf(placement.curve);
+    const float main_volume = input.main_out_volume;
+    const float main = main_volume * input.main_send;
+    const float fx_a = main_volume * input.fx_send[0];
+    const float fx_b = main_volume * input.fx_send[1];
+    const float fx_c = main_volume * input.fx_send[2];
+    AxVoice::MixParam mix;
+    if (mode == ntdlib::nwsnd::OutputMode::kDpl2)
+    {
+        // Skyward Sword HD's CalcMixParam for Dolby Pro Logic II (main 0x102a434 to 0x102ac6c). A channel that reaches
+        // both sides takes the warp. The pan gives the left and right ratios, and the surround pan the front and rear
+        // ratios. Each mix takes the product of one of each: left front, right front, left rear and right rear. Each
+        // bus's rear right is a volume of aux bus C. Bus C has no mix in this mode.
+        float pan = placement.pan;
+        float span = input.surround_pan;
+        if (placement.side == Policy::WaveSide::kBoth)
+        {
+            WarpDpl2(pan, span);
+        }
+
+        const float left = placement.side != Policy::WaveSide::kRightOnly ? CalcPanRatio(pan, info) : 0.0f;
+        const float right = placement.side != Policy::WaveSide::kLeftOnly ? CalcPanRatio(-pan, info) : 0.0f;
+        const float front = CalcSurroundPanRatio(span, info);
+        const float rear = CalcSurroundPanRatio(2.0f - span, info);
+        const float front_left = front * left;
+        const float front_right = front * right;
+        const float rear_left = rear * left;
+        const float rear_right = rear * right;
+        mix.l = MixVolume(main * front_left);
+        mix.r = MixVolume(main * front_right);
+        mix.s = MixVolume(main * rear_left);
+        mix.aux_a_l = MixVolume(fx_a * front_left);
+        mix.aux_a_r = MixVolume(fx_a * front_right);
+        mix.aux_a_s = MixVolume(fx_a * rear_left);
+        mix.aux_b_l = MixVolume(fx_b * front_left);
+        mix.aux_b_r = MixVolume(fx_b * front_right);
+        mix.aux_b_s = MixVolume(fx_b * rear_left);
+        mix.aux_c_l = MixVolume(main * rear_right);
+        mix.aux_c_r = MixVolume(fx_a * rear_right);
+        mix.aux_c_s = MixVolume(fx_b * rear_right);
+
+        return mix;
+    }
+
+    float left = 0.0f;
+    float right = 0.0f;
+    if (placement.side != Policy::WaveSide::kRightOnly)
+    {
+        left = CalcPanRatio(placement.pan, info);
+    }
+
+    if (placement.side != Policy::WaveSide::kLeftOnly)
+    {
+        right = CalcPanRatio(-placement.pan, info);
+    }
+
+    mix.l = MixVolume(main * left);
+    mix.r = MixVolume(main * right);
+    mix.s = MixVolume(0.0f);
+    mix.aux_a_l = MixVolume(fx_a * left);
+    mix.aux_a_r = MixVolume(fx_a * right);
+    mix.aux_a_s = MixVolume(0.0f);
+    mix.aux_b_l = MixVolume(fx_b * left);
+    mix.aux_b_r = MixVolume(fx_b * right);
+    mix.aux_b_s = MixVolume(0.0f);
+    mix.aux_c_l = MixVolume(fx_c * left);
+    mix.aux_c_r = MixVolume(fx_c * right);
+    mix.aux_c_s = MixVolume(0.0f);
+
+    return mix;
+}
 
 ax::SampleFormat ToAxFormat(ntdlib::rsar::WaveEncoding format)
 {
@@ -1301,42 +1419,9 @@ void Voice::CalcAxBiquadFilter()
 
 void Voice::CalcMixParam(int channel, AxVoice::MixParam& mix) const
 {
-    // CalcMixParam (0x8004d590), for the stereo output mode on the main line. The Wii's policy places each channel of
-    // the wave: its pan, the sides that it reaches, and the pan curve.
-    const float main_volume = main_out_volume_;
-    const float main = main_volume * main_send_;
-    const float fx_a = main_volume * fx_send_[0];
-    const float fx_b = main_volume * fx_send_[1];
-    const float fx_c = main_volume * fx_send_[2];
-
-    using Policy = ntdlib::nwsnd::RevolutionPolicy;
-    const Policy::WavePlacement placement = Policy::PlacementOfWaveChannel(
-        pan_, channel, channel_count_, static_cast<uint32_t>(pan_mode_), pan_curve_, engine_->Build());
-    const PanInfo info = ntdlib::nwsnd::PanInfoOf(placement.curve);
-    float left = 0.0f;
-    float right = 0.0f;
-    if (placement.side != Policy::WaveSide::kRightOnly)
-    {
-        left = CalcPanRatio(placement.pan, info);
-    }
-
-    if (placement.side != Policy::WaveSide::kLeftOnly)
-    {
-        right = CalcPanRatio(-placement.pan, info);
-    }
-
-    mix.l = MixVolume(main * left);
-    mix.r = MixVolume(main * right);
-    mix.s = MixVolume(0.0f);
-    mix.aux_a_l = MixVolume(fx_a * left);
-    mix.aux_a_r = MixVolume(fx_a * right);
-    mix.aux_a_s = MixVolume(0.0f);
-    mix.aux_b_l = MixVolume(fx_b * left);
-    mix.aux_b_r = MixVolume(fx_b * right);
-    mix.aux_b_s = MixVolume(0.0f);
-    mix.aux_c_l = MixVolume(fx_c * left);
-    mix.aux_c_r = MixVolume(fx_c * right);
-    mix.aux_c_s = MixVolume(0.0f);
+    const MixInput input{main_out_volume_, main_send_,     fx_send_,  pan_,
+                         surround_pan_,    channel_count_, pan_mode_, pan_curve_};
+    mix = CalcMix(input, channel, engine_->Build(), engine_->GetOutputMode());
 }
 
 void Voice::SyncAxVoice()

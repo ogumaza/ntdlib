@@ -33,19 +33,17 @@ struct Performance : PerformanceBase
 
     // Each track's stretches of commands, in the order that they ran, and the command of each note, at the note's ID
     // less 1 (TrackEvent::note). A stretch begins where its channel starts, where FF goes back to the loop point and
-    // where D7 goes back to the start of its repeat (Entry::kLoop). Its depth counts the repeats that the channel is
-    // in. `note_commands[i].stretch` counts in the stretches of the note's track.
+    // where D7 goes back to the start of its repeat (Entry::kLoop). A stretch also begins after each note, rest and
+    // wait, and keeps the entry of the stretch before it. Its depth counts the repeats that the channel is in at its
+    // first command. `note_commands[i].stretch` counts in the stretches of the note's track.
     //
-    // The MIDI file's tempo follows the first channel. A channel at another tempo T plays each of its ticks in
-    // 37 × T0 / T of the file's ticks, where T0 is the first channel's tempo. On such a channel, a stretch also begins
-    // after each note, rest and wait. It then holds at most one wait, at its end, and starts at the tick of the note or
-    // rest that ends it. It keeps the entry of the stretch that it splits, and its depth counts the repeats that the
-    // channel is in at its first command.
-    //
-    // A stretch also begins after 7F sets a channel's tempo, and on every channel after the first channel's 7F. The
-    // driver counts the channel's ticks again from there, and the first note after it starts its frame. Such a stretch
-    // keeps the entry of the stretch before it. With ConvertSettings::frame_timing, every note moves to the tick at
-    // which its frame starts, as in the MIDI file. A stretch's waits then give its notes' ticks only to the frame.
+    // A stretch therefore holds at most one wait, at its end, with the notes or rests that D4 ties to it. Every note
+    // waits for its length (Stretch::note_wait). The driver reads a stretch's commands in one frame. The commands
+    // before its wait run at its tick. The MIDI file's tempo follows the first channel. A channel at another tempo T
+    // plays each of its ticks in 37 × T0 / T of the file's ticks. T0 is the first channel's tempo. 7F starts a
+    // channel's count of ticks again. The first channel's 7F starts every channel's count. The first note after it
+    // starts its frame. With ConvertSettings::frame_timing, every note of the MIDI file and of the performance moves to
+    // the tick at which its frame starts.
     std::array<std::vector<Stretch>, 16> stretches;
     std::vector<NoteCommand> note_commands;
 

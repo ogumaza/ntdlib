@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -50,6 +51,20 @@ constexpr int kVblankLine = 160;
 class System final : public arm::Bus
 {
 public:
+    // What Restore() takes to go back to the system's state between calls: the work memories, the I/O registers,
+    // the vertical count and the CPU's registers r0 to r12 and r14 of the system mode. The BIOS and the cartridge stay
+    // out. A snapshot shares the 4 KiB pages that hold the same bytes with the snapshot that it was saved after.
+    class Snapshot
+    {
+        friend class System;
+
+        std::vector<std::shared_ptr<const std::vector<uint8_t>>> pages_; // EWRAM's, IWRAM's, then the I/O's
+        std::array<uint32_t, 14> registers_ = {};
+        int vcount_ = 0;
+        std::optional<int> held_vcount_;
+        uint64_t unmapped_ = 0;
+    };
+
     // The stack pointer that each call starts with. The BIOS gives the system mode this stack.
     static constexpr uint32_t kStack = 0x03007F00;
 
@@ -80,8 +95,19 @@ public:
     // The count of reads and writes of addresses that the system doesn't map.
     uint64_t UnmappedAccesses() const;
 
+    // Takes a snapshot between calls. The pages that hold the same bytes as `previous`'s share its memory.
+    Snapshot Save(const Snapshot* previous = nullptr) const;
+
+    // Goes back to `snapshot`. The next calls give what they gave after the save.
+    void Restore(const Snapshot& snapshot);
+
     // Called after each write to an I/O register, with the register's address and the written bytes.
     std::function<void(uint32_t address, int size, uint32_t value)> on_io_write;
+
+    // Called for an SWI whose call the BIOS doesn't model, with the call's number. It returns true when it handled the
+    // call, and the CPU goes on after the SWI. A handler may call a routine with Cpu().Call(). That call uses the stack
+    // where the SWI left it. Call() would start the stack again at kStack.
+    std::function<bool(uint32_t number)> on_swi;
 
     // arm::Bus.
     uint8_t* Page(uint32_t page) override;
@@ -95,10 +121,13 @@ private:
     // Runs DMA `channel`'s transfer if its control starts one at once.
     void StartDma(int channel);
 
-    // The BIOS's calls: Div, CpuSet, CpuFastSet and GetBiosChecksum. Returns false for a call that the system doesn't
-    // model.
+    // The BIOS's calls: Div, CpuSet, CpuFastSet, GetBiosChecksum, LZ77UnCompWram and LZ77UnCompVram. Returns false
+    // for a call that the system doesn't model.
     bool Swi(arm::Cpu& cpu, uint32_t comment);
     void CpuSet(uint32_t source, uint32_t destination, uint32_t control, bool fast);
+
+    // Decompresses the LZ77 data at `source` to `destination`. Returns false when the header doesn't name LZ77.
+    bool Lz77(uint32_t source, uint32_t destination);
 
     std::vector<uint8_t> bios_;
     std::vector<uint8_t> ewram_;

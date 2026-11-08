@@ -20,6 +20,7 @@ namespace
 
 constexpr std::size_t kTableOffset = 4;
 constexpr std::size_t kEntrySize = 8;
+constexpr std::size_t kHudsonRecordSize = 16;
 
 std::size_t TableEnd(std::size_t count)
 {
@@ -161,6 +162,32 @@ std::vector<uint8_t> SeqFile::Write() const
     }
 
     return bytes;
+}
+
+std::vector<HudsonSongRecord> ReadHudsonRecords(std::span<const uint8_t> data)
+{
+    const xsflib::Reader reader(data, true);
+    if (data.size() < kTableOffset || reader.U16(0) != kHudsonSeqFileRevision)
+    {
+        throw xsflib::FormatError("not a sequence bank of revision S2");
+    }
+
+    const std::size_t count = reader.U16(2);
+    const std::size_t first = TableEnd(count);
+    if (first + count * kHudsonRecordSize > data.size())
+    {
+        throw xsflib::FormatError("the records of a sequence bank of revision S2 leave the data");
+    }
+
+    std::vector<HudsonSongRecord> records;
+    records.reserve(count);
+    for (std::size_t i = 0; i < count; i++)
+    {
+        const std::size_t place = first + i * kHudsonRecordSize;
+        records.push_back({reader.U8(place), reader.U8(place + 1), reader.U32(place + 4)});
+    }
+
+    return records;
 }
 
 } // namespace ntdlib::n64

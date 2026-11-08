@@ -1343,6 +1343,13 @@ struct RevolutionPolicy
         return CafePolicy::PanPosition(pan);
     }
 
+    // The place in a pan curve for a surround pan, the same as on the Wii U. Skyward Sword HD's NW4R SND takes it in
+    // its mix for Dolby Pro Logic II (main 0x102a7f8).
+    static int SpanPosition(float span)
+    {
+        return CafePolicy::SpanPosition(span);
+    }
+
     // The sides of the stereo mix that a channel of a wave reaches.
     enum class WaveSide : uint8_t
     {

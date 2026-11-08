@@ -397,7 +397,12 @@ void Sequencer::ReadNotes(int c)
         // A note, a "play again" or a rest: its start, its length with any dot and ties, the effects, the event and the
         // wait for the next note. A note of the S revision that only waits has no event.
         StartNote(c, note);
-        const uint16_t ticks = NoteTicks(ch, b, value);
+        uint32_t last = at;
+        const uint16_t ticks = NoteTicks(ch, b, value, last);
+        if (record_ && stretch_[size_t(c)])
+        {
+            stretches_[stretch_[size_t(c)] - 1].last = last;
+        }
         RestartEffects(ch, note);
         if (note >= 0)
         {
@@ -405,12 +410,10 @@ void Sequencer::ReadNotes(int c)
             AddEvent(c, kind, NoteIndex(ch, note, c >= kPcmA ? kPcmPitchEntries : kFrequencyEntries), at);
         }
         ticks_[size_t(c)] += ticks;
-        waited_[size_t(c)] = true;
         WaitTicks(ch, ticks);
 
-        // The MIDI file's tempo follows the first channel. At another tempo, a tick of this channel lasts another
-        // number of the file's ticks. Each wait then ends a stretch.
-        split_[size_t(c)] = ch.tempo != channels_[0].tempo;
+        // Each wait ends a stretch. The commands of the next stretch run in the frame where the wait ends.
+        split_[size_t(c)] = true;
         return;
     }
 }
@@ -448,7 +451,6 @@ bool Sequencer::FollowEnd(int c)
     // Otherwise FF goes back to the loop point. The channel counts its ticks and frames again from there.
     ch.position = ch.loop;
     jumped_[size_t(c)] = true;
-    waited_[size_t(c)] = false;
     ch.frames = 0;
     ch.ticks = 0;
     if (traits_.reseeds)
@@ -507,7 +509,7 @@ void Sequencer::StartNote(int c, int note)
     ch.slide_next = 0;
 }
 
-uint16_t Sequencer::NoteTicks(Channel& ch, uint8_t first, int value)
+uint16_t Sequencer::NoteTicks(Channel& ch, uint8_t first, int value, uint32_t& last)
 {
     // D1 makes the note dotted. D4 followed by a note of the same pitch ties another length to it: in the S revision,
     // a note with the same first byte. The driver adds the lengths up in the channel's countdown. The countdown is a
@@ -517,7 +519,7 @@ uint16_t Sequencer::NoteTicks(Channel& ch, uint8_t first, int value)
     uint16_t ticks = uint16_t(Divide(kWholeNote, value));
     if (rom_.U8(ch.position) == dot)
     {
-        ch.position++;
+        last = ch.position++;
         ticks = uint16_t(ticks + Half(int16_t(ticks)));
     }
     while (rom_.U8(ch.position) == tie)
@@ -532,6 +534,7 @@ uint16_t Sequencer::NoteTicks(Channel& ch, uint8_t first, int value)
             }
 
             add = Divide(kWholeNote, rom_.U8(ch.position + 2));
+            last = ch.position + 1;
             ch.position += 3;
         }
         else
@@ -542,11 +545,12 @@ uint16_t Sequencer::NoteTicks(Channel& ch, uint8_t first, int value)
             }
 
             add = Divide(kWholeNote, rom_.U8(info_.length_table + uint32_t(next >> 4)));
+            last = ch.position + 1;
             ch.position += 2;
         }
         if (rom_.U8(ch.position) == dot)
         {
-            ch.position++;
+            last = ch.position++;
             add += Half(add);
         }
 
@@ -656,7 +660,6 @@ void Sequencer::RunCommand(int c, uint8_t command)
         ch.tempo = arg();
         ch.frames = 0;
         ch.ticks = 0;
-        Restart(c);
         if (c == 0)
         {
             for (int k = 1; k < kChannels; k++)
@@ -665,7 +668,6 @@ void Sequencer::RunCommand(int c, uint8_t command)
                 other.tempo = ch.tempo;
                 other.frames = 0;
                 other.ticks = 0;
-                Restart(k);
             }
         }
         AddEvent(c, Event::kTempo);
@@ -1847,18 +1849,10 @@ void Sequencer::RunAudition(int c)
     audition_.start = false;
 }
 
-void Sequencer::Restart(int c)
-{
-    // The first note after the restart starts its frame. On a channel that has waited since its count last started,
-    // the stretch's waits then no longer give that note's tick.
-    restarted_[size_t(c)] = restarted_[size_t(c)] || waited_[size_t(c)];
-    waited_[size_t(c)] = false;
-}
-
 void Sequencer::RecordRead(int c, uint32_t address)
 {
-    // The channel reads on from its last command, unless it went back, waited at another tempo than the first
-    // channel's, or started its count again at a tempo after a wait. At its loop point, FF reads again each frame.
+    // The channel reads on from its last command, unless it went back or waited. At its loop point, FF reads again each
+    // frame.
     if (!record_)
     {
         return;
@@ -1867,8 +1861,7 @@ void Sequencer::RecordRead(int c, uint32_t address)
     size_t& stretch = stretch_[size_t(c)];
     bool& jumped = jumped_[size_t(c)];
     bool& split = split_[size_t(c)];
-    bool& restarted = restarted_[size_t(c)];
-    if (stretch && !jumped && !split && !restarted)
+    if (stretch && !jumped && !split)
     {
         stretches_[stretch - 1].last = address;
         return;
@@ -1891,7 +1884,6 @@ void Sequencer::RecordRead(int c, uint32_t address)
     stretch = stretches_.size();
     jumped = false;
     split = false;
-    restarted = false;
     AddEvent(c, Event::kStretch, int(stretch - 1), address);
 }
 

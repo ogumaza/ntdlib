@@ -1000,27 +1000,19 @@ bool SeamRepeats(const Rom& rom, const DriverInfo& info, const Simulation& sim)
     return true;
 }
 
-// Returns the MIDI tick of the stretch that event `i` begins. A wait at another tempo than the first channel's split it
-// off (TrackStretch::split), and it holds no wait before its last command. Its note, "play again" or rest ends it. The
-// stretch starts at that command's tick. A stretch that ends otherwise starts at its event's tick.
-uint32_t SplitTick(const Simulation& sim, size_t i)
+// Returns the MIDI tick of event `i`, the start of a stretch or a change of a channel's volume. The driver reads a
+// channel's commands between the ends of two waits in one frame. They run at the tick of the wait that ends them. A
+// tempo or a loop among them starts the channel's count again. The first note after it then starts its frame. So do
+// the commands before the note.
+uint32_t RunTick(const Simulation& sim, size_t i)
 {
-    const Event& begins = sim.events[i];
-    const TrackStretch& s = sim.stretches[size_t(begins.index)];
-    for (size_t j = i + 1; j < sim.events.size(); j++)
+    const Event& at = sim.events[i];
+    for (size_t j = i + 1; j < sim.events.size() && sim.events[j].frame == at.frame; j++)
     {
         const Event& e = sim.events[j];
-        if (e.channel != begins.channel)
+        if (e.channel == at.channel && (e.kind == Event::kTempo || e.kind == Event::kLoop))
         {
-            continue;
-        }
-        if (e.kind == Event::kStretch)
-        {
-            break;
-        }
-        if ((e.kind == Event::kNote || e.kind == Event::kPlayAgain || e.kind == Event::kRest) && e.address == s.last)
-        {
-            return sim.event_ticks[j];
+            return sim.frame_ticks[at.frame];
         }
     }
 
@@ -1408,16 +1400,18 @@ ConvertedSong ConvertedNotes(const Rom& rom, const DriverInfo& info, int song, c
     for (size_t i = 0; i < sim.events.size(); i++)
     {
         const Event& e = sim.events[i];
-        const uint32_t tick = sim.event_ticks[i];
         if (e.kind == Event::kStretch)
         {
             const TrackStretch& s = sim.stretches[size_t(e.index)];
-            converted.stretches.push_back(
-                {s.channel, s.split ? SplitTick(sim, i) : tick, s.first, s.last, s.depth, s.loop});
+            converted.stretches.push_back({s.channel, RunTick(sim, i), s.first, s.last, s.depth, s.loop});
         }
-        else if (e.kind == Event::kVolume && tick < plan.end)
+        else if (e.kind == Event::kVolume)
         {
-            converted.volumes.push_back({e.channel, tick, e.index});
+            const uint32_t tick = RunTick(sim, i);
+            if (tick < plan.end)
+            {
+                converted.volumes.push_back({e.channel, tick, e.index});
+            }
         }
     }
 

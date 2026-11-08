@@ -3216,6 +3216,12 @@ Conversion EadGame::ConvertTrack(const EadTrack& track, const std::string& name,
         settings.song_volume = image_[profile_.song_volumes + index] / 127.0;
     }
 
+    // The game's code can give a sequence another volume.
+    if (track.song_volume >= 0)
+    {
+        settings.song_volume = track.song_volume / 127.0;
+    }
+
     EadPerformance played = PerformEad(settings, options);
     for (const EadPresetKey& key : played.presets)
     {

@@ -137,6 +137,12 @@ public:
         return block_left_ > 0;
     }
 
+    // The next byte of the file as it stands. A byte of 0xFE starts no block here.
+    uint8_t NextRaw()
+    {
+        return At(position_++);
+    }
+
 private:
     uint8_t At(std::size_t offset) const
     {
@@ -232,10 +238,12 @@ std::vector<MidiEvent> DecodeCompressedTrack(std::span<const uint8_t> file, std:
                                           std::to_string(event.type));
             }
 
+            // The player reads a loop end's bytes as they stand.
+            const bool raw = event.type == kCompressedLoopEnd && !source.InBlock();
             event.payload.resize(static_cast<std::size_t>(bytes));
             for (uint8_t& byte : event.payload)
             {
-                byte = source.Next();
+                byte = raw ? source.NextRaw() : source.Next();
             }
 
             if (event.type == kCompressedLoopStart && !source.InBlock())
@@ -395,45 +403,24 @@ private:
         }
     }
 
-    // Writes a loop end with its delta. The offset counts the event's bytes in the file, and a byte of 0xFE in the
-    // offset lengthens them. A distance of 0x1FE therefore has no offset that fits: the offset 0x1FE takes a byte more
-    // and leads to 0x1FF, and the offset 0x1FF takes a byte less and leads to 0x1FE. A delta that starts with an extra
-    // 0x80 reads the same and moves the distance on.
+    // Writes a loop end with its delta. The player reads the event's six bytes as they stand. The six bytes therefore
+    // go out without codes. The offset leads back from the end of the event.
     void WriteLoopEnd(const MidiEvent& event, bool has_start, std::size_t loop_place)
     {
         std::vector<uint8_t> delta;
         AppendVariableLength(delta, event.delta);
         std::array<uint8_t, kLoopEndPayload> payload = {};
         std::copy_n(event.payload.begin(), std::min(event.payload.size(), payload.size()), payload.begin());
-        constexpr std::size_t kMaxPadding = 4;
-        std::size_t padding = 0;
         if (has_start)
         {
-            bool done = false;
-            for (; padding <= kMaxPadding && !done; padding++)
-            {
-                const std::size_t fixed_bytes = out_.size() + padding + EscapedSize(delta) + 2 +
-                                                EscapedSize(std::span<const uint8_t>(payload).first(2)) +
-                                                kLoopEndOffsetBytes;
-                for (std::size_t escapes = 0; escapes <= kLoopEndOffsetBytes && !done; escapes++)
-                {
-                    const auto offset = static_cast<uint32_t>(fixed_bytes + escapes - loop_place);
-                    xsflib::StoreBe32(payload.data() + 2, offset);
-                    done = EscapedSize(std::span<const uint8_t>(payload).subspan(2)) == kLoopEndOffsetBytes + escapes;
-                }
-
-                if (done)
-                {
-                    break;
-                }
-            }
+            const std::size_t end = out_.size() + EscapedSize(delta) + 2 + kLoopEndPayload;
+            xsflib::StoreBe32(payload.data() + 2, static_cast<uint32_t>(end - loop_place));
         }
 
-        out_.insert(out_.end(), padding, uint8_t{0x80});
         AppendEscaped(delta);
         out_.push_back(kMidiMeta);
         out_.push_back(kCompressedLoopEnd);
-        AppendEscaped(payload);
+        out_.insert(out_.end(), payload.begin(), payload.end());
     }
 
     static uint64_t KeyOf(const uint8_t* bytes)

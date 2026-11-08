@@ -82,6 +82,50 @@ void TestSeqFile()
                  "sequence 1 of a sequence bank leaves the data");
 }
 
+// Hudson's revision S2: S1's table, then a record for each sequence, then 0xFFFFFFFF.
+void TestHudsonRecords()
+{
+    Bytes file = {'S', '2', 0, 2};
+    Put32(file, 0x38);
+    Put32(file, 2);
+    Put32(file, 0x3C);
+    Put32(file, 3);
+
+    for (const uint8_t bank : {uint8_t{0x00}, uint8_t{0x15}})
+    {
+        file.push_back(bank);
+        file.push_back(static_cast<uint8_t>(0x7D - bank));
+        Put16(file, 0xFFFF);
+        Put32(file, 0x40);
+        Put32(file, 0x1234);
+        Put32(file, 0x5678);
+    }
+
+    Put32(file, 0xFFFFFFFF);
+    file.insert(file.end(), {0xA1, 0xA2, 0xEE, 0xEF, 0xB1, 0xB2, 0xB3});
+
+    const std::vector<n64::HudsonSongRecord> records = n64::ReadHudsonRecords(file);
+
+    XSFLIB_CHECK(records.size() == 2);
+    XSFLIB_CHECK(records[0] == (n64::HudsonSongRecord{0x00, 0x7D, 0x40}));
+    XSFLIB_CHECK(records[1] == (n64::HudsonSongRecord{0x15, 0x68, 0x40}));
+
+    // The sequences read as in S1.
+    const n64::SeqFile bank = n64::SeqFile::Parse(file, n64::kHudsonSeqFileRevision);
+
+    const auto second = bank.Sequence(1);
+    XSFLIB_CHECK((Bytes(second.begin(), second.end()) == Bytes{0xB1, 0xB2, 0xB3}));
+
+    XSFLIB_CHECK(
+        ErrorOf<xsflib::FormatError>([&] { n64::ReadHudsonRecords(Bytes(file.begin(), file.begin() + 40)); }) ==
+        "the records of a sequence bank of revision S2 leave the data");
+
+    Bytes other = file;
+    other[1] = '1';
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { n64::ReadHudsonRecords(other); }) ==
+                 "not a sequence bank of revision S2");
+}
+
 // A bank file with one bank, a percussion instrument and two programs, the second of them empty. The sound's wave has a
 // loop and a book of one predictor. The padding after the key map holds bytes that the writer has to keep.
 Bytes BankBytes()
@@ -365,8 +409,7 @@ void TestCompressedBuild()
     XSFLIB_CHECK(decoded == track);
 }
 
-// A byte of 0xFE in a loop end takes two bytes in the file, and the offset counts them. Every low byte of the offset
-// comes up as the loop grows.
+// A loop end's bytes go out as they stand, 0xFE included. Every low byte of the offset comes up as the loop grows.
 void TestCompressedLoopOffsets()
 {
     for (int notes = 1; notes < 300; notes++)
@@ -411,6 +454,39 @@ void TestCompressedLoopOffsets()
         XSFLIB_CHECK(loop_end.delta == 2 && loop_end.loop_start == 0);
         XSFLIB_CHECK(loop_end.payload[0] == 0xFE && loop_end.payload[1] == 0xFE);
     }
+}
+
+// A game's loop end whose offset ends in 0xFE, followed by an end of track. The player reads the offset as it stands.
+void TestCompressedLoopEndBytes()
+{
+    Bytes file;
+    Put32(file, 68);
+    for (int i = 1; i < 16; i++)
+    {
+        Put32(file, 0);
+    }
+    Put32(file, 48);
+
+    // 68: a loop start. 73: 60 controllers and a note, 245 bytes. 318: a loop end that leads back 0xFE bytes from 327.
+    file.insert(file.end(), {0x00, 0xFF, 0x2E, 0x00, 0xFF});
+    for (int i = 0; i < 60; i++)
+    {
+        file.insert(file.end(), {0x00, 0xB0, 0x07, static_cast<uint8_t>(i)});
+    }
+    file.insert(file.end(), {0x00, 0x90, 0x40, 0x7F, 0x18});
+    file.insert(file.end(), {0x00, 0xFF, 0x2D, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFE, 0x00, 0xFF, 0x2F});
+
+    const std::vector<n64::MidiEvent> events = n64::CompressedMidi::Parse(file).DecodeTrack(0);
+
+    XSFLIB_CHECK(events.size() == 64);
+    if (events.size() != 64)
+    {
+        return;
+    }
+
+    XSFLIB_CHECK(events[62].IsMeta(n64::kCompressedLoopEnd) && events[62].loop_start == 0);
+    XSFLIB_CHECK(events[62].payload == (std::vector<uint8_t>{0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFE}));
+    XSFLIB_CHECK(events[63].IsMeta(n64::kMidiMetaEndOfTrack));
 }
 
 void TestStandardMidi()
@@ -579,10 +655,12 @@ int main()
                                     []
                                     {
                                         TestSeqFile();
+                                        TestHudsonRecords();
                                         TestBankFile();
                                         TestCompressedMidi();
                                         TestCompressedBuild();
                                         TestCompressedLoopOffsets();
+                                        TestCompressedLoopEndBytes();
                                         TestStandardMidi();
                                         TestVadpcmFrame();
                                         TestVadpcmDecode();

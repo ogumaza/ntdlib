@@ -1938,10 +1938,9 @@ void TestNestedCountedLoopsPastTheTimeLimit()
 {
     // Play key 60 for 960 ticks (10 s) in an inner loop of 2 passes, inside an outer loop of 64 passes, then end. The
     // outer passes take 21 minutes and 20 s, past the time limit. The performance reaches the limit inside both loops.
-    // It runs again with the track's outermost counted loop endless. The length analysis takes the same loop (R-409).
-    // The inner loop still ends after 2 passes. The main loop is a pass of the outer loop, 1920 ticks long. The
-    // sequence plays as the same outer loop with a count of 0. With every counted loop endless, the inner loop would be
-    // the main loop.
+    // It runs again with the track's outermost counted loop endless. The length analysis takes the same loop. The inner
+    // loop still ends after 2 passes. The main loop is a pass of the outer loop, 1920 ticks long. The sequence plays as
+    // the same outer loop with a count of 0. With every counted loop endless, the inner loop would be the main loop.
     const auto loops = [](uint8_t outer)
     {
         return PerformOnBank(Code({0xd4, outer, 0xd4, 0x02, 0x3c, 0x64, 0x87, 0x40, 0xfc, 0xfc, 0xff}),

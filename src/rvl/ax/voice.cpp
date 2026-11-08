@@ -5,12 +5,20 @@
 #include <cstdint>
 
 #include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/rvl/ax/system.h"
 
 namespace ntdlib::rvl::ax
 {
 
 void Voice::SetState(VoiceState state)
 {
+    if (layer != nullptr)
+    {
+        layer->SetVoiceState(*this, state);
+
+        return;
+    }
+
     if (pb.state == static_cast<uint16_t>(state))
     {
         return;
@@ -27,6 +35,12 @@ void Voice::SetState(VoiceState state)
 void Voice::SetAddr(const PbAddr& address)
 {
     pb.addr = address;
+    if (layer != nullptr)
+    {
+        loop_end = Join(address.end_address_hi, address.end_address_lo);
+
+        return;
+    }
 
     // PCM has no frames to decode. The decoder gets no coefficients and a gain that scales the samples to 16 bits.
     switch (static_cast<SampleFormat>(address.format))

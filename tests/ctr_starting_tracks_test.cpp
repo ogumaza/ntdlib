@@ -99,8 +99,8 @@ void TestSystemTitles()
     CheckStart(kMiiPlaza, "BGM_CTR_MSET", {});
     CheckStart(kMiiMaker, "MEDIT_BGM_FACE", {.silenced = 0xff00});
 
-    // Mii Maker's later mixes (R-938): the sound at 0.7, tracks 3, 4 and 7 out, tracks 8 and 9 at 0.8, and in the
-    // second, track 10 at 0.75. A start's tracks default to a volume of 1.
+    // Mii Maker's later mixes: the sound at 0.7, tracks 3, 4 and 7 out, tracks 8 and 9 at 0.8, and in the second, track
+    // 10 at 0.75. A start's tracks default to a volume of 1.
     const auto mixes = SequenceArrangements(kMiiMaker, "MEDIT_BGM_FACE");
     std::array<float, ntdlib::ctr::snd::kSequenceTracks> volumes = ntdlib::ctr::snd::kFullTrackVolumes;
     volumes[8] = 0.8f;
@@ -316,7 +316,7 @@ void TestArrangements()
           "a piece after the jingle keeps its change of global 16 in quick mode");
     Check(SequenceArrangements(kMiiPlaza, "BGM_NEW_Mii").empty(), "the short jingle has no quick state");
 
-    // Happy Home Designer's music players send 0.38 to the room's reverb or delay on bus A (R-727).
+    // Happy Home Designer's music players send 0.38 to the room's reverb or delay on bus A.
     constexpr SequenceStart kRinging = {.fx_send = {0.38f, 0.0f}, .game_effect = 0};
     constexpr SequenceStart kEchoes = {.fx_send = {0.38f, 0.0f}, .game_effect = 1};
     for (const std::string_view archive : {kHappyHomeDesigner, kHappyHomeDesignerOld})
@@ -401,9 +401,9 @@ void TestIslandTourTempoPieces()
 }
 
 // Mario Kart 7's beat sequences play at their stream's BPM over 120. Music Park's starts with tracks 0 to 3 muted. Its
-// other states unmute one of them, or come from the final lap, with track variable 0 at 1 and the faster stream.
-// Killer Ship's and Waluigi Pinball's have a final lap too. SEQ_SYNC_BEAT_120 starts at Toad Circuit's BPM, and its
-// states follow each other course's normal and final-lap streams (R-939).
+// other states unmute one of them, or come from the final lap, with track variable 0 at 1 and the faster stream. Killer
+// Ship's and Waluigi Pinball's have a final lap too. SEQ_SYNC_BEAT_120 starts at Toad Circuit's BPM, and its states
+// follow each other course's normal and final-lap streams.
 void TestMarioKart7Beats()
 {
     constexpr float kMusicPark = 139.0f / 120.0f;

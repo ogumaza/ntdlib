@@ -7,10 +7,13 @@
 // both biquads on. The calls change the game's copy of the parameters. Each frame then sends them to the renderer. The
 // renderer takes them in, reports the voices' state from two frames before, generates the frame's command list and runs
 // it. An aux effect in a mix sends the mix's samples to the game and receives what the game makes of them. A delay, a
-// reverb or a light limiter runs in the renderer. Not modelled yet: the renderer's I3DL2 reverb, compressor and other
-// effects, splitters, voice dropping, the downmix, the upsampler for a 32 kHz renderer, and the exchange of a
-// 6-channel effect's buffers 2 and 3 with 4 and 5 before REV11. That exchange leaves the front left and right as they
-// are.
+// reverb or a light limiter runs in the renderer. A voice's splitter follows the build in Skyward Sword HD's sdk
+// (NintendoSDK 11.4.0, REV8). With splitters in use, that renderer orders the mixes by a topological sort
+// (MixContext::TsortInfo). The model keeps the order by distance from the final mix. Not modelled yet: the renderer's
+// I3DL2 reverb, compressor and other effects, a sub-mix's splitter, the topological order, voice dropping, the
+// downmix, and the exchange of a 6-channel effect's buffers 2 and 3 with 4 and 5 before REV11. That exchange leaves the
+// front left and right as they are. A renderer at 32 kHz feeds its device sink through the upsampler to 48 kHz
+// (UpsampleFrame).
 
 #pragma once
 
@@ -19,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/nx/audio/delay.h"
@@ -48,6 +52,11 @@ struct BiquadFilterParameter
 
 // What AppendWaveBuffer takes (nn::audio::WaveBuffer): the samples and the range in them, and for DSP-ADPCM the context
 // at the range's start, if any. GetReleasedWaveBuffer gives `tag` back once the renderer is done with the buffer.
+//
+// With `loop_fields` set, the buffer takes its loop range and loop count from the three fields after it. The sdk's
+// AppendWaveBuffer does the same with WaveBuffer::MemberOptions (REV8). A looping buffer then plays [start, end)
+// once and [loop_start, loop_end) after that, loop_count more times, or for ever for -1. Without them, the loop range
+// is [start, end), and a looping buffer loops for ever.
 struct WaveBufferInfo
 {
     std::span<const uint8_t> buffer;
@@ -57,6 +66,18 @@ struct WaveBufferInfo
     bool end_of_stream = false;
     const AdpcmContext* context = nullptr;
     const void* tag = nullptr;
+    bool loop_fields = false;
+    int32_t loop_start = 0;
+    int32_t loop_end = 0;
+    int32_t loop_count = 0;
+};
+
+// What AcquireVoiceSlot takes as nn::audio::VoiceType::BehaviorOptions (REV5): whether a looping buffer's played
+// sample count starts again from 0 at each loop. nn::atk passes none. The renderer's option that skips the pitch and
+// the sample-rate conversion isn't modelled.
+struct VoiceBehavior
+{
+    bool reset_played_at_loop = false;
 };
 
 // The renderer's settings (nn::audio::AudioRendererParameter), and the mixing mode, which nn::audio lacks.
@@ -67,6 +88,10 @@ struct RendererParameter
     int32_t mix_buffer_count = 1;
     int32_t sub_mix_count = 0;
     int32_t voice_count = 1;
+
+    // The splitters (splitterCount) and the destinations that they share (splitterSendChannelCount).
+    int32_t splitter_count = 0;
+    int32_t splitter_destination_count = 0;
 
     // The enhanced mixing mode (see Renderer). Off, the renderer follows the console to the bit.
     bool enhanced = false;
@@ -84,7 +109,7 @@ public:
     virtual void OpenAudioRenderer(const RendererParameter& parameter) = 0;
 
     virtual void AcquireVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
-                                  const AdpcmCoefficients* coefficients, int voice) = 0;
+                                  const AdpcmCoefficients* coefficients, const VoiceBehavior& behavior, int voice) = 0;
     virtual void ReleaseVoiceSlot(int voice) = 0;
     virtual void SetVoicePlayState(int voice, PlayState state) = 0;
     virtual void GetVoicePlayState(int voice, PlayState state) = 0;
@@ -95,9 +120,15 @@ public:
     virtual void SetVoiceBiquadFilterParameter(int voice, int index, const BiquadFilterParameter& parameter) = 0;
     virtual void SetVoiceDestination(int voice, int mix) = 0;
     virtual void SetVoiceMixVolume(int voice, float volume, int channel, int buffer) = 0;
+    virtual void AcquireSplitter(int32_t sample_rate, int channel_count, int destination_count, int splitter) = 0;
+    virtual void ReleaseSplitter(int splitter) = 0;
+    virtual void SetSplitterDestination(int splitter, int destination, int mix) = 0;
+    virtual void SetSplitterMixVolume(int splitter, int destination, float volume, int channel, int buffer) = 0;
+    virtual void SetVoiceSplitter(int voice, int splitter) = 0;
     virtual void AppendWaveBuffer(int voice, const WaveBufferInfo& buffer, bool appended) = 0;
     virtual void GetReleasedWaveBuffer(int voice, const void* tag) = 0;
     virtual void GetVoicePlayedSampleCount(int voice, uint64_t count) = 0;
+    virtual void GetWaveBufferCount(int voice, int count) = 0;
     virtual void IsVoiceDroppedFlagOn(int voice, bool dropped) = 0;
     virtual void AcquireFinalMix(int buffer_count, bool acquired) = 0;
     virtual void AcquireSubMix(int32_t sample_rate, int buffer_count, int sub_mix) = 0;
@@ -193,6 +224,7 @@ public:
     // A mix by its id: the final mix is 0, the sub-mixes 1 up.
     static constexpr int kFinalMix = 0;
     static constexpr int kNoMix = -1;
+    static constexpr int kNoSplitter = -1;
 
     // The most channels a voice has, and the most buffers a mix has.
     static constexpr int kMaxChannels = 6;
@@ -212,7 +244,7 @@ public:
     // A voice is its slot, or -1 when there is no free slot or not enough channel resources (AcquireVoiceSlot). A new
     // voice is stopped, at pitch 1 and volume 1, with no destination.
     int AcquireVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
-                         const AdpcmCoefficients* coefficients);
+                         const AdpcmCoefficients* coefficients, const VoiceBehavior& behavior = {});
 
     // ReleaseVoiceSlot: the renderer stops the voice at once, with no depop.
     void ReleaseVoiceSlot(int voice);
@@ -228,6 +260,25 @@ public:
 
     // The gain from a channel of the voice to a buffer of its destination.
     void SetVoiceMixVolume(int voice, float volume, int channel, int buffer);
+
+    // Splitters (REV2). A splitter sends each channel of a voice to each of its destinations. A destination is a mix,
+    // with mix volumes for each channel. AcquireSplitter returns the splitter, or kNoSplitter when no splitter is free
+    // or too few destinations are (SplitterInfoManager::AcquireSplitterInfo, 0x45628 in Skyward Sword HD's sdk). It
+    // takes the free splitter and the free destinations that were freed first. A new destination has no mix and mix
+    // volumes of 0. ReleaseSplitter (0x457cc) frees them. The renderer then takes them out of use at the next frame,
+    // unless a new splitter takes them first.
+    int AcquireSplitter(int32_t sample_rate, int channel_count, int destination_count);
+    void ReleaseSplitter(int splitter);
+
+    // The mix of a destination, for each of the splitter's channels (SetSplitterDestination, 0x44db0).
+    void SetSplitterDestination(int splitter, int destination, int mix);
+
+    // The gain from a channel to a buffer of a destination's mix (SetSplitterMixVolume, 0x45070).
+    void SetSplitterMixVolume(int splitter, int destination, float volume, int channel, int buffer);
+
+    // The splitter as the voice's destination, in place of a mix (SetVoiceDestination, 0x465e0). SetVoiceDestination
+    // takes a voice off its splitter.
+    void SetVoiceSplitter(int voice, int splitter);
 
     // A host's mute of a voice. nn::audio has no such call. A muted voice plays on as before, and its output to every
     // buffer of its destination is silent. A change ramps the voice's volume to or from 0 across the next frame. A
@@ -260,6 +311,9 @@ public:
     // The tag of the oldest buffer the renderer has finished with, or nullptr. Each one comes back once.
     const void* GetReleasedWaveBuffer(int voice);
 
+    // The buffers appended that the client hasn't taken back with GetReleasedWaveBuffer (GetWaveBufferCount).
+    int GetWaveBufferCount(int voice) const;
+
     // What the last frame's update reported, as of two frames before it.
     uint64_t GetVoicePlayedSampleCount(int voice) const;
     bool IsVoiceDroppedFlagOn(int voice) const;
@@ -273,7 +327,8 @@ public:
     // The gain from a buffer of the sub-mix to a buffer of its destination.
     void SetSubMixMixVolume(int sub_mix, float volume, int source, int destination);
 
-    // The device sink: the final mix's buffers it takes, one for each channel of the output (AddDeviceSink).
+    // The device sink: the final mix's buffers it takes, one for each channel of the output (AddDeviceSink). The
+    // enhanced mode has no upsampler. In that mode at 32 kHz, AddDeviceSink throws std::logic_error.
     void AddDeviceSink(std::span<const int> inputs);
 
     // The size of each of an aux effect's two buffers for `frames` frames of `channels` channels
@@ -401,7 +456,8 @@ public:
         return mixing_;
     }
 
-    // The device sink's last frame: its channels interleaved, held to 16 bits.
+    // The device sink's last frame: its channels interleaved, held to 16 bits. A renderer at 32 kHz gives 240 samples
+    // of each channel at 48 kHz: the device sink's upsampler converts the final mix's 160 (UpsampleFrame).
     std::span<const int16_t> DeviceOutput() const
     {
         return output_;
@@ -461,6 +517,7 @@ private:
         int32_t sample_rate = 48000;
         int32_t priority = 0;
         int channel_count = 0;
+        VoiceBehavior behavior;
         float pitch = 1.0f;
         float volume = 1.0f;
         bool muted = false; // the host's mute (SetVoiceMuted)
@@ -469,6 +526,7 @@ private:
         std::array<BiquadFilterParameter, 2> biquads;
         AdpcmCoefficients coefficients{};
         int mix = kNoMix;
+        int splitter = kNoSplitter;
         std::array<ClientWaveBuffer, kWaveBufferCount> buffers;
         int buffer_count = 0; // appended and not yet released
         int buffer_index = 0; // the oldest not yet released
@@ -490,6 +548,7 @@ private:
             int32_t priority = 0;
             int32_t sort_order = 0;
             int channel_count = 0;
+            VoiceBehavior behavior;
             float pitch = 1.0f;
             float volume = 1.0f;
             float previous_volume = 0.0f;
@@ -500,12 +559,46 @@ private:
             std::array<BiquadFilterParameter, 2> biquads;
             std::array<bool, 2> biquads_were_enabled{};
             int mix = kNoMix;
+            int splitter = kNoSplitter;
             int buffer_count = 0;
             std::array<WaveBuffer, kWaveBufferCount> buffers;
             std::array<AdpcmContext, kWaveBufferCount> contexts{};
             std::array<bool, kWaveBufferCount> sent{true, true, true, true}; // false: taken, valid at the next frame
             bool stopping = false;
         } server;
+    };
+
+    // A splitter's destination, by its id: the client's mix and mix volumes, and the renderer's copy with the mix
+    // volumes of the last frame that mixed the destination (nn::audio::SplitterDestinationData, 0x80 bytes, and
+    // nn::audio::server::SplitterDestinationData, 0xe0 bytes). The next frame's update sends the client's values when
+    // they've changed.
+    struct SplitterDestination
+    {
+        int mix = kNoMix;
+        std::array<float, kMaxMixBuffers> volumes{};
+        bool in_use = false;
+        bool changed = true;
+
+        int server_mix = kNoMix;
+        std::array<float, kMaxMixBuffers> server_volumes{};
+        std::array<float, kMaxMixBuffers> previous_volumes{};
+        bool server_in_use = false;
+        bool mixed = false; // a frame has mixed it since the last update of its previous volumes
+        int next = -1;      // the next destination in the renderer's list
+    };
+
+    // A splitter, by its id: the client's channels and destinations, and the renderer's list of the destinations
+    // (nn::audio::SplitterInfo and its server's). The next frame's update sends the client's values when they've
+    // changed. Destination 0 comes first, once for each channel, then destination 1, and so on. The renderer links its
+    // list through the destinations themselves. It has no channel count.
+    struct Splitter
+    {
+        bool in_use = false;
+        bool changed = false;
+        int channel_count = 0;
+        int32_t sample_rate = 0;
+        std::vector<int> destinations;
+        int server_first = -1; // the first destination in the renderer's list
     };
 
     // An effect of a mix: its kind, and its index among the renderer's effects of that kind.
@@ -616,7 +709,7 @@ private:
 
     // What the client calls of the same names do, before the observer sees them.
     int TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
-                      const AdpcmCoefficients* coefficients);
+                      const AdpcmCoefficients* coefficients, const VoiceBehavior& behavior);
     bool QueueWaveBuffer(int voice, const WaveBufferInfo& buffer);
     const void* TakeReleasedWaveBuffer(int voice);
     bool TakeFinalMix(int buffer_count);
@@ -629,9 +722,31 @@ private:
     void GenerateWithoutMixing();
     void LayOutMixes();
     void RenderVoice(Voice& voice);
+
+    // The destinations of a voice's channel, as the renderer has them: the destination and its mix, for each one in
+    // use that has a mix in use (CommandGenerator::GenerateVoiceCommand, 0x5cd3c). For the depop, every channel's
+    // destinations (GenerateDataSourceCommand, 0x5c0c0).
+    std::vector<std::pair<SplitterDestination*, const Mix*>> SplitterMixes(const Voice::Server& server, int channel);
+    std::vector<std::pair<SplitterDestination*, const Mix*>> SplitterDepopMixes(const Voice::Server& server);
+
+    // The client's destination of a splitter's channel (SplitterInfo::GetDestinationData, 0x45d10), and the
+    // renderer's destination `index` places down a splitter's list, or -1 (SplitterContext::GetDestinationData,
+    // 0x67704).
+    SplitterDestination& ClientDestination(int splitter, int destination, int channel);
+    int ServerDestination(int splitter, int index) const;
+
+    // The splitters' update, and the destinations' previous mix volumes after the voices' commands.
+    void UpdateSplitters();
+    void FinishSplitters();
+
+    // A voice channel's mix ramps from `work` into the buffers of `mix`, from the volumes `from` to `to`, with its last
+    // samples for the depop and its meter's sums (GenerateVoiceMixCommand, 0x5c8c8).
+    void MixVoiceChannel(const Voice::Server& server, VoiceState& state, const int32_t* work, const Mix& mix,
+                         int mix_id, const std::array<float, kMaxMixBuffers>& from,
+                         const std::array<float, kMaxMixBuffers>& to);
     void RenderVoiceEnhanced(Voice& voice, const Mix* destination);
     void AdvanceVoice(Voice& voice, const Mix* destination);
-    void AddToMeter(const Voice::Server& server, int buffer, const int32_t* work, int32_t start, int32_t end);
+    void AddToMeter(const Voice::Server& server, int mix, int buffer, const int32_t* work, int32_t start, int32_t end);
     void AddToMeterEnhanced(const Voice::Server& server, int buffer, const float* work, float start, float end);
     void RenderSubMix(int id);
     void RenderFinalMix();
@@ -673,14 +788,19 @@ private:
     std::vector<ChannelResource> resources_;
     std::vector<int> order_; // the client's voices in use, by priority, the newest first among equals
     std::vector<Mix> mixes_;
+    std::vector<Splitter> splitters_;
+    std::vector<SplitterDestination> splitter_destinations_;
+    std::vector<int> free_splitters_;             // the first freed first
+    std::vector<int> free_splitter_destinations_; // the first freed first
     std::vector<Aux> auxes_;
     std::vector<Delay> delays_;
     std::vector<Reverb> reverbs_;
     std::vector<LightLimiter> limiters_;
     bool mixes_changed_ = true;
-    std::vector<int> sinks_;       // the device sink's inputs
-    std::vector<int32_t> buffers_; // the mix buffers, then a working buffer for each channel a voice may have
-    std::vector<int32_t> depop_;   // a value for each mix buffer
+    std::vector<int> sinks_;            // the device sink's inputs
+    std::vector<Upsampler> upsamplers_; // one for each of the device sink's inputs, at 32 kHz only
+    std::vector<int32_t> buffers_;      // the mix buffers, then a working buffer for each channel a voice may have
+    std::vector<int32_t> depop_;        // a value for each mix buffer
     std::vector<int16_t> output_;
     RendererObserver* observer_ = nullptr;
     bool mutes_at_once_ = false; // a restore came after the last frame
@@ -726,12 +846,17 @@ struct Renderer::Snapshot
     std::vector<ChannelResource> resources;
     std::vector<int> order;
     std::vector<Mix> mixes;
+    std::vector<Splitter> splitters;
+    std::vector<SplitterDestination> splitter_destinations;
+    std::vector<int> free_splitters;
+    std::vector<int> free_splitter_destinations;
     std::vector<Aux> auxes;
     std::vector<Delay> delays;
     std::vector<Reverb> reverbs;
     std::vector<LightLimiter> limiters;
     bool mixes_changed = true;
     std::vector<int> sinks;
+    std::vector<Upsampler> upsamplers;
     std::vector<int32_t> buffers;
     std::vector<int32_t> depop;
     std::vector<int16_t> output;

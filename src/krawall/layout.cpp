@@ -201,6 +201,101 @@ std::vector<Span> DriverDataOf(const Rom& rom, const DriverInfo& info, const std
         }
     }
 
+    // What each channel of each module plays: the entries of the instruments' maps that its notes and note offs with an
+    // instrument read, and its notes without an instrument.
+    struct Channel
+    {
+        std::map<int, std::set<int>> entries;
+        std::set<int> notes;
+    };
+    std::map<uint32_t, std::map<int, Channel>> channels;
+    for (const auto& [address, sequence] : sequences)
+    {
+        for (const commands::Command& item : sequence.decoded.sequence.items)
+        {
+            Channel& channel = channels[sequence.module][item.index];
+            const int instrument = item.sample.value_or(0);
+            if (item.kind == commands::Kind::kNote && instrument > 0)
+            {
+                channel.entries[instrument].insert(item.key - 1);
+            }
+            else if (item.kind == commands::Kind::kNote)
+            {
+                channel.notes.insert(item.key);
+            }
+            else if (item.kind == commands::Kind::kNoteOff && instrument > 0)
+            {
+                channel.entries[instrument].insert(kNoteOff - 1);
+            }
+        }
+    }
+
+    // A note without an instrument looks its sample up again in the channel's instrument. The entry is the note less 1
+    // plus the relative note of the channel's sample, modulo 256. Past the map's 96 notes, the player reads the
+    // instrument's other bytes, or the bytes after it, as a sample's number. A note off with an instrument reads entry
+    // 126: its note of 127, less 1. Each sample that an entry picks becomes the channel's sample. Its relative note
+    // moves the channel's next notes.
+    for (const auto& [address, of_module] : channels)
+    {
+        ModuleInfo module;
+        if (!ReadModule(source, info.build, address, module))
+        {
+            continue;
+        }
+
+        for (const auto& [index, channel] : of_module)
+        {
+            for (const auto& [instrument, entries] : channel.entries)
+            {
+                const std::optional<Instrument> found = ReadInstrument(rom, info, module, uint16_t(instrument));
+                if (!found || !found->address)
+                {
+                    continue;
+                }
+
+                std::set<int> reached;
+                std::set<int> looked;
+                std::vector<int> pending;
+                const auto read = [&](int entry)
+                {
+                    if (!reached.insert(entry).second)
+                    {
+                        return;
+                    }
+
+                    const uint32_t at = found->address + 2 * uint32_t(entry);
+                    if (entry >= kInstrumentNotes)
+                    {
+                        add(at, 2);
+                        add_sample(source.U16(at));
+                    }
+                    pending.push_back(source.U16(at));
+                };
+                for (const int entry : entries)
+                {
+                    read(entry);
+                }
+
+                while (!pending.empty())
+                {
+                    const int sample = pending.back();
+                    pending.pop_back();
+                    const uint32_t header = source.U32(info.samples + 4 * uint32_t(sample));
+                    if (!header || !looked.insert(sample).second)
+                    {
+                        continue;
+                    }
+
+                    const auto relative = int8_t(source.U8(header + kSampleRelativeNote));
+                    for (const int note : channel.notes)
+                    {
+                        read(uint8_t(note - 1 + relative));
+                    }
+                }
+            }
+        }
+    }
+
     add(info.sine, kWaveBytes);
     add(info.ramp, kWaveBytes);
     add(info.square, kWaveBytes);

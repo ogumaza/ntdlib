@@ -155,6 +155,16 @@ public:
         return 1.0f;
     }
 
+    // AxManager's output mode: stereo, as on the Wii in archive mode, or Dolby Pro Logic II. Skyward Sword HD's layer
+    // sets the second (main 0x1026ec0). The voices' mixes follow it (Voice::CalcMixParam). Set it before a sound
+    // starts. The model has no other mode: SetOutputMode throws std::invalid_argument for one.
+    ntdlib::nwsnd::OutputMode GetOutputMode() const
+    {
+        return output_mode_;
+    }
+
+    void SetOutputMode(ntdlib::nwsnd::OutputMode mode);
+
     // SeqPlayer's global variables. Every player shares them. They're zero until the game sets one. In archive mode, an
     // arrangement can set them before its sequence starts (see StartSequence).
     std::array<int16_t, 16>& GlobalVariables()
@@ -334,6 +344,7 @@ private:
     ChannelManager channels_;
     Random random_;
     SndBuild build_;
+    ntdlib::nwsnd::OutputMode output_mode_ = ntdlib::nwsnd::OutputMode::kStereo;
     std::array<int16_t, 16> global_variables_{};
     std::map<uint32_t, std::unique_ptr<LoadedBank>> banks_;
     std::vector<std::unique_ptr<ntdlib::rsar::Sequence>> sequences_;

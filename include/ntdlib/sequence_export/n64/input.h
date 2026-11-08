@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ntdlib/sequence_export/frame.h"
@@ -25,9 +26,11 @@ namespace ntdlib::sequence_export::n64
 class Input
 {
 public:
-    // Reads the image at `path`. Bytes that start no image, or an image with no engine that the converter reads, throw
-    // xsflib::FormatError.
-    static Input Open(const std::filesystem::path& path);
+    // Reads the image at `path`, or the ROM set of an arcade game: a ZIP archive or a folder of its chips. A ZIP archive
+    // without a profile's chips may hold a cartridge image instead: its one entry named .z64, .v64 or .n64, in any
+    // case. Bytes that start no image, a set without a profile's chips, or an image with no engine that ntdlib
+    // converts, throw xsflib::FormatError. `program` names the program in the message for a ZIP archive that it can't read.
+    static Input Open(const std::filesystem::path& path, std::string_view program);
 
     std::vector<ntdlib::sequence_export::Sequence> Sequences() const;
     Conversion Convert(std::size_t index, const PerformOptions& options);

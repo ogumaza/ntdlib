@@ -98,4 +98,54 @@ void ApplyReverb(const ReverbParameter& parameter, ReverbState& state, std::span
 void PassReverb(const ReverbParameter& parameter, std::span<const int32_t* const> inputs,
                 std::span<int32_t* const> outputs, int count);
 
+// nn::audio::ReverbParameterSet: a reverb's parameters as a client gives them. The pre-delay is in ms and the decay
+// time in seconds.
+struct ReverbParameterSet
+{
+    int32_t early_mode = 0;
+    float early_gain = 0.0f;
+    float predelay = 0.0f;
+    int32_t late_mode = 0;
+    float late_gain = 0.0f;
+    float decay_time = 0.0f;
+    float high_frequency_decay_ratio = 0.0f;
+    float coloration = 0.0f;
+    float reverb_gain = 0.0f;
+    float out_gain = 0.0f;
+    float dry_gain = 0.0f;
+};
+
+// A reverb that a game runs on the CPU over an aux bus's samples (nn::audio::AuxReverbType and its buffer). This
+// follows the client in Skyward Sword HD's sdk (NintendoSDK 11.4.0).
+class AuxReverb
+{
+public:
+    // InitializeAuxReverb (0x3bd00): `channels` channels at `sample_rate`, every parameter 0, and every channel on
+    // block 0. The reverb sets up at the first Process.
+    AuxReverb(int32_t sample_rate, int channels);
+
+    // SetAuxReverbInputOutput (0x3bff0): the block that each channel takes and gives. The channel count becomes
+    // `inputs.size()`, held to the channels that the reverb was made with and to 6. The reverb sets up again at the
+    // next Process. `outputs` must be as long as `inputs`.
+    void SetInputOutput(std::span<const int8_t> inputs, std::span<const int8_t> outputs);
+
+    // SetAuxReverbParameters (0x3be40): each value in Q14, towards zero. A reverb that has run works out its delays
+    // and gains again at the next Process. A mode above 4 throws std::invalid_argument. Nintendo's code stops there.
+    void SetParameters(const ReverbParameterSet& parameters);
+
+    // ResetAuxReverb (0x3c0a0): the reverb sets up again at the next Process.
+    void Reset();
+
+    // ProcessAuxReverb (0x3c0b0): `sample_count` samples of each channel. Channel k takes its samples at input +
+    // its block × sample_count and gives them at output + its block × sample_count. The output may be the input.
+    void Process(int32_t* output, const int32_t* input, uint32_t sample_count);
+
+private:
+    ReverbParameter parameter_;
+    std::array<int8_t, kReverbChannels> inputs_{};
+    std::array<int8_t, kReverbChannels> outputs_{};
+    uint8_t status_ = 0; // 0 set up, 1 work out the delays and gains again, 2 ready
+    ReverbState state_;
+};
+
 } // namespace ntdlib::nx::audio
