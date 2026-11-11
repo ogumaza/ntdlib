@@ -9,6 +9,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "ntdlib/rvl/ax/pb.h"
@@ -39,6 +41,15 @@ enum class EffectType : uint8_t
     // FxReverbStd of 2008 (Mario Kart Wii and Wii Music): preDelayTime, fusedTime, coloration, damping, outGain,
     // earlyMode, preDelayTimeMax, fusedMode, earlyGain, fusedGain.
     kReverbStd2008 = 6,
+
+    // The Photo Channel 1.1's mood effect (axfx::PhotoMood), turned on: the mode that SetMode takes.
+    kPhotoMood = 7,
+
+    // FxChorus of 2009 (Pokémon Rumble): delayTime (ms), depth, rate (Hz), feedback, outGain.
+    kChorus2009 = 8,
+
+    // FxDelay of 2009 (Pokémon Rumble): delay (ms), feedback, outGain, maxDelay (ms), lpf.
+    kDelay2009 = 9,
 };
 
 // The most words that a parameter structure has.
@@ -60,6 +71,11 @@ constexpr int EffectParamWords(EffectType type)
         return 5;
     case EffectType::kReverbStd2008:
         return 10;
+    case EffectType::kPhotoMood:
+        return 1;
+    case EffectType::kChorus2009:
+    case EffectType::kDelay2009:
+        return 5;
     }
 
     return 0;
@@ -160,13 +176,18 @@ inline std::vector<EffectSetup> EffectsFor(const std::vector<EffectSetup>& setup
     return found;
 }
 
-// A send to an aux bus that the game sets on a sound (BasicSound::SetFxSend, Animal Crossing: City Folk).
+// A send to an aux bus that the game sets on a sound (BasicSound::SetFxSend, Animal Crossing: City Folk). A send to
+// kMainSendBus is the sound's send to the main mix instead (BasicSound::SetMainSend, the Photo Channel 1.1).
 struct SoundSend
 {
     uint32_t sound = 0; // the index in the archive's sound table
     int bus = 0;
     float send = 0.0f;
 };
+
+// The bus of a SoundSend to the main mix. The sound's main send adds to its tracks' main sends. Each track's main send
+// is relative: 0 for a track at the full send. A main send of -1 therefore takes the sound out of the main mix.
+constexpr int kMainSendBus = 3;
 
 // The sends that the game sets on `sound`, by bus: 0 for a bus without one. Of two sends to one bus, the later counts.
 inline std::array<float, ax::kAuxBusCount> SendsOf(const std::vector<SoundSend>& sends, uint32_t sound)
@@ -183,14 +204,68 @@ inline std::array<float, ax::kAuxBusCount> SendsOf(const std::vector<SoundSend>&
     return found;
 }
 
+// The main send that the game sets on `sound`: 0 without one. Of two, the later counts.
+inline float MainSendOf(const std::vector<SoundSend>& sends, uint32_t sound)
+{
+    float found = 0.0f;
+    for (const SoundSend& send : sends)
+    {
+        if (send.sound == sound && send.bus == kMainSendBus)
+        {
+            found = send.send;
+        }
+    }
+
+    return found;
+}
+
+// Another state of a game in which some of its sounds play, such as the Photo Channel 1.1's moods and the Mii Channel's
+// scenes. A player of the game's states plays each of the sounds once more in each variant, with the variant's effects
+// and sends after the archive's (WithVariant). `name` names the state.
+struct EffectVariant
+{
+    std::string name;
+    std::vector<uint32_t> sounds = {};
+    std::vector<EffectSetup> setups = {};
+    std::vector<SoundSend> sends = {};
+
+    // The arrangement that the sounds play in, if the variant has one. Its tracks replace the tracks that the archive's
+    // effects give the sounds.
+    std::optional<Arrangement> arrangement = {};
+};
+
 // The effects that a game puts on the aux buses for the sounds of one of its sound archives, and what it sets on some
-// of those sounds as they start: sends to the buses, and the volumes of the tracks that it silences. A player of the
-// archive gives them in place of the game's code.
+// of those sounds as they start: sends to the buses, the volumes of the tracks that it silences and the values that it
+// gives their variables. A player of the archive gives them in place of the game's code. `variants` holds the game's
+// other states (EffectVariant).
 struct ArchiveEffects
 {
-    std::vector<EffectSetup> setups;
-    std::vector<SoundSend> sends;
-    std::vector<SoundTracks> tracks;
+    std::vector<EffectSetup> setups = {};
+    std::vector<SoundSend> sends = {};
+    std::vector<SoundTracks> tracks = {};
+    std::vector<SoundVariables> variables = {};
+    std::vector<EffectVariant> variants = {};
 };
+
+// The effects of `effects` with those of `variant` added after them, and without variants. The result leaves out the
+// tracks that `effects` gives the sounds of a variant with an arrangement.
+inline ArchiveEffects WithVariant(const ArchiveEffects& effects, const EffectVariant& variant)
+{
+    ArchiveEffects found = effects;
+    found.setups.insert(found.setups.end(), variant.setups.begin(), variant.setups.end());
+    found.sends.insert(found.sends.end(), variant.sends.begin(), variant.sends.end());
+    found.variants.clear();
+
+    if (variant.arrangement)
+    {
+        const auto in_variant = [&variant](const SoundTracks& entry)
+        {
+            return std::find(variant.sounds.begin(), variant.sounds.end(), entry.sound) != variant.sounds.end();
+        };
+        std::erase_if(found.tracks, in_variant);
+    }
+
+    return found;
+}
 
 } // namespace ntdlib::rvl::snd

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 
+// libultra's two sequence players: the queue of events, the voices and the MIDI messages. al_player_sequences.cpp
+// contains the readers of their sequences.
+
 #include "ntdlib/n64/al_player.h"
 
 #include <algorithm>
@@ -11,11 +14,21 @@
 #include <stdexcept>
 #include <vector>
 
+#include "al_player_constants.h"
+
 namespace ntdlib::n64
 {
 
 namespace
 {
+
+using al_player_constants::kStatusChannelPressure;
+using al_player_constants::kStatusController;
+using al_player_constants::kStatusNoteOff;
+using al_player_constants::kStatusNoteOn;
+using al_player_constants::kStatusPitchBend;
+using al_player_constants::kStatusPolyPressure;
+using al_player_constants::kStatusProgram;
 
 constexpr int32_t kFrameMicroseconds = 16000;
 constexpr int32_t kQueueEnd = 0x7FFFFFFF;
@@ -39,20 +52,6 @@ constexpr uint8_t kOscillatorVibratoRise = 131;
 constexpr uint8_t kScaledFormVolume = 120;
 constexpr uint8_t kDefaultPriority = 5;
 
-constexpr uint8_t kStatusNoteOff = 0x80;
-constexpr uint8_t kStatusNoteOn = 0x90;
-constexpr uint8_t kStatusPolyPressure = 0xA0;
-constexpr uint8_t kStatusController = 0xB0;
-constexpr uint8_t kStatusProgram = 0xC0;
-constexpr uint8_t kStatusChannelPressure = 0xD0;
-constexpr uint8_t kStatusPitchBend = 0xE0;
-constexpr uint8_t kStatusMeta = 0xFF;
-constexpr uint8_t kMetaTempo = 0x51;
-constexpr uint8_t kMetaEndOfTrack = 0x2F;
-constexpr uint8_t kMetaLoopStart = 0x2E;
-constexpr uint8_t kMetaLoopEnd = 0x2D;
-constexpr uint8_t kBlockCode = 0xFE;
-
 constexpr uint8_t kControllerVolume = 0x07;
 constexpr uint8_t kControllerChannelScale = 0x08;
 constexpr uint8_t kControllerPlayerScale = 0x15;
@@ -60,8 +59,6 @@ constexpr uint8_t kControllerPan = 0x0A;
 constexpr uint8_t kControllerPriority = 0x10;
 constexpr uint8_t kControllerSustain = 0x40;
 constexpr uint8_t kControllerFxMix = 0x5B;
-
-constexpr std::size_t kCompressedHeader = 68;
 
 // libultra's sine, in double precision from a single-precision angle.
 float Sine(float angle)
@@ -698,56 +695,17 @@ int32_t AlPlayer::Handle(AlSynth& synth)
             }
 
         case EventType::kNoteEnd:
-            {
-                const int voice = next_event_.voice;
-                const int synth_voice = voices_[static_cast<std::size_t>(voice)].synth_voice;
-                synth.StopVoice(synth_voice);
-                synth.FreeVoice(synth_voice);
-                StopOscillators(voice);
-                UnmapVoice(voice);
-                break;
-            }
+            EndVoice(synth, next_event_.voice);
+            break;
 
         case EventType::kTremolo:
         case EventType::kVibrato:
-            {
-                VoiceState& voice = voices_[static_cast<std::size_t>(next_event_.voice)];
-                Oscillator& oscillator = oscillator_states_[static_cast<std::size_t>(next_event_.oscillator)];
-                float value = 0.0F;
-                const int32_t delay = UpdateOscillatorState(
-                    oscillator.type, oscillator.second_half, oscillator.period, oscillator.count, oscillator.level,
-                    oscillator.depth, oscillator.low_level, oscillator.cents, oscillator.low_ratio,
-                    oscillator.high_ratio, oscillator.start_cents, oscillator.cents_range, value);
-                if (next_event_.type == EventType::kTremolo)
-                {
-                    voice.tremolo = static_cast<uint8_t>(static_cast<int32_t>(value));
-                    synth.SetVolume(voice.synth_voice, VoiceVolume(voice), VoiceDelta(voice));
-                }
-                else
-                {
-                    voice.vibrato = value;
-                    const float pitch = voice.pitch * voice.vibrato;
-                    synth.SetPitch(voice.synth_voice, channels_state_[voice.channel].pitch_bend * pitch);
-                }
-
-                Post(next_event_, delay);
-                break;
-            }
+            StepOscillator(synth);
+            break;
 
         case EventType::kEnvelope:
-            {
-                VoiceState& voice = voices_[static_cast<std::size_t>(next_event_.voice)];
-                if (voice.envelope_phase == EnvelopePhase::kAttack)
-                {
-                    voice.envelope_phase = EnvelopePhase::kDecay;
-                }
-
-                const int32_t delta = next_event_.delta;
-                voice.envelope_gain = next_event_.volume;
-                voice.envelope_end = time_ + delta;
-                synth.SetVolume(voice.synth_voice, VoiceVolume(voice), delta);
-                break;
-            }
+            NextEnvelopeSegment(synth);
+            break;
 
         case EventType::kMidi:
         case EventType::kNoteOff:
@@ -773,73 +731,15 @@ int32_t AlPlayer::Handle(AlSynth& synth)
             break;
 
         case EventType::kStop:
-            if (state_ == AlPlayerState::kStopping)
-            {
-                while (!active_voices_.empty())
-                {
-                    const int index = active_voices_.front();
-                    const int synth_voice = voices_[static_cast<std::size_t>(index)].synth_voice;
-                    synth.StopVoice(synth_voice);
-                    synth.FreeVoice(synth_voice);
-                    StopOscillators(index);
-                    UnmapVoice(index);
-                }
-
-                // Only ALSeqPlayer starts its time again.
-                if (form_ == AlSequenceForm::kStandard)
-                {
-                    time_ = 0;
-                }
-
-                state_ = AlPlayerState::kStopped;
-            }
-
+            FinishStop(synth);
             break;
 
         case EventType::kStopping:
-            if (state_ == AlPlayerState::kPlaying)
-            {
-                FlushType(EventType::kSequence);
-                if (form_ == AlSequenceForm::kCompressed)
-                {
-                    FlushType(EventType::kNoteOff);
-                }
-
-                FlushType(EventType::kMidi);
-                for (const int index : std::vector<int>(active_voices_))
-                {
-                    if (NeedsNoteKill(index, kKillTime))
-                    {
-                        ReleaseVoice(synth, index, kKillTime);
-                    }
-                }
-
-                state_ = AlPlayerState::kStopping;
-                Event event;
-                event.type = EventType::kStop;
-                Post(event, kQueueEnd);
-            }
-
+            StartStopping(synth);
             break;
 
         case EventType::kSetSequence:
-            bytes_ = pending_bytes_;
-            has_sequence_ = true;
-            if (form_ == AlSequenceForm::kCompressed)
-            {
-                NewCompressed();
-            }
-            else
-            {
-                NewStandard();
-            }
-
-            SetTempo(kInitialTempo);
-            if (file_ != nullptr)
-            {
-                InitFromBank();
-            }
-
+            LoadSequence();
             break;
 
         case EventType::kSetBank:
@@ -859,6 +759,128 @@ int32_t AlPlayer::Handle(AlSynth& synth)
     time_ += next_delta;
 
     return next_delta;
+}
+
+// The envelope segment that the event starts: the voice's target level and the time to reach it.
+void AlPlayer::NextEnvelopeSegment(AlSynth& synth)
+{
+    VoiceState& voice = voices_[static_cast<std::size_t>(next_event_.voice)];
+    if (voice.envelope_phase == EnvelopePhase::kAttack)
+    {
+        voice.envelope_phase = EnvelopePhase::kDecay;
+    }
+
+    const int32_t delta = next_event_.delta;
+    voice.envelope_gain = next_event_.volume;
+    voice.envelope_end = time_ + delta;
+    synth.SetVolume(voice.synth_voice, VoiceVolume(voice), delta);
+}
+
+// Stops a voice and frees it.
+void AlPlayer::EndVoice(AlSynth& synth, int voice)
+{
+    const int synth_voice = voices_[static_cast<std::size_t>(voice)].synth_voice;
+    synth.StopVoice(synth_voice);
+    synth.FreeVoice(synth_voice);
+    StopOscillators(voice);
+    UnmapVoice(voice);
+}
+
+// The next step of a voice's tremolo or vibrato.
+void AlPlayer::StepOscillator(AlSynth& synth)
+{
+    VoiceState& voice = voices_[static_cast<std::size_t>(next_event_.voice)];
+    Oscillator& oscillator = oscillator_states_[static_cast<std::size_t>(next_event_.oscillator)];
+    float value = 0.0F;
+    const int32_t delay = UpdateOscillatorState(
+        oscillator.type, oscillator.second_half, oscillator.period, oscillator.count, oscillator.level,
+        oscillator.depth, oscillator.low_level, oscillator.cents, oscillator.low_ratio, oscillator.high_ratio,
+        oscillator.start_cents, oscillator.cents_range, value);
+    if (next_event_.type == EventType::kTremolo)
+    {
+        voice.tremolo = static_cast<uint8_t>(static_cast<int32_t>(value));
+        synth.SetVolume(voice.synth_voice, VoiceVolume(voice), VoiceDelta(voice));
+    }
+    else
+    {
+        voice.vibrato = value;
+        const float pitch = voice.pitch * voice.vibrato;
+        synth.SetPitch(voice.synth_voice, channels_state_[voice.channel].pitch_bend * pitch);
+    }
+
+    Post(next_event_, delay);
+}
+
+// The end of a stop: every voice ends, and the player stops.
+void AlPlayer::FinishStop(AlSynth& synth)
+{
+    if (state_ != AlPlayerState::kStopping)
+    {
+        return;
+    }
+
+    while (!active_voices_.empty())
+    {
+        EndVoice(synth, active_voices_.front());
+    }
+
+    // Only ALSeqPlayer starts its time again.
+    if (form_ == AlSequenceForm::kStandard)
+    {
+        time_ = 0;
+    }
+
+    state_ = AlPlayerState::kStopped;
+}
+
+// The start of a stop: the sequence's events leave the queue, and the voices release over the kill time.
+void AlPlayer::StartStopping(AlSynth& synth)
+{
+    if (state_ != AlPlayerState::kPlaying)
+    {
+        return;
+    }
+
+    FlushType(EventType::kSequence);
+    if (form_ == AlSequenceForm::kCompressed)
+    {
+        FlushType(EventType::kNoteOff);
+    }
+
+    FlushType(EventType::kMidi);
+    for (const int index : std::vector<int>(active_voices_))
+    {
+        if (NeedsNoteKill(index, kKillTime))
+        {
+            ReleaseVoice(synth, index, kKillTime);
+        }
+    }
+
+    state_ = AlPlayerState::kStopping;
+    Event event;
+    event.type = EventType::kStop;
+    Post(event, kQueueEnd);
+}
+
+// Switches to the sequence that SetSequence queued, and starts its reader at the first tempo.
+void AlPlayer::LoadSequence()
+{
+    bytes_ = pending_bytes_;
+    has_sequence_ = true;
+    if (form_ == AlSequenceForm::kCompressed)
+    {
+        NewCompressed();
+    }
+    else
+    {
+        NewStandard();
+    }
+
+    SetTempo(kInitialTempo);
+    if (file_ != nullptr)
+    {
+        InitFromBank();
+    }
 }
 
 void AlPlayer::PostNextSequenceEvent()
@@ -957,105 +979,10 @@ void AlPlayer::HandleMidi(AlSynth& synth, const Event& event)
         return;
     }
 
-    ChannelState& channel = channels_state_[channel_number];
     const bool note_on = status == kStatusNoteOn && byte2 != 0;
     if (note_on)
     {
-        if (state_ != AlPlayerState::kPlaying)
-        {
-            return;
-        }
-
-        const BankSound* sound = LookupSound(byte1, byte2, channel_number);
-        if (sound == nullptr)
-        {
-            return;
-        }
-
-        const int index = MapVoice(byte1, byte2, channel_number);
-        if (index < 0)
-        {
-            return;
-        }
-
-        VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-        synth.AllocVoice(voice.synth_voice, channel.priority, false);
-        synth.SetVoiceTag(voice.synth_voice, channel_number);
-        const BankEnvelope& envelope = file_->envelopes[static_cast<std::size_t>(sound->envelope)];
-        const BankKeyMap& key_map = file_->key_maps[static_cast<std::size_t>(sound->key_map)];
-        voice.sound = sound;
-        voice.envelope_phase = EnvelopePhase::kAttack;
-        voice.phase = channel.sustain > kSustainThreshold ? NotePhase::kSustain : NotePhase::kNoteOn;
-        const auto cents = static_cast<int16_t>((byte1 - key_map.key_base) * 100 + key_map.detune);
-        voice.pitch = CentsToRatio(cents);
-        voice.envelope_gain = envelope.attack_volume;
-        voice.envelope_end = time_ + envelope.attack_time;
-        voice.tremolo = kVolumeFull;
-        voice.vibrato = 1.0F;
-        voice.oscillators = 0;
-        if (oscillators_ && channel.instrument != nullptr)
-        {
-            const BankInstrument& instrument = *channel.instrument;
-            float value = static_cast<float>(kVolumeFull);
-            if (instrument.tremolo_type != 0)
-            {
-                Event wave;
-                wave.type = EventType::kTremolo;
-                wave.voice = index;
-                const int32_t delay =
-                    StartOscillator(wave.oscillator, value, instrument.tremolo_type, instrument.tremolo_rate,
-                                    instrument.tremolo_depth, instrument.tremolo_delay);
-                if (delay != 0)
-                {
-                    Post(wave, delay);
-                    voice.oscillators |= 1;
-                }
-            }
-
-            voice.tremolo = static_cast<uint8_t>(static_cast<int32_t>(value));
-            value = 1.0F;
-            if (instrument.vibrato_type != 0)
-            {
-                Event wave;
-                wave.type = EventType::kVibrato;
-                wave.voice = index;
-                const int32_t delay =
-                    StartOscillator(wave.oscillator, value, instrument.vibrato_type, instrument.vibrato_rate,
-                                    instrument.vibrato_depth, instrument.vibrato_delay);
-                if (delay != 0)
-                {
-                    Post(wave, delay);
-                    voice.oscillators |= 2;
-                }
-            }
-
-            voice.vibrato = value;
-        }
-
-        const float pitch = voice.pitch * channel.pitch_bend * voice.vibrato;
-        synth.StartVoiceParams(voice.synth_voice, WaveOf(*sound), pitch, VoiceVolume(voice), VoicePan(voice),
-                               FxMix(channel), envelope.attack_time);
-
-        Event decay;
-        decay.type = EventType::kEnvelope;
-        decay.voice = index;
-        decay.volume = envelope.decay_volume;
-        decay.delta = envelope.decay_time;
-        Post(decay, envelope.attack_time);
-
-        if (form_ == AlSequenceForm::kCompressed && event.duration != 0)
-        {
-            Event note_off;
-            note_off.type = EventType::kNoteOff;
-            note_off.status = static_cast<uint8_t>(channel_number | kStatusNoteOff);
-            note_off.byte1 = byte1;
-            Post(note_off, microseconds_per_tick_ * static_cast<int32_t>(event.duration));
-        }
-
-        if (on_note)
-        {
-            on_note({channel_number, byte1, byte2, event.duration, event.offset, time_});
-        }
+        StartNote(synth, event, channel_number);
 
         return;
     }
@@ -1064,27 +991,8 @@ void AlPlayer::HandleMidi(AlSynth& synth, const Event& event)
     {
     case kStatusNoteOn:
     case kStatusNoteOff:
-        {
-            const int index = LookupVoice(byte1, channel_number);
-            if (index < 0)
-            {
-                return;
-            }
-
-            VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-            if (voice.phase == NotePhase::kSustain)
-            {
-                voice.phase = NotePhase::kSustainRelease;
-            }
-            else
-            {
-                voice.phase = NotePhase::kRelease;
-                const BankEnvelope& envelope = file_->envelopes[static_cast<std::size_t>(voice.sound->envelope)];
-                ReleaseVoice(synth, index, envelope.release_time);
-            }
-
-            break;
-        }
+        ReleaseNote(synth, channel_number, byte1);
+        break;
 
     case kStatusPolyPressure:
         {
@@ -1113,127 +1021,7 @@ void AlPlayer::HandleMidi(AlSynth& synth, const Event& event)
         break;
 
     case kStatusController:
-        switch (byte1)
-        {
-        case kControllerPan:
-            channel.pan = byte2;
-            for (const int index : active_voices_)
-            {
-                const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-                if (voice.channel == channel_number)
-                {
-                    synth.SetPan(voice.synth_voice, VoicePan(voice));
-                    if (library_form_ == AlPlayerForm::kPlayerScale)
-                    {
-                        RestartDecay(synth, index);
-                    }
-                }
-            }
-
-            break;
-
-        case kControllerVolume:
-            channel.volume = byte2;
-            for (const int index : active_voices_)
-            {
-                const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-                if (voice.channel == channel_number && voice.envelope_phase != EnvelopePhase::kRelease)
-                {
-                    ChangeVoiceLevel(synth, index);
-                }
-            }
-
-            break;
-
-        case kControllerChannelScale:
-            if (library_form_ == AlPlayerForm::kPlayerScale)
-            {
-                channel.scale = static_cast<int8_t>(byte2);
-                for (const int index : active_voices_)
-                {
-                    const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-                    if (voice.channel == channel_number && voice.envelope_phase != EnvelopePhase::kRelease)
-                    {
-                        ChangeVoiceLevel(synth, index);
-                    }
-                }
-            }
-
-            break;
-
-        case kControllerPlayerScale:
-            if (library_form_ == AlPlayerForm::kPlayerScale)
-            {
-                player_scale_ = byte2;
-                for (const int index : active_voices_)
-                {
-                    RestartDecay(synth, index);
-                }
-            }
-
-            break;
-
-        case kControllerPriority:
-            channel.priority = byte2;
-            break;
-
-        case kControllerSustain:
-            channel.sustain = byte2;
-            for (const int index : std::vector<int>(active_voices_))
-            {
-                VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-                if (voice.channel != channel_number || voice.phase == NotePhase::kRelease)
-                {
-                    continue;
-                }
-
-                if (byte2 > kSustainThreshold)
-                {
-                    if (voice.phase == NotePhase::kNoteOn)
-                    {
-                        voice.phase = NotePhase::kSustain;
-                    }
-                }
-                else if (voice.phase == NotePhase::kSustain)
-                {
-                    voice.phase = NotePhase::kNoteOn;
-                }
-                else if (voice.phase == NotePhase::kSustainRelease)
-                {
-                    voice.phase = NotePhase::kRelease;
-                    const BankEnvelope& envelope = file_->envelopes[static_cast<std::size_t>(voice.sound->envelope)];
-                    ReleaseVoice(synth, index, envelope.release_time);
-                }
-            }
-
-            break;
-
-        case kControllerFxMix:
-            channel.fx_mix = byte2;
-            {
-                // The offset adds up over the channel's voices. Pokémon Snap's player sets the mix on every voice.
-                uint8_t mix = byte2;
-                for (const int index : active_voices_)
-                {
-                    const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-                    if (voice.channel == channel_number)
-                    {
-                        mix = OffsetFxMix(mix, fx_offset_);
-                        synth.SetFxMix(voice.synth_voice, mix);
-                    }
-                    else if (library_form_ == AlPlayerForm::kPlayerScale)
-                    {
-                        synth.SetFxMix(voice.synth_voice, mix);
-                    }
-                }
-            }
-
-            break;
-
-        default:
-            break;
-        }
-
+        HandleController(synth, channel_number, byte1, byte2);
         break;
 
     case kStatusProgram:
@@ -1248,25 +1036,297 @@ void AlPlayer::HandleMidi(AlSynth& synth, const Event& event)
         }
 
     case kStatusPitchBend:
-        {
-            const int32_t bend = (byte2 << 7) + byte1 - 8192;
-            const int32_t cents = (channel.bend_range * bend) / 8192;
-            const float ratio = CentsToRatio(cents);
-            channel.pitch_bend = ratio;
-            for (const int index : active_voices_)
-            {
-                const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
-                if (voice.channel == channel_number)
-                {
-                    synth.SetPitch(voice.synth_voice, voice.pitch * ratio * voice.vibrato);
-                }
-            }
-
-            break;
-        }
+        SetPitchBend(synth, channel_number, byte1, byte2);
+        break;
 
     default:
         break;
+    }
+}
+
+// A note off: the release of the voice that plays the key, or its wait for the sustain pedal.
+void AlPlayer::ReleaseNote(AlSynth& synth, uint8_t channel_number, uint8_t byte1)
+{
+    const int index = LookupVoice(byte1, channel_number);
+    if (index < 0)
+    {
+        return;
+    }
+
+    VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+    if (voice.phase == NotePhase::kSustain)
+    {
+        voice.phase = NotePhase::kSustainRelease;
+    }
+    else
+    {
+        voice.phase = NotePhase::kRelease;
+        const BankEnvelope& envelope = file_->envelopes[static_cast<std::size_t>(voice.sound->envelope)];
+        ReleaseVoice(synth, index, envelope.release_time);
+    }
+}
+
+// A pitch bend of a channel, on each of its voices.
+void AlPlayer::SetPitchBend(AlSynth& synth, uint8_t channel_number, uint8_t byte1, uint8_t byte2)
+{
+    ChannelState& channel = channels_state_[channel_number];
+    const int32_t bend = (byte2 << 7) + byte1 - 8192;
+    const int32_t cents = (channel.bend_range * bend) / 8192;
+    const float ratio = CentsToRatio(cents);
+    channel.pitch_bend = ratio;
+    for (const int index : active_voices_)
+    {
+        const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+        if (voice.channel == channel_number)
+        {
+            synth.SetPitch(voice.synth_voice, voice.pitch * ratio * voice.vibrato);
+        }
+    }
+}
+
+// Starts a note: a voice with the sound that the key and velocity pick, its envelope and its oscillators.
+void AlPlayer::StartNote(AlSynth& synth, const Event& event, uint8_t channel_number)
+{
+    const uint8_t byte1 = event.byte1;
+    const uint8_t byte2 = event.byte2;
+    const ChannelState& channel = channels_state_[channel_number];
+    if (state_ != AlPlayerState::kPlaying)
+    {
+        return;
+    }
+
+    const BankSound* sound = LookupSound(byte1, byte2, channel_number);
+    if (sound == nullptr)
+    {
+        return;
+    }
+
+    const int index = MapVoice(byte1, byte2, channel_number);
+    if (index < 0)
+    {
+        return;
+    }
+
+    VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+    synth.AllocVoice(voice.synth_voice, channel.priority, false);
+    synth.SetVoiceTag(voice.synth_voice, channel_number);
+    const BankEnvelope& envelope = file_->envelopes[static_cast<std::size_t>(sound->envelope)];
+    const BankKeyMap& key_map = file_->key_maps[static_cast<std::size_t>(sound->key_map)];
+    voice.sound = sound;
+    voice.envelope_phase = EnvelopePhase::kAttack;
+    voice.phase = channel.sustain > kSustainThreshold ? NotePhase::kSustain : NotePhase::kNoteOn;
+    const auto cents = static_cast<int16_t>((byte1 - key_map.key_base) * 100 + key_map.detune);
+    voice.pitch = CentsToRatio(cents);
+    voice.envelope_gain = envelope.attack_volume;
+    voice.envelope_end = time_ + envelope.attack_time;
+    StartVoiceOscillators(index, channel);
+    const float pitch = voice.pitch * channel.pitch_bend * voice.vibrato;
+    synth.StartVoiceParams(voice.synth_voice, WaveOf(*sound), pitch, VoiceVolume(voice), VoicePan(voice),
+                           FxMix(channel), envelope.attack_time);
+
+    Event decay;
+    decay.type = EventType::kEnvelope;
+    decay.voice = index;
+    decay.volume = envelope.decay_volume;
+    decay.delta = envelope.decay_time;
+    Post(decay, envelope.attack_time);
+
+    if (form_ == AlSequenceForm::kCompressed && event.duration != 0)
+    {
+        Event note_off;
+        note_off.type = EventType::kNoteOff;
+        note_off.status = static_cast<uint8_t>(channel_number | kStatusNoteOff);
+        note_off.byte1 = byte1;
+        Post(note_off, microseconds_per_tick_ * static_cast<int32_t>(event.duration));
+    }
+
+    if (on_note)
+    {
+        on_note({channel_number, byte1, byte2, event.duration, event.offset, time_});
+    }
+}
+
+// The tremolo and the vibrato of a new voice, from the instrument of its channel.
+void AlPlayer::StartVoiceOscillators(int index, const ChannelState& channel)
+{
+    VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+    voice.tremolo = kVolumeFull;
+    voice.vibrato = 1.0F;
+    voice.oscillators = 0;
+    if (oscillators_ && channel.instrument != nullptr)
+    {
+        const BankInstrument& instrument = *channel.instrument;
+        float value = static_cast<float>(kVolumeFull);
+        if (instrument.tremolo_type != 0)
+        {
+            Event wave;
+            wave.type = EventType::kTremolo;
+            wave.voice = index;
+            const int32_t delay =
+                StartOscillator(wave.oscillator, value, instrument.tremolo_type, instrument.tremolo_rate,
+                                instrument.tremolo_depth, instrument.tremolo_delay);
+            if (delay != 0)
+            {
+                Post(wave, delay);
+                voice.oscillators |= 1;
+            }
+        }
+
+        voice.tremolo = static_cast<uint8_t>(static_cast<int32_t>(value));
+        value = 1.0F;
+        if (instrument.vibrato_type != 0)
+        {
+            Event wave;
+            wave.type = EventType::kVibrato;
+            wave.voice = index;
+            const int32_t delay =
+                StartOscillator(wave.oscillator, value, instrument.vibrato_type, instrument.vibrato_rate,
+                                instrument.vibrato_depth, instrument.vibrato_delay);
+            if (delay != 0)
+            {
+                Post(wave, delay);
+                voice.oscillators |= 2;
+            }
+        }
+
+        voice.vibrato = value;
+    }
+}
+
+// A controller's change on a channel.
+void AlPlayer::HandleController(AlSynth& synth, uint8_t channel_number, uint8_t byte1, uint8_t byte2)
+{
+    ChannelState& channel = channels_state_[channel_number];
+    switch (byte1)
+    {
+    case kControllerPan:
+        channel.pan = byte2;
+        ApplyChannelPan(synth, channel_number);
+        break;
+
+    case kControllerVolume:
+        channel.volume = byte2;
+        ApplyChannelLevel(synth, channel_number);
+        break;
+
+    case kControllerChannelScale:
+        if (library_form_ == AlPlayerForm::kPlayerScale)
+        {
+            channel.scale = static_cast<int8_t>(byte2);
+            ApplyChannelLevel(synth, channel_number);
+        }
+
+        break;
+
+    case kControllerPlayerScale:
+        if (library_form_ == AlPlayerForm::kPlayerScale)
+        {
+            player_scale_ = byte2;
+            for (const int index : active_voices_)
+            {
+                RestartDecay(synth, index);
+            }
+        }
+
+        break;
+
+    case kControllerPriority:
+        channel.priority = byte2;
+        break;
+
+    case kControllerSustain:
+        channel.sustain = byte2;
+        ApplySustain(synth, channel_number, byte2);
+        break;
+
+    case kControllerFxMix:
+        channel.fx_mix = byte2;
+        ApplyFxMix(synth, channel_number, byte2);
+        break;
+
+    default:
+        break;
+    }
+}
+
+// The pan of a channel, on each of its voices.
+void AlPlayer::ApplyChannelPan(AlSynth& synth, uint8_t channel_number)
+{
+    for (const int index : active_voices_)
+    {
+        const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+        if (voice.channel == channel_number)
+        {
+            synth.SetPan(voice.synth_voice, VoicePan(voice));
+            if (library_form_ == AlPlayerForm::kPlayerScale)
+            {
+                RestartDecay(synth, index);
+            }
+        }
+    }
+}
+
+// The level of a channel, on each of its voices that isn't in its release.
+void AlPlayer::ApplyChannelLevel(AlSynth& synth, uint8_t channel_number)
+{
+    for (const int index : active_voices_)
+    {
+        const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+        if (voice.channel == channel_number && voice.envelope_phase != EnvelopePhase::kRelease)
+        {
+            ChangeVoiceLevel(synth, index);
+        }
+    }
+}
+
+// The sustain pedal of a channel, on each of its voices.
+void AlPlayer::ApplySustain(AlSynth& synth, uint8_t channel_number, uint8_t byte2)
+{
+    for (const int index : std::vector<int>(active_voices_))
+    {
+        VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+        if (voice.channel != channel_number || voice.phase == NotePhase::kRelease)
+        {
+            continue;
+        }
+
+        if (byte2 > kSustainThreshold)
+        {
+            if (voice.phase == NotePhase::kNoteOn)
+            {
+                voice.phase = NotePhase::kSustain;
+            }
+        }
+        else if (voice.phase == NotePhase::kSustain)
+        {
+            voice.phase = NotePhase::kNoteOn;
+        }
+        else if (voice.phase == NotePhase::kSustainRelease)
+        {
+            voice.phase = NotePhase::kRelease;
+            const BankEnvelope& envelope = file_->envelopes[static_cast<std::size_t>(voice.sound->envelope)];
+            ReleaseVoice(synth, index, envelope.release_time);
+        }
+    }
+}
+
+// The effect mix of a channel, on its voices.
+void AlPlayer::ApplyFxMix(AlSynth& synth, uint8_t channel_number, uint8_t byte2)
+{
+    // The offset adds up over the channel's voices. Pokémon Snap's player sets the mix on every voice.
+    uint8_t mix = byte2;
+    for (const int index : active_voices_)
+    {
+        const VoiceState& voice = voices_[static_cast<std::size_t>(index)];
+        if (voice.channel == channel_number)
+        {
+            mix = OffsetFxMix(mix, fx_offset_);
+            synth.SetFxMix(voice.synth_voice, mix);
+        }
+        else if (library_form_ == AlPlayerForm::kPlayerScale)
+        {
+            synth.SetFxMix(voice.synth_voice, mix);
+        }
     }
 }
 
@@ -1576,406 +1636,6 @@ void AlPlayer::SetTempo(float tempo)
 {
     microseconds_per_tick_ =
         has_sequence_ ? static_cast<int32_t>(tempo * ticks_per_quarter_inverse_) : kInitialTickTime;
-}
-
-uint8_t AlPlayer::SequenceByte(uint32_t place) const
-{
-    return place < bytes_.size() ? bytes_[place] : uint8_t{0};
-}
-
-void AlPlayer::NewCompressed()
-{
-    valid_tracks_ = 0;
-    last_delta_ticks_ = 0;
-    last_ticks_ = 0;
-    delta_flag_ = true;
-    for (int i = 0; i < 16; i++)
-    {
-        Track& track = tracks_[static_cast<std::size_t>(i)];
-        track = {};
-        const auto at = static_cast<uint32_t>(i) * 4;
-        const uint32_t offset = (static_cast<uint32_t>(SequenceByte(at)) << 24) |
-                                (static_cast<uint32_t>(SequenceByte(at + 1)) << 16) |
-                                (static_cast<uint32_t>(SequenceByte(at + 2)) << 8) | SequenceByte(at + 3);
-        if (offset != 0)
-        {
-            valid_tracks_ |= 1U << i;
-            track.location = offset;
-            track.delta_ticks = TrackVarLen(i);
-        }
-    }
-
-    const uint32_t division = (static_cast<uint32_t>(SequenceByte(kCompressedHeader - 4)) << 24) |
-                              (static_cast<uint32_t>(SequenceByte(kCompressedHeader - 3)) << 16) |
-                              (static_cast<uint32_t>(SequenceByte(kCompressedHeader - 2)) << 8) |
-                              SequenceByte(kCompressedHeader - 1);
-    ticks_per_quarter_inverse_ = static_cast<float>(1.0 / static_cast<double>(static_cast<float>(division)));
-}
-
-bool AlPlayer::CompressedNextDelta(int32_t& ticks)
-{
-    if (valid_tracks_ == 0)
-    {
-        return false;
-    }
-
-    uint32_t first = 0xFFFFFFFF;
-    for (int i = 0; i < 16; i++)
-    {
-        if (((valid_tracks_ >> i) & 1U) != 0)
-        {
-            Track& track = tracks_[static_cast<std::size_t>(i)];
-            if (delta_flag_)
-            {
-                track.delta_ticks -= last_delta_ticks_;
-            }
-
-            first = std::min(first, track.delta_ticks);
-        }
-    }
-
-    delta_flag_ = false;
-    ticks = static_cast<int32_t>(first);
-
-    return true;
-}
-
-AlPlayer::SequenceEvent AlPlayer::CompressedNextEvent()
-{
-    uint32_t first = 0xFFFFFFFF;
-    int first_track = 0;
-    for (int i = 0; i < 16; i++)
-    {
-        if (((valid_tracks_ >> i) & 1U) != 0)
-        {
-            Track& track = tracks_[static_cast<std::size_t>(i)];
-            if (delta_flag_)
-            {
-                track.delta_ticks -= last_delta_ticks_;
-            }
-
-            if (track.delta_ticks < first)
-            {
-                first = track.delta_ticks;
-                first_track = i;
-            }
-        }
-    }
-
-    const SequenceEvent event = CompressedTrackEvent(first_track);
-    last_ticks_ += first;
-    last_delta_ticks_ = first;
-    if (event.type != SequenceEventType::kTrackEnd)
-    {
-        tracks_[static_cast<std::size_t>(first_track)].delta_ticks += TrackVarLen(first_track);
-    }
-
-    delta_flag_ = true;
-
-    return event;
-}
-
-AlPlayer::SequenceEvent AlPlayer::CompressedTrackEvent(int track_number)
-{
-    Track& track = tracks_[static_cast<std::size_t>(track_number)];
-    SequenceEvent event;
-    event.offset = track.block_length != 0 ? track.block_place : track.location;
-    const uint8_t status = TrackByte(track_number);
-    if (status == kStatusMeta)
-    {
-        const uint8_t type = TrackByte(track_number);
-        if (type == kMetaTempo)
-        {
-            event.type = SequenceEventType::kTempo;
-            event.byte1 = TrackByte(track_number);
-            event.byte2 = TrackByte(track_number);
-            event.byte3 = TrackByte(track_number);
-            track.last_status = 0;
-        }
-        else if (type == kMetaEndOfTrack)
-        {
-            valid_tracks_ ^= 1U << track_number;
-            event.type = valid_tracks_ != 0 ? SequenceEventType::kTrackEnd : SequenceEventType::kEnd;
-        }
-        else if (type == kMetaLoopStart)
-        {
-            TrackByte(track_number);
-            TrackByte(track_number);
-            track.last_status = 0;
-            event.type = SequenceEventType::kLoopStart;
-        }
-        else if (type == kMetaLoopEnd)
-        {
-            const uint32_t count_place = track.location;
-            const uint8_t loop_count = SequenceByte(count_place);
-            const uint8_t running = SequenceByte(count_place + 1);
-            if (running == 0)
-            {
-                bytes_[count_place + 1] = loop_count;
-                track.location = count_place + 6;
-            }
-            else
-            {
-                if (running != 0xFF)
-                {
-                    bytes_[count_place + 1] = static_cast<uint8_t>(running - 1);
-                }
-
-                const uint32_t offset = (static_cast<uint32_t>(SequenceByte(count_place + 2)) << 24) |
-                                        (static_cast<uint32_t>(SequenceByte(count_place + 3)) << 16) |
-                                        (static_cast<uint32_t>(SequenceByte(count_place + 4)) << 8) |
-                                        SequenceByte(count_place + 5);
-                track.location = count_place + 6 - offset;
-            }
-
-            track.last_status = 0;
-            event.type = SequenceEventType::kLoopEnd;
-        }
-
-        return event;
-    }
-
-    event.type = SequenceEventType::kMidi;
-    if ((status & 0x80) != 0)
-    {
-        event.status = status;
-        event.byte1 = TrackByte(track_number);
-        track.last_status = status;
-    }
-    else
-    {
-        event.status = track.last_status;
-        event.byte1 = status;
-    }
-
-    const auto kind = static_cast<uint8_t>(event.status & 0xF0);
-    if (kind != kStatusProgram && kind != kStatusChannelPressure)
-    {
-        event.byte2 = TrackByte(track_number);
-        if (kind == kStatusNoteOn)
-        {
-            event.duration = TrackVarLen(track_number);
-        }
-    }
-
-    return event;
-}
-
-uint8_t AlPlayer::TrackByte(int track_number)
-{
-    Track& track = tracks_[static_cast<std::size_t>(track_number)];
-    if (track.block_length != 0)
-    {
-        const uint8_t byte = SequenceByte(track.block_place);
-        track.block_place++;
-        track.block_length--;
-
-        return byte;
-    }
-
-    uint8_t byte = SequenceByte(track.location);
-    track.location++;
-    if (byte != kBlockCode)
-    {
-        return byte;
-    }
-
-    const uint8_t next = SequenceByte(track.location);
-    track.location++;
-    if (next == kBlockCode)
-    {
-        return byte;
-    }
-
-    const uint8_t low = SequenceByte(track.location);
-    track.location++;
-    const uint8_t length = SequenceByte(track.location);
-    track.location++;
-    const uint32_t back = (static_cast<uint32_t>(next) << 8) + low;
-    track.block_place = track.location - (back + 4);
-    track.block_length = length;
-    byte = SequenceByte(track.block_place);
-    track.block_place++;
-    track.block_length--;
-
-    return byte;
-}
-
-uint32_t AlPlayer::TrackVarLen(int track_number)
-{
-    uint32_t value = TrackByte(track_number);
-    if ((value & 0x80) != 0)
-    {
-        value &= 0x7F;
-        uint32_t next = 0;
-        do
-        {
-            next = TrackByte(track_number);
-            value = (value << 7) + (next & 0x7F);
-        } while ((next & 0x80) != 0);
-    }
-
-    return value;
-}
-
-void AlPlayer::NewStandard()
-{
-    place_ = 0;
-    last_status_ = 0;
-    standard_ticks_ = 0;
-    loop_count_ = 0;
-
-    // The file's header: the chunk's id and length, the format, the track count and the division, then the track's id
-    // and length.
-    constexpr uint32_t kDivision = 12;
-    constexpr uint32_t kFirstEvent = 22;
-    const uint32_t division = (static_cast<uint32_t>(SequenceByte(kDivision)) << 8) | SequenceByte(kDivision + 1);
-    ticks_per_quarter_inverse_ = static_cast<float>(1.0 / static_cast<double>(static_cast<float>(division)));
-    track_start_ = kFirstEvent;
-    place_ = kFirstEvent;
-}
-
-uint8_t AlPlayer::StandardByte()
-{
-    const uint8_t byte = SequenceByte(place_);
-    place_++;
-
-    return byte;
-}
-
-int32_t AlPlayer::StandardVarLen()
-{
-    int32_t next = StandardByte();
-    int32_t value = next;
-    if ((next & 0x80) != 0)
-    {
-        value &= 0x7F;
-        do
-        {
-            next = StandardByte();
-            value = (value << 7) + (next & 0x7F);
-        } while ((next & 0x80) != 0);
-    }
-
-    return value;
-}
-
-bool AlPlayer::StandardNextDelta(int32_t& ticks)
-{
-    if (place_ >= bytes_.size())
-    {
-        return false;
-    }
-
-    const uint32_t saved = place_;
-    ticks = StandardVarLen();
-    place_ = saved;
-
-    return true;
-}
-
-AlPlayer::SequenceEvent AlPlayer::StandardNextEvent()
-{
-    SequenceEvent event;
-    const int32_t delta = StandardVarLen();
-    standard_ticks_ += delta;
-    event.offset = place_;
-    const uint8_t status = StandardByte();
-    if (status == kStatusMeta)
-    {
-        const uint8_t type = StandardByte();
-        if (type == kMetaTempo)
-        {
-            event.type = SequenceEventType::kTempo;
-            StandardByte();
-            event.byte1 = StandardByte();
-            event.byte2 = StandardByte();
-            event.byte3 = StandardByte();
-        }
-        else if (type == kMetaEndOfTrack)
-        {
-            event.type = SequenceEventType::kEnd;
-            StandardByte();
-        }
-        else
-        {
-            // The library's release build reads nothing more of other meta events, and its event keeps its old type. No
-            // file of the images holds one in a played sequence's place: a meta event here skips its length.
-            event.type = SequenceEventType::kLoopStart;
-            const int32_t length = StandardVarLen();
-            place_ += static_cast<uint32_t>(length);
-        }
-
-        last_status_ = 0;
-
-        return event;
-    }
-
-    event.type = SequenceEventType::kMidi;
-    if ((status & 0x80) != 0)
-    {
-        event.status = status;
-        event.byte1 = StandardByte();
-        last_status_ = status;
-    }
-    else
-    {
-        event.status = last_status_;
-        event.byte1 = status;
-    }
-
-    const auto kind = static_cast<uint8_t>(event.status & 0xF0);
-    if (kind != kStatusProgram && kind != kStatusChannelPressure)
-    {
-        event.byte2 = StandardByte();
-    }
-
-    return event;
-}
-
-AlPlayer::StandardMarker AlPlayer::MakeMarker(int32_t ticks)
-{
-    StandardMarker marker;
-    if (ticks == 0)
-    {
-        marker.place = track_start_;
-
-        return marker;
-    }
-
-    const uint32_t saved_place = place_;
-    const uint8_t saved_status = last_status_;
-    const int32_t saved_ticks = standard_ticks_;
-    place_ = track_start_;
-    last_status_ = 0;
-    standard_ticks_ = 0;
-    uint32_t last_place = place_;
-    uint8_t last_status = last_status_;
-    int32_t last_ticks = standard_ticks_;
-    do
-    {
-        last_place = place_;
-        last_status = last_status_;
-        last_ticks = standard_ticks_;
-        const SequenceEvent event = StandardNextEvent();
-        if (event.type == SequenceEventType::kEnd)
-        {
-            last_place = place_;
-            last_status = last_status_;
-            last_ticks = standard_ticks_;
-            break;
-        }
-    } while (standard_ticks_ < ticks && place_ < bytes_.size());
-
-    marker.place = last_place;
-    marker.last_status = last_status;
-    marker.last_ticks = last_ticks;
-    marker.current_ticks = standard_ticks_;
-    place_ = saved_place;
-    last_status_ = saved_status;
-    standard_ticks_ = saved_ticks;
-
-    return marker;
 }
 
 void BuildAlFrame(AlSynth& synth, AlPlayer& player, AudioList& list, AudioMemory& memory, uint32_t output, int samples)

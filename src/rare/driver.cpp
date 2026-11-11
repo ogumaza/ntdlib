@@ -511,6 +511,112 @@ bool GuessFormat(const Rom& rom, DriverInfo& info)
     return true;
 }
 
+// Sets the samples a frame and the rate's scale for the mix rate that the init sets. Warns about a rate that the rate
+// routine doesn't support, and about a voice limit out of range.
+void SetRate(DriverInfo& info)
+{
+    // The rate routine supports four rates.
+    bool known_rate = false;
+    for (const RateSetting& r : kRateSettings)
+    {
+        if (r.rate == info.mix_rate)
+        {
+            info.samples_per_frame = r.samples_per_frame;
+            info.rate_scale = r.scale;
+            known_rate = true;
+        }
+    }
+    if (!known_rate)
+    {
+        info.warnings.push_back("the init sets a mix rate of " + std::to_string(info.mix_rate) +
+                                " Hz, which the driver doesn't know; " + std::to_string(kAssumedRate.rate) +
+                                " Hz is assumed");
+        info.mix_rate = kAssumedRate.rate;
+        info.samples_per_frame = kAssumedRate.samples_per_frame;
+        info.rate_scale = kAssumedRate.scale;
+    }
+
+    if (info.voice_limit < 1 || info.voice_limit > 101)
+    {
+        info.warnings.push_back("the init sets a limit of " + std::to_string(info.voice_limit) +
+                                " voices; 8 is assumed");
+        info.voice_limit = 8;
+    }
+}
+
+// Sets the music volume at which the game's code starts each tune.
+void SetMusicVolume(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info)
+{
+    // The music volume at which the game's code starts each tune. Donkey Kong Country 3's revision of the driver plays
+    // most tunes of that game at 69. A build of the game that isn't listed is taken to do the same.
+    bool known = false, other_build = false;
+    for (const GameSettings& game : kGameSettings)
+    {
+        if (rom.GameCode() != game.game_code)
+        {
+            continue;
+        }
+
+        if (info.init != game.init || (!game.volumes.empty() && info.tune_count != game.tune_count))
+        {
+            other_build = true;
+            break;
+        }
+
+        info.music_volume = game.volume;
+        info.music_volumes.assign(game.volumes.begin(), game.volumes.end());
+        known = true;
+    }
+    if (!known && info.skips_silent_notes)
+    {
+        info.music_volume = kDkc3MusicVolume;
+        info.warnings.push_back("the game's music volumes aren't known; every tune plays at " +
+                                std::to_string(kDkc3MusicVolume) +
+                                ", the volume of most of Donkey Kong Country 3's tunes");
+    }
+    else if (other_build)
+    {
+        info.warnings.push_back(overrides.program + " knows another build's music volumes; every tune plays at 128");
+    }
+}
+
+// Adds what detection found to the log.
+void LogDetection(DriverInfo& info)
+{
+    if (info.init)
+    {
+        info.log.push_back("driver init at " + Hex(info.init) + ", " +
+                           (info.format == Format::kChannelNibble ? "channel in each command byte"
+                                                                  : "channel in a byte after each command"));
+        info.log.push_back("mixer: " + std::to_string(info.mix_rate) + " Hz, up to " +
+                           std::to_string(info.voice_limit) + " voices, " + std::to_string(info.slots_per_channel) +
+                           " notes a channel");
+        if (info.envelope_controllers)
+        {
+            info.log.push_back("controllers 20-23 set a channel's attack, decay, sustain and release");
+        }
+        if (!info.music_volumes.empty() || info.music_volume != 128)
+        {
+            int low = info.music_volume, high = info.music_volume;
+            if (!info.music_volumes.empty())
+            {
+                low = *std::min_element(info.music_volumes.begin(), info.music_volumes.end());
+                high = *std::max_element(info.music_volumes.begin(), info.music_volumes.end());
+            }
+            info.log.push_back("the game's code starts the tunes at a music volume of " + std::to_string(low) +
+                               (low == high ? "" : " to " + std::to_string(high)) + ", out of 128");
+        }
+        if (info.water.tune >= 0)
+        {
+            info.log.push_back("the game's code plays tune " + std::to_string(info.water.tune) + " on channels " +
+                               ChannelsText(info.water.above) + " above water and " + ChannelsText(info.water.under) +
+                               " under water");
+        }
+    }
+    info.log.push_back("tune table at " + Hex(info.tune_table) + ": " + std::to_string(info.tune_count) + " tune" +
+                       (info.tune_count == 1 ? "" : "s"));
+}
+
 } // namespace
 
 bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error)
@@ -554,65 +660,8 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         return false;
     }
 
-    // The rate routine supports four rates.
-    bool known_rate = false;
-    for (const RateSetting& r : kRateSettings)
-    {
-        if (r.rate == info.mix_rate)
-        {
-            info.samples_per_frame = r.samples_per_frame;
-            info.rate_scale = r.scale;
-            known_rate = true;
-        }
-    }
-    if (!known_rate)
-    {
-        info.warnings.push_back("the init sets a mix rate of " + std::to_string(info.mix_rate) +
-                                " Hz, which the driver doesn't know; " + std::to_string(kAssumedRate.rate) +
-                                " Hz is assumed");
-        info.mix_rate = kAssumedRate.rate;
-        info.samples_per_frame = kAssumedRate.samples_per_frame;
-        info.rate_scale = kAssumedRate.scale;
-    }
-
-    if (info.voice_limit < 1 || info.voice_limit > 101)
-    {
-        info.warnings.push_back("the init sets a limit of " + std::to_string(info.voice_limit) +
-                                " voices; 8 is assumed");
-        info.voice_limit = 8;
-    }
-
-    // The music volume at which the game's code starts each tune. Donkey Kong Country 3's revision of the driver plays
-    // most tunes of that game at 69. A build of the game that isn't listed is taken to do the same.
-    bool known = false, other_build = false;
-    for (const GameSettings& game : kGameSettings)
-    {
-        if (rom.GameCode() != game.game_code)
-        {
-            continue;
-        }
-
-        if (info.init != game.init || (!game.volumes.empty() && info.tune_count != game.tune_count))
-        {
-            other_build = true;
-            break;
-        }
-
-        info.music_volume = game.volume;
-        info.music_volumes.assign(game.volumes.begin(), game.volumes.end());
-        known = true;
-    }
-    if (!known && info.skips_silent_notes)
-    {
-        info.music_volume = kDkc3MusicVolume;
-        info.warnings.push_back("the game's music volumes aren't known; every tune plays at " +
-                                std::to_string(kDkc3MusicVolume) +
-                                ", the volume of most of Donkey Kong Country 3's tunes");
-    }
-    else if (other_build)
-    {
-        info.warnings.push_back(overrides.program + " knows another build's music volumes; every tune plays at 128");
-    }
+    SetRate(info);
+    SetMusicVolume(rom, overrides, info);
 
     // Donkey Kong Country 3's code picks the arrangement of a tune by the water, through the channels' levels. Only
     // that revision of the driver has the levels.
@@ -625,39 +674,7 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         }
     }
 
-    // Report what was found.
-    if (info.init)
-    {
-        info.log.push_back("driver init at " + Hex(info.init) + ", " +
-                           (info.format == Format::kChannelNibble ? "channel in each command byte"
-                                                                  : "channel in a byte after each command"));
-        info.log.push_back("mixer: " + std::to_string(info.mix_rate) + " Hz, up to " +
-                           std::to_string(info.voice_limit) + " voices, " + std::to_string(info.slots_per_channel) +
-                           " notes a channel");
-        if (info.envelope_controllers)
-        {
-            info.log.push_back("controllers 20-23 set a channel's attack, decay, sustain and release");
-        }
-        if (!info.music_volumes.empty() || info.music_volume != 128)
-        {
-            int low = info.music_volume, high = info.music_volume;
-            if (!info.music_volumes.empty())
-            {
-                low = *std::min_element(info.music_volumes.begin(), info.music_volumes.end());
-                high = *std::max_element(info.music_volumes.begin(), info.music_volumes.end());
-            }
-            info.log.push_back("the game's code starts the tunes at a music volume of " + std::to_string(low) +
-                               (low == high ? "" : " to " + std::to_string(high)) + ", out of 128");
-        }
-        if (info.water.tune >= 0)
-        {
-            info.log.push_back("the game's code plays tune " + std::to_string(info.water.tune) + " on channels " +
-                               ChannelsText(info.water.above) + " above water and " + ChannelsText(info.water.under) +
-                               " under water");
-        }
-    }
-    info.log.push_back("tune table at " + Hex(info.tune_table) + ": " + std::to_string(info.tune_count) + " tune" +
-                       (info.tune_count == 1 ? "" : "s"));
+    LogDetection(info);
 
     return true;
 }

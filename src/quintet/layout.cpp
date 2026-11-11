@@ -15,6 +15,8 @@
 #include <variant>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/quintet/song.h"
 
@@ -156,100 +158,11 @@ sar::Place PieceStart(uint32_t piece)
     return {piece, 0, false, false};
 }
 
-} // namespace
-
-Layout Cut(const Rom& rom, std::span<const DriverInfo> files)
+// Returns the entries of each sequence piece: the items that the fields name.
+std::map<uint32_t, std::set<uint32_t>> NamedEntries(std::span<const commands::Sequence> sequences,
+                                                    std::span<const sar::Piece> pieces,
+                                                    std::span<const sar::Field> fields)
 {
-    Layout layout;
-    if (files.empty())
-    {
-        layout.pieces.emplace_back(std::vector<uint8_t>(rom.Ptr(kRomBase), rom.Ptr(kRomBase) + rom.Size()));
-        return layout;
-    }
-
-    layout.traits = TraitsOf(rom, files[0]);
-    const std::span<const uint8_t> bytes(rom.Ptr(kRomBase), rom.Size());
-    uint32_t at = 0;
-    for (const List& list : ListsOf(rom, files))
-    {
-        AddRun(layout.pieces, bytes.subspan(at, list.songs[0] - at));
-        for (const uint32_t song : list.songs)
-        {
-            SongHeader header;
-            ReadSongHeader(rom, kRomBase + song, header);
-            const bool even = (rom.U16(kRomBase + song) & 1) == 0;
-            Decoded decoded;
-            bool cut = false;
-            if (even)
-            {
-                const std::span<const uint8_t> body = bytes.subspan(song + kHeaderBytes, header.length - kHeaderBytes);
-                std::vector<uint32_t> starts;
-                for (const uint32_t channel : header.channels)
-                {
-                    starts.push_back(channel - kRomBase - song - kHeaderBytes);
-                }
-                decoded = DecodeSequence(body, starts, layout.traits);
-                if (!decoded.opaque)
-                {
-                    const Encoded encoded = EncodeSequence(decoded.sequence, decoded.entries, layout.traits);
-                    cut = std::equal(encoded.bytes.begin(), encoded.bytes.end(), body.begin(), body.end());
-                }
-            }
-
-            if (!cut)
-            {
-                AddRun(layout.pieces, bytes.subspan(song, header.length));
-                continue;
-            }
-
-            // The header, as a run of its own, and the commands.
-            const uint32_t header_piece = uint32_t(layout.pieces.size());
-            layout.pieces.emplace_back(std::vector<uint8_t>(bytes.begin() + song, bytes.begin() + song + kHeaderBytes));
-            const uint32_t body_piece = uint32_t(layout.pieces.size());
-            const uint32_t sequence = uint32_t(layout.sequences.size());
-            layout.pieces.emplace_back(sar::SequencePiece{sequence, 0, 0});
-
-            sar::Field length;
-            length.at = PieceStart(header_piece);
-            length.from = PieceStart(header_piece);
-            length.to = {body_piece, uint32_t(decoded.sequence.items.size()), true, false};
-            length.bytes = 2;
-            layout.fields.push_back(length);
-            for (size_t c = 0; c < decoded.entries.size(); c++)
-            {
-                sar::Field offset;
-                offset.at = {header_piece, uint32_t(2 + 2 * c), false, false};
-                offset.from = PieceStart(header_piece);
-                offset.to = {body_piece, decoded.entries[c], true, false};
-                offset.bytes = 2;
-                layout.fields.push_back(offset);
-            }
-            layout.sequences.push_back(std::move(decoded.sequence));
-        }
-
-        // The length of 0 after the list moves with it. The room's fill follows, and the next piece starts at the
-        // room's end.
-        AddRun(layout.pieces, bytes.subspan(list.end, list.terminator ? 2 : 0));
-        layout.rooms.push_back({uint32_t(layout.pieces.size()), list.room_end, list.fill});
-        layout.pieces.emplace_back(std::vector<uint8_t>());
-        at = list.room_end;
-    }
-    AddRun(layout.pieces, bytes.subspan(at));
-
-    if (layout.sequences.empty())
-    {
-        layout = Layout();
-        layout.pieces.emplace_back(std::vector<uint8_t>(bytes.begin(), bytes.end()));
-    }
-
-    return layout;
-}
-
-std::vector<uint8_t> Join(const Traits& traits, std::span<const commands::Sequence> sequences,
-                          std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
-                          std::span<const Room> rooms)
-{
-    // Each sequence's entries: the items that the fields name.
     std::map<uint32_t, std::set<uint32_t>> entries;
     for (const sar::Field& field : fields)
     {
@@ -265,11 +178,28 @@ std::vector<uint8_t> Join(const Traits& traits, std::span<const commands::Sequen
         }
     }
 
-    // The pieces' bytes and places.
+    return entries;
+}
+
+// The bytes of a joined ROM, and the places of its pieces in them.
+struct Placed
+{
     std::vector<uint8_t> out;
     std::vector<uint32_t> starts;
     std::vector<uint32_t> ends;                        // each piece's end, before a room's fill
     std::map<uint32_t, std::vector<uint32_t>> offsets; // each sequence piece's items' offsets
+};
+
+// Places the pieces one after another, with each room's fill up to its end, and encodes the sequences. `entries`
+// contains the entries of each sequence piece.
+Placed PlacePieces(const Traits& traits, std::span<const commands::Sequence> sequences,
+                   std::span<const sar::Piece> pieces, std::span<const Room> rooms,
+                   std::map<uint32_t, std::set<uint32_t>>& entries)
+{
+    std::vector<uint8_t> out;
+    std::vector<uint32_t> starts;
+    std::vector<uint32_t> ends;
+    std::map<uint32_t, std::vector<uint32_t>> offsets;
     std::map<uint32_t, const Room*> room_at;
     for (const Room& room : rooms)
     {
@@ -322,33 +252,144 @@ std::vector<uint8_t> Join(const Traits& traits, std::span<const commands::Sequen
         offsets[p] = encoded.offsets;
     }
 
-    // The position of a place.
-    const auto position = [&](const sar::Place& place) -> uint32_t
+    return {std::move(out), std::move(starts), std::move(ends), std::move(offsets)};
+}
+
+// Returns the position of a place in the joined ROM.
+uint32_t Position(std::span<const sar::Piece> pieces, const Placed& placed, const sar::Place& place)
+{
+    const std::vector<uint32_t>& starts = placed.starts;
+    const std::vector<uint32_t>& ends = placed.ends;
+    const std::map<uint32_t, std::vector<uint32_t>>& offsets = placed.offsets;
+
+    if (place.sequence || place.piece >= pieces.size())
     {
-        if (place.sequence || place.piece >= pieces.size())
+        throw std::invalid_argument("a field names a place that the pieces lack");
+    }
+    if (!place.item)
+    {
+        if (place.offset > ends[place.piece] - starts[place.piece])
         {
-            throw std::invalid_argument("a field names a place that the pieces lack");
+            throw std::invalid_argument("a field names a place past its piece");
         }
-        if (!place.item)
+        return starts[place.piece] + place.offset;
+    }
+
+    const auto found = offsets.find(place.piece);
+    if (found == offsets.end() || place.offset >= found->second.size())
+    {
+        throw std::invalid_argument("a field names an item that its sequence lacks");
+    }
+
+    // The end of the items is the end of the piece, with its zero.
+    return place.offset + 1 == found->second.size() ? ends[place.piece]
+                                                    : starts[place.piece] + found->second[place.offset];
+}
+
+// Adds song `song`, at its offset in the ROM, to `layout`: its header and its commands as pieces of their own, or one
+// run of bytes if the song doesn't encode back to the same bytes.
+void CutSong(const Rom& rom, std::span<const uint8_t> bytes, uint32_t song, Layout& layout)
+{
+    SongHeader header;
+    ReadSongHeader(rom, kRomBase + song, header);
+    const bool even = (rom.U16(kRomBase + song) & 1) == 0;
+    Decoded decoded;
+    bool cut = false;
+    if (even)
+    {
+        const std::span<const uint8_t> body = bytes.subspan(song + kHeaderBytes, header.length - kHeaderBytes);
+        std::vector<uint32_t> starts;
+        for (const uint32_t channel : header.channels)
         {
-            if (place.offset > ends[place.piece] - starts[place.piece])
-            {
-                throw std::invalid_argument("a field names a place past its piece");
-            }
-            return starts[place.piece] + place.offset;
+            starts.push_back(channel - kRomBase - song - kHeaderBytes);
+        }
+        decoded = DecodeSequence(body, starts, layout.traits);
+        if (!decoded.opaque)
+        {
+            const Encoded encoded = EncodeSequence(decoded.sequence, decoded.entries, layout.traits);
+            cut = std::equal(encoded.bytes.begin(), encoded.bytes.end(), body.begin(), body.end());
+        }
+    }
+
+    if (!cut)
+    {
+        AddRun(layout.pieces, bytes.subspan(song, header.length));
+        return;
+    }
+
+    // The header, as a run of its own, and the commands.
+    const uint32_t header_piece = uint32_t(layout.pieces.size());
+    layout.pieces.emplace_back(std::vector<uint8_t>(bytes.begin() + song, bytes.begin() + song + kHeaderBytes));
+    const uint32_t body_piece = uint32_t(layout.pieces.size());
+    const uint32_t sequence = uint32_t(layout.sequences.size());
+    layout.pieces.emplace_back(sar::SequencePiece{sequence, 0, 0});
+
+    sar::Field length;
+    length.at = PieceStart(header_piece);
+    length.from = PieceStart(header_piece);
+    length.to = {body_piece, uint32_t(decoded.sequence.items.size()), true, false};
+    length.bytes = 2;
+    layout.fields.push_back(length);
+    for (size_t c = 0; c < decoded.entries.size(); c++)
+    {
+        sar::Field offset;
+        offset.at = {header_piece, uint32_t(2 + 2 * c), false, false};
+        offset.from = PieceStart(header_piece);
+        offset.to = {body_piece, decoded.entries[c], true, false};
+        offset.bytes = 2;
+        layout.fields.push_back(offset);
+    }
+    layout.sequences.push_back(std::move(decoded.sequence));
+}
+
+} // namespace
+
+Layout Cut(const Rom& rom, std::span<const DriverInfo> files)
+{
+    Layout layout;
+    if (files.empty())
+    {
+        layout.pieces.emplace_back(std::vector<uint8_t>(rom.Ptr(kRomBase), rom.Ptr(kRomBase) + rom.Size()));
+        return layout;
+    }
+
+    layout.traits = TraitsOf(rom, files[0]);
+    const std::span<const uint8_t> bytes(rom.Ptr(kRomBase), rom.Size());
+    uint32_t at = 0;
+    for (const List& list : ListsOf(rom, files))
+    {
+        AddRun(layout.pieces, bytes.subspan(at, list.songs[0] - at));
+        for (const uint32_t song : list.songs)
+        {
+            CutSong(rom, bytes, song, layout);
         }
 
-        const auto found = offsets.find(place.piece);
-        if (found == offsets.end() || place.offset >= found->second.size())
-        {
-            throw std::invalid_argument("a field names an item that its sequence lacks");
-        }
+        // The length of 0 after the list moves with it. The room's fill follows, and the next piece starts at the
+        // room's end.
+        AddRun(layout.pieces, bytes.subspan(list.end, list.terminator ? 2 : 0));
+        layout.rooms.push_back({uint32_t(layout.pieces.size()), list.room_end, list.fill});
+        layout.pieces.emplace_back(std::vector<uint8_t>());
+        at = list.room_end;
+    }
+    AddRun(layout.pieces, bytes.subspan(at));
 
-        // The end of the items is the end of the piece, with its zero.
-        return place.offset + 1 == found->second.size() ? ends[place.piece]
-                                                        : starts[place.piece] + found->second[place.offset];
-    };
+    if (layout.sequences.empty())
+    {
+        layout = Layout();
+        layout.pieces.emplace_back(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+    }
 
+    return layout;
+}
+
+std::vector<uint8_t> Join(const Traits& traits, std::span<const commands::Sequence> sequences,
+                          std::span<const sar::Piece> pieces, std::span<const sar::Field> fields,
+                          std::span<const Room> rooms)
+{
+    std::map<uint32_t, std::set<uint32_t>> entries = NamedEntries(sequences, pieces, fields);
+    Placed placed = PlacePieces(traits, sequences, pieces, rooms, entries);
+
+    // Each field's distance, in its run.
     for (const sar::Field& field : fields)
     {
         if (field.bytes != 2 || field.at.item || field.at.piece >= pieces.size() ||
@@ -358,19 +399,18 @@ std::vector<uint8_t> Join(const Traits& traits, std::span<const commands::Sequen
             throw std::invalid_argument("a field doesn't lie in a run");
         }
 
-        const uint32_t from = position(field.from);
-        const uint32_t to = position(field.to);
+        const uint32_t from = Position(pieces, placed, field.from);
+        const uint32_t to = Position(pieces, placed, field.to);
         if (to < from || to - from > 0xFFFF)
         {
             throw std::invalid_argument("a song's header can't hold the distance");
         }
 
-        const uint32_t at = starts[field.at.piece] + field.at.offset;
-        out[at] = uint8_t(to - from);
-        out[at + 1] = uint8_t((to - from) >> 8);
+        const uint32_t at = placed.starts[field.at.piece] + field.at.offset;
+        xsflib::StoreLe16(&placed.out[at], uint16_t(to - from));
     }
 
-    return out;
+    return std::move(placed.out);
 }
 
 std::vector<uint8_t> Join(const Layout& layout)

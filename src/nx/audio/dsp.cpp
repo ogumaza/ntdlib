@@ -75,15 +75,6 @@ int16_t SampleAt(std::span<const uint8_t> buffer, int64_t index)
     return static_cast<int16_t>(low | (high << 8));
 }
 
-// The nibble where a DSP-ADPCM sample lies: frames of 16 nibbles hold a header in their first two and 14 samples. A
-// sample at a frame's start gives the header's place.
-int32_t NibbleOf(int32_t sample)
-{
-    const int32_t frame = sample / 14;
-    const int32_t in_frame = sample - frame * 14;
-    return in_frame + frame * 16 + (in_frame != 0 ? 2 : 0);
-}
-
 // The sample-rate converter's filters: `taps` coefficients from a table chosen by the ratio, applied to the samples at
 // the position, in 32-bit sums of the products, shifted down by 15.
 void ResampleFiltered(int32_t* out, const int16_t* in, int32_t ratio, int32_t& fraction, int count, int taps,
@@ -170,9 +161,7 @@ int32_t DecodeAdpcm(int16_t* out, const DecodeArg& arg)
     }
 
     // The buffer must hold every byte up to the range's end.
-    const int32_t end_nibble = NibbleOf(arg.end);
-    const int64_t end_bytes = (int64_t{end_nibble} + 1) / 2;
-    if (static_cast<uint64_t>(end_bytes) > arg.buffer.size())
+    if (static_cast<uint64_t>(AdpcmBytes(arg.end)) > arg.buffer.size())
     {
         return 0;
     }
@@ -187,7 +176,7 @@ int32_t DecodeAdpcm(int16_t* out, const DecodeArg& arg)
     int32_t scale = header & 0xF;
     int32_t yn1 = arg.context->yn1;
     int32_t yn2 = arg.context->yn2;
-    int32_t nibble = NibbleOf(position);
+    auto nibble = static_cast<int32_t>(ntdlib::wave::DspAdpcmNibbleCount(int64_t{position}));
     int64_t byte = nibble / 2;
 
     for (int32_t done = 0; done < count;)
@@ -283,11 +272,26 @@ void SkipResample(int32_t ratio, int32_t& fraction, int count, SrcQuality qualit
     }
 }
 
-void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>& b, const std::array<int16_t, 2>& a,
-                       BiquadFilterState& state, int count)
+namespace
 {
-    // The coefficients for each place in a block of four, worked out as Nintendo's code does, operation for operation
-    // (the zero terms come from its general form and only change the signs of zeros).
+
+// The weights of each input, the last two inputs and the last two outputs, for the four outputs of a block.
+struct BlockWeights
+{
+    std::array<float, 4> in0;
+    std::array<float, 4> in1;
+    std::array<float, 4> in2;
+    std::array<float, 4> in3;
+    std::array<float, 4> x1w;
+    std::array<float, 4> x2w;
+    std::array<float, 4> y1w;
+    std::array<float, 4> y2w;
+};
+
+// The coefficients for each place in a block of four, worked out as Nintendo's code does, operation for operation
+// (the zero terms come from its general form and only change the signs of zeros).
+BlockWeights WeightsOf(const std::array<int16_t, 3>& b, const std::array<int16_t, 2>& a)
+{
     constexpr float kQ14 = 6.103515625e-05f;
     constexpr float kZero = 0.0f;
     const float a1 = static_cast<float>(a[0]) * kQ14;
@@ -368,16 +372,24 @@ void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>
     const float t18g = t19d + kZero;
     const float t16 = t20d + kZero;
 
-    // The weights of each input, the last two inputs and the last two outputs, for the four outputs of a block.
-    const float in0[4] = {b0, t8, t23, t21c};
-    const float in1[4] = {kZero, t19, t18, t24b};
-    const float in2[4] = {kZero, t21, t31b, t27b};
-    const float in3[4] = {kZero, t21, t29c, t22c};
-    const float x1w[4] = {b1, t24, t25, t18f};
-    const float x2w[4] = {b2, t30, t26, t18g};
-    const float y1w[4] = {a1, t22, t27, t18d};
-    const float y2w[4] = {a2, t29, t28, t16};
+    return {
+        .in0 = {b0, t8, t23, t21c},
+        .in1 = {kZero, t19, t18, t24b},
+        .in2 = {kZero, t21, t31b, t27b},
+        .in3 = {kZero, t21, t29c, t22c},
+        .x1w = {b1, t24, t25, t18f},
+        .x2w = {b2, t30, t26, t18g},
+        .y1w = {a1, t22, t27, t18d},
+        .y2w = {a2, t29, t28, t16},
+    };
+}
 
+} // namespace
+
+void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>& b, const std::array<int16_t, 2>& a,
+                       BiquadFilterState& state, int count)
+{
+    const BlockWeights w = WeightsOf(b, a);
     float x1 = state.x1;
     float x2 = state.x2;
     float y1 = state.y1;
@@ -388,15 +400,15 @@ void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>
         float x[4];
         std::memcpy(x, in + block, sizeof(x));
         float y[4];
-        for (int j = 0; j < 4; ++j)
+        for (std::size_t j = 0; j < 4; ++j)
         {
-            float sum = in2[j] * x[2] + in3[j] * x[3];
-            sum = in1[j] * x[1] + sum;
-            sum = in0[j] * x[0] + sum;
-            sum = x1w[j] * x1 + sum;
-            sum = x2w[j] * x2 + sum;
-            sum = y1w[j] * y1 + sum;
-            y[j] = y2w[j] * y2 + sum;
+            float sum = w.in2[j] * x[2] + w.in3[j] * x[3];
+            sum = w.in1[j] * x[1] + sum;
+            sum = w.in0[j] * x[0] + sum;
+            sum = w.x1w[j] * x1 + sum;
+            sum = w.x2w[j] * x2 + sum;
+            sum = w.y1w[j] * y1 + sum;
+            y[j] = w.y2w[j] * y2 + sum;
         }
         std::memcpy(out + block, y, sizeof(y));
 

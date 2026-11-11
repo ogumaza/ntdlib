@@ -22,6 +22,7 @@ namespace
 using xsflib::testing::Check;
 
 const float kNan = std::numeric_limits<float>::quiet_NaN();
+const float kInfinity = std::numeric_limits<float>::infinity();
 
 void TestNumbers()
 {
@@ -79,7 +80,7 @@ void TestReciprocalEstimate()
     // Below 2^-128, zero, infinity and NaN.
     Check(Bits(ntdlib::aarch64::Frecpe(0x1p-129f)) == 0x7F800000u, "frecpe below 2^-128");
     Check(Bits(ntdlib::aarch64::Frecpe(-0.0f)) == 0xFF800000u, "frecpe of -0");
-    Check(Bits(ntdlib::aarch64::Frecpe(std::numeric_limits<float>::infinity())) == 0, "frecpe of infinity");
+    Check(Bits(ntdlib::aarch64::Frecpe(kInfinity)) == 0, "frecpe of infinity");
     Check(Bits(ntdlib::aarch64::Frecpe(std::bit_cast<float>(0x7F800001u))) == 0x7FC00001u, "frecpe of a NaN");
 }
 
@@ -91,10 +92,10 @@ void TestReciprocalStep()
     // (1 + 2^-23)(2 - 2^-22) is 2 - 2^-45. Rounded on its own, the product would be 2, and the step 0.
     Check(ntdlib::aarch64::Frecps(1.0f + 0x1p-23f, 2.0f - 0x1p-22f) == 0x1p-45f, "frecps rounds once");
 
-    const float infinity = std::numeric_limits<float>::infinity();
-    Check(ntdlib::aarch64::Frecps(infinity, 0.0f) == 2.0f && ntdlib::aarch64::Frecps(-0.0f, infinity) == 2.0f,
+    Check(ntdlib::aarch64::Frecps(kInfinity, 0.0f) == 2.0f && ntdlib::aarch64::Frecps(-0.0f, kInfinity) == 2.0f,
           "frecps of infinity and 0");
-    Check(ntdlib::aarch64::Frecps(infinity, 2.0f) == -infinity && ntdlib::aarch64::Frecps(-1.0f, infinity) == infinity,
+    Check(ntdlib::aarch64::Frecps(kInfinity, 2.0f) == -kInfinity &&
+              ntdlib::aarch64::Frecps(-1.0f, kInfinity) == kInfinity,
           "frecps of infinity");
     Check(Bits(ntdlib::aarch64::Frecps(std::bit_cast<float>(0x7FC00002u), 1.0f)) == 0xFFC00002u &&
               Bits(ntdlib::aarch64::Frecps(kNan, std::bit_cast<float>(0x7F800003u))) == 0x7FC00003u,

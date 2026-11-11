@@ -4,7 +4,8 @@
 // converter's filters at a ratio of 1, the biquad on filters whose output is known, the gains, mixes and depop against
 // their formulas, a voice's frames through the renderer (its samples, what the updates report and when, the fade when
 // it stops, a host's mutes, meters and peaks of a mix, splitters, and wave buffers' loop fields), the upsampler from
-// 32 to 48 kHz, and the I3DL2 reverb with a density below 0 and with each of nn::audio's presets.
+// 32 to 48 kHz, the I3DL2 reverb with a density below 0 and with each of nn::audio's presets, and the system's downmix
+// of 6 channels to 2.
 
 #include <algorithm>
 #include <array>
@@ -15,8 +16,10 @@
 #include <stdexcept>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/nx/audio/downmix.h"
 #include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/nx/audio/renderer.h"
@@ -38,8 +41,7 @@ void TestPcm16()
     for (int16_t s = 0; s < 16; ++s)
     {
         const uint16_t value = static_cast<uint16_t>(s * 1000 - 3000);
-        bytes.push_back(static_cast<uint8_t>(value & 0xFF));
-        bytes.push_back(static_cast<uint8_t>(value >> 8));
+        xsflib::AppendLe16(bytes, value);
     }
     audio::DecodeArg arg;
     arg.buffer = bytes;
@@ -180,8 +182,7 @@ struct OneVoice
         for (int i = 0; i < kFrame * 8; ++i)
         {
             const uint16_t kValue = 10000;
-            samples.push_back(static_cast<uint8_t>(kValue & 0xFF));
-            samples.push_back(static_cast<uint8_t>(kValue >> 8));
+            xsflib::AppendLe16(samples, kValue);
         }
         renderer.AcquireFinalMix(2);
         const int kInputs[] = {0, 1};
@@ -699,8 +700,7 @@ std::vector<int16_t> PlayBuffers(std::span<const audio::WaveBufferInfo> buffers,
     for (int i = 0; i < kFrame * 8; ++i)
     {
         const auto value = static_cast<uint16_t>(100 * i);
-        one.samples.push_back(static_cast<uint8_t>(value & 0xFF));
-        one.samples.push_back(static_cast<uint8_t>(value >> 8));
+        xsflib::AppendLe16(one.samples, value);
     }
     one.renderer.ReleaseVoiceSlot(one.voice);
     one.voice = one.renderer.AcquireVoiceSlot(48000, 1, audio::SampleFormat::kPcmInt16, 0, nullptr, behavior);
@@ -870,6 +870,83 @@ void TestI3dl2Presets()
     }
 }
 
+// The three downmix functions: the outputs of seven examples, and FNV-1a over the outputs of 65,536 cases from a linear
+// congruential generator. The expected values follow the code of the audio DSP in the system module of firmware 22.5.0.
+// The examples: the front pair alone, the low frequency alone, the rear pair at -6 dB, the rear pair at -1 and 1
+// (rounded down, and halved to -1 in mono), the centre alone, sums beyond 16 bits, and every channel but the low
+// frequency.
+void TestDownmix()
+{
+    using Channels = std::array<int16_t, 6>;
+    using Stereo = std::array<int16_t, 2>;
+    const std::array<Channels, 7> examples = {{
+        {1000, -1000, 0, 0, 0, 0},
+        {0, 0, 0, 32767, 0, 0},
+        {0, 0, 0, 0, 16384, -16384},
+        {0, 0, 0, 0, -1, 1},
+        {0, 0, 1000, 0, 0, 0},
+        {32767, -32768, 32767, 0, 32767, -32768},
+        {1000, 3001, -3, 0, 0, -1},
+    }};
+    struct Expected
+    {
+        audio::Downmix downmix;
+        std::array<Stereo, 7> outputs;
+        uint64_t hash;
+    };
+    const std::array<Expected, 3> expected = {{
+        {audio::Downmix::kStereo,
+         {{{1000, -1000}, {0, 0}, {11599, -11599}, {-1, 0}, {707, 707}, {32767, -32768}, {997, 2997}}},
+         0x415a3625bb4f7382},
+        {audio::Downmix::kMono,
+         {{{0, 0}, {0, 0}, {0, 0}, {-1, -1}, {707, 707}, {-1, -1}, {1997, 1997}}},
+         0x95cf703b585ebb39},
+        {audio::Downmix::kScaled,
+         {{{375, -376}, {0, 0}, {4350, -4351}, {-1, 0}, {265, 265}, {29693, -12292}, {373, 1124}}},
+         0x02ec7f082b68c0a6},
+    }};
+
+    for (const Expected& mode : expected)
+    {
+        for (std::size_t i = 0; i < examples.size(); ++i)
+        {
+            XSFLIB_CHECK(audio::DownmixSample(examples[i], mode.downmix) == mode.outputs[i]);
+        }
+
+        uint32_t state = 1;
+        const auto sample = [&state]()
+        {
+            state = state * 1664525u + 1013904223u;
+            return static_cast<int16_t>(state >> 16);
+        };
+        uint64_t hash = 0xcbf29ce484222325;
+        const auto add = [&hash](int16_t value)
+        {
+            const uint16_t bits = static_cast<uint16_t>(value);
+            hash = (hash ^ (bits & 0xff)) * 0x100000001b3;
+            hash = (hash ^ (bits >> 8)) * 0x100000001b3;
+        };
+        for (int i = 0; i < 65536; ++i)
+        {
+            Channels channels{};
+            std::generate(channels.begin(), channels.end(), sample);
+            const Stereo output = audio::DownmixSample(channels, mode.downmix);
+            add(output[0]);
+            add(output[1]);
+        }
+
+        XSFLIB_CHECK(hash == mode.hash);
+    }
+
+    // The front pair, and a frame of two samples through DownmixFrame.
+    XSFLIB_CHECK(audio::DownmixSample(examples[5], audio::Downmix::kFrontPair) == (Stereo{32767, -32768}));
+    std::vector<int16_t> frame(examples[2].begin(), examples[2].end());
+    frame.insert(frame.end(), examples[0].begin(), examples[0].end());
+    std::vector<int16_t> output = {7};
+    audio::DownmixFrame(frame, audio::Downmix::kStereo, output);
+    XSFLIB_CHECK(output == (std::vector<int16_t>{7, 11599, -11599, 1000, -1000}));
+}
+
 } // namespace
 
 int main()
@@ -895,6 +972,7 @@ int main()
     TestUpsampler();
     TestI3dl2NegativeDelay();
     TestI3dl2Presets();
+    TestDownmix();
 
     return xsflib::testing::Summary("nx_audio");
 }

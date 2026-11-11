@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -347,7 +348,7 @@ private:
     static constexpr std::size_t kWorkSamples = kSourceSamples + 32 + kSubframeSamples;
 
     // The steps of a channel.
-    void DecodeAfc(DspChannelBlock& block, std::span<int16_t> source, int blocks);
+    void DecodeAfc(DspChannelBlock& block, std::span<int16_t> destination, int blocks);
     // PCM16 (2 bytes a sample) and PCM8 (1). Hagi's two fetches differ only in their reads and in the steps of the
     // read address.
     void FetchPcm(DspChannelBlock& block, int16_t* destination, uint32_t bytes);
@@ -358,6 +359,16 @@ private:
     void Mix(DspChannelBlock& block, std::span<int16_t> work, int offset);
     void AutoMix(DspChannelBlock& block, const int16_t* samples);
     void ProcessAfc(DspChannelBlock& block, std::span<int16_t> source);
+
+    // The parts of ProcessChannel, FetchPcm and ProcessAfc. ChannelSamples writes the sub-frame's samples to
+    // `output`: the last sample while the channel pauses, else its wave through the resampler or its oscillator. It
+    // returns false where the model has no path for the channel's format. ReadPcm reads FetchPcm's samples.
+    // RestartAfcLoop decodes an AFC wave's first block at its loop's start into the saved block, and returns the
+    // samples left over from it. SaveAfcBlock saves the block that ends at `end` in `source`.
+    bool ChannelSamples(DspChannelBlock& block, std::span<int16_t> source, int16_t* output);
+    void ReadPcm(const DspChannelBlock& block, int16_t* out, uint32_t count, uint32_t bytes) const;
+    uint32_t RestartAfcLoop(DspChannelBlock& block);
+    static void SaveAfcBlock(DspChannelBlock& block, std::span<const int16_t> source, std::size_t end);
 
     // The FX lines at a sub-frame's start, and the matrix of the surround buses.
     void ReadFxLine(const DspFxLine& line, uint16_t position, Bus& bus);
@@ -386,5 +397,90 @@ private:
     std::array<DspFxLine, 4> fx_lines_{};
     std::array<Bus, kBusCount> buses_{};
 };
+
+// The CPU side's work around the DSP that the models of JAudio2, JAudio1 and the Jac share.
+
+// JASDsp::setFXLine: the writes of an FX line's settings at `at` in the layout `kLayout`, with the line's buffer at
+// `buffer` and its delay's length at `subframes`. `Line` holds the flags, the two buses, their levels and the filter's
+// 8 coefficients.
+template <Dsp::FxLayout kLayout, typename Line>
+void WriteFxLine(DspMemory& memory, uint32_t at, uint32_t buffer, uint16_t subframes, const Line& fx)
+{
+    constexpr bool kJaudio2 = kLayout == Dsp::FxLayout::kJaudio2;
+    constexpr uint32_t kBuffer = kJaudio2 ? 8 : 4;
+    constexpr uint32_t kSends = kJaudio2 ? 0x10 : 8;
+    constexpr uint32_t kFilter = kJaudio2 ? 0x18 : 0x10;
+
+    memory.SetNative16(at, fx.flags);
+    memory.SetNative16(at + 2, subframes);
+    memory.SetNative32(at + kBuffer, buffer);
+    for (uint32_t send = 0; send < 2; send++)
+    {
+        memory.SetNative16(at + kSends + 4 * send, fx.buses[send]);
+        memory.SetNative16(at + kSends + 2 + 4 * send, static_cast<uint16_t>(fx.levels[send]));
+    }
+    for (uint32_t i = 0; i < fx.filter.size(); i++)
+    {
+        memory.SetNative16(at + kFilter + 2 * i, static_cast<uint16_t>(fx.filter[i]));
+    }
+}
+
+// The copy of a sub-frame's output from the DSP's output buffers at `left` and `right`, from `offset` bytes in, to
+// `output` as interleaved stereo. The buffers hold big-endian samples.
+inline void CopyOutput(const DspMemory& memory, uint32_t left, uint32_t right, uint32_t offset,
+                       std::span<int16_t> output)
+{
+    for (int i = 0; i < Dsp::kSubframeSamples; i++)
+    {
+        const auto at = static_cast<uint32_t>(2 * i) + offset;
+        output[2 * static_cast<std::size_t>(i)] = static_cast<int16_t>(memory.Big16(left + at));
+        output[2 * static_cast<std::size_t>(i) + 1] = static_cast<int16_t>(memory.Big16(right + at));
+    }
+}
+
+// The loudest sample of an FX line's delay that counts as silence (-72 dB). xsflib's length analysis uses the same
+// level (xsflib::rip::kSilenceLevel). A line's feedback rounds its products, and can keep quieter samples going round
+// for ever.
+inline constexpr int kFxSilence = 8;
+
+// Whether the FX lines' buffers or the centre delay hold a sample louder than kFxSilence: the lines still ring. The
+// buffers hold big-endian samples.
+inline bool FxBuffersRinging(std::span<const uint8_t> buffers, std::span<const int16_t> delay)
+{
+    const auto loud = [](int16_t sample)
+    {
+        return sample > kFxSilence || sample < -kFxSilence;
+    };
+    for (std::size_t i = 0; i + 1 < buffers.size(); i += 2)
+    {
+        if (loud(static_cast<int16_t>(buffers[i] << 8 | buffers[i + 1])))
+        {
+            return true;
+        }
+    }
+
+    return std::any_of(delay.begin(), delay.end(), loud);
+}
+
+// A DSP channel's place in its wave: whether it plays a wave, whether the wave loops, and a position that drops each
+// time the wave passes back to its loop's start.
+struct WavePlace
+{
+    bool playing = false;
+    bool loops = false;
+    int64_t position = 0;
+};
+
+// The place of the wave that plays from the DSP channel's block at `block`: its position is the negated count of the
+// samples left before the loop's end or the wave's.
+inline WavePlace PlayingWavePlace(const DspMemory& memory, uint32_t block)
+{
+    WavePlace place;
+    place.playing = true;
+    place.loops = memory.Native16(block + static_cast<uint32_t>(DspChannelBlock::kLoops)) != 0;
+    place.position = -static_cast<int64_t>(memory.Native32(block + static_cast<uint32_t>(DspChannelBlock::kRemaining)));
+
+    return place;
+}
 
 } // namespace ntdlib::jaudio2

@@ -761,15 +761,16 @@ std::vector<SoundState> StatesOf(const ArchiveRules& rules, std::string_view lab
         return states;
     }
 
+    constexpr std::string_view kI3dl2Prefix = "I3DL2_";
     states.push_back({"", 0, reverb});
     if (std::ranges::find(rules.bus_b_later, label) != rules.bus_b_later.end())
     {
         for (const ReverbPreset& preset : rules.bus_b_presets)
         {
             std::string_view name = preset.name;
-            if (name.starts_with("I3DL2_"))
+            if (name.starts_with(kI3dl2Prefix))
             {
-                name.remove_prefix(6);
+                name.remove_prefix(kI3dl2Prefix.size());
             }
             states.push_back({std::string(name) + " reverb", 0, preset.name});
         }

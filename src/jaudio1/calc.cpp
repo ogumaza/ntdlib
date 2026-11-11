@@ -121,6 +121,14 @@ const std::array<float, kSinTableSize>& SinTable()
 
 } // namespace
 
+int32_t NextRandomS32(int32_t v0, int32_t v1)
+{
+    const uint32_t high = (static_cast<uint32_t>(v1) * 0x98765432u) | 1u;
+    const int32_t low = static_cast<int32_t>(static_cast<uint32_t>(v0) * 0x13579bdeu) >> 4;
+
+    return static_cast<int32_t>(high + static_cast<uint32_t>(low));
+}
+
 float Key2Pitch(int32_t key)
 {
     const int32_t clamped = key < 0 ? 0 : key > 127 ? 127 : key;
@@ -166,6 +174,36 @@ float RandomFast::Next()
     value = value * 0x19660du + 0x3c6ef35fu;
 
     return std::bit_cast<float>(0x3f800000u | value >> 9) + -1.0f;
+}
+
+std::array<uint8_t, 2> DelaySamples(float level)
+{
+    const int32_t delay = ToInt32(level * 128.0f);
+    const uint32_t value = static_cast<uint32_t>(delay);
+
+    return {static_cast<uint8_t>((0u - value) & (value >> 7)), static_cast<uint8_t>(delay < 0 ? 0 : value)};
+}
+
+bool ConditionHolds(uint16_t value, uint32_t condition)
+{
+    const auto v = static_cast<int16_t>(value);
+    switch (condition & 0xf)
+    {
+    case 0:
+        return true;
+    case 1:
+        return v == 0;
+    case 2:
+        return v != 0;
+    case 3:
+        return v == 1;
+    case 4:
+        return v < 0;
+    case 5:
+        return v >= 0;
+    default:
+        return false;
+    }
 }
 
 } // namespace ntdlib::jaudio1

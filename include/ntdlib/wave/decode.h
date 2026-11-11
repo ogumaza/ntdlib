@@ -19,6 +19,8 @@ namespace ntdlib::wave
 // Decoded PCM for the first two wave channels, with loop_end samples per channel.
 struct Pcm
 {
+    bool operator==(const Pcm&) const = default;
+
     uint32_t Length() const
     {
         return loop_end;

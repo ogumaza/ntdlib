@@ -100,6 +100,12 @@ public:
     // (__AXOutInit, 0x80106068). The model then follows `build`.
     void Init(Build build = Build::kDecember2006);
 
+    // The build that the model follows. Init sets it.
+    Build FollowedBuild() const
+    {
+        return build_;
+    }
+
     // Hands the voices to `layer` (see VoiceLayer) in place of Init: `count` voices, each with its index, a PB of
     // zeros and the layer. StartFrame and FinishFrame aren't for a layer. The layer runs the frame callback itself
     // (RunFrameCallback). The master volume and the aux buses' callbacks and return volumes stay for the layer to read.
@@ -226,6 +232,10 @@ private:
 
     void PushCallbackStack(Voice* voice);
     Voice* PopCallbackStack();
+
+    // Voice `index` at the start: its defaults, its PB linked to the next one in the microcode's list, and the address
+    // of its buffer for updates in the build of October 2006 (`update_buffers`).
+    void InitVoice(uint32_t index, bool update_buffers);
 
     void SetPbDefault(Voice* voice);
     void SyncPbs(uint32_t base_cycles);

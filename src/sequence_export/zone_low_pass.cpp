@@ -206,17 +206,18 @@ double WorstMiss(const std::vector<KeyFit>& fits, int base, int slope)
     return worst;
 }
 
-} // namespace
+// A window of the spectrum: the channel that it reads, and the sample that it starts at.
+using Window = std::pair<const std::vector<int16_t>*, std::ptrdiff_t>;
 
-WaveSpectrum MeasureSpectrum(const wave::Pcm& wave)
+// The windows of `wave`'s channels. The windows start half a window before the first sample. Every sample then falls in
+// two windows. A one-shot wave that ends within kMeasuredSamples plays out into silence, and the windows run past its
+// end. The windows of another wave stop at kMeasuredSamples. A looping wave plays its loop again after its end.
+std::vector<Window> SpectrumWindows(const wave::Pcm& wave)
 {
-    // The windows start half a window before the first sample. Every sample then falls in two windows. A one-shot wave
-    // that ends within kMeasuredSamples plays out into silence, and the windows run past its end. The windows of
-    // another wave stop at kMeasuredSamples. A looping wave plays its loop again after its end.
     const bool ends = !wave.loop && wave.Length() <= kMeasuredSamples;
     const auto last_start = ends ? static_cast<std::ptrdiff_t>(wave.Length()) - 1
                                  : static_cast<std::ptrdiff_t>(kMeasuredSamples - kFftSize);
-    std::vector<std::pair<const std::vector<int16_t>*, std::ptrdiff_t>> windows;
+    std::vector<Window> windows;
     for (const std::vector<int16_t>& channel : wave.channels)
     {
         for (auto start = -static_cast<std::ptrdiff_t>(kHop); start <= last_start;
@@ -226,8 +227,14 @@ WaveSpectrum MeasureSpectrum(const wave::Pcm& wave)
         }
     }
 
-    // Each transform takes two windows: one in its real part and one in its imaginary part. Their powers at bin k add
-    // up to (|X(k)|^2 + |X(N - k)|^2) / 2.
+    return windows;
+}
+
+// The power of `windows` of `wave` at each bin from 0 to kFftSize / 2, added up over the windows. Each transform takes
+// two windows: one in its real part and one in its imaginary part. Their powers at bin k add up to (|X(k)|^2 +
+// |X(N - k)|^2) / 2.
+std::vector<double> WindowsPower(const wave::Pcm& wave, const std::vector<Window>& windows)
+{
     std::vector<double> sine(kFftSize);
     for (std::size_t n = 0; n < kFftSize; n++)
     {
@@ -274,10 +281,16 @@ WaveSpectrum MeasureSpectrum(const wave::Pcm& wave)
         }
     }
 
-    // The bins from 1 up, in bands of 1/24 octave. Each band's frequency is its bins' mean, weighted by power. The bins
-    // up to 34 each make a band. A band without power is left out.
+    return power;
+}
+
+// The spectrum of the bins' `power` of a wave at `sample_rate`: the bins from 1 up, in bands of 1/24 octave. Each
+// band's frequency is its bins' mean, weighted by power. The bins up to 34 each make a band. A band without power is
+// left out.
+WaveSpectrum PowerBands(const std::vector<double>& power, uint32_t sample_rate)
+{
     WaveSpectrum spectrum;
-    const double bin_hz = wave.sample_rate / static_cast<double>(kFftSize);
+    const double bin_hz = sample_rate / static_cast<double>(kFftSize);
     int band = -1;
     double band_power = 0.0;
     double band_moment = 0.0;
@@ -309,8 +322,10 @@ WaveSpectrum MeasureSpectrum(const wave::Pcm& wave)
     return spectrum;
 }
 
-std::optional<FittedCutoff> FitZoneCutoff(const WaveSpectrum& spectrum, int original_key, double tune, uint32_t game_hz,
-                                          int table_cutoff, const std::vector<int>& keys, const Settings& settings)
+// The fit of each of `keys` that a wave of `spectrum` plays through the game's low-pass at `game_hz` (FitZoneCutoff). A
+// key at which the low-pass passes no power is left out.
+std::vector<KeyFit> KeyFits(const WaveSpectrum& spectrum, int original_key, double tune, uint32_t game_hz,
+                            const std::vector<int>& keys, const Settings& settings)
 {
     // The game's one-pole low-pass, y = a0 x + b0 y1 in Q15, at AX's rate.
     const ax::LpfSettings& ax_settings = *settings.zone_low_pass;
@@ -353,12 +368,13 @@ std::optional<FittedCutoff> FitZoneCutoff(const WaveSpectrum& spectrum, int orig
         fits.push_back(std::move(fit));
     }
 
-    // The table's cutoff stays where it comes close enough to the game's level.
-    if (WorstMiss(fits, table_cutoff, 0) <= kFixedTolerance)
-    {
-        return std::nullopt;
-    }
+    return fits;
+}
 
+// The cutoff that `fits` give a zone: a fixed one where it comes close enough to the game's level at every key, or one
+// that tracks the key where that misses by less. Nothing where no key has a weight.
+std::optional<FittedCutoff> FittedLine(const std::vector<KeyFit>& fits)
+{
     // The weighted sums of the keys and their cutoffs.
     double weight = 0.0;
     double sum_c = 0.0;
@@ -399,6 +415,27 @@ std::optional<FittedCutoff> FitZoneCutoff(const WaveSpectrum& spectrum, int orig
     const FittedCutoff tracking = {static_cast<int>(std::lround(sum_c / weight - slope * mean_k)), slope};
 
     return WorstMiss(fits, tracking.base, tracking.slope) < fixed_miss ? tracking : fixed;
+}
+
+} // namespace
+
+WaveSpectrum MeasureSpectrum(const wave::Pcm& wave)
+{
+    return PowerBands(WindowsPower(wave, SpectrumWindows(wave)), wave.sample_rate);
+}
+
+std::optional<FittedCutoff> FitZoneCutoff(const WaveSpectrum& spectrum, int original_key, double tune, uint32_t game_hz,
+                                          int table_cutoff, const std::vector<int>& keys, const Settings& settings)
+{
+    const std::vector<KeyFit> fits = KeyFits(spectrum, original_key, tune, game_hz, keys, settings);
+
+    // The table's cutoff stays where it comes close enough to the game's level.
+    if (WorstMiss(fits, table_cutoff, 0) <= kFixedTolerance)
+    {
+        return std::nullopt;
+    }
+
+    return FittedLine(fits);
 }
 
 std::vector<std::bitset<128>> PlayedKeys(const Performance& perf)

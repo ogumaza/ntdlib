@@ -3,30 +3,19 @@
 #include "ntdlib/jaudio1/conductor.h"
 
 #include <algorithm>
-#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <utility>
 #include <vector>
 
-#include "xsflib/binary.h"
+#include "jaudio/conductor_file.h"
 
 namespace ntdlib::jaudio1
 {
 
 namespace
 {
-
-// The bytes of each object in a conductor file: before its values, its values, and after them.
-constexpr std::size_t kConductorValues = 3;
-constexpr std::size_t kConductorAfter = 17;
-constexpr std::size_t kTrackBefore = 3;
-constexpr std::size_t kTrackValues = 14;
-constexpr std::size_t kTrackAfter = 3;
-constexpr std::size_t kModuleValues = 19;
-constexpr std::size_t kModuleAfter = 21;
-constexpr std::size_t kNameBytes = 8;
 
 // The requests to the conductor's code.
 constexpr uint32_t kSyncConductor = 0x300;
@@ -61,16 +50,6 @@ constexpr uint32_t kMaxList = 255;
 
 constexpr uint16_t kNone = 0xffff;
 
-uint32_t Read24(const Sequence& sequence, uint32_t offset)
-{
-    return uint32_t{sequence.U8(offset)} << 16 | uint32_t{sequence.U8(offset + 1)} << 8 | sequence.U8(offset + 2);
-}
-
-uint16_t Read16(const Sequence& sequence, uint32_t offset)
-{
-    return static_cast<uint16_t>(sequence.U8(offset) << 8 | sequence.U8(offset + 1));
-}
-
 uint16_t StartWait(uint8_t half_start, uint16_t start)
 {
     return static_cast<uint16_t>((half_start == 1 ? kHalfStart : 0) + start * kStartUnit);
@@ -80,46 +59,36 @@ uint16_t StartWait(uint8_t half_start, uint16_t start)
 
 ConductorFile ConductorFile::Parse(std::span<const uint8_t> bytes)
 {
-    const xsflib::Reader r(bytes, false);
+    const jaudio::detail::ConductorValues values =
+        jaudio::detail::ReadConductorValues(bytes, /*big_endian=*/false, /*check_whole_name=*/false);
     ConductorFile file;
-    std::size_t at = 0;
-    file.beat_interval = r.U8(at);
-    file.tempo = r.U8(at + 1);
-    const uint8_t track_count = r.U8(at + 2);
-    at += kConductorValues + kConductorAfter;
+    file.beat_interval = values.beat_interval;
+    file.tempo = values.tempo;
 
-    for (uint32_t i = 0; i < track_count; i++)
+    for (const jaudio::detail::ConductorTrackValues& track_values : values.tracks)
     {
         Track track;
-        at += kTrackBefore;
-        const uint8_t module_count = r.U8(at);
-        track.start = r.U16(at + 1);
-        track.half_start = r.U8(at + 3);
-        for (std::size_t c = 0; c < kNameBytes && r.U8(at + 4 + c) != 0; c++)
-        {
-            track.name += static_cast<char>(r.U8(at + 4 + c));
-        }
-        track.unison = r.U8(at + 12);
-        track.fxmix = r.U8(at + 13);
-        at += kTrackValues + kTrackAfter;
+        track.start = track_values.start;
+        track.half_start = track_values.half_start;
+        track.name = track_values.name;
+        track.unison = track_values.follows;
+        track.fxmix = track_values.send;
 
-        for (uint32_t j = 0; j < module_count; j++)
+        for (const jaudio::detail::ConductorModuleValues& module_values : track_values.modules)
         {
-            // The byte at +4 is a value that no request reads.
             Module module;
-            module.start = r.U16(at);
-            module.beats = r.S16(at + 2);
-            module.in_order = r.U8(at + 5);
-            module.port_high = r.U8(at + 6);
-            module.port_low = r.U8(at + 7);
-            module.tip_list = r.U16(at + 8);
-            module.scene_list = r.U16(at + 10);
-            module.repeats = {r.U8(at + 12), r.U8(at + 13)};
-            module.transpose = r.S16(at + 14);
-            module.volume = r.U8(at + 16);
-            module.pan = r.U8(at + 17);
-            module.half_start = r.U8(at + 18);
-            at += kModuleValues + kModuleAfter;
+            module.start = module_values.start;
+            module.beats = module_values.beats;
+            module.in_order = module_values.in_order;
+            module.port_high = module_values.port_high;
+            module.port_low = module_values.port_low;
+            module.tip_list = module_values.lists[0];
+            module.scene_list = module_values.lists[1];
+            module.repeats = module_values.repeats;
+            module.transpose = module_values.transpose;
+            module.volume = module_values.volume;
+            module.pan = module_values.pan;
+            module.half_start = module_values.half_start;
             track.modules.push_back(module);
         }
         file.tracks.push_back(std::move(track));
@@ -156,6 +125,25 @@ void Conductor::CountBeat()
         {
             track.modules[track.current].beats++;
         }
+    }
+}
+
+bool Conductor::TakesRequest(uint32_t value)
+{
+    switch (value)
+    {
+    case kSyncConductor:
+    case kSyncTrack:
+    case kSyncModule:
+    case kSyncCycleLoop:
+    case kSyncCycleTop:
+    case kSyncClearScene:
+    case kSyncPlay:
+    case kSyncCloser:
+        return true;
+
+    default:
+        return false;
     }
 }
 
@@ -333,8 +321,8 @@ void Conductor::SetTables(const Sequence* sequence, const ModuleRef& ref)
         return;
     }
 
-    module.tips = Read24(*sequence, tip_table_ + 3 * uint32_t{file.tip_list});
-    module.scenes = Read24(*sequence, scene_table_ + 3 * uint32_t{file.scene_list});
+    module.tips = sequence->U24(tip_table_ + 3 * uint32_t{file.tip_list});
+    module.scenes = sequence->U24(scene_table_ + 3 * uint32_t{file.scene_list});
     uint32_t count = 0;
     while (count < kMaxList &&
            !(sequence->U8(module.tips + 3 * count) == kEnd && sequence->U8(module.tips + 3 * count + 1) == kEnd &&
@@ -423,7 +411,7 @@ uint16_t Conductor::PlayScene(Tracks& tracks, uint32_t index, const ModuleRef& r
     const Sequence* sequence = tracks.TrackAt(index).sequence;
     const auto scene = [&](uint32_t number) -> uint16_t
     {
-        return sequence != nullptr ? Read16(*sequence, module.scenes + 2 * number) : kNone;
+        return sequence != nullptr ? sequence->U16(module.scenes + 2 * number) : kNone;
     };
 
     uint16_t value = 0;
@@ -495,7 +483,7 @@ void Conductor::SetTip(Tracks& tracks, uint32_t index, const ModuleRef& ref)
 
     module.tip = tip;
     const Sequence* sequence = tracks.TrackAt(index).sequence;
-    const uint32_t value = sequence != nullptr ? Read24(*sequence, module.tips + 3 * uint32_t{tip}) : 0xffffff;
+    const uint32_t value = sequence != nullptr ? sequence->U24(module.tips + 3 * uint32_t{tip}) : 0xffffff;
     tracks.WritePortAppDirect(index, kPortTip, static_cast<uint16_t>(value >> 16));
     tracks.WritePortAppDirect(index, kPortTip + 1, static_cast<uint16_t>(value & 0xffff));
 }

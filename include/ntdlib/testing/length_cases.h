@@ -18,6 +18,7 @@
 
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/testing/byte_writer.h"
 #include "ntdlib/testing/sar_files.h"
 
 namespace ntdlib::testing::length_cases
@@ -29,7 +30,7 @@ namespace ntdlib::testing::length_cases
 class Code
 {
 public:
-    explicit Code(bool big_endian) : big_endian_(big_endian)
+    explicit Code(bool big_endian) : bytes_(big_endian)
     {
         Byte(0xB0).Byte(48); // timebase 48
         Byte(0xE1).U16(120); // tempo 120
@@ -37,7 +38,7 @@ public:
 
     const std::vector<uint8_t>& Bytes() const
     {
-        return bytes_;
+        return bytes_.Data();
     }
 
     Code& Note(uint8_t key, uint8_t velocity, uint32_t length)
@@ -147,7 +148,7 @@ public:
 private:
     Code& Byte(uint32_t value)
     {
-        bytes_.push_back(static_cast<uint8_t>(value));
+        bytes_.U8(value);
 
         return *this;
     }
@@ -171,17 +172,19 @@ private:
 
     Code& U16(uint32_t value)
     {
-        return big_endian_ ? Byte(value >> 8).Byte(value) : Byte(value).Byte(value >> 8);
+        bytes_.U16(value);
+
+        return *this;
     }
 
     Code& U24(uint32_t value)
     {
-        return big_endian_ ? Byte(value >> 16).Byte(value >> 8).Byte(value)
-                           : Byte(value).Byte(value >> 8).Byte(value >> 16);
+        bytes_.U24(value);
+
+        return *this;
     }
 
-    bool big_endian_;
-    std::vector<uint8_t> bytes_;
+    ByteWriter bytes_;
 };
 
 // A case: the sound's label, its sequence, where the sound starts in it, the sound's volume and the tracks it
@@ -546,7 +549,7 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor)
 {
     // A wave of 1 s that ends, and one of 0.1 s that loops. Program 0 plays the wave that ends, and program 1 the one
     // that loops.
-    const bool big_endian = sar_files::detail::BigEndian(flavor);
+    const bool big_endian = sar_files::BigEndian(flavor);
     const sar_files::WaveSpec once = sar_files::ConstantWave(big_endian);
     sar_files::WaveSpec looping = sar_files::ConstantWave(big_endian, 3200);
     looping.loop = true;
@@ -580,7 +583,7 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor)
 // The archive for the Wii U, or for the Switch.
 inline std::vector<uint8_t> Archive(bool big_endian)
 {
-    return Archive(sar_files::detail::FlavorOf(big_endian));
+    return Archive(sar_files::FlavorOf(big_endian));
 }
 
 // Checks every case's timing. `analyze(index)` gives the timing of the archive's sound `index` (with length_ms, fade_ms

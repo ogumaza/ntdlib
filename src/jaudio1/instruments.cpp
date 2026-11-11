@@ -22,13 +22,66 @@ namespace
 {
 
 // JASInstRand's offset of its random value from 0 to 2: -0.99999988 (0xbf7ffffe).
-const float kRandomCenter = std::bit_cast<float>(0xbf7ffffeu);
+constexpr float kRandomCenter = std::bit_cast<float>(0xbf7ffffeu);
 
 // JASDrumSet::getParam's oscillator for every drum: the volume at 1 throughout, with no tables.
 const OscData kDrumOscillator{};
 
 // The instruments that JASBNKParser::findOscPtr searches.
 constexpr uint32_t kInstruments = 128;
+
+// The first instrument before program `number` that plays oscillator `osc`, or nullptr.
+const ntdlib::jaudio::Instrument* FirstSharing(const ntdlib::jaudio::Bank& bank, uint32_t number, std::size_t osc)
+{
+    for (const auto& [earlier, other] : bank.programs)
+    {
+        if (earlier >= number)
+        {
+            return nullptr;
+        }
+
+        const auto* shares = std::get_if<ntdlib::jaudio::Instrument>(&other);
+        if (shares != nullptr &&
+            std::find(shares->oscillators.begin(), shares->oscillators.end(), osc) != shares->oscillators.end())
+        {
+            return shares;
+        }
+    }
+
+    return nullptr;
+}
+
+// The parser's draws (findOscPtr), from `random`: for each oscillator of an instrument, in the order of the programs
+// and of the instrument's slots, the first earlier instrument that plays the same oscillator gives a note of key 60 at
+// velocity 127. Each of its random effects takes a number. The drum sets come after the instruments and draw none.
+void DrawLikeTheParser(const ntdlib::jaudio::Bank& bank, RandomFast& random)
+{
+    for (const auto& [number, program] : bank.programs)
+    {
+        const auto* inst = std::get_if<ntdlib::jaudio::Instrument>(&program);
+        if (number >= kInstruments || inst == nullptr)
+        {
+            continue;
+        }
+
+        for (const std::size_t osc : inst->oscillators)
+        {
+            const ntdlib::jaudio::Instrument* shares = FirstSharing(bank, number, osc);
+            if (shares == nullptr)
+            {
+                continue;
+            }
+
+            for (const ntdlib::jaudio::InstEffect& e : shares->effects)
+            {
+                if (e.kind == ntdlib::jaudio::InstEffect::Kind::kRandom)
+                {
+                    random.Next();
+                }
+            }
+        }
+    }
+}
 
 } // namespace
 
@@ -71,114 +124,13 @@ InstrumentBank::InstrumentBank(const ntdlib::jaudio::Bank& bank, RandomFast& ran
         oscillators.push_back(osc.get());
     }
 
-    const auto effects = [](const std::vector<ntdlib::jaudio::InstEffect>& from)
+    const auto oscillator = [&oscillators](std::size_t i)
     {
-        std::vector<Effect> to;
-        for (const ntdlib::jaudio::InstEffect& e : from)
-        {
-            Effect& effect = to.emplace_back();
-            effect.random = e.kind == ntdlib::jaudio::InstEffect::Kind::kRandom;
-            effect.target = e.target;
-            effect.base = e.base;
-            effect.width = e.width;
-            effect.trigger = e.trigger;
-            effect.center = e.center;
-            effect.low = e.low;
-            effect.high = e.high;
-        }
-
-        return to;
+        return oscillators[i];
     };
-    const auto velocities = [](const std::vector<ntdlib::jaudio::VelocityRegion>& from)
-    {
-        std::vector<VelocityRegion> to;
-        for (const ntdlib::jaudio::VelocityRegion& v : from)
-        {
-            to.push_back({v.high_velocity, v.wave_id, v.volume, v.pitch});
-        }
+    jaudio2::CopyPrograms<Programs>(bank, programs_, oscillator);
 
-        return to;
-    };
-
-    for (const auto& [number, program] : bank.programs)
-    {
-        if (number >= programs_.size())
-        {
-            continue;
-        }
-
-        if (const auto* inst = std::get_if<ntdlib::jaudio::Instrument>(&program))
-        {
-            Instrument& to = programs_[number].emplace<Instrument>();
-            to.volume = inst->volume;
-            to.pitch = inst->pitch;
-            for (std::size_t k = 0; k < std::min<std::size_t>(inst->oscillators.size(), 2); k++)
-            {
-                to.oscillators[k] = oscillators[inst->oscillators[k]];
-            }
-            to.effects = effects(inst->effects);
-            for (const ntdlib::jaudio::KeyRegion& key : inst->keys)
-            {
-                to.keys.push_back({key.high_key, velocities(key.velocities)});
-            }
-        }
-        else
-        {
-            const auto& drums = std::get<ntdlib::jaudio::DrumSet>(program);
-            DrumSet& to = programs_[number].emplace<DrumSet>();
-            for (std::size_t key = 0; key < drums.keys.size(); key++)
-            {
-                if (const auto& drum = drums.keys[key])
-                {
-                    to.keys[key] = Drum{drum->volume,
-                                        drum->pitch,
-                                        drum->pan,
-                                        drum->release,
-                                        effects(drum->effects),
-                                        velocities(drum->velocities)};
-                }
-            }
-        }
-    }
-
-    // The parser's draws (findOscPtr): for each oscillator of an instrument, in the order of the programs and of the
-    // instrument's slots, the first earlier instrument that plays the same oscillator gives a note of key 60 at
-    // velocity 127. Each of its random effects takes a number. The drum sets come after the instruments and draw none.
-    for (const auto& [number, program] : bank.programs)
-    {
-        const auto* inst = std::get_if<ntdlib::jaudio::Instrument>(&program);
-        if (number >= kInstruments || inst == nullptr)
-        {
-            continue;
-        }
-
-        for (const std::size_t osc : inst->oscillators)
-        {
-            for (const auto& [earlier, other] : bank.programs)
-            {
-                if (earlier >= number)
-                {
-                    break;
-                }
-
-                const auto* shares = std::get_if<ntdlib::jaudio::Instrument>(&other);
-                if (shares == nullptr ||
-                    std::find(shares->oscillators.begin(), shares->oscillators.end(), osc) == shares->oscillators.end())
-                {
-                    continue;
-                }
-
-                for (const ntdlib::jaudio::InstEffect& e : shares->effects)
-                {
-                    if (e.kind == ntdlib::jaudio::InstEffect::Kind::kRandom)
-                    {
-                        random.Next();
-                    }
-                }
-                break;
-            }
-        }
-    }
+    DrawLikeTheParser(bank, random);
 }
 
 bool InstrumentBank::HasProgram(uint32_t program) const
@@ -202,21 +154,7 @@ void InstrumentBank::ApplyEffect(const Effect& effect, uint32_t key, uint32_t ve
         const int32_t x = effect.trigger == 2   ? static_cast<int32_t>(key)
                           : effect.trigger == 1 ? static_cast<int32_t>(velocity)
                                                 : 0;
-        const int32_t center = effect.center;
-        if (center == 0x7f || center == 0)
-        {
-            y = effect.low + ((effect.high - effect.low) * static_cast<float>(x)) / 127.0f;
-        }
-        else if (x - center >= 0)
-        {
-            const float place = static_cast<float>(x - center) / static_cast<float>(0x7f - center);
-            y = place * (effect.high + -1.0f) + 1.0f;
-        }
-        else
-        {
-            const float place = static_cast<float>(x) / static_cast<float>(static_cast<uint32_t>(center));
-            y = effect.low + place * (1.0f - effect.low);
-        }
+        y = SenseCurve(effect.low, effect.high, effect.center, static_cast<uint32_t>(x));
     }
 
     switch (effect.target)
@@ -242,18 +180,21 @@ void InstrumentBank::ApplyEffect(const Effect& effect, uint32_t key, uint32_t ve
     }
 }
 
-const InstrumentBank::VelocityRegion* InstrumentBank::FindVelocity(std::span<const VelocityRegion> regions,
-                                                                   uint32_t velocity)
+float SenseCurve(float low, float high, uint32_t center, uint32_t x)
 {
-    for (const VelocityRegion& region : regions)
+    if (center == 0x7f || center == 0)
     {
-        if (region.high_velocity >= static_cast<int32_t>(velocity))
-        {
-            return &region;
-        }
+        return low + ((high - low) * static_cast<float>(x)) / 127.0f;
+    }
+    if (center > x)
+    {
+        return low + (static_cast<float>(x) / static_cast<float>(center)) * (1.0f - low);
     }
 
-    return nullptr;
+    const float above =
+        static_cast<float>(static_cast<int32_t>(x - center)) / static_cast<float>(static_cast<int32_t>(127 - center));
+
+    return above * (high + -1.0f) + 1.0f;
 }
 
 bool InstrumentBank::GetInstParam(uint32_t program, uint32_t key, uint32_t velocity, InstParam& param,
@@ -278,21 +219,13 @@ bool InstrumentBank::GetInstParam(uint32_t program, uint32_t key, uint32_t veloc
             ApplyEffect(effect, key, velocity, param, random);
         }
 
-        const KeyRegion* region = nullptr;
-        for (const KeyRegion& k : inst->keys)
-        {
-            if (k.high_key >= static_cast<int32_t>(key))
-            {
-                region = &k;
-                break;
-            }
-        }
+        const KeyRegion* region = jaudio2::FindKeyRegion(inst->keys, key);
         if (region == nullptr)
         {
             return false;
         }
 
-        const VelocityRegion* v = FindVelocity(region->velocities, velocity);
+        const VelocityRegion* v = jaudio2::FindVelocity<int64_t>(region->velocities, velocity);
         if (v == nullptr)
         {
             return false;
@@ -327,7 +260,7 @@ bool InstrumentBank::GetInstParam(uint32_t program, uint32_t key, uint32_t veloc
             ApplyEffect(effect, key, velocity, param, random);
         }
 
-        const VelocityRegion* v = FindVelocity(drum.velocities, velocity);
+        const VelocityRegion* v = jaudio2::FindVelocity<int64_t>(drum.velocities, velocity);
         if (v == nullptr)
         {
             return false;

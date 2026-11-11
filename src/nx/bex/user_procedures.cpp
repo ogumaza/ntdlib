@@ -44,6 +44,33 @@ uint32_t Step(uint32_t state)
     return (state * 48271u) % 0x7FFFFFFFu;
 }
 
+// The most draws of one call. Jamboree's handler stops there. Superstars' handler would draw for ever once its last
+// result is 0 with its generator at 0, and the model stops it there too.
+constexpr int kMostDraws = 64;
+
+// A draw for a count of 3 or more: steps the generator from `start` until the result, the state modulo `count`, differs
+// from the slot's last one, at most kMostDraws times. Leaves the state in `state` and the result in `last`, and returns
+// the result.
+uint32_t Draw(uint32_t start, uint32_t count, uint32_t& state, uint32_t& last)
+{
+    uint32_t next = start;
+    uint32_t result = 0;
+    for (int draw = 0; draw < kMostDraws; ++draw)
+    {
+        next = Step(next);
+        result = next % count;
+        if (result != last)
+        {
+            break;
+        }
+    }
+
+    state = next;
+    last = result;
+
+    return result;
+}
+
 } // namespace
 
 UserProcedures::UserProcedures(ProcedureHandler handler) : handler_(handler)
@@ -121,21 +148,7 @@ void UserProcedures::DrawJamboree(int bank, ProcedureVariables& variables)
     uint32_t& last = last_[static_cast<std::size_t>(bank)][slot];
     if (count >= 3)
     {
-        uint32_t next = state != 0 ? state : 1;
-        uint32_t result = 0;
-        for (int draw = 0; draw < 64; ++draw)
-        {
-            next = Step(next);
-            result = next % static_cast<uint32_t>(count);
-            if (result != last)
-            {
-                break;
-            }
-        }
-
-        state = next;
-        last = result;
-        slot_variable = static_cast<int16_t>(result);
+        slot_variable = static_cast<int16_t>(Draw(state != 0 ? state : 1, static_cast<uint32_t>(count), state, last));
     }
     else if (count == 2)
     {
@@ -201,21 +214,7 @@ void UserProcedures::DrawSuperstars(ProcedureVariables& variables)
     uint32_t& last = last_[0][static_cast<std::size_t>(slot_variable)];
     if (count >= 3)
     {
-        uint32_t next = state;
-        uint32_t result = 0;
-        for (int draw = 0; draw < 64; ++draw)
-        {
-            next = Step(next);
-            result = next % static_cast<uint32_t>(count);
-            if (result != last)
-            {
-                break;
-            }
-        }
-
-        state = next;
-        last = result;
-        slot_variable = static_cast<int16_t>(result);
+        slot_variable = static_cast<int16_t>(Draw(state, static_cast<uint32_t>(count), state, last));
     }
     else if (count == 2)
     {

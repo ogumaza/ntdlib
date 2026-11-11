@@ -16,6 +16,7 @@
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/wave/adpcm.h"
 
 namespace ntdlib::ctr::snd
 {
@@ -62,13 +63,8 @@ uint32_t SamplesToBytes(uint32_t samples, SampleFormat format)
     {
     case SampleFormat::kPcm8:
         return samples;
-
     case SampleFormat::kDspAdpcm:
-        {
-            const uint32_t rest = samples % 14;
-            return (samples / 14 * 16 + (rest ? rest + 2 : 0)) / 2;
-        }
-
+        return wave::DspAdpcmNibbleCount(samples) / 2;
     default:
         return samples * 2;
     }

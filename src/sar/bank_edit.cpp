@@ -20,32 +20,29 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/format_ids.h"
 
 namespace ntdlib::sar
 {
 namespace
 {
 
-constexpr uint16_t kInfoBlock = 0x5800;
-constexpr uint16_t kWaveTableReference = 0x0100;       // from INFO to the table of waves
-constexpr uint16_t kInstrumentTableReference = 0x0101; // from INFO to the table of instruments
-constexpr uint16_t kInstrumentReference = 0x5900;
-constexpr uint16_t kNoRegionReference = 0x5903; // the tools give a reference to no instrument this type too
-constexpr uint16_t kDirectTable = 0x6000;
-constexpr uint16_t kRangeTable = 0x6001;
-constexpr uint16_t kIndexTable = 0x6002;
-constexpr int32_t kNoOffset = -1;
 constexpr uint32_t kLastProgram = 0xFFFF;
 
-// The options of a velocity region that ntdlib reads: the original key, the volume, the pan, the pitch, the flags and
-// the envelope. Each set bit has a value of 4 bytes, in the order of the bits.
-constexpr uint32_t kRegionOptions = 0x21F;
-constexpr int kEnvelopeOption = 9;
-constexpr std::size_t kEnvelopeBytes = 5;
-
-// The boundary that each structure of INFO starts on.
-constexpr std::size_t kAlignment = 4;
-
+using detail::kBankAlignment;
+using detail::kBankInfoBlock;
+using detail::kDirectTable;
+using detail::kEnvelopeBytes;
+using detail::kEnvelopeOption;
+using detail::kIndexTable;
+using detail::kInstrumentReference;
+using detail::kListReference;
+using detail::kNoItemReference;
+using detail::kNone;
+using detail::kNoOffset;
+using detail::kRangeTable;
+using detail::kRegionOptions;
+using detail::kTableReference;
 using detail::Out;
 
 // The kinds of an instrument's structures, for the record of the structures that a walk has reached.
@@ -58,9 +55,9 @@ enum Kind
     kVelocityRegion,
 };
 
-// A bank file: a reader in its byte order, the place of its INFO block, the entry of the table of blocks for INFO and
-// the places of its two tables. Each table starts with its count.
-struct BankFile
+// A bank file as the edit reads it: a reader in its byte order, the place of its INFO block, the entry of the table of
+// blocks for INFO and the places of its two tables. Each table starts with its count.
+struct BankPlaces
 {
     xsflib::Reader r;
     std::size_t info = 0;
@@ -72,7 +69,7 @@ struct BankFile
 // Opens a bank file of `flavor`. Throws std::invalid_argument for a bank file of another flavor. Throws
 // xsflib::FormatError for other bytes, for an INFO block past the file's end and for an unknown reference of INFO's
 // body.
-BankFile Open(std::span<const uint8_t> file, Flavor flavor)
+BankPlaces Open(std::span<const uint8_t> file, Flavor flavor)
 {
     if (file.size() < 6 || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, "BNK", 3) != 0 ||
         !((file[4] == 0xFF && file[5] == 0xFE) || (file[4] == 0xFE && file[5] == 0xFF)))
@@ -85,11 +82,11 @@ BankFile Open(std::span<const uint8_t> file, Flavor flavor)
         throw std::invalid_argument("a bank file of another console");
     }
 
-    BankFile bank{xsflib::Reader(file, big_endian)};
+    BankPlaces bank{xsflib::Reader(file, big_endian)};
     for (uint16_t i = 0; i < bank.r.U16(0x10); ++i)
     {
         const std::size_t entry = 0x14 + std::size_t{i} * 12;
-        if (bank.r.U16(entry) == kInfoBlock)
+        if (bank.r.U16(entry) == kBankInfoBlock)
         {
             bank.info_entry = entry;
             bank.info = bank.r.U32(entry + 4);
@@ -108,11 +105,11 @@ BankFile Open(std::span<const uint8_t> file, Flavor flavor)
         const std::size_t table = body + static_cast<std::size_t>(bank.r.S32(reference + 4));
         switch (bank.r.U16(reference))
         {
-        case kWaveTableReference:
+        case kListReference:
             bank.waves = table;
             break;
 
-        case kInstrumentTableReference:
+        case kTableReference:
             bank.instruments = table;
             break;
 
@@ -126,7 +123,7 @@ BankFile Open(std::span<const uint8_t> file, Flavor flavor)
 
 // The copies of `copies`, by their programs in `bank`. Throws std::invalid_argument for a program past 0xFFFF and for
 // a program that the bank or another copy takes already.
-std::map<uint32_t, const InstrumentCopy*> Programs(const BankFile& bank, std::span<const InstrumentCopy> copies)
+std::map<uint32_t, const InstrumentCopy*> Programs(const BankPlaces& bank, std::span<const InstrumentCopy> copies)
 {
     const uint32_t count = bank.r.U32(bank.instruments);
     std::map<uint32_t, const InstrumentCopy*> programs;
@@ -147,7 +144,7 @@ std::map<uint32_t, const InstrumentCopy*> Programs(const BankFile& bank, std::sp
 }
 
 // The place of the instrument at `program` of `bank`. Throws std::invalid_argument for a program without an instrument.
-std::size_t InstrumentAt(const BankFile& bank, uint32_t program)
+std::size_t InstrumentAt(const BankPlaces& bank, uint32_t program)
 {
     const std::size_t entry = bank.instruments + 4 + std::size_t{program} * 8;
     if (program >= bank.r.U32(bank.instruments) || bank.r.U16(entry) != kInstrumentReference)
@@ -201,12 +198,12 @@ RegionTable TableAt(const xsflib::Reader& r, std::size_t owner)
     return table;
 }
 
-// The region that the reference at `at` names, from `table`. A reference of kNoRegionReference or without an offset
+// The region that the reference at `at` names, from `table`. A reference of kNoItemReference or without an offset
 // names none.
 std::optional<std::size_t> RegionAt(const xsflib::Reader& r, std::size_t table, std::size_t at)
 {
     const int32_t offset = r.S32(at + 4);
-    if (r.U16(at) == kNoRegionReference || offset == kNoOffset)
+    if (r.U16(at) == kNoItemReference || offset == kNoOffset)
     {
         return std::nullopt;
     }
@@ -246,7 +243,7 @@ struct Offset
 class Offsets
 {
 public:
-    explicit Offsets(const BankFile& bank) : r_(bank.r)
+    explicit Offsets(const BankPlaces& bank) : r_(bank.r)
     {
         const std::size_t body = bank.info + 8;
         fields_.push_back({body + 4, body, body + static_cast<std::size_t>(r_.S32(body + 4))});
@@ -346,7 +343,7 @@ private:
 class WaveTable
 {
 public:
-    explicit WaveTable(const BankFile& bank) : count_(bank.r.U32(bank.waves))
+    explicit WaveTable(const BankPlaces& bank) : count_(bank.r.U32(bank.waves))
     {
         for (uint32_t i = 0; i < count_; ++i)
         {
@@ -358,7 +355,7 @@ public:
     // The index in the table of the wave that entry `index` of the table of waves of `from` names: the first entry
     // that names the same wave archive and wave, or else a new one. Throws xsflib::FormatError for an index past the
     // table of `from`.
-    uint32_t IndexOf(const BankFile& from, uint32_t index)
+    uint32_t IndexOf(const BankPlaces& from, uint32_t index)
     {
         if (index >= from.r.U32(from.waves))
         {
@@ -403,7 +400,7 @@ public:
     }
 
     // Lays out the instrument at `at` of `from`. Returns its place.
-    std::size_t Instrument(const BankFile& from, std::size_t at)
+    std::size_t Instrument(const BankPlaces& from, std::size_t at)
     {
         key_regions_.clear();
         const std::size_t place = Copy(from, at, 8);
@@ -419,15 +416,15 @@ public:
 
 private:
     // Appends `size` bytes of `from` at `at`, and returns their place.
-    std::size_t Copy(const BankFile& from, std::size_t at, std::size_t size)
+    std::size_t Copy(const BankPlaces& from, std::size_t at, std::size_t size)
     {
         return bytes_.Append(from.r.Sub(at, size));
     }
 
     // Lays out the region table that the reference at `owner` gives, and each region that it names. The reference's
     // copy lies at `owner_place`.
-    void Table(const BankFile& from, std::size_t owner, std::size_t owner_place,
-               std::size_t (Layout::*region)(const BankFile&, std::size_t))
+    void Table(const BankPlaces& from, std::size_t owner, std::size_t owner_place,
+               std::size_t (Layout::*region)(const BankPlaces&, std::size_t))
     {
         const RegionTable table = TableAt(from.r, owner);
         const std::size_t place = Copy(from, table.at, table.Size());
@@ -444,7 +441,7 @@ private:
     }
 
     // A key region that the table names again keeps the place where it went in first.
-    std::size_t KeyRegion(const BankFile& from, std::size_t at)
+    std::size_t KeyRegion(const BankPlaces& from, std::size_t at)
     {
         const auto [laid, first] = key_regions_.emplace(at, bytes_.Size());
         if (first)
@@ -456,7 +453,7 @@ private:
         return laid->second;
     }
 
-    std::size_t VelocityRegion(const BankFile& from, std::size_t at)
+    std::size_t VelocityRegion(const BankPlaces& from, std::size_t at)
     {
         const auto [size, envelope] = RegionSize(from.r, at);
         const std::size_t place = Copy(from, at, size);
@@ -467,7 +464,7 @@ private:
             const std::size_t reference_place = Copy(from, reference, 8);
             const std::size_t bytes = reference + static_cast<std::size_t>(from.r.S32(reference + 4));
             const std::size_t bytes_place = Copy(from, bytes, kEnvelopeBytes);
-            bytes_.Align(kAlignment);
+            bytes_.Align(kBankAlignment);
             bytes_.U32(place + *envelope, static_cast<uint32_t>(reference_place - place));
             bytes_.U32(reference_place + 4, static_cast<uint32_t>(bytes_place - reference_place));
         }
@@ -499,12 +496,57 @@ std::size_t Moved(const std::vector<Insertion>& insertions, std::size_t at)
     return place;
 }
 
+// The entries of the table of waves for `waves`: a wave archive's item ID and a wave's index for each.
+std::vector<uint8_t> WaveEntries(std::span<const std::pair<uint32_t, uint32_t>> waves, bool big_endian)
+{
+    Out out(big_endian);
+    for (const auto& [wave_archive, index] : waves)
+    {
+        const std::size_t at = out.Zeros(8);
+        out.U32(at, wave_archive);
+        out.U32(at + 4, index);
+    }
+
+    return out.Take();
+}
+
+// `count` entries of the table of instruments that name no instrument.
+std::vector<uint8_t> NoInstrumentEntries(uint32_t count, bool big_endian)
+{
+    Out out(big_endian);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const std::size_t at = out.Zeros(8);
+        out.U16(at, kNoItemReference);
+        out.U32(at + 4, kNone);
+    }
+
+    return out.Take();
+}
+
+// `bank` with `insertions`, in the order of their places. Of the insertions at one place, the one that comes last in
+// `insertions` goes in last.
+Out WithInsertions(std::span<const uint8_t> bank, std::span<const Insertion> insertions, bool big_endian)
+{
+    Out out(big_endian);
+    std::size_t copied = 0;
+    for (const Insertion& insertion : insertions)
+    {
+        out.Append(bank.subspan(copied, insertion.at - copied));
+        out.Append(insertion.bytes);
+        copied = insertion.at;
+    }
+    out.Append(bank.subspan(copied));
+
+    return out;
+}
+
 } // namespace
 
 std::vector<uint8_t> WithInstruments(std::span<const uint8_t> bank, Flavor flavor,
                                      std::span<const InstrumentCopy> copies)
 {
-    const BankFile target = Open(bank, flavor);
+    const BankPlaces target = Open(bank, flavor);
     if (copies.empty())
     {
         return {bank.begin(), bank.end()};
@@ -518,7 +560,7 @@ std::vector<uint8_t> WithInstruments(std::span<const uint8_t> bank, Flavor flavo
     std::vector<std::pair<uint32_t, std::size_t>> places;
     for (const auto& [program, copy] : programs)
     {
-        const BankFile from = Open(copy->from, flavor);
+        const BankPlaces from = Open(copy->from, flavor);
         places.emplace_back(program, layout.Instrument(from, InstrumentAt(from, copy->program)));
     }
 
@@ -531,7 +573,8 @@ std::vector<uint8_t> WithInstruments(std::span<const uint8_t> bank, Flavor flavo
     std::vector<Insertion> insertions(3);
     insertions[0].at = target.waves + 4 + std::size_t{waves.Count()} * 8;
     insertions[1].at = target.instruments + 4 + std::size_t{count} * 8;
-    insertions[2].at = std::max(insertions[1].at, (offsets.End() + kAlignment - 1) / kAlignment * kAlignment);
+    insertions[2].at =
+        std::max(insertions[1].at, (offsets.End() + kBankAlignment - 1) / kBankAlignment * kBankAlignment);
     for (const Insertion& insertion : insertions)
     {
         if (insertion.at < target.info + 8 || insertion.at > target.info + info_size)
@@ -540,37 +583,15 @@ std::vector<uint8_t> WithInstruments(std::span<const uint8_t> bank, Flavor flavo
         }
     }
 
-    Out new_waves(r.BigEndian());
-    for (const auto& [wave_archive, index] : waves.Added())
-    {
-        const std::size_t at = new_waves.Zeros(8);
-        new_waves.U32(at, wave_archive);
-        new_waves.U32(at + 4, index);
-    }
-    Out new_entries(r.BigEndian());
-    for (uint32_t i = count; i < new_count; ++i)
-    {
-        const std::size_t at = new_entries.Zeros(8);
-        new_entries.U16(at, kNoRegionReference);
-        new_entries.U32(at + 4, static_cast<uint32_t>(kNoOffset));
-    }
-    insertions[0].bytes = new_waves.Take();
-    insertions[1].bytes = new_entries.Take();
+    insertions[0].bytes = WaveEntries(waves.Added(), r.BigEndian());
+    insertions[1].bytes = NoInstrumentEntries(new_count - count, r.BigEndian());
     insertions[2].bytes = layout.Take();
     const std::size_t copies_at = insertions[2].at;
     const std::size_t copies_size = insertions[2].bytes.size();
     std::ranges::stable_sort(insertions, {}, &Insertion::at);
 
     // The bank with the insertions. Of the insertions at one place, the copies go in last.
-    Out out(r.BigEndian());
-    std::size_t copied = 0;
-    for (const Insertion& insertion : insertions)
-    {
-        out.Append(bank.subspan(copied, insertion.at - copied));
-        out.Append(insertion.bytes);
-        copied = insertion.at;
-    }
-    out.Append(bank.subspan(copied));
+    Out out = WithInsertions(bank, insertions, r.BigEndian());
 
     // The offsets, the counts, the copies' entries and the sizes.
     for (const Offset& offset : offsets.Fields())

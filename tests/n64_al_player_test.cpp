@@ -345,6 +345,7 @@ void TestLinearRamps()
 
         return (static_cast<uint32_t>(static_cast<uint16_t>(high)) << 16) | low;
     };
+
     XSFLIB_CHECK(expected_rate(2553) == 0xFD81C001);
     XSFLIB_CHECK(rates[0] == expected_rate(currents[0]));
 

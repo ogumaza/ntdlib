@@ -114,4 +114,11 @@ struct BannerOptions
 // identifies the build of October 2006.
 SndBuild FindSndBuild(std::span<const uint8_t> dol, const BannerOptions& options = {});
 
+// The build that a game plays by when it links `build`, from FindSndBuild, and AX of `ax`. A build without a banner
+// plays as the build of October 2006 (SndBuild::October2006), whatever AX comes with it. So does a build with AX of
+// October 2006. WarioWare: Smooth Moves links a build without a banner with AX of October 2006. The Mii Channel links
+// one with AX of August 2007. The Mii Channel's sequence clock counts in 416ths of a tick (0x800fd84c to 0x800fd8a0 in
+// its main program). The build of October 2006 counts the same way.
+SndBuild SndBuildWithAx(SndBuild build, AxBuild ax);
+
 } // namespace ntdlib

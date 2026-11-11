@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -83,22 +84,7 @@ void SoundBus::Store(const agb::RegisterWrite& write)
     const uint32_t address = write.address;
     if (address >= agb::kRegSound1CntL && address < kSoundEnd)
     {
-        // The resets of the FIFOs empty them.
-        for (uint32_t b = 0; b < write.size; b++)
-        {
-            if (address + b == kSoundCntHHigh)
-            {
-                const uint8_t high = uint8_t(write.value >> (8 * b));
-                for (int f = 0; f < 2; f++)
-                {
-                    if (high & (0x08 << (4 * f)))
-                    {
-                        fifos_[size_t(f)].bytes.clear();
-                        fifos_[size_t(f)].output = 0;
-                    }
-                }
-            }
-        }
+        ResetFifos(write);
         apu_.Store(address, write.size, write.value);
     }
     else if (address >= agb::kRegFifoA && address < agb::kRegFifoA + 2 * kFifoBytes)
@@ -120,6 +106,26 @@ void SoundBus::Store(const agb::RegisterWrite& write)
     {
         const uint32_t offset = address - kDma1;
         StoreDma(int(offset / kDmaBytes), offset % kDmaBytes, write.size, write.value);
+    }
+}
+
+void SoundBus::ResetFifos(const agb::RegisterWrite& write)
+{
+    const uint32_t address = write.address;
+    for (uint32_t b = 0; b < write.size; b++)
+    {
+        if (address + b == kSoundCntHHigh)
+        {
+            const uint8_t high = uint8_t(write.value >> (8 * b));
+            for (int f = 0; f < 2; f++)
+            {
+                if (high & (0x08 << (4 * f)))
+                {
+                    fifos_[size_t(f)].bytes.clear();
+                    fifos_[size_t(f)].output = 0;
+                }
+            }
+        }
     }
 }
 
@@ -202,61 +208,66 @@ void SoundBus::StartEnhanced()
     enhanced_ = true;
 }
 
+void SoundBus::PlayFifo(int f, std::vector<float>& enhanced)
+{
+    Fifo& fifo = fifos_[size_t(f)];
+    const Timer& timer = timers_[size_t(TimerOf(f))];
+    struct Played
+    {
+        uint64_t at = 0;
+        int8_t byte = 0;
+    };
+    std::vector<Played> played;
+    const int8_t start = fifo.output;
+    for (uint64_t at = timer.next; timer.period && at < agb::kFrameCycles; at += timer.period)
+    {
+        if (!fifo.bytes.empty())
+        {
+            fifo.output = fifo.bytes.front();
+            fifo.bytes.pop_front();
+        }
+        played.push_back({at, fifo.output});
+        if (fifo.dma && fifo.bytes.size() <= kDmaLevel)
+        {
+            Fill(f, fifo.source, kDmaBurst);
+            fifo.source += kDmaBurst;
+        }
+    }
+
+    // In the enhanced mode, each output sample lies between the byte that plays and the next, at its place between
+    // the two overflows. A stopped timer holds the byte.
+    if (enhanced_)
+    {
+        const int8_t next = fifo.bytes.empty() ? fifo.output : fifo.bytes.front();
+        for (uint32_t i = 0; i < agb::kEnhancedFrameSamples; i++)
+        {
+            if (!timer.period)
+            {
+                enhanced.push_back(float(fifo.output));
+                continue;
+            }
+
+            const double at = double(i) * double(agb::kFrameCycles) / agb::kEnhancedFrameSamples;
+            const auto after = std::upper_bound(played.begin(), played.end(), at,
+                                                [](double t, const Played& p) { return t < double(p.at); });
+            const int8_t to = after == played.end() ? next : after->byte;
+            const bool before = after == played.begin();
+            const int8_t from = before ? start : (after - 1)->byte;
+            const double from_at = before ? double(after == played.end() ? timer.next : after->at) - timer.period
+                                          : double((after - 1)->at);
+            const double weight = std::clamp((at - from_at) / timer.period, 0.0, 1.0);
+            enhanced.push_back(float(from + (to - from) * weight));
+        }
+    }
+}
+
 void SoundBus::RunFrame(std::vector<int16_t>* out, std::vector<float>* enhanced_out)
 {
     // Each overflow of a FIFO's timer plays the FIFO's next byte. The DMA moves 16 more once 16 or fewer are left.
     std::array<std::vector<float>, 2> enhanced;
     for (int f = 0; f < 2; f++)
     {
-        Fifo& fifo = fifos_[size_t(f)];
-        const Timer& timer = timers_[size_t(TimerOf(f))];
-        struct Played
-        {
-            uint64_t at = 0;
-            int8_t byte = 0;
-        };
-        std::vector<Played> played;
-        const int8_t start = fifo.output;
-        for (uint64_t at = timer.next; timer.period && at < agb::kFrameCycles; at += timer.period)
-        {
-            if (!fifo.bytes.empty())
-            {
-                fifo.output = fifo.bytes.front();
-                fifo.bytes.pop_front();
-            }
-            played.push_back({at, fifo.output});
-            if (fifo.dma && fifo.bytes.size() <= kDmaLevel)
-            {
-                Fill(f, fifo.source, kDmaBurst);
-                fifo.source += kDmaBurst;
-            }
-        }
-
-        // In the enhanced mode, each output sample lies between the byte that plays and the next, at its place between
-        // the two overflows. A stopped timer holds the byte.
-        if (enhanced_)
-        {
-            const int8_t next = fifo.bytes.empty() ? fifo.output : fifo.bytes.front();
-            for (uint32_t i = 0; i < agb::kEnhancedFrameSamples; i++)
-            {
-                if (!timer.period)
-                {
-                    enhanced[size_t(f)].push_back(float(fifo.output));
-                    continue;
-                }
-
-                const double at = double(i) * double(agb::kFrameCycles) / agb::kEnhancedFrameSamples;
-                const auto after = std::upper_bound(played.begin(), played.end(), at,
-                                                    [](double t, const Played& p) { return t < double(p.at); });
-                const int8_t to = after == played.end() ? next : after->byte;
-                const bool before = after == played.begin();
-                const int8_t from = before ? start : (after - 1)->byte;
-                const double from_at = before ? double(after == played.end() ? timer.next : after->at) - timer.period
-                                              : double((after - 1)->at);
-                const double weight = std::clamp((at - from_at) / timer.period, 0.0, 1.0);
-                enhanced[size_t(f)].push_back(float(from + (to - from) * weight));
-            }
-        }
+        PlayFifo(f, enhanced[size_t(f)]);
     }
 
     for (int f = 0; f < 2; f++)

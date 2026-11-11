@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,10 +29,12 @@
 
 #include "xsflib/testing/check.h"
 
+#include "ctr_archive_waves.h"
 #include "ntdlib/ctr/nnsnd/dsp_abi.h"
 #include "ntdlib/ctr/snd/engine.h"
 #include "ntdlib/ctr/snd/sar_options.h"
 #include "ntdlib/ctr/snd/sound_players.h"
+#include "ntdlib/ctr/snd/starting_tracks.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
 #include "ntdlib/testing/sar_files.h"
@@ -39,6 +42,7 @@
 namespace
 {
 
+namespace archive_test = ntdlib::ctr::archive_test;
 namespace files = ntdlib::testing::sar_files;
 namespace sar = ntdlib::sar;
 using ntdlib::ctr::snd::ArchiveModel;
@@ -113,46 +117,6 @@ std::optional<std::vector<uint8_t>> Firmware()
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// A looped DSP-ADPCM wave of 400 frames of 14 samples, from a fixed run of numbers. Each frame's header picks a
-// predictor of 0 to 7 and a scale of 0 to 11. The loop runs from frame 100 to the end.
-files::WaveSpec AdpcmWave()
-{
-    std::vector<uint8_t> bytes(400 * 8);
-    uint32_t state = 1;
-    for (std::size_t i = 0; i < bytes.size(); i++)
-    {
-        state = state * 1103515245u + 12345u;
-        const auto value = static_cast<uint8_t>(state >> 16);
-        bytes[i] = i % 8 == 0 ? static_cast<uint8_t>((value & 0x70) | (value % 12)) : value;
-    }
-
-    files::WaveSpec wave;
-    wave.encoding = 2;
-    wave.loop = true;
-    wave.loop_start = 100 * 14;
-    wave.loop_end = 400 * 14;
-    wave.channels = {bytes};
-
-    return wave;
-}
-
-// A PCM8 wave of a sawtooth, 0.5 s long. It plays once.
-files::WaveSpec Pcm8Wave()
-{
-    std::vector<uint8_t> bytes(16000);
-    for (std::size_t i = 0; i < bytes.size(); i++)
-    {
-        bytes[i] = static_cast<uint8_t>(3 * i);
-    }
-
-    files::WaveSpec wave;
-    wave.encoding = 0;
-    wave.loop_end = static_cast<uint32_t>(bytes.size());
-    wave.channels = {bytes};
-
-    return wave;
-}
-
 // A stream as the 3DS's tools lay one out in version 2.3.1.0, `samples` long: two channels of DSP-ADPCM at 32,728 Hz.
 // Channel 0 holds a sawtooth and channel 1 a square wave. A loop from `loop_start` moves to the start of the next
 // block.
@@ -172,10 +136,10 @@ std::vector<uint8_t> Stream(uint32_t samples, std::optional<uint32_t> loop_start
 // The stream files: 1 s with a loop from 8,000 samples, then 0.4 s without a loop.
 const std::array<std::vector<uint8_t>, 2>& Streams()
 {
-    static const std::array<std::vector<uint8_t>, 2> streams = {Stream(160 * kSecond, 8000),
-                                                                Stream(13091, std::nullopt)};
+    static const std::array<std::vector<uint8_t>, 2> kStreams = {Stream(160 * kSecond, 8000),
+                                                                 Stream(13091, std::nullopt)};
 
-    return streams;
+    return kStreams;
 }
 
 // The wave sound file of sounds 3 to 5 (see Archive). Its waves are the constant wave, the DSP-ADPCM wave and a wave
@@ -252,14 +216,13 @@ std::vector<uint8_t> Archive()
     spec.wave_archives = {{"WARC", 2}};
     spec.players = {{"PLAYER", 2}};
     const std::vector<uint8_t> note = {0x3C, 0x7F, 0x60, 0x80, 0x60, 0xFF};
-    const std::vector<uint8_t> notes = {0xC0, 0x30, 0xC7, 0x00, 0x81, 0x01, 0x40, 0x7F, 0x60, 0x81, 0x02, 0x37, 0x50,
-                                        0x60, 0x81, 0x00, 0x48, 0x7F, 0x60, 0x80, 0x60, 0xC7, 0x01, 0x81, 0x01, 0x30,
-                                        0x7F, 0x30, 0x81, 0x02, 0x3C, 0x7F, 0x30, 0x81, 0x00, 0x43, 0x7F, 0x30, 0xFF};
+    const std::vector<uint8_t> notes = archive_test::Notes();
     const std::vector<uint8_t> sends = {0xD9, 0x40, 0xDA, 0x64, 0x81, 0x01, 0x40, 0x7F, 0x60, 0x80, 0x60, 0xFF};
     spec.files = {{files::Sequence(kCtr, note, {{"SEQ_NOTE", 0}})},
                   {files::Bank(kCtr, files::OneRegionBank(3))},
                   {files::WaveArchive(kCtr, {files::Wave(kCtr, files::ConstantWave(false, 64000)),
-                                             files::Wave(kCtr, AdpcmWave()), files::Wave(kCtr, Pcm8Wave())})},
+                                             files::Wave(kCtr, archive_test::AdpcmWave()),
+                                             files::Wave(kCtr, archive_test::Pcm8Wave())})},
                   {files::Sequence(kCtr, notes, {{"SEQ_NOTES", 0}})},
                   {files::Sequence(kCtr, sends, {{"SEQ_SENDS", 0}})},
                   {files::WaveSoundFile(kCtr, WaveSounds())},
@@ -541,6 +504,63 @@ void TestMute(DspKind kind, std::span<const uint8_t> firmware, const sar::SoundA
                  std::equal(muted_out.begin() + from, muted_out.begin() + to, plain_out.begin() + from));
 }
 
+// A start's muted or silenced tracks play no note that sounds, and banks that leave every slot empty give the notes
+// nothing to play. The plain start sounds. A variable can be scheduled only for a player of the engine.
+void TestSequenceStart(const sar::SoundArchive& archive)
+{
+    ntdlib::ctr::snd::SequenceStart muted;
+    muted.muted = 0xffff;
+    ntdlib::ctr::snd::SequenceStart silenced;
+    silenced.silenced = 0xffff;
+    constexpr uint32_t kEmpty = ntdlib::ctr::snd::kNoBank;
+    const std::array<uint32_t, 4> no_banks = {kEmpty, kEmpty, kEmpty, kEmpty};
+    std::array<std::vector<int16_t>, 4> out;
+    std::array<std::unique_ptr<ArchiveModel>, 4> models;
+    for (std::size_t i = 0; i < models.size(); i++)
+    {
+        models[i] = Start(DspKind::kModel, {}, archive, out[i]);
+    }
+
+    ntdlib::ctr::snd::SequenceSoundPlayer* const plain = models[0]->engine->StartSequence(0);
+    ntdlib::ctr::snd::SequenceSoundPlayer* const quiet = models[1]->engine->StartSequence(0);
+    ntdlib::ctr::snd::SequenceSoundPlayer* const silent = models[2]->engine->StartSequence(0);
+    XSFLIB_CHECK(plain != nullptr && quiet != nullptr && silent != nullptr &&
+                 models[3]->engine->StartSequence(0, no_banks) != nullptr);
+    ntdlib::ctr::snd::ApplySequenceStart(*models[0]->engine, *plain, {});
+    ntdlib::ctr::snd::ApplySequenceStart(*models[1]->engine, *quiet, muted);
+    ntdlib::ctr::snd::ApplySequenceStart(*models[2]->engine, *silent, silenced);
+
+    bool refused = false;
+    try
+    {
+        models[0]->engine->ScheduleVariable(*quiet, 0, 1, 5);
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+
+    XSFLIB_CHECK(refused);
+
+    // ApplyVariables skips an entry that sets no variable, sets a variable of frame 0 at once and schedules a later
+    // one.
+    const std::array<ntdlib::ctr::snd::SequenceVariable, 3> variables = {{{}, {0, 7, 0}, {1, 9, 3}}};
+    ntdlib::ctr::snd::ApplyVariables(*models[0]->engine, *plain, variables);
+    const ntdlib::ctr::snd::Engine::Snapshot snapshot = models[0]->engine->Save();
+    XSFLIB_CHECK(snapshot.scheduled.size() == 1 && snapshot.scheduled[0].player == plain->Id() &&
+                 snapshot.scheduled[0].index == 1 && snapshot.scheduled[0].value == 9 &&
+                 snapshot.scheduled[0].frame == snapshot.frames + 3);
+    for (int i = 0; i < 100; i++)
+    {
+        for (const std::unique_ptr<ArchiveModel>& model : models)
+        {
+            XSFLIB_CHECK(model->engine->RunFrame());
+        }
+    }
+
+    XSFLIB_CHECK(Sounds(out[0]) && !Sounds(out[1]) && !Sounds(out[2]) && !Sounds(out[3]));
+}
+
 // A track's meter follows its notes. Sound 1 plays every note on track 0, and the other tracks' meters stay at 0. Track
 // 0's peaks follow the frames that the DSP mixed. The limiter of the output squeezes the loud frames, and the quiet
 // ones come out at the meter's level. The meters change nothing in the output. Each frame that the DSP mixes comes out
@@ -731,10 +751,10 @@ void TestStreamTrackVolumes(const sar::SoundArchive& archive)
 
     // Both tracks until the change, and the quiet output from 3 frames after it on, in values of both channels.
     const std::vector<int16_t> below = PlayStream(archive, two, kAll, kSecond, 0x2, -1.0f);
-    const auto until = static_cast<std::ptrdiff_t>(2 * 160 * kSecond);
-    const auto from = static_cast<std::ptrdiff_t>(2 * 160 * (kSecond + 3));
-    XSFLIB_CHECK(below.size() == quiet.size() && std::equal(below.begin(), below.begin() + until, both.begin()) &&
-                 std::equal(below.begin() + from, below.end(), quiet.begin() + from));
+    constexpr std::ptrdiff_t kUntil = 2 * 160 * kSecond;
+    constexpr std::ptrdiff_t kFrom = 2 * 160 * (kSecond + 3);
+    XSFLIB_CHECK(below.size() == quiet.size() && std::equal(below.begin(), below.begin() + kUntil, both.begin()) &&
+                 std::equal(below.begin() + kFrom, below.end(), quiet.begin() + kFrom));
 }
 
 // The tracks that Mario Kart 7, Super Mario 3D Land, New Leaf, Happy Home Designer and Tomodachi Life play of their
@@ -891,6 +911,7 @@ int main()
 
     TestRestoreOfGrownVoices();
     TestMute(DspKind::kModel, {}, archive);
+    TestSequenceStart(archive);
     TestMeters(archive);
     TestWaveSounds(archive);
     TestStreams(archive);

@@ -31,6 +31,14 @@ namespace ntdlib::ctr::snd
 namespace
 {
 
+// Gives `channel` the DSP-ADPCM decoder's coefficients, and its state at the start and at the loop, from `adpcm`.
+void SetAdpcm(WaveInfo::Channel& channel, const ntdlib::sar::DspAdpcmInfo& adpcm)
+{
+    channel.coefs = adpcm.coefs;
+    channel.context = {adpcm.pred_scale, adpcm.yn1, adpcm.yn2};
+    channel.loop_context = {adpcm.loop_pred_scale, adpcm.loop_yn1, adpcm.loop_yn2};
+}
+
 // Reads `wave`, a wave in the wave archive `warc`, into a WaveInfo. nw::snd's WaveFileReader fills one the same way.
 // Each channel's data is the address of its samples in FCRAM. Returns nothing for a wave that the DSP can't play: an
 // IMA-ADPCM wave, or one without channels.
@@ -69,9 +77,7 @@ std::optional<WaveInfo> ReadWaveInfo(const Engine::LoadedWarc& warc, const ntdli
         dst.data = warc.base + static_cast<ntdlib::PAddr>(src.data.data() - warc.file.data());
         if (src.adpcm)
         {
-            dst.coefs = src.adpcm->coefs;
-            dst.context = {src.adpcm->pred_scale, src.adpcm->yn1, src.adpcm->yn2};
-            dst.loop_context = {src.adpcm->loop_pred_scale, src.adpcm->loop_yn1, src.adpcm->loop_yn2};
+            SetAdpcm(dst, *src.adpcm);
         }
     }
 
@@ -106,9 +112,7 @@ WaveInfo StreamChannelWave(const ntdlib::sar::StreamFile& stream, std::size_t ch
     to.data = data;
     if (const auto& adpcm = stream.channels[channel].adpcm)
     {
-        to.coefs = adpcm->coefs;
-        to.context = {adpcm->pred_scale, adpcm->yn1, adpcm->yn2};
-        to.loop_context = {adpcm->loop_pred_scale, adpcm->loop_yn1, adpcm->loop_yn2};
+        SetAdpcm(to, *adpcm);
     }
 
     return wave;
@@ -271,15 +275,14 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& bank_items, int bank_index,
 
 void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus)
 {
-    std::visit(
-        [&](auto& owner)
+    const auto forward = [&](auto& owner)
+    {
+        if constexpr (requires { owner.ChannelEvent(*this, track, channel); })
         {
-            if constexpr (requires { owner.ChannelEvent(*this, track, channel); })
-            {
-                owner.ChannelEvent(*this, track, channel);
-            }
-        },
-        players_[player]);
+            owner.ChannelEvent(*this, track, channel);
+        }
+    };
+    std::visit(forward, players_[player]);
 }
 
 void Engine::VoiceEvent(int player, int channel, VoiceCallbackStatus status)
@@ -290,14 +293,21 @@ void Engine::VoiceEvent(int player, int channel, VoiceCallbackStatus status)
     }
 }
 
-SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
+SequenceSoundPlayer* Engine::StartSequence(uint32_t index, const std::optional<std::array<uint32_t, 4>>& banks)
 {
     if (index >= archive_.Sounds().size())
     {
         return nullptr;
     }
 
-    const ntdlib::sar::SoundInfo& info = archive_.Sounds()[index];
+    // With a StartInfo's SeqSoundInfo, the sequence's prepare (0x2bcaf0 and 0x2bcc10 in Super Mario 3D Land) takes all
+    // four bank IDs from the StartInfo.
+    ntdlib::sar::SoundInfo info = archive_.Sounds()[index];
+    if (banks)
+    {
+        info.banks.assign(banks->begin(), banks->end());
+    }
+
     if (info.type != ntdlib::sar::SoundType::kSequence)
     {
         return nullptr;
@@ -415,11 +425,33 @@ bool Engine::RunFrame()
         return false;
     }
 
+    for (const ScheduledVariable& change : scheduled_)
+    {
+        if (change.frame == frames_)
+        {
+            if (SequenceSoundPlayer* player = players_.Get<SequenceSoundPlayer>(change.player))
+            {
+                player->SetVariable(*this, change.index, change.value);
+            }
+        }
+    }
+
     FrameProcess();
     SetHostMixes();
     snd_.SendParameterToDsp();
+    ++frames_;
 
     return true;
+}
+
+void Engine::ScheduleVariable(const SequenceSoundPlayer& player, int index, int16_t value, uint64_t frame)
+{
+    if (players_.Get<SequenceSoundPlayer>(player.Id()) != &player)
+    {
+        throw std::invalid_argument("a scheduled variable for a player the engine doesn't have");
+    }
+
+    scheduled_.push_back({.player = player.Id(), .index = index, .value = value, .frame = frames_ + frame});
 }
 
 bool Engine::IsBusy() const
@@ -511,6 +543,8 @@ Engine::Snapshot Engine::Save() const
     snapshot.warcs = warcs_;
     snapshot.waves = waves_;
     snapshot.global_vars = global_vars_;
+    snapshot.frames = frames_;
+    snapshot.scheduled = scheduled_;
 
     return snapshot;
 }
@@ -528,6 +562,8 @@ void Engine::Restore(const Snapshot& snapshot)
     warcs_ = snapshot.warcs;
     waves_ = snapshot.waves;
     global_vars_ = snapshot.global_vars;
+    frames_ = snapshot.frames;
+    scheduled_ = snapshot.scheduled;
 }
 
 ArchiveModel::Snapshot ArchiveModel::Save(const Snapshot* previous)

@@ -485,9 +485,10 @@ void FramePlayer::RunEnhancedWithoutMixing(std::size_t samples)
         enhanced_->ForgetVoices();
     }
 
-    // The rest of the last frame is silent.
+    // The rest of the last frame is silent, and its meters give 0.
     float_pending_.assign(static_cast<std::size_t>(-needed / game_per_output) * 2, 0.0F);
     pending_read_ = 0;
+    frame_peaks_ = {};
 }
 
 void FramePlayer::StartFrame(bool mix)

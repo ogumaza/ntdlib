@@ -387,14 +387,15 @@ inline constexpr auto kTwilightPrincessHdStates = []
 {
     constexpr uint32_t kHyruleCastle = 0x0100003f;
     constexpr uint32_t kTwilightBattle = 0x0100001b;
-    constexpr std::array castle{
+    constexpr std::array kCastle{
         State(kHyruleCastle, "", {{0x0387, 0.0f}, {0x0078, 0.3f}}),
         State(kHyruleCastle, "_status8", {{0x0007, 0.0f}, {0x0078, 0.5f}, {0x0200, 0.8f}}, 8),
         State(kHyruleCastle, "_status3150", {{0x0278, 0.0f}, {0x0180, 0.5f}}, 3150),
         State(kHyruleCastle, "_status6150", {{0x0007, 0.0f}}, 6150),
     };
     constexpr std::size_t kCastleBefore = 3;
-    std::array<MusicState, kTwilightPrincessStates.size() - kCastleBefore + castle.size()> hd{};
+
+    std::array<MusicState, kTwilightPrincessStates.size() - kCastleBefore + kCastle.size()> hd{};
     std::size_t n = 0;
     for (const MusicState& state : kTwilightPrincessStates)
     {
@@ -402,13 +403,14 @@ inline constexpr auto kTwilightPrincessHdStates = []
         {
             if (state.suffix == "_status8")
             {
-                for (const MusicState& c : castle)
+                for (const MusicState& c : kCastle)
                 {
                     hd[n++] = c;
                 }
             }
             continue;
         }
+
         hd[n] = state;
         if (state.sound == kTwilightBattle)
         {
@@ -416,6 +418,7 @@ inline constexpr auto kTwilightPrincessHdStates = []
         }
         n++;
     }
+
     return hd;
 }();
 

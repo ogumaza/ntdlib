@@ -18,6 +18,9 @@
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/nwsnd/units.h"
 
+#include "commands/decoding.h"
+#include "commands/encoding.h"
+
 namespace ntdlib::nwsnd
 {
 namespace
@@ -27,6 +30,9 @@ using commands::Argument;
 using commands::Command;
 using commands::Kind;
 using commands::Source;
+using commands::detail::Cover;
+using commands::detail::Found;
+using commands::detail::Read;
 
 constexpr uint8_t kRandomPrefix = 0xA0;
 constexpr uint8_t kVariablePrefix = 0xA1;
@@ -476,12 +482,19 @@ Argument ReadArgument(Reader& r, Width width, Source source, Command& command)
     return argument;
 }
 
-// Reads one command as the player parses it: an if prefix, a time prefix, a random or a variable prefix, the opcode
-// and its arguments. A jump's, a call's or a track start's target is a byte offset. `opcode` takes the command's code:
-// a note's key, an opcode, or 0xF000 plus the byte after 0xF0.
-Command ParseCommand(Reader& r, const Grammar& grammar, uint32_t& opcode)
+// A command's prefixes, and its code: a note's key, an opcode, or 0xF000 plus the byte after 0xF0.
+struct Prefixes
 {
-    Command command;
+    uint32_t code = 0;
+    uint8_t time_prefix = 0;
+    bool random = false;
+    bool variable = false;
+};
+
+// Reads a command's prefixes and its code. Sets in `command` whether an if prefix makes it conditional.
+Prefixes ReadPrefixes(Reader& r, const Grammar& grammar, Command& command)
+{
+    Prefixes prefixes;
     uint32_t code = r.Byte();
     if (code == kIfPrefix)
     {
@@ -489,49 +502,63 @@ Command ParseCommand(Reader& r, const Grammar& grammar, uint32_t& opcode)
         code = r.Byte();
     }
 
-    uint8_t time_prefix = 0;
     if (grammar.time_prefixes && code >= kTimePrefix && code <= kTimeVariablePrefix)
     {
-        time_prefix = static_cast<uint8_t>(code);
+        prefixes.time_prefix = static_cast<uint8_t>(code);
         code = r.Byte();
     }
 
-    bool random = false;
-    bool variable = false;
     if (code == kRandomPrefix)
     {
-        random = true;
+        prefixes.random = true;
         code = r.Byte();
     }
-    if (code == kVariablePrefix && (!random || grammar.prefixes_chain))
+    if (code == kVariablePrefix && (!prefixes.random || grammar.prefixes_chain))
     {
-        variable = true;
+        prefixes.variable = true;
         code = r.Byte();
     }
     if (code == kExtended)
     {
         code = 0xF000 | r.Byte();
     }
+    prefixes.code = code;
 
-    // The prefixes that the command takes give its value's source. The others stay in the encoding. A variable prefix
-    // after a random one takes the place of the random one.
+    return prefixes;
+}
+
+// The source of the value of a command with `prefixes`. The prefixes that the command takes (`prefixed`) give its
+// value's source. The others stay in the encoding of `command`. A variable prefix after a random one takes the place
+// of the random one.
+Source ValueSource(const Prefixes& prefixes, bool prefixed, Command& command)
+{
+    if (prefixed && prefixes.variable)
+    {
+        command.encoding.unused_random = prefixes.random;
+        return Source::kVariable;
+    }
+    if (prefixed && prefixes.random)
+    {
+        return Source::kRandom;
+    }
+
+    command.encoding.unused_random = prefixes.random;
+    command.encoding.unused_variable = prefixes.variable;
+
+    return Source::kValue;
+}
+
+// Reads one command as the player parses it: an if prefix, a time prefix, a random or a variable prefix, the opcode
+// and its arguments. A jump's, a call's or a track start's target is a byte offset. `opcode` takes the command's code:
+// a note's key, an opcode, or 0xF000 plus the byte after 0xF0.
+Command ParseCommand(Reader& r, const Grammar& grammar, uint32_t& opcode)
+{
+    Command command;
+    const Prefixes prefixes = ReadPrefixes(r, grammar, command);
+    const uint32_t code = prefixes.code;
+    const uint8_t time_prefix = prefixes.time_prefix;
     const bool prefixed = TakesPrefixes(code);
-    Source source = Source::kValue;
-    if (prefixed && variable)
-    {
-        source = Source::kVariable;
-        command.encoding.unused_random = random;
-    }
-    else if (prefixed && random)
-    {
-        source = Source::kRandom;
-    }
-    else
-    {
-        command.encoding.unused_random = random;
-        command.encoding.unused_variable = variable;
-    }
-
+    const Source source = ValueSource(prefixes, prefixed, command);
     if (code < 0x80)
     {
         command.kind = Kind::kNote;
@@ -828,29 +855,6 @@ bool ReadsBack(std::span<const uint8_t> bytes, std::size_t start, const Command&
     return !r.PastEnd() && r.At() == bytes.size() && read == command;
 }
 
-// A command that the decoder read, at its offset.
-struct Read
-{
-    Command command;
-    uint32_t size = 0;
-    bool raw = false; // the encoder would write other bytes: the item keeps the bytes
-};
-
-// What covers each byte: nothing yet, a command's first byte, or one of its other bytes.
-enum class Cover : uint8_t
-{
-    kFree,
-    kStart,
-    kInside,
-};
-
-// The commands that the decoder has found, and the bytes they cover.
-struct Found
-{
-    std::map<uint32_t, Read> reads;
-    std::vector<Cover> cover;
-};
-
 // The command at `at`, or nothing where it runs past the end of `data`.
 std::optional<Read> ReadAt(std::span<const uint8_t> data, uint32_t at, const Grammar& grammar)
 {
@@ -872,225 +876,28 @@ std::optional<Read> ReadAt(std::span<const uint8_t> data, uint32_t at, const Gra
     return read;
 }
 
-bool Free(const Found& found, uint32_t at, uint32_t size)
-{
-    const auto start = found.cover.begin() + at;
-    return std::all_of(start, start + size, [](Cover c) { return c == Cover::kFree; });
-}
-
-void Mark(Found& found, uint32_t at, Read read)
-{
-    found.cover[at] = Cover::kStart;
-    std::fill(found.cover.begin() + at + 1, found.cover.begin() + at + read.size, Cover::kInside);
-    found.reads.emplace(at, std::move(read));
-}
-
-// Follows the commands from each offset in `pending`, through every jump, call and track start. Returns false where a
-// command overlaps another, or where the flow leads inside a command.
-bool Follow(std::span<const uint8_t> data, std::vector<uint32_t> pending, const Grammar& grammar, Found& found)
-{
-    while (!pending.empty())
-    {
-        uint32_t at = pending.back();
-        pending.pop_back();
-        while (at < data.size() && found.cover[at] == Cover::kFree)
-        {
-            std::optional<Read> read = ReadAt(data, at, grammar);
-            if (!read)
-            {
-                break; // the rest stays data
-            }
-            if (!Free(found, at, read->size))
-            {
-                return false;
-            }
-
-            if (commands::HasTarget(read->command.kind))
-            {
-                pending.push_back(read->command.target);
-            }
-
-            const bool next = FallsThrough(read->command, grammar);
-            const uint32_t size = read->size;
-            Mark(found, at, std::move(*read));
-            if (!next)
-            {
-                break;
-            }
-
-            at += size;
-        }
-        if (at < data.size() && found.cover[at] == Cover::kInside)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// Reads the commands in the bytes that the player never reaches, such as the end after a track's last jump or a track
-// that no command starts. A run of them counts from the start of the bytes that no command covers, up to an end, a jump
-// or a return, or up to a command that the player reaches. Each of its targets has to lead to an item. Bytes that no
-// such run covers stay as data.
-void Guess(std::span<const uint8_t> data, const std::set<uint32_t>& cuts, const Grammar& grammar, Found& found)
-{
-    uint32_t at = 0;
-    while (at < data.size())
-    {
-        if (found.cover[at] == Cover::kStart)
-        {
-            at += found.reads.at(at).size;
-            continue;
-        }
-
-        // The bytes that no command covers, up to the next command or cut.
-        uint32_t end = at + 1;
-        while (end < data.size() && found.cover[end] == Cover::kFree && !cuts.contains(end))
-        {
-            ++end;
-        }
-
-        std::vector<std::pair<uint32_t, Read>> run;
-        uint32_t next = at;
-        bool counts = false;
-        while (next < end && !counts)
-        {
-            std::optional<Read> read = ReadAt(data, next, grammar);
-            if (!read || read->raw || next + read->size > end)
-            {
-                break;
-            }
-
-            const uint32_t size = read->size;
-            counts = !FallsThrough(read->command, grammar) ||
-                     (next + size == end && end < data.size() && found.cover[end] == Cover::kStart);
-            run.emplace_back(next, std::move(*read));
-            next += size;
-        }
-
-        // A target leads to a command, a cut, the end, or a command of the run.
-        const auto leads = [&](uint32_t target)
-        {
-            return target >= data.size() || found.cover[target] == Cover::kStart || cuts.contains(target) ||
-                   std::any_of(run.begin(), run.end(), [&](const auto& read) { return read.first == target; });
-        };
-        const auto target_leads = [&](const auto& read)
-        {
-            const Command& command = read.second.command;
-            return !commands::HasTarget(command.kind) || leads(command.target);
-        };
-        counts = counts && std::all_of(run.begin(), run.end(), target_leads);
-        if (!counts)
-        {
-            at = end;
-            continue;
-        }
-
-        for (auto& [offset, read] : run)
-        {
-            Mark(found, offset, std::move(read));
-        }
-        at = next;
-    }
-}
-
-// The items of `data` in the order of their bytes, from the commands in `found`. Data splits at `cuts`. Gives the item
-// at each offset where one starts, and at the end. Without commands, the items are the whole bytecode as data, split at
-// `cuts`.
-commands::Sequence Items(std::span<const uint8_t> data, const Found& found, const std::set<uint32_t>& cuts,
-                         std::map<uint32_t, uint32_t>& items)
-{
-    commands::Sequence sequence;
-    uint32_t at = 0;
-    while (at < data.size())
-    {
-        items[at] = static_cast<uint32_t>(sequence.items.size());
-        const auto read = found.reads.find(at);
-        if (read != found.reads.end() && !read->second.raw)
-        {
-            sequence.items.push_back(read->second.command);
-            at += read->second.size;
-            continue;
-        }
-
-        // A run of data up to the next command, cut or end. A raw command stands alone.
-        uint32_t end = read != found.reads.end() ? at + read->second.size : static_cast<uint32_t>(data.size());
-        if (read == found.reads.end())
-        {
-            const auto next_read = found.reads.upper_bound(at);
-            if (next_read != found.reads.end())
-            {
-                end = std::min(end, next_read->first);
-            }
-
-            const auto next_cut = cuts.upper_bound(at);
-            if (next_cut != cuts.end())
-            {
-                end = std::min(end, *next_cut);
-            }
-        }
-
-        Command item;
-        item.kind = Kind::kData;
-        item.bytes.assign(data.begin() + at, data.begin() + end);
-        sequence.items.push_back(std::move(item));
-        at = end;
-    }
-    items[static_cast<uint32_t>(data.size())] = static_cast<uint32_t>(sequence.items.size());
-
-    // The targets by item.
-    for (Command& command : sequence.items)
-    {
-        if (!commands::HasTarget(command.kind))
-        {
-            continue;
-        }
-
-        const auto item = items.find(command.target);
-        if (item == items.end())
-        {
-            command.target_outside = true; // past the end: the offset stays
-            continue;
-        }
-
-        command.target = item->second;
-    }
-
-    return sequence;
-}
-
 } // namespace
 
 Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffset> labels, const Grammar& grammar,
                        std::span<const uint32_t> entries)
 {
     // Every label and entry starts an item, and so does every target.
-    std::set<uint32_t> cuts;
-    for (const LabelOffset& label : labels)
-    {
-        if (label.offset > data.size())
-        {
-            throw std::invalid_argument("a label past the end of the sequence: " + label.name);
-        }
-
-        cuts.insert(label.offset);
-    }
-    for (const uint32_t entry : entries)
-    {
-        if (entry > data.size())
-        {
-            throw std::invalid_argument("an entry past the end of the sequence: " + std::to_string(entry));
-        }
-
-        cuts.insert(entry);
-    }
-
-    const std::set<uint32_t> starts = cuts; // the labels and the entries
+    const std::set<uint32_t> starts = commands::detail::Starts(data.size(), labels, entries);
+    std::set<uint32_t> cuts = starts;
 
     Found found;
     found.cover.assign(data.size(), Cover::kFree);
-    bool opaque = !Follow(data, std::vector<uint32_t>(cuts.begin(), cuts.end()), grammar, found);
+    const auto read_at = [&](uint32_t at, bool)
+    {
+        return ReadAt(data, at, grammar);
+    };
+    const auto falls_through = [&](const Command& command)
+    {
+        return FallsThrough(command, grammar);
+    };
+    bool opaque =
+        !commands::detail::Follow(data, std::vector<uint32_t>(cuts.begin(), cuts.end()), found, read_at, falls_through);
+
     for (const auto& [at, read] : found.reads)
     {
         if (commands::HasTarget(read.command.kind))
@@ -1104,18 +911,24 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
     };
     opaque = opaque || std::any_of(cuts.begin(), cuts.end(), inside);
 
+    // Each target is a byte offset of the bytecode.
     Decoded decoded;
     std::map<uint32_t, uint32_t> items; // byte offset to item
+    const auto offset_of = [](uint32_t target)
+    {
+        return std::optional<uint32_t>(target);
+    };
     if (opaque)
     {
         // The whole bytecode as data, split at the labels and the entries.
-        decoded.sequence = Items(data, Found{}, starts, items);
+        decoded.sequence = commands::detail::Items(data, Found{}, starts, items, offset_of);
         decoded.opaque = true;
     }
     else
     {
-        Guess(data, cuts, grammar, found);
-        decoded.sequence = Items(data, found, cuts, items);
+        // The commands that the player never reaches. A run of them counts where its targets all lead to items.
+        commands::detail::Guess(data, cuts, false, found, read_at, falls_through, offset_of);
+        decoded.sequence = commands::detail::Items(data, found, cuts, items, offset_of);
     }
 
     for (const LabelOffset& label : labels)
@@ -1176,45 +989,18 @@ Encoded EncodeSequence(const commands::Sequence& sequence, const Grammar& gramma
         Convert(item, grammar, FromUnit);
     }
 
-    // Each item's size doesn't depend on its target's offset. The sizes give the offsets.
-    Encoded encoded;
-    encoded.offsets.reserve(items.size() + 1);
-    std::vector<uint8_t> scratch;
-    uint32_t at = 0;
-    for (const Command& item : items)
+    // The bytes from offset 0. The player has to read each command's bytes back as the command.
+    const auto append = [&grammar](std::vector<uint8_t>& out, const Command& item, uint32_t target)
     {
-        encoded.offsets.push_back(at);
-        scratch.clear();
-        AppendCommand(scratch, item, 0, grammar);
-        at += static_cast<uint32_t>(scratch.size());
-    }
-    encoded.offsets.push_back(at);
-
-    // Then the bytes, with each target's offset. The player has to read each command's bytes back as the command.
-    encoded.bytes.reserve(at);
-    for (const Command& item : items)
+        AppendCommand(out, item, target, grammar);
+    };
+    const auto reads_back =
+        [&grammar](std::span<const uint8_t> bytes, std::size_t start, const Command& item, uint32_t target)
     {
-        uint32_t target = item.target;
-        if (commands::HasTarget(item.kind) && !item.target_outside)
-        {
-            if (item.target >= encoded.offsets.size())
-            {
-                throw std::invalid_argument("a target past the items");
-            }
+        return ReadsBack(bytes, start, item, target, grammar);
+    };
 
-            target = encoded.offsets[item.target];
-        }
-
-        const std::size_t start = encoded.bytes.size();
-        AppendCommand(encoded.bytes, item, target, grammar);
-        if (item.kind != Kind::kData && !ReadsBack(encoded.bytes, start, item, target, grammar))
-        {
-            throw std::invalid_argument("the player would read other commands from the bytes of " +
-                                        std::string(commands::Name(item.kind)));
-        }
-    }
-
-    return encoded;
+    return commands::detail::Encode<Encoded>(items, 0, "player", append, reads_back);
 }
 
 } // namespace ntdlib::nwsnd

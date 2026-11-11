@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "ntdlib/sdat/formats.h"
 
@@ -25,11 +26,13 @@ constexpr uint32_t kWaveArchiveSize = 0x08;
 constexpr uint32_t kWaveCount = 0x38;
 constexpr uint32_t kWaveTable = 0x3C;
 
-constexpr uint32_t kWaveArchiveFileId = 0xFFFFFF;
 constexpr uint32_t kSingleWaves = 1u << 24;
-constexpr uint16_t kNoWaveArchive = 0xFFFF;
 
 } // namespace
+
+HeapFullError::HeapFullError() : std::runtime_error("the files don't fit in the sound heap")
+{
+}
 
 SoundHeap::SoundHeap(std::span<uint8_t> memory, uint32_t base, uint32_t start, uint32_t end)
     : memory_(memory), base_(base), next_(start), end_(end)
@@ -69,7 +72,7 @@ uint32_t SoundHeap::LoadBank(const Archive& archive, uint32_t bank)
         }
 
         const uint32_t wave_archive = archive.wave_archives[index]->file_id;
-        const uint32_t id = wave_archive & kWaveArchiveFileId;
+        const uint32_t id = wave_archive & kFileIdBits;
         if ((wave_archive & kSingleWaves) == 0)
         {
             Link(at, slot, LoadFile(archive, id));
@@ -115,7 +118,7 @@ uint32_t SoundHeap::Allocate(std::size_t size)
     const uint32_t at = next_;
     if (size > end_ - at)
     {
-        throw std::runtime_error("the files don't fit in the sound heap");
+        throw HeapFullError();
     }
 
     next_ = static_cast<uint32_t>((at + size + 31) & ~std::size_t{31});
@@ -205,17 +208,12 @@ void SoundHeap::Link(uint32_t bank, uint32_t slot, uint32_t wave_archive)
 
 uint32_t SoundHeap::Read32(uint32_t address) const
 {
-    const uint8_t* p = &memory_[address - base_];
-    return static_cast<uint32_t>(p[0] | p[1] << 8 | p[2] << 16 | p[3] << 24);
+    return xsflib::LoadLe32(&memory_[address - base_]);
 }
 
 void SoundHeap::Write32(uint32_t address, uint32_t value)
 {
-    uint8_t* p = &memory_[address - base_];
-    for (int i = 0; i < 4; i++)
-    {
-        p[i] = static_cast<uint8_t>(value >> (8 * i));
-    }
+    xsflib::StoreLe32(&memory_[address - base_], value);
 }
 
 } // namespace ntdlib::sdat

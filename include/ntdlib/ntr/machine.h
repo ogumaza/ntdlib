@@ -33,6 +33,7 @@
 #include "ntdlib/ntr/arm7.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/sound.h"
+#include "ntdlib/ntr/timers.h"
 
 namespace ntdlib::ntr
 {
@@ -104,6 +105,11 @@ public:
     // returns. Returns r0. Throws std::runtime_error when the clock reaches `until` first.
     uint32_t Call(uint32_t address, std::span<const uint32_t> args, uint64_t until, std::vector<SoundOutput>& out);
 
+    // arm::Bus, for the ARM9.
+    uint8_t* Page(uint32_t page) override;
+    uint32_t Read(uint32_t address, int size) override;
+    void Write(uint32_t address, int size, uint32_t value) override;
+
     // Called for each SWI of the ARM9 with its comment field, before the BIOS. Returns true when it handled the SWI.
     std::function<bool(arm::Cpu&, uint32_t comment)> on_arm9_swi;
 
@@ -113,20 +119,7 @@ public:
     // Called for each access of the ARM9 to an I/O register or a device that the machine doesn't model.
     std::function<void(uint32_t address, int size, bool write)> on_unknown_io;
 
-    // arm::Bus, for the ARM9.
-    uint8_t* Page(uint32_t page) override;
-    uint32_t Read(uint32_t address, int size) override;
-    void Write(uint32_t address, int size, uint32_t value) override;
-
 private:
-    struct Timer
-    {
-        uint16_t reload = 0;
-        uint16_t control = 0;
-        uint16_t counter = 0; // the counter at `base`
-        uint64_t base = 0;    // the clock at which the counter held `counter`
-    };
-
     struct Dma
     {
         uint32_t source = 0;
@@ -175,10 +168,6 @@ private:
     void Unknown(uint32_t address, int size, bool write);
     void Poll();
 
-    // Memory as DMA reaches it: the bus, without the TCMs.
-    uint32_t Load(uint32_t address, int size);
-    void Store(uint32_t address, int size, uint32_t value);
-
     bool Swi(arm::Cpu& cpu, uint32_t comment);
     void Fail(std::string message);
 
@@ -188,13 +177,6 @@ private:
     void Events();
     void Request(uint32_t irq);
     void UpdateIrq();
-    uint64_t Prescale(int timer) const;
-    bool Counting(int timer) const;
-    uint16_t TimerCounter(int timer) const;
-    uint64_t TimerOverflow(int timer) const;
-    void RebaseTimer(int timer);
-    void OverflowTimer(int timer, uint64_t at);
-    void WriteTimerControl(int timer, uint16_t control);
     uint64_t Line() const;
     void ScheduleDisplay();
     void ScheduleDisplayAfter(uint64_t after);
@@ -249,7 +231,7 @@ private:
     uint32_t ie_ = 0;
     uint32_t if_ = 0;
     uint16_t dispstat_ = 0;
-    std::array<Timer, 4> timers_ = {};
+    Timers timers_;
     std::array<Dma, 4> dmas_ = {};
     uint8_t wram_control_ = 3;
     uint32_t chip_id_ = 0;

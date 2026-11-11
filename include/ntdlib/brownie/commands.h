@@ -64,6 +64,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -124,13 +125,8 @@ struct ListTrack
 // kOpenTrack, each with its word, up to a kEnd of `index` 1.
 std::vector<ListTrack> TracksOfList(const commands::Sequence& sequence, uint32_t list);
 
-// The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
-// the end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a sequence, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence` at the address `base`. Throws std::invalid_argument for a command that the revision's bytes can't
 // hold, for a target that the sequence lacks, and for a sequence that the driver wouldn't read as its items say: a

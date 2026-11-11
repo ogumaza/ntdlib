@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/sf2/presets.h"
+
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
 
@@ -194,6 +196,11 @@ std::vector<std::pair<int, int>> TuningRuns(const KeyTuning& tuning)
     }
 
     return runs;
+}
+
+double KeyHz(int key)
+{
+    return kMiddleC * std::exp2((key - 60) / 12.0);
 }
 
 int SettingCents(int setting, double hz)
@@ -587,8 +594,7 @@ NamedZones PsgSamples::WaveInstrument(Sf2File& file, const WaveShapes& shapes, i
         std::vector<sf2::Zone> run = SwitchZones(first_sample, frames, second_sample, tuning[size_t(lo)], lo, hi);
         if (run.size() == 2 && first_offset != second_offset)
         {
-            run[1].generators.insert(run[1].generators.end() - 1,
-                                     sf2::Generator::Value(sf2::kOverridingRootKey, 60 + first_offset));
+            sf2::AddGenerator(run[1], sf2::kOverridingRootKey, 60 + first_offset);
         }
 
         made.zones.insert(made.zones.end(), run.begin(), run.end());

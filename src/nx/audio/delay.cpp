@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "nx/audio/arithmetic.h"
+#include "nx/audio/effect_channels.h"
 
 namespace ntdlib::nx::audio
 {
@@ -23,18 +24,6 @@ constexpr int64_t kLowPassScale = 0x3CCC;
 // The longest line the model keeps. A longer delay is cut to this length. No game asks for one: it lasts 87 s at
 // 48 kHz.
 constexpr uint32_t kMostCells = uint32_t{1} << 22;
-
-// The low 32 bits of a * gain shifted right by 14, the product in 64 bits.
-int32_t MulQ14(int64_t a, int64_t gain)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(static_cast<uint64_t>(a * gain) >> 14));
-}
-
-// A sample on the delay's scale: shifted left by 6, wrapping.
-int32_t Scaled(int32_t sample)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(sample) << 6);
-}
 
 // One channel's step after its feedback `g`: the filter, the write into the line, the line's next cell, and the output
 // from the dry input `x` and the line's oldest sample `d`.
@@ -96,22 +85,14 @@ void InitializeDelay(const DelayParameter& parameter, DelayState& state)
 void PassDelay(const DelayParameter& parameter, std::span<const int32_t* const> inputs,
                std::span<int32_t* const> outputs, int count)
 {
-    const auto channels =
-        std::min({static_cast<std::size_t>(std::max(parameter.channel_count, 0)), inputs.size(), outputs.size()});
-    for (std::size_t k = 0; k < channels; ++k)
-    {
-        if (inputs[k] != outputs[k])
-        {
-            std::copy(inputs[k], inputs[k] + count, outputs[k]);
-        }
-    }
+    PassChannels(parameter.channel_count, inputs, outputs, count);
 }
 
 void ApplyDelay(const DelayParameter& parameter, DelayState& state, std::span<const int32_t* const> inputs,
                 std::span<int32_t* const> outputs, int count)
 {
     const int channels = parameter.channel_count;
-    if (channels != 1 && channels != 2 && channels != 4 && channels != 6)
+    if (!ProcessesChannels(channels))
     {
         PassDelay(parameter, inputs, outputs, count);
         return;
@@ -149,7 +130,7 @@ void ApplyDelay(const DelayParameter& parameter, DelayState& state, std::span<co
         for (int k = 0; k < channels; ++k)
         {
             const auto c = static_cast<std::size_t>(k);
-            x[c] = Scaled(inputs[c][t]);
+            x[c] = ToEffectScale(inputs[c][t]);
             d[c] = at(k);
         }
 

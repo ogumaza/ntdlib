@@ -71,6 +71,21 @@ using TrackVolumes = std::array<float, kSequenceTracks>;
 constexpr TrackVolumes kFullTrackVolumes = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
                                             1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 
+// Every track at 1, but the tracks in the mask `muted`, a bit for each, at 0.
+constexpr TrackVolumes TrackVolumesOf(uint16_t muted)
+{
+    TrackVolumes volumes = kFullTrackVolumes;
+    for (std::size_t t = 0; t < volumes.size(); ++t)
+    {
+        if ((muted >> t & 1) != 0)
+        {
+            volumes[t] = 0.0f;
+        }
+    }
+
+    return volumes;
+}
+
 // A sound to rip: its index in the archive, its label, its timing once the length analysis has worked it out, the
 // volumes that the game's code gives its tracks, and the reverb that the game's code keeps on aux bus B while the sound
 // plays. A game can play a sound in more than one state, each with other track volumes or another reverb
@@ -127,9 +142,9 @@ std::vector<Job> SkipSilent(std::vector<Job> jobs, Skipped& skipped);
 // Whether a file holds a group, by the group file's name (ntdlib/sar/formats.h).
 using sar::IsGroupFileName;
 
-// The group files that the archive's external groups name, found with `find`. While a group is still missing, the
-// archive's group files in the SARC archives that `list_sarcs` lists are added too, in that order (see
-// SoundArchive::MatchesGroupFile). `read_sarc` reads a SARC. A group file from a SARC is kept at the SARC's path, a
+// The group files that the archive's external groups name, found with `find`. If `find` finds fewer group files than
+// the archive keeps outside it, every group file of the archive in the SARC archives that `list_sarcs` lists is added
+// too, in that order (see SoundArchive::MatchesGroupFile). `read_sarc` reads a SARC. A group file from a SARC is kept at the SARC's path, a
 // slash and the file's name in the SARC. A file without a name is kept under its index among the files that SarcFiles
 // gives. A group that isn't found is reported. If a SARC held a group file of the archive, no group is reported. A
 // group file doesn't say which group it is. An archive that can't be read with `options` gives none: the rip reports
@@ -202,6 +217,51 @@ std::vector<FileChunk> FindGroups(
     }
 
     return groups;
+}
+
+// The group file `name` among the files at `paths` in a game, such as the paths of the files of a title or a disc. A
+// file matches by its file name, the part of its path after the last '/', in any case (IsGroupFileName). `read`, a
+// call (const std::string& path, std::vector<uint8_t>& data) -> bool, reads a file. The first file that matches and
+// that `read` reads is the group file. Nothing if none.
+template <typename FileChunk, typename Paths, typename Read>
+std::optional<FileChunk> FindGroupFile(const Paths& paths, const Read& read, const std::string& name)
+{
+    for (const std::string& path : paths)
+    {
+        const std::size_t slash = path.rfind('/');
+        if (!IsGroupFileName(slash == std::string::npos ? path : path.substr(slash + 1), name))
+        {
+            continue;
+        }
+
+        FileChunk group{path, {}};
+        if (read(path, group.data))
+        {
+            return group;
+        }
+    }
+
+    return std::nullopt;
+}
+
+// The SARC archives among the files at `paths` that lie in the folder of the sound archive at `archive_path`, not in
+// a folder below it, in the order of their paths' UTF-8 bytes. A SARC archive's path ends in ".sarc". A game can keep
+// group files in them under other names (FindGroups).
+template <typename Paths>
+std::vector<std::string> SarcsBeside(const Paths& paths, const std::string& archive_path)
+{
+    const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
+    std::vector<std::string> sarcs;
+    for (const std::string& path : paths)
+    {
+        if (path.starts_with(folder) && path.find('/', folder.size()) == std::string::npos && path.ends_with(".sarc"))
+        {
+            sarcs.push_back(path);
+        }
+    }
+    std::ranges::sort(sarcs);
+
+    return sarcs;
 }
 
 // The part of a sound archive that a library holds: the archive's bytes, and the group files beside the archive that
@@ -280,6 +340,24 @@ std::optional<std::vector<uint8_t>> KeepLoadedFiles(const sar::SoundArchive& arc
 //       static constexpr uint8_t kPsfVersion = ...;
 //   };
 
+// The descriptor of a library that holds the sound archive `archive` and the group files `groups`: `settings` with the
+// paths of the archive and of the group files. A mini whose reserved area takes the place of the library descriptor
+// starts from it too.
+template <typename Format>
+typename Format::ArchiveDescriptor LibraryDescriptor(const typename Format::FileChunk& archive,
+                                                     const std::vector<typename Format::FileChunk>& groups,
+                                                     typename Format::ArchiveDescriptor settings)
+{
+    settings.archive_path = archive.path;
+    settings.group_paths.clear();
+    for (const typename Format::FileChunk& group : groups)
+    {
+        settings.group_paths.push_back(group.path);
+    }
+
+    return settings;
+}
+
 // A library holding the sound archive and the group files that its sequences require, with `settings` as its
 // descriptor.
 template <typename Format>
@@ -287,17 +365,16 @@ std::vector<uint8_t> BuildArchiveLibrary(const typename Format::FileChunk& archi
                                          const std::vector<typename Format::FileChunk>& groups,
                                          typename Format::ArchiveDescriptor settings, const xsflib::psf::Tags& tags)
 {
-    settings.archive_path = archive.path;
-    settings.group_paths.clear();
+    const typename Format::ArchiveDescriptor descriptor =
+        LibraryDescriptor<Format>(archive, groups, std::move(settings));
     typename Format::ProgramBuilder program;
     program.AddFileRef(archive.path, archive.data);
     for (const typename Format::FileChunk& group : groups)
     {
-        settings.group_paths.push_back(group.path);
         program.AddFileRef(group.path, group.data);
     }
 
-    return program.WritePsf(Format::kPsfVersion, settings.Serialize(), tags);
+    return program.WritePsf(Format::kPsfVersion, descriptor.Serialize(), tags);
 }
 
 // A mini that plays sound `index` from the library `lib_name`, with `reserved` as its reserved area. A descriptor

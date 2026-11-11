@@ -11,7 +11,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
-#include <initializer_list>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -36,6 +35,10 @@
 #include "ntdlib/dol.h"
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/barc.h"
+#include "ntdlib/jaudio/jac_effects.h"
+#include "ntdlib/jaudio/jmap.h"
+#include "ntdlib/jaudio/jungle_beat_states.h"
+#include "ntdlib/jaudio/pikmin2_pieces.h"
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/z2_starts.h"
 #include "ntdlib/jaudio/z2_states.h"
@@ -428,46 +431,6 @@ std::optional<fs::path> FindCaseless(const fs::path& folder, const std::string& 
     }
 }
 
-// A field of a JMap table (BCSV). The table starts with its count of rows, its count of fields, the offset of its
-// first row and the size of a row. 12 bytes then describe each field: the hash of its name, a mask, its offset in a
-// row, a shift and its type. Type 0 is a 32-bit integer, and type 6 the offset of a string in the strings after the
-// rows.
-struct JMapField
-{
-    uint32_t mask = 0;
-    uint16_t offset = 0;
-    uint8_t shift = 0;
-    uint8_t type = 0;
-};
-
-// The hash of a field's name: each character, as a signed char, added to 31 times the hash so far.
-uint32_t JMapHash(std::string_view name)
-{
-    uint32_t hash = 0;
-    for (const char c : name)
-    {
-        hash = hash * 31 + static_cast<uint32_t>(static_cast<signed char>(c));
-    }
-
-    return hash;
-}
-
-// The field of table `r` named `name`. Throws FormatError if the table has none.
-JMapField FindJMapField(const xsflib::Reader& r, std::string_view name)
-{
-    const uint32_t fields = r.U32(4);
-    for (uint32_t i = 0; i < fields; i++)
-    {
-        const std::size_t at = 16 + 12 * std::size_t{i};
-        if (r.U32(at) == JMapHash(name))
-        {
-            return {.mask = r.U32(at + 4), .offset = r.U16(at + 8), .shift = r.U8(at + 10), .type = r.U8(at + 11)};
-        }
-    }
-
-    throw FormatError("the table has no field " + std::string(name));
-}
-
 // Pikmin's sound files on a disc: the bank file (.bx) in a Banks folder, the sequence index in the disc's main.dol, and
 // the file of sequences in the Seqs folder beside the Banks folder that the index names. The index gives the file's
 // name in 16 bytes at +0x10.
@@ -525,33 +488,11 @@ std::optional<BankFileGame> FindBankFileGame(const std::vector<const ntdlib::dis
 
 std::map<std::string, uint8_t> ReadVolumeTable(std::span<const uint8_t> archive, const GameRules::VolumeTable& table)
 {
-    std::vector<uint8_t> decoded;
-    const std::vector<ArchiveFile> files = ReadRarc(DecodeIfYaz0(archive, decoded));
-    const auto file =
-        std::ranges::find_if(files, [&](const ArchiveFile& f) { return AsciiLower(f.name) == AsciiLower(table.file); });
-    if (file == files.end())
-    {
-        throw FormatError("the archive holds no " + table.file);
-    }
-
-    const xsflib::Reader r(file->data, true, {.check_string_offset = true});
-    const uint32_t rows = r.U32(0);
-    const std::size_t first = r.U32(8);
-    const std::size_t size = r.U32(12);
-    const JMapField name = FindJMapField(r, table.name_field);
-    const JMapField volume = FindJMapField(r, table.volume_field);
-    if (name.type != 6 || volume.type != 0 || volume.shift >= 32)
-    {
-        throw FormatError("the table's fields aren't a name and an integer");
-    }
-
     std::map<std::string, uint8_t> volumes;
-    const std::size_t strings = first + rows * size;
-    for (uint32_t i = 0; i < rows; i++)
+    for (const ntdlib::jaudio::JMapNamedValue& row :
+         ntdlib::jaudio::ReadJMapNamedValues(archive, table.file, table.name_field, table.volume_field))
     {
-        const std::size_t row = first + i * size;
-        const uint32_t value = (r.U32(row + volume.offset) & volume.mask) >> volume.shift;
-        volumes[r.CString(strings + r.U32(row + name.offset), 0x100)] = static_cast<uint8_t>(value & 0xff);
+        volumes[row.name] = static_cast<uint8_t>(row.value & 0xff);
     }
 
     return volumes;
@@ -601,7 +542,21 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
     // on the Wii.
     constexpr std::array<std::string_view, 2> kPikmin{"9ae6b40b8e9eacfda6ed0b5d59ff1e680373a018",
                                                       "9f42f65be7f7159faa14b003524476d624e1227f"};
+    // Pac-Man Vs.: the SHA-1 of the USA release's start-up archive. The European and Japanese releases have the same
+    // archive.
+    constexpr std::string_view kPacManVs = "7436b12c7470a2ed14f865e0a6aa96ccfa1af758";
     GameRules rules;
+
+    // The games whose effects convert with GameOptions::known_effects. Each of these games plays its effects in its
+    // effects sequence. That sequence is the first sequence of the sound table, or the one that the game's rules name
+    // (effects_sequence). Pikmin plays its effects in two sequences (jac_effects). The effects of the other games of
+    // JAudio1 stay out.
+    const auto listed = [&archive_sha1](std::span<const std::string_view> games)
+    {
+        return std::ranges::find(games, archive_sha1) != games.end();
+    };
+    rules.known_effects = listed(kWindWaker) || archive_sha1 == kLuigisMansion || archive_sha1 == kPacManVs ||
+                          listed(kPikmin2) || archive_sha1 == kSunshine || listed(kPikmin);
     if (archive_sha1 == kSunshine)
     {
         // The game's music start calls JAISound::setVolume (0x8030a57c in the USA release's main.dol) with the float at
@@ -665,6 +620,21 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
             TrackMask tracks = kEveryTrack;
             tracks[0] = children;
             rules.start_states[0x01000000u | piece].tracks = tracks;
+        }
+
+        // The game's code sets more states for 43 pieces during play (ntdlib/jaudio/jungle_beat_states.h). Each state
+        // converts once more as an arrangement that is named after what sets the state. The arrangement plays the
+        // children of track 0 that the state plays. The Wii release's menus also set state 1 of JA_BGM_COURSE_SELECT.
+        const std::span<const ntdlib::jaudio::JungleBeatState> states =
+            archive_sha1 == kJungleBeat[1]
+                ? std::span<const ntdlib::jaudio::JungleBeatState>(ntdlib::jaudio::kJungleBeatWiiStates)
+                : ntdlib::jaudio::kJungleBeatStates;
+        for (const ntdlib::jaudio::JungleBeatState& state : states)
+        {
+            TrackMask tracks = kEveryTrack;
+            tracks[0] = state.children;
+            rules.arrangements.push_back(
+                {.sound = state.piece, .suffix = std::string(state.suffix), .state = {.tracks = tracks}});
         }
 
         // Some effects' sequences add a value at port 0xb to a key. The game's code writes the value as it starts the
@@ -878,30 +848,17 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.later_jaudio1 = true;
 
         // A cave's music is an AutoBgm: a conductor picks the phrases that its tracks play (SequenceSound::conductor).
-        // PSM::SceneMgr::newAutoBgm takes the conductor from the floor's list (BgmList_*.txt). These are the first of
-        // each family. Each of them plays on some floors. The game's code names caveconc_00_0.cnd itself, for a boss's
-        // floor.
-        // No code or list of the game starts a_iron, a_zawinul01 or caveboss. Their calls are those of the caves'
-        // music. a_iron and a_zawinul01 play with iron.cnd, and caveboss with caveboss.cnd.
-        for (const auto& [file, cnd] : std::initializer_list<std::pair<const char*, const char*>>{
-                 {"a_iron.bms", "iron.cnd"},
-                 {"a_zawinul01.bms", "iron.cnd"},
-                 {"caveboss.bms", "caveboss.cnd"},
-                 {"caveconc.bms", "caveconc_00_0.cnd"},
-                 {"caveglass.bms", "caveglass_00_0.cnd"},
-                 {"cavekeyget.bms", "cavekeyget.cnd"},
-                 {"cavemetal.bms", "cavemetal_00_0.cnd"},
-                 {"caverelax.bms", "caverelax.cnd"},
-                 {"cavesoil.bms", "cavesoil_00_0.cnd"},
-                 {"cavetile.bms", "cavetile_00_0.cnd"},
-                 {"cavetsumiki.bms", "cavetsumiki_00_0.cnd"},
-             })
+        // PSM::SceneMgr::newAutoBgm takes the conductor from the floor's list (BgmList_*.txt). The table of the game's
+        // pieces (ntdlib/jaudio/pikmin2_pieces.h) gives each piece the first conductor of its family. Each of them
+        // plays on some floors. The game's code names caveconc_00_0.cnd itself, for a boss's floor. No code or list of
+        // the game starts a_iron, a_zawinul01 or caveboss. Their calls are those of the caves' music. a_iron and
+        // a_zawinul01 play with iron.cnd, and caveboss with caveboss.cnd.
+        for (const ntdlib::jaudio::Pikmin2Piece& piece : ntdlib::jaudio::kPikmin2Pieces)
         {
-            rules.conductors[file] = cnd;
-        }
-        for (int i = 0; i <= 8; i++)
-        {
-            rules.conductors["new_0" + std::to_string(i) + ".bms"] = "new_0" + std::to_string(i) + "_0.cnd";
+            if (*piece.conductor && !*piece.label)
+            {
+                rules.conductors[piece.sequence] = piece.conductor;
+            }
         }
 
         // The other pieces' roots wait between polls for as many ticks as call 0x2e00 gives
@@ -1677,6 +1634,32 @@ void Game::OpenVolumeTable(const std::optional<std::vector<uint8_t>>& archive)
     }
 }
 
+bool Game::ListsEffects() const
+{
+    return options_.jaudio1_effects || (options_.known_effects && rules_.known_effects);
+}
+
+namespace
+{
+
+// Give `seq` the rules of the game's sound library that each of its sequences plays by.
+void SetLibraryRules(SequenceSound& seq, const GameRules& rules, bool jaudio1, bool jac)
+{
+    seq.default_release = rules.default_release;
+    seq.echo = rules.echo;
+    seq.jaudio1 = jaudio1;
+    seq.squared_track_volume = rules.squared_track_volume;
+    seq.timed_random = rules.timed_random;
+    seq.track_oscillator_routes = rules.track_oscillator_routes;
+    seq.callback = rules.callback;
+    seq.jac = jac;
+    seq.later_jaudio1 = rules.later_jaudio1;
+    seq.mute_child_15 = rules.mute_child_15;
+    seq.filter_rate = rules.filter_rate;
+}
+
+} // namespace
+
 void Game::FindSequences()
 {
     // A game whose code reads no sequence archive plays none of the files of one on its disc.
@@ -1812,7 +1795,7 @@ void Game::FindSequences()
     {
         // A JAudio1 game's effects play in its effects sequence.
         const bool effect = jaudio1_ && (s.Id() & ntdlib::jaudio::kAafTypeMask) == ntdlib::jaudio::kAafEffect;
-        if (effect && options_.jaudio1_effects && effects != sequence_files_.end())
+        if (effect && ListsEffects() && effects != sequence_files_.end())
         {
             SequenceSound seq = EffectSound(s, effects->data);
             const auto start = rules_.random_starts.find(s.Id());
@@ -1854,17 +1837,7 @@ void Game::FindSequences()
         const bool from_table = table_volume != table_volumes_.end() && (s.type & 0x40) != 0;
         seq.volume =
             static_cast<float>(from_table ? table_volume->second : s.volume) / (rules_.first_layouts ? 255.0f : 127.0f);
-        seq.default_release = rules_.default_release;
-        seq.echo = rules_.echo;
-        seq.jaudio1 = jaudio1_;
-        seq.squared_track_volume = rules_.squared_track_volume;
-        seq.timed_random = rules_.timed_random;
-        seq.track_oscillator_routes = rules_.track_oscillator_routes;
-        seq.callback = rules_.callback;
-        seq.jac = jac_;
-        seq.later_jaudio1 = rules_.later_jaudio1;
-        seq.mute_child_15 = rules_.mute_child_15;
-        seq.filter_rate = rules_.filter_rate;
+        SetLibraryRules(seq, rules_, jaudio1_, jac_);
         const auto start_state = rules_.start_states.find(s.Id());
         if (start_state != rules_.start_states.end())
         {
@@ -1999,16 +1972,9 @@ void Game::FindSequences()
 
         const std::string name =
             file.name.empty() ? "SEQUENCE_" + std::to_string(file.id) : file.name.substr(0, file.name.rfind('.'));
-        SequenceSound seq{name, file.data, 0, 1.0f, rules_.default_release, rules_.echo};
-        seq.jaudio1 = jaudio1_;
-        seq.jac = jac_;
-        seq.later_jaudio1 = rules_.later_jaudio1;
-        seq.mute_child_15 = rules_.mute_child_15;
-        seq.timed_random = rules_.timed_random;
-        seq.track_oscillator_routes = rules_.track_oscillator_routes;
-        seq.callback = rules_.callback;
+        SequenceSound seq{name, file.data};
+        SetLibraryRules(seq, rules_, jaudio1_, jac_);
         seq.zone_filters = true;
-        seq.filter_rate = rules_.filter_rate;
         const auto volumes = rules_.child_volumes.find(file.name);
         if (volumes != rules_.child_volumes.end())
         {
@@ -2035,7 +2001,7 @@ void Game::FindSequences()
         }
     }
 
-    if (jac_ && options_.jaudio1_effects && rules_.jac_effects)
+    if (jac_ && ListsEffects() && rules_.jac_effects)
     {
         effect_sounds = JacEffectSounds();
     }
@@ -2069,34 +2035,24 @@ std::vector<SequenceSound> Game::JacEffectSounds()
         return {};
     }
 
-    constexpr std::size_t kRow = 20;
-    constexpr std::size_t kEventTypes = 8;
-    constexpr std::size_t kAction = 6;
-    constexpr int32_t kSystem = -2;
-    constexpr int32_t kPlayer = -1;
+    using ntdlib::jaudio::JacCatalogue;
     constexpr uint16_t kPlayerPort1 = 0x8000;
     const ntdlib::Dol dol = ntdlib::Dol::ParseMain(disc_->dol);
-    const std::span<const uint8_t> rows = dol.At(rules.catalogue);
-    const std::span<const uint8_t> offsets = dol.At(rules.event_offsets);
-    if (rows.size() < rules.count * kRow || offsets.size() < kEventTypes * 4)
+    std::optional<JacCatalogue> catalogue;
+    std::vector<JacCatalogue::Row> rows;
+    try
+    {
+        catalogue.emplace(dol, rules.catalogue, rules.count, rules.event_offsets);
+        for (uint32_t i = 0; i < rules.count; i++)
+        {
+            rows.push_back(catalogue->RowAt(i));
+        }
+    }
+    catch (const xsflib::FormatError&)
     {
         warnings_.push_back("main.dol's catalogue of effects is damaged: the effects are left out");
         return {};
     }
-    const std::span<const uint8_t> actions = offsets.subspan(kEventTypes * 4);
-    const auto u16 = [](std::span<const uint8_t> b, std::size_t at)
-    {
-        return static_cast<uint16_t>(b[at] << 8 | b[at + 1]);
-    };
-    const auto u32 = [](std::span<const uint8_t> b, std::size_t at)
-    {
-        return static_cast<uint32_t>(b[at]) << 24 | static_cast<uint32_t>(b[at + 1]) << 16 | b[at + 2] << 8 | b[at + 3];
-    };
-    const auto name_at = [&dol](uint32_t address)
-    {
-        const std::span<const uint8_t> text = dol.At(address);
-        return std::string(text.begin(), std::ranges::find(text, uint8_t{0}));
-    };
 
     std::vector<SequenceSound> sounds;
     std::set<std::tuple<bool, uint8_t, uint8_t, uint16_t>> listed; // the requests listed already
@@ -2130,13 +2086,12 @@ std::vector<SequenceSound> Game::JacEffectSounds()
         }
     };
 
-    for (uint32_t i = 0; i < rules.count; i++)
+    for (JacCatalogue::Row& row : rows)
     {
-        const std::span<const uint8_t> row = rows.subspan(i * kRow, kRow);
-        const auto number = static_cast<uint16_t>(u32(row, 4));
-        std::string name = name_at(u32(row, 8));
-        const auto kind = static_cast<int32_t>(u32(row, 16));
-        if (kind == kSystem)
+        const auto number = static_cast<uint16_t>(row.number);
+        std::string name = std::move(row.name);
+        const int32_t kind = row.kind;
+        if (kind == JacCatalogue::kSystemRow)
         {
             if (std::ranges::find(rules.left_out, number) != rules.left_out.end())
             {
@@ -2153,16 +2108,16 @@ std::vector<SequenceSound> Game::JacEffectSounds()
                 add(std::move(name), false, rules.system_track, 0, number);
             }
         }
-        else if (kind == kPlayer)
+        else if (kind == JacCatalogue::kPlayerRow)
         {
             add_player(std::move(name), number);
         }
-        else if (kind > 0 && static_cast<std::size_t>(kind) < kEventTypes)
+        else if (kind > 0 && static_cast<uint32_t>(kind) < JacCatalogue::kEventTypes)
         {
-            const std::size_t entry = u32(offsets, 4 * static_cast<std::size_t>(kind)) + std::size_t{number};
-            if ((entry + 1) * kAction <= actions.size())
+            const std::size_t entry = catalogue->FirstEntry(static_cast<uint32_t>(kind)) + std::size_t{number};
+            if (const std::optional<uint16_t> effect = catalogue->EffectOf(entry))
             {
-                add(std::move(name), true, 0, 0, u16(actions, entry * kAction + 4));
+                add(std::move(name), true, 0, 0, *effect);
             }
         }
     }
@@ -2233,14 +2188,7 @@ SequenceSound Game::EffectSound(const SoundEntry& s, std::span<const uint8_t> se
         seq.volume *= volume->second;
     }
     seq.pitch = rules_.effect_parameters ? s.pitch : 1.0f;
-    seq.default_release = rules_.default_release;
-    seq.echo = rules_.echo;
-    seq.jaudio1 = true;
-    seq.squared_track_volume = rules_.squared_track_volume;
-    seq.timed_random = rules_.timed_random;
-    seq.track_oscillator_routes = rules_.track_oscillator_routes;
-    seq.jac = jac_;
-    seq.mute_child_15 = rules_.mute_child_15;
+    SetLibraryRules(seq, rules_, true, jac_);
     seq.tracks.fill(0);
     seq.tracks[slot >> 4] = static_cast<uint16_t>(1u << (slot & 15));
     seq.effect = EffectStart{.slot = slot, .number = static_cast<uint16_t>(s.resource)};

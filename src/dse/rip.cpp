@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+#include "xsflib/text.h"
 
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/sets.h"
@@ -38,18 +40,6 @@ std::string StemOf(const std::string& path)
         name.erase(dot);
     }
     return name;
-}
-
-std::string Hex16(uint16_t value)
-{
-    char text[8];
-    std::snprintf(text, sizeof(text), "0x%04X", value);
-    return text;
-}
-
-uint16_t Get16(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return static_cast<uint16_t>(bytes[at] | bytes[at + 1] << 8);
 }
 
 // Whether the slot `slot` of the bank of sound effects `file` holds a sequence. A bank that can't be read holds none.
@@ -176,7 +166,7 @@ std::vector<std::string> MissingData(std::span<const NamedFile> files, const Seq
             {
                 for (const uint16_t id : effects.slots[*sequence.effect].missing)
                 {
-                    missing.push_back("wave bank " + Hex16(id));
+                    missing.push_back("wave bank " + xsflib::Hex(id, 4, true));
                 }
             }
         }
@@ -186,7 +176,7 @@ std::vector<std::string> MissingData(std::span<const NamedFile> files, const Seq
         const std::span<const uint8_t> header = files[bank].bytes;
         if (!set->main_bank && header.size() >= kBankHeaderSize && header[0x4B] == kWavesInMainBank)
         {
-            missing.push_back("the main bank " + Hex16(Get16(header, 0x40)));
+            missing.push_back("the main bank " + xsflib::Hex(xsflib::LoadLe16(&header[0x40]), 4, true));
             break;
         }
     }

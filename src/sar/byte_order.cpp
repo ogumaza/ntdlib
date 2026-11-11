@@ -19,38 +19,37 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
 #include "ntdlib/sar/wave_file.h"
+#include "ntdlib/wave/encode.h"
+#include "sar/format_ids.h"
 
 namespace ntdlib::sar
 {
 namespace
 {
 
-constexpr uint16_t kBankInfoBlock = 0x5800;
-constexpr uint16_t kWaveSoundInfoBlock = 0x6800;
-constexpr uint16_t kWaveTableReference = 0x0100; // from INFO to the table of waves
-constexpr uint16_t kItemTableReference = 0x0101; // from INFO to the table of instruments or of wave sounds
-constexpr uint16_t kInstrumentReference = 0x5900;
-constexpr uint16_t kNoRegionReference = 0x5903;
-constexpr uint16_t kDirectTable = 0x6000;
-constexpr uint16_t kRangeTable = 0x6001;
-constexpr uint16_t kIndexTable = 0x6002;
-constexpr int32_t kNoOffset = -1;
+using detail::kBankInfoBlock;
+using detail::kDirectTable;
+using detail::kEnvelopeBytes;
+using detail::kEnvelopeOption;
+using detail::kIndexTable;
+using detail::kInstrumentReference;
+using detail::kListReference;
+using detail::kNoItemReference;
+using detail::kNoOffset;
+using detail::kRangeTable;
+using detail::kRegionOptions;
+using detail::kTableReference;
+using detail::kWaveSoundInfoBlock;
 
-// The optional parameters that the walk knows: a region's original key, volume, pan, pitch, flags and envelope, and a
-// wave sound's pan, pitch, filter, sends and envelope.
-constexpr uint32_t kRegionOptions = 0x21F;
+// The optional parameters of a wave sound that the walk knows: its pan, pitch, filter, sends and envelope.
+// kRegionOptions gives a region's parameters. The envelope has the same bit in both.
 constexpr uint32_t kWaveSoundOptions = 0x307;
 constexpr int kSendsOption = 8;
-constexpr int kEnvelopeOption = 9;
-constexpr std::size_t kEnvelopeBytes = 5;
 
 // The first version of a wave file that holds the loop's original start: 2.1.1.0 on the 3DS, and 1.2.0 on the Wii U and
 // the Switch.
 constexpr uint32_t kCtrOriginalLoopStartVersion = 0x02010100;
 constexpr uint32_t kOriginalLoopStartVersion = 0x00010200;
-
-constexpr std::size_t kDspAdpcmFrameBytes = 8;
-constexpr std::size_t kDspAdpcmFrameSamples = 14;
 
 // A file's bytes in a byte order: the file's or the other. Each field that the walk reads goes into the copy in that
 // order. The walk marks the bytes of each field. A field that overlaps another field throws, and so does a byte that no
@@ -277,7 +276,7 @@ void WalkVelocityRegion(Swap& swap, std::size_t at)
 
 // A reference at `at` to a region table: one region (direct), the regions up to each key or velocity (range), or one
 // region for each from a first to a last (index). The references in the table count from its start. Calls `walk` for
-// each region. A reference of kNoRegionReference or without an offset names no region.
+// each region. A reference of kNoItemReference or without an offset names no region.
 template <typename Walk>
 void WalkRegionTable(Swap& swap, std::size_t at, Walk walk)
 {
@@ -286,7 +285,7 @@ void WalkRegionTable(Swap& swap, std::size_t at, Walk walk)
     const auto region = [&swap, &walk, table](std::size_t reference)
     {
         const auto [region_type, region_offset] = swap.Reference(reference);
-        if (region_type != kNoRegionReference && region_offset != kNoOffset)
+        if (region_type != kNoItemReference && region_offset != kNoOffset)
         {
             walk(table + static_cast<std::size_t>(region_offset));
         }
@@ -349,12 +348,12 @@ void WalkBank(Swap& swap, std::size_t info)
     {
         const auto [type, offset] = swap.Reference(info + i * 8);
         const std::size_t table = info + static_cast<std::size_t>(offset);
-        if (type == kWaveTableReference)
+        if (type == kListReference)
         {
             WalkWaveTable(swap, table);
             continue;
         }
-        if (type != kItemTableReference)
+        if (type != kTableReference)
         {
             throw xsflib::FormatError("a bank's INFO block with a reference that ntdlib doesn't know");
         }
@@ -454,12 +453,12 @@ void WalkWaveSoundFile(Swap& swap, std::size_t info)
     {
         const auto [type, offset] = swap.Reference(info + i * 8);
         const std::size_t table = info + static_cast<std::size_t>(offset);
-        if (type == kWaveTableReference)
+        if (type == kListReference)
         {
             WalkWaveTable(swap, table);
             continue;
         }
-        if (type != kItemTableReference)
+        if (type != kTableReference)
         {
             throw xsflib::FormatError("a wave sound file's INFO block with a reference that ntdlib doesn't know");
         }
@@ -479,12 +478,10 @@ std::size_t SampleBytes(WaveEncoding encoding, uint32_t count)
     {
     case WaveEncoding::kPcm8:
         return count;
-
     case WaveEncoding::kPcm16:
         return std::size_t{count} * 2;
-
     default:
-        return (std::size_t{count} + kDspAdpcmFrameSamples - 1) / kDspAdpcmFrameSamples * kDspAdpcmFrameBytes;
+        return wave::DspAdpcmBytes(count);
     }
 }
 

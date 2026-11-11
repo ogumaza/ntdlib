@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "ntdlib/ctr/nnsnd/dsp_link.h"
+#include "ntdlib/ctr_fx/vfp.h"
 
 namespace ntdlib::ctr::nnsnd
 {
@@ -61,18 +62,6 @@ constexpr std::array<std::array<uint32_t, 2>, 4> kFilterCycles = {
 
 // For each bus the voice mixes into: the main bus, and aux A or B when any of its gains isn't zero (0x18638c: 275 * 8).
 constexpr uint32_t kBusCycles = 2200;
-
-// The ARM11's VFP conversion to an unsigned integer (vcvt.u32.f32): it rounds towards zero, saturates, and turns NaN
-// into 0.
-uint32_t VfpToUnsigned(float value)
-{
-    if (!(value > 0.0f))
-    {
-        return 0;
-    }
-
-    return value >= 4294967296.0f ? UINT32_MAX : static_cast<uint32_t>(value);
-}
 
 } // namespace
 
@@ -334,6 +323,7 @@ void Voice::UpdateParameters(DspLink& link)
                 cfg.gain[bus][ch] = host_muted_ ? 0.0f : mix_[bus * 4 + ch] * volume_;
             }
         }
+
         cfg.dirty |= kCfgGains;
     }
 
@@ -419,8 +409,8 @@ uint32_t Voice::ComputeDspCost() const
 
     // vmla rounds the product before it adds.
     const float format_cycles = static_cast<float>(kFormatCycles[format][channels]) * rate_;
-    const uint32_t cost = VfpToUnsigned(kBaseCycles + format_cycles) + kInterpolationCycles[interpolation][channels] +
-                          kFilterCycles[filters][channels];
+    const uint32_t cost = ctr_fx::vfp::ToU32(kBaseCycles + format_cycles) +
+                          kInterpolationCycles[interpolation][channels] + kFilterCycles[filters][channels];
 
     // The gains are compared as bits: -0.0 counts as a gain.
     uint32_t buses = 1;

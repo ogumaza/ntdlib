@@ -6,91 +6,45 @@
 // player with 5 ms frames, arguments in the file's byte order and the Switch's audio renderer. Settings selects the
 // console.
 
-#include "ntdlib/sequence_export/performer.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <iterator>
 #include <limits>
-#include <map>
 #include <optional>
-#include <set>
-#include <span>
-#include <stdexcept>
 #include <string>
-#include <tuple>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
-#include "seqlib/midi/controllers.h"
 #include "seqlib/midi/recorder.h"
-#include "seqlib/sf2/units.h"
-#include "xsflib/binary.h"
 
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/console.h"
-#include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/util.h"
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/sar/decode.h"
-#include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/filter.h"
-#include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/passes.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/recording_engine.h"
-#include "ntdlib/sequence_export/resampling.h"
-#include "ntdlib/sequence_export/rsar_instruments.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "sequence_export/lengths.h"
+#include "sequence_export/performer_engine.h"
+#include "sequence_export/performer_records.h"
 
 namespace ntdlib::sequence_export
 {
 
-using sar::Pcm;
-using sar::Sequence;
-using sar::SoundArchive;
-using sar::SoundInfo;
-using sar::VelocityRegion;
-using seqlib::sf2::SoundFontPan;
-using seqlib::sf2::ToTimecents;
-
 namespace
 {
 
-constexpr double kNever = 1e300;                        // sentinel time in milliseconds
 constexpr double kMaxTailMs = kMaxTailSeconds * 1000.0; // longest release tail kept after the end (lengths.h)
 
 // The notes that a core has room for at once in a conversion that keeps every note. The 3DS's core always has this many
 // channels.
 constexpr int kEveryNote = 4096;
-
-// A one-shot wave that runs out in frame `f` keeps its channel for the ticks of frames up to `f + ReportFrames`. The
-// Switch's renderer reports how far a voice has played two frames late. A one-shot wave's end reaches nn::atk two
-// frames after the frame that reads the wave's last sample (LowLevelVoiceAllocator::UpdateAllVoiceStatus). AX on the
-// Wii U stops a voice in the frame that reads its last sample. On the 3DS and the Wii, the next frame's voice update
-// finds the end, after that frame's ticks.
-uint64_t ReportFrames(const Settings& settings)
-{
-    switch (settings.engine)
-    {
-    case Engine::kSwitch:
-        return 2;
-    case Engine::kCtr:
-    case Engine::kRevolution:
-        return 1;
-    default:
-        return 0;
-    }
-}
 
 // The 3DS's nw::snd counts ticks in thousandths of the ARM's cycles. A sound frame is 160 samples of the DSP's clock,
 // 160 * 8192 cycles (SequenceSoundPlayer::UpdateTick, code.bin 0x31ff50; see Performer::NextCoreTick).
@@ -120,23 +74,6 @@ double UnitsToMs(uint64_t units, const Settings& settings)
     return static_cast<double>(units) / 65536.0;
 }
 
-// The Wii's build of October 2006 counts time in 416ths of a tick. A tick lasts 416 / tempo frames.
-constexpr int kTickUnits = 416;
-
-// MML gives LFO delays and portamento times in 5 ms units.
-constexpr int kMmlUnitMs = 5;
-
-// The deepest call stack of any console's track. Track::calls holds a copy of the core's stack.
-constexpr int kCallDepth = std::max({nwsnd::CafePolicy::kCallStackDepth, nwsnd::NxPolicy::kCallStackDepth,
-                                     nwsnd::CtrPolicy::kCallStackDepth, nwsnd::RevolutionPolicy::kCallStackDepth});
-
-// A track's LFOs: the plain MML commands set the first, and extended ones (0xf0 0xa0 onwards) the others.
-constexpr int kLfoCount = 4;
-
-// A player's tracks, and the parts of a track's MIDI track: one for each of MIDI's 16 channels at most.
-using nwsnd::kTrackCount;
-constexpr uint8_t kPartCount = 16;
-
 // The rules of the main loop's passes that this performer plays by (passes.h). A track's first part starts with the SFZ
 // low-pass and biquad off. A preset at the loop's first tick doesn't count among the settings there. Without
 // Settings::reverb_moves_loops, the comparison of passes leaves CC91 out.
@@ -147,994 +84,6 @@ const LoopRules& LoopRulesOf(const Settings& settings)
 {
     return settings.reverb_moves_loops ? kLoopRules : kLoopRulesWithoutReverb;
 }
-
-// A linear ramp over a number of ticks (nw::snd MoveValue).
-class MoveValue
-{
-public:
-    // Sets the value immediately.
-    void Init(int v)
-    {
-        start_ = target_ = v;
-        duration_ = counter_ = 0;
-    }
-
-    int Get() const
-    {
-        if (counter_ >= duration_)
-        {
-            return target_;
-        }
-
-        return (target_ - start_) * counter_ / duration_ + start_;
-    }
-
-    bool Moving() const
-    {
-        return counter_ < duration_;
-    }
-
-    // Takes the state of `ramp`, a ramp of the core. A negative count there applies at once.
-    template <typename T>
-    void Take(const nwsnd::MoveValue<T>& ramp)
-    {
-        start_ = ramp.start;
-        target_ = ramp.target;
-        duration_ = std::max(0, static_cast<int>(ramp.duration));
-        counter_ = ramp.counter;
-    }
-
-private:
-    int start_ = 0, target_ = 0, duration_ = 0, counter_ = 0;
-};
-
-// On the Wii: the swing and the cut that fit the level of a MIDI note whose volume LFO the voice holds at full level
-// (PresetKey::lfo_swing and lfo_cut, MidiRecorder::VolumeLfoFits).
-struct VolumeLfoFit
-{
-    bool operator==(const VolumeLfoFit&) const = default;
-
-    uint8_t swing = 16;
-    int16_t cut = 0;
-};
-
-// The weighted sums of a MIDI note's frames with a volume LFO (MidiRecorder::OnVolumeLfo): the weights, the level that
-// the SoundFont and SFZ play the LFO at, its square, the level that the game plays it at, and the product of the two
-// levels. `held`: in some frame, the voice held the note at full level.
-struct VolumeLfoSums
-{
-    double w = 0.0, x = 0.0, xx = 0.0, y = 0.0, xy = 0.0;
-    bool held = false;
-};
-
-// The MIDI note that the performer plays a channel as.
-struct MidiNote
-{
-    uint8_t key = 0;        // the key of the MIDI note
-    bool on = false;        // the MIDI note is on
-    uint8_t velocity = 0;   // the MIDI note's velocity
-    int start_velocity = 0; // the velocity nw::snd played the MIDI note's start at
-    bool liftable = false;  // the MIDI note started alone on its part: a later pass may start it higher
-    uint8_t part = 0;       // the part of the track the MIDI note is on (TrackEvent::part)
-    uint8_t volume = 127;   // volume of the region selected for the MIDI note (see Legato)
-    uint32_t id = 0;        // the MIDI note's id (TrackEvent::note)
-    uint64_t frame = 0;     // the sound frame the MIDI note started in
-    std::optional<int16_t> attack_timecents; // the MIDI note's lengthened attack (PresetKey::attack_timecents)
-    PresetKey preset;                        // the MIDI note's preset, for its LFO settings (CheckLfo)
-    bool lfo_moved = false;                  // reported as heard with other LFO settings than its preset has
-    double quiet_ms = kNever;                // time the held envelope sinks below hearing (QuietMs)
-    double faded_ms = kNever;     // time the MIDI note of a channel that its length can't release ends (FadedMs)
-    bool sunk = false;            // its MIDI note ended below hearing (MidiRecorder::OnLengthUpdated)
-    int16_t lift = 0;             // the Wii: its zones' lift in centibels (PresetKey::lift, ZoneLift)
-    float level = -1.0f;          // the Wii: its level before the track's volumes, -1 if CC11 sets it (CheckFullLevel)
-    bool over_full_level = false; // reported as played at another level than in the game (CheckFullLevel)
-    bool lfo_above_full = false;  // the Wii: reported with a volume LFO above full level (FollowGainAboveFull)
-    VolumeLfoFit lfo_fit;         // the Wii: its volume LFO's fit from an earlier pass (PassFindings::lfo_fits)
-
-    // A MIDI note whose pitch LFO changes while it sounds plays on a part of its own (MidiNoteOn). Its preset has no
-    // LFO. The pitch bends of the part add the value of the core channel's pitch LFO in each frame (PartPitch).
-    // `lfo_crowded`: no part of its own was free, and the preset keeps the LFO. `lfo_random`: the note has reported
-    // the random curve of its pitch bends (TakeCoreLfos).
-    bool lfo_bends = false;
-    bool lfo_crowded = false;
-    bool lfo_random = false;
-
-    // On the Wii U and the Switch: the MIDI note starts past one of the console's pitch limits (PastPitchLimit).
-    // `at_limits`: an earlier pass found its pitch still (PassFindings::pitch_moves), and its preset plays it at the
-    // limit (PresetKey::at_pitch_limits).
-    bool past_limit = false;
-    bool at_limits = false;
-};
-
-// A sounding nw::snd channel and its corresponding MIDI note.
-struct Note
-{
-    // Returns when a one-shot wave's channel is freed, or kNever for a looping wave. The core's position model gives
-    // the frame in which the wave runs out (`core_end`). The console reports the end ReportFrames later. The sound
-    // library frees the channel before the ticks of the next frame.
-    double NaturalEndMs() const
-    {
-        return one_shot && core_end && *core_end != WaveEnd::kNoEnd
-                   ? static_cast<double>(*core_end + 1 + ReportFrames(*settings)) * settings->frame_ms
-                   : kNever;
-    }
-
-    // Returns the earlier of wave completion and release completion.
-    double EndMs() const
-    {
-        return std::min(NaturalEndMs(), release_end_ms);
-    }
-
-    // Returns when the channel's sound ends: where its fade ended its MIDI note (`sunk`), and otherwise when the
-    // channel ends.
-    double SoundEndMs() const
-    {
-        return midi.sunk ? midi.faded_ms : EndMs();
-    }
-
-    // Returns when the held envelope sinks below hearing (kInaudibleSustain), or kNever if it doesn't.
-    double QuietMs() const
-    {
-        return AttenuationMs(kInaudibleSustain);
-    }
-
-    // Returns when the held envelope fades to kFadedAttenuation. If its sustain level stays above that, returns when it
-    // sinks below hearing instead.
-    double FadedMs() const
-    {
-        const double faded = AttenuationMs(kFadedAttenuation);
-        return faded < kNever ? faded : QuietMs();
-    }
-
-    // Returns when the held envelope falls to `attenuation` centibels, or kNever if it doesn't.
-    double AttenuationMs(int attenuation) const
-    {
-        const int64_t frames = FramesToLevel(env, -static_cast<float>(attenuation), *settings);
-        return frames >= 0 ? static_cast<double>(on_frame + static_cast<uint64_t>(frames) + 1) * settings->frame_ms
-                           : kNever;
-    }
-
-    // True if the one-shot wave has run out by the end of frame `frame`.
-    bool WaveEndedBy(uint64_t frame) const
-    {
-        return one_shot && core_end && *core_end <= frame;
-    }
-
-    // Like Channel::GetSweepValue (0x022C4204), calculates the sweep offset in semitones for sound frame `frame`. Timed
-    // sweeps advance Settings::env_step_ms per frame after pitch calculation, from the initial frame on. Note-length
-    // sweeps advance once per tick.
-    float SweepAt(uint64_t frame) const
-    {
-        const int total = static_cast<int>(sweep_length);
-        const int gone =
-            sweep_in_ms ? static_cast<int>(std::min<uint64_t>((frame - sweep_frame) * settings->env_step_ms, total))
-                        : static_cast<int>(std::min(sweep_ticks, sweep_length));
-        if (sweep == 0.0f || gone >= total)
-        {
-            return 0.0f;
-        }
-
-        return sweep * static_cast<float>(total - gone) / static_cast<float>(total);
-    }
-
-    // The value of the core channel's pitch LFO in sound frame `frame`, in semitones (lfo_pitch). A frame that the core
-    // hasn't run yet gives the latest value.
-    float LfoPitchAt(uint64_t frame) const
-    {
-        if (lfo_pitch.empty())
-        {
-            return 0.0f;
-        }
-
-        const uint64_t index = frame > lfo_frame ? frame - lfo_frame : 0;
-        return lfo_pitch[std::min<std::size_t>(index, lfo_pitch.size() - 1)];
-    }
-
-    // True if `other`'s sweep moves its pitch the same way as this note's sweep from sound frame `frame` on: neither
-    // sweeps any more, or both sweep alike.
-    bool SweepsLike(const Note& other, uint64_t frame) const
-    {
-        if (SweepAt(frame) == 0.0f && other.SweepAt(frame) == 0.0f)
-        {
-            return true;
-        }
-
-        return sweep == other.sweep && sweep_length == other.sweep_length && sweep_in_ms == other.sweep_in_ms &&
-               (sweep_in_ms ? sweep_frame == other.sweep_frame : sweep_ticks == other.sweep_ticks);
-    }
-
-    // True if the channel has a MIDI note. The game plays a note at velocity 0 silently, and MIDI gets no note for it.
-    // The MIDI note of a channel that its length can't release ends where the channel's fade ends it (`sunk`). The
-    // checks of a part's notes leave out a channel without a MIDI note (Alone, PartSounds, PartPitch and others).
-    // Otherwise a silent channel's sweep and settings would move the notes that sound on the same part.
-    bool HasMidiNote() const
-    {
-        return midi.id != 0 && !midi.sunk;
-    }
-
-    uint8_t key = 0;             // the key nw::snd plays
-    MidiNote midi;               // the MIDI note that the performer plays the channel as
-    uint8_t region_volume = 127; // volume of the region the channel started on (tie and mono keep it; see Legato)
-    int32_t length = -1;         // ticks until note-off; -1: none
-    bool released = false;
-
-    // A note-off came before the channel's first update (Settings::note_off_waits_for_update). nn::atk makes the
-    // note-off in that update, after the envelope's first step (Channel::NoteOff, 0xc23a70). The note sounds for its
-    // first frame (Performer::ReleasePending).
-    bool release_pending = false;
-    bool ignore_note_off = false;
-    uint8_t key_group = 0;
-    uint64_t on_frame = 0; // the sound frame the note started in
-    EnvelopeValues env;
-    double release_end_ms = kNever;
-    uint64_t released_frame = 0; // the sound frame the note was last released in
-    float release_level = 0;     // 0.1 dB when released
-    float release_rate = 0;      // 0.1 dB per millisecond
-
-    // Whether the wave is a one-shot. The core's position model gives the frame in which a one-shot wave runs out: at
-    // the note's start, a prediction at the key's pitch times PerformOptions::pitch (RecordingEngine::PredictEnd), and
-    // once the voice plays, the frame at the voice's rate (Performer::TakeCoreWaves).
-    bool one_shot = false;
-    std::optional<uint64_t> core_end;
-
-    // The core's channel that plays the note, and the key of its voice (RecordingEngine::PositionKey), or kNoChannel
-    // and -1. The channel's envelope gives the level at a release (Performer::ReleaseNote).
-    nwsnd::ChannelId core_channel = nwsnd::kNoChannel;
-    int core_key = -1;
-
-    // The Wii: the channel's volume before the track's volumes (Channel::SetInitVolume): velocity squared, and the
-    // region's volume for a new note. The voice clamps it times the track's volumes to 1 (Voice::SetVolume, main.dol
-    // 0x8004c830).
-    float init_volume = 1.0f;
-    bool stereo = false;
-
-    // The console's settings (Performer::NoteOn sets them).
-    const Settings* settings = nullptr;
-
-    // Instrument and initial pan at note-on. Tie/mono continue the channel with these values even if the track changes
-    // them.
-    uint8_t bank_slot = 0;
-    uint32_t program = 0;
-    int8_t init_pan = 0;
-
-    // The track's bend when the track detached the note (MidiRecorder::DetachAll).
-    float bend = 0.0f;
-
-    // Sweep/portamento starts `sweep` semitones from the target and returns linearly.
-    float sweep = 0.0f;
-    double sweep_length = 0; // ticks (-1 for a note without a length), or milliseconds when sweep_in_ms
-    double sweep_ticks = 0;
-    uint64_t sweep_frame = 0; // the sound frame a timed sweep starts in
-    bool sweep_in_ms = false;
-
-    // For a MIDI note with lfo_bends: the value of the core channel's pitch LFO in each sound frame from `lfo_frame` on
-    // (Performer::TakeCoreLfos).
-    std::vector<float> lfo_pitch;
-    uint64_t lfo_frame = 0;
-};
-
-// Call stack entry: a return address, or a loop start and remaining count.
-struct CallEntry
-{
-    bool is_loop = false;
-    uint8_t count = 0;
-    uint32_t address = 0;
-};
-
-// The settings that the MML commands give a track LFO: CurveLfoParam and its type.
-struct LfoSetting
-{
-    uint8_t depth = 0;   // the LFO's depth is this / 128
-    float speed = 6.25f; // Hz
-    int32_t delay = 0;   // milliseconds, unsigned in nw::snd: a negative delay never ends
-    uint8_t range = 1;
-    uint8_t curve = 0; // 0 sine, 1 triangle, 2 saw, 3 square, 4 random
-    uint8_t phase = 0; // the cycle's start, in 127ths
-    uint8_t type = 0;  // 0 pitch, 1 volume, 2 pan
-};
-
-// Returns the CC1 value that holds the depth of LFO `lfo`. A volume LFO changes a channel's level by
-// CalcVolumeRatio(6 * its value) dB. That can't rise more than 6 dB. The SoundFont and SFZ LFOs swing as far up as
-// down. A deeper LFO therefore keeps to a 6 dB swing and dips less than in the game. The game's LFO value reaches depth
-// / 128 * range. Both outputs swing 12 * range * CC1 / 128 dB. A 6 dB swing takes CC1 = 64 / range.
-int ModulationValue(const LfoSetting& lfo)
-{
-    int mod = std::min(127, (lfo.depth + 1) / 2);
-    if (lfo.type == 1 && lfo.depth * lfo.range > 128)
-    {
-        mod = std::min(mod, static_cast<int>(64.0 / lfo.range));
-    }
-
-    return mod;
-}
-
-// The legato gain of the notes on a part that their track has left (MidiRecorder::Switch).
-struct LeftPart
-{
-    double gain = 1.0;
-};
-
-// What the performer has sent to a track's MIDI channels.
-struct TrackMidi
-{
-    // The SoundFont approximation of the track's filters.
-    SoundFontFilter filter;
-
-    // Whether the track has played a note. The track's MIDI controllers go out from then on.
-    bool played = false;
-
-    // The part that the track's new notes and changes go to (MidiRecorder::Switch), and each part's last values.
-    seqlib::midi::TrackOutput output;
-
-    // Legato velocity relative to the continuing MIDI note, and key offset in semitones (see Legato).
-    double legato_gain = 1.0;
-    float legato_bend = 0.0f;
-
-    // The parts the track has left.
-    std::array<LeftPart, kPartCount> left{};
-
-    // The track's volume, pan and sends at the end of its last tick (Performance::mix).
-    std::array<int16_t, kMixSettingCount> mix = {127, 0, 0, 0, 0};
-};
-
-// The controllers that a track's settings give each part that takes them, apart from the pitch
-// (MidiRecorder::UpdateOutputs). CC11 takes `level` times the part's legato gain.
-struct PartControllers
-{
-    int volume = 0;
-    double level = 0.0;
-    int pan = 64;
-    int modulation = 0;
-    int reverb = 0;
-    std::optional<int> chorus; // none where the sends leave CC93 alone (Sends::kReverbDry)
-    std::optional<int> filter; // only for a filter that changes during notes (PassFindings::filter_moves)
-    int sfz_low_pass = 0;
-    int sfz_biquad = 0;
-};
-
-// Sends the controllers `c` through `send`, which takes a controller's value and its kind, with CC11 at `expression`.
-template <typename Send>
-void SendControllers(const PartControllers& c, int expression, const Send& send)
-{
-    send(c.volume, EventKind::kVolume);
-    send(expression, EventKind::kExpression);
-    send(c.pan, EventKind::kPan);
-    send(c.modulation, EventKind::kModulation);
-    send(c.reverb, EventKind::kReverb);
-    if (c.chorus)
-    {
-        send(*c.chorus, EventKind::kChorus);
-    }
-    if (c.filter)
-    {
-        send(*c.filter, kFilterEvent);
-    }
-    send(c.sfz_low_pass, kSfzLowPassEvent);
-    send(c.sfz_biquad, kSfzBiquadEvent);
-}
-
-// A sequence track: its state and settings from the core's track (Performer::TakeCoreTrack), its channels, and the
-// records of the loop analysis (Performer::OnLoop).
-struct Track
-{
-    // The pitch bend in semitones.
-    float Bend() const
-    {
-        return static_cast<float>(bend.Get()) / 128.0f * bend_range;
-    }
-
-    // Resets to the initial sound state but keeps track allocation.
-    void Init()
-    {
-        const bool was_allocated = allocated;
-        const Engine was_engine = engine;
-        *this = Track{};
-        allocated = was_allocated;
-        engine = was_engine;
-
-        vol.Init(127);
-        volume2.Init(127);
-        pan.Init(0);
-        bend.Init(0);
-        vars.fill(-1);
-    }
-
-    bool allocated = false;
-    bool open = false;
-    uint32_t current = 0;  // offset of the next command
-    bool note_wait = true; // a note makes the track wait for its length (MML notewait)
-    bool tie = false;
-    bool mono = false;
-
-    // The offset of the command that the track runs, and how the track's next stretch of commands begins, if its next
-    // command begins one (Performance::stretches).
-    uint32_t command = 0;
-    std::optional<Entry> next_stretch = Entry::kOpen;
-    std::array<CallEntry, kCallDepth> calls{};
-    int call_depth = 0;
-    int32_t wait = 0; // ticks until the next command
-    bool mute = false;
-    bool note_finish_wait = false; // waiting for the track's notes to end
-    bool held_wait = false;        // waiting out a note of kHeldTicks or more
-    bool holds = false;            // the track's last note is one of kHeldTicks or more
-    bool damper = false;
-    uint8_t bank_slot = 0;
-    uint32_t program = 0;
-    std::array<LfoSetting, kLfoCount> lfos{};
-    MoveValue vol, volume2, pan, bend;
-    uint8_t velocity_range = 127; // velocities are scaled by this / 127
-    uint8_t bend_range = 2;
-    int8_t init_pan = 0;
-    uint8_t attack = 0xff, decay = 0xff, sustain = 0xff, release = 0xff, hold = 0xff;
-    uint8_t main_send = 127;
-    Engine engine = Engine::kCafe; // the console's engine (Performer sets it)
-    uint8_t fx_send_a = 0, fx_send_b = 0, fx_send_c = 0;
-    float handle_volume = 1.0f;     // the volume that the game sets through the sound's handle (PerformOptions::tracks)
-    std::array<int16_t, 16> vars{}; // track variables, 32-47 to commands
-    std::vector<Note> notes;        // the track's channels, newest last
-    std::vector<Note> detached;     // released channels no longer on the track, still sounding
-
-    // Last tick that began a wait (OnLoop), and counts of channels/legatos started in `note_tick` (NoteOn).
-    std::optional<uint32_t> last_wait;
-    uint32_t note_tick = 0;
-    int tick_notes = 0, tick_legatos = 0;
-
-    // Track filter arguments: low-pass (0xd8, initially off), biquad type/value (0xb4/0xb5), and their SoundFont
-    // approximation.
-    int32_t low_pass = 0x40;
-    int32_t biquad_type = 0, biquad_value = 0;
-
-    // Last tick that changed the track's sound, used for main-loop detection (OnLoop). This must agree across Perform's
-    // passes even when legato MIDI output differs (Legato). Every legato counts as a change. The comparison takes the
-    // game's unrounded level before legato gain, MIDI scaling or clamping; legato gain can make CC11 steps finer. The
-    // comparison also takes the filter cutoff independently of controller use, and the pitch without the legato key
-    // offset. change_level, change_filter and change_pitch store those values.
-    std::optional<uint32_t> last_change;
-    double change_level = -1.0;
-    int change_filter = -1;
-    float change_pitch = 0.0f;
-    // Whether the track's last pass of a loop changed nothing. Inner passes don't count. A Leavable pass counts only
-    // when it changed nothing, no variable included, and drew no random number (OnLoop).
-    bool idle = false;
-    uint32_t opened = 0; // the tick it last opened at
-
-    // When the track last changed a player or global variable that another open track has read and can read again. The
-    // value is the number of commands run by then (Performer::commands_run_). Such a change counts as a change of the
-    // sound for main-loop detection (OnLoop). The other track may play because of it.
-    std::optional<uint64_t> last_signal;
-
-    // The number of commands run (Performer::commands_run_) when the track last changed a variable, or 0 before its
-    // first change (see OnLoop).
-    uint64_t last_variable_change = 0;
-
-    // The number of commands run (Performer::commands_run_) after the track's last conditional jump, call, return or
-    // fin, and after its last note, or 0 before the first (see Leavable).
-    uint64_t leave_at = 0;
-    uint64_t note_at = 0;
-
-    // The same number after the track last jumped back to each loop start, and the starts of the track's inner loops:
-    // loops that the track jumped back to during a pass of another loop (OnLoop).
-    std::map<uint32_t, uint64_t> jump_backs;
-    std::set<uint32_t> inner_loops;
-    double last_pass_ms = 0.0; // the time of the track's last pass of a loop that isn't inner (OnLoop)
-
-    // A serial number for each entry of the call stack, and how many entries have one (Performer::NumberCalls).
-    std::array<uint64_t, kCallDepth> call_ids{};
-    int numbered_calls = 0;
-};
-
-// Builds a preset key for a new note on `tr`. Envelope values outside 0-127 leave the bank value unchanged. Discards
-// settings for ineffective LFOs to avoid duplicate presets. These include unsupported types and negative delays.
-// nw::snd keeps a delay as unsigned milliseconds. A negative delay therefore wraps to a huge one, and the LFO never
-// starts.
-PresetKey TrackPresetKey(const Track& tr)
-{
-    PresetKey pk;
-    pk.bank_slot = tr.bank_slot;
-    pk.program = tr.program;
-    pk.attack = tr.attack <= 127 ? tr.attack : 0xff;
-    pk.decay = tr.decay <= 127 ? tr.decay : 0xff;
-    pk.sustain = tr.sustain <= 127 ? tr.sustain : 0xff;
-    pk.release = tr.release <= 127 ? tr.release : 0xff;
-    pk.hold = tr.hold <= 127 ? tr.hold : 0xff;
-    const LfoSetting& lfo = tr.lfos[0];
-    if (lfo.type <= 2 && lfo.delay >= 0)
-    {
-        pk.lfo_type = lfo.type;
-        pk.lfo_range = lfo.range;
-        pk.lfo_speed = lfo.speed;
-        pk.lfo_delay = static_cast<uint32_t>(lfo.delay);
-        if (LfoInBytecodeUnits(tr.engine))
-        {
-            // The 3DS's and the Wii's keys hold the bytecode's units: the speed, and the delay in 5 ms steps. Both are
-            // exact: the track keeps the speed times 0.390625 and the delay times 5.
-            pk.lfo_speed = lfo.speed / 0.390625f;
-            pk.lfo_delay = static_cast<uint32_t>(lfo.delay / kMmlUnitMs);
-        }
-    }
-    else
-    {
-        pk.lfo_type = 3;
-    }
-
-    pk.init_pan = tr.init_pan;
-
-    return pk;
-}
-
-// Builds channel `n`'s current preset key from track `tr`. The key keeps the channel's original instrument and initial
-// pan.
-PresetKey ChannelPresetKey(const Track& tr, const Note& n)
-{
-    PresetKey pk = TrackPresetKey(tr);
-    pk.bank_slot = n.bank_slot;
-    pk.program = n.program;
-    pk.init_pan = n.init_pan;
-
-    return pk;
-}
-
-// True if `a` and `b` have the same LFO settings.
-bool SameLfo(const PresetKey& a, const PresetKey& b)
-{
-    return a.lfo_type == b.lfo_type && a.lfo_range == b.lfo_range && a.lfo_speed == b.lfo_speed &&
-           a.lfo_delay == b.lfo_delay;
-}
-
-// `key` with the LFO settings of `lfo`.
-PresetKey WithLfo(PresetKey key, const PresetKey& lfo)
-{
-    key.lfo_type = lfo.lfo_type;
-    key.lfo_range = lfo.lfo_range;
-    key.lfo_speed = lfo.lfo_speed;
-    key.lfo_delay = lfo.lfo_delay;
-
-    return key;
-}
-
-// `key` without an LFO: with the settings of a track whose LFO has no effect (TrackPresetKey).
-PresetKey WithoutLfo(const PresetKey& key)
-{
-    PresetKey none;
-    none.lfo_type = 3;
-
-    return WithLfo(key, none);
-}
-
-// The regions and decoded waves that the performer plays a sound's notes with. The same region always gives the same
-// pointer. Perform's overloads give one over a sound archive's banks: over a BankSet, or over the Wii's RsarBankSet
-// with its regions in sar's form.
-class Regions
-{
-public:
-    virtual ~Regions() = default;
-
-    // The velocity region of instrument `program` of the bank in `slot` that plays `key` at `velocity`, or nullptr.
-    virtual const VelocityRegion* FindRegion(int slot, uint32_t program, int key, int velocity) const = 0;
-
-    // Wave `wave_id_index` of the bank in `slot`, decoded, or nullptr.
-    virtual const Pcm* GetWave(int slot, uint32_t wave_id_index) = 0;
-};
-
-// The regions and waves of a CSAR or FSAR archive's banks.
-class SarRegions final : public Regions
-{
-public:
-    explicit SarRegions(BankSet& banks) : banks_(banks)
-    {
-    }
-
-    const VelocityRegion* FindRegion(int slot, uint32_t program, int key, int velocity) const override
-    {
-        return banks_.FindRegion(slot, program, key, velocity);
-    }
-
-    const Pcm* GetWave(int slot, uint32_t wave_id_index) override
-    {
-        return banks_.GetWave(slot, wave_id_index);
-    }
-
-private:
-    BankSet& banks_;
-};
-
-// The regions and waves of a Wii sound's bank, in sar's form. Each region is converted once. A region keeps the same
-// pointer. The waves are in sar's form already (wave::Pcm). Builds of NW4R SND before 2008 have no hold, note-off types
-// or key groups (Mario Kart Wii's Bank::NoteOn, 0x8008d41c and 0x8008d490).
-class RsarRegions final : public Regions
-{
-public:
-    RsarRegions(RsarBankSet& banks, bool since_march_2008) : banks_(banks), since_march_2008_(since_march_2008)
-    {
-    }
-
-    const VelocityRegion* FindRegion(int, uint32_t program, int key, int velocity) const override
-    {
-        const rsar::Region* region = banks_.FindRegion(program, key, velocity);
-        if (!region)
-        {
-            return nullptr;
-        }
-
-        const auto [it, added] = regions_.try_emplace(region);
-        if (added)
-        {
-            VelocityRegion& v = it->second;
-            v.wave_id_index = static_cast<uint32_t>(region->wave_index);
-            v.original_key = region->original_key;
-            v.volume = region->volume;
-            v.pan = region->pan;
-            v.pitch = region->tune;
-            v.ignore_note_off = since_march_2008_ && region->note_off_type == 1;
-            v.key_group = since_march_2008_ ? region->key_group : 0;
-            const EnvelopeValues env = RegionEnvelope(*region, since_march_2008_);
-            v.adshr = {static_cast<uint8_t>(env.attack), static_cast<uint8_t>(env.decay),
-                       static_cast<uint8_t>(env.sustain), static_cast<uint8_t>(env.hold),
-                       static_cast<uint8_t>(env.release)};
-        }
-
-        return &it->second;
-    }
-
-    const Pcm* GetWave(int, uint32_t wave_id_index) override
-    {
-        return banks_.GetWave(wave_id_index);
-    }
-
-private:
-    RsarBankSet& banks_;
-    bool since_march_2008_;
-    mutable std::map<const rsar::Region*, VelocityRegion> regions_;
-};
-
-class Performer;
-
-// The core: a console's sequence player on nw::snd's model (nwsnd/). The core plays the sequence, and the performer
-// follows it through the hooks below: each command, its arguments' random draws and variable reads, and each note
-// command. The performer runs the core's tick of each track, and the core's frames move on with the frames of the
-// performer's ticks. `VoiceLayer` gives the console's voices (see recording_engine.h).
-template <typename Console, template <typename> class VoiceLayer = MultiVoiceLayer>
-class SequenceCore : public RecordingEngine<Console, SequenceCore<Console, VoiceLayer>, Regions, VoiceLayer>
-{
-public:
-    using Base = RecordingEngine<Console, SequenceCore<Console, VoiceLayer>, Regions, VoiceLayer>;
-    using Player = typename Base::Player;
-    using Channel = typename Base::Channel;
-    using Base::Base;
-
-    // A track that runs the parse limit's commands in a tick without a wait reads on in the next tick. The track stops
-    // once it has run on that way for kHoldSeconds. `now_ms_` is the tick's time. The performer records a track that
-    // stops.
-    bool OnParseLimit(Player& player, int track);
-
-    // A track that the policy's parse limit ends, on the Wii. The performer records the stop in the same way as for
-    // OnParseLimit.
-    void OnParseLimitEnd(Player& player, int track);
-
-    // The hooks that the performer follows (Performer::FollowCommandStart and the others).
-    void OnCommandStart(Player& player, int track, uint32_t offset, uint32_t command, bool conditional);
-    void OnCommand(Player& player, int track, uint32_t command, int32_t arg1, int32_t arg2);
-    void OnExtendedCommand(Player& player, int track, uint32_t command, int32_t arg1, int32_t arg2);
-    void OnRandomDraw(Player& player, int track);
-    void OnVariableRead(Player& player, int track, int index);
-    void OnNoteCommand(Player& player, int track, int key, int velocity, int32_t length);
-    void OnNoteOn(Player& player, int track, Channel& channel);
-    void OnLegato(Player& player, int track, Channel& channel);
-
-    // A channel's release or note-off, and the end of the count of a track's lengths (Performer::FollowLengths).
-    void OnRelease(Player& player, int track, Channel& channel);
-    void OnLengthsCounted(Player& player, int track);
-
-    // A note that finds no free channel, and a channel whose voice went to another note (RecordingEngine::NoteOn and
-    // ChannelEvent).
-    void OnNoChannel(int track);
-    void OnChannelDropped(int track, Channel& channel);
-
-    // The Wii's builds before September 2009: a frame in which a channel's volume LFO lifts the envelope's gain above
-    // full level (RevolutionPolicy::UpdateChannel). The voice limits the gain to full level.
-    void OnGainAboveFull(Channel& channel);
-
-    // The Wii's builds before September 2009: a frame of a channel's volume LFO, with the envelope's level and the
-    // LFO's in decibels (RevolutionPolicy::UpdateChannel).
-    void OnVolumeLfo(Channel& channel, float envelope_db, float lfo_db);
-
-    // A pass that stops the performance stops the track's tick at the jump. A copy of the performer then runs the rest
-    // of the tick (Performer::PlayOn).
-    bool StopsTick(Player& player, int track);
-
-    // Whether the counted loop whose body starts at `address` loops for ever: the loops of Performer::SetEndlessLoops
-    // do.
-    bool LoopsForEver(const Player& player, int track, uint32_t address) const;
-
-    // The build of the console's sound library that plays the sound. The Wii's channels depend on it
-    // (RevolutionPolicy::UpdateChannel).
-    const typename Console::Build& Build() const
-    {
-        return build_;
-    }
-
-    double now_ms_ = 0.0;
-
-    // The performer that the hooks report to. The performer sets it before each run of the core's tracks. A copy of the
-    // performer holds a copy of the core, and the copy sets the pointer to itself.
-    Performer* performer_ = nullptr;
-
-    typename Console::Build build_{};
-
-private:
-    // Each track's last tick that hit the parse limit, and the time that its run of such ticks began.
-    std::array<int64_t, kTrackCount> limit_ticks_ = []
-    {
-        std::array<int64_t, kTrackCount> ticks;
-        ticks.fill(-2);
-
-        return ticks;
-    }();
-    std::array<double, kTrackCount> run_start_ms_{};
-};
-
-// The cores of the Wii U, the Switch, the 3DS and the Wii.
-using CafeCore = SequenceCore<nwsnd::CafePolicy>;
-using NxCore = SequenceCore<nwsnd::NxPolicy>;
-using CtrCore = SequenceCore<nwsnd::CtrPolicy, CtrVoiceLayer>;
-using RevolutionCore = SequenceCore<nwsnd::RevolutionPolicy>;
-
-// The performer's rules for recording MIDI (seqlib/midi/recorder.h). nw::snd gives a frame's notes the settings that
-// the frame ends with. A setting therefore goes before every event of its tick but a sound off. A part switch drops the
-// new part's last values. A pitch that moves 0.0005 semitones or less isn't sent.
-seqlib::midi::RecorderOptions RecordingRules()
-{
-    seqlib::midi::RecorderOptions options;
-    options.settings_before_all_events = true;
-    options.pitch_tolerance = 0.0005f;
-
-    return options;
-}
-
-// The last value of setting `kind` sent to the part that `output`'s track plays on, or -1 if none was.
-int LastSent(const seqlib::midi::TrackOutput& output, EventKind kind)
-{
-    const auto sent = output.sent.find({output.part, kind});
-    return sent != output.sent.end() ? sent->second : -1;
-}
-
-// When a tick comes: the sound frame it's processed in, and its time. The Wii's build of October 2006 counts time in
-// 416ths of a tick (NextCoreTick). There `ticks_left` is the number of the frame's ticks after this one, and
-// `nominal_ms` the tick's time at MIDI's tempo.
-struct TickTime
-{
-    uint64_t frame = 0;
-    double ms = 0;
-    int ticks_left = 0;
-    double nominal_ms = 0;
-};
-
-// What a pass of a sequence's performance found, for the next pass to play by (PerformPasses).
-struct PassFindings
-{
-    bool operator==(const PassFindings&) const = default;
-
-    // Tracks whose filters changed during a sounding note. Their filters require MIDI controllers because presets
-    // cannot update an existing note.
-    std::array<bool, kTrackCount> filter_moves{};
-
-    // The MIDI notes that tie or mono legatos raise above the velocity they started at, by note id, with the highest
-    // velocity each reaches. A later pass starts them there (MidiRecorder::MidiNoteOn).
-    std::map<uint32_t, int> rises = {};
-
-    // The MIDI notes the game releases before their SoundFont attack ends, more than 1 dB quieter than the attack has
-    // reached then, by note id. Each value is the attack in timecents that reaches the game's level at the release. A
-    // later pass gives the notes those attacks (MidiRecorder::MidiNoteOn).
-    std::map<uint32_t, int16_t> early_releases = {};
-
-    // On the Wii: the fits of the MIDI notes whose volume LFO the voice holds at full level, by note id
-    // (MidiRecorder::VolumeLfoFits). A later pass gives the notes presets with those fits (MidiRecorder::MidiNoteOn).
-    std::map<uint32_t, VolumeLfoFit> lfo_fits = {};
-
-    // The MIDI notes whose pitch LFO changes while they sound, by note id. A later pass gives each of them a part of
-    // its own. The pitch bends of that part add the LFO (MidiRecorder::MidiNoteOn).
-    std::set<uint32_t> lfo_changes = {};
-
-    // The MIDI notes past one of the console's pitch limits whose part bends while they sound, by note id: a sweep, an
-    // LFO in the part's bends or a bend. The other notes past a limit hold their pitch. A later pass gives those notes
-    // a preset that plays them at the limit (PresetKey::at_pitch_limits).
-    std::set<uint32_t> pitch_moves = {};
-};
-
-// The recording of a sequence's performance: the MIDI events, and the parts of them that the passes use. The recorder's
-// methods take the engine that it records, the Performer.
-class MidiRecorder
-{
-public:
-    MidiRecorder();
-
-    // Channel `n` of track `t` enters its release in the current frame.
-    void OnRelease(Performer& engine, int t, Note& n);
-
-    // Channel `n` of track `t` enters its release a fraction `after` of a tick past the current tick: a note-off that
-    // waited for the channel's first update (Settings::note_off_waits_for_update).
-    void OnDeferredRelease(Performer& engine, int t, Note& n, double after);
-
-    // Channel `n` of track `t` stops at once (Channel::Stop).
-    void OnStop(Performer& engine, int t, Note& n);
-
-    // Track `t` closes. OnTrackClosing comes before its channels are released, and OnTrackClosed after.
-    void OnTrackClosing(Performer& engine, int t);
-    void OnTrackClosed(Performer& engine, int t);
-
-    // The frames between the current tick and `next` pass.
-    void OnBetweenTicks(Performer& engine, const TickTime& next);
-
-    // Channel `n` of track `t` ends: its one-shot wave or its release has finished.
-    void OnEnd(Performer& engine, int t, Note& n);
-
-    // Channel `n` of track `t` has counted down its length for the tick.
-    void OnLengthUpdated(Performer& engine, int t, Note& n);
-
-    // Track `t` has run command `cmd` with its first argument `arg1`.
-    void OnCommand(Performer& engine, int t, uint32_t cmd, int32_t arg1);
-
-    // The timebase has changed.
-    void OnTimebase(Performer& engine);
-
-    // Track `t` stops after running without waits (the policy's kParseLimit).
-    void OnRunaway(Performer& engine, int t);
-
-    // Track `t`'s commands for the tick have run, and its settings reach its channels.
-    void OnTickEnd(Performer& engine, int t);
-
-    // Records the changes of track `t`'s volume, pan and sends in the tick (Performance::mix).
-    void RecordMix(const Performer& engine, int t);
-
-    // Track `t` releases all its channels (SequenceTrack::ReleaseAllChannel). OnReleaseAll comes before the channels
-    // are released, and OnReleasedAll after.
-    void OnReleaseAll(Performer& engine, int t);
-    void OnReleasedAll(Performer& engine, int t);
-
-    // Track `t` stops all its channels at once, before they're freed (SequenceTrack::SetMute's mode 3).
-    void OnStopAll(Performer& engine, int t);
-
-    // Track `t` plays a note: the first hook of each note, before tie, mono or a new channel.
-    void OnNoteOnStart(Performer& engine, int t);
-
-    // Channel `n` of track `t` starts, at velocity `velocity` (the track's velocity range applied), on `region`.
-    void OnNoteOn(Performer& engine, int t, Note& n, int velocity, const VelocityRegion* region, bool stereo);
-
-    // A tie or mono note continues channel `n` of track `t` at `key` and `velocity` (Legato). `heard` is false when the
-    // channel was below hearing. Returns whether the note plays.
-    bool OnLegato(Performer& engine, int t, Note& n, int key, int velocity, bool past_cap, bool heard);
-
-    // Starts/ends channel `n`'s MIDI note. The note plays `region` (null if none plays its key and velocity). Track
-    // CC11 is multiplied by `gain` while the note plays (see Legato).
-    void MidiNoteOn(Performer& engine, int t, Note& n, int velocity, const VelocityRegion* region, double gain = 1.0);
-
-    // Reports the approximations that MIDI and the synths make of track `t`'s LFOs, sends and filters at the start of
-    // channel `n`'s MIDI note (MidiNoteOn).
-    void ReportNoteApproximations(Performer& engine, int t, const Note& n);
-
-    void MidiNoteOff(Performer& engine, int t, Note& n);
-
-    // Ends `n`'s MIDI note on release, stop or replacement. Removes unheard notes entirely (see Unheard).
-    void EndMidiNote(Performer& engine, int t, Note& n);
-
-    // Records the attack for released channel `n` if the game releases its MIDI note before the SoundFont attack ends,
-    // more than 1 dB quieter than that attack has reached (PassFindings::early_releases).
-    void RecordEarlyRelease(Performer& engine, const Note& n);
-
-    // Adds a frame of MIDI note `id`'s volume LFO to the note's sums. The envelope stood at `envelope_db` and the LFO
-    // at `lfo_db`. The SoundFont and SFZ play the LFO `scale` times as deep (ModulationValue).
-    void OnVolumeLfo(uint32_t id, float envelope_db, float lfo_db, double scale);
-
-    // The fits of the MIDI notes whose volume LFO the voice holds at full level, by note id. Unlisted notes keep the
-    // LFO's full swing.
-    std::map<uint32_t, VolumeLfoFit> VolumeLfoFits() const;
-
-    // Detaches track `t`'s channels. They keep sounding.
-    void DetachAll(Performer& engine, int t);
-
-    // After track `t` detaches its channels (DetachAll), moves the track to another part if they still sound on its
-    // part. In the game they keep their settings. On a shared MIDI channel, the track's later changes would reach them.
-    void LeaveTails(Performer& engine, int t);
-
-    // Moves track `t`'s new notes and changes to a part on which nothing but `except` sounds, within its part limit.
-    // The notes on the track's current part keep the settings they have. Returns false if every part sounds.
-    bool Switch(Performer& engine, int t, const Note* except = nullptr);
-
-    // Emits changed volume, pan, pitch and other controllers for track `t`.
-    void UpdateOutputs(Performer& engine, int t);
-
-    // Sends setting `kind` of track `t` at `value` to `part`, or to the part the track plays on, if that part's last
-    // value is another (seqlib::midi::Recorder::SendSetting). Returns true if it was sent.
-    bool SendSetting(Performer& engine, int t, EventKind kind, int value, int part = -1);
-
-    // Updates Track::last_change for an event of `kind` that track `t` records. UpdateOutputs handles the three values
-    // that can differ between passes: the expression, the filter and the pitch. CC91 counts only with
-    // Settings::reverb_moves_loops.
-    void NoteChange(Performer& engine, int t, EventKind kind);
-
-    // The pitch MIDI gives part `part` of track `t` in sound frame `frame`, in semitones. On the part the track plays
-    // on, that's the track's bend and legato key offset with the newest sweep of its notes there that can be heard. A
-    // part that the track has left follows the newest note there that can be heard: that note's bend, the offset of its
-    // key from the key of its MIDI note, and the newest sweep on the part. Nothing if the part has no such note. A note
-    // with lfo_bends adds its pitch LFO.
-    std::optional<float> PartPitch(const Performer& engine, int t, uint8_t part, uint64_t frame) const;
-
-    // Sends part `part` of track `t` its pitch in sound frame `frame` if that has changed: at the current tick, or for
-    // a frame between ticks, `after` it by a fraction of a tick (TrackEvent::after). Returns true if it was sent.
-    bool SendPitch(Performer& engine, int t, uint8_t part, uint64_t frame, double after = 0);
-
-    // True if notes that track `t` has detached still sound on the part that the track plays on. That part takes the
-    // track's later changes. No other part was free for the track (LeaveTails).
-    bool TailsOnPart(const Performer& engine, int t) const;
-
-    // Sends the pitches that timed sweeps reach in the sound frames between the current tick's frame and `next`'s
-    // frame. A part whose pitch bends add a note's pitch LFO gets its pitch in the current tick's frame too.
-    void SweepBetweenTicks(Performer& engine, const TickTime& next);
-
-    // The Wii: reports the notes of track `t` that play at another level than in the game. The game limits a channel's
-    // volume to full level (TrackLevel, ZoneLift).
-    void CheckFullLevel(Performer& engine, int t);
-
-    // At the end of a tick, reports each of track `t`'s notes whose LFO plays with other settings than its preset has.
-    // Keeps the notes whose pitch LFO changes for a later pass (PassFindings::lfo_changes).
-    void CheckLfo(Performer& engine, int t);
-
-    // Gives the notes that track `t` struck in this tick presets with the track's LFO settings. This tick's preset
-    // events are sent again in front of its notes.
-    void GiveStruckNotesLfo(Performer& engine, int t);
-
-    // Returns track `t`'s CC11 before legato gain, the level scale and the 127 limit (UpdateOutputs).
-    double TrackLevel(const Performer& engine, int t) const;
-
-    // The Wii: the centibels by which the zones of a note at `velocity` on track `t` play louder than their regions'
-    // volumes (PresetKey::lift).
-    int16_t ZoneLift(const Performer& engine, int t, int velocity) const;
-
-    // Records the current tempo. At tempo or timebase 0, the sequence stops advancing (Run). MIDI keeps its previous
-    // tempo. The Wii's build of October 2006 runs tempo / 416 ticks a frame (NextTick).
-    void OnTempo(Performer& engine);
-
-    // Records an event for track `t` at the current tick, on `part` or else the part the track plays on, and updates
-    // Track::last_change.
-    //
-    // nw::snd applies track settings at frame end (SequenceTrack::UpdateChannelParam). A note therefore uses settings
-    // from the end of its tick, including changes after its note command. Controller changes go before that tick's
-    // notes/presets. A change replaces any earlier value for the same setting. SFZ depends on this order to select the
-    // biquad filter at note-on.
-    void Emit(Performer& engine, int t, TrackEvent e, int part = -1);
-
-    // The SFZ files select a filtered or an unfiltered region at note-on, from the biquad's controller (sfz.cpp). The
-    // game gives the notes that a sound frame starts the settings that the frame ends with. When a tick switches the
-    // biquad on or off, each note that an earlier tick of its frame started on the part gets a copy of the controller
-    // before it. The copies go before notes of earlier ticks only. A loop that starts in the frame therefore keeps its
-    // events.
-    void GiveTheFrameTheBiquad(Performer& engine, int t, const TrackEvent& e);
-
-    // Counts an approximation required by MIDI or SoundFont.
-    void Approximate(const char* what);
-
-    // Records `now_ms_` for the new `tick_`, and its frame start as a fractional tick (Performance::frame_ticks). The
-    // Wii's build of October 2006 runs a tick at the start of its frame. MIDI's tempo puts the tick at `nominal_ms_`,
-    // up to a frame earlier.
-    void RecordTickTime(Performer& engine);
-
-    Performance out_;
-
-    // The note ids, the part switches, the parts used and their limits, the levels, and the approximations and
-    // warnings.
-    seqlib::midi::Recorder rec_;
-
-    // What the pass before found, and what this pass finds (Performer::Findings). In place of the volume LFOs' fits,
-    // this pass sums their frames.
-    PassFindings earlier_;
-    std::array<bool, kTrackCount> filter_moves_{};
-    std::map<uint32_t, int> rises_;
-    std::map<uint32_t, int16_t> early_releases_;
-    std::map<uint32_t, VolumeLfoSums> lfo_sums_;
-    std::set<uint32_t> lfo_changes_;
-    std::set<uint32_t> pitch_moves_;
-    std::array<TrackMidi, kTrackCount> tracks_{}; // what each track's MIDI channels have been sent
-};
 
 // How a track's next stretch of commands begins after `command` moved the track elsewhere (Performance::stretches).
 Entry EntryAfter(uint32_t command)
@@ -1152,680 +101,18 @@ Entry EntryAfter(uint32_t command)
     }
 }
 
-// A note command that waits for the core's verdict on its channel (Performer::FollowNoteCommand), and where the command
-// lies.
-struct PendingNote
+// The report of the new notes that a track starts in one tick past TickNoteCap(). The performer keeps the first
+// notes. On the 3DS, the Wii and the Switch, the game keeps the newest. A new note that finds every voice in use takes
+// the voice of the lowest priority there, the oldest first (the AllocVoice of each console's voice manager). On the
+// Wii U, a new note finds no channel once every channel is in use (ChannelManager::Alloc, 0x022B8A14). The game there
+// keeps the first notes too.
+const char* TickCapReport(Engine engine)
 {
-    int t = 0;
-    int key = 0;
-    int velocity = 0;
-    int32_t length = 0;
-    NoteCommand command;
-};
-
-// Executes a sequence tick by tick, following nw::snd::SequenceSoundPlayer, and records its output.
-class Performer
-{
-    template <typename Console, template <typename> class VoiceLayer>
-    friend class SequenceCore;
-    friend class MidiRecorder;
-
-public:
-    // What MarkSteadyPass selected (passes.h).
-    using LoopChoice = sequence_export::LoopChoice;
-
-    // `earlier` holds what an earlier pass found (Findings): the tracks whose filters take controllers, and the MIDI
-    // notes to start higher, to give other attacks, to fit to their volume LFO or to give a part of their own. CC11 is
-    // multiplied by `level_scale` (LevelPeak). Each track gets at most `part_limits` parts (Switch). The main loop's
-    // choices in `loop_choices` come from an earlier pass (LoopChoices). ChooseSteadyPass selects after them.
-    Performer(const Settings& settings, const SoundInfo& sound, const Sequence& seq, Regions& banks,
-              const PerformOptions& options, const PassFindings& earlier, double level_scale,
-              const std::array<uint8_t, kTrackCount>& part_limits, const std::vector<LoopChoice>& loop_choices)
-        : settings_(settings), sound_(sound), seq_(seq), banks_(banks), options_(options), main_loop_(loop_choices)
-    {
-        midi_.rec_.SetLevelScale(level_scale);
-        midi_.earlier_ = earlier;
-        midi_.rec_.SetPartLimits(part_limits);
-        for (Track& tr : tracks_)
-        {
-            tr.engine = settings_.engine;
-        }
-
-        player_vars_.fill(-1);
-        if (!Wii())
-        {
-            global_vars_.fill(-1); // on the Wii, 0 until the game first sets one (SeqPlayer::SetGlobalVariable)
-        }
-
-        for (const auto& [index, value] : options.variables)
-        {
-            if (index < 16)
-            {
-                player_vars_[index] = value;
-            }
-            else if (index < 32)
-            {
-                global_vars_[index - 16] = value;
-            }
-        }
-
-        // The game's changes come in the order of their frames, and so do its writes in user procedures.
-        std::ranges::stable_sort(options_.changes, {}, &VariableChange::frame);
-        std::ranges::stable_sort(options_.procedure_changes, {}, &ProcedureChange::frame);
-        procedure_taken_.assign(options_.procedure_changes.size(), false);
-
-        main_volume_.Init(127);
-
-        // The Wii's stereo waves play in balance mode. The build of October 2006 has only dual mode.
-        if (Wii())
-        {
-            balance_ = !WiiOctober2006() && sound.pan_mode == 1;
-            midi_.out_.since_march_2008 = settings_.wii_build.SinceMarch2008();
-            midi_.out_.balance = balance_;
-        }
-
-        // The core plays the sequence (MakeCore). On the Wii U and the Switch, each channel has a voice. With voice
-        // drops, the cores of the Wii U, the Switch and the Wii have the game's voices. Without, the cores have room
-        // for kEveryNote notes at once. With voice drops, the Wii's core has NW4R SND's channels: one per voice, and
-        // one more. The 3DS's core has room for kEveryNote channels. A channel there plays only while it holds a voice.
-        // Only the voices run out. With voice drops, the 3DS's core has the game's voices. A new note then takes the
-        // voice of the lowest priority.
-        const int count = VoiceLimit() > 0 ? VoiceLimit() : kEveryNote;
-        if (settings_.engine == Engine::kCafe)
-        {
-            MakeCore<CafeCore>(banks, count, count);
-        }
-        else if (settings_.engine == Engine::kSwitch)
-        {
-            MakeCore<NxCore>(banks, count, count);
-        }
-        else if (settings_.engine == Engine::kCtr)
-        {
-            MakeCore<CtrCore>(banks, kEveryNote, VoiceLimit() > 0 ? VoiceLimit() : kEveryNote);
-        }
-        else if (Wii())
-        {
-            MakeCore<RevolutionCore>(banks, VoiceLimit() > 0 ? nwsnd::RevolutionPolicy::kChannelCount : count, count);
-        }
-    }
-
-    // Runs the sound and returns its recorded performance.
-    Performance Run();
-
-    // What this pass found, for the next pass to play by.
-    PassFindings Findings() const
-    {
-        return {.filter_moves = midi_.filter_moves_,
-                .rises = midi_.rises_,
-                .early_releases = midi_.early_releases_,
-                .lfo_fits = midi_.VolumeLfoFits(),
-                .lfo_changes = midi_.lfo_changes_,
-                .pitch_moves = midi_.pitch_moves_};
-    }
-
-    // Highest sounding CC11 value before `level_scale` and MIDI clamping. Game volumes can reach 255. This value may
-    // therefore exceed 127.
-    double LevelPeak() const
-    {
-        return midi_.rec_.LevelPeak();
-    }
-
-    // The parts each track used: one more than the highest.
-    const std::array<uint8_t, kTrackCount>& PartsUsed() const
-    {
-        return midi_.rec_.PartsUsed();
-    }
-
-    // The choices MarkSteadyPass made for the main loop, for a later pass to make again.
-    const std::vector<LoopChoice>& LoopChoices() const
-    {
-        return main_loop_.Choices();
-    }
-
-    // The counted loops that loop for ever in this performance, each a track and its loop's body. Like the passes of a
-    // loop of count 0, their passes count as loops of the sequence.
-    void SetEndlessLoops(const std::set<std::pair<int, uint32_t>>& loops)
-    {
-        endless_loops_ = loops;
-    }
-
-    // Stops the performance at `ms`, as at the time limit, without a main loop (PerformBeside). Until then, a sound
-    // that holds doesn't end it.
-    void SetStop(double ms)
-    {
-        stop_ms_ = ms;
-    }
-
-    // The loops that a performance cut at the time limit makes endless when it runs again: the outermost loop that each
-    // open track was in, where that loop is a counted one, each a track and its loop's body. The set is empty when the
-    // performance ended before the limit or counted as finished there.
-    const std::set<std::pair<int, uint32_t>>& LimitLoops() const
-    {
-        return limit_loops_;
-    }
-
-private:
-    // When a track last ran a command: the tick, and the number of commands all tracks had run before it. The number
-    // orders the commands of a tick. `call` is the serial number of the innermost call that the command ran in
-    // (Track::call_ids), or 0 outside calls.
-    struct CommandRun
-    {
-        uint32_t tick = 0;
-        uint64_t order = 0;
-        uint64_t call = 0;
-    };
-
-    // How a pass of the main loop starts (passes.h).
-    using PassStart = sequence_export::PassStart;
-
-    // True for the Wii's engine.
-    bool Wii() const
-    {
-        return settings_.engine == Engine::kRevolution;
-    }
-
-    // Whether the sound plays as the Wii's build of October 2006 (SndBuild::October2006).
-    bool WiiOctober2006() const
-    {
-        return Wii() && settings_.wii_build.October2006();
-    }
-
-    // Sound frame containing `ms`.
-    uint64_t FrameOf(double ms) const
-    {
-        return static_cast<uint64_t>(ms / settings_.frame_ms + 1e-9);
-    }
-
-    // When the next tick comes at the current tempo. Nothing when tempo or timebase is 0: either stops nw::snd sequence
-    // timing. The core's clock moves on to the tick.
-    std::optional<TickTime> NextTick();
-
-    // Makes a core of type `Core` with `channels` channels and `voices` voices to play the sequence. The core's random
-    // state starts from PerformOptions::seed. Each global variable starts at -1. On the Wii, each starts at 0
-    // (SeqPlayer::SetGlobalVariable), and the core plays as the game's build of NW4R SND does.
-    template <typename Core>
-    void MakeCore(Regions& banks, int channels, int voices);
-
-    // NextTick from the core's clock (SequenceSoundPlayer::NextTickTime on the Wii U, the Switch and the 3DS). The
-    // Wii's clock counts in float milliseconds, or in 416ths of a tick in the build of October 2006.
-    template <typename Core>
-    std::optional<TickTime> NextCoreTick(Core& core);
-
-    // Track `t`'s state and settings, taken from the core's track for the performer's analysis and recording. A track
-    // that the core's player has freed keeps its state.
-    template <typename Core>
-    void TakeCoreTrack(Core& core, int t);
-
-    // Track `t`'s volumes, pan and bend, with their moves, from the core's track.
-    template <typename Core>
-    void TakeCoreRamps(Core& core, int t);
-
-    // The tempo, the timebase, the main volume and the variables from the core's player.
-    template <typename Core>
-    void TakeCorePlayer(Core& core);
-
-    // What the core's run of command `cmd` on track `t` changed, for the performer's analysis and recording: the pass
-    // that a jump back or the end of an endless loop closes, the values of the track and the player, the variables, and
-    // the notes that a tie, mono or mute releases or stops.
-    template <typename Core>
-    void RecordCoreCommand(Core& core, int t, uint32_t cmd, int32_t arg1, int32_t arg2);
-
-    // ParseTracks on the core: the core runs each track's tick, and the performer follows the core's hooks.
-    template <typename Core>
-    bool ParseCoreTracks(Core& core, int first);
-
-    // For a copy that PlayOn makes at a jump: the copy of the core runs the rest of track `t`'s tick.
-    template <typename Core>
-    void ContinueCoreTrack(Core& core, int t);
-
-    // The performer's records after the core ran track `t`'s tick, or the rest of it: the close of a track that ended,
-    // the start of a wait, and the track's state and settings from the core. `ran` says whether the track ran commands.
-    // Returns whether the track is open after the tick.
-    template <typename Core>
-    bool FinishCoreTrackTick(Core& core, int t, bool was_open, bool open, bool ran);
-
-    // Runs `f` on the core, if the performer has one.
-    template <typename F>
-    void WithCore(F&& f)
-    {
-        const auto run = [&](auto& core)
-        {
-            if constexpr (!std::is_same_v<std::decay_t<decltype(core)>, std::monostate>)
-            {
-                f(core);
-            }
-        };
-        std::visit(run, core_);
-    }
-
-    // What the core's hooks report (SequenceCore). Each records the sequence's analysis: a command's start, a command
-    // that has run with `next` the offset after its arguments, a random draw, an argument's variable read, and a note
-    // command. They do nothing once a pass has stopped the performance.
-    void FollowCommandStart(int t, uint32_t offset, uint32_t command, bool conditional);
-    void FollowCommand(int t, uint32_t command, int32_t arg1, int32_t arg2, uint32_t next);
-    void FollowRandomDraw();
-    void FollowVariableRead(int t, int index);
-    void FollowNoteCommand(int t, int key, int velocity, int32_t length);
-
-    // The core started channel `channel` for track `t`'s note, on the voice with key `key`
-    // (RecordingEngine::PositionKey). The note that NoteOn started for the same command plays there.
-    void FollowNoteOn(int t, nwsnd::ChannelId channel, int key);
-
-    // The core continued channel `channel` of track `t` for the note command: a tie or a mono legato.
-    void FollowLegato(int t, nwsnd::ChannelId channel);
-
-    // The core found no free channel for track `t`'s note. With voice drops (VoiceLimit), the note plays nothing, as in
-    // the game. Without them, the performer keeps the note.
-    void FollowNoChannel(int t);
-
-    // The core gave the voice of track `t`'s channel `channel` to another note. With voice drops, the note on that
-    // channel stops at once, as in the game.
-    void FollowChannelDrop(int t, nwsnd::ChannelId channel);
-
-    // On the Wii's builds before September 2009, a volume LFO lifted the envelope's gain above full level on channel
-    // `channel` of track `t`. The game holds the gain at full level there. The LFOs of the SoundFont and the SFZ swing
-    // above it. Each note is reported once.
-    void FollowGainAboveFull(int t, nwsnd::ChannelId channel);
-
-    // On the Wii's builds before September 2009, channel `channel` of track `t` played a frame of its volume LFO. The
-    // envelope stood at `envelope_db` and the LFO at `lfo_db`. The frame goes into the sums of the note on the channel
-    // (MidiRecorder::OnVolumeLfo).
-    void FollowVolumeLfo(int t, nwsnd::ChannelId channel, float envelope_db, float lfo_db);
-
-    // Track `t`'s newest note on channel `channel`, on the track or let go, or nullptr. An older note's channel has
-    // ended, and a newer channel can take its place.
-    Note* NewestNoteOn(int t, nwsnd::ChannelId channel);
-
-    // The core released channel `channel`, or ran a note-off on it. While the core counts down a track's lengths
-    // (SequenceTrack::UpdateChannelLength, 0x022B6E88), FollowRelease keeps the channels whose lengths ran out. After
-    // the count, FollowLengths releases their notes, in the order the notes started. FollowLengths copies each note's
-    // length from its channel, or counts the length of a note without one. The channels that have stopped are removed.
-    void FollowRelease(nwsnd::ChannelId channel);
-    void FollowLengths(int t);
-
-    // Runs the note command that FollowNoteCommand keeps until the core's verdict: NoteOn and the track's record of it.
-    // With `drop`, the core found no free channel, and NoteOn starts no channel. A command's start and the end of a
-    // track's tick settle a note that the core gave no verdict on, such as one with no region.
-    void SettleNote(bool drop);
-
-    // The voices for the notes that the game drops: --voices's count. 0, the default, keeps every note. The drops come
-    // from the core.
-    int VoiceLimit() const
-    {
-        return options_.voice_limit;
-    }
-
-    // The new notes that a track can start in one tick: the game's count (Settings::voices) with --voices. Without it,
-    // the cap is kMaxVoiceLimit, far above any console's count. A loop without waits then makes at most that many MIDI
-    // notes in one tick.
-    int TickNoteCap() const
-    {
-        return VoiceLimit() > 0 ? settings_.voices : static_cast<int>(kMaxVoiceLimit);
-    }
-
-    // The core's channel that plays note `n`, or nullptr once the core has freed it.
-    template <typename Core>
-    const typename Core::Channel* CoreChannelOf(Core& core, const Note& n);
-
-    // Each note's frame in which its one-shot wave runs out, from the core's voice layer, after the core's frames.
-    template <typename Core>
-    void TakeCoreWaves(Core& core);
-
-    // The value of the pitch LFO of each note with lfo_bends in sound frame `frame`, from the core's channel before the
-    // frame's update (Note::lfo_pitch).
-    template <typename Core>
-    void TakeCoreLfos(Core& core, uint64_t frame);
-
-    // The core's frames without ticks, from the current frame up to frame `until`, and each note's one-shot playback
-    // and pitch LFO from them. They continue the waves past the sound's last tick. The frames stop once no note's
-    // one-shot wave plays on, and no pitch LFO goes on in a note with lfo_bends.
-    template <typename Core>
-    void RunCoreTail(Core& core, uint64_t until);
-
-    // After sequence timing stops, continues sounding channels at the MIDI tempo (OnTempo). Releases and one-shot waves
-    // finish normally; held notes last kHoldSeconds. No further sequence commands run.
-    void PlayOutStopped();
-
-    // Real milliseconds per tick at the current tempo and PerformOptions::tempo_ratio, or 0 at tempo 0 or timebase 0. A
-    // tick of the Wii's build of October 2006 lasts 416 / tempo frames, whatever the timebase.
-    double MsPerTick() const
-    {
-        if (WiiOctober2006())
-        {
-            return tempo_ > 0 ? settings_.frame_ms * kTickUnits / (tempo_ * double{options_.tempo_ratio}) : 0.0;
-        }
-
-        const double tpm = static_cast<double>(timebase_) * tempo_ * options_.tempo_ratio; // ticks per minute
-        return tpm > 0 ? 60000.0 / tpm : 0.0;
-    }
-
-    // First tick at or after `ms`. Extrapolates beyond the last tick at the final tempo, or the MIDI tempo if sequence
-    // timing stopped.
-    uint32_t MsToTick(double ms) const;
-
-    // Milliseconds per tick at MIDI's tempo (OnTempo).
-    double MidiMsPerTick() const
-    {
-        return 60000.0 / (midi_.out_.tempo.back().bpm * midi_.out_.timebase);
-    }
-
-    // Includes a stopped note's end time in the sound's duration.
-    void Ended(const Note& n)
-    {
-        sound_end_ms_ = std::max(sound_end_ms_, std::min(n.SoundEndMs(), now_ms_));
-    }
-
-    // True if `n` hasn't been released and its envelope has sunk below hearing (MidiNote::quiet_ms). Such a note then
-    // counts as silence in the search for loops, held sounds and the silence at the time limit.
-    bool BelowHearing(const Note& n) const
-    {
-        return !n.released && now_ms_ >= n.midi.quiet_ms;
-    }
-
-    // Allocates track 0, tracks requested by sound flags, and those in a leading alloctrack command.
-    void AllocateTracks();
-
-    // Starts the core's sound, with the tracks that AllocateTracks allocated, the game's variables and the tracks that
-    // PerformOptions::tracks leaves out silenced.
-    void StartCore();
-
-    // Ends the performance at the time limit. Returns true where the sequence counts as finished there.
-    bool EndAtTimeLimit();
-
-    // Ends all notes and records duration/end tick. `finished` means the sequence ended naturally.
-    void EndPerformance(bool finished);
-
-    // Starts track `t` at command offset `offset`.
-    void OpenTrack(int t, uint32_t offset);
-
-    // Releases track `t`'s channels and closes the track.
-    void CloseTrack(int t);
-
-    // Starts a tick: the core begins it and moves the main volume a tick on. The performer takes the main volume.
-    void StartTick();
-
-    // Records each global variable that the tick's commands changed from `before`, its value at the start of the tick
-    // after the game's changes (Performance::global_changes).
-    void RecordGlobalChanges(const std::array<int16_t, 16>& before);
-
-    // Makes the game's changes of variables that come by the current frame (PerformOptions::changes), before the
-    // frame's first tick. The search for the main loop then starts again. It also starts again at the frame of a write
-    // in a user procedure (PerformOptions::procedure_changes). The write waits from then for a call.
-    void ChangeVariables();
-
-    // Makes the game's writes in user procedure `procedure` (PerformOptions::procedure_changes) that wait for a call by
-    // the current frame and haven't taken effect, in their order. A call of the procedure by a track runs them. The
-    // search for the main loop then starts again.
-    void ChangeInProcedure(uint16_t procedure);
-
-    // Runs the game's model of user procedure `procedure` (PerformOptions::user_procedures) for a call by track `t`.
-    // The model's changes of variables count as the track's. A call that changed the model's state counts as a random
-    // draw.
-    void RunUserProcedure(int t, uint16_t procedure);
-
-    // Whether the frame of every write in a user procedure has come.
-    bool ProcedureChangesArmed() const
-    {
-        return armed_procedure_changes_ == options_.procedure_changes.size();
-    }
-
-    // Runs the open tracks from track `first` on for one tick, and closes those that finish. Returns true if one of
-    // them is still open.
-    bool ParseTracks(int first);
-
-    // Ends a tick: sends each track's changes, and reports the notes whose LFOs play otherwise than their presets.
-    void FinishTick();
-
-    // Moves on to the tick at `next`. Sends the pitches that timed sweeps reach on the way.
-    void AdvanceTo(const TickTime& next);
-
-    // How a pass that starts at `tick` starts.
-    PassStart PassStartAt(uint32_t tick) const;
-
-    // A copy of this performer that plays on from the tick in which track `t` jumped back to `target` and stopped the
-    // performance, up to but not including tick `until`, with no limit on the loops.
-    Performer PlayOn(int t, uint32_t target, uint32_t until) const;
-
-    // How the next pass of the main loop starts when track `t` has jumped back to `target` in this tick.
-    PassStart NextPassStart(int t, uint32_t target) const;
-
-    // True if a copy of this performer that plays on for kMinLoopSeconds from track `t`'s jump back to `target` finds
-    // the loop at `target` inner (CountedPassStart). A pass of another loop then ends with a jump back to `target` in
-    // it.
-    bool TurnsInner(int t, uint32_t target) const;
-
-    // True if a MIDI player that loops on the pass from `start` to `end` plays each repeat's notes as the game plays
-    // the notes of the next pass (passes.h). This performer has played that pass.
-    bool RepeatsAsTheGame(uint32_t start, uint32_t end) const;
-
-    // Marks the first of the loop owner's passes that plays as the pass after it does (RepeatsAsTheGame). A MIDI player
-    // that loops on the markers plays each repeat as the marked pass. Track `t` has just jumped back to `target`.
-    // Returns true if the performance can stop, false if it requires another pass first.
-    bool MarkSteadyPass(int t, uint32_t target);
-
-    // True if the bytecode's 16- and 24-bit arguments are big-endian (Settings::arguments_follow_byte_order).
-    bool ArgumentsBigEndian() const
-    {
-        return !settings_.arguments_follow_byte_order || seq_.big_endian;
-    }
-
-    // Resolves player, global or track variable `index` for track `t`. Returns nullptr above 47.
-    int16_t* Variable(int t, uint8_t index);
-    // Sets track variable `index` - 32 (`index` from 32 to 47) of every allocated track, in the core and here.
-    template <typename Core>
-    void SetTrackVariables(Core& core, uint8_t index, int16_t value);
-
-    // Records that track `t` reads player or global variable `index` (a comparison or an argument), or changes it. A
-    // change sets Track::last_signal if another open track has read the variable and can still read on.
-    void NoteVariableRead(int t, uint8_t index);
-    void NoteVariableChange(int t, uint8_t index);
-
-    // The notes of mute mode `mode` on track `t`: mode 2 releases them, and mode 3 stops them.
-    void MuteNotes(int t, uint8_t mode);
-
-    // True if track `t` is in a subroutine and the pass that began with command `first_command` (as commands_run_
-    // counts) ran a conditional jump, call, return or fin and played no note. The track must also hold no note that
-    // sounds until the game stops it (see OnLoop).
-    bool Leavable(int t, uint64_t first_command) const;
-
-    // Gives each entry that track `t`'s call stack gained since the track's last command a serial number
-    // (Track::call_ids). A command either pushes entries or pops them. The numbered entries therefore follow the stack.
-    void NumberCalls(int t);
-
-    // The serial number of the innermost call on track `t`'s stack, or 0 outside calls.
-    uint64_t InnermostCall(int t) const;
-
-    // True if track `t` has returned from the call with serial number `call`. Commands outside calls (0) never are.
-    bool ReturnedFrom(int t, uint64_t call) const;
-
-    // Handles track `t` jumping back to `target`. `jump` is true for a jump command and false for the end of an endless
-    // loop. Marks the pass that the jump ends if the pass counts.
-    void OnLoop(int t, uint32_t target, bool jump);
-
-    // The first tick of the pass that track `t`'s jump back to `target` ends, if the pass counts as a pass of the loop.
-    // The check updates the track's records of its jumps back, its inner loops, its last pass and whether that pass was
-    // idle.
-    std::optional<uint32_t> CountedPassStart(int t, uint32_t target, bool jump);
-
-    // Marks a counted pass of track `t`'s loop at `target`, from tick `start` to now, in the main loop's passes and its
-    // markers. Stops the performance after the requested repetitions.
-    void MarkPass(int t, uint32_t target, uint32_t start);
-
-    // Plays a note on track `t`. Allocates a channel for it, or reuses the newest one for tie/mono. Returns false for a
-    // legato on a channel below hearing. Such a legato plays nothing. With `drop`, the game found no free channel for a
-    // new note: NoteOn ends after the tie and mono rules, and returns false.
-    bool NoteOn(int t, int key, int velocity, int32_t length, bool drop = false);
-
-    // Moves channel `n` to `key` without another attack. Continues its MIDI note where possible, or once this tick has
-    // reached the legato cap of Settings::voices (`past_cap`; see NoteOn). Otherwise starts a new one. Returns false if
-    // the channel is below hearing (BelowHearing). A legato doesn't start the envelope again. The channel therefore
-    // stays there.
-    bool Legato(int t, Note& n, int key, int velocity, int32_t length, bool past_cap);
-
-    // Starts `n`'s sweep from the core's channel for the note command (settling_channel_), or no sweep without one.
-    void StartSweep(Note& n);
-
-    // True before `n` has been heard. Envelopes start at -90.4 dB and first advance at the end of the note-on frame.
-    bool Unheard(const Note& n) const;
-
-    // True if released channel `n` remains above the inaudibility threshold (kInaudibleSustain).
-    bool StillAudible(const Note& n) const;
-
-    // True if channel `n` can be heard: if it's released, above the inaudibility threshold (StillAudible).
-    bool Heard(const Note& n) const;
-
-    // True if no channel of track `t` but `n` can be heard on the part the track plays on, released ones included. CC11
-    // acts on the whole MIDI channel. Only a note that's alone can therefore start higher and be brought down to its
-    // velocity by CC11 (MidiNoteOn).
-    bool Alone(int t, const Note& n) const;
-
-    // True if a channel of track `t` on `part`, other than `except`, still sounds.
-    bool PartSounds(int t, uint8_t part, const Note* except = nullptr) const;
-
-    // Like tie, mono and mute mode 2, releases track `t`'s channels and detaches them. Gives them the track's settings
-    // first.
-    void ReleaseAndDetach(int t);
-
-    // Releases channel `n`, at MML release rate `release_value` if one is given.
-    void ReleaseNote(int t, Note& n, int release_value = -1);
-
-    // Stops channel `n` at once.
-    void StopNote(int t, Note& n);
-
-    // Removes stopped channels from track `t`, including detached channels.
-    void PruneNotes(int t);
-
-    // Makes the note-offs pending in the current tick's frame (Note::release_pending) if `next` comes in a later frame.
-    // nn::atk makes them in the frame's channel update, after the envelopes' first step. So each note sounds for that
-    // frame and releases from there in the next. Its MIDI note-off comes where that frame starts.
-    void ReleasePending(const TickTime& next);
-
-    // True if a note of track `t` on `part` that sounds at `ms` has a timed sweep still moving after sound frame
-    // `frame`, or has lfo_bends.
-    bool SweepMoves(int t, uint8_t part, uint64_t frame, double ms) const;
-
-    // Sends the pitches that the timed sweeps of a finished sequence's release tails reach after its last tick. Each
-    // pitch goes as far after that tick as its frame starts, at the sequence's last tempo.
-    void SweepAfterEnd();
-
-    // The Wii: returns the volume NW4R SND gives track `t`'s channels (SeqTrack::UpdateChannelParam): each volume
-    // squared, the volume from the sound's handle, and the sound's volume, clamped to 1 (SeqPlayer's volume).
-    float UserVolume(int t) const;
-
-    // Track `t`'s effect send on `bus`, from 0 to 127 for CC91 and CC93. It's the track's send over 127 plus the
-    // sound's send (PerformOptions::fx_sends). A voice holds the sum between 0 and 1.
-    int EffectSend(int t, int bus) const;
-
-    // Builds channel `n`'s current preset key. The key uses a controller for the filter if track `t` is in
-    // `midi_.earlier_.filter_moves`.
-    PresetKey NoteKey(int t, const Note& n) const;
-
-    // Recalculates track `t`'s filter and records changes affecting sounding notes (PassFindings::filter_moves). As in
-    // the game, detached channels keep their previous filter.
-    void SetFilter(int t);
-
-    // Returns true if one of track `t`'s channels is still sounding.
-    bool TrackBusy(int t) const;
-
-    // True if any channel of track `t` except `except` is sounding, including detached channels.
-    bool OthersSounding(int t, const Note* except) const;
-
-    // True if open track `t` won't read on before the game stops the sound: it waits a negative number of ticks, waits
-    // out a note of kHeldTicks or more, or is blocked on held, looping notes that never end.
-    bool WaitsForever(int t) const;
-
-    // True if track `t` sounds nothing, and kHoldSeconds have passed since its last change or since it opened,
-    // whichever is later.
-    bool Quiet(int t) const;
-
-    // The Wii: true if no open track will read on before the game stops the sound and no note sounds: the sequence has
-    // ended.
-    bool Stuck() const;
-
-    // True if every open track waits for ever (WaitsForever) and no sweep, volume, pan or bend can change. The volumes
-    // are the track's volume, volume2 and the main volume.
-    bool Steady() const;
-
-    // Returns the time to end the performance at if the main loop holds a sound unchanged. The loop's pass started at
-    // tick `start`. Such a pass is longer than kHoldSeconds and has changed nothing for longer than that. The pass
-    // sounds only endless notes, each the newest on an open track with tie or mono on. The next pass usually continues
-    // them. The sound then holds forever. As with Steady, the performance ends kHoldSeconds after the last change.
-    std::optional<double> HeldSoundEnd(uint32_t start) const;
-
-    // The tick of the last change that HeldSoundEnd and EndPerformance count: the last MIDI event or tempo change.
-    // Without Settings::reverb_moves_loops, a change of CC91 doesn't count.
-    uint32_t LastChangeTick() const;
-
-    // True if the marked main loop sounds nothing once the notes before it have ended. No note starts from the loop's
-    // start on. No channel has a MIDI note any more. Each channel has ended or ends without the game. Release tails and
-    // fades may still play. The game keeps such a sound in silence until it stops the sound, or until a poll leaves the
-    // loop.
-    bool SilentLoop() const;
-
-    const Settings& settings_;
-    const SoundInfo& sound_;
-    const Sequence& seq_;
-    Regions& banks_;
-    PerformOptions options_;
-
-    // The core, on the Wii U, the Switch, the 3DS and the Wii, and whether any of its tracks is open after the tracks
-    // that have run this tick.
-    std::variant<std::monostate, CafeCore, NxCore, CtrCore, RevolutionCore> core_;
-    bool core_open_ = false;
-
-    // The notes that NoteOn has started, and the track whose newest note waits for the core's channel, or -1
-    // (FollowNoteOn).
-    uint64_t notes_started_ = 0;
-    int note_to_pair_ = -1;
-
-    // The note command that waits for the core's verdict (FollowNoteCommand, SettleNote), and the core's channel for it
-    // while FollowNoteOn and FollowLegato settle it. The MIDI notes that NoteOn starts while SettleNote settles a note
-    // command take `settling_command_` (Performance::note_commands).
-    std::optional<PendingNote> pending_note_;
-    nwsnd::ChannelId settling_channel_ = nwsnd::kNoChannel;
-    NoteCommand settling_command_;
-
-    // The core counts down a track's lengths, and the channels that the count releases (FollowRelease).
-    bool counting_lengths_ = false;
-    std::vector<nwsnd::ChannelId> length_releases_;
-
-    MidiRecorder midi_; // what the performer records
-    std::array<Track, kTrackCount> tracks_{};
-    std::array<int16_t, 16> player_vars_{};
-    std::array<int16_t, 16> global_vars_{};
-    uint32_t timebase_ = 48;
-    int tempo_ = 120;
-    MoveValue main_volume_;
-    uint32_t tick_ = 0;
-    double now_ms_ = 0;
-    uint64_t frame_ = 0; // the sound frame the current tick is processed in
-
-    // The Wii's build of October 2006 (NextCoreTick): the ticks of the current frame after this one, and the tick's
-    // time at MIDI's tempo.
-    int frame_ticks_left_ = 0;
-    double nominal_ms_ = 0;
-    bool balance_ = false; // the Wii's stereo waves play in balance mode (Performance::balance)
-    std::array<std::map<uint32_t, CommandRun>, kTrackCount> last_run_; // when each command offset last ran, per track
-    uint64_t commands_run_ = 0;                                        // by all tracks
-    uint64_t call_serial_ = 0;                                         // the last serial number of a call (NumberCalls)
-    std::vector<double> tick_ms_;                                      // the time of each tick
-    double sound_end_ms_ = 0;                                          // end time of the last completed note
-    bool stop_ = false;
-    int stopped_by_ = -1;                         // the track whose pass of the main loop stopped the performance
-    std::optional<double> held_sound_end_ms_;     // set when the main loop holds a sound (HeldSoundEnd)
-    bool silent_loop_ = false;                    // the main loop sounded nothing (SilentLoop)
-    MainLoopPasses main_loop_;                    // the main loop's counted passes and marked pass (OnLoop)
-    std::size_t next_change_ = 0;                 // the first of the game's changes still to come (ChangeVariables)
-    std::vector<bool> procedure_taken_;           // for each write in a user procedure, whether it has taken effect
-    std::size_t armed_procedure_changes_ = 0;     // the writes in user procedures whose frames have come
-    uint32_t changed_at_ = 0;                     // the tick of the last change, or of a procedure write's frame
-    std::optional<uint32_t> last_draw_;           // the last tick a track drew a random number in
-    uint64_t last_draw_order_ = 0;                // commands_run_ at the last random draw, or 0 before the first
-    std::array<uint16_t, 32> variable_readers_{}; // the tracks that have read each player or global variable
-    std::set<std::pair<int, uint32_t>> endless_loops_;
-    std::set<std::pair<int, uint32_t>> limit_loops_;
-    std::optional<double> stop_ms_; // SetStop
-};
+    return engine == Engine::kCafe ? " new channels on a track in one tick (excess omitted; the game keeps the first)"
+                                   : " new channels on a track in one tick (excess omitted; the game keeps the newest)";
+}
+
+} // namespace
 
 template <typename Console, template <typename> class VoiceLayer>
 bool SequenceCore<Console, VoiceLayer>::OnParseLimit(Player& player, int track)
@@ -1955,143 +242,57 @@ bool SequenceCore<Console, VoiceLayer>::LoopsForEver(const Player&, int track, u
     return performer_->endless_loops_.contains({track, address});
 }
 
-MidiRecorder::MidiRecorder() : rec_(RecordingRules())
+Performer::Performer(const Settings& settings, const SoundInfo& sound, const Sequence& seq, Regions& banks,
+                     const PerformOptions& options, const PassFindings& earlier, double level_scale,
+                     const std::array<uint8_t, kTrackCount>& part_limits, const std::vector<LoopChoice>& loop_choices)
+    : settings_(settings), sound_(sound), seq_(seq), banks_(banks), options_(options), main_loop_(loop_choices)
 {
-    // A track's first part starts with the SFZ filters off, at their controllers' default of 0.
-    for (int t = 0; t < kTrackCount; t++)
+    midi_.rec_.SetLevelScale(level_scale);
+    midi_.earlier_ = earlier;
+    midi_.rec_.SetPartLimits(part_limits);
+    for (Track& tr : tracks_)
     {
-        tracks_[t].output.midi_track = static_cast<uint8_t>(t);
-        tracks_[t].output.sent[{0, kSfzLowPassEvent}] = 0;
-        tracks_[t].output.sent[{0, kSfzBiquadEvent}] = 0;
-    }
-}
-
-void MidiRecorder::OnTempo(Performer& engine)
-{
-    const double tempo = static_cast<double>(engine.tempo_) * engine.options_.tempo_ratio;
-    const double bpm = engine.WiiOctober2006()
-                           ? tempo * (60000.0 / engine.settings_.frame_ms / kTickUnits) / out_.timebase
-                           : tempo * engine.timebase_ / out_.timebase;
-    rec_.SetTempo(out_, engine.tick_, bpm);
-}
-
-void MidiRecorder::Emit(Performer& engine, int t, TrackEvent e, int part)
-{
-    e.tick = engine.tick_;
-    e.part = static_cast<uint8_t>(part >= 0 ? part : tracks_[t].output.part);
-    NoteChange(engine, t, e.kind);
-    rec_.Emit(out_, tracks_[t].output, engine.tick_, e, e.part);
-    if (IsTrackSetting(e.kind))
-    {
-        GiveTheFrameTheBiquad(engine, t, e);
-    }
-}
-
-bool MidiRecorder::SendSetting(Performer& engine, int t, EventKind kind, int value, int part)
-{
-    if (!rec_.SendSetting(out_, tracks_[t].output, engine.tick_, kind, static_cast<uint8_t>(value), part))
-    {
-        return false;
+        tr.engine = settings_.engine;
     }
 
-    TrackEvent e{engine.tick_, kind, 0, static_cast<uint8_t>(value)};
-    e.part = static_cast<uint8_t>(part >= 0 ? part : tracks_[t].output.part);
-    NoteChange(engine, t, kind);
-    GiveTheFrameTheBiquad(engine, t, e);
+    // The game's changes come in the order of their frames, and so do its writes in user procedures.
+    std::ranges::stable_sort(options_.changes, {}, &VariableChange::frame);
+    std::ranges::stable_sort(options_.procedure_changes, {}, &ProcedureChange::frame);
+    procedure_taken_.assign(options_.procedure_changes.size(), false);
 
-    return true;
-}
+    main_volume_.Init(127);
 
-void MidiRecorder::NoteChange(Performer& engine, int t, EventKind kind)
-{
-    const bool counts = kind != EventKind::kReverb || engine.settings_.reverb_moves_loops;
-    if (counts && kind != EventKind::kExpression && kind != kFilterEvent && kind != EventKind::kPitch)
+    // The Wii's stereo waves play in balance mode. The build of October 2006 has only dual mode.
+    if (Wii())
     {
-        engine.tracks_[t].last_change = engine.tick_;
-    }
-}
-
-void MidiRecorder::GiveTheFrameTheBiquad(Performer& engine, int t, const TrackEvent& e)
-{
-    // The ticks played out after a sequence stops advancing have no recorded time (PlayOutStopped). No command switches
-    // the biquad then.
-    if (e.kind != kSfzBiquadEvent || engine.tick_ >= engine.tick_ms_.size())
-    {
-        return;
+        balance_ = !WiiOctober2006() && sound.pan_mode == 1;
+        midi_.out_.since_march_2008 = settings_.wii_build.SinceMarch2008();
+        midi_.out_.balance = balance_;
     }
 
-    // Find the events of the frame's earlier ticks, just before the current tick's events.
-    std::vector<TrackEvent>& events = out_.tracks[t];
-    std::size_t end = events.size();
-    while (end > 0 && events[end - 1].tick == engine.tick_)
+    // The core plays the sequence (MakeCore). On the Wii U and the Switch, each channel has a voice. With voice
+    // drops, the cores of the Wii U, the Switch and the Wii have the game's voices. Without, the cores have room
+    // for kEveryNote notes at once. With voice drops, the Wii's core has NW4R SND's channels: one per voice, and
+    // one more. The 3DS's core has room for kEveryNote channels. A channel there plays only while it holds a voice.
+    // Only the voices run out. With voice drops, the 3DS's core has the game's voices. A new note then takes the
+    // voice of the lowest priority.
+    const int count = VoiceLimit() > 0 ? VoiceLimit() : kEveryNote;
+    if (settings_.engine == Engine::kCafe)
     {
-        end--;
+        MakeCore<CafeCore>(banks, count, count);
     }
-
-    const uint64_t frame = engine.FrameOf(engine.tick_ms_[engine.tick_]);
-    std::size_t begin = end;
-    while (begin > 0 && events[begin - 1].after == 0 &&
-           engine.FrameOf(engine.tick_ms_[events[begin - 1].tick]) == frame)
+    else if (settings_.engine == Engine::kSwitch)
     {
-        begin--;
+        MakeCore<NxCore>(banks, count, count);
     }
-
-    // The controller's value before the frame, 0 (off) if it was never sent.
-    int value = 0;
-    for (std::size_t k = begin; k > 0; k--)
+    else if (settings_.engine == Engine::kCtr)
     {
-        if (events[k - 1].kind == kSfzBiquadEvent && events[k - 1].part == e.part)
-        {
-            value = events[k - 1].value;
-            break;
-        }
+        MakeCore<CtrCore>(banks, kEveryNote, VoiceLimit() > 0 ? VoiceLimit() : kEveryNote);
     }
-
-    // Each of those notes on the part that would get the other choice gets a copy of the controller first.
-    for (std::size_t k = begin; k < end; k++)
+    else if (Wii())
     {
-        const TrackEvent& ev = events[k];
-        if (ev.part != e.part)
-        {
-            continue;
-        }
-
-        if (ev.kind == kSfzBiquadEvent)
-        {
-            value = ev.value;
-        }
-        else if (ev.kind == EventKind::kNoteOn && (value != 0) != (e.value != 0))
-        {
-            TrackEvent copy = e;
-            copy.tick = ev.tick;
-            events.insert(events.begin() + static_cast<std::ptrdiff_t>(k), copy);
-            k++;
-            end++;
-            value = e.value;
-        }
+        MakeCore<RevolutionCore>(banks, VoiceLimit() > 0 ? nwsnd::RevolutionPolicy::kChannelCount : count, count);
     }
-}
-
-void MidiRecorder::Approximate(const char* what)
-{
-    rec_.Approximate(what);
-}
-
-void MidiRecorder::RecordTickTime(Performer& engine)
-{
-    engine.tick_ms_.push_back(engine.now_ms_);
-
-    // The Wii's build of October 2006 runs a tick at the start of its frame. MIDI's tempo puts the tick at
-    // `nominal_ms_`, up to a frame earlier.
-    if (engine.WiiOctober2006())
-    {
-        out_.frame_ticks.push_back(static_cast<double>(engine.tick_) +
-                                   (engine.now_ms_ - engine.nominal_ms_) / engine.MidiMsPerTick());
-        return;
-    }
-
-    const double start = static_cast<double>(engine.frame_) * engine.settings_.frame_ms;
-    rec_.RecordFrameStart(out_, engine.tick_ms_, engine.tick_, start);
 }
 
 int16_t* Performer::Variable(int t, uint8_t index)
@@ -2159,166 +360,15 @@ void Performer::SetFilter(int t)
     midi_.tracks_[t].filter = filter;
 }
 
-void MidiRecorder::GiveStruckNotesLfo(Performer& engine, int t)
-{
-    // This tick's events, and the notes struck in them.
-    Track& tr = engine.tracks_[t];
-    std::vector<TrackEvent>& events = out_.tracks[t];
-    auto first = events.end();
-    while (first != events.begin() && std::prev(first)->tick == engine.tick_)
-    {
-        --first;
-    }
-
-    std::set<uint32_t> struck;
-    for (auto it = first; it != events.end(); ++it)
-    {
-        if (it->kind == EventKind::kNoteOn)
-        {
-            struck.insert(it->note);
-        }
-    }
-    if (struck.empty())
-    {
-        return;
-    }
-
-    // The preset each part had before this tick.
-    std::map<uint8_t, int> sent;
-    for (auto it = first; it != events.end(); ++it)
-    {
-        if (it->kind == EventKind::kNoteOn && !sent.contains(it->part))
-        {
-            const uint8_t part = it->part;
-            auto is_part_preset = [part](const TrackEvent& e)
-            {
-                return e.kind == EventKind::kPreset && e.part == part;
-            };
-            const auto back = std::find_if(std::make_reverse_iterator(first), events.rend(), is_part_preset);
-            sent[part] = back != events.rend() ? static_cast<int>(back->preset) : -1;
-        }
-    }
-
-    // Each note's preset with the track's LFO settings goes in front of it, in place of this tick's preset events. A
-    // note with lfo_bends keeps its preset without the LFO.
-    const PresetKey lfo = TrackPresetKey(tr);
-    std::set<uint32_t> bends;
-    for (const Note& n : tr.notes)
-    {
-        if (n.midi.lfo_bends)
-        {
-            bends.insert(n.midi.id);
-        }
-    }
-
-    std::map<uint8_t, int> struck_with = sent;
-    std::vector<TrackEvent> tick_events;
-    for (auto it = first; it != events.end(); ++it)
-    {
-        if (it->kind == EventKind::kPreset)
-        {
-            struck_with[it->part] = static_cast<int>(it->preset);
-            continue;
-        }
-
-        const int with = it->kind == EventKind::kNoteOn ? struck_with[it->part] : -1;
-        if (with >= 0)
-        {
-            const int preset = bends.contains(it->note)
-                                   ? with
-                                   : static_cast<int>(seqlib::midi::PresetIndex(
-                                         out_.presets, WithLfo(out_.presets[static_cast<std::size_t>(with)], lfo)));
-            if (preset != sent[it->part])
-            {
-                TrackEvent ev{engine.tick_, EventKind::kPreset};
-                ev.part = it->part;
-                ev.preset = static_cast<uint32_t>(preset);
-                tick_events.push_back(ev);
-                sent[it->part] = preset;
-            }
-        }
-        tick_events.push_back(*it);
-    }
-
-    events.erase(first, events.end());
-    events.insert(events.end(), tick_events.begin(), tick_events.end());
-
-    if (sent.contains(tracks_[t].output.part))
-    {
-        tracks_[t].output.sent[{tracks_[t].output.part, EventKind::kPreset}] = sent[tracks_[t].output.part];
-    }
-
-    for (Note& n : tr.notes)
-    {
-        if (struck.contains(n.midi.id))
-        {
-            n.midi.preset = WithLfo(n.midi.preset, lfo);
-        }
-    }
-}
-
-void MidiRecorder::CheckLfo(Performer& engine, int t)
-{
-    Track& tr = engine.tracks_[t];
-    const PresetKey lfo = TrackPresetKey(tr);
-    if (tr.lfos[0].depth == 0 || lfo.lfo_type > 2)
-    {
-        return;
-    }
-
-    for (Note& n : tr.notes)
-    {
-        if (n.midi.on && !n.midi.lfo_moved && n.EndMs() > engine.now_ms_ && !SameLfo(n.midi.preset, lfo))
-        {
-            // A pitch LFO that changes, without a volume or pan LFO before it, can go out as pitch bends.
-            n.midi.lfo_moved = true;
-            if (lfo.lfo_type == 0 && (n.midi.preset.lfo_type == 0 || n.midi.preset.lfo_type == 3))
-            {
-                lfo_changes_.insert(n.midi.id);
-            }
-            if (n.midi.lfo_crowded)
-            {
-                Approximate(
-                    "LFO parameters changed during a note, with no MIDI channel free for its pitch bends (using "
-                    "its note-on settings)");
-            }
-            else if (!n.midi.lfo_bends)
-            {
-                Approximate("LFO parameters changed during a note (using its note-on settings)");
-            }
-        }
-    }
-}
-
 void Performer::OpenTrack(int t, uint32_t offset)
 {
-    // SetSeqData (0x022B69A8) and Open (0x022B69B8) preserve the other track parameters. On the Wii
-    // (SeqTrack::SetSeqData, main.dol 0x8003ffbc, and Open, 0x8003ffcc), a wait and a call stack are among them.
+    // The rest of the track's state comes from the core (TakeCoreTrack). Open (0x022B69B8) clears the wait, the call
+    // stack and the wait for notes to end on every console but the Wii (kOpenClearsState in nwsnd's policies).
     Track& tr = tracks_[t];
     tr.current = offset;
-
-    if (!Wii())
-    {
-        tr.note_finish_wait = false;
-        tr.call_depth = 0;
-        tr.wait = 0;
-    }
-
     tr.open = true;
     tr.opened = tick_;
     tr.next_stretch = Entry::kOpen;
-}
-
-void MidiRecorder::MidiNoteOff(Performer& engine, int t, Note& n)
-{
-    if (!n.midi.on)
-    {
-        return;
-    }
-
-    n.midi.on = false;
-    rec_.NoteOff(out_, static_cast<uint8_t>(t), engine.tick_, n.midi.part, n.midi.key, n.midi.id);
-    NoteChange(engine, t, EventKind::kNoteOff);
 }
 
 void Performer::ReleaseNote(int t, Note& n, int release_value)
@@ -2367,110 +417,6 @@ void Performer::ReleaseNote(int t, Note& n, int release_value)
     midi_.OnRelease(*this, t, n);
 }
 
-void MidiRecorder::OnRelease(Performer& engine, int t, Note& n)
-{
-    RecordEarlyRelease(engine, n);
-    EndMidiNote(engine, t, n);
-}
-
-void MidiRecorder::RecordEarlyRelease(Performer& engine, const Note& n)
-{
-    // The SoundFont attack starts with the MIDI note and reaches full level after Sf2AttackMs. A linear ramp to full
-    // level over T milliseconds reaches the game's level L dB after t milliseconds when T = t * 10^(-L / 20).
-    const uint64_t released_frame = engine.settings_.note_off_waits_for_update ? n.released_frame : engine.frame_;
-    const double held_ms = static_cast<double>(released_frame - n.midi.frame) * engine.settings_.frame_ms;
-    const double ramp_ms = Sf2AttackMs(n.env, engine.settings_);
-    if (!n.midi.on || held_ms <= 0.0 || held_ms >= ramp_ms)
-    {
-        return;
-    }
-
-    const double level_db = n.release_level / 10.0;
-    if (20.0 * std::log10(held_ms / ramp_ms) - level_db <= 1.0)
-    {
-        return;
-    }
-
-    const double attack_ms = held_ms * std::pow(10.0, -level_db / 20.0);
-    early_releases_[n.midi.id] = static_cast<int16_t>(ToTimecents(attack_ms, -12000, 8000));
-}
-
-void MidiRecorder::OnVolumeLfo(uint32_t id, float envelope_db, float lfo_db, double scale)
-{
-    // The SoundFont and SFZ play the LFO at `x` decibels. The game raises a level by 6 dB at most (CalcVolumeRatio).
-    // The voice holds the envelope's level plus the LFO's at full level. The game then plays the LFO at `y`. A frame
-    // counts by the envelope's power. The note's quiet frames then count for little.
-    const double envelope = envelope_db;
-    const double game = std::min(static_cast<double>(lfo_db), 6.0);
-    const double x = scale * lfo_db;
-    const double y = std::min(0.0, envelope + game) - envelope;
-    const double w = std::pow(10.0, envelope / 10.0);
-    VolumeLfoSums& sums = lfo_sums_[id];
-    sums.w += w;
-    sums.x += w * x;
-    sums.xx += w * x * x;
-    sums.y += w * y;
-    sums.xy += w * x * y;
-    sums.held = sums.held || envelope + game > 0.0;
-}
-
-std::map<uint32_t, VolumeLfoFit> MidiRecorder::VolumeLfoFits() const
-{
-    // The SoundFont and SFZ play a fitted note's LFO at `swing` times `x`, `offset` decibels lower: the weighted
-    // least-squares fit to the game's `y` (OnVolumeLfo). The swing stays between 0 and 1, and the offset at 0 or
-    // below. A note whose envelope stays at full level then swings half as far, a third of the LFO's depth lower. The
-    // fit's steps are 16ths of the swing and 5 centibels. Only the notes that the voice holds at full level get a fit.
-    std::map<uint32_t, VolumeLfoFit> fits;
-    for (const auto& [id, sums] : lfo_sums_)
-    {
-        const double det = sums.w * sums.xx - sums.x * sums.x;
-        if (!sums.held || sums.w <= 0.0 || det <= 1e-12 * sums.w * sums.xx)
-        {
-            continue;
-        }
-
-        double swing = std::clamp((sums.w * sums.xy - sums.x * sums.y) / det, 0.0, 1.0);
-        double offset = (sums.y - swing * sums.x) / sums.w;
-        if (offset > 0.0)
-        {
-            offset = 0.0;
-            swing = std::clamp(sums.xy / sums.xx, 0.0, 1.0);
-        }
-
-        VolumeLfoFit fit;
-        fit.swing = static_cast<uint8_t>(std::lround(16.0 * swing));
-        fit.cut = static_cast<int16_t>(5 * std::lround(-2.0 * offset));
-        if (fit != VolumeLfoFit{})
-        {
-            fits[id] = fit;
-        }
-    }
-
-    return fits;
-}
-
-void MidiRecorder::EndMidiNote(Performer& engine, int t, Note& n)
-{
-    if (!n.midi.on || !engine.Unheard(n))
-    {
-        MidiNoteOff(engine, t, n);
-        return;
-    }
-
-    std::vector<TrackEvent>& events = out_.tracks[t];
-    auto is_note_on = [&](const TrackEvent& e)
-    {
-        return e.kind == EventKind::kNoteOn && e.note == n.midi.id;
-    };
-    const auto on = std::find_if(events.rbegin(), events.rend(), is_note_on);
-    if (on != events.rend())
-    {
-        events.erase(std::next(on).base());
-    }
-
-    n.midi.on = false;
-}
-
 bool Performer::Unheard(const Note& n) const
 {
     return frame_ == n.on_frame;
@@ -2516,44 +462,6 @@ bool Performer::PartSounds(int t, uint8_t part, const Note* except) const
     return std::ranges::any_of(tr.notes, sounds) || std::ranges::any_of(tr.detached, sounds);
 }
 
-bool MidiRecorder::Switch(Performer& engine, int t, const Note* except)
-{
-    // The new part's channel may hold another part's values from earlier. Its last values are dropped, and every
-    // controller goes out again.
-    const uint8_t old = tracks_[t].output.part;
-    auto sounds = [&](uint8_t part)
-    {
-        return engine.PartSounds(t, part, except);
-    };
-    if (!rec_.Switch(out_, tracks_[t].output, engine.tick_, sounds))
-    {
-        return false;
-    }
-
-    tracks_[t].left[old].gain = tracks_[t].legato_gain;
-
-    return true;
-}
-
-void MidiRecorder::OnStopAll(Performer& engine, int t)
-{
-    // CC120 stops the parts that the track's notes sounded on. Tails that the track detached on other parts go on.
-    std::set<uint8_t> sounding;
-    for (Note& n : engine.tracks_[t].notes)
-    {
-        if (n.HasMidiNote() && n.EndMs() > engine.now_ms_ && !engine.Unheard(n))
-        {
-            sounding.insert(n.midi.part);
-        }
-        EndMidiNote(engine, t, n);
-    }
-
-    for (const uint8_t part : sounding)
-    {
-        Emit(engine, t, {0, EventKind::kSoundOff}, part);
-    }
-}
-
 void Performer::ReleaseAndDetach(int t)
 {
     // SequenceTrack::ReleaseAllChannel (0x022B608C) gives the channels the track's settings before it releases them.
@@ -2565,43 +473,6 @@ void Performer::ReleaseAndDetach(int t)
         ReleaseNote(t, n);
     }
     midi_.OnReleasedAll(*this, t);
-}
-
-void MidiRecorder::OnReleaseAll(Performer& engine, int t)
-{
-    UpdateOutputs(engine, t);
-}
-
-void MidiRecorder::OnReleasedAll(Performer& engine, int t)
-{
-    DetachAll(engine, t);
-    LeaveTails(engine, t);
-}
-
-void MidiRecorder::LeaveTails(Performer& engine, int t)
-{
-    const Track& tr = engine.tracks_[t];
-    auto tail = [&](const Note& n)
-    {
-        return n.HasMidiNote() && n.midi.part == tracks_[t].output.part && engine.StillAudible(n);
-    };
-    if (std::ranges::any_of(tr.detached, tail))
-    {
-        Switch(engine, t);
-    }
-}
-
-void MidiRecorder::DetachAll(Performer& engine, int t)
-{
-    // FreeAllChannel (0x022B6114). SequenceTrack::UpdateChannelParam (0x022B55B4) gives the channels the track's bend
-    // before it detaches them. A detached note keeps that bend (PartPitch).
-    Track& tr = engine.tracks_[t];
-    for (Note& n : tr.notes)
-    {
-        n.bend = tr.Bend();
-        tr.detached.push_back(n);
-    }
-    tr.notes.clear();
 }
 
 bool Performer::OthersSounding(int t, const Note* except) const
@@ -2634,24 +505,6 @@ void Performer::StopNote(int t, Note& n)
     n.release_end_ms = now_ms_;
 }
 
-void MidiRecorder::OnStop(Performer& engine, int t, Note& n)
-{
-    // MIDI CC120 cuts the whole channel. Use it only for an audible note with no other sounds remaining on its part.
-    const bool heard = n.HasMidiNote() && !engine.Unheard(n);
-    EndMidiNote(engine, t, n);
-    if (heard && n.EndMs() > engine.now_ms_)
-    {
-        if (!engine.PartSounds(t, n.midi.part, &n))
-        {
-            Emit(engine, t, {0, EventKind::kSoundOff}, n.midi.part);
-        }
-        else
-        {
-            Approximate("immediate channel stop (MIDI release tail remains)");
-        }
-    }
-}
-
 void Performer::CloseTrack(int t)
 {
     // Like the end of a tick, SequenceTrack::Close (0x022B6158) first gives the channels the track's settings. The
@@ -2666,20 +519,6 @@ void Performer::CloseTrack(int t)
 
     midi_.OnTrackClosed(*this, t);
     tr.open = false;
-}
-
-void MidiRecorder::OnTrackClosing(Performer& engine, int t)
-{
-    if (engine.TrackBusy(t))
-    {
-        UpdateOutputs(engine, t);
-        rec_.RaiseLevelPeak(TrackLevel(engine, t) * tracks_[t].legato_gain);
-    }
-}
-
-void MidiRecorder::OnTrackClosed(Performer& engine, int t)
-{
-    DetachAll(engine, t);
 }
 
 bool Performer::TrackBusy(int t) const
@@ -2789,11 +628,6 @@ bool Performer::Steady() const
     return any;
 }
 
-void MidiRecorder::OnEnd(Performer& engine, int t, Note& n)
-{
-    MidiNoteOff(engine, t, n); // the wave ended by itself
-}
-
 void Performer::PruneNotes(int t)
 {
     // Remove channels when their one-shot wave or release finishes (SequenceTrack::ChannelCallbackFunc, 0x022CB06C).
@@ -2811,18 +645,6 @@ void Performer::PruneNotes(int t)
     };
     std::erase_if(tracks_[t].notes, ended);
     std::erase_if(tracks_[t].detached, ended);
-}
-
-void MidiRecorder::OnLengthUpdated(Performer& engine, int t, Note& n)
-{
-    // The MIDI note of a channel that its length can't release, such as a tie, ends where the channel has faded to
-    // kFadedAttenuation. The channel's sound ends there.
-    if (!n.midi.sunk && (n.ignore_note_off || n.length < 0) && !n.released && engine.now_ms_ >= n.midi.faded_ms)
-    {
-        MidiNoteOff(engine, t, n);
-        n.midi.sunk = true;
-        engine.sound_end_ms_ = std::max(engine.sound_end_ms_, n.midi.faded_ms);
-    }
 }
 
 void Performer::FollowRelease(nwsnd::ChannelId channel)
@@ -2871,7 +693,7 @@ void Performer::FollowLengths(int t)
 
             if (!n.sweep_in_ms)
             {
-                n.sweep_ticks += 1.0;
+                n.sweep_ticks++;
             }
         }
 
@@ -2892,338 +714,6 @@ void Performer::FollowLengths(int t)
 
     length_releases_.clear();
     PruneNotes(t);
-}
-
-void MidiRecorder::UpdateOutputs(Performer& engine, int t)
-{
-    // The values SequenceTrack::UpdateChannelParam (0x022B55B4) gives the track's channels.
-    Track& tr = engine.tracks_[t];
-    if (!tracks_[t].played)
-    {
-        return;
-    }
-
-    // A closed track's channels take nothing more from it, but go on with their timed sweeps (Channel::Update).
-    if (!tr.open)
-    {
-        for (uint8_t part = 0; part < kPartCount; part++)
-        {
-            if (engine.frame_ > 0 && engine.SweepMoves(t, part, engine.frame_ - 1, engine.now_ms_))
-            {
-                SendPitch(engine, t, part, engine.frame_);
-            }
-        }
-
-        return;
-    }
-
-    // Channel gain is (vol * volume2 * main volume / 127^3)^2 * sound volume / 127 * (velocity / 127)^2. Each volume
-    // can reach 255. SoundFont CC7, CC11 and velocity all act squared: put up to 127 of track volume in CC7, and the
-    // excess, other volumes and legato velocity change in CC11. If CC11 exceeds 127, rerun with all CC11 values scaled
-    // equally (Perform).
-    PartControllers c;
-    c.volume = std::clamp(tr.vol.Get(), 0, 127);
-    c.level = TrackLevel(engine, t);
-    const int change_filter = FilterControllerValue(tracks_[t].filter.cutoff);
-    if (c.level != tr.change_level || change_filter != tr.change_filter)
-    {
-        if (engine.Wii() && c.level != tr.change_level)
-        {
-            CheckFullLevel(engine, t);
-        }
-
-        tr.change_level = c.level;
-        tr.change_filter = change_filter;
-        tr.last_change = engine.tick_;
-    }
-
-    // nw::snd pan is value / 63, and the SoundFont CC10 modulator is (value - 64) / 64, on the synth's pan curve (see
-    // seqlib/sf2/units.h).
-    c.pan = std::clamp(static_cast<int>(std::lround(64.0 + SoundFontPan(tr.pan.Get() / 63.0) * 64.0)), 0, 127);
-    auto stereo_on_part = [&](const Note& n)
-    {
-        return n.stereo && n.midi.part == tracks_[t].output.part && n.EndMs() > engine.now_ms_;
-    };
-    if (c.pan != LastSent(tracks_[t].output, EventKind::kPan) && c.pan != 64 && engine.balance_ &&
-        std::ranges::any_of(tr.notes, stereo_on_part))
-    {
-        Approximate("track pan on stereo waves in balance mode (they pan as in dual mode)");
-    }
-
-    c.modulation = ModulationValue(tr.lfos[0]);
-
-    // The game's code sets up the effects on the aux buses, and a send to a bus without an effect is lost (sndcore2).
-    // The games put an effect on bus A. Bus A becomes the synth's reverb. Bus B usually has none, and CC93 stays at 0.
-    // A synth's default chorus send therefore adds nothing either.
-    c.reverb = engine.settings_.sends == Sends::kNone ? 0 : engine.EffectSend(t, 0);
-    if (engine.settings_.sends == Sends::kReverbDry &&
-        (engine.options_.bus_reverbs[1] || engine.options_.bus_reverbs[2]))
-    {
-        // A reverb on bus B or C takes that bus's send too (PerformOptions::bus_reverbs). CC91 stands in for every
-        // reverb. A delay on bus A then leaves CC91 (PerformOptions::bus_a_delay).
-        if (engine.options_.bus_a_delay)
-        {
-            c.reverb = 0;
-        }
-        for (int bus = 1; bus < 3; ++bus)
-        {
-            if (engine.options_.bus_reverbs[static_cast<std::size_t>(bus)])
-            {
-                c.reverb = std::min(127, c.reverb + engine.EffectSend(t, bus));
-            }
-        }
-    }
-    if (engine.settings_.sends == Sends::kReverb || engine.settings_.sends == Sends::kNone)
-    {
-        c.chorus = 0;
-    }
-    else if (engine.settings_.sends == Sends::kReverbChorus)
-    {
-        c.chorus = engine.EffectSend(t, 1);
-    }
-
-    if (earlier_.filter_moves[t])
-    {
-        c.filter = change_filter;
-    }
-
-    // SFZ controllers hold the original filter settings. Each track file uses its first enabled biquad type; omit later
-    // types.
-    c.sfz_low_pass = SfzLowPassValue(tr.low_pass);
-    c.sfz_biquad = SfzBiquadValue(tr.biquad_type, tr.biquad_value, engine.settings_);
-    if (c.sfz_biquad != 0 && out_.biquad_types[t] == 0)
-    {
-        out_.biquad_types[t] = static_cast<uint8_t>(tr.biquad_type);
-    }
-    if (tr.biquad_type != out_.biquad_types[t])
-    {
-        c.sfz_biquad = 0;
-    }
-
-    // Detached notes keep their old settings in the game. In MIDI, those the track couldn't leave on another part
-    // (LeaveTails) still share its channel and receive later controller changes.
-    const bool tails = TailsOnPart(engine, t);
-    auto control = [&](int value, EventKind kind)
-    {
-        if (SendSetting(engine, t, kind, value) && tails)
-        {
-            Approximate("detached notes (still receive track controller changes in MIDI)");
-        }
-    };
-    SendControllers(c, rec_.Expression(c.level * tracks_[t].legato_gain), control);
-
-    // As in the game, a part that the track has left but whose notes it still holds follows the track's changes. The
-    // part takes them at the level its notes have (their legato gain). A part that holds only notes that the track
-    // detached keeps their settings.
-    for (uint8_t part = 0; part < kPartCount; part++)
-    {
-        auto held = [&](const Note& n)
-        {
-            return n.HasMidiNote() && n.midi.part == part && engine.Heard(n);
-        };
-        if (part == tracks_[t].output.part || !std::ranges::any_of(tr.notes, held))
-        {
-            continue;
-        }
-
-        const double gain = tracks_[t].left[part].gain;
-        auto follow = [&](int value, EventKind kind)
-        {
-            SendSetting(engine, t, kind, value, part);
-        };
-        SendControllers(c, rec_.Expression(c.level * gain), follow);
-        rec_.RaiseLevelPeak(c.level * gain);
-    }
-
-    // MIDI has one pitch per channel; nw::snd has one per note. For change detection, take the track's bend and the
-    // newest sweep of any part, without the legato key offset. The game's notes have no parts (Track::last_change). A
-    // note below hearing changes nothing that can be heard.
-    float game_pitch = tr.Bend();
-    for (auto it = tr.notes.rbegin(); it != tr.notes.rend(); ++it)
-    {
-        const float s = it->SweepAt(engine.frame_);
-        if (s != 0.0f && !engine.BelowHearing(*it))
-        {
-            game_pitch += s;
-            break;
-        }
-    }
-    if (std::fabs(game_pitch - tr.change_pitch) > 0.0005f || (game_pitch != tr.change_pitch && game_pitch == 0.0f))
-    {
-        tr.change_pitch = game_pitch;
-        tr.last_change = engine.tick_;
-    }
-
-    // Each part gets the pitch of its notes, the track's first.
-    if (SendPitch(engine, t, tracks_[t].output.part, engine.frame_) && tails)
-    {
-        Approximate("detached notes (still receive track controller changes in MIDI)");
-    }
-    for (uint8_t part = 0; part < kPartCount; part++)
-    {
-        if (part != tracks_[t].output.part)
-        {
-            SendPitch(engine, t, part, engine.frame_);
-        }
-    }
-}
-
-std::optional<float> MidiRecorder::PartPitch(const Performer& engine, int t, uint8_t part, uint64_t frame) const
-{
-    const Track& tr = engine.tracks_[t];
-    if (part == tracks_[t].output.part && tr.open)
-    {
-        const float pitch = tr.Bend() + tracks_[t].legato_bend;
-        for (auto it = tr.notes.rbegin(); it != tr.notes.rend(); ++it)
-        {
-            const float s = it->SweepAt(frame);
-            if ((s != 0.0f || it->midi.lfo_bends) && it->midi.part == part && it->HasMidiNote() && engine.Heard(*it))
-            {
-                return it->midi.lfo_bends ? pitch + s + it->LfoPitchAt(frame) : pitch + s;
-            }
-        }
-
-        return pitch;
-    }
-
-    const Note* newest = nullptr;
-    bool held = false;
-    float sweep = 0.0f;
-    auto look = [&](const Note& n, bool holds)
-    {
-        if (!n.HasMidiNote() || n.midi.part != part || !engine.Heard(n))
-        {
-            return;
-        }
-
-        if (!newest)
-        {
-            newest = &n;
-            held = holds;
-        }
-        sweep = sweep != 0.0f ? sweep : n.SweepAt(frame);
-    };
-    std::for_each(tr.notes.rbegin(), tr.notes.rend(), [&](const Note& n) { look(n, true); });
-    std::for_each(tr.detached.rbegin(), tr.detached.rend(), [&](const Note& n) { look(n, false); });
-    if (!newest)
-    {
-        return std::nullopt;
-    }
-
-    // The game gives the notes a track holds its bend in the frame of the tick that changes it, after this tick's
-    // events (SequenceTrack::UpdateChannelParam). Detached notes keep theirs.
-    const float bend = held ? tr.Bend() : newest->bend;
-    const float pitch = bend + static_cast<float>(newest->key - newest->midi.key) + sweep;
-    return newest->midi.lfo_bends ? pitch + newest->LfoPitchAt(frame) : pitch;
-}
-
-bool MidiRecorder::SendPitch(Performer& engine, int t, uint8_t part, uint64_t frame, double after)
-{
-    const std::optional<float> pitch = PartPitch(engine, t, part, frame);
-    if (pitch && *pitch != 0.0f)
-    {
-        // The notes past a pitch limit on the part move away from their keys' pitch (PassFindings::pitch_moves).
-        const Track& tr = engine.tracks_[t];
-        for (const auto* list : {&tr.notes, &tr.detached})
-        {
-            for (const Note& n : *list)
-            {
-                if (n.midi.past_limit && n.HasMidiNote() && n.midi.part == part)
-                {
-                    pitch_moves_.insert(n.midi.id);
-                }
-            }
-        }
-    }
-
-    return pitch && rec_.SendPitch(out_, tracks_[t].output, engine.tick_, *pitch, part, after);
-}
-
-bool MidiRecorder::TailsOnPart(const Performer& engine, int t) const
-{
-    const Track& tr = engine.tracks_[t];
-    auto shares_part = [&](const Note& n)
-    {
-        return n.HasMidiNote() && n.midi.part == tracks_[t].output.part && engine.StillAudible(n);
-    };
-
-    return std::ranges::any_of(tr.detached, shares_part);
-}
-
-void MidiRecorder::SweepBetweenTicks(Performer& engine, const TickTime& next)
-{
-    // Channel::Update moves a timed sweep and an LFO on every sound frame. That includes the frames between ticks and
-    // the frames after the track has closed. The track's settings hold still between ticks. Find the parts with a sweep
-    // under way, and the parts whose pitch bends add a note's pitch LFO.
-    std::array<std::array<bool, kPartCount>, kTrackCount> sweeping{};
-    std::array<std::array<bool, kPartCount>, kTrackCount> lfo{};
-    bool any = false;
-    for (int t = 0; t < kTrackCount; t++)
-    {
-        const Track& tr = engine.tracks_[t];
-        if (!tracks_[t].played)
-        {
-            continue;
-        }
-
-        for (const auto* list : {&tr.notes, &tr.detached})
-        {
-            for (const Note& n : *list)
-            {
-                if (n.HasMidiNote() && n.sweep_in_ms && n.SweepAt(engine.frame_) != 0.0f)
-                {
-                    sweeping[t][n.midi.part] = true;
-                    any = true;
-                }
-                if (n.HasMidiNote() && n.midi.lfo_bends && engine.Heard(n))
-                {
-                    sweeping[t][n.midi.part] = true;
-                    lfo[t][n.midi.part] = true;
-                    any = true;
-                }
-            }
-        }
-    }
-    if (!any)
-    {
-        return;
-    }
-
-    // The core has run the current tick's frame. The LFO's value in that frame goes at the tick, in place of the latest
-    // value that the tick sent.
-    for (int t = 0; t < kTrackCount; t++)
-    {
-        for (uint8_t part = 0; part < kPartCount; part++)
-        {
-            if (lfo[t][part] && SendPitch(engine, t, part, engine.frame_) && engine.tracks_[t].open &&
-                part == tracks_[t].output.part && TailsOnPart(engine, t))
-            {
-                Approximate("detached notes (still receive track controller changes in MIDI)");
-            }
-        }
-    }
-
-    // Send each frame's pitch where the frame starts. Give its time as a fraction of the way to the next tick.
-    for (uint64_t f = engine.frame_ + 1; f < next.frame; f++)
-    {
-        // On the Wii's build of October 2006, the fraction counts at MIDI's tempo from the tick's nominal time
-        // (RecordTickTime).
-        const double start = static_cast<double>(f) * engine.settings_.frame_ms;
-        const double after = engine.WiiOctober2006() ? (start - engine.nominal_ms_) / engine.MidiMsPerTick()
-                                                     : (start - engine.now_ms_) / (next.ms - engine.now_ms_);
-        for (int t = 0; t < kTrackCount; t++)
-        {
-            for (uint8_t part = 0; part < kPartCount; part++)
-            {
-                const Track& tr = engine.tracks_[t];
-                if (sweeping[t][part] && SendPitch(engine, t, part, f, after) && tr.open &&
-                    part == tracks_[t].output.part && TailsOnPart(engine, t))
-                {
-                    Approximate("detached notes (still receive track controller changes in MIDI)");
-                }
-            }
-        }
-    }
 }
 
 bool Performer::SweepMoves(int t, uint8_t part, uint64_t frame, double ms) const
@@ -3272,76 +762,14 @@ void Performer::SweepAfterEnd()
     }
 }
 
-double MidiRecorder::TrackLevel(const Performer& engine, int t) const
-{
-    // On the Switch, a voice's main bus takes the main send, and its aux buses B and C the effect sends. Sub-mix 0
-    // passes every bus to the final mix at 1.0. A bus with no effect reaches the mix dry, in phase with the main bus
-    // (MultiVoice::CalcMixVolumeForBuses, 0xc25fc0). Those sends therefore add up to the note's level. Bus A's send
-    // goes through the game's reverb. CC91 stands in for that reverb. The sound's sends on buses B and C add to the
-    // track's sends (PerformOptions::fx_sends).
-    //
-    // The volume that the game sets through the sound's handle multiplies the channel's volume (Policy::TrackVolume).
-    // A track that PerformOptions::tracks leaves out has volume 0 there. The sound's volume from its handle
-    // (PerformOptions::volume) multiplies its volume from the archive.
-    const Track& tr = engine.tracks_[t];
-    const double handle = std::sqrt(std::max(0.0f, tr.handle_volume));
-    if (engine.settings_.sends == Sends::kReverbDry)
-    {
-        const std::array<float, 3>& sends = engine.options_.fx_sends;
-        const std::array<std::optional<float>, 3>& reverbs = engine.options_.bus_reverbs;
-        double dry = (tr.main_send + tr.fx_send_b + tr.fx_send_c) / 127.0 + sends[1] + sends[2];
-        if (reverbs[1] || reverbs[2])
-        {
-            // A bus with a reverb passes on only its dry gain's share of the send (PerformOptions::bus_reverbs). The
-            // reverb's part goes to CC91 (EffectSend). A bus that gets no send leaves the level exactly as it was.
-            dry -= (1.0 - reverbs[1].value_or(1.0f)) * (tr.fx_send_b / 127.0 + sends[1]) +
-                   (1.0 - reverbs[2].value_or(1.0f)) * (tr.fx_send_c / 127.0 + sends[2]);
-            dry = std::max(dry, 0.0);
-        }
-        return std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) * (engine.main_volume_.Get() / 127.0) *
-               std::sqrt(engine.sound_.volume / 127.0 * engine.options_.volume * dry) * handle;
-    }
-
-    // The Wii's voice clamps a channel's volume to 1 (Voice::SetVolume), and the sound's volume to 1 too. The track's
-    // volumes never take a note above full level. Limit them to full level, the most CC7 and CC11 can give together. A
-    // note's zones take the rest (ZoneLift).
-    if (engine.Wii())
-    {
-        const double level =
-            std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) * (engine.main_volume_.Get() / 127.0) *
-            std::sqrt(std::min<int>(engine.sound_.volume, 127) / 127.0 * engine.options_.volume) * handle;
-        return std::min(level, 127.0 * 127.0 / std::clamp(tr.vol.Get(), 1, 127));
-    }
-
-    return std::max(tr.vol.Get(), 127) * (tr.volume2.Get() / 127.0) * (engine.main_volume_.Get() / 127.0) *
-           std::sqrt(engine.sound_.volume / 127.0 * engine.options_.volume) * handle;
-}
-
-int16_t MidiRecorder::ZoneLift(const Performer& engine, int t, int velocity) const
-{
-    // A channel's volume is the velocity squared, the region's volume and the track's volumes (UserVolume) multiplied
-    // together. MIDI's velocities stop at 127. Its track volumes stop at full level (TrackLevel). The zones take the
-    // rest.
-    const double above = std::max(velocity, 127) / 127.0;
-    const double rest = above * above * std::max(1.0f, engine.UserVolume(t));
-    return static_cast<int16_t>(std::lround(200.0 * std::log10(rest)));
-}
-
 float Performer::UserVolume(int t) const
 {
     const Track& tr = tracks_[t];
-    const float volume = static_cast<float>(tr.vol.Get()) / 127.0f;
-    const float volume2 = static_cast<float>(tr.volume2.Get()) / 127.0f;
-    const float main_volume = static_cast<float>(main_volume_.Get()) / 127.0f;
-    float user = 1.0f;
-    user *= volume * volume;
-    user *= volume2 * volume2;
-    user *= main_volume * main_volume;
-    user *= tr.handle_volume;
-    user *= std::clamp(static_cast<float>(sound_.volume) / 127.0f, 0.0f, 1.0f);
-    user *= options_.volume;
+    const float sound = std::clamp(static_cast<float>(sound_.volume) / 127.0f, 0.0f, 1.0f);
 
-    return user;
+    return nwsnd::RevolutionPolicy::TrackVolume(tr.vol.Get(), tr.volume2.Get(), main_volume_.Get(), tr.handle_volume,
+                                                sound) *
+           options_.volume;
 }
 
 int Performer::EffectSend(int t, int bus) const
@@ -3352,36 +780,6 @@ int Performer::EffectSend(int t, int bus) const
         track_sends[static_cast<std::size_t>(bus)] / 127.0 + options_.fx_sends[static_cast<std::size_t>(bus)];
 
     return static_cast<int>(std::lround(127.0 * std::clamp(send, 0.0, 1.0)));
-}
-
-void MidiRecorder::CheckFullLevel(Performer& engine, int t)
-{
-    // The game limits a channel's volume to full level (Note::init_volume). MIDI plays a note at its level before the
-    // track's volumes (MidiNote::level), times the track's volumes up to full level (TrackLevel). Report a note whose
-    // level differs from its level in the game by more than 0.1 dB. That happens to a note below velocity 127 whose
-    // zone reaches full level before the note does (ZoneLift). It also happens to a note whose track's volumes change
-    // while it plays. After a legato, CC11 sets the level. A note with lifted zones then plays at another level. So
-    // does a quieter note while the track's volumes are above full level.
-    constexpr double kTenthDb = 1.0115794542598986; // 10^(0.1 / 20)
-    Track& tr = engine.tracks_[t];
-    const float user = engine.UserVolume(t);
-    for (Note& n : tr.notes)
-    {
-        if (n.midi.over_full_level || !n.midi.on)
-        {
-            continue;
-        }
-
-        const double game = std::min(1.0, static_cast<double>(n.init_volume) * user);
-        const double midi = static_cast<double>(n.midi.level) * std::min(1.0f, user);
-        const bool differs = n.midi.level >= 0.0f ? midi > game * kTenthDb || game > midi * kTenthDb
-                                                  : n.midi.lift > 0 || (user > 1.0f && n.init_volume < 1.0f);
-        if (differs)
-        {
-            n.midi.over_full_level = true;
-            Approximate("channel volume above full level (limited in the game; MIDI plays the note at another level)");
-        }
-    }
 }
 
 void Performer::StartSweep(Note& n)
@@ -3405,208 +803,6 @@ void Performer::StartSweep(Note& n)
         }
     };
     WithCore(take_sweep);
-}
-
-void MidiRecorder::MidiNoteOn(Performer& engine, int t, Note& n, int velocity, const VelocityRegion* region,
-                              double gain)
-{
-    Track& tr = engine.tracks_[t];
-    n.midi.key = n.key;
-    n.midi.lfo_bends = false;
-    n.midi.lfo_crowded = false;
-    n.midi.past_limit = false;
-    n.midi.at_limits = false;
-    if (velocity <= 0)
-    {
-        return; // silent in nw::snd; MIDI velocity 0 would be a note-off
-    }
-
-    // On the Wii, the voice limits the channel's volume to full level (Note::init_volume). The note's zones take the
-    // part of the volume above what MIDI's velocity and track controllers reach (ZoneLift). A new note that a legato
-    // starts takes its level from CC11 instead (OnLegato).
-    n.midi.lift = engine.Wii() && gain == 1.0 ? ZoneLift(engine, t, velocity) : 0;
-
-    // A note that requires a pitch or level that the other notes sounding on the track's part don't share moves the
-    // track to another part (Switch), and the note plays there. Each part has a MIDI channel of its own. A note that
-    // sweeps, or that starts beside one still sweeping, moves the track. So does a note above velocity 127 whose zones
-    // don't take the rest. A note that later legatos raise moves the track too. Such a note starts higher (below). A
-    // note moves the track if its CC11, or the CC11 a legato lowered, would change the level of the others. Last, a
-    // note whose pitch LFO an earlier pass found changing (PassFindings::lfo_changes) moves the track. So does a note
-    // that starts beside one. Alone on its part, the note plays without the LFO in its preset. The pitch bends of the
-    // part add the core's LFO (lfo_bends).
-    const auto rise = earlier_.rises.find(rec_.NextNote());
-    const bool lfo_changes_here = earlier_.lfo_changes.contains(rec_.NextNote());
-    auto sweeps_otherwise = [&](const Note& other)
-    {
-        return &other != &n && other.HasMidiNote() && other.midi.part == tracks_[t].output.part &&
-               engine.Heard(other) && (!n.SweepsLike(other, engine.frame_) || other.midi.lfo_bends);
-    };
-    const bool own_settings = std::ranges::any_of(tr.notes, sweeps_otherwise) ||
-                              std::ranges::any_of(tr.detached, sweeps_otherwise) || rise != earlier_.rises.end() ||
-                              (velocity > 127 && n.midi.lift == 0) || gain != 1.0 || tracks_[t].legato_gain != 1.0 ||
-                              lfo_changes_here;
-    if (own_settings && !engine.Alone(t, n))
-    {
-        Switch(engine, t, &n);
-    }
-    n.midi.part = tracks_[t].output.part;
-    n.midi.lfo_bends = lfo_changes_here && engine.Alone(t, n);
-    n.midi.lfo_crowded = lfo_changes_here && !n.midi.lfo_bends;
-
-    // A note that legatos raise later (PassFindings::rises) starts at the highest velocity that they reach and that its
-    // region still plays. That way the synth selects the same zone, and CC11 brings the note down to the velocity it
-    // plays at. The legatos then continue the note (Legato). That works only for a note alone on its part (Alone).
-    const int capped = std::min(velocity, 127);
-    int start = capped;
-    n.midi.liftable = engine.Alone(t, n);
-    if (n.midi.liftable && rise != earlier_.rises.end() && region)
-    {
-        for (int v = std::min(rise->second, 127); v > capped; v--)
-        {
-            if (engine.banks_.FindRegion(n.bank_slot, n.program, n.key, v) == region)
-            {
-                start = v;
-                break;
-            }
-        }
-    }
-
-    // A note above velocity 127 plays at 127. If the note is alone on its part, CC11 raises it the rest of the way. On
-    // the Wii, the zones do.
-    double above = 1.0;
-    if (velocity > 127 && n.midi.lift == 0)
-    {
-        if (n.midi.liftable)
-        {
-            above = static_cast<double>(velocity) / 127.0;
-        }
-        else
-        {
-            Approximate("velocity above 127 (played at 127)");
-        }
-    }
-
-    tracks_[t].legato_gain = gain * capped / start * above;
-    tracks_[t].legato_bend = 0.0f;
-    UpdateOutputs(engine, t); // the controllers, and the pitch of a sweeping note, come first
-    ReportNoteApproximations(engine, t, n);
-
-    const auto attack = earlier_.early_releases.find(rec_.NextNote());
-    n.midi.attack_timecents =
-        attack != earlier_.early_releases.end() ? std::optional<int16_t>(attack->second) : std::nullopt;
-    const auto fit = earlier_.lfo_fits.find(rec_.NextNote());
-    n.midi.lfo_fit = fit != earlier_.lfo_fits.end() ? fit->second : VolumeLfoFit{};
-    // AX on the Wii U and nn::atk on the Switch hold a voice's pitch within the console's limits (resampling.h). A note
-    // past a limit whose pitch holds still plays at the limit (PresetKey::at_pitch_limits). A note that starts with a
-    // sweep, an LFO in its part's bends or a bend moves. An earlier pass found the notes that a later bend or LFO moves
-    // (PassFindings::pitch_moves).
-    const Pcm* limited = region ? engine.banks_.GetWave(n.bank_slot, region->wave_id_index) : nullptr;
-    n.midi.past_limit =
-        limited &&
-        PastPitchLimit(n.midi.key, {region->original_key, region->pitch, limited->sample_rate, region->interpolation},
-                       engine.settings_);
-    const bool moves = n.SweepAt(engine.frame_) != 0.0f || n.midi.lfo_bends ||
-                       tr.Bend() + tracks_[t].legato_bend != 0.0f || earlier_.pitch_moves.contains(rec_.NextNote());
-    n.midi.at_limits = n.midi.past_limit && !moves;
-    n.midi.preset = engine.NoteKey(t, n);
-    n.midi.lfo_moved = false;
-
-    // The SoundFont leaves the zone's low-pass for the console's resampling filter out of a preset whose filter changes
-    // during notes (ZoneSpans).
-    const Pcm* wave =
-        region && n.midi.preset.filter_controller ? engine.banks_.GetWave(n.bank_slot, region->wave_id_index) : nullptr;
-    if (wave &&
-        ResamplingFilterOf(n.midi.key, {region->original_key, region->pitch, wave->sample_rate, region->interpolation},
-                           engine.settings_))
-    {
-        Approximate("resampling filter on a preset whose filter changes during notes (omitted from SoundFont)");
-    }
-    const PresetKey sent = n.midi.lfo_bends ? WithoutLfo(n.midi.preset) : n.midi.preset;
-    if (rec_.SendPreset(out_, tracks_[t].output, engine.tick_, seqlib::midi::PresetIndex(out_.presets, sent)))
-    {
-        NoteChange(engine, t, EventKind::kPreset);
-    }
-
-    // Assign IDs to overlapping notes of the same key so the MIDI writer can distribute them across channels.
-    n.midi.on = true;
-    n.midi.velocity = static_cast<uint8_t>(start);
-    n.midi.start_velocity = velocity;
-    n.midi.frame = engine.frame_;
-    n.midi.id = rec_.NoteOn(out_, tracks_[t].output, engine.tick_, n.midi.key, n.midi.velocity);
-    out_.note_commands.resize(n.midi.id);
-    out_.note_commands[n.midi.id - 1] = engine.settling_command_;
-    NoteChange(engine, t, EventKind::kNoteOn);
-    if (engine.Wii())
-    {
-        // The note's level before the track's volumes: the velocity's level times the zone's level, up to full level.
-        // CC11 sets the level of a note that a legato starts.
-        const double zone = region ? region->volume / 127.0 * std::pow(10.0, n.midi.lift / 200.0) : 0.0;
-        n.midi.level =
-            gain == 1.0 ? static_cast<float>(capped * capped / (127.0 * 127.0) * std::min(1.0, zone)) : -1.0f;
-        CheckFullLevel(engine, t);
-    }
-}
-
-void MidiRecorder::ReportNoteApproximations(Performer& engine, int t, const Note& n)
-{
-    const Track& tr = engine.tracks_[t];
-    const LfoSetting& lfo = tr.lfos[0];
-    if (lfo.type == 2 && lfo.depth != 0 && lfo.delay >= 0)
-    {
-        Approximate("pan LFO (omitted from SoundFont)");
-    }
-    if (lfo.type == 1 && lfo.depth * lfo.range > 128 && lfo.delay >= 0)
-    {
-        Approximate("volume LFO deeper than 6 dB (limited to 6 dB: it dips less than in the game)");
-    }
-    // The pitch bends of a note with lfo_bends follow the curve and the phase of the core's LFO. TakeCoreLfos reports a
-    // random curve there.
-    if (lfo.depth != 0 && lfo.delay >= 0 && (lfo.curve != 0 || lfo.phase != 0) && !n.midi.lfo_bends)
-    {
-        Approximate("LFO curve other than a sine, or a phase (using a sine from the cycle's start)");
-    }
-    if (std::any_of(tr.lfos.begin() + 1, tr.lfos.end(), [](const LfoSetting& s) { return s.depth != 0; }))
-    {
-        Approximate("second to fourth LFOs (omitted)");
-    }
-    if (engine.settings_.sends == Sends::kReverb && engine.EffectSend(t, 1) != 0)
-    {
-        Approximate("effect send B (omitted)");
-    }
-    if ((engine.settings_.sends == Sends::kReverb || engine.settings_.sends == Sends::kReverbChorus) &&
-        engine.EffectSend(t, 2) != 0)
-    {
-        Approximate("effect send C (omitted)");
-    }
-
-    const GameFilters filters = TrackFilters(tr.low_pass, tr.biquad_type, tr.biquad_value, engine.settings_);
-    if (filters.low_pass >= 0)
-    {
-        Approximate("low-pass filter (one-pole in the game, two-pole in the SoundFont)");
-    }
-    if (BiquadShape(filters.biquad_type, engine.settings_) >= 2)
-    {
-        Approximate("biquad high-pass or band-pass (omitted from SoundFont)");
-    }
-    if (filters.low_pass >= 0 && BiquadShape(filters.biquad_type, engine.settings_) == 1)
-    {
-        Approximate("combined low-pass filters (SoundFont uses the lower cutoff)");
-    }
-    if (filters.biquad_type != 0 && filters.biquad_type != out_.biquad_types[t])
-    {
-        Approximate("biquad type change (SFZ supports one type per track)");
-    }
-}
-
-// The report of the new notes that a track starts in one tick past TickNoteCap(). The performer keeps the first
-// notes. On the 3DS, the Wii and the Switch, the game keeps the newest. A new note that finds every voice in use takes
-// the voice of the lowest priority there, the oldest first (the AllocVoice of each console's voice manager). On the
-// Wii U, a new note finds no channel once every channel is in use (ChannelManager::Alloc, 0x022B8A14). The game there
-// keeps the first notes too.
-const char* TickCapReport(Engine engine)
-{
-    return engine == Engine::kCafe ? " new channels on a track in one tick (excess omitted; the game keeps the first)"
-                                   : " new channels on a track in one tick (excess omitted; the game keeps the newest)";
 }
 
 bool Performer::NoteOn(int t, int key, int velocity, int32_t length, bool drop)
@@ -3667,35 +863,7 @@ bool Performer::NoteOn(int t, int key, int velocity, int32_t length, bool drop)
         return true;
     }
 
-    const bool stereo = pcm->channels.size() > 1;
-    Note n;
-    n.settings = &settings_;
-    n.key = static_cast<uint8_t>(key);
-    n.length = tr.tie ? -1 : length;
-    n.on_frame = frame_;
-    n.ignore_note_off = region->ignore_note_off;
-    n.key_group = region->key_group;
-    n.bank_slot = tr.bank_slot;
-    n.program = tr.program;
-    n.init_pan = tr.init_pan;
-    n.stereo = stereo;
-    const float init_volume = static_cast<float>(vel) / 127.0f;
-    n.init_volume = init_volume * init_volume * (static_cast<float>(region->volume) / 127.0f);
-    n.env = OverrideEnvelope(RegionEnvelope(*region), TrackPresetKey(tr));
-
-    n.midi.quiet_ms = n.QuietMs();
-    n.midi.faded_ms = n.FadedMs();
-
-    n.midi.volume = region->volume;
-    n.region_volume = region->volume;
-    if (!pcm->loop)
-    {
-        const float ratio = nwsnd::CalcPitchRatio((key - region->original_key) * 256) * region->pitch * options_.pitch;
-        n.one_shot = true;
-        WithCore([&](auto& core) { n.core_end = core.PredictEnd(frame_, pcm->Length(), ratio, pcm->sample_rate); });
-    }
-
-    StartSweep(n);
+    const Note n = NewNote(t, key, vel, length, *region, *pcm);
 
     // Release other channels in the key group at rate 126. SoundFont uses exclusiveClass for this. From 2008, the Wii
     // releases each of them at its release rate (Mario Kart Wii, 0x8009bfcc).
@@ -3712,66 +880,44 @@ bool Performer::NoteOn(int t, int key, int velocity, int32_t length, bool drop)
 
     tr.notes.push_back(n);
     notes_started_++;
-    midi_.OnNoteOn(*this, t, tr.notes.back(), vel, region, stereo);
+    midi_.OnNoteOn(*this, t, tr.notes.back(), vel, region, n.stereo);
 
     return true;
 }
 
-void MidiRecorder::OnNoteOnStart(Performer& engine, int t)
+Note Performer::NewNote(int t, int key, int vel, int32_t length, const VelocityRegion& region, const Pcm& pcm)
 {
-    if (!tracks_[t].played)
-    {
-        tracks_[t].played = true;
-        UpdateOutputs(engine, t);
-    }
-}
+    const Track& tr = tracks_[t];
+    Note n;
+    n.settings = &settings_;
+    n.key = static_cast<uint8_t>(key);
+    n.length = tr.tie ? -1 : length;
+    n.on_frame = frame_;
+    n.ignore_note_off = region.ignore_note_off;
+    n.key_group = region.key_group;
+    n.bank_slot = tr.bank_slot;
+    n.program = tr.program;
+    n.init_pan = tr.init_pan;
+    n.stereo = pcm.channels.size() > 1;
+    const float init_volume = static_cast<float>(vel) / 127.0f;
+    n.init_volume = init_volume * init_volume * (static_cast<float>(region.volume) / 127.0f);
+    n.env = OverrideEnvelope(RegionEnvelope(region), TrackPresetKey(tr));
 
-void MidiRecorder::OnNoteOn(Performer& engine, int t, Note& n, int velocity, const VelocityRegion* region, bool stereo)
-{
-    // Use nw::snd's default pan curve and dual mode for stereo waves. On the Wii, the default pan curve, with the
-    // sound's pan mode.
-    if (engine.Wii())
-    {
-        if (velocity > 0 && engine.sound_.pan_curve != 0)
-        {
-            Approximate("custom pan curve (using the default)");
-        }
-    }
-    else if (velocity > 0 && (engine.sound_.pan_curve != 0 || (engine.sound_.pan_mode != 0 && stereo)))
-    {
-        Approximate("custom pan curve or mode (using defaults)");
-    }
+    n.midi.quiet_ms = n.QuietMs();
+    n.midi.faded_ms = n.FadedMs();
 
-    // nw::snd adds region pan, track initial pan and track pan before applying its pan law. The synth receives the
-    // first two as zone pan and the third as CC10, then combines them by the synth's pan law.
-    if (velocity > 0 && region->pan + engine.tracks_[t].init_pan != 64 && engine.tracks_[t].pan.Get() != 0)
+    n.midi.volume = region.volume;
+    n.region_volume = region.volume;
+    if (!pcm.loop)
     {
-        Approximate("combined region and track pan (using the synth pan law)");
+        const float ratio = nwsnd::CalcPitchRatio((key - region.original_key) * 256) * region.pitch * options_.pitch;
+        n.one_shot = true;
+        WithCore([&](auto& core) { n.core_end = core.PredictEnd(frame_, pcm.Length(), ratio, pcm.sample_rate); });
     }
 
-    // In the Wii's balance mode a stereo wave's channels keep to their sides, but CC10 pans them as in dual mode.
-    if (velocity > 0 && stereo && engine.balance_ && engine.tracks_[t].pan.Get() != 0)
-    {
-        Approximate("track pan on stereo waves in balance mode (they pan as in dual mode)");
-    }
+    StartSweep(n);
 
-    // AX uses the region's interpolation mode. The SFZ files follow linear interpolation. SoundFont synths use their
-    // usual interpolation. That interpolation most closely matches the default mode.
-    if ((engine.settings_.engine == Engine::kCafe || engine.settings_.engine == Engine::kCtr) && velocity > 0 &&
-        region->interpolation == 1)
-    {
-        Approximate("linear sample interpolation (SoundFont uses the synth's interpolation)");
-    }
-    else if (engine.settings_.engine == Engine::kCafe && velocity > 0 && region->interpolation != 0)
-    {
-        Approximate("uninterpolated sample playback (using synth interpolation)");
-    }
-    else if (engine.settings_.engine == Engine::kCtr && velocity > 0 && region->interpolation == 2)
-    {
-        Approximate("uninterpolated sample playback (SoundFont uses the synth's interpolation)");
-    }
-
-    MidiNoteOn(engine, t, n, velocity, region);
+    return n;
 }
 
 bool Performer::Legato(int t, Note& n, int key, int velocity, int32_t length, bool past_cap)
@@ -3798,168 +944,6 @@ bool Performer::Legato(int t, Note& n, int key, int velocity, int32_t length, bo
     }
 
     return midi_.OnLegato(*this, t, n, key, velocity, past_cap, heard);
-}
-
-bool MidiRecorder::OnLegato(Performer& engine, int t, Note& n, int key, int velocity, bool past_cap, bool heard)
-{
-    if (heard)
-    {
-        n.midi.quiet_ms = n.QuietMs();
-        n.midi.faded_ms = n.FadedMs();
-    }
-
-    // A channel that has faded far enough goes on silent. Its MIDI note has ended (MidiRecorder::OnLengthUpdated).
-    // Nothing starts another.
-    if (!heard && !n.midi.on)
-    {
-        return false;
-    }
-
-    // The tie path of SequenceTrack::NoteOn (0x022C9A4C) sets only the channel's velocity volume. The channel keeps the
-    // volume of the region it started on. The 3DS's and the Wii's nw::snd drop that volume. The synth zone applies the
-    // volume of the region the MIDI note started on. Once a legato has started a new MIDI note on another region, CC11
-    // makes up the difference. A zero-volume zone can't be made audible this way.
-    //
-    // The 3DS's and the Wii's SequenceTrack::NoteOn set the gain from the new velocity without the region's volume
-    // (Settings::keep_first_region_volume). CC11 then takes out the volume of the region that the synth plays.
-    const int first_volume = engine.settings_.keep_first_region_volume ? n.region_volume : 127;
-    auto with_first_region_volume = [&](double gain)
-    {
-        if (n.midi.volume == 0 && first_volume > 0 && velocity > 0)
-        {
-            Approximate("legato on a zero-volume region (audible in the game, silent in the synth)");
-        }
-
-        return n.midi.volume > 0 ? gain * std::sqrt(static_cast<double>(first_volume) / n.midi.volume) : gain;
-    };
-
-    // Continue the MIDI note if its preset matches. CC11 handles the velocity and pitch bend the key (UpdateOutputs).
-    // The note keeps its sample position and original region. At velocity 0, keep the note silent through CC11
-    // regardless of preset; ending it would leave a release tail.
-    //
-    // MIDI can't raise a note's velocity. A legato above the velocity that a MIDI note alone on its track started at
-    // therefore raises CC11 above the note's start. Record it. A later pass then starts the note higher (MidiNoteOn);
-    // CC11 above 127, past the top velocity of the note's region, lowers the whole sequence (Perform). A note that
-    // isn't alone requires a new MIDI note. Lowering CC11 for it would lower the others too.
-    //
-    // After Settings::voices legatos in a tick, continue regardless of preset, capped at the starting velocity. Count
-    // only legatos that would otherwise require a new MIDI note as approximations.
-    //
-    // A legato on a channel below hearing continues its MIDI note the same way. The game's legato doesn't start the
-    // envelope again. A new MIDI note, or a later pass that starts the note higher, would change what can be heard. The
-    // gain of such a legato therefore stays at or below the note's start, and the legato records no rise.
-    //
-    // Envelope settings that the track leaves to the bank (0xff), such as those after an envelope reset, leave the
-    // channel's settings as they were (SequenceTrack::NoteOn). They therefore count as the MIDI note's settings.
-    auto same_preset = [&]()
-    {
-        const PresetKey& sent = out_.presets[static_cast<std::size_t>(LastSent(tracks_[t].output, EventKind::kPreset))];
-        PresetKey current = n.midi.lfo_bends ? WithoutLfo(engine.NoteKey(t, n)) : engine.NoteKey(t, n);
-        for (auto [kept, from] : {std::pair{&current.attack, &sent.attack}, std::pair{&current.decay, &sent.decay},
-                                  std::pair{&current.sustain, &sent.sustain},
-                                  std::pair{&current.release, &sent.release}, std::pair{&current.hold, &sent.hold}})
-        {
-            if (*kept == 0xff)
-            {
-                *kept = *from;
-            }
-        }
-
-        return current == sent;
-    };
-    const bool carries_on =
-        n.midi.on && (velocity <= n.midi.velocity || n.midi.liftable) && (velocity <= 0 || same_preset());
-    if (carries_on || (n.midi.on && (past_cap || !heard)))
-    {
-        if (!carries_on && heard)
-        {
-            const std::string what =
-                "more than " + std::to_string(engine.settings_.voices) +
-                " legatos in a tick (keeping the MIDI preset and limiting gain to the starting level)";
-            Approximate(what.c_str());
-        }
-        else if (carries_on && heard && velocity > n.midi.start_velocity)
-        {
-            int& top = rises_[n.midi.id];
-            top = std::max(top, velocity);
-        }
-
-        const int kept = carries_on && heard ? std::max(velocity, 0) : std::clamp<int>(velocity, 0, n.midi.velocity);
-        tracks_[t].legato_gain = with_first_region_volume(static_cast<double>(kept) / n.midi.velocity);
-        tracks_[t].legato_bend = static_cast<float>(key - n.midi.key);
-        if (engine.Wii())
-        {
-            n.midi.level = -1.0f; // CC11 sets the level from here (CheckFullLevel)
-            CheckFullLevel(engine, t);
-        }
-
-        return heard;
-    }
-
-    // Start a new MIDI note. Select its region by the new key and velocity. A legato at velocity 0 starts none.
-    const VelocityRegion* played = engine.banks_.FindRegion(n.bank_slot, n.program, key, velocity);
-    n.midi.volume = played ? played->volume : 127;
-    EndMidiNote(engine, t, n);
-    MidiNoteOn(engine, t, n, velocity, played, with_first_region_volume(1.0));
-    if (n.midi.on)
-    {
-        Approximate("legato (tie or mono) played as a new note");
-    }
-
-    return heard;
-}
-
-void MidiRecorder::OnCommand(Performer& engine, int /*t*/, uint32_t cmd, int32_t arg1)
-{
-    const uint8_t a8 = static_cast<uint8_t>(arg1);
-    switch (cmd)
-    {
-    case 0xd7: // surround pan: the Wii's stereo mix leaves it out
-        if (!engine.settings_.surround_pan && arg1 != 0)
-        {
-            Approximate("surround pan (omitted)");
-        }
-        break;
-
-    case 0xd9:
-        if (engine.settings_.sends == Sends::kNone && a8 != 0)
-        {
-            Approximate("effect send A (omitted)");
-        }
-        break;
-
-    case 0xda:
-        if (engine.settings_.sends == Sends::kNone && a8 != 0)
-        {
-            Approximate("effect send B (omitted)");
-        }
-        break;
-
-    case 0xdb:
-        if (engine.settings_.sends != Sends::kReverbDry && a8 != 127)
-        {
-            Approximate("main send (omitted)");
-        }
-        break;
-
-    default:
-        break;
-    }
-}
-
-void MidiRecorder::OnTimebase(Performer& engine)
-{
-    if (engine.tick_ == 0 && engine.timebase_ > 0)
-    {
-        out_.timebase = engine.timebase_;
-    }
-
-    OnTempo(engine);
-}
-
-void MidiRecorder::OnRunaway(Performer& /*engine*/, int t)
-{
-    rec_.Warn("track " + std::to_string(t) + " stopped after running without waits");
 }
 
 void Performer::NoteVariableRead(int t, uint8_t index)
@@ -4012,7 +996,7 @@ void Performer::MuteNotes(int t, uint8_t mode)
 bool Performer::Leavable(int t, uint64_t first_command) const
 {
     const Track& tr = tracks_[t];
-    const auto call = [](const CallEntry& e)
+    const auto call = [](const nwsnd::CallStackEntry& e)
     {
         return !e.is_loop;
     };
@@ -4093,34 +1077,12 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
     // constant. Its later passes then run until the counter wraps.
     const uint32_t start = run->second.tick;
     const uint64_t first_command = run->second.order;
-    for (const auto& [other, at] : tr.jump_backs)
+    if (InnerLoopPass(t, target, first_command))
     {
-        if (other != target && at > first_command)
-        {
-            tr.inner_loops.insert(other);
-        }
+        return std::nullopt;
     }
 
-    tr.jump_backs[target] = commands_run_;
-    if (tr.inner_loops.contains(target))
-    {
-        if (now_ms_ - tr.last_pass_ms < kMinLoopSeconds * 1000.0)
-        {
-            return std::nullopt;
-        }
-
-        tr.inner_loops.erase(target);
-    }
-
-    // A pass that changed nothing is idle: the track only waited, polled or counted. Changing a variable that another
-    // open track reads counts as a change (Track::last_signal). It belongs to the pass if it came after the pass's
-    // first command. The tick doesn't show that: a loop's last commands run in the tick that its next pass starts in.
-    auto changed = [&](int i)
-    {
-        const Track& other = tracks_[i];
-        return (other.last_change && *other.last_change >= start) ||
-               (other.last_signal && *other.last_signal > first_command);
-    };
+    // A pass that changed nothing is idle: the track only waited, polled or counted (ChangedSince).
 
     // A jump back inside a subroutine isn't a loop when its pass ran a conditional command that can leave the loop and
     // played no note. A subroutine that polls a variable after a one-shot sound does that. A stricter rule would leave
@@ -4132,7 +1094,8 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
     // between a track's notes changes its counter. Its passes keep Track::idle as the track's other passes set it.
     if (jump && Leavable(t, first_command))
     {
-        if (!changed(t) && tr.last_variable_change <= first_command && last_draw_order_ <= first_command)
+        if (!ChangedSince(t, start, first_command) && tr.last_variable_change <= first_command &&
+            last_draw_order_ <= first_command)
         {
             tr.idle = true;
         }
@@ -4141,7 +1104,7 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
     }
 
     tr.last_pass_ms = now_ms_;
-    tr.idle = !changed(t);
+    tr.idle = !ChangedSince(t, start, first_command);
 
     // Use the lowest-numbered track that can still advance: track 0 while active, or a later track for continuing sound
     // effects. A pass counts only if no earlier track contributed during it. The marked section then contains only
@@ -4154,7 +1117,7 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
     };
     for (int i = 0; i < kTrackCount; i++)
     {
-        if (i != t && (i < t || tr.idle) && (plays_on(i) || changed(i)))
+        if (i != t && (i < t || tr.idle) && (plays_on(i) || ChangedSince(i, start, first_command)))
         {
             return std::nullopt;
         }
@@ -4168,6 +1131,40 @@ std::optional<uint32_t> Performer::CountedPassStart(int t, uint32_t target, bool
     }
 
     return start;
+}
+
+bool Performer::InnerLoopPass(int t, uint32_t target, uint64_t first_command)
+{
+    Track& tr = tracks_[t];
+    for (const auto& [other, at] : tr.jump_backs)
+    {
+        if (other != target && at > first_command)
+        {
+            tr.inner_loops.insert(other);
+        }
+    }
+
+    tr.jump_backs[target] = commands_run_;
+    if (tr.inner_loops.contains(target))
+    {
+        if (now_ms_ - tr.last_pass_ms < kMinLoopSeconds * 1000.0)
+        {
+            return true;
+        }
+
+        tr.inner_loops.erase(target);
+    }
+
+    return false;
+}
+
+bool Performer::ChangedSince(int t, uint32_t start, uint64_t first_command) const
+{
+    // Changing a variable that another open track reads counts as a change (Track::last_signal). It belongs to the
+    // pass if it came after the pass's first command. The tick doesn't show that: a loop's last commands run in the
+    // tick that its next pass starts in.
+    const Track& tr = tracks_[t];
+    return (tr.last_change && *tr.last_change >= start) || (tr.last_signal && *tr.last_signal > first_command);
 }
 
 void Performer::MarkPass(int t, uint32_t target, uint32_t start)
@@ -4388,7 +1385,7 @@ void Performer::StartTick()
         core.now_ms_ = now_ms_;
         core.GetPlayer().BeginTick();
         core_open_ = false;
-        main_volume_.Take(core.GetPlayer().MainVolume());
+        main_volume_ = core.GetPlayer().MainVolume();
     };
     WithCore(begin_tick);
 }
@@ -4476,16 +1473,16 @@ void Performer::RunUserProcedure(int t, uint16_t procedure)
     std::array<int16_t, 16> local = player_vars_;
     std::array<int16_t, 16> global = global_vars_;
     std::array<int16_t, 16> track = tracks_[t].vars;
-    WithCore(
-        [&](auto& core)
+    const auto take_variables = [&](auto& core)
+    {
+        local = core.GetPlayer().LocalVariables();
+        global = core.GlobalVariables();
+        if (const auto* core_track = core.GetPlayer().Track(t))
         {
-            local = core.GetPlayer().LocalVariables();
-            global = core.GlobalVariables();
-            if (const auto* core_track = core.GetPlayer().Track(t))
-            {
-                track = core_track->Variables();
-            }
-        });
+            track = core_track->Variables();
+        }
+    };
+    WithCore(take_variables);
 
     const std::array<std::array<int16_t, 16>, 3> before = {local, global, track};
     if (options_.user_procedures(procedure, local, global, track))
@@ -4507,18 +1504,18 @@ void Performer::RunUserProcedure(int t, uint16_t procedure)
 
             const auto index = static_cast<uint8_t>(set * 16 + i);
             *Variable(t, index) = value;
-            WithCore(
-                [&](auto& core)
+            const auto set_variable = [&](auto& core)
+            {
+                if (index < 32)
                 {
-                    if (index < 32)
-                    {
-                        core.GetPlayer().SetVariable(core, index, value);
-                    }
-                    else
-                    {
-                        core.GetPlayer().SetTrackVariable(t, index - 32, value);
-                    }
-                });
+                    core.GetPlayer().SetVariable(core, index, value);
+                }
+                else
+                {
+                    core.GetPlayer().SetTrackVariable(t, index - 32, value);
+                }
+            };
+            WithCore(set_variable);
             NoteVariableChange(t, index);
         }
     }
@@ -4610,7 +1607,6 @@ void Performer::FollowCommandStart(int t, uint32_t offset, uint32_t command, boo
     Track& tr = tracks_[t];
     NumberCalls(t);
     last_run_[t][offset] = {tick_, commands_run_++, InnermostCall(t)};
-    tr.held_wait = false;
 
     // The command runs on in the track's stretch of commands, or begins the next stretch (Performance::stretches).
     std::vector<Stretch>& stretches = midi_.out_.stretches[t];
@@ -4636,8 +1632,14 @@ void Performer::FollowCommandStart(int t, uint32_t offset, uint32_t command, boo
         tr.leave_at = commands_run_;
     }
 
-    // The core moved the track's ramps on at the start of its tick.
-    WithCore([&](auto& core) { TakeCoreRamps(core, t); });
+    // The core moved the track's ramps on at the start of its tick. The note before the command set the track's waits,
+    // and the command's start has ended the wait for a held note.
+    const auto take_ramps_and_waits = [&](auto& core)
+    {
+        TakeCoreRamps(core, t);
+        TakeCoreWaits(core, t);
+    };
+    WithCore(take_ramps_and_waits);
 }
 
 void Performer::FollowCommand(int t, uint32_t command, int32_t arg1, int32_t arg2, uint32_t next)
@@ -4664,12 +1666,9 @@ void Performer::FollowCommand(int t, uint32_t command, int32_t arg1, int32_t arg
     }
 }
 
-template <typename Core>
-void Performer::RecordCoreCommand(Core& core, int t, uint32_t cmd, int32_t arg1, int32_t arg2)
+void Performer::ClosePass(int t, uint32_t cmd, int32_t arg1)
 {
-    // A jump back, and the end of an endless loop, close a pass of a loop (OnLoop). The analysis takes the track's
-    // position and loops from before the command.
-    Track& tr = tracks_[t];
+    const Track& tr = tracks_[t];
     if (cmd == 0x89 && static_cast<uint32_t>(arg1) < tr.current)
     {
         OnLoop(t, static_cast<uint32_t>(arg1), true);
@@ -4679,12 +1678,33 @@ void Performer::RecordCoreCommand(Core& core, int t, uint32_t cmd, int32_t arg1,
         // The Wii takes the top of the call stack as the loop, whether a loop start or a call put it there
         // (kLoopEndIgnoresCalls in nwsnd's policies). A counted loop in endless_loops_ closes a pass like a loop of
         // count 0.
-        const CallEntry& e = tr.calls[tr.call_depth - 1];
-        if ((e.is_loop || Wii()) && (e.count == 0 || endless_loops_.contains({t, e.address})))
+        const nwsnd::CallStackEntry& e = tr.calls[tr.call_depth - 1];
+        if ((e.is_loop || Wii()) && (e.loop_count == 0 || endless_loops_.contains({t, e.address})))
         {
             OnLoop(t, e.address, false);
         }
     }
+}
+
+void Performer::RecordVariableCommand(int t, uint32_t op, uint8_t index, bool changed)
+{
+    if (op >= 0x90)
+    {
+        NoteVariableRead(t, index);
+    }
+    if (changed)
+    {
+        NoteVariableChange(t, index);
+    }
+}
+
+template <typename Core>
+void Performer::RecordCoreCommand(Core& core, int t, uint32_t cmd, int32_t arg1, int32_t arg2)
+{
+    // A jump back, and the end of an endless loop, close a pass of a loop (OnLoop). The analysis takes the track's
+    // position and loops from before the command.
+    Track& tr = tracks_[t];
+    ClosePass(t, cmd, arg1);
 
     // A variable command's variable before the command, and the track's LFOs.
     const uint32_t op = cmd & 0xff;
@@ -4698,18 +1718,9 @@ void Performer::RecordCoreCommand(Core& core, int t, uint32_t cmd, int32_t arg1,
     TakeCorePlayer(core);
     if (cmd > 0xff)
     {
-        if (!variable)
+        if (variable)
         {
-            return;
-        }
-
-        if (op >= 0x90)
-        {
-            NoteVariableRead(t, index);
-        }
-        if (*variable != before)
-        {
-            NoteVariableChange(t, index);
+            RecordVariableCommand(t, op, index, *variable != before);
         }
 
         return;
@@ -4722,6 +1733,7 @@ void Performer::RecordCoreCommand(Core& core, int t, uint32_t cmd, int32_t arg1,
         {
             CloseTrack(arg1);
             OpenTrack(arg1, static_cast<uint32_t>(arg2));
+            TakeCoreTrack(core, arg1);
         }
         break;
 
@@ -4871,8 +1883,9 @@ void Performer::FollowVolumeLfo(int t, nwsnd::ChannelId channel, float envelope_
         return;
     }
 
-    const LfoSetting& lfo = tracks_[t].lfos[0];
-    const double scale = lfo.depth != 0 ? 2.0 * ModulationValue(lfo) / lfo.depth : 0.0;
+    const Track& tr = tracks_[t];
+    const int depth = LfoDepth(tr.lfos[0]);
+    const double scale = depth != 0 ? 2.0 * ModulationValue(tr.lfos[0], tr.lfo_types[0]) / depth : 0.0;
     midi_.OnVolumeLfo(note->midi.id, envelope_db, lfo_db, scale);
 }
 
@@ -4964,41 +1977,46 @@ void Performer::TakeCoreLfos(Core& core, uint64_t frame)
                     continue;
                 }
 
-                // Channel::Update adds the pitch LFO's value to the frame's pitch before the LFO steps on. A copy of
-                // the LFO gives the value. The copy draws from a copy of the random generator. The core's generator
-                // stays as it was. A random curve's numbers come from that copy. They can differ from those in the
-                // game. A note reports such a curve once, when the curve first moves the note's pitch.
-                float value = 0.0f;
-                if (channel->lfo_types[0] == 0)
-                {
-                    auto lfo = channel->lfos[0];
-                    nwsnd::Random random = core.Rng();
-                    value = lfo.GetValue(random);
-                    if (lfo.param.curve == 4 && value != 0.0f && !n.midi.lfo_random)
-                    {
-                        n.midi.lfo_random = true;
-                        midi_.Approximate(
-                            "random LFO curve in pitch bends (its numbers can differ from those in the game)");
-                    }
-                }
-
-                // The note keeps the values from frame_ - 1 on.
-                const uint64_t kept = frame_ > 0 ? frame_ - 1 : 0;
-                if (n.lfo_pitch.empty() || n.lfo_frame + n.lfo_pitch.size() != frame)
-                {
-                    n.lfo_pitch.clear();
-                    n.lfo_frame = frame;
-                }
-                else if (n.lfo_frame < kept)
-                {
-                    const uint64_t gone = std::min<uint64_t>(kept - n.lfo_frame, n.lfo_pitch.size());
-                    n.lfo_pitch.erase(n.lfo_pitch.begin(), n.lfo_pitch.begin() + static_cast<std::ptrdiff_t>(gone));
-                    n.lfo_frame += gone;
-                }
-                n.lfo_pitch.push_back(value);
+                TakeNoteLfo(core, n, *channel, frame);
             }
         }
     }
+}
+
+template <typename Core>
+void Performer::TakeNoteLfo(Core& core, Note& n, const typename Core::Channel& channel, uint64_t frame)
+{
+    // Channel::Update adds the pitch LFO's value to the frame's pitch before the LFO steps on. A copy of
+    // the LFO gives the value. The copy draws from a copy of the random generator. The core's generator
+    // stays as it was. A random curve's numbers come from that copy. They can differ from those in the
+    // game. A note reports such a curve once, when the curve first moves the note's pitch.
+    float value = 0.0f;
+    if (channel.lfo_types[0] == 0)
+    {
+        auto lfo = channel.lfos[0];
+        nwsnd::Random random = core.Rng();
+        value = lfo.GetValue(random);
+        if (lfo.param.curve == 4 && value != 0.0f && !n.midi.lfo_random)
+        {
+            n.midi.lfo_random = true;
+            midi_.Approximate("random LFO curve in pitch bends (its numbers can differ from those in the game)");
+        }
+    }
+
+    // The note keeps the values from frame_ - 1 on.
+    const uint64_t kept = frame_ > 0 ? frame_ - 1 : 0;
+    if (n.lfo_pitch.empty() || n.lfo_frame + n.lfo_pitch.size() != frame)
+    {
+        n.lfo_pitch.clear();
+        n.lfo_frame = frame;
+    }
+    else if (n.lfo_frame < kept)
+    {
+        const uint64_t gone = std::min<uint64_t>(kept - n.lfo_frame, n.lfo_pitch.size());
+        n.lfo_pitch.erase(n.lfo_pitch.begin(), n.lfo_pitch.begin() + static_cast<std::ptrdiff_t>(gone));
+        n.lfo_frame += gone;
+    }
+    n.lfo_pitch.push_back(value);
 }
 
 template <typename Core>
@@ -5073,24 +2091,14 @@ void Performer::FollowNoteCommand(int t, int key, int velocity, int32_t length)
         return;
     }
 
-    // The note waits for the core's verdict on its channel (SettleNote).
-    Track& tr = tracks_[t];
-    tr.holds = length >= kHeldTicks;
+    // The note waits for the core's verdict on its channel (SettleNote). The performer takes the track's waits after
+    // the note from the core (TakeCoreWaits).
+    const Track& tr = tracks_[t];
     note_to_pair_ = -1;
     if (!tr.mute)
     {
         const auto stretch = static_cast<uint32_t>(midi_.out_.stretches[t].size() - 1);
         pending_note_ = PendingNote{t, key, velocity, length, {tr.command, stretch}};
-    }
-
-    if (tr.note_wait)
-    {
-        tr.wait = length;
-        tr.held_wait = length >= kHeldTicks;
-        if (length == 0)
-        {
-            tr.note_finish_wait = true;
-        }
     }
 }
 
@@ -5128,16 +2136,10 @@ void Performer::TakeCoreTrack(Core& core, int t)
     Track& tr = tracks_[t];
     tr.open = track->IsOpen();
     tr.current = track->Current();
-    tr.wait = track->Wait();
-    tr.note_finish_wait = track->NoteFinishWait();
-    tr.holds = track->Holds();
-    tr.held_wait = track->HeldWait();
+    TakeCoreWaits(core, t);
     const auto calls = track->CallStack();
     tr.call_depth = static_cast<int>(calls.size());
-    for (std::size_t i = 0; i < calls.size(); i++)
-    {
-        tr.calls[i] = {.is_loop = calls[i].is_loop, .count = calls[i].loop_count, .address = calls[i].address};
-    }
+    std::ranges::copy(calls, tr.calls.begin());
 
     tr.tie = track->Tie();
     tr.mono = track->Mono();
@@ -5146,18 +2148,8 @@ void Performer::TakeCoreTrack(Core& core, int t)
     TakeCoreRamps(core, t);
     tr.bend_range = track->BendRange();
     tr.init_pan = track->InitPan();
-
-    for (int i = 0; i < kLfoCount; i++)
-    {
-        const nwsnd::CurveLfoParam& lfo = track->LfoParams()[static_cast<std::size_t>(i)];
-        tr.lfos[i] = {.depth = static_cast<uint8_t>(lfo.depth * 128.0f),
-                      .speed = lfo.speed,
-                      .delay = static_cast<int32_t>(lfo.delay),
-                      .range = lfo.range,
-                      .curve = lfo.curve,
-                      .phase = lfo.phase,
-                      .type = track->LfoTypes()[static_cast<std::size_t>(i)]};
-    }
+    tr.lfos = track->LfoParams();
+    tr.lfo_types = track->LfoTypes();
 
     tr.attack = track->Attack();
     tr.decay = track->Decay();
@@ -5192,10 +2184,26 @@ void Performer::TakeCoreRamps(Core& core, int t)
     }
 
     Track& tr = tracks_[t];
-    tr.vol.Take(track->Volume());
-    tr.volume2.Take(track->Volume2());
-    tr.pan.Take(track->Pan());
-    tr.bend.Take(track->Bend());
+    tr.vol = track->Volume();
+    tr.volume2 = track->Volume2();
+    tr.pan = track->Pan();
+    tr.bend = track->Bend();
+}
+
+template <typename Core>
+void Performer::TakeCoreWaits(Core& core, int t)
+{
+    const auto* track = core.GetPlayer().Track(t);
+    if (!track)
+    {
+        return;
+    }
+
+    Track& tr = tracks_[t];
+    tr.wait = track->Wait();
+    tr.note_finish_wait = track->NoteFinishWait();
+    tr.holds = track->Holds();
+    tr.held_wait = track->HeldWait();
 }
 
 template <typename Core>
@@ -5204,37 +2212,9 @@ void Performer::TakeCorePlayer(Core& core)
     const auto& player = core.GetPlayer();
     tempo_ = player.Tempo();
     timebase_ = player.Timebase();
-    main_volume_.Take(player.MainVolume());
+    main_volume_ = player.MainVolume();
     player_vars_ = player.LocalVariables();
     global_vars_ = core.GlobalVariables();
-}
-
-void MidiRecorder::OnTickEnd(Performer& engine, int t)
-{
-    RecordMix(engine, t);
-    UpdateOutputs(engine, t);
-    CheckLfo(engine, t);
-    if (tracks_[t].played && engine.tracks_[t].open && engine.TrackBusy(t))
-    {
-        rec_.RaiseLevelPeak(TrackLevel(engine, t) * tracks_[t].legato_gain);
-    }
-}
-
-void MidiRecorder::RecordMix(const Performer& engine, int t)
-{
-    const Track& tr = engine.tracks_[t];
-    const std::array<int16_t, kMixSettingCount> values = {static_cast<int16_t>(tr.vol.Get()),
-                                                          static_cast<int16_t>(tr.pan.Get()), tr.fx_send_a,
-                                                          tr.fx_send_b, tr.fx_send_c};
-    std::array<int16_t, kMixSettingCount>& last = tracks_[t].mix;
-    for (int setting = 0; setting < kMixSettingCount; setting++)
-    {
-        if (values[setting] != last[setting])
-        {
-            out_.mix[t].push_back({engine.tick_, static_cast<Mix>(setting), values[setting]});
-            last[setting] = values[setting];
-        }
-    }
 }
 
 void Performer::FinishTick()
@@ -5300,21 +2280,6 @@ void Performer::ReleasePending(const TickTime& next)
             midi_.OnDeferredRelease(*this, t, n, after);
         }
     }
-}
-
-void MidiRecorder::OnDeferredRelease(Performer& engine, int t, Note& n, double after)
-{
-    RecordEarlyRelease(engine, n);
-    if (n.midi.on)
-    {
-        n.midi.on = false;
-        rec_.NoteOff(out_, static_cast<uint8_t>(t), engine.tick_, n.midi.part, n.midi.key, n.midi.id, after);
-    }
-}
-
-void MidiRecorder::OnBetweenTicks(Performer& engine, const TickTime& next)
-{
-    SweepBetweenTicks(engine, next);
 }
 
 void Performer::AdvanceTo(const TickTime& next)
@@ -5384,53 +2349,14 @@ Performance Performer::Run()
         RecordGlobalChanges(globals);
         if (stop_)
         {
-            // A main loop that sounds nothing is no loop. The sequence ends with its last sound, like one that ends.
-            if (midi_.out_.loop && !held_sound_end_ms_ && SilentLoop())
-            {
-                finished = true;
-                silent_loop_ = true;
-                midi_.out_.DropLoop();
-            }
-            else if (midi_.out_.loop && !held_sound_end_ms_)
-            {
-                next_pass = tick_ > midi_.out_.loop->end ? PassStartAt(midi_.out_.loop->end)
-                                                         : NextPassStart(stopped_by_, tracks_[stopped_by_].current);
-            }
-
+            finished = EndAtStoppingPass(next_pass);
             break;
         }
 
         FinishTick();
-
-        // Every track has ended. The game repeats none of the passes before the end, such as a state machine's jumps
-        // back to its dispatcher. Drop the loop marked on the way. On the Wii, a sequence also ends when no track will
-        // read on and no note sounds (Stuck).
-        if (!any_open || (Wii() && Stuck()))
+        if (const std::optional<bool> ended = EndAfterTick(any_open, steady_since))
         {
-            finished = true;
-            midi_.out_.DropLoop();
-            break;
-        }
-
-        // A performance with a stop plays to it (SetStop).
-        if (steady_since < 0 && !stop_ms_ && Steady())
-        {
-            steady_since = now_ms_;
-        }
-        if (steady_since >= 0 && now_ms_ - steady_since >= kHoldSeconds * 1000.0)
-        {
-            midi_.out_.holds = true;
-            break;
-        }
-
-        if (now_ms_ >= kMaxSeconds * 1000.0)
-        {
-            finished = EndAtTimeLimit();
-            break;
-        }
-        if (stop_ms_ && now_ms_ >= *stop_ms_)
-        {
-            midi_.out_.DropLoop();
+            finished = *ended;
             break;
         }
 
@@ -5460,6 +2386,59 @@ Performance Performer::Run()
     }
 
     return midi_.out_;
+}
+
+bool Performer::EndAtStoppingPass(PassStart& next_pass)
+{
+    // A main loop that sounds nothing is no loop. The sequence ends with its last sound, like one that ends.
+    if (midi_.out_.loop && !held_sound_end_ms_ && SilentLoop())
+    {
+        silent_loop_ = true;
+        midi_.out_.DropLoop();
+        return true;
+    }
+    if (midi_.out_.loop && !held_sound_end_ms_)
+    {
+        next_pass = tick_ > midi_.out_.loop->end ? PassStartAt(midi_.out_.loop->end)
+                                                 : NextPassStart(stopped_by_, tracks_[stopped_by_].current);
+    }
+
+    return false;
+}
+
+std::optional<bool> Performer::EndAfterTick(bool any_open, double& steady_since)
+{
+    // Every track has ended. The game repeats none of the passes before the end, such as a state machine's jumps back
+    // to its dispatcher. Drop the loop marked on the way. On the Wii, a sequence also ends when no track will read on
+    // and no note sounds (Stuck).
+    if (!any_open || (Wii() && Stuck()))
+    {
+        midi_.out_.DropLoop();
+        return true;
+    }
+
+    // A performance with a stop plays to it (SetStop).
+    if (steady_since < 0 && !stop_ms_ && Steady())
+    {
+        steady_since = now_ms_;
+    }
+    if (steady_since >= 0 && now_ms_ - steady_since >= kHoldSeconds * 1000.0)
+    {
+        midi_.out_.holds = true;
+        return false;
+    }
+
+    if (now_ms_ >= kMaxSeconds * 1000.0)
+    {
+        return EndAtTimeLimit();
+    }
+    if (stop_ms_ && now_ms_ >= *stop_ms_)
+    {
+        midi_.out_.DropLoop();
+        return false;
+    }
+
+    return std::nullopt;
 }
 
 void Performer::RecordGlobalChanges(const std::array<int16_t, 16>& before)
@@ -5525,6 +2504,8 @@ void Performer::StartCore()
         }
         core.GetPlayer().StartClock(1);
         core.GetPlayer().NextTickTime();
+        player_vars_ = core.GetPlayer().LocalVariables();
+        global_vars_ = core.GlobalVariables();
     };
     WithCore(start);
 
@@ -5558,7 +2539,7 @@ bool Performer::EndAtTimeLimit()
         {
             if (tr.calls[i].is_loop)
             {
-                if (tr.calls[i].count != 0)
+                if (tr.calls[i].loop_count != 0)
                 {
                     limit_loops_.insert({t, tr.calls[i].address});
                 }
@@ -5581,10 +2562,10 @@ Performer::PassStart Performer::PassStartAt(uint32_t tick) const
     return sequence_export::PassStartAt(midi_.out_, midi_.rec_.PartSwitches(), tick);
 }
 
-Performer Performer::PlayOn(int t, uint32_t target, uint32_t until) const
+Performer Performer::ResumeAfterJump(int t, uint32_t target) const
 {
-    // Track `t` has jumped back, and the tracks after it haven't run this tick. The copy runs them, then the ticks
-    // after, with no limit on the loops. No pass then stops the copy again.
+    // Track `t` has jumped back, and the tracks after it haven't run this tick. The copy runs them with no limit on the
+    // loops. No pass then stops the copy again.
     Performer probe = *this;
     probe.stop_ = false;
     probe.options_.loops = std::numeric_limits<int>::max();
@@ -5593,19 +2574,31 @@ Performer Performer::PlayOn(int t, uint32_t target, uint32_t until) const
     probe.ParseTracks(t + 1);
     probe.FinishTick();
 
+    return probe;
+}
+
+bool Performer::PlayNextTick()
+{
+    const std::optional<TickTime> next = NextTick();
+    if (!next)
+    {
+        return false;
+    }
+
+    AdvanceTo(*next);
+    StartTick();
+    const bool any_open = ParseTracks(0);
+    FinishTick();
+
+    return any_open;
+}
+
+Performer Performer::PlayOn(int t, uint32_t target, uint32_t until) const
+{
+    Performer probe = ResumeAfterJump(t, target);
     while (probe.tick_ + 1 < until)
     {
-        const std::optional<TickTime> next = probe.NextTick();
-        if (!next)
-        {
-            break;
-        }
-
-        probe.AdvanceTo(*next);
-        probe.StartTick();
-        const bool any_open = probe.ParseTracks(0);
-        probe.FinishTick();
-        if (!any_open)
+        if (!probe.PlayNextTick())
         {
             break;
         }
@@ -5616,29 +2609,12 @@ Performer Performer::PlayOn(int t, uint32_t target, uint32_t until) const
 
 bool Performer::TurnsInner(int t, uint32_t target) const
 {
-    // The copy starts as PlayOn's does. It stops at the first tick that shows the loop inner.
-    Performer probe = *this;
-    probe.stop_ = false;
-    probe.options_.loops = std::numeric_limits<int>::max();
-    probe.tracks_[t].current = target;
-    probe.WithCore([&](auto& core) { probe.ContinueCoreTrack(core, t); });
-    probe.ParseTracks(t + 1);
-    probe.FinishTick();
-
+    // The copy stops at the first tick that shows the loop inner.
+    Performer probe = ResumeAfterJump(t, target);
     const double end_ms = now_ms_ + kMinLoopSeconds * 1000.0;
     while (probe.now_ms_ < end_ms && !probe.tracks_[t].inner_loops.contains(target))
     {
-        const std::optional<TickTime> next = probe.NextTick();
-        if (!next)
-        {
-            break;
-        }
-
-        probe.AdvanceTo(*next);
-        probe.StartTick();
-        const bool any_open = probe.ParseTracks(0);
-        probe.FinishTick();
-        if (!any_open)
+        if (!probe.PlayNextTick())
         {
             break;
         }
@@ -5792,6 +2768,35 @@ void Performer::EndPerformance(bool finished)
         WithCore([&](auto& core) { RunCoreTail(core, FrameOf(now_ms_ + kMaxTailMs) + 1); });
     }
 
+    EndNotes(finished);
+    if (finished)
+    {
+        SetFinishedEnd();
+    }
+    else
+    {
+        midi_.out_.end_tick = tick_;
+        midi_.out_.seconds = now_ms_ / 1000.0;
+    }
+
+    // Without Settings::reverb_moves_loops, a change of CC91 doesn't move the end. A MIDI track ends after its last
+    // event. The changes of CC91 after the end are therefore dropped. Nothing sounds there.
+    if (!settings_.reverb_moves_loops)
+    {
+        const uint32_t end = midi_.out_.end_tick;
+        const auto after_end = [end](const TrackEvent& e)
+        {
+            return e.kind == EventKind::kReverb && e.tick > end;
+        };
+        for (std::vector<TrackEvent>& events : midi_.out_.tracks)
+        {
+            std::erase_if(events, after_end);
+        }
+    }
+}
+
+void Performer::EndNotes(bool finished)
+{
     for (int t = 0; t < kTrackCount; t++)
     {
         Track& tr = tracks_[t];
@@ -5822,54 +2827,34 @@ void Performer::EndPerformance(bool finished)
         tr.notes.clear();
         tr.detached.clear();
     }
+}
 
-    if (finished)
+void Performer::SetFinishedEnd()
+{
+    // After a main loop that sounded nothing (SilentLoop), what comes after the last sound can't be heard.
+    if (silent_loop_)
     {
-        // After a main loop that sounded nothing (SilentLoop), what comes after the last sound can't be heard.
-        if (silent_loop_)
-        {
-            const uint32_t end = MsToTick(sound_end_ms_);
-            for (std::vector<TrackEvent>& events : midi_.out_.tracks)
-            {
-                std::erase_if(events, [end](const TrackEvent& e) { return e.tick > end; });
-            }
-            std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
-        }
-        else if (EndsAtLastSound(sound_end_ms_ / 1000.0, tick_ms_[LastChangeTick()] / 1000.0))
-        {
-            // Changes that come more than kHoldSeconds after the last sound can't be heard either (EndsAtLastSound).
-            // The performance then ends with the sound. A note below hearing that sounds on keeps its note-off, at the
-            // end.
-            const uint32_t end = MsToTick(sound_end_ms_);
-            seqlib::midi::ClampNoteOffs(midi_.out_, end);
-            seqlib::midi::CutAt(midi_.out_, end);
-            std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
-        }
-
-        const uint32_t last_change = LastChangeTick();
-        midi_.out_.end_tick = std::max(last_change, MsToTick(sound_end_ms_));
-        midi_.out_.seconds = std::max(sound_end_ms_, tick_ms_[last_change]) / 1000.0;
-    }
-    else
-    {
-        midi_.out_.end_tick = tick_;
-        midi_.out_.seconds = now_ms_ / 1000.0;
-    }
-
-    // Without Settings::reverb_moves_loops, a change of CC91 doesn't move the end. A MIDI track ends after its last
-    // event. The changes of CC91 after the end are therefore dropped. Nothing sounds there.
-    if (!settings_.reverb_moves_loops)
-    {
-        const uint32_t end = midi_.out_.end_tick;
-        const auto after_end = [end](const TrackEvent& e)
-        {
-            return e.kind == EventKind::kReverb && e.tick > end;
-        };
+        const uint32_t end = MsToTick(sound_end_ms_);
         for (std::vector<TrackEvent>& events : midi_.out_.tracks)
         {
-            std::erase_if(events, after_end);
+            std::erase_if(events, [end](const TrackEvent& e) { return e.tick > end; });
         }
+        std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
     }
+    else if (EndsAtLastSound(sound_end_ms_ / 1000.0, tick_ms_[LastChangeTick()] / 1000.0))
+    {
+        // Changes that come more than kHoldSeconds after the last sound can't be heard either (EndsAtLastSound).
+        // The performance then ends with the sound. A note below hearing that sounds on keeps its note-off, at the
+        // end.
+        const uint32_t end = MsToTick(sound_end_ms_);
+        seqlib::midi::ClampNoteOffs(midi_.out_, end);
+        seqlib::midi::CutAt(midi_.out_, end);
+        std::erase_if(midi_.out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
+    }
+
+    const uint32_t last_change = LastChangeTick();
+    midi_.out_.end_tick = std::max(last_change, MsToTick(sound_end_ms_));
+    midi_.out_.seconds = std::max(sound_end_ms_, tick_ms_[last_change]) / 1000.0;
 }
 
 uint32_t Performer::MsToTick(double ms) const
@@ -5883,1304 +2868,6 @@ uint32_t Performer::MsToTick(double ms) const
     // Extrapolate at the last tempo, or the MIDI tempo if sequence timing stopped.
     const double per_tick = MsPerTick() > 0 ? MsPerTick() : MidiMsPerTick();
     return static_cast<uint32_t>(tick_ms_.size() - 1 + std::ceil((ms - tick_ms_.back()) / per_tick));
-}
-
-// What the sequences of a piece share in their passes (PerformTogether): the least CC11 peak that each sequence's
-// levels scale for, and the parts that each of its tracks may have. Without part limits, the passes fit the parts into
-// MIDI's channels themselves (FitParts).
-struct SharedPasses
-{
-    double peak = 0.0;
-    std::optional<std::array<uint8_t, kTrackCount>> part_limits;
-};
-
-// A sequence's performance, with the CC11 peak that its levels were scaled for (LevelScale).
-struct Passes
-{
-    Performance performance;
-    double peak = 0.0;
-};
-
-// Tunes every part of every track of `performance` by `pitch`, a ratio of frequencies (PerformOptions::pitch): RPN 2
-// takes the nearest whole number of semitones and RPN 1 the rest, in 8192ths of a semitone. The events come before the
-// part's other events at tick 0, and end with the null RPN. A pitch of 1 adds nothing.
-void TuneChannels(Performance& performance, float pitch)
-{
-    if (pitch == 1.0f || !(pitch > 0.0f))
-    {
-        return;
-    }
-
-    const double semitones = 12.0 * std::log2(static_cast<double>(pitch));
-    const long coarse = std::clamp(std::lround(semitones), -64L, 63L);
-    const long fine = std::clamp(8192 + std::lround((semitones - static_cast<double>(coarse)) * 8192.0), 0L, 16383L);
-    constexpr uint8_t kCoarseTuning = 2;
-    constexpr uint8_t kFineTuning = 1;
-    constexpr uint8_t kNullRpn = 127;
-    const std::array<std::pair<uint8_t, long>, 10> controls = {{
-        {seqlib::midi::cc::kRpnMsb, 0},
-        {seqlib::midi::cc::kRpnLsb, kCoarseTuning},
-        {seqlib::midi::cc::kDataEntry, 64 + coarse},
-        {seqlib::midi::cc::kDataEntryLsb, 0},
-        {seqlib::midi::cc::kRpnMsb, 0},
-        {seqlib::midi::cc::kRpnLsb, kFineTuning},
-        {seqlib::midi::cc::kDataEntry, fine >> 7},
-        {seqlib::midi::cc::kDataEntryLsb, fine & 0x7f},
-        {seqlib::midi::cc::kRpnMsb, kNullRpn},
-        {seqlib::midi::cc::kRpnLsb, kNullRpn},
-    }};
-    for (std::vector<TrackEvent>& events : performance.tracks)
-    {
-        std::set<uint8_t> parts;
-        for (const TrackEvent& e : events)
-        {
-            parts.insert(e.part);
-        }
-
-        std::vector<TrackEvent> tuning;
-        for (const uint8_t part : parts)
-        {
-            for (const auto& [controller, value] : controls)
-            {
-                tuning.push_back({.tick = 0,
-                                  .kind = seqlib::midi::ControlKind(controller),
-                                  .value = static_cast<uint8_t>(value),
-                                  .part = part});
-            }
-        }
-        events.insert(events.begin(), tuning.begin(), tuning.end());
-    }
-}
-
-// Runs as many passes of a sequence's performance as it takes. The passes take what `shared` gives. The counted loops
-// in `endless_loops` loop for ever. A pass stops at `stop_ms`, when it has one (Performer::SetStop).
-Passes PerformPasses(const SoundInfo& sound, const Sequence& seq, Regions& banks, const PerformOptions& options,
-                     const Settings& settings, const SharedPasses& shared = {},
-                     const std::set<std::pair<int, uint32_t>>& endless_loops = {},
-                     std::optional<double> stop_ms = std::nullopt)
-{
-    // Rerun sequences in these cases (PassFindings). When filters change during notes, the rerun moves those filters
-    // from presets to controllers. When legatos raise MIDI notes above the velocities they start at, the rerun starts
-    // those notes higher. When the game releases a MIDI note before its SoundFont attack ends, the rerun gives the note
-    // an attack that reaches the game's level at the release. When rounded CC11 exceeds 127, the rerun scales every
-    // value equally, and the tracks keep their balance. When a note's pitch LFO changes while it sounds, the rerun
-    // gives the note a part of its own. The pitch bends of that part add the LFO. On the Wii, when the voice holds a
-    // note's volume LFO at full level, the rerun gives the note a preset that fits its level.
-    //
-    // Only MIDI events and presets change between passes, but each change can move the others. With a controller-driven
-    // filter, a legato may continue its MIDI note (Legato). That numbers the notes differently and changes the peak
-    // CC11. A higher start lowers the peak. Note ids stay valid only between passes with the same filters. So run
-    // passes until one leaves nothing to change, four at most. A pass whose parts don't fit MIDI's channels also
-    // requires another pass. That pass keeps each track to the parts that fit (FitParts). Every later pass does the
-    // same.
-    PassFindings earlier;      // what the last pass found, for the next to play by
-    double peak = shared.peak; // the CC11 peak the next pass scales for
-    double applied = 0.0;      // the peak the last pass scaled for
-    std::array<uint8_t, kTrackCount> part_limits;
-    part_limits.fill(kPartCount);
-    bool limited = false;
-    if (shared.part_limits)
-    {
-        part_limits = *shared.part_limits;
-        limited = true;
-    }
-
-    std::vector<Performer::LoopChoice> loop_choices;
-    Performance performance;
-    for (int pass = 0; pass < 4; pass++)
-    {
-        Performer performer(settings, sound, seq, banks, options, earlier, LevelScale(peak), part_limits, loop_choices);
-        performer.SetEndlessLoops(endless_loops);
-        if (stop_ms)
-        {
-            performer.SetStop(*stop_ms);
-        }
-        performance = performer.Run();
-
-        // A sequence can repeat its music in a counted loop that the game plays for longer than the limit. When the
-        // performance is cut at the limit inside counted loops, the sequence is performed again with each track's
-        // outermost counted loop endless. Their passes then count as loops of the sequence.
-        if (endless_loops.empty() && !performer.LimitLoops().empty())
-        {
-            return PerformPasses(sound, seq, banks, options, settings, shared, performer.LimitLoops(), stop_ms);
-        }
-
-        applied = peak;
-        loop_choices = performer.LoopChoices();
-
-        bool parts_fit = true;
-        if (!limited)
-        {
-            const std::array<uint8_t, kTrackCount> fitted = FitParts(performance, performer.PartsUsed());
-            for (int t = 0; t < kTrackCount; t++)
-            {
-                parts_fit = parts_fit && fitted[t] >= performer.PartsUsed()[t];
-            }
-            if (!parts_fit)
-            {
-                part_limits = fitted;
-                limited = true;
-            }
-        }
-
-        // After a change of filters, the note ids no longer match. The next pass then takes only the filters.
-        PassFindings found = performer.Findings();
-        if (found.filter_moves != earlier.filter_moves)
-        {
-            found = PassFindings{.filter_moves = found.filter_moves};
-        }
-        const double level_peak = std::max(shared.peak, performer.LevelPeak());
-        if (parts_fit && found == earlier && LevelScale(level_peak) == LevelScale(peak))
-        {
-            break;
-        }
-
-        earlier = std::move(found);
-        peak = level_peak;
-    }
-
-    SetLevelCut(performance, applied);
-    TuneChannels(performance, options.pitch);
-
-    return {std::move(performance), applied};
-}
-
-// A sound's fields and its sequence's bytecode, in sar's form, for the performer: from a CSAR or FSAR archive
-// (ReadSarSequence) or from a Wii archive (ReadWiiSequence).
-struct SarSequence
-{
-    SoundInfo sound;
-    Sequence seq;
-};
-
-// Reads sequence `sound_index` of a CSAR or FSAR archive, with the archive options of `settings`. Throws FormatError
-// for a sequence that the archive and its group files don't hold.
-SarSequence ReadSarSequence(const SoundArchive& archive, uint32_t sound_index, const Settings& settings)
-{
-    const SoundInfo& sound = archive.Sounds()[sound_index];
-    const auto file = archive.FileData(sound.file_id);
-    if (file.empty() && !archive.FileMissing(sound.file_id))
-    {
-        // As in NoData (instruments.cpp), the 3DS's message doesn't mention group files.
-        throw xsflib::FormatError(settings.archive.flavor == sar::Flavor::kCtr || archive.ExternalGroups().empty()
-                                      ? "sequence file is not stored in the archive"
-                                      : "sequence file is not stored in the archive or a group file beside it");
-    }
-    if (file.empty())
-    {
-        throw xsflib::FormatError(archive.Truncated() ? "sequence extends past the truncated archive"
-                                                      : "sequence extends past the archive");
-    }
-
-    return {sound, Sequence::Parse(file, settings.archive)};
-}
-
-// Reads sequence `sound_index` of the Wii's `archive`. The Wii's arguments are big-endian. Throws FormatError for a
-// sequence that the archive doesn't hold.
-SarSequence ReadWiiSequence(const rsar::SoundArchive& archive, uint32_t sound_index)
-{
-    const rsar::SoundInfo& sound = archive.Sounds()[sound_index];
-    const auto file = archive.FileData(sound.file_id);
-    if (file.empty() && !archive.FileMissing(sound.file_id))
-    {
-        throw xsflib::FormatError("sequence file is not stored in the archive");
-    }
-    if (file.empty())
-    {
-        throw xsflib::FormatError(archive.Truncated() ? "sequence extends past the truncated archive"
-                                                      : "sequence extends past the archive");
-    }
-
-    SarSequence wii;
-    wii.seq.data = rsar::Sequence::Parse(file).data;
-    wii.seq.big_endian = true;
-
-    SoundInfo& info = wii.sound;
-    info.name = sound.name;
-    info.file_id = sound.file_id;
-    info.volume = sound.volume;
-    info.pan_mode = sound.pan_mode;
-    info.pan_curve = sound.pan_curve;
-    info.allocate_track_flags = sound.allocate_track_flags;
-    info.start_offset = sound.start_offset;
-
-    return wii;
-}
-
-// How a sequence of a piece plays (PerformTogether): the passes of its main loop to play at least (PerformOptions'
-// `loops`), and what it shares with the piece's other sequences.
-struct PieceRun
-{
-    bool operator==(const PieceRun& other) const
-    {
-        return loops == other.loops && shared.peak == other.shared.peak &&
-               shared.part_limits == other.shared.part_limits;
-    }
-
-    int loops = 1;
-    SharedPasses shared;
-};
-
-// A sequence of a piece, how it plays and its performance.
-struct PieceSequence
-{
-    SarSequence source;
-    PieceRun run;
-    Passes played;
-};
-
-// Performs a sequence of a piece as `run` gives.
-Passes PlayPieceSequence(const SarSequence& source, const PieceRun& run, Regions& banks, const PerformOptions& options,
-                         const Settings& settings)
-{
-    PerformOptions played = options;
-    played.loops = run.loops;
-
-    return PerformPasses(source.sound, source.seq, banks, played, settings, run.shared);
-}
-
-// Whether a track's `events` play a note.
-bool TrackPlays(const std::vector<TrackEvent>& events)
-{
-    const auto note_on = [](const TrackEvent& e)
-    {
-        return e.kind == EventKind::kNoteOn;
-    };
-
-    return std::ranges::any_of(events, note_on);
-}
-
-// Whether `perf` plays a note.
-bool PlaysNotes(const Performance& perf)
-{
-    return std::ranges::any_of(perf.tracks, TrackPlays);
-}
-
-// Whether `perf` has a main loop that the MIDI writer marks: one that ends after it starts.
-bool MarksLoop(const Performance& perf)
-{
-    return perf.loop && perf.loop->end > perf.loop->start;
-}
-
-// The time in milliseconds at which the MIDI tempo of `perf` places fractional tick `tick`.
-double TempoMs(const Performance& perf, double tick)
-{
-    const double timebase = std::max<uint32_t>(perf.timebase, 1);
-    double ms = 0.0;
-    double from = 0.0;
-    double bpm = 120.0;
-    for (const Performance::Tempo& change : perf.tempo)
-    {
-        if (change.tick >= tick)
-        {
-            break;
-        }
-
-        ms += (change.tick - from) * 60000.0 / (bpm * timebase);
-        from = change.tick;
-        bpm = change.bpm;
-    }
-
-    return ms + (tick - from) * 60000.0 / (bpm * timebase);
-}
-
-// The fractional tick at which the MIDI tempo of `perf` places the time `ms`.
-double TempoTick(const Performance& perf, double ms)
-{
-    const double timebase = std::max<uint32_t>(perf.timebase, 1);
-    double at_ms = 0.0;
-    double from = 0.0;
-    double bpm = 120.0;
-    for (const Performance::Tempo& change : perf.tempo)
-    {
-        const double change_ms = at_ms + (change.tick - from) * 60000.0 / (bpm * timebase);
-        if (change_ms >= ms)
-        {
-            break;
-        }
-
-        at_ms = change_ms;
-        from = change.tick;
-        bpm = change.bpm;
-    }
-
-    return from + (ms - at_ms) * bpm * timebase / 60000.0;
-}
-
-// Where the MIDI writer places event `e` of `perf`, in fractional ticks: at the start of its frame, even after its tick
-// (seqlib::midi::FrameTiming::kFrameStart, the timing of the Wii's conversion).
-double EventPlace(const Performance& perf, const TrackEvent& e)
-{
-    if (e.after > 0)
-    {
-        return e.tick + e.after;
-    }
-
-    return e.tick < perf.frame_ticks.size() ? perf.frame_ticks[e.tick] : static_cast<double>(e.tick);
-}
-
-// The timing of a piece's MIDI file: the sequence whose tempo it takes, which sequences place their ticks at that
-// sequence's times, the frames of those ticks, and the piece's main loop and end in those ticks.
-struct PieceTiming
-{
-    std::size_t lead = 0;
-    std::vector<bool> timed;
-    std::vector<double> frame_ticks;
-    std::optional<Performance::Loop> loop;
-    int loops = 0;
-    uint32_t end_tick = 0;
-    std::vector<std::string> warnings;
-};
-
-// Whether `perf` places its ticks at the same times as `lead`: the same timebase and tempo, and the same frames,
-// `frames`, for the ticks that both have.
-bool SameTiming(const Performance& perf, const Performance& lead, const std::vector<double>& frames)
-{
-    const auto same_tempo = [](const Performance::Tempo& a, const Performance::Tempo& b)
-    {
-        return a.tick == b.tick && a.bpm == b.bpm;
-    };
-    const std::size_t common = std::min(perf.frame_ticks.size(), frames.size());
-
-    return perf.timebase == lead.timebase && std::ranges::equal(perf.tempo, lead.tempo, same_tempo) &&
-           std::equal(frames.begin(), frames.begin() + static_cast<std::ptrdiff_t>(common), perf.frame_ticks.begin());
-}
-
-// The fractional tick in the ticks of `lead` at which `lead`'s MIDI tempo places fractional tick `tick` of `perf`.
-double LeadTick(const Performance& perf, const Performance& lead, double tick)
-{
-    return TempoTick(lead, TempoMs(perf, tick));
-}
-
-// Works out the timing of the piece that `sequences` play, with a main loop that plays at least `loops` times.
-//
-// The piece takes the tempo of its first sequence with notes, the lead. A sequence with the lead's timing keeps its
-// ticks. Any other sequence's events move to the places in the lead's ticks where the lead's tempo puts their times.
-//
-// The sequences with notes that loop must have the lead's timing and loops of one length. Each marks its loop on the
-// first pass that the game's next pass repeats (ChooseSteadyPass). The piece marks the latest of those passes. Each
-// sequence then plays one of its later passes there. The game's next pass repeats that pass too. The other sequences
-// with notes have to end before the piece's loop. A sequence without notes doesn't count. The piece ends where its
-// looping sequences end. Where the loops don't fit together, the piece has no loop, with a warning.
-PieceTiming TimePiece(const std::vector<PieceSequence>& sequences, int loops)
-{
-    PieceTiming timing;
-    const auto plays = [](const PieceSequence& s)
-    {
-        return PlaysNotes(s.played.performance);
-    };
-    const auto first = std::ranges::find_if(sequences, plays);
-    timing.lead = first == sequences.end() ? 0 : static_cast<std::size_t>(first - sequences.begin());
-
-    // The sequences with the lead's timing, the frames of their ticks, and the end of the piece without a loop.
-    const Performance& lead = sequences[timing.lead].played.performance;
-    timing.frame_ticks = lead.frame_ticks;
-    std::vector<std::size_t> looping;
-    double end = 0.0;
-    for (const PieceSequence& s : sequences)
-    {
-        const Performance& perf = s.played.performance;
-        const bool timed = SameTiming(perf, lead, timing.frame_ticks);
-        timing.timed.push_back(timed);
-        if (timed && perf.frame_ticks.size() > timing.frame_ticks.size())
-        {
-            timing.frame_ticks = perf.frame_ticks;
-        }
-
-        end = std::max(end, timed ? perf.end_tick : LeadTick(perf, lead, perf.end_tick));
-        if (PlaysNotes(perf) && MarksLoop(perf))
-        {
-            looping.push_back(timing.timed.size() - 1);
-        }
-    }
-
-    timing.end_tick = static_cast<uint32_t>(std::ceil(end));
-    if (looping.empty())
-    {
-        return timing;
-    }
-
-    // The loops must have the lead's timing and one length, and start a whole number of passes apart.
-    const uint32_t length =
-        sequences[looping[0]].played.performance.loop->end - sequences[looping[0]].played.performance.loop->start;
-    uint32_t start = 0;
-    uint32_t loop_end = 0;
-    bool fits = true;
-    for (const std::size_t k : looping)
-    {
-        const Performance& perf = sequences[k].played.performance;
-        fits = fits && timing.timed[k] && perf.loop->end - perf.loop->start == length;
-        start = std::max(start, perf.loop->start);
-        loop_end = std::max(loop_end, perf.end_tick);
-    }
-    for (const std::size_t k : looping)
-    {
-        const Performance& perf = sequences[k].played.performance;
-        fits = fits && (start - perf.loop->start) % length == 0 && (loop_end - perf.loop->start) % length == 0;
-    }
-    if (!fits)
-    {
-        timing.warnings.push_back("the sequences loop at different places: the piece has no loop markers");
-        return timing;
-    }
-
-    // The sequences with notes that don't loop end before the piece's loop. Their events at the loop's tick are no
-    // notes.
-    for (std::size_t k = 0; k < sequences.size(); k++)
-    {
-        const Performance& perf = sequences[k].played.performance;
-        if (!PlaysNotes(perf) || MarksLoop(perf))
-        {
-            continue;
-        }
-
-        double last = 0.0;
-        for (const std::vector<TrackEvent>& events : perf.tracks)
-        {
-            for (const TrackEvent& e : events)
-            {
-                last = std::max(last, timing.timed[k] ? e.tick + e.after : LeadTick(perf, lead, EventPlace(perf, e)));
-            }
-        }
-        while (start < last)
-        {
-            start += length;
-        }
-    }
-
-    loop_end = std::max(loop_end, start + static_cast<uint32_t>(std::max(loops, 1)) * length);
-    timing.loop = Performance::Loop{start, start + length};
-    timing.loops = static_cast<int>((loop_end - start) / length);
-    timing.end_tick = loop_end;
-
-    return timing;
-}
-
-// The fractional place `place` in the ticks of a piece as an event's tick and the fraction after it (TrackEvent). The
-// fraction is above 0 for any place above 0. The MIDI writer then puts the event at that place, not at its tick's
-// frame.
-std::pair<uint32_t, double> TickAndAfter(double place)
-{
-    if (place <= 0.0)
-    {
-        return {0, 0.0};
-    }
-
-    const double tick = std::ceil(place) - 1.0;
-
-    return {static_cast<uint32_t>(tick), place - tick};
-}
-
-// Merges the performances of `sequences` into the performance of their piece, with `timing`. The piece keeps each
-// sequence's tracks with notes, in order, each named after its sequence's label and its track. Note ids and presets
-// are numbered across the piece. Throws FormatError when the tracks with notes are more than MIDI's 16.
-Performance MergePiece(const std::vector<PieceSequence>& sequences, const PieceTiming& timing)
-{
-    const Performance& lead = sequences[timing.lead].played.performance;
-    Performance piece;
-    piece.timebase = lead.timebase;
-    piece.tempo = lead.tempo;
-    piece.frame_ticks = timing.frame_ticks;
-    piece.since_march_2008 = lead.since_march_2008;
-    piece.balance = lead.balance;
-    piece.loop = timing.loop;
-    piece.loops = timing.loops;
-    piece.end_tick = timing.end_tick;
-
-    int next_track = 0;
-    uint32_t note_base = 0;
-    for (std::size_t k = 0; k < sequences.size(); k++)
-    {
-        const Performance& perf = sequences[k].played.performance;
-        const std::string& label = sequences[k].source.sound.name;
-
-        // Each track with notes, with the piece's note ids and presets, at the lead's ticks. The piece takes only the
-        // presets that those tracks use.
-        uint32_t last_note = 0;
-        for (int t = 0; t < kTrackCount; t++)
-        {
-            if (!TrackPlays(perf.tracks[t]))
-            {
-                continue;
-            }
-            if (next_track == kTrackCount)
-            {
-                throw xsflib::FormatError("the sequences play notes on more tracks than MIDI's 16 channels");
-            }
-
-            std::vector<TrackEvent>& events = piece.tracks[next_track];
-            for (TrackEvent e : perf.tracks[t])
-            {
-                if (e.note != 0)
-                {
-                    last_note = std::max(last_note, e.note);
-                    e.note += note_base;
-                }
-                if (e.kind == EventKind::kPreset)
-                {
-                    e.preset = seqlib::midi::PresetIndex(piece.presets, perf.presets[e.preset]);
-                }
-                if (!timing.timed[k])
-                {
-                    std::tie(e.tick, e.after) = TickAndAfter(LeadTick(perf, lead, EventPlace(perf, e)));
-                }
-                events.push_back(e);
-            }
-
-            piece.track_names[next_track] = label + " Track " + std::to_string(t);
-            piece.biquad_types[next_track] = perf.biquad_types[t];
-            next_track++;
-        }
-        note_base += last_note;
-
-        // What the sequence's performance found, and its length. The sequences share their levels' cut.
-        piece.seconds = std::max(piece.seconds, perf.seconds);
-        piece.truncated = piece.truncated || perf.truncated;
-        piece.holds = piece.holds || perf.holds;
-        piece.level_cut_db = std::max(piece.level_cut_db, perf.level_cut_db);
-        for (const auto& [what, count] : perf.approximations)
-        {
-            piece.approximations[what] += count;
-        }
-        for (const std::string& warning : perf.warnings)
-        {
-            piece.warnings.push_back(label + ": " + warning);
-        }
-    }
-
-    piece.warnings.insert(piece.warnings.end(), timing.warnings.begin(), timing.warnings.end());
-
-    return piece;
-}
-
-// How each of `sequences` has to play for its piece, `piece`, with `timing` (PerformTogether): every looping sequence
-// to the piece's end, every sequence's levels at the scale of the loudest, and each track within the parts that the
-// piece's MIDI channels leave it.
-std::vector<PieceRun> PieceRuns(const std::vector<PieceSequence>& sequences, const PieceTiming& timing,
-                                const Performance& piece)
-{
-    std::vector<PieceRun> runs;
-    double peak = 0.0;
-    for (const PieceSequence& s : sequences)
-    {
-        runs.push_back(s.run);
-        peak = std::max(peak, s.played.peak);
-    }
-
-    // The parts that each of the piece's tracks uses, and the parts that MIDI's channels leave it.
-    std::array<uint8_t, kTrackCount> used{};
-    for (int t = 0; t < kTrackCount; t++)
-    {
-        for (const TrackEvent& e : piece.tracks[t])
-        {
-            if (e.kind == EventKind::kNoteOn)
-            {
-                used[t] = std::max<uint8_t>(used[t], static_cast<uint8_t>(e.part + 1));
-            }
-        }
-    }
-    const std::array<uint8_t, kTrackCount> fitted = FitParts(piece, used);
-
-    int piece_track = 0;
-    for (std::size_t k = 0; k < sequences.size(); k++)
-    {
-        const Performance& perf = sequences[k].played.performance;
-        PieceRun& run = runs[k];
-        if (timing.loop && MarksLoop(perf) && PlaysNotes(perf))
-        {
-            const uint32_t length = perf.loop->end - perf.loop->start;
-            const auto passes = static_cast<int>((timing.end_tick - perf.loop->start) / length);
-            if (passes > perf.loops)
-            {
-                run.loops = std::max(run.loops, passes);
-            }
-        }
-        if (LevelScale(peak) != LevelScale(sequences[k].played.peak))
-        {
-            run.shared.peak = peak;
-        }
-
-        // The piece's tracks hold this sequence's tracks with notes, in order.
-        std::array<uint8_t, kTrackCount> limits;
-        limits.fill(1);
-        bool over = false;
-        for (int t = 0; t < kTrackCount; t++)
-        {
-            if (piece_track < kTrackCount && TrackPlays(perf.tracks[t]))
-            {
-                limits[t] = fitted[piece_track];
-                over = over || fitted[piece_track] < used[piece_track];
-                piece_track++;
-            }
-        }
-        if (over)
-        {
-            run.shared.part_limits = limits;
-        }
-    }
-
-    return runs;
-}
-
-// Performs `sequences`, whose sources are read, as one piece with the banks of `regions` (PerformTogether). Each
-// sequence plays alone first. Then each that has to play otherwise for the piece plays again (PieceRuns). A run can
-// only add passes, lower the levels' scale or take parts away. The runs therefore settle in a round or two.
-Performance PerformPiece(std::vector<PieceSequence>& sequences, Regions& regions, const PerformOptions& options,
-                         const Settings& settings)
-{
-    for (PieceSequence& s : sequences)
-    {
-        s.run.loops = options.loops;
-        s.played = PlayPieceSequence(s.source, s.run, regions, options, settings);
-    }
-
-    for (int round = 0; round < 3; round++)
-    {
-        const PieceTiming timing = TimePiece(sequences, options.loops);
-        Performance piece = MergePiece(sequences, timing);
-        const std::vector<PieceRun> runs = PieceRuns(sequences, timing, piece);
-        bool again = false;
-        for (std::size_t k = 0; k < sequences.size(); k++)
-        {
-            if (runs[k] != sequences[k].run)
-            {
-                sequences[k].run = runs[k];
-                sequences[k].played = PlayPieceSequence(sequences[k].source, runs[k], regions, options, settings);
-                again = true;
-            }
-        }
-        if (!again)
-        {
-            return piece;
-        }
-    }
-
-    return MergePiece(sequences, TimePiece(sequences, options.loops));
-}
-
-// Plays a sequence once, as the first pass of PerformPasses does, and stops at `stop_ms` when there's one. What a pass
-// finds for the next changes only the MIDI events, not what the sequence's commands do. One pass therefore gives the
-// changes of the global variables and the variables read (PerformBeside).
-Performance PlayOnce(const SarSequence& source, Regions& regions, const PerformOptions& options,
-                     const Settings& settings, std::optional<double> stop_ms)
-{
-    std::array<uint8_t, kTrackCount> limits;
-    limits.fill(kPartCount);
-    Performer performer(settings, source.sound, source.seq, regions, options, {}, LevelScale(0.0), limits, {});
-    if (stop_ms)
-    {
-        performer.SetStop(*stop_ms);
-    }
-
-    return performer.Run();
-}
-
-// The changes among `changes` of the global variables that `read` marks (Performance::globals_read), from frame `from`
-// on, each `shift` frames later.
-std::vector<VariableChange> ReadChanges(const std::vector<VariableChange>& changes, uint16_t read, uint64_t from,
-                                        int64_t shift)
-{
-    std::vector<VariableChange> taken;
-    for (const VariableChange& change : changes)
-    {
-        const bool global = change.index >= 16 && change.index < 32;
-        if (global && (read >> (change.index - 16) & 1) && change.frame >= from)
-        {
-            taken.push_back({.frame = static_cast<uint64_t>(static_cast<int64_t>(change.frame) + shift),
-                             .index = change.index,
-                             .value = change.value});
-        }
-    }
-
-    return taken;
-}
-
-// The global variables in frame `frame` of the companion, after its ticks (PerformBeside): -1 at first, then the
-// game's writes `writes` and the companion's changes `changes`, frame by frame. In each frame, the game's writes come
-// before the ticks.
-std::array<int16_t, 16> GlobalsAfter(uint64_t frame, const std::vector<VariableChange>& writes,
-                                     const std::vector<VariableChange>& changes)
-{
-    std::vector<std::pair<std::pair<uint64_t, int>, VariableChange>> ordered;
-    for (const VariableChange& w : writes)
-    {
-        ordered.push_back({{w.frame, 0}, w});
-    }
-    for (const VariableChange& c : changes)
-    {
-        ordered.push_back({{c.frame, 1}, c});
-    }
-    std::ranges::stable_sort(ordered, {}, &std::pair<std::pair<uint64_t, int>, VariableChange>::first);
-
-    std::array<int16_t, 16> globals;
-    globals.fill(-1);
-    for (const auto& [when, change] : ordered)
-    {
-        if (when.first <= frame && change.index >= 16 && change.index < 32)
-        {
-            globals[change.index - 16] = change.value;
-        }
-    }
-
-    return globals;
-}
-
-// How a piece and its companion play together (PerformBeside): the companion's frame in which the piece starts, and
-// each sound's options with the other's changes.
-struct BesideTiming
-{
-    uint64_t start = 0;
-    PerformOptions piece;
-    PerformOptions companion;
-};
-
-// The time a companion has to hand over to its piece (PerformBeside).
-constexpr double kHandOverMs = 30000.0;
-
-// The rounds in which the piece and its companion take each other's changes, at most (PerformBeside).
-constexpr int kBesideRounds = 8;
-
-// Works out how the piece `piece` and its companion `companion` play together (PerformBeside), with the piece's options
-// `piece_options` and the companion's `companion_options`. Each sound plays with the other's changes from its last run,
-// until a run of each changes nothing that the other reads. The piece plays one more pass of its loop than its options
-// ask. Its changes then cover the companion's run past the piece's end (MergeBeside). Nothing when the companion
-// doesn't hand over within kHandOverMs.
-std::optional<BesideTiming> TimeBeside(const SarSequence& piece, Regions& piece_regions,
-                                       const PerformOptions& piece_options, const SarSequence& companion,
-                                       Regions& companion_regions, const PerformOptions& companion_options,
-                                       const CompanionScript& script, const Settings& settings)
-{
-    std::optional<BesideTiming> settled;
-    std::vector<VariableChange> piece_changes; // in the companion's frames
-    uint16_t piece_reads = 0;
-    uint16_t companion_reads = 0;
-    double piece_ms = 0.0;
-    for (int round = 0; round < kBesideRounds; round++)
-    {
-        // The companion takes the game's writes, and the piece's changes in the frame after them.
-        BesideTiming timing;
-        timing.companion = companion_options;
-        timing.companion.changes = script.writes;
-        const std::vector<VariableChange> from_piece = ReadChanges(piece_changes, companion_reads, 0, 1);
-        timing.companion.changes.insert(timing.companion.changes.end(), from_piece.begin(), from_piece.end());
-        const double stop =
-            settled ? static_cast<double>(settled->start) * settings.frame_ms + piece_ms + kHoldSeconds * 1000.0
-                    : kHandOverMs;
-        const Performance played = PlayOnce(companion, companion_regions, timing.companion, settings, stop);
-        const auto hand_over =
-            std::ranges::find_if(played.global_changes, [&script](const VariableChange& c)
-                                 { return c.index == script.hand_over && c.value == script.hand_over_value; });
-        if (hand_over == played.global_changes.end())
-        {
-            return std::nullopt;
-        }
-
-        // The piece starts in that frame with the global variables as the game and the companion have left them. It
-        // takes the game's later writes and the companion's later changes in their frames.
-        timing.start = hand_over->frame;
-        timing.piece = piece_options;
-        const std::array<int16_t, 16> globals = GlobalsAfter(timing.start, script.writes, played.global_changes);
-        for (int i = 0; i < 16; i++)
-        {
-            timing.piece.variables.try_emplace(static_cast<uint8_t>(16 + i), globals[i]);
-        }
-        const auto shift = -static_cast<int64_t>(timing.start);
-        const std::vector<VariableChange> game = ReadChanges(script.writes, piece_reads, timing.start + 1, shift);
-        const std::vector<VariableChange> from_companion =
-            ReadChanges(played.global_changes, piece_reads, timing.start + 1, shift);
-        timing.piece.changes.insert(timing.piece.changes.end(), game.begin(), game.end());
-        timing.piece.changes.insert(timing.piece.changes.end(), from_companion.begin(), from_companion.end());
-
-        PerformOptions longer = timing.piece;
-        longer.loops = std::max(piece_options.loops, 1) + 1;
-        const Performance piece_played = PlayOnce(piece, piece_regions, longer, settings, std::nullopt);
-        std::vector<VariableChange> changes = piece_played.global_changes;
-        for (VariableChange& change : changes)
-        {
-            change.frame += timing.start;
-        }
-
-        const bool same = settled && settled->start == timing.start && changes == piece_changes &&
-                          piece_played.globals_read == piece_reads && played.globals_read == companion_reads &&
-                          settled->piece.changes == timing.piece.changes;
-        piece_changes = std::move(changes);
-        piece_reads = piece_played.globals_read;
-        companion_reads = played.globals_read;
-        piece_ms = TempoMs(piece_played, piece_played.end_tick);
-        settled = std::move(timing);
-        if (same)
-        {
-            break;
-        }
-    }
-
-    // The companion's final options take the piece's last changes.
-    settled->companion = companion_options;
-    settled->companion.changes = script.writes;
-    const std::vector<VariableChange> from_piece = ReadChanges(piece_changes, companion_reads, 0, 1);
-    settled->companion.changes.insert(settled->companion.changes.end(), from_piece.begin(), from_piece.end());
-
-    return settled;
-}
-
-// A merge of a piece's performance and its companion's (MergeBeside): the performance, and the source of each of its
-// tracks. A source is 0 for the piece or 1 for the companion, and the sound's track. Tracks that the merge doesn't
-// use have the source {-1, -1}.
-struct BesideMerge
-{
-    Performance performance;
-    std::array<std::pair<int, int>, kTrackCount> sources;
-};
-
-// Merges the piece's performance `lead`, labelled `lead_label`, and the companion's performance `companion`, labelled
-// `companion_label` (PerformBeside). The companion started `offset_ms` before the piece. The merge keeps the piece's
-// timing, loop and end. It contains the piece's tracks with notes, then the companion's, each named after its sequence
-// and its track. The companion's events go where the piece's tempo puts their times. The companion's notes before the
-// piece's start, or from the piece's end, are left out. Its settings from before the start move to the start. An event
-// of the companion within half a frame (`frame_ms`) of the start counts as in the start's frame. Rounding can put such
-// an event a little before the start. A note that sounds at the end stops there. The companion's presets use the
-// companion's slots in the piece's banks (BankSet::SetCompanion). Where the piece loops, the companion's events of the
-// marked pass have to come again in the pass after it, to within one and a half frames. The companion plays on past the
-// piece's end for that.
-// Otherwise the piece has no loop, with a warning. A track of the companion without a note between the piece's start
-// and its end is left out. Throws FormatError when the tracks with notes are more than MIDI's 16.
-BesideMerge MergeBeside(const Performance& lead, const std::string& lead_label, const Performance& companion,
-                        const std::string& companion_label, double offset_ms, double frame_ms)
-{
-    BesideMerge merge;
-    merge.sources.fill({-1, -1});
-    Performance& piece = merge.performance;
-    piece.timebase = lead.timebase;
-    piece.tempo = lead.tempo;
-    piece.frame_ticks = lead.frame_ticks;
-    piece.loop = lead.loop;
-    piece.loops = lead.loops;
-    piece.end_tick = lead.end_tick;
-    piece.seconds = lead.seconds;
-    piece.truncated = lead.truncated;
-    piece.holds = lead.holds;
-    piece.level_cut_db = std::max(lead.level_cut_db, companion.level_cut_db);
-    piece.draws = lead.draws || companion.draws;
-    for (const auto& [what, count] : lead.approximations)
-    {
-        piece.approximations[what] += count;
-    }
-    for (const auto& [what, count] : companion.approximations)
-    {
-        piece.approximations[what] += count;
-    }
-    for (const std::string& warning : lead.warnings)
-    {
-        piece.warnings.push_back(lead_label + ": " + warning);
-    }
-    for (const std::string& warning : companion.warnings)
-    {
-        piece.warnings.push_back(companion_label + ": " + warning);
-    }
-
-    int next_track = 0;
-    uint32_t note_base = 0;
-    const auto add_track = [&](const Performance& perf, const std::string& label, int source, int t)
-    {
-        if (next_track == kTrackCount)
-        {
-            throw xsflib::FormatError("the sequences play notes on more tracks than MIDI's 16 channels");
-        }
-
-        piece.track_names[next_track] = label + " Track " + std::to_string(t);
-        piece.biquad_types[next_track] = perf.biquad_types[t];
-        merge.sources[next_track] = {source, t};
-        return &piece.tracks[next_track++];
-    };
-
-    for (int t = 0; t < kTrackCount; t++)
-    {
-        if (!TrackPlays(lead.tracks[t]))
-        {
-            continue;
-        }
-
-        std::vector<TrackEvent>& events = *add_track(lead, lead_label, 0, t);
-        for (TrackEvent e : lead.tracks[t])
-        {
-            note_base = std::max(note_base, e.note);
-            if (e.kind == EventKind::kPreset)
-            {
-                e.preset = seqlib::midi::PresetIndex(piece.presets, lead.presets[e.preset]);
-            }
-            events.push_back(e);
-        }
-    }
-
-    // A companion event at its place in the piece's ticks, with what the comparison of passes compares.
-    struct Placed
-    {
-        double place = 0.0;
-        TrackEvent event;
-    };
-    const auto same_event = [](const TrackEvent& a, const TrackEvent& b)
-    {
-        return a.kind == b.kind && a.key == b.key && a.value == b.value && a.preset == b.preset &&
-               a.semitones == b.semitones && a.part == b.part;
-    };
-
-    const double end = piece.end_tick;
-    bool repeats = true;
-    for (int t = 0; t < kTrackCount; t++)
-    {
-        if (!TrackPlays(companion.tracks[t]))
-        {
-            continue;
-        }
-
-        // The settings before the piece's start, the last of each kind on each part, and the notes left out.
-        std::map<std::pair<uint8_t, EventKind>, TrackEvent> settings_at_start;
-        std::set<uint32_t> left_out;
-        std::vector<Placed> placed;
-        for (TrackEvent e : companion.tracks[t])
-        {
-            if (e.note != 0)
-            {
-                e.note += note_base;
-            }
-            if (e.kind == EventKind::kPreset)
-            {
-                PresetKey key = companion.presets[e.preset];
-                key.bank_slot = static_cast<uint8_t>(key.bank_slot + BankSet::kCompanionSlot);
-                e.preset = seqlib::midi::PresetIndex(piece.presets, key);
-            }
-
-            const double ms = TempoMs(companion, EventPlace(companion, e)) - offset_ms;
-            const bool note = e.kind == EventKind::kNoteOn || e.kind == EventKind::kNoteOff;
-            if (ms < -0.5 * frame_ms)
-            {
-                if (e.kind == EventKind::kNoteOn)
-                {
-                    left_out.insert(e.note);
-                }
-                else if (!note && e.kind != EventKind::kSoundOff)
-                {
-                    e.tick = 0;
-                    e.after = 0.0;
-                    settings_at_start[{e.part, e.kind}] = e;
-                }
-                continue;
-            }
-            if (e.kind == EventKind::kNoteOff && left_out.contains(e.note))
-            {
-                continue;
-            }
-
-            placed.push_back({TempoTick(lead, std::max(ms, 0.0)), e});
-        }
-
-        // Where the piece loops, the companion's events in the marked pass have to come again one pass later. The
-        // companion's events lie at the starts of their frames, and the piece's frames bound the passes: the frame of
-        // the loop's start, of its end, and of the end of the pass after it. Rounding can put an event a little before
-        // the start of its frame. Events compare by their times from their pass's start, to within one and a half
-        // frames. The companion's ticks needn't keep step with the piece's frames. An event can then move by a frame
-        // from one pass to the next. A note-off at the start of a pass can end a note of the pass before. The
-        // note-offs therefore don't count.
-        if (piece.loop && repeats)
-        {
-            const auto frame_start = [&lead, frame_ms](double tick)
-            {
-                return std::floor((TempoMs(lead, tick) + 0.01) / frame_ms) * frame_ms;
-            };
-            const double first = frame_start(piece.loop->start);
-            const double second = frame_start(piece.loop->end);
-            const double third = frame_start(piece.loop->end + (piece.loop->end - piece.loop->start));
-            std::vector<std::pair<double, TrackEvent>> marked;
-            std::vector<std::pair<double, TrackEvent>> next;
-            for (const Placed& p : placed)
-            {
-                const double ms = TempoMs(lead, p.place) + 0.01;
-                if (p.event.kind == EventKind::kNoteOff)
-                {
-                    continue;
-                }
-                if (ms >= first && ms < second)
-                {
-                    marked.push_back({ms - first, p.event});
-                }
-                else if (ms >= second && ms < third)
-                {
-                    next.push_back({ms - second, p.event});
-                }
-            }
-            const auto same =
-                [&same_event, frame_ms](const std::pair<double, TrackEvent>& a, const std::pair<double, TrackEvent>& b)
-            {
-                return std::abs(a.first - b.first) < 1.5 * frame_ms && same_event(a.second, b.second);
-            };
-            repeats = std::ranges::equal(marked, next, same);
-        }
-
-        const bool sounds = std::ranges::any_of(
-            placed, [end](const Placed& p) { return p.event.kind == EventKind::kNoteOn && p.place < end; });
-        if (!sounds)
-        {
-            continue;
-        }
-
-        std::vector<TrackEvent>& events = *add_track(companion, companion_label, 1, t);
-        for (const auto& [kind, e] : settings_at_start)
-        {
-            events.push_back(e);
-        }
-        for (Placed& p : placed)
-        {
-            TrackEvent& e = p.event;
-            if (p.place >= end)
-            {
-                // A note that sounds at the piece's end stops there.
-                if (e.kind != EventKind::kNoteOff || left_out.contains(e.note))
-                {
-                    if (e.kind == EventKind::kNoteOn)
-                    {
-                        left_out.insert(e.note);
-                    }
-                    continue;
-                }
-                p.place = end;
-            }
-            std::tie(e.tick, e.after) = TickAndAfter(p.place);
-            events.push_back(e);
-        }
-        std::ranges::stable_sort(
-            events, [](const TrackEvent& a, const TrackEvent& b) { return a.tick + a.after < b.tick + b.after; });
-    }
-
-    if (piece.loop && !repeats)
-    {
-        piece.DropLoop();
-        piece.warnings.push_back(companion_label + " doesn't repeat with the loop of " + lead_label +
-                                 ": the piece has no loop markers");
-    }
-
-    return merge;
-}
-
-// The shared level scale and the part limits that the piece and its companion take for their merge `merge`
-// (PerformBeside), as PieceRuns gives them to the sequences of a piece.
-std::pair<SharedPasses, SharedPasses> BesideShares(const Passes& lead, const Passes& companion,
-                                                   const BesideMerge& merge)
-{
-    const Performance& merged = merge.performance;
-    std::pair<SharedPasses, SharedPasses> shares;
-    const double peak = std::max(lead.peak, companion.peak);
-    if (LevelScale(peak) != LevelScale(lead.peak))
-    {
-        shares.first.peak = peak;
-    }
-    if (LevelScale(peak) != LevelScale(companion.peak))
-    {
-        shares.second.peak = peak;
-    }
-
-    std::array<uint8_t, kTrackCount> used{};
-    for (int t = 0; t < kTrackCount; t++)
-    {
-        for (const TrackEvent& e : merged.tracks[t])
-        {
-            if (e.kind == EventKind::kNoteOn)
-            {
-                used[t] = std::max<uint8_t>(used[t], static_cast<uint8_t>(e.part + 1));
-            }
-        }
-    }
-    const std::array<uint8_t, kTrackCount> fitted = FitParts(merged, used);
-
-    const auto limit = [&](int source, SharedPasses& share)
-    {
-        std::array<uint8_t, kTrackCount> limits;
-        limits.fill(1);
-        bool over = false;
-        for (int m = 0; m < kTrackCount; m++)
-        {
-            if (merge.sources[m].first == source)
-            {
-                limits[merge.sources[m].second] = fitted[m];
-                over = over || fitted[m] < used[m];
-            }
-        }
-        if (over)
-        {
-            share.part_limits = limits;
-        }
-    };
-    limit(0, shares.first);
-    limit(1, shares.second);
-
-    return shares;
-}
-
-} // namespace
-
-// Finds, reads and performs a CSAR or FSAR archive's sequence.
-Performance Perform(const SoundArchive& archive, uint32_t sound_index, BankSet& banks, const PerformOptions& options,
-                    const Settings& settings)
-{
-    const SarSequence source = ReadSarSequence(archive, sound_index, settings);
-    SarRegions regions(banks);
-    return PerformPasses(source.sound, source.seq, regions, options, settings).performance;
-}
-
-// Finds, reads and performs a Wii archive's sequence. The sound's fields and the sequence's bytecode go to the
-// performer in sar's form (ReadWiiSequence).
-Performance Perform(const rsar::SoundArchive& archive, uint32_t sound_index, RsarBankSet& banks,
-                    const PerformOptions& options, const Settings& settings)
-{
-    const SarSequence wii = ReadWiiSequence(archive, sound_index);
-    RsarRegions regions(banks, settings.wii_build.SinceMarch2008());
-    return PerformPasses(wii.sound, wii.seq, regions, options, settings).performance;
-}
-
-Performance PerformTogether(const SoundArchive& archive, std::span<const uint32_t> sound_indices, BankSet& banks,
-                            const PerformOptions& options, const Settings& settings)
-{
-    if (sound_indices.empty())
-    {
-        throw std::invalid_argument("no sequences to perform together");
-    }
-
-    // One SoundFont holds the piece's instruments. The sequences therefore share their banks, and the pan mode that
-    // places their stereo waves.
-    const SoundInfo& first = archive.Sounds()[sound_indices[0]];
-    for (const uint32_t index : sound_indices)
-    {
-        const SoundInfo& sound = archive.Sounds()[index];
-        if (sound.banks != first.banks || sound.pan_mode != first.pan_mode)
-        {
-            throw std::invalid_argument(first.name + " and " + sound.name + " differ in banks or pan mode");
-        }
-    }
-
-    SarRegions regions(banks);
-    std::vector<PieceSequence> sequences(sound_indices.size());
-    for (std::size_t k = 0; k < sound_indices.size(); k++)
-    {
-        sequences[k].source = ReadSarSequence(archive, sound_indices[k], settings);
-    }
-
-    return PerformPiece(sequences, regions, options, settings);
-}
-
-Performance PerformTogether(const rsar::SoundArchive& archive, std::span<const uint32_t> sound_indices,
-                            RsarBankSet& banks, const PerformOptions& options, const Settings& settings)
-{
-    if (sound_indices.empty())
-    {
-        throw std::invalid_argument("no sequences to perform together");
-    }
-
-    // One SoundFont holds the piece's instruments. The sequences therefore share their bank, and the pan mode that
-    // places its stereo waves.
-    const rsar::SoundInfo& first = archive.Sounds()[sound_indices[0]];
-    for (const uint32_t index : sound_indices)
-    {
-        const rsar::SoundInfo& sound = archive.Sounds()[index];
-        if (sound.bank != first.bank || sound.pan_mode != first.pan_mode)
-        {
-            throw std::invalid_argument(first.name + " and " + sound.name + " differ in bank or pan mode");
-        }
-    }
-
-    RsarRegions regions(banks, settings.wii_build.SinceMarch2008());
-    std::vector<PieceSequence> sequences(sound_indices.size());
-    for (std::size_t k = 0; k < sound_indices.size(); k++)
-    {
-        sequences[k].source = ReadWiiSequence(archive, sound_indices[k]);
-    }
-
-    return PerformPiece(sequences, regions, options, settings);
-}
-
-Performance PerformBeside(const SoundArchive& archive, uint32_t sound_index, BankSet& banks,
-                          const SoundArchive& companion_archive, uint32_t companion_index, BankSet& companion_banks,
-                          const CompanionScript& script, const PerformOptions& options, const Settings& settings)
-{
-    const SarSequence piece = ReadSarSequence(archive, sound_index, settings);
-    const SarSequence companion = ReadSarSequence(companion_archive, companion_index, settings);
-    banks.SetCompanion(&companion_banks);
-    SarRegions piece_regions(banks);
-    SarRegions companion_regions(companion_banks);
-
-    // The companion plays with the piece's options, but not with its variables, changes, tracks, banks and volume. It
-    // plays as long as the piece.
-    PerformOptions companion_options = options;
-    companion_options.variables.clear();
-    companion_options.track_variables.clear();
-    companion_options.changes.clear();
-    companion_options.procedure_changes.clear();
-    companion_options.tracks = 0xffff;
-    companion_options.banks.reset();
-    companion_options.volume = script.volume;
-    companion_options.loops = std::numeric_limits<int>::max();
-
-    const std::optional<BesideTiming> timing =
-        TimeBeside(piece, piece_regions, options, companion, companion_regions, companion_options, script, settings);
-    if (!timing)
-    {
-        throw xsflib::FormatError(companion.sound.name + " doesn't hand over to " + piece.sound.name +
-                                  " within 30 seconds");
-    }
-
-    // The companion plays on past the piece's end by a pass of the piece's loop, for MergeBeside's comparison.
-    const double offset_ms = static_cast<double>(timing->start) * settings.frame_ms;
-    const auto stop = [offset_ms](const Performance& lead)
-    {
-        double ms = offset_ms + TempoMs(lead, lead.end_tick) + kHoldSeconds * 1000.0;
-        if (lead.loop)
-        {
-            ms += TempoMs(lead, lead.loop->end) - TempoMs(lead, lead.loop->start);
-        }
-
-        return ms;
-    };
-
-    SharedPasses lead_share;
-    SharedPasses companion_share;
-    Passes lead = PerformPasses(piece.sound, piece.seq, piece_regions, timing->piece, settings, lead_share);
-    Passes played = PerformPasses(companion.sound, companion.seq, companion_regions, timing->companion, settings,
-                                  companion_share, {}, stop(lead.performance));
-    const auto same = [](const SharedPasses& a, const SharedPasses& b)
-    {
-        return a.peak == b.peak && a.part_limits == b.part_limits;
-    };
-    for (int round = 0; round < 3; round++)
-    {
-        BesideMerge merged = MergeBeside(lead.performance, piece.sound.name, played.performance, companion.sound.name,
-                                         offset_ms, settings.frame_ms);
-        const auto [lead_now, companion_now] = BesideShares(lead, played, merged);
-        if (same(lead_now, lead_share) && same(companion_now, companion_share))
-        {
-            return std::move(merged.performance);
-        }
-
-        if (!same(lead_now, lead_share))
-        {
-            lead_share = lead_now;
-            lead = PerformPasses(piece.sound, piece.seq, piece_regions, timing->piece, settings, lead_share);
-        }
-        companion_share = companion_now;
-        played = PerformPasses(companion.sound, companion.seq, companion_regions, timing->companion, settings,
-                               companion_share, {}, stop(lead.performance));
-    }
-
-    return MergeBeside(lead.performance, piece.sound.name, played.performance, companion.sound.name, offset_ms,
-                       settings.frame_ms)
-        .performance;
-}
-
-PresetKey StartingPresetKey(uint32_t program, const Settings& settings)
-{
-    Track track;
-    track.engine = settings.engine;
-    track.Init();
-    track.program = program;
-
-    return TrackPresetKey(track);
 }
 
 } // namespace ntdlib::sequence_export

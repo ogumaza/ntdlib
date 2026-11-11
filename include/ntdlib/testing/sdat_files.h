@@ -13,9 +13,12 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
+
+#include "ntdlib/testing/byte_writer.h"
 
 namespace ntdlib::testing::sdat_files
 {
@@ -34,14 +37,12 @@ inline void Put32(Bytes& file, std::size_t at, uint32_t value)
 
 inline void Append16(Bytes& file, uint32_t value)
 {
-    file.resize(file.size() + 2);
-    Put16(file, file.size() - 2, value);
+    xsflib::AppendLe16(file, static_cast<uint16_t>(value));
 }
 
 inline void Append32(Bytes& file, uint32_t value)
 {
-    file.resize(file.size() + 4);
-    Put32(file, file.size() - 4, value);
+    xsflib::AppendLe32(file, value);
 }
 
 inline void AppendMagic(Bytes& file, const char* magic)
@@ -52,7 +53,7 @@ inline void AppendMagic(Bytes& file, const char* magic)
 // Appends zeros up to a multiple of `alignment`.
 inline void Align(Bytes& file, std::size_t alignment)
 {
-    file.resize((file.size() + alignment - 1) / alignment * alignment, 0);
+    file.resize(AlignUp(file.size(), alignment), 0);
 }
 
 // A file header for `blocks` blocks. Finish() fills in the size.
@@ -381,6 +382,50 @@ struct Archive
     bool symbols = true;
 };
 
+// Appends the SYMB block of `archive` to `file`, and stores the block's offset and size in the header.
+inline void WriteSymb(Bytes& file, const Archive& archive)
+{
+    const std::size_t symb = StartBlock(file, "SYMB");
+    file.resize(file.size() + 8 * 4 + 24, 0);
+    std::vector<std::pair<std::size_t, std::string>> names;
+    for (std::size_t kind = 0; kind < 8; kind++)
+    {
+        Put32(file, symb + 8 + kind * 4, static_cast<uint32_t>(file.size() - symb));
+        const std::vector<Item>& items = archive.items[kind];
+        Append32(file, static_cast<uint32_t>(items.size()));
+        const std::size_t list = file.size();
+        file.resize(list + items.size() * (kind == 1 ? 8 : 4), 0);
+        for (std::size_t i = 0; i < items.size(); i++)
+        {
+            if (!items[i].name.empty())
+            {
+                names.emplace_back(list + i * (kind == 1 ? 8 : 4), items[i].name);
+            }
+            if (kind == 1)
+            {
+                Put32(file, list + i * 8 + 4, static_cast<uint32_t>(file.size() - symb));
+                Append32(file, static_cast<uint32_t>(items[i].sequence_names.size()));
+                const std::size_t sub = file.size();
+                file.resize(sub + items[i].sequence_names.size() * 4, 0);
+                for (std::size_t k = 0; k < items[i].sequence_names.size(); k++)
+                {
+                    names.emplace_back(sub + k * 4, items[i].sequence_names[k]);
+                }
+            }
+        }
+    }
+    for (const auto& [at, name] : names)
+    {
+        Put32(file, at, static_cast<uint32_t>(file.size() - symb));
+        file.insert(file.end(), name.begin(), name.end());
+        file.push_back(0);
+    }
+    Align(file, 4);
+    EndBlock(file, symb);
+    Put32(file, 0x10, static_cast<uint32_t>(symb));
+    Put32(file, 0x14, static_cast<uint32_t>(file.size() - symb));
+}
+
 inline Bytes SoundArchive(const Archive& archive)
 {
     Bytes file = Header("SDAT", 0x40, archive.symbols ? 4 : 3);
@@ -389,45 +434,7 @@ inline Bytes SoundArchive(const Archive& archive)
     // offset of its sequences' list.
     if (archive.symbols)
     {
-        const std::size_t symb = StartBlock(file, "SYMB");
-        file.resize(file.size() + 8 * 4 + 24, 0);
-        std::vector<std::pair<std::size_t, std::string>> names;
-        for (std::size_t kind = 0; kind < 8; kind++)
-        {
-            Put32(file, symb + 8 + kind * 4, static_cast<uint32_t>(file.size() - symb));
-            const std::vector<Item>& items = archive.items[kind];
-            Append32(file, static_cast<uint32_t>(items.size()));
-            const std::size_t list = file.size();
-            file.resize(list + items.size() * (kind == 1 ? 8 : 4), 0);
-            for (std::size_t i = 0; i < items.size(); i++)
-            {
-                if (!items[i].name.empty())
-                {
-                    names.emplace_back(list + i * (kind == 1 ? 8 : 4), items[i].name);
-                }
-                if (kind == 1)
-                {
-                    Put32(file, list + i * 8 + 4, static_cast<uint32_t>(file.size() - symb));
-                    Append32(file, static_cast<uint32_t>(items[i].sequence_names.size()));
-                    const std::size_t sub = file.size();
-                    file.resize(sub + items[i].sequence_names.size() * 4, 0);
-                    for (std::size_t k = 0; k < items[i].sequence_names.size(); k++)
-                    {
-                        names.emplace_back(sub + k * 4, items[i].sequence_names[k]);
-                    }
-                }
-            }
-        }
-        for (const auto& [at, name] : names)
-        {
-            Put32(file, at, static_cast<uint32_t>(file.size() - symb));
-            file.insert(file.end(), name.begin(), name.end());
-            file.push_back(0);
-        }
-        Align(file, 4);
-        EndBlock(file, symb);
-        Put32(file, 0x10, static_cast<uint32_t>(symb));
-        Put32(file, 0x14, static_cast<uint32_t>(file.size() - symb));
+        WriteSymb(file, archive);
     }
 
     // INFO: a list of record offsets for each kind, then the records.

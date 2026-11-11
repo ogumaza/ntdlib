@@ -13,8 +13,12 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
+#include "ntdlib/agb/data_items.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/krawall/driver.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::krawall
 {
@@ -25,6 +29,7 @@ using commands::FromUnit;
 using commands::Kind;
 using commands::ToUnit;
 using Item = commands::Command;
+using agb::DataItem;
 
 // The bytes of a pattern's index.
 constexpr uint32_t kIndexBytes = 2 * kPatternIndexEntries;
@@ -44,22 +49,9 @@ uint32_t UsedEntries(uint32_t rows)
     return std::min((rows + 3) / 4, kPatternIndexEntries);
 }
 
-uint32_t Aligned(uint32_t at)
-{
-    return (at + 3) & ~3u;
-}
-
 uint32_t Le16(std::span<const uint8_t> bytes, uint32_t at)
 {
     return uint32_t(bytes[at]) | uint32_t(bytes[at + 1]) << 8;
-}
-
-Item DataItem(std::span<const uint8_t> bytes)
-{
-    Item item;
-    item.kind = Kind::kData;
-    item.bytes.assign(bytes.begin(), bytes.end());
-    return item;
 }
 
 Item Wait(uint32_t rows)
@@ -77,22 +69,151 @@ Decoded Opaque(std::span<const uint8_t> data, std::span<const uint32_t> starts, 
     decoded.opaque = true;
     decoded.reason = std::move(reason);
 
-    std::set<uint32_t> splits = {0};
-    splits.insert(starts.begin(), starts.end());
-    std::map<uint32_t, uint32_t> items;
-    for (auto it = splits.begin(); it != splits.end(); ++it)
-    {
-        const auto next = std::next(it);
-        const uint32_t end = next == splits.end() ? uint32_t(data.size()) : *next;
-        items[*it] = uint32_t(decoded.sequence.items.size());
-        decoded.sequence.items.push_back(DataItem(data.subspan(*it, end - *it)));
-    }
+    const std::map<uint32_t, uint32_t> items =
+        agb::AppendDataItems(data, {starts.begin(), starts.end()}, decoded.sequence.items);
     for (const uint32_t start : starts)
     {
         decoded.entries.push_back(items.at(start));
     }
 
     return decoded;
+}
+
+// The rows of a pattern, read a byte at a time up to `end`. A read past `end` sets `problem` and gives -1.
+struct RowBytes
+{
+    std::span<const uint8_t> data;
+    uint32_t at;
+    uint32_t end;
+    std::string& problem;
+
+    int Next()
+    {
+        if (at >= end)
+        {
+            problem = "a pattern's rows run past its bytes";
+            return -1;
+        }
+        return data[at++];
+    }
+};
+
+// Reads the note field of an entry for `channel`: a note, a note's end or a change of instrument. Returns false if
+// the bytes end.
+bool ReadNote(RowBytes& bytes, uint8_t channel, const Traits& traits, std::vector<Item>& items)
+{
+    const int b0 = bytes.Next();
+    const int b1 = bytes.Next();
+    if (b0 < 0 || b1 < 0)
+    {
+        return false;
+    }
+    Item item;
+    item.index = channel;
+    uint32_t instrument = 0;
+    uint8_t note = 0;
+    if (traits.wide)
+    {
+        note = uint8_t(b0 & 0x7F);
+        instrument = uint32_t(b1);
+        if (b0 & 0x80)
+        {
+            const int b2 = bytes.Next();
+            if (b2 < 0)
+            {
+                return false;
+            }
+            instrument |= uint32_t(b2) << 8;
+            if (instrument < 0x100)
+            {
+                item.encoding.value_bytes = 3;
+            }
+        }
+    }
+    else
+    {
+        note = uint8_t(b0 >> 1);
+        instrument = uint32_t(b1) | uint32_t(b0 & 1) << 8;
+    }
+
+    if (note == 0)
+    {
+        item.kind = Kind::kProgram;
+        item.value.value = ToUnit(instrument, {});
+    }
+    else
+    {
+        item.kind = note == kNoteOff ? Kind::kNoteOff : Kind::kNote;
+        item.key = note == kNoteOff ? uint8_t(0) : note;
+        item.sample = uint16_t(instrument);
+    }
+    items.push_back(std::move(item));
+
+    return true;
+}
+
+// Reads the fields of an entry that `flags` gives: the note, the volume and the effect. Returns false if the bytes
+// end.
+bool ReadEntryFields(RowBytes& bytes, int flags, const Traits& traits, std::vector<Item>& items)
+{
+    const uint8_t channel = uint8_t(flags & kEntryChannel);
+    if ((flags & kEntryNote) && !ReadNote(bytes, channel, traits, items))
+    {
+        return false;
+    }
+    if (flags & kEntryVolume)
+    {
+        const int volume = bytes.Next();
+        if (volume < 0)
+        {
+            return false;
+        }
+        Item item;
+        item.kind = Kind::kVolume;
+        item.index = channel;
+        item.value.value = ToUnit(volume, {});
+        items.push_back(std::move(item));
+    }
+    if (flags & kEntryEffect)
+    {
+        const int effect = bytes.Next();
+        const int operand = bytes.Next();
+        if (effect < 0 || operand < 0)
+        {
+            return false;
+        }
+        Item item;
+        item.kind = Kind::kOther;
+        item.index = channel;
+        item.encoding.opcode = uint16_t(kEffectOpcode + effect);
+        item.bytes = {uint8_t(operand)};
+        items.push_back(std::move(item));
+    }
+
+    return true;
+}
+
+// Checks that the index of the pattern at `start` gives the data of every 4th row (`indexed`). Keeps its spare entries
+// with the pattern's header item. Returns false and sets `problem` if it doesn't.
+bool CheckIndex(std::span<const uint8_t> data, uint32_t start, const std::vector<uint32_t>& indexed, Item& header,
+                std::string& problem)
+{
+    for (uint32_t i = 0; i < indexed.size(); i++)
+    {
+        if (Le16(data, start + 2 * i) != indexed[i])
+        {
+            problem = "a pattern's index doesn't give its rows' data";
+            return false;
+        }
+    }
+    const uint32_t used = 2 * uint32_t(indexed.size());
+    const std::span<const uint8_t> spare = data.subspan(start + used, kIndexBytes - used);
+    if (std::any_of(spare.begin(), spare.end(), [](uint8_t b) { return b != 0; }))
+    {
+        header.bytes.assign(spare.begin(), spare.end());
+    }
+
+    return true;
 }
 
 // Reads the pattern at `start` into `items`, up to `end`. Returns the first byte past its rows, or sets `problem`.
@@ -114,29 +235,19 @@ uint32_t ReadPattern(std::span<const uint8_t> data, uint32_t start, uint32_t end
     const size_t header_item = items.size() - 1;
 
     std::vector<uint32_t> indexed;
-    uint32_t at = first;
+    RowBytes bytes{data, first, end, problem};
     uint32_t empty_rows = 0;
-    const auto byte = [&]() -> int
-    {
-        if (at >= end)
-        {
-            problem = "a pattern's rows run past its bytes";
-            return -1;
-        }
-        return data[at++];
-    };
-
     for (uint32_t row = 0; row < rows; row++)
     {
         if (row % 4 == 0 && row < kIndexedRows)
         {
-            indexed.push_back(at - first);
+            indexed.push_back(bytes.at - first);
         }
 
         bool any = false;
         for (;;)
         {
-            const int flags = byte();
+            const int flags = bytes.Next();
             if (flags < 0)
             {
                 return 0;
@@ -157,84 +268,9 @@ uint32_t ReadPattern(std::span<const uint8_t> data, uint32_t start, uint32_t end
                 empty_rows = 0;
             }
             any = true;
-
-            const uint8_t channel = uint8_t(flags & kEntryChannel);
-            if (flags & kEntryNote)
+            if (!ReadEntryFields(bytes, flags, traits, items))
             {
-                const int b0 = byte();
-                const int b1 = byte();
-                if (b0 < 0 || b1 < 0)
-                {
-                    return 0;
-                }
-                Item item;
-                item.index = channel;
-                uint32_t instrument = 0;
-                uint8_t note = 0;
-                if (traits.wide)
-                {
-                    note = uint8_t(b0 & 0x7F);
-                    instrument = uint32_t(b1);
-                    if (b0 & 0x80)
-                    {
-                        const int b2 = byte();
-                        if (b2 < 0)
-                        {
-                            return 0;
-                        }
-                        instrument |= uint32_t(b2) << 8;
-                        if (instrument < 0x100)
-                        {
-                            item.encoding.value_bytes = 3;
-                        }
-                    }
-                }
-                else
-                {
-                    note = uint8_t(b0 >> 1);
-                    instrument = uint32_t(b1) | uint32_t(b0 & 1) << 8;
-                }
-
-                if (note == 0)
-                {
-                    item.kind = Kind::kProgram;
-                    item.value.value = ToUnit(instrument, {});
-                }
-                else
-                {
-                    item.kind = note == kNoteOff ? Kind::kNoteOff : Kind::kNote;
-                    item.key = note == kNoteOff ? uint8_t(0) : note;
-                    item.sample = uint16_t(instrument);
-                }
-                items.push_back(std::move(item));
-            }
-            if (flags & kEntryVolume)
-            {
-                const int volume = byte();
-                if (volume < 0)
-                {
-                    return 0;
-                }
-                Item item;
-                item.kind = Kind::kVolume;
-                item.index = channel;
-                item.value.value = ToUnit(volume, {});
-                items.push_back(std::move(item));
-            }
-            if (flags & kEntryEffect)
-            {
-                const int effect = byte();
-                const int operand = byte();
-                if (effect < 0 || operand < 0)
-                {
-                    return 0;
-                }
-                Item item;
-                item.kind = Kind::kOther;
-                item.index = channel;
-                item.encoding.opcode = uint16_t(kEffectOpcode + effect);
-                item.bytes = {uint8_t(operand)};
-                items.push_back(std::move(item));
+                return 0;
             }
         }
 
@@ -252,23 +288,7 @@ uint32_t ReadPattern(std::span<const uint8_t> data, uint32_t start, uint32_t end
         items.push_back(Wait(empty_rows));
     }
 
-    // The index has to give the data of every 4th row. Its spare entries stay with the pattern's start.
-    for (uint32_t i = 0; i < indexed.size(); i++)
-    {
-        if (Le16(data, start + 2 * i) != indexed[i])
-        {
-            problem = "a pattern's index doesn't give its rows' data";
-            return 0;
-        }
-    }
-    const uint32_t used = 2 * uint32_t(indexed.size());
-    const std::span<const uint8_t> spare = data.subspan(start + used, kIndexBytes - used);
-    if (std::any_of(spare.begin(), spare.end(), [](uint8_t b) { return b != 0; }))
-    {
-        items[header_item].bytes.assign(spare.begin(), spare.end());
-    }
-
-    return at;
+    return CheckIndex(data, start, indexed, items[header_item], problem) ? bytes.at : 0;
 }
 
 // Writes the items of a sequence of patterns. Each item's offset goes in `offsets`, and the patterns' starts in
@@ -481,8 +501,7 @@ private:
             {
                 throw std::invalid_argument("a pattern's rows run past what its index can give");
             }
-            header[2 * i] = uint8_t(offset);
-            header[2 * i + 1] = uint8_t(offset >> 8);
+            xsflib::StoreLe16(&header[2 * i], uint16_t(offset));
         }
         const uint32_t used = 2 * UsedEntries(rows_);
         if (spare_.size() == kIndexBytes - used)
@@ -495,7 +514,7 @@ private:
             header[kPatternRows + 1] = uint8_t(rows_ >> 8);
         }
 
-        bytes_.resize(Aligned(uint32_t(bytes_.size())));
+        bytes_.resize(AlignUp(uint32_t(bytes_.size()), 4));
         in_pattern_ = false;
     }
 
@@ -591,7 +610,7 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const uint32_t> 
         }
 
         // Bytes of 0 pad the pattern to a multiple of 4 bytes.
-        if (Aligned(after) != end ||
+        if (AlignUp(after, 4) != end ||
             std::any_of(data.begin() + after, data.begin() + end, [](uint8_t b) { return b != 0; }))
         {
             return Opaque(data, starts, "a pattern isn't followed by the padding to a multiple of 4 bytes");
@@ -676,9 +695,9 @@ Decoded DecodeRomSequence(const Rom& rom, const DriverInfo& info, int sequence)
     std::string problem;
     const uint32_t after = ReadPattern(rest, last - address, uint32_t(rest.size()), traits, items, problem);
     uint32_t end = 0;
-    if (problem.empty() && Aligned(after) <= rest.size())
+    if (problem.empty() && AlignUp(after, 4) <= rest.size())
     {
-        end = Aligned(after);
+        end = AlignUp(after, 4);
     }
     else if (module.address > last && modules.Contains(address, module.address - address))
     {

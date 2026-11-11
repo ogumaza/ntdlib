@@ -249,7 +249,7 @@ public:
 
     TestDspInterface dsp_interface_;
     TestExi exi_;
-    std::vector<std::string> reports_;
+    std::vector<std::string> reports;
 
 private:
     friend class ntdlib::flipper::MachineBase<TestMachine>;
@@ -279,7 +279,7 @@ void CheckMachineBase()
     TestMachine machine;
     machine.on_unknown_io = [&](const std::string& line)
     {
-        machine.reports_.push_back(line);
+        machine.reports.push_back(line);
     };
 
     Check(machine.RamPage(0x1000) == machine.Memory().bytes.data() + 0x1000, "machine: the second page of memory");
@@ -288,7 +288,7 @@ void CheckMachineBase()
     machine.WriteIo(0x0c003024, 4, 0x9abc);
     uint32_t value = 0;
     machine.ReadIo(0x0c008000, 2, value);
-    Check(machine.reports_ ==
+    Check(machine.reports ==
               std::vector<std::string>{"write32 0c003024 = 00005678 at pc 00000000", "read16 0c008000 at pc 00000000"},
           "machine: each unknown register is reported once");
     machine.WriteIo(0x0c006c00, 4, 0x40);
@@ -303,7 +303,7 @@ void CheckSharedBlocks()
     TestMachine machine;
     machine.on_unknown_io = [&](const std::string& line)
     {
-        machine.reports_.push_back(line);
+        machine.reports.push_back(line);
     };
     uint32_t value = 0;
 
@@ -335,12 +335,12 @@ void CheckSharedBlocks()
     machine.ReadIo(0x0c006808, 4, value);
     Check(machine.exi_.regs[2] == 0x01020304 && value == 0x01020304, "shared blocks: EXI's registers");
 
-    machine.reports_.clear();
+    machine.reports.clear();
     Check(!machine.ReadIo(0x0c006000, 4, value) && !machine.ReadIo(0x0c007000, 4, value),
           "shared blocks: the machine handles the disc interface and the blocks after AI");
-    Check(machine.reports_ ==
-              std::vector<std::string>{"read32 0c006000 at pc 00000000", "read32 0c007000 at pc 00000000"},
-          "shared blocks: the machine reports the blocks that it doesn't handle");
+    Check(
+        machine.reports == std::vector<std::string>{"read32 0c006000 at pc 00000000", "read32 0c007000 at pc 00000000"},
+        "shared blocks: the machine reports the blocks that it doesn't handle");
 }
 
 // A machine with GameCube memory and a disc, for the boot. It runs no code.

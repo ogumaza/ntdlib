@@ -277,14 +277,8 @@ Conversion ConvertTogether(const sar::SoundArchive& archive, std::span<const uin
     BankSet banks(archive, archive.Sounds()[sound_indices[0]], settings);
     Performance performance = PerformTogether(archive, sound_indices, banks, options, settings);
 
-    // The SoundFont's comment lists the sequences: "sequences A, B and C together".
-    std::vector<std::string> labels;
-    for (const uint32_t index : sound_indices)
-    {
-        labels.push_back(archive.Sounds()[index].name);
-    }
-
-    return ConvertPerformance(std::move(performance), banks, name, SequencesText(labels), settings, program);
+    return ConvertPerformance(std::move(performance), banks, name, SequencesText(archive, sound_indices), settings,
+                              program);
 }
 
 Conversion ConvertBeside(const sar::SoundArchive& archive, uint32_t sound_index,
@@ -339,23 +333,13 @@ BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, c
     // Each instrument becomes a preset at its program, with a track's starting settings. Those set no filter. The
     // presets therefore need no performance for the fit of their low-passes (ZoneLowPass).
     const Performance kNone;
-    const auto build = [&](std::span<const uint32_t> run)
+    const auto make = [&]
     {
-        SoundFontBuilder builder(banks, quieter, kNone, settings);
-        for (const uint32_t p : run)
-        {
-            builder.Add(p, StartingPresetKey(p, settings), "Program " + std::to_string(p));
-        }
-
-        return builder;
+        return SoundFontBuilder(banks, quieter, kNone, settings);
     };
-    SoundFontBuilder whole = build(programs);
     const std::string& name = banks.BankName(0);
-    c.sound_fonts = BankSoundFonts(
-        whole.Result(), programs, [&](std::span<const uint32_t> run) { return std::move(build(run).Result()); }, name,
-        program);
+    c.sound_fonts = ProgramSoundFonts(programs, make, settings, name, program, c.warnings);
     c.sfz = BuildBankSfz(programs, banks, name, settings, program);
-    c.warnings.insert(c.warnings.end(), whole.Warnings().begin(), whole.Warnings().end());
     c.warnings.insert(c.warnings.end(), banks.Errors().begin(), banks.Errors().end());
 
     return c;

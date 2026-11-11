@@ -139,6 +139,7 @@ private:
     void ResumeFromPoll(uint64_t time);
     void PollTimer(uint64_t time);
     void RunLoop(uint64_t time);
+    void RunLoopTop(uint64_t time);
     void SendCommand(uint16_t value);
     void Raise(Interrupt interrupt, Pipe pipe);
 

@@ -48,7 +48,7 @@ namespace
 
 namespace snd = ntdlib::ntr::snd;
 using ntdlib::ntr::ArchivePlayer;
-using ntdlib::sequence_export::FitParts;
+using ntdlib::sequence_export::FittedParts;
 using ntdlib::sequence_export::LevelScale;
 using ntdlib::sequence_export::LoopChoice;
 using ntdlib::sequence_export::MainLoopPasses;
@@ -1321,16 +1321,11 @@ Performance Perform(const sdat::Archive& archive, const ntdlib::ntr::SequenceRef
         bool parts_fit = true;
         if (!limited)
         {
-            const std::array<uint8_t, 16> fitted =
-                FitParts(performance, performer.PartsUsed(), SpareChannels::kForLayers);
-            for (std::size_t t = 0; t < 16; t++)
+            if (const auto fitted = FittedParts(performance, performer.PartsUsed(), SpareChannels::kForLayers))
             {
-                parts_fit = parts_fit && fitted[t] >= performer.PartsUsed()[t];
-            }
-            if (!parts_fit)
-            {
-                part_limits = fitted;
+                part_limits = *fitted;
                 limited = true;
+                parts_fit = false;
             }
         }
         if (parts_fit && LevelScale(performer.LevelPeak()) == LevelScale(peak))

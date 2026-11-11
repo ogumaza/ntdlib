@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include <teakra/disassembler.h>
 #include <teakra/impl/register.h>
 #include <teakra/teakra.h>
@@ -95,9 +96,8 @@ inline void FindThrowing(Teakra::Teakra& dsp, std::vector<Kind>& kinds)
 
         dsp.Reset();
         uint8_t* memory = dsp.GetDspMemory();
-        memory[0] = static_cast<uint8_t>(op);
-        memory[1] = static_cast<uint8_t>(op >> 8);
-        memory[2] = memory[3] = 0;
+        xsflib::StoreLe16(&memory[0], static_cast<uint16_t>(op));
+        xsflib::StoreLe16(&memory[2], 0);
 
         try
         {
@@ -275,7 +275,7 @@ inline void Randomize(Teakra::RegisterState& r, std::mt19937_64& rng)
 inline std::string FieldAt(std::size_t offset)
 {
     Teakra::RegisterState r;
-    const auto* base = reinterpret_cast<const uint8_t*>(&r);
+    const auto base = reinterpret_cast<std::uintptr_t>(&r);
 
     struct Field
     {
@@ -304,7 +304,7 @@ inline std::string FieldAt(std::size_t offset)
 
     for (const Field& f : fields)
     {
-        const std::size_t start = static_cast<const uint8_t*>(f.at) - base;
+        const std::size_t start = reinterpret_cast<std::uintptr_t>(f.at) - base;
         if (offset >= start && offset < start + f.size)
         {
             return std::string(f.name) + "+" + std::to_string(offset - start);
@@ -329,6 +329,12 @@ inline std::string RunCatching(Teakra::Teakra& dsp, uint32_t cycles)
     return {};
 }
 
+// Stores `value` at word `word` of DSP memory, low byte first.
+inline void Store(std::vector<uint8_t>& memory, uint32_t word, uint16_t value)
+{
+    xsflib::StoreLe16(&memory[word * 2], value);
+}
+
 // DSP memory for a program: few jumps (and some block repeats) in program memory, and random data.
 inline std::vector<uint8_t> RandomMemory(std::mt19937_64& rng)
 {
@@ -347,8 +353,8 @@ inline std::vector<uint8_t> RandomMemory(std::mt19937_64& rng)
 
             value = static_cast<uint16_t>(rng());
         }
-        memory[word * 2] = static_cast<uint8_t>(value);
-        memory[word * 2 + 1] = static_cast<uint8_t>(value >> 8);
+
+        Store(memory, word, value);
     }
 
     return memory;

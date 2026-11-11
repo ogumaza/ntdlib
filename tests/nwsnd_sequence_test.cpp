@@ -1603,6 +1603,59 @@ void TestWiiTrackVolume()
                            "the Wii: before Start, a track whose bit isn't set keeps its volume");
 }
 
+// The volumes of all tracks at once (SetTrackVolumes), before or after Start. Track 0 plays two notes. The first entry
+// sets the volume of track 0. A volume of 1 leaves a track as it is. An earlier SetTrackVolume then stays. Track 1
+// isn't allocated.
+void TestWiiTrackVolumes()
+{
+    using Policy = TestPolicy<ntdlib::nwsnd::RevolutionPolicy>;
+    using Player = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
+    using Volumes = std::array<float, ntdlib::nwsnd::kTrackCount>;
+
+    const auto volume = [](const Volumes& volumes, bool before_start, float earlier = 1.0f)
+    {
+        typename Policy::Engine engine;
+        const typename Policy::SoundInfo kInfo;
+        const std::vector<uint8_t> data = KeyGroupSequence(false, false);
+        Player player(0, kInfo, data);
+        engine.player = &player;
+
+        if (before_start)
+        {
+            player.SetTrackVolume(1, earlier);
+            player.SetTrackVolumes(volumes);
+        }
+        player.Start();
+        if (!before_start)
+        {
+            player.SetTrackVolume(1, earlier);
+            player.SetTrackVolumes(volumes);
+        }
+        player.Update(engine);
+
+        return engine.pool.channels.empty() ? -1.0f : engine.pool.channels[0].track_volume;
+    };
+
+    Volumes ones;
+    ones.fill(1.0f);
+    Volumes half = ones;
+    half[0] = 0.5f;
+    Volumes other = ones;
+    other[1] = 0.0f;
+
+    for (const bool before_start : {false, true})
+    {
+        const std::string when = before_start ? "before Start" : "after Start";
+        const float full = volume(ones, before_start);
+        xsflib::testing::Check(full > 0.0f && volume(half, before_start) == full * 0.5f,
+                               "the Wii: SetTrackVolumes " + when + " sets track 0's volume");
+        xsflib::testing::Check(volume(other, before_start) == full,
+                               "the Wii: SetTrackVolumes " + when + " leaves track 0 at 1");
+        xsflib::testing::Check(volume(ones, before_start, 0.5f) == full * 0.5f,
+                               "the Wii: a volume of 1 " + when + " leaves an earlier volume");
+    }
+}
+
 // A game's mute and silence of tracks through the sound's handle (SequenceSoundHandle::SetTrackMute and
 // SetTrackSilence), set after Start, as a game sets them when the sound starts. Track 0 plays two notes. A mute in any
 // mode keeps both notes from starting (the track's mute, SeqTrack::SetMute). A silence lets them start at a silence of
@@ -1750,6 +1803,7 @@ int main()
     TestWiiTempo();
     TestWiiTempoRatio();
     TestWiiTrackVolume();
+    TestWiiTrackVolumes();
     TestCafeTrackVariable();
     TestNoteOn<ntdlib::nwsnd::CafePolicy>("the Wii U");
     TestNoteOn<ntdlib::nwsnd::NxPolicy>("the Switch");

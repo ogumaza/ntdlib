@@ -11,9 +11,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -26,6 +28,7 @@
 #include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/barc.h"
 #include "ntdlib/jaudio/bx.h"
+#include "ntdlib/jaudio/jmap.h"
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
@@ -109,6 +112,85 @@ void TestWaveGroups()
     const std::vector<uint32_t> kFirst = {3 << 16 | 0};
     Check(jaudio::MissingWaves({three, seven}, kFirst, kPlayed) == 3, "the waves that group a lacks");
     Check(jaudio::MissingWaves({three, seven}, groups, kPlayed) == 0, "the chosen groups lack no wave");
+}
+
+// The wave archives in a model's DSP memory: each from a 32-byte boundary, in the order of their names. An empty or
+// missing archive gets no address.
+void TestWaveArchiveLayout()
+{
+    const jaudio::WaveArchiveLayout layout =
+        jaudio::LayOutWaveArchives({{"b.aw", 40}, {"a.aw", 64}, {"c.aw", 0}, {"d.aw", 1}}, 0x8000);
+    Check(layout.addresses == std::map<std::string, uint32_t>{{"a.aw", 0x8000}, {"b.aw", 0x8040}, {"d.aw", 0x8080}},
+          "each archive's address");
+    Check(layout.end == 0x80a0, "the memory's size");
+    Check(jaudio::LayOutWaveArchives({}, 0x8000).end == 0x8000, "no archive");
+}
+
+// A JMap table (BCSV) in a RARC archive, as Super Mario Galaxy 2's BgmParam.arc lays it out: the rows' names and
+// volumes in the table's order, with a row's name twice. The volume field's mask and shift apply. The table's name
+// matches whatever its case, and the archive may be compressed. A missing table, a missing field or a field of another
+// type can't be read.
+void TestJMapTable()
+{
+    // The hashes of "Volume" and "SoundIdName" in Galaxy 2's table.
+    Check(jaudio::JMapHash("Volume") == 0x990fd33a && jaudio::JMapHash("SoundIdName") == 0xc42d0c15,
+          "the hashes of the fields' names");
+
+    const auto table = [](uint32_t volume_mask, uint32_t volume_type)
+    {
+        std::vector<uint8_t> bcsv;
+        const auto u32 = [&](uint32_t v)
+        {
+            for (int shift = 24; shift >= 0; shift -= 8)
+            {
+                bcsv.push_back(static_cast<uint8_t>(v >> shift));
+            }
+        };
+        u32(3);
+        u32(2);
+        u32(40);
+        u32(8);
+        u32(0x990fd33a);
+        u32(volume_mask);
+        u32(0x00000400 | volume_type); // offset 0, shift 4
+        u32(0xc42d0c15);
+        u32(0xffffffff);
+        u32(0x00040006); // offset 4, shift 0, type 6
+        u32(0x690);
+        u32(0);
+        u32(0x17f0);
+        u32(6);
+        u32(0x50);
+        u32(0);
+        for (const char c : std::string_view("BGM_A\0BGM_B\0", 12))
+        {
+            bcsv.push_back(static_cast<uint8_t>(c));
+        }
+        return files::RarcFile({{0, "BgmParam.bcsv", bcsv}});
+    };
+
+    const auto read = [](const std::vector<uint8_t>& arc, std::string_view file)
+    {
+        std::vector<std::pair<std::string, uint32_t>> rows;
+        for (const jaudio::JMapNamedValue& row : jaudio::ReadJMapNamedValues(arc, file, "SoundIdName", "Volume"))
+        {
+            rows.emplace_back(row.name, row.value);
+        }
+        return rows;
+    };
+
+    const std::vector<std::pair<std::string, uint32_t>> expected = {{"BGM_A", 0x69}, {"BGM_B", 0x17f}, {"BGM_A", 5}};
+    Check(read(table(0xffffffff, 0), "BgmParam.bcsv") == expected, "the rows in the table's order");
+    Check(read(table(0xffffffff, 0), "bgmparam.BCSV") == expected, "the table's name in other capitals");
+    Check(read(files::LiteralYaz0(table(0xffffffff, 0)), "BgmParam.bcsv") == expected, "a compressed archive");
+    Check(read(table(0x000000f0, 0), "BgmParam.bcsv") ==
+              std::vector<std::pair<std::string, uint32_t>>{{"BGM_A", 9}, {"BGM_B", 15}, {"BGM_A", 5}},
+          "the mask before the shift");
+    Check(!ErrorOf([&] { read(table(0xffffffff, 0), "Other.bcsv"); }).empty(), "a missing table");
+    Check(!ErrorOf([&] { jaudio::ReadJMapNamedValues(table(0xffffffff, 0), "BgmParam.bcsv", "SoundIdName", "Pan"); })
+               .empty(),
+          "a missing field");
+    Check(!ErrorOf([&] { read(table(0xffffffff, 6), "BgmParam.bcsv"); }).empty(), "a volume that isn't an integer");
 }
 
 // The later layout of a sound's entry, and a start-up archive with a "bfca" command.
@@ -512,39 +594,6 @@ void TestReadSequenceTable()
           "a table cut short in its entries");
     Check(!ErrorOf([&] { jaudio::ReadSequenceTable(std::span(table).first(table.size() - 1)); }).empty(),
           "an entry past the table's end");
-}
-
-// Yaz0's repeats: a short one, one whose length takes a third byte, and the damaged cases.
-void TestYaz0()
-{
-    const auto yaz0 = [](uint32_t size, const std::vector<uint8_t>& body)
-    {
-        files::Bytes b;
-        b.Tag("Yaz0").U32(size).U32(0).U32(0);
-        for (const uint8_t byte : body)
-        {
-            b.U8(byte);
-        }
-
-        return b.Data();
-    };
-
-    // Four literals, a repeat of 12 bytes from 4 back, then three literals.
-    Check(Text(jaudio::DecodeYaz0(yaz0(19, {0xf7, 'A', 'B', 'C', 'D', 0xa0, 0x03, 'X', 'Y', 'Z'}))) ==
-              "ABCDABCDABCDABCDXYZ",
-          "a short repeat");
-    // A literal, then a repeat of 0x12 + 0x10 bytes from 1 back.
-    Check(Text(jaudio::DecodeYaz0(yaz0(35, {0x80, 'Q', 0x00, 0x00, 0x10}))) == std::string(35, 'Q'),
-          "a repeat whose length takes a third byte");
-
-    Check(
-        ErrorOf([&] { jaudio::DecodeYaz0(yaz0(4, {0x00, 0x10, 0x00})); }) == "Yaz0 data repeats bytes before its start",
-        "a repeat before the start");
-    Check(!ErrorOf([&] { jaudio::DecodeYaz0(yaz0(19, {0xf7, 'A', 'B'})); }).empty(), "truncated Yaz0 data");
-    Check(ErrorOf([&] { jaudio::DecodeYaz0(yaz0(0x4000001, {})); }) == "Yaz0 data decodes to more than 64 MiB",
-          "a decoded size over 64 MiB");
-    Check(ErrorOf([&] { jaudio::DecodeYaz0(std::vector<uint8_t>{'R', 'A', 'R', 'C'}); }) == "not Yaz0 data",
-          "data that isn't Yaz0");
 }
 
 void TestMessages()
@@ -1524,6 +1573,8 @@ int main()
     TestBanks();
     TestBankChunkPastItsSize();
     TestWaveGroups();
+    TestWaveArchiveLayout();
+    TestJMapTable();
     TestSoundTable();
     TestLaterLayout();
     TestFirstLayouts();
@@ -1531,7 +1582,6 @@ int main()
     TestRarc();
     TestRepackSequenceTable();
     TestReadSequenceTable();
-    TestYaz0();
     TestMessages();
     TestLightReaders();
     TestStrictRules();

@@ -21,9 +21,9 @@ namespace ntdlib::sequence_export::ubimilan
 {
 
 using ntdlib::sequence_export::agb::AddLoopGuard;
+using ntdlib::sequence_export::agb::KeyHz;
 using ntdlib::sequence_export::agb::KeyTuning;
 using ntdlib::sequence_export::agb::kInstant;
-using ntdlib::sequence_export::agb::kMiddleC;
 using ntdlib::sequence_export::agb::kNoiseSequenceRate;
 using ntdlib::sequence_export::agb::LengthenLoop;
 using ntdlib::sequence_export::agb::Looped;
@@ -52,12 +52,6 @@ constexpr int kFrequencyEntries = 104;
 // The keys below the first entry of the frequency table on the squares and on the wave channel.
 constexpr int kSquareBaseKey = 36;
 constexpr int kWaveBaseKey = 12;
-
-// Returns the pitch of MIDI key `key` in equal temperament, in Hz.
-double KeyHz(int key)
-{
-    return kMiddleC * std::pow(2.0, (key - 60) / 12.0);
-}
 
 // Returns the cents from `hz` to the pitch of a square channel at entry `index` of the frequency table, or 0 for an
 // entry past the table's ends or one that doesn't play.

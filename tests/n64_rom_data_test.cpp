@@ -47,86 +47,9 @@ void Put32(Bytes& out, uint32_t value)
     Put16(out, static_cast<uint16_t>(value));
 }
 
-// A block's header: the magic, the decoded size, and the places of the references and the literals.
-Bytes Header(std::string_view magic, uint32_t size, uint32_t references, uint32_t literals)
-{
-    Bytes out = Text(magic);
-    Put32(out, size);
-    Put32(out, references);
-    Put32(out, literals);
-
-    return out;
-}
-
 void Append(Bytes& out, std::initializer_list<uint8_t> bytes)
 {
     out.insert(out.end(), bytes);
-}
-
-void TestMio0()
-{
-    // Three literals, a reference of 6 bytes from 3 bytes back, and a literal: the bits 1110 1000.
-    Bytes block = Header("MIO0", 10, 20, 22);
-    Append(block, {0xE8, 0, 0, 0});
-    Append(block, {0x30, 0x02});
-    Append(block, {'a', 'b', 'c', 'd'});
-    XSFLIB_CHECK(n64::DecodeMio0(block) == Text(kRepeated));
-
-    // A reference to bytes before the start.
-    Bytes early = Header("MIO0", 4, 20, 22);
-    Append(early, {0x60, 0, 0, 0});
-    Append(early, {0x10, 0x02});
-    Append(early, {'a'});
-    XSFLIB_CHECK(!ErrorOf<xsflib::FormatError>([&] { n64::DecodeMio0(early); }).empty());
-
-    // Another format's magic.
-    Bytes other = block;
-    other[0] = 'Y';
-    XSFLIB_CHECK(!ErrorOf<xsflib::FormatError>([&] { n64::DecodeMio0(other); }).empty());
-}
-
-void TestYay0()
-{
-    // A count of 6 takes the nibble 4 in this format.
-    Bytes block = Header("Yay0", 10, 20, 22);
-    Append(block, {0xE8, 0, 0, 0});
-    Append(block, {0x40, 0x02});
-    Append(block, {'a', 'b', 'c', 'd'});
-    XSFLIB_CHECK(n64::DecodeYay0(block) == Text(kRepeated));
-
-    // A nibble of 0 reads the count from the literals: 2 + 18 bytes of the last byte, between the literals 'a' and 'b'.
-    // The bits are 101.
-    Bytes longer = Header("Yay0", 22, 20, 22);
-    Append(longer, {0xA0, 0, 0, 0});
-    Append(longer, {0x00, 0x00});
-    Append(longer, {'a', 2, 'b'});
-    Bytes expected(21, 'a');
-    expected.push_back('b');
-    XSFLIB_CHECK(n64::DecodeYay0(longer) == expected);
-
-    // A block that ends early.
-    Bytes cut = block;
-    cut.resize(24);
-    XSFLIB_CHECK(!ErrorOf<xsflib::FormatError>([&] { n64::DecodeYay0(cut); }).empty());
-}
-
-void TestYaz0()
-{
-    // The literals and the references lie among the bits.
-    Bytes block = Header("Yaz0", 10, 0, 0);
-    Append(block, {0xE8, 'a', 'b', 'c', 0x40, 0x02, 'd'});
-    XSFLIB_CHECK(n64::DecodeYaz0(block) == Text(kRepeated));
-
-    Bytes longer = Header("Yaz0", 22, 0, 0);
-    Append(longer, {0xA0, 'a', 0x00, 0x00, 2, 'b'});
-    Bytes expected(21, 'a');
-    expected.push_back('b');
-    XSFLIB_CHECK(n64::DecodeYaz0(longer) == expected);
-
-    // A second byte of flags after eight items.
-    Bytes groups = Header("Yaz0", 9, 0, 0);
-    Append(groups, {0xFF, '1', '2', '3', '4', '5', '6', '7', '8', 0x80, '9'});
-    XSFLIB_CHECK(n64::DecodeYaz0(groups) == Text("123456789"));
 }
 
 // Each stream comes from zlib's deflate, or by hand from RFC 1951 for the stored block, after the two bytes of Rare's
@@ -325,9 +248,6 @@ int main()
     return xsflib::testing::RunTest("n64_rom_data",
                                     []
                                     {
-                                        TestMio0();
-                                        TestYay0();
-                                        TestYaz0();
                                         TestRare();
                                         TestRareSequenceTable();
                                         TestFindPlainLaterSoundData();

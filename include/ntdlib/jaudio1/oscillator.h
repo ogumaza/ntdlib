@@ -17,6 +17,12 @@ namespace ntdlib::jaudio1
 
 using jaudio2::OscPoint;
 
+// The modes of a point that move no value (jaudio2::OscPoint): a jump to the point that the value names, a hold and a
+// stop.
+inline constexpr int16_t kPointJump = 13;
+inline constexpr int16_t kPointHold = 14;
+inline constexpr int16_t kPointStop = 15;
+
 // A table of points as the game holds it: a pointer into the data, or null. The game compares the pointers of a
 // setting's two tables. `size` counts the points that the data holds from the pointer on. A point past it reads as a
 // stop.
@@ -32,7 +38,7 @@ struct OscTable
 
     OscPoint At(std::size_t index) const
     {
-        return index < size ? points[index] : OscPoint{15, 0, 0};
+        return index < size ? points[index] : OscPoint{kPointStop, 0, 0};
     }
 
     bool operator==(const OscTable& other) const
@@ -130,8 +136,9 @@ public:
     }
 
 private:
-    // JASOscillator::calc: the next segments while the countdown has run out, then the value along the segment.
-    float Calc(OscTable table, float dac_rate);
+    // JASOscillator::calc: the next segments while the countdown has run out, then the phase along the segment. The
+    // game's function also returns the output. The callers here read it with Value().
+    void Calc(OscTable table, float dac_rate);
 
     const OscData* data_ = nullptr;
     Fields fields_;

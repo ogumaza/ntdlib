@@ -170,6 +170,19 @@ int64_t FramesToLevelOn(const EnvelopeValues& v, float level, const Settings& se
     return -1;
 }
 
+// The game's attack in milliseconds, scaled by Settings::env_time_scale. An attack of 127 or more takes no time.
+double ScaledAttackMs(const EnvelopeValues& v, const Settings& settings)
+{
+    return v.attack < 127 ? AttackMs(v.attack) * settings.env_time_scale : 0.0;
+}
+
+// The hold of the converted envelopes, in milliseconds: the game's hold, then the part of the attack after the ramp
+// (kAttackRamp).
+double ConvertedHoldMs(const EnvelopeValues& v, const Settings& settings)
+{
+    return nwsnd::HoldMs(v.hold) * settings.env_time_scale + ScaledAttackMs(v, settings) * (1.0 - kAttackRamp);
+}
+
 } // namespace
 
 double AttackMs(int attack)
@@ -270,7 +283,6 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& v, const Settings& settings)
     const double scale = settings.env_time_scale;
     const Engine engine = settings.engine;
     Sf2Envelope e;
-    const double attack_ms = v.attack < 127 ? AttackMs(v.attack) * scale : 0.0;
     e.attack = ToTimecents(Sf2AttackMs(v, settings), -12000, 8000);
 
     // SoundFont decay and release times specify a 100 dB fall, linear in dB. A decay slower than SoundFont allows gets
@@ -279,7 +291,7 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& v, const Settings& settings)
     // hold. Half that hold splits the error evenly: as loud at the end of the hold as quiet when the decay reaches the
     // sustain level.
     const double decay_ms = 1000.0 / DecayRate(v.decay, engine) * scale;
-    double hold_ms = nwsnd::HoldMs(v.hold) * scale + attack_ms * (1.0 - kAttackRamp);
+    double hold_ms = ConvertedHoldMs(v, settings);
     if (decay_ms > kSlowestSf2DecayMs)
     {
         hold_ms += -nwsnd::DecibelSquare(v.sustain) / 1000.0 * (decay_ms - kSlowestSf2DecayMs) / 2.0;
@@ -295,7 +307,7 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& v, const Settings& settings)
 
 double Sf2AttackMs(const EnvelopeValues& v, const Settings& settings)
 {
-    return v.attack < 127 ? AttackMs(v.attack) * settings.env_time_scale * kAttackRamp : 0.0;
+    return ScaledAttackMs(v, settings) * kAttackRamp;
 }
 
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& v, const Settings& settings)
@@ -307,9 +319,8 @@ SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& v, const Settings& setti
 
     const double scale = settings.env_time_scale;
     SfzEnvelope e;
-    const double attack_ms = v.attack < 127 ? AttackMs(v.attack) * scale : 0.0;
     e.attack = Sf2AttackMs(v, settings) / 1000.0;
-    e.hold = (nwsnd::HoldMs(v.hold) * scale + attack_ms * (1.0 - kAttackRamp)) / 1000.0;
+    e.hold = ConvertedHoldMs(v, settings) / 1000.0;
     e.decay = kSfzFall / DecayRate(v.decay, settings.engine) * scale / 1000.0;
     e.sustain = 100.0 * std::pow(10.0, nwsnd::DecibelSquare(v.sustain) / 200.0);
     e.release = kSfzFall / DecayRate(v.release, settings.engine) * scale / 1000.0;

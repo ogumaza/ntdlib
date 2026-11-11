@@ -332,27 +332,10 @@ std::string GameIdOf(uint64_t title_id)
 std::string DecodeUtf16Be(std::span<const uint8_t> text)
 {
     std::string out;
-    for (size_t i = 0; i + 1 < text.size(); i += 2)
-    {
-        uint32_t code = xsflib::LoadBe16(&text[i]);
-        if (code == 0)
-        {
-            break;
-        }
+    xsflib::AppendUtf16(out, text,
+                        {.big_endian = true, .stop_at_nul = true, .controls_as_spaces = true, .trim_spaces = true});
 
-        const uint32_t next = i + 3 < text.size() ? xsflib::LoadBe16(&text[i + 2]) : 0;
-        if (code >= 0xD800 && code < 0xDC00 && next >= 0xDC00 && next < 0xE000)
-        {
-            code = 0x10000 + ((code - 0xD800) << 10) + (next - 0xDC00);
-            i += 2;
-        }
-
-        xsflib::AppendUtf8(out, code < 0x20 ? ' ' : code);
-    }
-
-    const size_t first = out.find_first_not_of(' ');
-
-    return first == std::string::npos ? "" : out.substr(first, out.find_last_not_of(' ') + 1 - first);
+    return out;
 }
 
 // The English name in a title's banner, its content 0, or nothing. The banner's IMET header starts at 0x80 in a title's

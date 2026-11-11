@@ -94,6 +94,68 @@ std::string NoteName(int note)
     return kNoteNames[(note - 1) % 12] + std::to_string((note - 1) / 12);
 }
 
+// The text of a row's entry for `flags`: the channel's note and instrument, its volume column and its effect,
+// whichever the entry gives.
+std::string EntryText(const RowEntry& entry, uint8_t flags)
+{
+    char line[256];
+    std::snprintf(line, sizeof line, " | c%d", entry.channel);
+    std::string text = line;
+    if (entry.note)
+    {
+        text += " " + NoteName(entry.note);
+    }
+    if (entry.instrument)
+    {
+        text += " i" + std::to_string(entry.instrument);
+    }
+    if (flags & kEntryVolume)
+    {
+        if (entry.volume <= 0x60)
+        {
+            text += " v" + std::to_string(entry.volume - 0x10);
+        }
+        else
+        {
+            std::snprintf(line, sizeof line, " %s %d", kColumnNames[(entry.volume - 0x60) >> 4],
+                          (entry.volume - 0x60) & 0xF);
+            text += line;
+        }
+    }
+    if (flags & kEntryEffect)
+    {
+        const uint8_t effect = entry.effect;
+        std::snprintf(line, sizeof line, " %s %02X",
+                      effect < std::size(kEffectNames) ? kEffectNames[effect] : "unknown effect", entry.effect_op);
+        text += line;
+    }
+
+    return text;
+}
+
+// The text of pattern `number` at `pattern`: a line for the pattern, and a line for each row with its entries.
+std::string PatternText(const Rom& rom, Build build, int number, uint32_t pattern)
+{
+    char line[256];
+    const int rows = int(PatternRows(rom, build, pattern));
+    std::snprintf(line, sizeof line, "\nPattern %d at 0x%08X, %d rows\n", number, unsigned(pattern), rows);
+    std::string out = line;
+
+    uint32_t at = PatternData(build, pattern);
+    for (int row = 0; row < rows && rom.Contains(at); row++)
+    {
+        std::snprintf(line, sizeof line, "%3d", row);
+        std::string text = line;
+        for (uint8_t flags = rom.U8(at++); flags && rom.Contains(at); flags = rom.U8(at++))
+        {
+            text += EntryText(ReadEntry(rom, build, flags, at), flags);
+        }
+        out += text + "\n";
+    }
+
+    return out;
+}
+
 } // namespace
 
 bool DumpSong(const Rom& rom, const DriverInfo& info, int song, const std::string& path, std::string& error)
@@ -139,56 +201,10 @@ bool DumpSong(const Rom& rom, const DriverInfo& info, int song, const std::strin
     }
     out += "\n";
 
-    // Each pattern's rows: a channel's note and instrument, its volume column and its effect, whichever the row gives.
+    // Each pattern's rows.
     for (size_t p = 0; p < module.patterns.size(); p++)
     {
-        const uint32_t pattern = module.patterns[p];
-        const int rows = int(PatternRows(rom, info.build, pattern));
-        std::snprintf(line, sizeof line, "\nPattern %d at 0x%08X, %d rows\n", int(p), unsigned(pattern), rows);
-        out += line;
-
-        uint32_t at = PatternData(info.build, pattern);
-        for (int row = 0; row < rows && rom.Contains(at); row++)
-        {
-            std::snprintf(line, sizeof line, "%3d", row);
-            std::string text = line;
-            for (uint8_t flags = rom.U8(at++); flags && rom.Contains(at); flags = rom.U8(at++))
-            {
-                const RowEntry entry = ReadEntry(rom, info.build, flags, at);
-                std::snprintf(line, sizeof line, " | c%d", entry.channel);
-                text += line;
-                if (entry.note)
-                {
-                    text += " " + NoteName(entry.note);
-                }
-                if (entry.instrument)
-                {
-                    text += " i" + std::to_string(entry.instrument);
-                }
-                if (flags & kEntryVolume)
-                {
-                    if (entry.volume <= 0x60)
-                    {
-                        text += " v" + std::to_string(entry.volume - 0x10);
-                    }
-                    else
-                    {
-                        std::snprintf(line, sizeof line, " %s %d", kColumnNames[(entry.volume - 0x60) >> 4],
-                                      (entry.volume - 0x60) & 0xF);
-                        text += line;
-                    }
-                }
-                if (flags & kEntryEffect)
-                {
-                    const uint8_t effect = entry.effect;
-                    std::snprintf(line, sizeof line, " %s %02X",
-                                  effect < std::size(kEffectNames) ? kEffectNames[effect] : "unknown effect",
-                                  entry.effect_op);
-                    text += line;
-                }
-            }
-            out += text + "\n";
-        }
+        out += PatternText(rom, info.build, int(p), module.patterns[p]);
     }
 
     return WriteTextFile(path, out, error);

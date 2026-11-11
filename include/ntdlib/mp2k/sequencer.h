@@ -97,7 +97,7 @@ struct Channel
     bool synth = false;
 
     // A PSG channel's envelope and output settings.
-    uint8_t goal = 0;    // the envelope's full level, 0-15
+    uint8_t goal = 0;    // the envelope's full level, 0-31: at most 15 on each side
     uint8_t counter = 0; // counts before the envelope's next step
     uint8_t sustain_goal = 0;
     uint8_t pan = 0;

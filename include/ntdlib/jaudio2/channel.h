@@ -11,9 +11,11 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 
+#include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio2/dsp.h"
 #include "ntdlib/jaudio2/oscillator.h"
 
@@ -33,6 +35,23 @@ struct WaveInfo
     int16_t last = 0; // the decoder's history at the loop's start
     int16_t penult = 0;
 };
+
+// The wave `info` of a wave system as a channel plays it.
+inline WaveInfo ChannelWaveOf(const ntdlib::jaudio::WaveInfo& info)
+{
+    WaveInfo wave;
+    wave.format = static_cast<uint8_t>(info.format);
+    wave.base_key = info.base_key;
+    wave.sample_rate = info.sample_rate;
+    wave.loop_flags = info.loop ? 0xffffffff : 0;
+    wave.loop_start = info.loop_start;
+    wave.loop_end = info.loop_end;
+    wave.sample_count = info.sample_count;
+    wave.last = info.loop_last;
+    wave.penult = info.loop_penult;
+
+    return wave;
+}
 
 // A view of a channel's block in the emulated memory, for the CPU side's writes (JASDsp::TChannel). The CPU side
 // keeps the blocks in the host's byte order, little-endian.
@@ -239,6 +258,168 @@ struct DspChannel
     uint32_t channel = Channel::kNone; // the channel that the callback reports to, or kNone with no callback
 };
 
+// The DSP channels' side of the voices, which JAudio1's model shares. JAudio1 keeps the DSP channels' fields, their
+// allocation and their update as JAudio2 does.
+
+// main's constants, by their bits: the curve of a surround level in a mixer's second level.
+inline constexpr float kSurroundScale = std::bit_cast<float>(0x3eb20d99u); // 0.34776
+inline constexpr float kSurroundBase = std::bit_cast<float>(0x3ea6f933u);  // 0.32612
+
+// The DSP channel that JASDSPChannel::getLowestChannel picks for a channel of `priority` (0 to 255), or Channel::kNone:
+// a free one, or else the one of the lowest priority, at most `priority`, with the most updates.
+template <std::size_t kCount>
+uint32_t LowestDspChannel(const std::array<DspChannel, kCount>& dsp_channels, uint32_t priority)
+{
+    uint32_t best = Channel::kNone;
+    int32_t best_priority = 0xff;
+    uint32_t best_updates = 0;
+    for (uint32_t i = 0; i < kCount; i++)
+    {
+        const DspChannel& dsp = dsp_channels[i];
+        const int32_t level = dsp.priority;
+        if (level < 0)
+        {
+            return i;
+        }
+        if (level > static_cast<int32_t>(priority) || level > best_priority)
+        {
+            continue;
+        }
+
+        if (level != best_priority || dsp.updates > best_updates)
+        {
+            best = i;
+            best_priority = level;
+            best_updates = dsp.updates;
+        }
+    }
+
+    return best;
+}
+
+// JASDSPChannel::alloc and allocForce: a DSP channel for `channel` at `priority` (0 to 255), or Channel::kNone. A DSP
+// channel in use goes to the new channel. `report_drop(index)` first ends the channel on it, if any (the drop event).
+// allocForce marks the DSP channel inactive before the drop. The new channel then starts at the next update, with no
+// stop before it.
+template <std::size_t kCount, typename ReportDrop>
+uint32_t AllocDspChannel(std::array<DspChannel, kCount>& dsp_channels, uint32_t priority, uint32_t channel, bool force,
+                         ReportDrop report_drop)
+{
+    const uint32_t index = LowestDspChannel(dsp_channels, priority);
+    if (index == Channel::kNone)
+    {
+        return Channel::kNone;
+    }
+
+    // JASDSPChannel::drop: the channel on the DSP channel ends. A DSP channel that plays stops at the next update.
+    DspChannel& dsp = dsp_channels[index];
+    if (force)
+    {
+        dsp.status = DspChannel::kInactive;
+    }
+    report_drop(index);
+    dsp.channel = Channel::kNone;
+    dsp.flags &= ~1u;
+    if (dsp.status == DspChannel::kActive)
+    {
+        dsp.flags |= 2;
+        dsp.status = DspChannel::kDrop;
+    }
+
+    dsp.priority = static_cast<int16_t>(priority);
+    dsp.updates = 0;
+    dsp.channel = channel;
+
+    return index;
+}
+
+// JASDSPChannel::updateProc: a sub-frame's update of DSP channel `dsp`, whose block is `block`. `callback(event)` is
+// the channel's dspUpdateCallback. It runs only while a channel is on the DSP channel. Without one, a stop reports -1
+// and a start or an update 0. With `kStartCanFail`, a start that the callback refuses (below 0) stops the DSP channel
+// at once. JAudio2's start can fail. JAudio1's start returns nothing (initialUpdateDSPChannel), and the model ignores
+// it.
+template <bool kStartCanFail, typename Callback>
+void UpdateDspChannel(DspChannel& dsp, DspBlock& block, Callback callback)
+{
+    const auto stop = [&]
+    {
+        const int32_t result = dsp.channel != Channel::kNone ? callback(DspChannel::kEventStop) : -1;
+        if (result < 0)
+        {
+            dsp.priority = -1;
+        }
+    };
+
+    if (block.IsFinish())
+    {
+        dsp.flags &= ~2u;
+        if (dsp.status == DspChannel::kActive)
+        {
+            stop();
+        }
+        dsp.status = DspChannel::kInactive;
+        block.ReplyFinishRequest();
+        return;
+    }
+    if ((dsp.flags & 2) != 0)
+    {
+        dsp.flags &= ~2u;
+        block.ForceStop();
+        return;
+    }
+    if (dsp.status == DspChannel::kDrop)
+    {
+        return;
+    }
+
+    if ((dsp.flags & 1) != 0 && dsp.status == DspChannel::kInactive)
+    {
+        dsp.flags &= ~1u;
+        dsp.status = DspChannel::kActive;
+        block.Init();
+        if constexpr (kStartCanFail)
+        {
+            const int32_t result = dsp.channel != Channel::kNone ? callback(DspChannel::kEventStart) : 0;
+            if (result < 0)
+            {
+                dsp.status = DspChannel::kInactive;
+                stop();
+                return;
+            }
+        }
+        else if (dsp.channel != Channel::kNone)
+        {
+            callback(DspChannel::kEventStart);
+        }
+        block.PlayStart();
+        return;
+    }
+    if (dsp.status == DspChannel::kInactive)
+    {
+        return;
+    }
+
+    if (dsp.channel != Channel::kNone && callback(DspChannel::kEventPlay) < 0)
+    {
+        dsp.status = DspChannel::kInactive;
+        stop();
+        block.PlayStop();
+        return;
+    }
+    dsp.updates++;
+}
+
+// A channel's report of `event` to its owner (JASChannel's callback), where both exist. `target` is the channel's
+// owner, or Channel::kNone with no callback.
+template <typename Owner, typename Event>
+void NotifyOwner(Owner* owner, uint32_t target, Event event, uint32_t channel, DspBlock* block)
+{
+    if (owner != nullptr && target != Channel::kNone)
+    {
+        owner->OnChannel(target, event, channel, block);
+    }
+}
+
 // The tracks' side of the channels' callbacks (JASTrack::channelUpdateCallback). `block` is null for kEventStop.
 class ChannelOwner
 {
@@ -346,6 +527,17 @@ public:
     int32_t Pitch(const Channel& channel, const EffectParams& effects) const;
 
 private:
+    // updateEffectorParam's levels of a channel: its volume, and its pan, effect send and surround level, each clamped
+    // to 0 to 1. The mixers also take the surround level before its clamp.
+    struct MixerLevels
+    {
+        float volume = 0.0f;
+        float pan = 0.5f;
+        float fxmix = 0.0f;
+        float dolby = 0.0f;
+        float unclamped_dolby = 0.0f;
+    };
+
     // JASDSPChannel::alloc and allocForce. A DSP channel in use goes to the new channel, after a drop event for the
     // old one.
     uint32_t Alloc(ChannelOwner* owner, uint32_t priority, uint32_t channel, bool force);
@@ -371,6 +563,10 @@ private:
 
     void Notify(ChannelOwner* owner, uint32_t channel, Channel::Event event, DspBlock* block);
 
+    // updateEffectorParam's steps: the channel's levels, then the mixers' volumes from them.
+    MixerLevels EffectorLevels(const Channel& channel, const EffectParams& effects) const;
+    void UpdateMixers(const Channel& channel, const MixerLevels& levels, std::array<uint16_t, 6>& volumes) const;
+
     uint32_t blocks_;
     uint32_t output_mode_ = 1;
     uint16_t channel_level_ = 0x2ee0;
@@ -384,5 +580,18 @@ private:
 
 // JASChannel::effectOsc: an oscillator's effect on the channel's levels.
 void EffectOsc(const Oscillator& oscillator, EffectParams& effects);
+
+// The DSP channels of `voices` that play (DspChannel::kActive). JAudio1's model counts them the same way.
+template <typename VoicesOf>
+int ActiveDspChannels(const VoicesOf& voices)
+{
+    int count = 0;
+    for (uint32_t i = 0; i < VoicesOf::kDspChannels; i++)
+    {
+        count += voices.DspChannelAt(i).status == DspChannel::kActive ? 1 : 0;
+    }
+
+    return count;
+}
 
 } // namespace ntdlib::jaudio2

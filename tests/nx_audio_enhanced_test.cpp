@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/nx/audio/dsp.h"
@@ -36,9 +37,7 @@ struct EnhancedVoice
     {
         for (const int16_t sample : wave)
         {
-            const auto bits = static_cast<uint16_t>(sample);
-            bytes.push_back(static_cast<uint8_t>(bits & 0xFF));
-            bytes.push_back(static_cast<uint8_t>(bits >> 8));
+            xsflib::AppendLe16(bytes, static_cast<uint16_t>(sample));
         }
         renderer.AcquireFinalMix(2);
         const int kInputs[] = {0, 1};

@@ -7,7 +7,9 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 
+#include "ntdlib/ctr/snd/starting_tracks.h"
 #include "ntdlib/ctr/snd/voice.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/console.h"
@@ -72,5 +74,18 @@ struct Policy : ntdlib::nwsnd::CtrPolicy
 using Channel = Policy::Channel;
 using ChannelManager = ntdlib::nwsnd::ChannelManager<Policy>;
 using SequenceSoundPlayer = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
+
+// Sets the variables of frame 0 for `player`, and schedules the later ones (Engine::ScheduleVariable). It skips the
+// entries that set no variable (SequenceVariable::kNone).
+void ApplyVariables(Engine& engine, SequenceSoundPlayer& player, std::span<const SequenceVariable> variables);
+
+// Starts `player` as `start` gives, as a game does through the sound's handle. It sets the variables of frame 0 and
+// schedules the later ones (Engine::ScheduleVariable). With a seed, it sets the engine's random generator. It quiets
+// the muted tracks in the mode that keeps their channels sounding (SEQ_MUTE_NO_STOP), and the silenced tracks at once.
+// It gives the other tracks their volumes (the player's SetTrackVolume). It sets the tempo ratio, the pitch and the
+// player's sends on the aux buses. Call it after the sequence's start and before its first tick. Neither kind of
+// quieted track then starts a note that sounds. The silenced tracks' notes take their voices. The start's banks go to
+// Engine::StartSequence. The caller applies the start's volume to the output.
+void ApplySequenceStart(Engine& engine, SequenceSoundPlayer& player, const SequenceStart& start);
 
 } // namespace ntdlib::ctr::snd

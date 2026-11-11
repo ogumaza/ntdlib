@@ -7,8 +7,10 @@
 // sound files of versions 1.0 to 1.3 give the fields that each version holds, and their waves. An archive holds wave
 // sounds with their file. Archives of the 3DS and later consoles, and little-endian files, must be rejected with a
 // message. The values of an archive's tables take new values in place, and the old values give the archive back.
+// Last, the sounds that the rip tools take as music (rsar::IsMusic).
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +24,7 @@
 
 #include "ntdlib/rsar/decode.h"
 #include "ntdlib/rsar/formats.h"
+#include "ntdlib/rsar/music.h"
 #include "ntdlib/rsar/tables.h"
 #include "ntdlib/testing/rsar_files.h"
 
@@ -234,7 +237,8 @@ void CheckWaveSoundFiles()
     const std::vector<WaveSoundSpec> specs = TestWaveSounds();
     const Bytes raw_waves = MakeOldWaveData();
     const Bytes rwar = MakeRwar();
-    for (const uint16_t version : {0x0100, 0x0101, 0x0102, 0x0103})
+    constexpr std::array<uint16_t, 4> kVersions = {0x0100, 0x0101, 0x0102, 0x0103};
+    for (const uint16_t version : kVersions)
     {
         const std::string name = "a version 1." + std::to_string(version & 0xFF) + " wave sound file";
         const Bytes bytes = MakeWaveSoundFile(version, specs);
@@ -324,6 +328,52 @@ void CheckSoundTable()
     Check(table.Sounds().size() == 2 && table.Sounds()[0].name == "SEQ_FIELD" && table.Sounds()[0].player_id == 1 &&
               table.Sounds()[1].type == rsar::SoundType::kStream,
           "the sounds' players");
+}
+
+// The sounds that the rip tools take as music (rsar::IsMusic).
+void CheckMusic()
+{
+    // The players: some named for music by a word in their names, one of them followed by digits. One sound effects
+    // player also has MUSIC in its name. The others have unrelated names.
+    const std::vector<const char*> kPlayers = {"PLAYER_BGM_MAIN", "MUSIC_SE_PLAYER", "SONG_PLAYER",   "PLAYER_SFX",
+                                               "PLAYER_FANFARE",  "PLAYER_BGM2",     "MUSICAL_PLAYER"};
+
+    // The sounds, with their names, types and players, and whether each is music.
+    struct Case
+    {
+        TableSound sound;
+        bool music;
+    };
+
+    const Case kCases[] = {
+        {{"SEQ_FIELD", 1, 0}, true},       // on a BGM player
+        {{"SE_CURSOR", 1, 1}, false},      // on a player whose name has SE
+        {{"SEQ_ODE", 1, 2}, true},         // on a SONG player
+        {{"SEQ_JUNGLE_BGM1", 1, 3}, true}, // its label contains BGM
+        {{"SEQ_WHISTLE", 1, 3}, false},    // a sound effect
+        {{"STRM_RACE", 2, 0}, false},      // a stream, which isn't ripped
+        {{"SEQ_GOAL", 1, 4}, true},        // on a FANFARE player
+        {{"SEQ_BOSS", 1, 5}, true},        // on a BGM2 player
+        {{"SEQ_TUNE", 1, 6}, false},       // MUSICAL isn't MUSIC
+        {{"seq_bgm_menu", 1, 3}, true},    // labels are matched ignoring case
+        {{"SEQ_NOWHERE", 1, 9}, false},    // on a player the archive doesn't have
+    };
+    std::vector<TableSound> sounds;
+    for (const Case& c : kCases)
+    {
+        sounds.push_back(c.sound);
+    }
+
+    const Bytes bytes = MakeSoundTable(sounds, kPlayers);
+    const rsar::SoundArchive archive = rsar::SoundArchive::Load(bytes, kPlayback);
+
+    for (std::size_t i = 0; i < sounds.size(); ++i)
+    {
+        Check(rsar::IsMusic(archive, static_cast<uint32_t>(i)) == kCases[i].music,
+              std::string(sounds[i].name) + (kCases[i].music ? " is music" : " isn't music"));
+    }
+
+    Check(!rsar::IsMusic(archive, static_cast<uint32_t>(sounds.size())), "a sound the archive doesn't have");
 }
 
 // The number of bytes in which `a` and `b`, of the same size, differ.
@@ -516,6 +566,7 @@ int main()
         CheckOtherFormats();
         CheckDefaultRules();
         CheckDecoding();
+        CheckMusic();
     };
 
     return xsflib::testing::RunTest("rsar", tests);

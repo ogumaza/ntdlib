@@ -8,6 +8,8 @@
 #include <span>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 namespace ntdlib::wave
 {
 
@@ -29,8 +31,8 @@ std::vector<int16_t> DecodePcm16(std::span<const uint8_t> data, uint32_t samples
     out.reserve(std::min<std::size_t>(samples, data.size() / 2));
     for (uint32_t i = 0; i < samples && 2 * std::size_t{i} + 1 < data.size(); i++)
     {
-        const uint8_t first = data[2 * std::size_t{i}], second = data[2 * std::size_t{i} + 1];
-        out.push_back(static_cast<int16_t>(big_endian ? first << 8 | second : second << 8 | first));
+        const uint8_t* sample = &data[2 * std::size_t{i}];
+        out.push_back(static_cast<int16_t>(big_endian ? xsflib::LoadBe16(sample) : xsflib::LoadLe16(sample)));
     }
 
     return out;

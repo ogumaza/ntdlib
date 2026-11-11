@@ -16,11 +16,19 @@
 #include <cstdint>
 #include <map>
 #include <span>
+#include <stdexcept>
 
 #include "ntdlib/sdat/formats.h"
 
 namespace ntdlib::sdat
 {
+
+// The error that SoundHeap throws when the files don't fit. Its message is "the files don't fit in the sound heap".
+class HeapFullError : public std::runtime_error
+{
+public:
+    HeapFullError();
+};
 
 class SoundHeap
 {
@@ -30,12 +38,12 @@ public:
     SoundHeap(std::span<uint8_t> memory, uint32_t base, uint32_t start, uint32_t end);
 
     // Loads file `id` of `archive`, and returns its address. A file that the heap holds already isn't loaded again.
-    // Throws std::runtime_error when the file doesn't fit.
+    // Throws HeapFullError when the file doesn't fit.
     uint32_t LoadFile(const Archive& archive, uint32_t id);
 
     // Loads bank `bank` of `archive` with its wave archives, and returns the bank's address. A slot that names no wave
     // archive of `archive` stays empty. The SDK's load of the bank fails there instead. Throws xsflib::FormatError when
-    // the bank can't be read or a wave lies outside its file, and std::runtime_error when the files don't fit.
+    // the bank can't be read or a wave lies outside its file, and HeapFullError when the files don't fit.
     uint32_t LoadBank(const Archive& archive, uint32_t bank);
 
     // The address after the last byte that the heap holds.

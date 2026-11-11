@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/agb/files.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
@@ -180,7 +182,7 @@ public:
         const std::span<const uint8_t> registers = seq.SoundRegisters();
         const auto half = [&](uint32_t offset)
         {
-            return uint16_t(registers[offset] | registers[offset + 1] << 8);
+            return xsflib::LoadLe16(&registers[offset]);
         };
 
         // A store to NRx4 with bit 7 set restarts the channel.

@@ -206,6 +206,39 @@ private:
         uint16_t fraction = 0;
     };
 
+    // The places of an envelope mixer's input and its four outputs in DMEM.
+    struct EnvPlaces
+    {
+        uint32_t in = 0;
+        uint32_t dry_left = 0;
+        uint32_t dry_right = 0;
+        uint32_t wet_left = 0;
+        uint32_t wet_right = 0;
+    };
+
+    // An envelope mixer's ramps, in the order of the mixer's state in DMEM.
+    struct EnvRamps
+    {
+        // The ramps' values in each lane: the whole part and the fraction, on the left and the right.
+        Vector left = {};
+        Vector left_fraction = {};
+        Vector right = {};
+        Vector right_fraction = {};
+
+        // The ramps' settings: the left's target and rate, the right's target and rate, then the two gains.
+        Vector settings = {};
+    };
+
+    // The masks of an EAD envelope mixer's outputs, and whether it swaps the wet sides.
+    struct EnvMasks
+    {
+        uint16_t left = 0;
+        uint16_t right = 0;
+        uint16_t wet_left = 0;
+        uint16_t wet_right = 0;
+        bool swap = false;
+    };
+
     uint16_t Get16(uint32_t address) const;
     void Put16(uint32_t address, uint16_t value);
     uint32_t Get32(uint32_t address) const;
@@ -246,6 +279,14 @@ private:
     void Interleave(const AudioCommand& command);
     void PoleFilter(const AudioCommand& command, AudioBus& bus);
     void SetLoop(const AudioCommand& command);
+    void SaveResampleState(const ResampleEnd& end, int32_t first_in, uint32_t state, AudioBus& bus);
+    void LoadEnvRamps(EnvRamps& ramps, uint32_t place) const;
+    void StoreEnvRamps(const EnvRamps& ramps, uint32_t place);
+    static void RecordPlaces(AudioEnvOp& env, const EnvPlaces& places);
+    void LoadEnvSide(bool aux, Vector& dry_samples, uint32_t dry_place, Vector& wet_samples, uint32_t wet_place) const;
+    void StoreEnvSide(bool aux, const Vector& dry_samples, uint32_t dry_place, const Vector& wet_samples,
+                      uint32_t wet_place);
+    void MixEnvGroups(EnvRamps& ramps, EnvPlaces places, int32_t count, bool init, bool aux);
 
     void EadLoad(const AudioCommand& command, const AudioBus& bus);
     void EadSave(const AudioCommand& command, AudioBus& bus);
@@ -256,6 +297,7 @@ private:
     void EadHalve(const AudioCommand& command);
     void EadFirstEnvMixer(const AudioCommand& command);
     void EadLateEnvMixer(const AudioCommand& command);
+    void RecordEadLateEnv(const EnvPlaces& places, const EnvMasks& masks, int32_t count);
     void EadLateResample(const AudioCommand& command, AudioBus& bus);
     void EadZeroOrderResample(const AudioCommand& command);
     void EadFilter(const AudioCommand& command, AudioBus& bus);
@@ -272,9 +314,10 @@ private:
     void CompactInterleave();
     void CompactMove(const AudioCommand& command);
     void CompactAdpcm(const AudioCommand& command, AudioBus& bus);
-    void CompactPoleFilter(const AudioCommand& command, AudioBus& bus);
     void CompactResample(const AudioCommand& command, AudioBus& bus);
     void CompactEnvMixer(const AudioCommand& command, AudioBus& bus);
+    void MixCompactEnvGroups(EnvRamps& ramps, bool init, int16_t right_volume);
+    void MixEnvBuffer(uint32_t place, const Vector& samples, const Vector& volume, int16_t amount);
     void CompactMixer(const AudioCommand& command);
 
     AudioMicrocode microcode_;

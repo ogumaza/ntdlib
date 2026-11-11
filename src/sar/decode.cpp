@@ -11,8 +11,9 @@
 #include "xsflib/binary.h"
 
 #include "ntdlib/sar/formats.h"
-#include "ntdlib/wave/adpcm.h"
 #include "ntdlib/wave/decode.h"
+#include "sar/file_parts.h"
+#include "sar/sample_steps.h"
 
 namespace ntdlib::sar
 {
@@ -23,19 +24,12 @@ namespace
 // can't be decoded.
 wave::Encoding EncodingOf(WaveEncoding encoding, Flavor flavor)
 {
-    switch (encoding)
+    if (encoding == WaveEncoding::kImaAdpcm && flavor == Flavor::kCtr)
     {
-    case WaveEncoding::kPcm8:
-        return wave::Encoding::kPcm8;
-    case WaveEncoding::kPcm16:
-        return wave::Encoding::kPcm16;
-    case WaveEncoding::kDspAdpcm:
-        return wave::Encoding::kDspAdpcm;
-    case WaveEncoding::kImaAdpcm:
-        return flavor == Flavor::kCtr ? wave::Encoding::kImaAdpcm : wave::Encoding::kUnknown;
-    default:
-        return wave::Encoding::kUnknown;
+        return wave::Encoding::kImaAdpcm;
     }
+
+    return detail::DecoderEncoding(encoding);
 }
 
 } // namespace
@@ -57,21 +51,14 @@ Pcm DecodeWave(std::span<const uint8_t> file, const Options& options)
     wave::EncodedWave encoded;
     encoded.encoding = EncodingOf(w.encoding, options.flavor);
     encoded.big_endian = w.big_endian;
-    encoded.sum = options.flavor == Flavor::kCtr ? wave::DspAdpcmSum::kWide : wave::DspAdpcmSum::kWrap;
+    encoded.sum = detail::SumOf(options.flavor);
     encoded.sample_rate = w.sample_rate;
     encoded.loop = w.loop;
     encoded.loop_start = w.loop_start;
     encoded.loop_end = w.loop_end;
     for (const WaveChannel& ch : w.channels)
     {
-        wave::EncodedChannel& channel = encoded.channels.emplace_back();
-        channel.data = ch.data;
-        if (ch.adpcm)
-        {
-            channel.coefs = &ch.adpcm->coefs;
-            channel.yn1 = ch.adpcm->yn1;
-            channel.yn2 = ch.adpcm->yn2;
-        }
+        wave::EncodedChannel& channel = detail::AddEncodedChannel(encoded, ch.data, ch.adpcm);
         if (ch.ima)
         {
             channel.ima_sample = ch.ima->sample;

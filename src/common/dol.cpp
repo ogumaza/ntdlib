@@ -5,8 +5,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "xsflib/binary.h"
@@ -93,6 +97,38 @@ std::span<const uint8_t> Dol::At(uint32_t address) const
     return {};
 }
 
+std::span<const uint8_t> Dol::From(uint32_t address, std::string_view what) const
+{
+    // Bytes throws if no section holds the address.
+    Bytes(address, 1, what);
+
+    return At(address);
+}
+
+std::span<const uint8_t> Dol::Bytes(uint32_t address, std::size_t size, std::string_view what) const
+{
+    const std::span<const uint8_t> bytes = At(address);
+    if (bytes.size() < size)
+    {
+        throw xsflib::FormatError("main.dol has no data at " + std::string(what));
+    }
+
+    return bytes.first(size);
+}
+
+uint32_t Dol::Word(uint32_t address, std::string_view what) const
+{
+    return xsflib::LoadBe32(Bytes(address, 4, what).data());
+}
+
+std::string Dol::Text(uint32_t address, std::size_t longest, std::string_view what) const
+{
+    const std::span<const uint8_t> bytes = From(address, what);
+    const std::span<const uint8_t> text = bytes.first(std::min(bytes.size(), longest));
+
+    return {text.begin(), std::find(text.begin(), text.end(), uint8_t{0})};
+}
+
 uint64_t Dol::Size(std::span<const uint8_t> header)
 {
     uint64_t size = kHeaderSize;
@@ -103,6 +139,28 @@ uint64_t Dol::Size(std::span<const uint8_t> header)
     }
 
     return size;
+}
+
+std::optional<std::filesystem::path> FindMainDol(const std::filesystem::path& file)
+{
+    std::error_code error;
+    const std::filesystem::path absolute = std::filesystem::absolute(file, error);
+    if (error)
+    {
+        return std::nullopt;
+    }
+
+    for (std::filesystem::path folder = absolute.parent_path(); folder.has_relative_path();
+         folder = folder.parent_path())
+    {
+        std::filesystem::path dol = folder.parent_path() / "sys" / "main.dol";
+        if (folder.filename() == "files" && std::filesystem::is_regular_file(dol, error))
+        {
+            return dol;
+        }
+    }
+
+    return std::nullopt;
 }
 
 } // namespace ntdlib

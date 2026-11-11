@@ -2,6 +2,7 @@
 
 #include "ntdlib/rvl/axfx/chorus.h"
 
+#include <algorithm>
 #include <cstddef>
 
 #include "ntdlib/fused.h"
@@ -110,6 +111,10 @@ ChorusExp::Params ExpParams(const Chorus::Params& params)
 
 } // namespace
 
+ChorusExp::ChorusExp(Build build) : build_(build)
+{
+}
+
 uint32_t ChorusExp::GetMemSize()
 {
     return kChannelCount * kLineSize * 4;
@@ -118,22 +123,15 @@ uint32_t ChorusExp::GetMemSize()
 bool ChorusExp::Init(const Params& params)
 {
     params_ = params;
-    active_ |= kStopped;
+    active_ = build_ == Build::kFebruary2009 ? kStopped : active_ | kStopped;
     size_ = kLineSize;
     for (std::vector<float>& line : line_)
     {
         line.assign(size_, 0.0f);
     }
 
-    // The output starts the delay time behind the input, in 16.16 fixed point.
-    in_pos_ = 0;
-    const uint32_t delay = ToUnsigned(32.0f * params_.delay_time);
-    out_pos_ = (size_ - delay) << 16;
-    last_pos_ = out_pos_;
-    size_fp_ = size_ << 16;
-    if (!InitParams())
+    if (!Start())
     {
-        FreeLines();
         return false;
     }
 
@@ -144,10 +142,20 @@ bool ChorusExp::Init(const Params& params)
 
 bool ChorusExp::Settings(const Params& params)
 {
-    FreeLines();
-    if (!Init(params))
+    if (build_ == Build::kFebruary2009)
     {
-        return false;
+        if (!Restart(params))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        FreeLines();
+        if (!Init(params))
+        {
+            return false;
+        }
     }
 
     active_ = (active_ | kSkipFrame) & ~kStopped;
@@ -241,6 +249,45 @@ void ChorusExp::Process(AuxFrame& frame, const AuxFrame* bus_in, AuxFrame* bus_o
             out_pos_ = 0;
         }
     }
+}
+
+bool ChorusExp::Restart(const Params& params)
+{
+    params_ = params;
+    active_ |= kStopped;
+    const auto is_freed = [](const std::vector<float>& line)
+    {
+        return line.empty();
+    };
+    if (std::any_of(line_.begin(), line_.end(), is_freed))
+    {
+        FreeLines();
+        return false;
+    }
+
+    for (std::vector<float>& line : line_)
+    {
+        ClearLine(line);
+    }
+
+    return Start();
+}
+
+bool ChorusExp::Start()
+{
+    // The output starts the delay time behind the input, in 16.16 fixed point.
+    in_pos_ = 0;
+    const uint32_t delay = ToUnsigned(32.0f * params_.delay_time);
+    out_pos_ = (size_ - delay) << 16;
+    last_pos_ = out_pos_;
+    size_fp_ = size_ << 16;
+    if (!InitParams())
+    {
+        FreeLines();
+        return false;
+    }
+
+    return true;
 }
 
 bool ChorusExp::InitParams()

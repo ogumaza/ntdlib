@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/testing/check.h"
@@ -386,6 +387,25 @@ void TestEncoderErrors()
     Check(fails(OneTrack({NewCommand(Kind::kOther), NewCommand(Kind::kEnd)})), "a kOther without a status byte");
     Check(fails(OneTrack({NewCommand(Kind::kPitchBend, 0x4000), NewCommand(Kind::kEnd)})), "a bend past 14 bits");
     Check(fails(OneTrack({NewCommand(Kind::kTranspose, 1), NewCommand(Kind::kEnd)})), "a kind that a file can't hold");
+
+    // kOther items that the driver reads as structure.
+    const auto other = [](uint16_t opcode, std::vector<uint8_t> bytes)
+    {
+        Command item = NewCommand(Kind::kOther);
+        item.encoding.opcode = opcode;
+        item.bytes = std::move(bytes);
+        return OneTrack({item, NewCommand(Kind::kEnd)});
+    };
+
+    Check(fails(other(rd1::kMetaEvent | 0x2F, {})), "a kOther end of track");
+    Check(fails(other(rd1::kMetaEvent | 0x51, {0x07, 0xA1, 0x20})), "a kOther tempo of 3 bytes");
+    Check(fails(other(rd1::kMetaEvent | 0x06, {'['})) && fails(other(rd1::kMetaEvent | 0x06, {']'})),
+          "a kOther loop marker");
+    Check(fails(other(0x93, {60, 100})) && fails(other(0x93, {0x85, 0x40})), "a kOther note on");
+    Check(!fails(other(rd1::kMetaEvent | 0x51, {0x07, 0xA1})) && !fails(other(rd1::kMetaEvent | 0x06, {'[', '['})) &&
+              !fails(other(0x93, {0x85, 0x80})) && !fails(other(0xA3, {60, 100})),
+          "kOther items that the driver reads as they say");
+    Check(rd1::ItemOffsets(other(rd1::kMetaEvent | 0x2F, {})).size() == 5, "a kOther end of track still has offsets");
 
     Sequence many = OneTrack({NewCommand(Kind::kEnd)});
     for (int t = 1; t < 32; t++)

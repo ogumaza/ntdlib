@@ -138,4 +138,11 @@ SndBuild FindSndBuild(std::span<const uint8_t> dol, const BannerOptions& options
     return {year * 10000 + static_cast<uint32_t>(month / 3 + 1) * 100 + digit(4) * 10 + digit(5)};
 }
 
+SndBuild SndBuildWithAx(SndBuild build, AxBuild ax)
+{
+    build.october_2006 = ax == AxBuild::kOctober2006 || build.date == 0;
+
+    return build;
+}
+
 } // namespace ntdlib

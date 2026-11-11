@@ -453,108 +453,68 @@ struct ArchiveLists
     std::vector<std::pair<uint32_t, std::string>> names = {};
 };
 
-// Builds a sound archive in format `f` with `files` in order and metadata from `lists`.
-std::vector<uint8_t> Archive(const Format& f, const std::vector<ArchiveFile>& files, const ArchiveLists& lists = {})
+// Sound entry: file, volume, sequence settings at +28, and the pan option. Sequence settings point to a bank table at
+// +20, allocate track 0 and include the start-offset option. `t` is the sound table.
+void AddSequenceSounds(Writer& w, std::size_t t, const std::vector<SequenceSound>& sequences)
 {
-    Writer w = BinaryFileHeader(f, "SAR", lists.names.empty() ? 2 : 3);
-    w.U32(0x08, f.version);
-
-    // INFO: eight table references followed by their tables. Players are empty; player settings are zero.
-    const std::size_t info = w.Add(8 + 8 * 8), body = info + 8;
-    const uint16_t kTables[8] = {0x2100, 0x2104, 0x2101, 0x2103, 0x2105, 0x2102, 0x2106, 0x220b};
-    std::size_t file_table = 0;
-    for (int i = 0; i < 8; i++)
+    w.U32(t, static_cast<uint32_t>(sequences.size()));
+    const std::size_t refs = w.Add(sequences.size() * 8);
+    for (std::size_t s = 0; s < sequences.size(); s++)
     {
-        const std::size_t t = w.Add(4);
-        w.U16(body + i * 8, kTables[i]);
-        w.U32(body + i * 8 + 4, static_cast<uint32_t>(t - body));
-        if (kTables[i] == 0x2100)
+        const SequenceSound& sound = sequences[s];
+        const std::size_t e = w.Add(52 + sound.banks.size() * 4), q = e + 28;
+        w.U16(refs + s * 8, 0x2200);
+        w.U32(refs + s * 8 + 4, static_cast<uint32_t>(e - t));
+        w.U32(e, sound.file_id);
+        w.bytes[e + 8] = 127;
+        w.U16(e + 12, 0x2203);
+        w.U32(e + 16, static_cast<uint32_t>(q - e));
+        w.U32(e + 20, 1 << 1);
+        w.U32(q + 4, 20);
+        w.U32(q + 8, 1);
+        w.U32(q + 12, 1);
+        w.U32(q + 16, sound.start_offset);
+        w.U32(q + 20, static_cast<uint32_t>(sound.banks.size()));
+        for (std::size_t b = 0; b < sound.banks.size(); b++)
         {
-            // Sound entry: file, volume, sequence settings at +28, and the pan option. Sequence settings point to a
-            // bank table at +20, allocate track 0 and include the start-offset option.
-            const std::vector<SequenceSound>& sequences = lists.sequences;
-            w.U32(t, static_cast<uint32_t>(sequences.size()));
-            const std::size_t refs = w.Add(sequences.size() * 8);
-            for (std::size_t s = 0; s < sequences.size(); s++)
-            {
-                const SequenceSound& sound = sequences[s];
-                const std::size_t e = w.Add(52 + sound.banks.size() * 4), q = e + 28;
-                w.U16(refs + s * 8, 0x2200);
-                w.U32(refs + s * 8 + 4, static_cast<uint32_t>(e - t));
-                w.U32(e, sound.file_id);
-                w.bytes[e + 8] = 127;
-                w.U16(e + 12, 0x2203);
-                w.U32(e + 16, static_cast<uint32_t>(q - e));
-                w.U32(e + 20, 1 << 1);
-                w.U32(q + 4, 20);
-                w.U32(q + 8, 1);
-                w.U32(q + 12, 1);
-                w.U32(q + 16, sound.start_offset);
-                w.U32(q + 20, static_cast<uint32_t>(sound.banks.size()));
-                for (std::size_t b = 0; b < sound.banks.size(); b++)
-                {
-                    w.U32(q + 24 + b * 4, sound.banks[b]);
-                }
-            }
-        }
-
-        if (kTables[i] == 0x2104)
-        {
-            // Sound group entry, as NintendoWare's tools lay out a wave sound set: the first and last sound IDs, a
-            // reference to the table of file IDs at +28, and a reference to the wave sound details after the table.
-            // The details refer to an empty table of wave archive IDs.
-            const std::vector<SoundGroup>& groups = lists.sound_groups;
-            w.U32(t, static_cast<uint32_t>(groups.size()));
-            const std::size_t refs = w.Add(groups.size() * 8);
-            for (std::size_t g = 0; g < groups.size(); g++)
-            {
-                const SoundGroup& group = groups[g];
-                const std::size_t details = 32 + group.file_ids.size() * 4;
-                const std::size_t e = w.Add(details + 16);
-                w.U16(refs + g * 8, 0x2204);
-                w.U32(refs + g * 8 + 4, static_cast<uint32_t>(e - t));
-                w.U32(e, 0x01000000 | group.first);
-                w.U32(e + 4, 0x01000000 | group.last);
-                w.U16(e + 8, 0x0100);
-                w.U32(e + 12, 28);
-                w.U16(e + 16, 0x2205);
-                w.U32(e + 20, static_cast<uint32_t>(details));
-                w.U32(e + 28, group.damaged ? 0x40000000 : static_cast<uint32_t>(group.file_ids.size()));
-                for (std::size_t k = 0; k < group.file_ids.size(); k++)
-                {
-                    w.U32(e + 32 + k * 4, group.file_ids[k]);
-                }
-                w.U16(e + details, 0x0100);
-                w.U32(e + details + 4, 12);
-            }
-        }
-
-        // Bank, wave archive and group entries contain file IDs with no options.
-        const std::vector<uint32_t>* file_ids = kTables[i] == 0x2101   ? &lists.banks
-                                                : kTables[i] == 0x2103 ? &lists.wave_archives
-                                                : kTables[i] == 0x2105 ? &lists.groups
-                                                                       : nullptr;
-        if (file_ids)
-        {
-            w.U32(t, static_cast<uint32_t>(file_ids->size()));
-            w.Add(file_ids->size() * 16);
-            for (std::size_t k = 0; k < file_ids->size(); k++)
-            {
-                const std::size_t e = 4 + file_ids->size() * 8 + k * 8;
-                w.U32(t + 8 + k * 8, static_cast<uint32_t>(e));
-                w.U32(t + e, (*file_ids)[k]);
-            }
-        }
-        if (kTables[i] == 0x2106)
-        {
-            file_table = t;
-            w.U32(t, static_cast<uint32_t>(files.size()));
-            w.Add(files.size() * 32);
+            w.U32(q + 24 + b * 4, sound.banks[b]);
         }
     }
-    Block(w, 0, 0x2001, "INFO", info, w.bytes.size() - info);
+}
 
-    // FILE payload and matching locations in the file table.
+// Sound group entry, as NintendoWare's tools lay out a wave sound set: the first and last sound IDs, a reference to the
+// table of file IDs at +28, and a reference to the wave sound details after the table. The details refer to an empty
+// table of wave archive IDs. `t` is the sound group table.
+void AddSoundGroups(Writer& w, std::size_t t, const std::vector<SoundGroup>& groups)
+{
+    w.U32(t, static_cast<uint32_t>(groups.size()));
+    const std::size_t refs = w.Add(groups.size() * 8);
+    for (std::size_t g = 0; g < groups.size(); g++)
+    {
+        const SoundGroup& group = groups[g];
+        const std::size_t details = 32 + group.file_ids.size() * 4;
+        const std::size_t e = w.Add(details + 16);
+        w.U16(refs + g * 8, 0x2204);
+        w.U32(refs + g * 8 + 4, static_cast<uint32_t>(e - t));
+        w.U32(e, 0x01000000 | group.first);
+        w.U32(e + 4, 0x01000000 | group.last);
+        w.U16(e + 8, 0x0100);
+        w.U32(e + 12, 28);
+        w.U16(e + 16, 0x2205);
+        w.U32(e + 20, static_cast<uint32_t>(details));
+        w.U32(e + 28, group.damaged ? 0x40000000 : static_cast<uint32_t>(group.file_ids.size()));
+        for (std::size_t k = 0; k < group.file_ids.size(); k++)
+        {
+            w.U32(e + 32 + k * 4, group.file_ids[k]);
+        }
+        w.U16(e + details, 0x0100);
+        w.U32(e + details + 4, 12);
+    }
+}
+
+// FILE payload and matching locations in the file table at `file_table`.
+void AddFileBlock(Writer& w, std::size_t file_table, const std::vector<ArchiveFile>& files)
+{
     const std::size_t file = w.Add(8);
     for (std::size_t i = 0; i < files.size(); i++)
     {
@@ -587,32 +547,88 @@ std::vector<uint8_t> Archive(const Format& f, const std::vector<ArchiveFile>& fi
         }
     }
     Block(w, 1, 0x2002, "FILE", file, w.bytes.size() - file);
+}
 
-    // STRG: references to the name table and Patricia tree. Only the leaves' name-to-item mappings are read.
+// STRG: references to the name table and Patricia tree. Only the leaves' name-to-item mappings are read.
+void AddStringBlock(Writer& w, const std::vector<std::pair<uint32_t, std::string>>& names)
+{
+    const std::size_t count = names.size();
+    const std::size_t strg = w.Add(8 + 16), refs = strg + 8;
+    const std::size_t table = w.Add(4 + count * 12), tree = w.Add(8 + count * 20);
+    w.U16(refs, 0x2400);
+    w.U32(refs + 4, static_cast<uint32_t>(table - refs));
+    w.U16(refs + 8, 0x2401);
+    w.U32(refs + 12, static_cast<uint32_t>(tree - refs));
+    w.U32(table, static_cast<uint32_t>(count));
+    w.U32(tree + 4, static_cast<uint32_t>(count));
+    for (std::size_t i = 0; i < count; i++)
+    {
+        const std::string& name = names[i].second;
+        const std::size_t at = w.Add(name.size() + 1), e = table + 4 + i * 12, node = tree + 8 + i * 20;
+        std::memcpy(w.bytes.data() + at, name.data(), name.size());
+        w.U16(e, 0x1f01);
+        w.U32(e + 4, static_cast<uint32_t>(at - table));
+        w.U32(e + 8, static_cast<uint32_t>(name.size() + 1));
+        w.U16(node, 1); // a leaf
+        w.U32(node + 12, static_cast<uint32_t>(i));
+        w.U32(node + 16, names[i].first);
+    }
+    Block(w, 2, 0x2000, "STRG", strg, w.bytes.size() - strg);
+}
+
+// Builds a sound archive in format `f` with `files` in order and metadata from `lists`.
+std::vector<uint8_t> Archive(const Format& f, const std::vector<ArchiveFile>& files, const ArchiveLists& lists = {})
+{
+    Writer w = BinaryFileHeader(f, "SAR", lists.names.empty() ? 2 : 3);
+    w.U32(0x08, f.version);
+
+    // INFO: eight table references followed by their tables. Players are empty; player settings are zero.
+    const std::size_t info = w.Add(8 + 8 * 8), body = info + 8;
+    const uint16_t kTables[8] = {0x2100, 0x2104, 0x2101, 0x2103, 0x2105, 0x2102, 0x2106, 0x220b};
+    std::size_t file_table = 0;
+    for (int i = 0; i < 8; i++)
+    {
+        const std::size_t t = w.Add(4);
+        w.U16(body + i * 8, kTables[i]);
+        w.U32(body + i * 8 + 4, static_cast<uint32_t>(t - body));
+        if (kTables[i] == 0x2100)
+        {
+            AddSequenceSounds(w, t, lists.sequences);
+        }
+        if (kTables[i] == 0x2104)
+        {
+            AddSoundGroups(w, t, lists.sound_groups);
+        }
+
+        // Bank, wave archive and group entries contain file IDs with no options.
+        const std::vector<uint32_t>* file_ids = kTables[i] == 0x2101   ? &lists.banks
+                                                : kTables[i] == 0x2103 ? &lists.wave_archives
+                                                : kTables[i] == 0x2105 ? &lists.groups
+                                                                       : nullptr;
+        if (file_ids)
+        {
+            w.U32(t, static_cast<uint32_t>(file_ids->size()));
+            w.Add(file_ids->size() * 16);
+            for (std::size_t k = 0; k < file_ids->size(); k++)
+            {
+                const std::size_t e = 4 + file_ids->size() * 8 + k * 8;
+                w.U32(t + 8 + k * 8, static_cast<uint32_t>(e));
+                w.U32(t + e, (*file_ids)[k]);
+            }
+        }
+        if (kTables[i] == 0x2106)
+        {
+            file_table = t;
+            w.U32(t, static_cast<uint32_t>(files.size()));
+            w.Add(files.size() * 32);
+        }
+    }
+    Block(w, 0, 0x2001, "INFO", info, w.bytes.size() - info);
+
+    AddFileBlock(w, file_table, files);
     if (!lists.names.empty())
     {
-        const std::size_t count = lists.names.size();
-        const std::size_t strg = w.Add(8 + 16), refs = strg + 8;
-        const std::size_t table = w.Add(4 + count * 12), tree = w.Add(8 + count * 20);
-        w.U16(refs, 0x2400);
-        w.U32(refs + 4, static_cast<uint32_t>(table - refs));
-        w.U16(refs + 8, 0x2401);
-        w.U32(refs + 12, static_cast<uint32_t>(tree - refs));
-        w.U32(table, static_cast<uint32_t>(count));
-        w.U32(tree + 4, static_cast<uint32_t>(count));
-        for (std::size_t i = 0; i < count; i++)
-        {
-            const std::string& name = lists.names[i].second;
-            const std::size_t at = w.Add(name.size() + 1), e = table + 4 + i * 12, node = tree + 8 + i * 20;
-            std::memcpy(w.bytes.data() + at, name.data(), name.size());
-            w.U16(e, 0x1f01);
-            w.U32(e + 4, static_cast<uint32_t>(at - table));
-            w.U32(e + 8, static_cast<uint32_t>(name.size() + 1));
-            w.U16(node, 1); // a leaf
-            w.U32(node + 12, static_cast<uint32_t>(i));
-            w.U32(node + 16, lists.names[i].first);
-        }
-        Block(w, 2, 0x2000, "STRG", strg, w.bytes.size() - strg);
+        AddStringBlock(w, lists.names);
     }
 
     w.U32(0x0c, static_cast<uint32_t>(w.bytes.size()));

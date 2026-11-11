@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -239,6 +240,9 @@ public:
 
 private:
     void Line(std::string_view line);
+    void ReportRegisters();
+    void ReportDevices();
+    void ReportMemory();
     bool Directive(const std::vector<std::string>& words, std::string& error);
     void SetRegister(const std::string& name, uint64_t value);
 
@@ -527,8 +531,18 @@ std::string Scenario<Memory>::Registers() const
 template <typename Memory>
 uint64_t Scenario<Memory>::Finish()
 {
-    // The registers as reads by number return them, raw: the accumulators' high parts sign-extended and no stack
-    // popped.
+    ReportRegisters();
+    ReportDevices();
+    ReportMemory();
+
+    return hash_;
+}
+
+// The steps, the pc, whether the DSP halted, and the registers as reads by number return them, raw: the accumulators'
+// high parts sign-extended and no stack popped. Then the accumulators whole, and the stacks.
+template <typename Memory>
+void Scenario<Memory>::ReportRegisters()
+{
     const dsp::Registers& r = dsp_->regs_;
     Line("final steps " + std::to_string(dsp_->Steps()));
     Line("final pc " + Hex(r.pc, 4));
@@ -594,8 +608,13 @@ uint64_t Scenario<Memory>::Finish()
         }
         Line(line);
     }
+}
 
-    // The DSP's side of DSPCR (its reset, interrupt, halt and init bits), the mailboxes and the hardware registers.
+// The DSP's side of DSPCR (its reset, interrupt, halt and init bits), the mailboxes, the hardware registers and the
+// accelerator.
+template <typename Memory>
+void Scenario<Memory>::ReportDevices()
+{
     Line("control dsp " + Hex(dsp_->Control(0) & dsp::control::kDspSide, 4));
     Line("mailbox cpu_to_dsp " + Hex(dsp_->MailboxToDsp(), 8));
     Line("mailbox dsp_to_cpu " + Hex(dsp_->MailboxToCpu(), 8));
@@ -615,7 +634,12 @@ uint64_t Scenario<Memory>::Finish()
          Hex(a.format, 4) + " gain " + Hex(a.gain, 4) + " yn1 " + Hex(a.yn1, 4) + " yn2 " + Hex(a.yn2, 4) +
          " pred_scale " + Hex(a.pred_scale, 4) + " input " + Hex(a.input, 4) + " reads_stopped " +
          (a.reads_stopped ? "1" : "0"));
+}
 
+// IRAM and DRAM, 16 words to a line.
+template <typename Memory>
+void Scenario<Memory>::ReportMemory()
+{
     for (const auto& [name, words] : {std::pair{"iram ", dsp_->Iram()}, std::pair{"dram ", dsp_->Dram()}})
     {
         for (std::size_t row = 0; row < words.size(); row += 16)
@@ -629,8 +653,6 @@ uint64_t Scenario<Memory>::Finish()
             Line(line);
         }
     }
-
-    return hash_;
 }
 
 // Runs a scenario and checks its report's hash. Steps are replayed as Scenario's constructor specifies.
@@ -694,10 +716,10 @@ void WriteScenarios(const fs::path& folder)
 template <typename Memory>
 void CheckAll(const std::string& console)
 {
-    CheckScenario<Memory>(console + ": loops", kLoops, test::kLoopsHash);
-    CheckScenario<Memory>(console + ": extensions", kExtensions, test::kExtensionsHash);
-    CheckScenario<Memory>(console + ": adpcm", kAdpcm, test::kAdpcmHash);
-    for (const auto& [n, hash] : test::kRandomHashes)
+    CheckScenario<Memory>(console + ": loops", kLoops, dolphin_hashes::kLoopsHash);
+    CheckScenario<Memory>(console + ": extensions", kExtensions, dolphin_hashes::kExtensionsHash);
+    CheckScenario<Memory>(console + ": adpcm", kAdpcm, dolphin_hashes::kAdpcmHash);
+    for (const auto& [n, hash] : dolphin_hashes::kRandomHashes)
     {
         CheckScenario<Memory>(console + ": random program " + std::to_string(n), RandomProgram(n), hash);
     }
@@ -709,10 +731,10 @@ void CheckAll(const std::string& console)
     }
 
     // A copy of the DSP is a snapshot. Steps run from a copy that's then put back leave no trace.
-    CheckScenario<Memory>(console + ": loops, replaying steps", kLoops, test::kLoopsHash, 1);
-    CheckScenario<Memory>(console + ": extensions, replaying steps", kExtensions, test::kExtensionsHash, 1);
-    CheckScenario<Memory>(console + ": adpcm, replaying steps", kAdpcm, test::kAdpcmHash, 1);
-    for (const auto& [n, hash] : test::kRandomHashes)
+    CheckScenario<Memory>(console + ": loops, replaying steps", kLoops, dolphin_hashes::kLoopsHash, 1);
+    CheckScenario<Memory>(console + ": extensions, replaying steps", kExtensions, dolphin_hashes::kExtensionsHash, 1);
+    CheckScenario<Memory>(console + ": adpcm, replaying steps", kAdpcm, dolphin_hashes::kAdpcmHash, 1);
+    for (const auto& [n, hash] : dolphin_hashes::kRandomHashes)
     {
         if (n % 8 == 0)
         {

@@ -99,9 +99,9 @@ class Reverb
 {
 public:
     // Sets the reverb up as the library's SetParam and Initialize do, with the buffers in silence. Throws
-    // std::invalid_argument for parameters that the library refuses, for filter sizes that aren't whole frames or
-    // hold none, for surround with nn::snd, for high-pass damping with nn::snd of 2011, and for a frame format without
-    // samples.
+    // std::invalid_argument for parameters that the library refuses, for filter sizes that aren't whole frames, hold
+    // none or exceed 2^24, for surround with nn::snd, for high-pass damping with nn::snd of 2011, for a frame format of
+    // no samples or of more than 65,536, and for buffers of more than 2^28 samples in all.
     Reverb(Library library, const ReverbParam& param, FrameFormat format = {});
 
     // Changes the parameters after the setup. The times and the filter sizes can't grow past those of the setup, and
@@ -164,7 +164,8 @@ class Delay
 {
 public:
     // Sets the delay up as the library's SetParam and Initialize do, with the lines in silence. Throws
-    // std::invalid_argument for parameters that the library refuses, and for a frame format without samples.
+    // std::invalid_argument for parameters that the library refuses, for a frame format of no samples or of more than
+    // 65,536, and for lines of more than 2^28 samples in all.
     explicit Delay(const DelayParam& param, FrameFormat format = {});
 
     // Changes the parameters as SetParam does after Initialize. The delay can't grow past the setup's delay, and

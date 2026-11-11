@@ -57,6 +57,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -111,13 +112,8 @@ Decoded DecodeRomSequence(const Rom& rom, const DriverInfo& info, int sequence);
 // sequence.
 inline constexpr uint32_t kSequenceGap = 16;
 
-// The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
-// the end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a sequence, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence`, in the console's values nearest its units. Throws std::invalid_argument for a command that the
 // revision's bytes can't hold, a target more than 0xFFFF bytes from the sequence's start, and a sequence that the

@@ -74,6 +74,8 @@
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/held_notes.h"
+#include "ntdlib/nwsnd/basic_sound.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/envelope.h"
@@ -137,6 +139,14 @@ struct MoveValue
     int16_t counter = 0;
 };
 
+// A call or a loop on a track's call stack (8 bytes at +0x10C of the track): where it returns to, and the loop's count.
+struct CallStackEntry
+{
+    bool is_loop = false;
+    uint8_t loop_count = 0;
+    uint32_t address = 0;
+};
+
 // One of a player's 16 tracks (driver::SequenceTrack, with MmlParser). A track runs its part of the sequence's
 // bytecode, keeps the settings that the commands give, and plays its notes on channels (see channel.h).
 template <typename Policy>
@@ -146,14 +156,7 @@ public:
     using Channel = typename Policy::Channel;
     using Engine = typename Policy::Engine;
     using Player = SequenceSoundPlayer<Policy>;
-
-    // A call or a loop (8 bytes at +0x10C): where it returns to, and the loop's count.
-    struct CallStackEntry
-    {
-        bool is_loop = false;
-        uint8_t loop_count = 0;
-        uint32_t address = 0;
-    };
+    using CallStackEntry = nwsnd::CallStackEntry;
 
     // Track `index`, 0 to 15, of a player. The player passes itself and the engine to the calls that require them.
     explicit SequenceTrack(int index);
@@ -479,10 +482,8 @@ private:
 
     static constexpr int kCallStackDepth = Policy::kCallStackDepth;
 
-    // A held note, for a rip tool's length analysis: one of this many ticks or more. That's 200 beats at the default
-    // timebase, and minutes at any usual tempo. A sound that plays until the game stops it gives a note this length.
-    // The game then stops the sound before the note ends. Music's notes are far shorter.
-    static constexpr int32_t kHeldTicks = 9600;
+    // A held note, for a rip tool's length analysis (held_notes.h).
+    static constexpr int32_t kHeldTicks = ntdlib::kHeldTicks;
 
     SoundState State(const Player& player) const;
 
@@ -855,7 +856,7 @@ public:
     // game sets it through the sound's handle (SoundHandle::SetPitch).
     void SetPitch(float pitch)
     {
-        pitch_ = pitch;
+        basic_.pitch = pitch;
     }
 
     // The output parameters that BasicSound gives the player, such as the sends on the aux buses that the sound's
@@ -863,7 +864,7 @@ public:
     // policy's defaults.
     typename Policy::Outputs& PlayerOutputs()
     {
-        return outputs_;
+        return basic_.outputs;
     }
 
     // Sets the volume of each allocated track whose bit is set in `track_flags`, bit 0 for track 0. Policy::TrackVolume
@@ -889,6 +890,20 @@ public:
             else if (!started_)
             {
                 start_track_volumes_[static_cast<std::size_t>(i)] = volume;
+            }
+        }
+    }
+
+    // Sets the volume of each track from `volumes`, track 0 first, as SetTrackVolume does. A volume of 1 leaves its
+    // track as it is. A game sets such volumes for the tracks of a sound through the sound handle as it starts the
+    // sound.
+    void SetTrackVolumes(const std::array<float, kTrackCount>& volumes)
+    {
+        for (int i = 0; i < kTrackCount; ++i)
+        {
+            if (volumes[static_cast<std::size_t>(i)] != 1.0f)
+            {
+                SetTrackVolume(1u << i, volumes[static_cast<std::size_t>(i)]);
             }
         }
     }
@@ -1047,17 +1062,7 @@ private:
     static constexpr int kTrackVariableCount = 16;
     std::vector<TrackVariable> pending_track_variables_;
 
-    // What BasicSound gives the player from the sound's info and what the game sets (BasicSoundPlayer's parameters).
-    float volume_ = 1.0f;              // +0x2C
-    float pitch_ = 1.0f;               // +0x30
-    float lpf_ = 0.0f;                 // +0x34
-    float biquad_value_ = 0.0f;        // +0x38
-    int8_t biquad_type_ = -1;          // +0x3C: replaces the tracks' type when 0 or more
-    uint32_t pan_mode_ = 0;            // +0x40
-    uint32_t pan_curve_ = 0;           // +0x44
-    uint32_t output_line_ = 1;         // +0x48
-    typename Policy::Outputs outputs_; // +0x50
-    const Receiver* receiver_ = nullptr;
+    BasicSoundParams<Policy> basic_; // +0x2C
 
     bool release_priority_fix_ = false; // +0x190
     float pan_range_ = 1.0f;            // +0x194

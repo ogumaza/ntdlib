@@ -146,6 +146,9 @@ public:
     std::function<void(const MusNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     static constexpr int kForDepth = 4;
     static constexpr int kNoVoice = -1;
     static constexpr int kNoWave = -1;
@@ -264,9 +267,14 @@ private:
     };
 
     void RunChannel(Channel& channel, int index);
+    void EndFade(Channel& channel);
+    void SendVoice(Channel& channel, float ratio, uint32_t volume, uint32_t pan, uint32_t reverb);
+    void StartVoice(Channel& channel, float ratio, uint32_t volume, uint32_t pan, uint32_t reverb);
     void InitChannel(Channel& channel) const;
     void StartPending(const PendingSong& pending);
     void Step(Channel& channel, int index);
+    uint32_t RunCommands(Channel& channel);
+    void EndNote(Channel& channel);
     uint32_t RunCommand(Channel& channel, uint8_t command, uint32_t place);
     void SetEnvelope(Channel& channel, uint32_t place);
     void SetTempo(Channel& channel, uint8_t value);
@@ -352,6 +360,9 @@ public:
     std::function<void(const MusNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     static constexpr int kMasterChannels = 4;
     static constexpr int kForDepth = 4;
     static constexpr int kNoWave = -1;
@@ -469,10 +480,20 @@ private:
     int Random(int range);
     uint32_t RunCommand(Channel& channel, uint8_t command, uint32_t place);
     void Step(Channel& channel, int index);
+    uint32_t RunCommands(Channel& channel);
+    static void ReleaseForRest(Channel& channel);
+    void ReadVelocity(Channel& channel, uint8_t note) const;
+    void ReadLength(Channel& channel) const;
+    uint16_t WaveNumber(const Channel& channel, uint32_t number) const;
+    uint8_t StartDrum(Channel& channel, uint8_t note) const;
+    static void StartNoteTimes(Channel& channel);
+    void ChangeWave(Channel& channel, int voice, int wave);
+    void SendReverb(Channel& channel, int voice);
     void StartWave(Channel& channel, int voice);
     void RunChannel(Channel& channel, int index);
     void ReadVolume(Channel& channel) const;
     void ReadBend(Channel& channel) const;
+    static int32_t EnvelopeTicks(const Channel& channel, uint64_t from, uint32_t less);
     void RunEnvelope(Channel& channel) const;
     static void RunSweep(Channel& channel);
     static float Wobble(Channel& channel);

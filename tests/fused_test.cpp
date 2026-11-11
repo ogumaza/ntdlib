@@ -15,6 +15,7 @@ namespace
 {
 
 using ntdlib::ArmToInt32;
+using ntdlib::PowerPcDoubleToInt32;
 using ntdlib::PowerPcToInt32;
 using xsflib::testing::Check;
 
@@ -46,6 +47,19 @@ void TestPowerPcToInt32()
     Check(PowerPcToInt32(kNan) == INT32_MIN, "NaN gives the most negative integer");
 }
 
+void TestPowerPcDoubleToInt32()
+{
+    const double kNan = std::numeric_limits<double>::quiet_NaN();
+
+    Check(PowerPcDoubleToInt32(2147483647.9) == INT32_MAX && PowerPcDoubleToInt32(-2147483648.9) == INT32_MIN,
+          "a double just past the range's ends converts toward zero");
+    Check(PowerPcDoubleToInt32(-2147483647.9) == -2147483647 && PowerPcDoubleToInt32(1.5) == 1,
+          "a double in the range converts toward zero");
+    Check(PowerPcDoubleToInt32(2147483648.0) == INT32_MAX && PowerPcDoubleToInt32(-2147483649.0) == INT32_MIN,
+          "a double past the range gives the integer at its end");
+    Check(PowerPcDoubleToInt32(kNan) == INT32_MIN, "NaN gives the most negative integer");
+}
+
 void TestArmToInt32()
 {
     const float kNan = std::numeric_limits<float>::quiet_NaN();
@@ -69,6 +83,7 @@ int main()
 {
     TestNegatedFma();
     TestPowerPcToInt32();
+    TestPowerPcDoubleToInt32();
     TestArmToInt32();
 
     return xsflib::testing::Summary("fused");

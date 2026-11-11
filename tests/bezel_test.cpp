@@ -2,9 +2,9 @@
 
 // Tests the reader of Bezel Engine's data sheets and the sound levels (ntdlib/bezel) on sheets built here: records of
 // both games' sizes, a level left to the default, a random change to the level, a level below 0, the choice among the
-// records that play a sound, a table in .bss, the sheets that the reader leaves out, and the search for a game's
-// sheets. The levels of the records follow a run of WarioWare: Get It Together!'s and WarioWare: Move It!'s code on
-// their sheets.
+// records that play a sound, a table in .bss, names in .bss, the sheets that the reader leaves out, and the search for
+// a game's sheets. The levels of the records follow a run of WarioWare: Get It Together!'s and WarioWare: Move It!'s
+// code on their sheets.
 
 #include <algorithm>
 #include <bit>
@@ -266,6 +266,19 @@ void TestBss()
     Check(levels.Count() == 0, "a table in .bss adds no records");
 }
 
+// A symbol table whose names lie in a section without bytes in the file, such as .bss, gives no symbols.
+void TestNamesInBss()
+{
+    std::vector<uint8_t> bytes = SoundSheet(kGetItTogether, {{"s_VoiceDataTable", {{"BGM_A", "", 0.5f}}}});
+    const uint64_t symbol_table = xsflib::LoadLe64(&bytes[0x28]) + 3 * 0x40;
+    xsflib::StoreLe32(&bytes[symbol_table + 0x28], 6);
+
+    const bezel::Sheet sheet = Parsed(std::move(bytes));
+
+    Check(sheet.Symbol("s_VoiceDataTable").empty(), "a symbol has no bytes without its name");
+    Check(sheet.SymbolsStartingWith("s_").empty(), "the table gives no names");
+}
+
 void TestSheetNames()
 {
     Check(bezel::IsSoundSheet("SoundVoice_BGM.elf"), "the music's sheet");
@@ -323,6 +336,7 @@ int main()
     TestLevels();
     TestChoiceAmongRecords();
     TestBss();
+    TestNamesInBss();
     TestSheetNames();
     TestFolders();
 

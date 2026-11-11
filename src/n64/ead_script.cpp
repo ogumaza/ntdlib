@@ -906,9 +906,9 @@ public:
         std::sort(walk_.dynamic_tables.begin(), walk_.dynamic_tables.end());
         walk_.dynamic_tables.erase(std::unique(walk_.dynamic_tables.begin(), walk_.dynamic_tables.end()),
                                    walk_.dynamic_tables.end());
-        for (auto& [offset, command] : found_)
+        for (const auto& [offset, command] : found_)
         {
-            walk_.commands.push_back(std::move(command));
+            walk_.commands.push_back(command);
         }
 
         return std::move(walk_);

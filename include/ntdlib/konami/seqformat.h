@@ -80,6 +80,11 @@ bool EternalDuelistLayout(Revision r);
 // Dungeon Dice Monsters revisions each have another.
 bool OlderOutputStage(Revision r);
 
+// Returns true if the mixer of revision `r` takes only voices 5 to 11 from echo bus 0. A voice from 0 to 4 that is
+// routed to bus 0 alone then plays dry. The Live Start, Prince of Tennis 2004, WCT 2004 and Minna no Ouji-sama
+// revisions do.
+bool MixesBus0FromVoice5(Revision r);
+
 // Returns true if revision `r` has the Rave Master revision's songs, outputs, voices and mixer. The Rave Master and
 // Hunter X Hunter revisions do.
 bool RaveMasterLayout(Revision r);

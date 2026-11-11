@@ -247,29 +247,9 @@ WsdFile WsdFile::Read(std::span<const uint8_t> file, std::span<const uint8_t> wa
     }
     else
     {
-        for (const std::vector<uint8_t>& rwav : WaveArchiveFile::Read(wave_data).waves)
-        {
-            wsd.waves.push_back(WaveFile::Read(rwav));
-        }
+        wsd.waves = detail::ReadArchivedWaves(wave_data);
     }
-
-    Files written;
-    try
-    {
-        written = wsd.Write();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        throw OtherLayout(error.what());
-    }
-    if (!std::ranges::equal(written.file, file))
-    {
-        throw OtherLayout("Write gives other bytes of the file");
-    }
-    if (!std::ranges::equal(written.wave_data, wave_data))
-    {
-        throw OtherLayout("Write gives other bytes of the wave data");
-    }
+    detail::CheckWrittenBack(wsd, file, wave_data, OtherLayout);
 
     return wsd;
 }
@@ -310,12 +290,7 @@ WsdFile::Files WsdFile::Write() const
     }
     else
     {
-        WaveArchiveFile archive;
-        for (const WaveFile& wave : waves)
-        {
-            archive.waves.push_back(wave.Write());
-        }
-        files.wave_data = archive.Write();
+        files.wave_data = detail::ArchiveWaves(waves);
     }
     files.file = CloseFile(out);
 

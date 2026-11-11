@@ -150,9 +150,7 @@ struct ChannelRules<nwsnd::RevolutionPolicy> : NwSndChannelRules
             channel.key_group = region.key_group;
         }
 
-        float init_pan = static_cast<float>(static_cast<int>(region.pan) - 64) / 63.0f;
-        init_pan += static_cast<float>(info.init_pan) / 63.0f;
-        channel.init_pan = init_pan;
+        channel.init_pan = nwsnd::RevolutionPolicy::InitialPan(region.pan, info.init_pan);
         channel.init_span = 0.0f;
     }
 };

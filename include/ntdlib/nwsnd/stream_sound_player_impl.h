@@ -24,7 +24,10 @@ namespace ntdlib::nwsnd
 template <typename Policy>
 StreamSoundPlayer<Policy>::StreamSoundPlayer(int id, const typename Policy::SoundInfo& info, const StreamTracks& tracks,
                                              std::vector<WaveInfo> channels, const Receiver* receiver)
-    : id_(id), waves_(std::move(channels)), voices_(waves_.size(), kNoVoice), receiver_(receiver)
+    : id_(id),
+      waves_(std::move(channels)),
+      voices_(waves_.size(), kNoVoice),
+      basic_{.outputs = {}, .receiver = receiver}
 {
     for (std::size_t i = 0; i < tracks.tracks.size(); ++i)
     {
@@ -36,9 +39,9 @@ StreamSoundPlayer<Policy>::StreamSoundPlayer(int id, const typename Policy::Soun
 
     // What the archive player gives a sound from its info (SoundArchivePlayer::SetCommonSoundParam, 0x02295C98): the
     // volume, a division by 127, and the pan mode and curve. The stream sound's details give its pitch and sends.
-    volume_ = Policy::PlayerVolume(info.volume);
-    pan_mode_ = info.pan_mode;
-    pan_curve_ = info.pan_curve;
+    basic_.volume = Policy::PlayerVolume(info.volume);
+    basic_.pan_mode = info.pan_mode;
+    basic_.pan_curve = info.pan_curve;
     item_pitch_ = info.stream.pitch;
     item_main_send_ = FractionOfSoundValue(info.stream.main_send) - 1.0f;
     for (std::size_t bus = 0; bus < item_fx_send_.size(); ++bus)
@@ -89,7 +92,7 @@ void StreamSoundPlayer<Policy>::Start(Engine& engine)
             voice.SetSampleRate(wave.sample_rate);
             if constexpr (!std::is_void_v<Receiver>)
             {
-                voice.SetOutputReceiver(receiver_);
+                voice.SetOutputReceiver(basic_.receiver);
             }
             if (!queued[channel])
             {
@@ -190,19 +193,20 @@ void StreamSoundPlayer<Policy>::UpdateVoiceParams(Engine& engine, const Track& t
 
     // The voices' parameters: the player's with the track's. The player's biquad filter replaces the track's when the
     // game sets one.
-    const float volume = volume_ * data_volume * track.volume;
-    const float pitch = pitch_ * item_pitch_;
-    const float lpf = data_lpf + lpf_;
-    if (biquad_type_ != -1)
+    const float volume = basic_.volume * data_volume * track.volume;
+    const float pitch = basic_.pitch * item_pitch_;
+    const float lpf = data_lpf + basic_.lpf;
+    if (basic_.biquad_type != -1)
     {
-        biquad_type = biquad_type_;
-        biquad_value = biquad_value_;
+        biquad_type = basic_.biquad_type;
+        biquad_value = basic_.biquad_value;
     }
-    const uint32_t output_line = track.output_line != -1 ? static_cast<uint32_t>(track.output_line) : output_line_;
+    const uint32_t output_line =
+        track.output_line != -1 ? static_cast<uint32_t>(track.output_line) : basic_.output_line;
 
     // Each device's output parameters (SetOutputParam, 0x022B4C78): the player's times the track's, with the track's
     // pan and surround pan added to the player's, and the track's and the sound's sends added to the player's.
-    typename Policy::Outputs outputs = outputs_;
+    typename Policy::Outputs outputs = basic_.outputs;
     Policy::ForEachOutput(
         [&](auto& param, const auto& from_track)
         {
@@ -241,7 +245,7 @@ void StreamSoundPlayer<Policy>::UpdateVoiceParams(Engine& engine, const Track& t
         voice.SetLpfFreq(lpf);
         voice.SetBiquadFilter(biquad_type, biquad_value);
         voice.SetOutputLine(output_line);
-        Policy::SetStreamVoiceMode(voice, pan_mode_, pan_curve_, info.flags != 0);
+        Policy::SetStreamVoiceMode(voice, basic_.pan_mode, basic_.pan_curve, info.flags != 0);
         Policy::SetStreamVoiceOutputs(voice, outputs, count, index);
     }
 }

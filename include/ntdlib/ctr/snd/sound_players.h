@@ -210,6 +210,12 @@ private:
         float span = 0.0f;                 // +0x1c
     };
 
+    // The steps of Start: a voice for each channel (false when one can't be allocated, and the player has finished),
+    // the flags of each track on the voices of its channels, and the start of the voices of the tracks that play.
+    bool AllocVoices(Engine& engine);
+    void SetTrackFlags(Engine& engine);
+    void StartTracks(Engine& engine);
+
     void UpdateVoiceParams(Engine& engine, const Track& track);
 
     // Frees every voice and finishes (0x31f8e4).

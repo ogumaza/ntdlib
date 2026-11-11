@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "nx/audio/arithmetic.h"
+#include "nx/audio/effect_channels.h"
 #include "nx/audio/fixed_point.h"
 #include "nx/audio/tables.h"
 
@@ -66,18 +67,6 @@ const std::array<int, kReverbTaps>& TapChannels(int channels)
     default:
         return kTaps6;
     }
-}
-
-// The low 32 bits of a * gain shifted right by 14, the product in 64 bits.
-int32_t MulQ14(int64_t a, int64_t gain)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(static_cast<uint64_t>(a * gain) >> 14));
-}
-
-// A sample on the reverb's scale: shifted left by 6, wrapping.
-int32_t Scaled(int32_t sample)
-{
-    return static_cast<int32_t>(static_cast<uint32_t>(sample) << 6);
 }
 
 // A line of `count` samples at `cursor` in the buffer. The next line follows it.
@@ -194,6 +183,91 @@ LineGains Gains(const ReverbParameter& parameter, int32_t samples, int32_t cosin
     return {MulQ14(gain, kFdnScale), filter};
 }
 
+// The early reflections, from the pre-delay line before the input goes in.
+std::array<int32_t, kReverbChannels> EarlyReflections(const ReverbState& state,
+                                                      const std::array<int, kReverbTaps>& taps, int channels)
+{
+    std::array<int32_t, kReverbChannels> early{};
+    for (std::size_t i = 0; i < kReverbTaps; ++i)
+    {
+        const int32_t v = MulQ14(Tap(state, state.predelay, state.early_delays[i]), state.early_gains[i]);
+        const auto to = static_cast<std::size_t>(taps[i]);
+        early[to] = WrapAdd(early[to], v);
+        if (channels == 6)
+        {
+            early[3] = WrapAdd(early[3], v);
+        }
+    }
+    if (channels == 6)
+    {
+        early[3] = MulQ14(early[3], kLfeScale);
+    }
+
+    return early;
+}
+
+// The late reverb for a sample: the outputs of the four lines' all-passes.
+std::array<int32_t, kReverbLines> LateLines(const ReverbParameter& parameter, ReverbState& state)
+{
+    // The late reverb's tap, just after the input went in, and each feedback line through its filter.
+    const uint32_t length = state.predelay.length;
+    const int32_t late_delay =
+        length > static_cast<uint32_t>(state.late_delay) ? state.late_delay : static_cast<int32_t>(length - 1);
+    const int32_t late = MulQ14(Tap(state, state.predelay, late_delay + 1), parameter.late_gain);
+    std::array<int32_t, kReverbLines>& o = state.filtered;
+    for (std::size_t i = 0; i < kReverbLines; ++i)
+    {
+        o[i] = WrapAdd(MulQ14(o[i], state.filter_gains[i]), MulQ14(At(state, state.fdn[i].cursor), state.fdn_gains[i]));
+    }
+
+    // The lines mixed, each through its all-pass and back into its feedback line.
+    const std::array<int32_t, kReverbLines> mixed = {
+        WrapAdd(WrapAdd(o[1], late), o[2]),
+        WrapSub(WrapSub(late, o[0]), o[3]),
+        WrapSub(WrapAdd(o[0], late), o[3]),
+        WrapSub(WrapAdd(o[1], late), o[2]),
+    };
+    std::array<int32_t, kReverbLines> a{};
+    for (std::size_t i = 0; i < kReverbLines; ++i)
+    {
+        const int32_t r = At(state, state.all_pass[i].cursor);
+        const int32_t u = WrapSub(mixed[i], MulQ14(r, state.all_pass_gain));
+        Write(state, state.all_pass[i], u);
+        a[i] = WrapAdd(r, MulQ14(u, state.all_pass_gain));
+        Write(state, state.fdn[i], a[i]);
+    }
+
+    return a;
+}
+
+// The lines that each channel takes: all four for one channel, two each for two. Six channels give the centre
+// the third and fourth lines' difference, 5 ms late.
+std::array<int32_t, kReverbChannels> Wet(ReverbState& state, const std::array<int32_t, kReverbLines>& a, int channels)
+{
+    std::array<int32_t, kReverbChannels> wet{};
+    switch (channels)
+    {
+    case 1:
+        wet[0] = WrapAdd(WrapAdd(WrapAdd(a[0], a[1]), a[2]), a[3]);
+        break;
+    case 2:
+        wet = {WrapAdd(a[2], a[0]), WrapAdd(a[3], a[1])};
+        break;
+    case 4:
+        wet = {a[0], a[1], a[2], a[3]};
+        break;
+    default:
+        {
+            const int32_t center = At(state, state.center.cursor);
+            Write(state, state.center, MulQ14(WrapSub(a[2], a[3]), kCenterScale));
+            wet = {a[0], a[1], center, a[3], a[2], a[3]};
+            break;
+        }
+    }
+
+    return wet;
+}
+
 } // namespace
 
 void InitializeReverb(const ReverbParameter& parameter, ReverbState& state, bool long_predelay)
@@ -277,22 +351,14 @@ void UpdateReverb(const ReverbParameter& parameter, ReverbState& state)
 void PassReverb(const ReverbParameter& parameter, std::span<const int32_t* const> inputs,
                 std::span<int32_t* const> outputs, int count)
 {
-    const auto channels =
-        std::min({static_cast<std::size_t>(std::max(parameter.channel_count, 0)), inputs.size(), outputs.size()});
-    for (std::size_t k = 0; k < channels; ++k)
-    {
-        if (inputs[k] != outputs[k])
-        {
-            std::copy(inputs[k], inputs[k] + count, outputs[k]);
-        }
-    }
+    PassChannels(parameter.channel_count, inputs, outputs, count);
 }
 
 void ApplyReverb(const ReverbParameter& parameter, ReverbState& state, std::span<const int32_t* const> inputs,
                  std::span<int32_t* const> outputs, int count)
 {
     const int channels = parameter.channel_count;
-    if (channels != 1 && channels != 2 && channels != 4 && channels != 6)
+    if (!ProcessesChannels(channels))
     {
         PassReverb(parameter, inputs, outputs, count);
         return;
@@ -307,22 +373,7 @@ void ApplyReverb(const ReverbParameter& parameter, ReverbState& state, std::span
     const auto c = static_cast<std::size_t>(channels);
     for (int t = 0; t < count; ++t)
     {
-        // The early reflections, from the pre-delay line before the input goes in.
-        std::array<int32_t, kReverbChannels> early{};
-        for (std::size_t i = 0; i < kReverbTaps; ++i)
-        {
-            const int32_t v = MulQ14(Tap(state, state.predelay, state.early_delays[i]), state.early_gains[i]);
-            const auto to = static_cast<std::size_t>(taps[i]);
-            early[to] = WrapAdd(early[to], v);
-            if (channels == 6)
-            {
-                early[3] = WrapAdd(early[3], v);
-            }
-        }
-        if (channels == 6)
-        {
-            early[3] = MulQ14(early[3], kLfeScale);
-        }
+        const std::array<int32_t, kReverbChannels> early = EarlyReflections(state, taps, channels);
 
         // The input into the pre-delay line. Two and four channels scale each channel. Six scale their sum.
         std::array<int32_t, kReverbChannels> x{};
@@ -332,66 +383,16 @@ void ApplyReverb(const ReverbParameter& parameter, ReverbState& state, std::span
         {
             x[k] = inputs[k][t];
             sum = WrapAdd(sum, x[k]);
-            in = WrapAdd(in, MulQ14(Scaled(x[k]), parameter.reverb_gain));
+            in = WrapAdd(in, MulQ14(ToEffectScale(x[k]), parameter.reverb_gain));
         }
         if (channels == 6)
         {
-            in = MulQ14(Scaled(sum), parameter.reverb_gain);
+            in = MulQ14(ToEffectScale(sum), parameter.reverb_gain);
         }
         Write(state, state.predelay, in);
 
-        // The late reverb's tap, just after the input went in, and each feedback line through its filter.
-        const uint32_t length = state.predelay.length;
-        const int32_t late_delay =
-            length > static_cast<uint32_t>(state.late_delay) ? state.late_delay : static_cast<int32_t>(length - 1);
-        const int32_t late = MulQ14(Tap(state, state.predelay, late_delay + 1), parameter.late_gain);
-        std::array<int32_t, kReverbLines>& o = state.filtered;
-        for (std::size_t i = 0; i < kReverbLines; ++i)
-        {
-            o[i] = WrapAdd(MulQ14(o[i], state.filter_gains[i]),
-                           MulQ14(At(state, state.fdn[i].cursor), state.fdn_gains[i]));
-        }
-
-        // The lines mixed, each through its all-pass and back into its feedback line.
-        const std::array<int32_t, kReverbLines> mixed = {
-            WrapAdd(WrapAdd(o[1], late), o[2]),
-            WrapSub(WrapSub(late, o[0]), o[3]),
-            WrapSub(WrapAdd(o[0], late), o[3]),
-            WrapSub(WrapAdd(o[1], late), o[2]),
-        };
-        std::array<int32_t, kReverbLines> a{};
-        for (std::size_t i = 0; i < kReverbLines; ++i)
-        {
-            const int32_t r = At(state, state.all_pass[i].cursor);
-            const int32_t u = WrapSub(mixed[i], MulQ14(r, state.all_pass_gain));
-            Write(state, state.all_pass[i], u);
-            a[i] = WrapAdd(r, MulQ14(u, state.all_pass_gain));
-            Write(state, state.fdn[i], a[i]);
-        }
-
-        // The lines that each channel takes: all four for one channel, two each for two. Six channels give the centre
-        // the third and fourth lines' difference, 5 ms late.
-        std::array<int32_t, kReverbChannels> wet{};
-        switch (channels)
-        {
-        case 1:
-            wet[0] = WrapAdd(WrapAdd(WrapAdd(a[0], a[1]), a[2]), a[3]);
-            break;
-        case 2:
-            wet = {WrapAdd(a[2], a[0]), WrapAdd(a[3], a[1])};
-            break;
-        case 4:
-            wet = {a[0], a[1], a[2], a[3]};
-            break;
-        default:
-            {
-                const int32_t center = At(state, state.center.cursor);
-                Write(state, state.center, MulQ14(WrapSub(a[2], a[3]), kCenterScale));
-                wet = {a[0], a[1], center, a[3], a[2], a[3]};
-                break;
-            }
-        }
-
+        const std::array<int32_t, kReverbLines> a = LateLines(parameter, state);
+        const std::array<int32_t, kReverbChannels> wet = Wet(state, a, channels);
         for (std::size_t k = 0; k < c; ++k)
         {
             const int32_t reverb = MulQ14(WrapAdd(early[k], wet[k]), parameter.out_gain) >> 6;

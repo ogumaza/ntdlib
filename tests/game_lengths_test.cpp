@@ -2,6 +2,7 @@
 
 // Tests of the length analysis of a JAudio2 or JAudio1 sound in game mode (jaudio/game_lengths.h), on a made-up
 // machine: a CPU whose watched functions the test runs, words and bytes of memory, and an output that the test fills.
+// TestSoundLength checks the SoundLength class without a machine.
 
 #include "ntdlib/jaudio/game_lengths.h"
 
@@ -986,6 +987,48 @@ void TestInterruptRoutine()
     XSFLIB_CHECK(counted && counted->length_ms == 20'000 && counted->fade_ms == 10'000);
 }
 
+void TestSoundLength()
+{
+    // A sound with one block of sound, then silence. Once it has stayed silent for `silence_ms`, it ends `tail_ms`
+    // after its last sound. No LoopFinder follows it, and its track events count for nothing.
+    jaudio::GameLengthRules rules = kRules;
+    rules.silence_ms = 10;
+    jaudio::SoundLength length(rules);
+    std::vector<int16_t> block(2 * rules.block_frames);
+    Sound(block.data(), rules.block_frames);
+    const jaudio::TrackEvent jump = {jaudio::TrackEvent::Kind::kJump, kTrack, 0x18, 0x10, 0, 0, 0};
+    const auto no_wait = [](uint32_t)
+    {
+        return jaudio::TrackWait{0, false};
+    };
+    std::optional<xsflib::rip::Timing> timing;
+    while (!timing && length.Running())
+    {
+        length.Hear(block);
+        std::fill(block.begin(), block.end(), int16_t{0});
+        XSFLIB_CHECK(!length.Take(jump) && !length.Following());
+        timing = length.EndBlock(true, no_wait);
+    }
+
+    XSFLIB_CHECK(timing && timing->length_ms == 1 + 500 && timing->fade_ms == 0 && !timing->silent);
+
+    // A sound that plays to the limit is silent if it never sounded. If it sounded, it fades out at the limit.
+    rules.limit_ms = 2;
+    jaudio::SoundLength quiet(rules);
+    while (quiet.Running())
+    {
+        XSFLIB_CHECK(!quiet.EndBlock(true, no_wait));
+    }
+
+    jaudio::SoundLength sounding(rules);
+    sounding.MarkSound();
+
+    XSFLIB_CHECK(quiet.Frames() == 2 * rules.block_frames && quiet.AtLimit().silent &&
+                 quiet.AtLimit().length_ms == 500);
+    XSFLIB_CHECK(sounding.AtLimit().length_ms == 2 && sounding.AtLimit().fade_ms == 10'000 &&
+                 !sounding.AtLimit().silent);
+}
+
 } // namespace
 
 int main()
@@ -1003,6 +1046,7 @@ int main()
     TestPooledJAudio1();
     TestEndlessWait();
     TestInterruptRoutine();
+    TestSoundLength();
 
     return xsflib::testing::Summary("game lengths");
 }

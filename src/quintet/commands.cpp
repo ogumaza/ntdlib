@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/data_items.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/quintet/song.h"
 
@@ -26,6 +27,7 @@ using commands::FromUnit;
 using commands::Kind;
 using commands::ToUnit;
 using Item = commands::Command;
+using agb::DataItem;
 
 // The size of each command with arguments, in the A revision's numbering. The others take a byte.
 uint32_t CommandSize(uint8_t command)
@@ -162,23 +164,11 @@ std::optional<uint8_t> UsualCode(int64_t ticks, const Traits& traits)
     }
 }
 
-// Reads the command at `at` in the console's values. Sets `past` if it runs past the bytes.
-Item ReadItem(std::span<const uint8_t> data, uint32_t at, const Traits& traits, uint32_t& size, bool& past)
+// Reads the note, play again, rest or wait whose first byte is `first` into `item`, and sets `size`. `byte` reads the
+// byte at an offset from `first`. Returns false if `first` starts a command.
+template <typename ByteReader>
+bool ReadNote(uint8_t first, const ByteReader& byte, const Traits& traits, uint32_t& size, Item& item)
 {
-    const auto byte = [&](uint32_t i) -> uint8_t
-    {
-        if (at + i >= data.size())
-        {
-            past = true;
-            return 0;
-        }
-        return data[at + i];
-    };
-
-    Item item;
-    const uint8_t first = byte(0);
-
-    // A note, a play again, a rest or a wait.
     int pitch = first & 15;
     const int length = first >> 4;
     if (traits.byte_notes ? first < kFirstCommandS : pitch <= 13 && length <= 12)
@@ -219,6 +209,29 @@ Item ReadItem(std::span<const uint8_t> data, uint32_t at, const Traits& traits, 
         {
             item.encoding.length_code = code;
         }
+        return true;
+    }
+
+    return false;
+}
+
+// Reads the command at `at` in the console's values. Sets `past` if it runs past the bytes.
+Item ReadItem(std::span<const uint8_t> data, uint32_t at, const Traits& traits, uint32_t& size, bool& past)
+{
+    const auto byte = [&](uint32_t i) -> uint8_t
+    {
+        if (at + i >= data.size())
+        {
+            past = true;
+            return 0;
+        }
+        return data[at + i];
+    };
+
+    Item item;
+    const uint8_t first = byte(0);
+    if (ReadNote(first, byte, traits, size, item))
+    {
         return item;
     }
 
@@ -387,14 +400,6 @@ private:
     std::string problem_;
 };
 
-Item DataItem(std::span<const uint8_t> bytes)
-{
-    Item item;
-    item.kind = Kind::kData;
-    item.bytes.assign(bytes.begin(), bytes.end());
-    return item;
-}
-
 // Keeps a song whose commands can't be read safely as data, split at the channels' starts.
 Decoded Opaque(std::span<const uint8_t> data, std::span<const uint32_t> starts, std::string reason)
 {
@@ -402,16 +407,8 @@ Decoded Opaque(std::span<const uint8_t> data, std::span<const uint32_t> starts, 
     decoded.opaque = true;
     decoded.reason = std::move(reason);
 
-    std::set<uint32_t> splits = {0};
-    splits.insert(starts.begin(), starts.end());
-    std::map<uint32_t, uint32_t> items;
-    for (auto it = splits.begin(); it != splits.end(); ++it)
-    {
-        const auto next = std::next(it);
-        const uint32_t end = next == splits.end() ? uint32_t(data.size()) : *next;
-        items[*it] = uint32_t(decoded.sequence.items.size());
-        decoded.sequence.items.push_back(DataItem(data.subspan(*it, end - *it)));
-    }
+    const std::map<uint32_t, uint32_t> items =
+        agb::AppendDataItems(data, {starts.begin(), starts.end()}, decoded.sequence.items);
     for (const uint32_t start : starts)
     {
         decoded.entries.push_back(items.at(start));

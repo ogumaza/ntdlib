@@ -201,12 +201,13 @@ void TestExtractedDiscs(const fs::path& dir, const TestDisc& disc)
 
 // Checks the image test's helper. TestIsoImages and TestExtractedDiscs write game.iso and the disc's folder first. The
 // folder and the image match the folder's manifest, and a manifest with a wrong hash gives one failure. The check
-// prints that failure, and the test then takes it back.
+// prints that failure, and the test then takes it back. ManifestField reads the manifest's game ID.
 void TestImageManifest(const fs::path& dir, const TestDisc& disc)
 {
     {
         std::ofstream manifest(dir / "disc" / "MANIFEST.txt");
         manifest << "source: game.iso\n";
+        manifest << "game id: GTST01\n";
         const auto line = [&manifest](const std::string& path, const Bytes& data)
         {
             manifest << xsflib::Sha1::Hex(xsflib::Sha1::Of(data)) << "  " << data.size() << "  " << path << "\n";
@@ -223,6 +224,9 @@ void TestImageManifest(const fs::path& dir, const TestDisc& disc)
     const ntdlib::testing::ImageManifest manifest = ntdlib::testing::ReadImageManifest(dir / "disc" / "MANIFEST.txt");
     Check(manifest.source == "game.iso" && manifest.hashes.size() == 3 + disc.files.size(),
           "image manifest: its source and every line");
+    Check(ntdlib::testing::ManifestField(dir / "disc" / "MANIFEST.txt", "game id") == "GTST01" &&
+              ntdlib::testing::ManifestField(dir / "disc" / "MANIFEST.txt", "title").empty(),
+          "image manifest: a field, and a field that it doesn't give");
     std::string folder = (dir / "disc").string();
     std::string roms = dir.string();
     char* arguments[] = {const_cast<char*>("image_test"), folder.data(), roms.data()};
@@ -234,6 +238,35 @@ void TestImageManifest(const fs::path& dir, const TestDisc& disc)
     const bool caught = failures == failures_before + 1;
     failures = failures_before;
     Check(caught, "image manifest: a wrong hash is one failure");
+}
+
+// Reads a manifest with fields, an empty line, a path with spaces and a line that ends in CR LF. A line that only
+// looks like a file's is a field or nothing.
+void TestReadImageManifest(const fs::path& dir)
+{
+    const std::string a(40, 'a');
+    const std::string b(40, 'b');
+    {
+        std::ofstream manifest(dir / "MANIFEST.txt", std::ios::binary);
+        manifest << "source: game.wux\ntitle id: 00050000-12345600\nimage sha1: " << b << "\n"
+                 << "disc: 25025314816 bytes, crc32 0\n\n"
+                 << a << "        12  files/a b.bin\n"
+                 << b << "  1234567890  sys/main.dol\r\n"
+                 << "abc  12  short.bin\n";
+    }
+
+    const ntdlib::testing::ImageManifest manifest = ntdlib::testing::ReadImageManifest(dir / "MANIFEST.txt");
+    Check(manifest.source == "game.wux" && manifest.fields.size() == 4, "manifest reader: the source and the fields");
+    Check(manifest.fields.at("title id") == "00050000-12345600" && manifest.fields.at("image sha1") == b &&
+              manifest.fields.at("disc") == "25025314816 bytes, crc32 0",
+          "manifest reader: each field's value");
+    Check(manifest.files.size() == 2 && manifest.files[0].path == "files/a b.bin" && manifest.files[0].size == 12 &&
+              manifest.files[0].sha1 == a && manifest.files[1].path == "sys/main.dol" &&
+              manifest.files[1].size == 1234567890,
+          "manifest reader: the files in order, with their sizes and whole paths");
+    Check(manifest.hashes.size() == 2 && manifest.hashes.at("files/a b.bin") == a &&
+              manifest.hashes.at("sys/main.dol") == b,
+          "manifest reader: the hashes by path");
 }
 
 // Checks an extracted disc that lacks a system file: without its main.dol, and with a folder in its place. A folder in
@@ -288,6 +321,7 @@ int main(int argc, char** argv)
     TestWiaAndRvz(dir, disc);
     TestExtractedDiscs(dir, disc);
     TestImageManifest(dir, disc);
+    TestReadImageManifest(dir);
     TestBrokenExtractedDisc(dir, disc);
     TestRefusals(dir, disc);
 

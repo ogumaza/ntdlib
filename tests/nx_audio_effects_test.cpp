@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/nx/audio/delay.h"
@@ -512,8 +513,7 @@ struct NoiseVoice
         {
             seed = seed * 1664525u + 1013904223u;
             const auto value = static_cast<uint16_t>(static_cast<int32_t>(seed >> 18) - 8192);
-            bytes.push_back(static_cast<uint8_t>(value & 0xFF));
-            bytes.push_back(static_cast<uint8_t>(value >> 8));
+            xsflib::AppendLe16(bytes, value);
         }
 
         renderer.AcquireFinalMix(2);

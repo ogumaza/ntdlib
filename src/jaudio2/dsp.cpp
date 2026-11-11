@@ -591,32 +591,32 @@ void Dsp::DecodeAfc(DspChannelBlock& block, std::span<int16_t> destination, int 
     block.SetU16(DspChannelBlock::kAdpcmHistory1, static_cast<uint16_t>(history1));
 }
 
+// Reads `count` samples from the read address on: big-endian ones of 16 bits, or bytes in the high half of a
+// sample (0x175a04 and 0x2001f0 in the main of Pikmin's Switch release).
+void Dsp::ReadPcm(const DspChannelBlock& block, int16_t* out, uint32_t count, uint32_t bytes) const
+{
+    const uint32_t address = block.U32(DspChannelBlock::kReadAddress);
+    const uint32_t line = (varam_ + (address & 0xffffffe0)) & 0x7fffffc;
+    if (bytes == 1)
+    {
+        for (uint32_t i = 0; i < count; i++)
+        {
+            out[i] = static_cast<int16_t>(memory_.Byte(line + (address & 0x1f) + i) << 8);
+        }
+        return;
+    }
+
+    const uint32_t offset = (address >> 1) & 0xf;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        out[i] = static_cast<int16_t>(memory_.Big16(line + (offset + i) * 2));
+    }
+}
+
 void Dsp::FetchPcm(DspChannelBlock& block, int16_t* destination, uint32_t bytes)
 {
     const uint32_t needed = static_cast<uint32_t>(
         (uint64_t{block.U16(DspChannelBlock::kPitch)} * 80 + block.U16(DspChannelBlock::kFraction)) >> 12);
-
-    // Reads `count` samples from the read address on: big-endian ones of 16 bits, or bytes in the high half of a
-    // sample (0x175a04 and 0x2001f0 in the main of Pikmin's Switch release).
-    const auto read = [&](int16_t* out, uint32_t count)
-    {
-        const uint32_t address = block.U32(DspChannelBlock::kReadAddress);
-        const uint32_t line = (varam_ + (address & 0xffffffe0)) & 0x7fffffc;
-        if (bytes == 1)
-        {
-            for (uint32_t i = 0; i < count; i++)
-            {
-                out[i] = static_cast<int16_t>(memory_.Byte(line + (address & 0x1f) + i) << 8);
-            }
-            return;
-        }
-
-        const uint32_t offset = (address >> 1) & 0xf;
-        for (uint32_t i = 0; i < count; i++)
-        {
-            out[i] = static_cast<int16_t>(memory_.Big16(line + (offset + i) * 2));
-        }
-    };
 
     // A channel's start, or a loop that the last sub-frame reached the end of.
     if (block.U16(DspChannelBlock::kReset) != 0)
@@ -652,7 +652,7 @@ void Dsp::FetchPcm(DspChannelBlock& block, int16_t* destination, uint32_t bytes)
     while (remaining <= step)
     {
         const uint32_t count = remaining & 0xffff;
-        read(out, count);
+        ReadPcm(block, out, count, bytes);
         out += count;
         wanted -= block.U16(DspChannelBlock::kRemaining);
         if (block.U16(DspChannelBlock::kLoops) == 0)
@@ -676,7 +676,7 @@ void Dsp::FetchPcm(DspChannelBlock& block, int16_t* destination, uint32_t bytes)
         }
     }
 
-    read(out, wanted & 0xffff);
+    ReadPcm(block, out, wanted & 0xffff, bytes);
     const uint32_t left = block.U32(DspChannelBlock::kRemaining) - step;
     block.SetU32(DspChannelBlock::kRemaining, left);
     if (left == 0)
@@ -730,6 +730,53 @@ void Dsp::Resample(DspChannelBlock& block, int16_t* source, int16_t* out)
         block.SetU16(DspChannelBlock::kHistory + 2 * static_cast<std::size_t>(k), static_cast<uint16_t>(next[k]));
     }
     block.SetU16(DspChannelBlock::kFraction, (position >> 4) & 0xfff);
+}
+
+uint32_t Dsp::RestartAfcLoop(DspChannelBlock& block)
+{
+    const uint32_t loop_start = block.U32(DspChannelBlock::kLoopStart);
+    block.SetU32(DspChannelBlock::kReadAddress,
+                 static_cast<uint32_t>(static_cast<int32_t>(loop_start) >> 4) * block.U16(DspChannelBlock::kFormat) +
+                     block.U32(DspChannelBlock::kWaveAddress));
+    const uint32_t loop_history = block.U32(DspChannelBlock::kLoopLast);
+    block.SetU32(DspChannelBlock::kAdpcmHistory2, loop_history >> 16 | loop_history << 16);
+
+    std::array<int16_t, 16> first_block{};
+    DecodeAfc(block, first_block, 1);
+    for (uint32_t k = 0; k < 16; k++)
+    {
+        block.words[DspChannelBlock::kSavedBlock / 2 + k] = static_cast<uint16_t>(first_block[k]);
+    }
+
+    const uint32_t leftover = 16 - (loop_start & 0xf);
+    block.SetU16(DspChannelBlock::kLeftover, leftover);
+    block.SetU32(DspChannelBlock::kRemaining, block.U32(DspChannelBlock::kLoopEnd) - loop_start - leftover);
+
+    return leftover;
+}
+
+void Dsp::SaveAfcBlock(DspChannelBlock& block, std::span<const int16_t> source, std::size_t end)
+{
+    for (uint32_t k = 0; k < 16; k++)
+    {
+        block.words[DspChannelBlock::kSavedBlock / 2 + k] = static_cast<uint16_t>(source[end - 16 + k]);
+    }
+
+    // At the wave's end, its last samples move to the saved block's end. The next sub-frame takes the leftover
+    // from there.
+    const uint32_t end_sample = block.U32(DspChannelBlock::kLoopEnd);
+    if (block.U32(DspChannelBlock::kRemaining) == 0 && (end_sample & 0xffff) != 0)
+    {
+        const auto last = static_cast<int>((end_sample - 1) & 0xf);
+        const int first = static_cast<int>(DspChannelBlock::kSavedBlock / 2);
+        int k = 0;
+        do
+        {
+            block.words[static_cast<std::size_t>(first + 15 - k)] =
+                block.words[static_cast<std::size_t>(first + last - k)];
+            k++;
+        } while (k < block.U16(DspChannelBlock::kLeftover));
+    }
 }
 
 void Dsp::ProcessAfc(DspChannelBlock& block, std::span<int16_t> source)
@@ -797,23 +844,7 @@ void Dsp::ProcessAfc(DspChannelBlock& block, std::span<int16_t> source)
                 break;
             }
 
-            const uint32_t loop_start = block.U32(DspChannelBlock::kLoopStart);
-            block.SetU32(DspChannelBlock::kReadAddress, static_cast<uint32_t>(static_cast<int32_t>(loop_start) >> 4) *
-                                                                block.U16(DspChannelBlock::kFormat) +
-                                                            block.U32(DspChannelBlock::kWaveAddress));
-            const uint32_t loop_history = block.U32(DspChannelBlock::kLoopLast);
-            block.SetU32(DspChannelBlock::kAdpcmHistory2, loop_history >> 16 | loop_history << 16);
-
-            std::array<int16_t, 16> first_block{};
-            DecodeAfc(block, first_block, 1);
-            for (uint32_t k = 0; k < 16; k++)
-            {
-                saved(k) = static_cast<uint16_t>(first_block[k]);
-            }
-
-            leftover = 16 - (loop_start & 0xf);
-            block.SetU16(DspChannelBlock::kLeftover, leftover);
-            block.SetU32(DspChannelBlock::kRemaining, block.U32(DspChannelBlock::kLoopEnd) - loop_start - leftover);
+            leftover = RestartAfcLoop(block);
             continue;
         }
 
@@ -837,27 +868,7 @@ void Dsp::ProcessAfc(DspChannelBlock& block, std::span<int16_t> source)
         DecodeAfc(block, std::span<int16_t>(source).subspan(at), blocks);
         if (block.U16(DspChannelBlock::kLeftover) != 0)
         {
-            const std::size_t end = start + static_cast<std::size_t>(static_cast<int16_t>(blocks << 4));
-            for (uint32_t k = 0; k < 16; k++)
-            {
-                saved(k) = static_cast<uint16_t>(source[end - 16 + k]);
-            }
-
-            // At the wave's end, its last samples move to the saved block's end. The next sub-frame takes the leftover
-            // from there.
-            const uint32_t end_sample = block.U32(DspChannelBlock::kLoopEnd);
-            if (block.U32(DspChannelBlock::kRemaining) == 0 && (end_sample & 0xffff) != 0)
-            {
-                const auto last = static_cast<int>((end_sample - 1) & 0xf);
-                const int first = static_cast<int>(DspChannelBlock::kSavedBlock / 2);
-                int k = 0;
-                do
-                {
-                    block.words[static_cast<std::size_t>(first + 15 - k)] =
-                        block.words[static_cast<std::size_t>(first + last - k)];
-                    k++;
-                } while (k < block.U16(DspChannelBlock::kLeftover));
-            }
+            SaveAfcBlock(block, source, start + static_cast<std::size_t>(static_cast<int16_t>(blocks << 4)));
         }
         break;
     }
@@ -1169,6 +1180,52 @@ bool Dsp::Oscillate(DspChannelBlock& block, int16_t* out) const
     return true;
 }
 
+bool Dsp::ChannelSamples(DspChannelBlock& block, std::span<int16_t> source, int16_t* output)
+{
+    if (block.U16(DspChannelBlock::kPause) != 0)
+    {
+        std::fill_n(output, kSubframeSamples, block.S16(DspChannelBlock::kLastSample));
+    }
+    else
+    {
+        switch (block.U16(DspChannelBlock::kFormat))
+        {
+        case 5:
+        case 9:
+            if ((flags_ & kFlagFastPaths) == 0 || (flags_ & kFlagDirectFetch) == 0)
+            {
+                return false;
+            }
+            ProcessAfc(block, source);
+            Resample(block, source.data(), output);
+            break;
+
+        case 16:
+            if ((flags_ & kFlagDirectFetch) == 0)
+            {
+                return false;
+            }
+            FetchPcm(block, source.data() + 4, 2);
+            Resample(block, source.data(), output);
+            break;
+
+        case 8:
+            if ((flags_ & kFlagDirectFetch) == 0)
+            {
+                return false;
+            }
+            FetchPcm(block, source.data() + 4, 1);
+            Resample(block, source.data(), output);
+            break;
+
+        default:
+            return Oscillate(block, output);
+        }
+    }
+
+    return true;
+}
+
 void Dsp::ProcessChannel(uint16_t index)
 {
     const uint32_t address = (channel_blocks_ + index * static_cast<uint32_t>(DspChannelBlock::kBytes)) & 0x3fffffc;
@@ -1187,49 +1244,9 @@ void Dsp::ProcessChannel(uint16_t index)
     const std::span<int16_t> source = std::span<int16_t>(work).first(kSourceSamples);
     int16_t* out = work.data() + kSourceSamples;
     int16_t* output = out + 32;
-    if (block.U16(DspChannelBlock::kPause) != 0)
+    if (!ChannelSamples(block, source, output))
     {
-        std::fill_n(output, kSubframeSamples, block.S16(DspChannelBlock::kLastSample));
-    }
-    else
-    {
-        switch (block.U16(DspChannelBlock::kFormat))
-        {
-        case 5:
-        case 9:
-            if ((flags_ & kFlagFastPaths) == 0 || (flags_ & kFlagDirectFetch) == 0)
-            {
-                return;
-            }
-            ProcessAfc(block, source);
-            Resample(block, source.data(), output);
-            break;
-
-        case 16:
-            if ((flags_ & kFlagDirectFetch) == 0)
-            {
-                return;
-            }
-            FetchPcm(block, source.data() + 4, 2);
-            Resample(block, source.data(), output);
-            break;
-
-        case 8:
-            if ((flags_ & kFlagDirectFetch) == 0)
-            {
-                return;
-            }
-            FetchPcm(block, source.data() + 4, 1);
-            Resample(block, source.data(), output);
-            break;
-
-        default:
-            if (!Oscillate(block, output))
-            {
-                return;
-            }
-            break;
-        }
+        return;
     }
 
     if (block.U16(DspChannelBlock::kDist) != 0)

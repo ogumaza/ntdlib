@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -48,7 +49,7 @@ float PlusSpan(float base, uint8_t span)
 // ---------------------------------------------------------------------------------------------- WaveSoundPlayer
 WaveSoundPlayer::WaveSoundPlayer(int id, const ntdlib::sar::SoundInfo& info,
                                  const ntdlib::sar::WaveSoundFile::WaveSound& sound, std::optional<WaveInfo> wave)
-    : id_(id), wave_(std::move(wave)), settings_(sound)
+    : id_(id), wave_(wave), settings_(sound)
 {
     settings_.tracks = {};
     settings_.notes = {};
@@ -156,12 +157,8 @@ StreamTracks StreamTracksOf(const ntdlib::sar::StreamSoundInfo& sound, const ntd
     // channels of a track.
     StreamTracks result;
     result.valid = sound.valid_tracks;
-    std::size_t count = 0;
-    for (uint32_t bits = sound.valid_tracks; bits != 0; bits >>= 1)
-    {
-        ++count;
-    }
-    count = std::min(count, StreamSoundPlayer::kMaxTracks);
+    const std::size_t count =
+        std::min(static_cast<std::size_t>(std::bit_width(sound.valid_tracks)), StreamSoundPlayer::kMaxTracks);
 
     // A track past the table holds the reader's defaults: no channels.
     result.tracks.resize(count);
@@ -221,25 +218,42 @@ StreamSoundPlayer::StreamSoundPlayer(int id, const ntdlib::sar::SoundInfo& info,
 void StreamSoundPlayer::Start(Engine& engine)
 {
     started_ = true;
+    if (!AllocVoices(engine))
+    {
+        return;
+    }
 
+    SetTrackFlags(engine);
+    StartTracks(engine);
+}
+
+bool StreamSoundPlayer::AllocVoices(Engine& engine)
+{
     // 0x180128: a voice of one channel for each channel. When one can't be allocated, the others are freed. The voice's
     // callback reaches the player through the engine: a restore can put another player object in the player's place.
     for (std::size_t channel = 0; channel < waves_.size(); ++channel)
     {
         const int player = id_;
         const int index = static_cast<int>(channel);
-        const VoiceId voice = engine.Voices().AllocVoice(engine, 1, kStreamVoicePriority,
-                                                         [&engine, player, index](VoiceId, VoiceCallbackStatus status)
-                                                         { engine.VoiceEvent(player, index, status); });
+        const auto forward = [&engine, player, index](VoiceId, VoiceCallbackStatus status)
+        {
+            engine.VoiceEvent(player, index, status);
+        };
+        const VoiceId voice = engine.Voices().AllocVoice(engine, 1, kStreamVoicePriority, forward);
         if (voice == kNoVoice)
         {
             FinishPlayer(engine);
-            return;
+            return false;
         }
 
         voices_[channel] = voice;
     }
 
+    return true;
+}
+
+void StreamSoundPlayer::SetTrackFlags(Engine& engine)
+{
     // The voices of each track's channels then take the track's flags, whether the track plays or not.
     for (const Track& track : tracks_)
     {
@@ -257,20 +271,26 @@ void StreamSoundPlayer::Start(Engine& engine)
                 voice.SetFrontBypass(false);
                 voice.SetTwoChannelBus(false);
                 break;
+
             case 1:
                 voice.SetFrontBypass(true);
                 voice.SetTwoChannelBus(false);
                 break;
+
             case 2:
                 voice.SetFrontBypass(false);
                 voice.SetTwoChannelBus(true);
                 break;
+
             default:
                 break;
             }
         }
     }
+}
 
+void StreamSoundPlayer::StartTracks(Engine& engine)
+{
     // StartPlayer (0x31f9dc): each channel of each track that plays takes the stream's format and rate, and starts. The
     // game's loader has queued the first blocks by then. The model's voice queues the channel's samples as one wave.
     std::vector<bool> queued(waves_.size(), false);

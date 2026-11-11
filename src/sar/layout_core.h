@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +32,14 @@ struct Location
     std::size_t start = 0;
     std::size_t size = 0;
 };
+
+// The bytes of `location` that `archive` holds: all of them, or those before its end.
+inline std::span<const uint8_t> BytesOf(std::span<const uint8_t> archive, const Location& location)
+{
+    const std::size_t start = std::min(location.start, archive.size());
+
+    return archive.subspan(start, std::min(location.size, archive.size() - start));
+}
 
 // A field of the archive's tables, with positions from the archive's start: the field, and the distance it holds. A
 // size's distance ends where a range that starts at `from` ends. Any other distance ends where something starts.

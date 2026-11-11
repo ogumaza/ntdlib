@@ -25,6 +25,9 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "ntdlib/rip/names.h"
+#include "ntdlib/rip/player_names.h"
+#include "ntdlib/rounding.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/reference.h"
 
@@ -77,7 +80,7 @@ std::vector<std::string> MissingData(const sar::SoundArchive& archive, uint32_t 
 
         const sar::BankInfo& info = archive.Banks()[*bank];
         const std::span<const uint8_t> file = archive.FileData(info.file_id);
-        const std::string name = info.name.empty() ? "#" + std::to_string(*bank) : info.name;
+        const std::string name = NameOrNumber(info.name, *bank);
         if (file.empty())
         {
             missing.push_back("bank " + name);
@@ -107,8 +110,8 @@ std::vector<std::string> MissingData(const sar::SoundArchive& archive, uint32_t 
         }
         else if (archive.FileData(archive.WaveArchives()[*wave_archive].file_id).empty())
         {
-            const std::string& name = archive.WaveArchives()[*wave_archive].name;
-            missing.push_back("wave archive " + (name.empty() ? "#" + std::to_string(*wave_archive) : name));
+            missing.push_back("wave archive " +
+                              NameOrNumber(archive.WaveArchives()[*wave_archive].name, *wave_archive));
         }
     }
 
@@ -134,21 +137,7 @@ bool IsMusic(const sar::SoundArchive& archive, uint32_t index)
         return false;
     }
 
-    // The player's name, word by word, each without the digits it ends in (PLAYER_BGM1).
-    bool music = false;
-    bool effects = false;
-    const std::string name = xsflib::AsciiLower(archive.Players()[*player].name);
-    for (std::size_t start = 0; start <= name.size();)
-    {
-        const std::size_t end = std::min(name.find('_', start), name.size());
-        std::string word = name.substr(start, end - start);
-        word.erase(word.find_last_not_of("0123456789") + 1);
-        music = music || word == "bgm" || word == "music" || word == "song" || word == "fanfare";
-        effects = effects || word == "se";
-        start = end + 1;
-    }
-
-    return music && !effects;
+    return IsMusicPlayerName(archive.Players()[*player].name);
 }
 
 std::vector<Job> SelectSounds(const sar::SoundArchive& archive, const std::regex& only, bool bgm)
@@ -310,13 +299,38 @@ void ForEachEntry(const xsflib::Reader& r, std::size_t table, const Use& use)
     }
 }
 
+// Whether the byte-order mark of `file`, an archive or a group file, gives big-endian.
+bool IsBigEndian(std::span<const uint8_t> file)
+{
+    return file.size() > kByteOrderMark + 1 && file[kByteOrderMark] == 0xFE && file[kByteOrderMark + 1] == 0xFF;
+}
+
+// The alignment of a file's start. The tools start each file on a multiple of 64 bytes on the Switch, and of 32 bytes
+// on the 3DS and the Wii U.
+std::size_t FileAlignment(const sar::SoundArchive& archive)
+{
+    return archive.ReadOptions().flavor == sar::Flavor::kNx ? 64 : 32;
+}
+
+// Pads `out` with zeros up to a multiple of `alignment`.
+void Align(std::vector<uint8_t>& out, std::size_t alignment)
+{
+    out.resize(AlignUp(out.size(), alignment));
+}
+
+// Stores `value` as a 32-bit word at `at`, in the byte order that `big_endian` gives.
+void PutWord(std::vector<uint8_t>& out, std::size_t at, std::size_t value, bool big_endian)
+{
+    const auto word = static_cast<uint32_t>(value);
+    big_endian ? xsflib::StoreBe32(&out[at], word) : xsflib::StoreLe32(&out[at], word);
+}
+
 // The layout of `bytes`, a sound archive. Nothing when the header's table of blocks, or a block other than the FILE
 // block, ends after the FILE block's start. Throws xsflib::FormatError for tables that can't be read.
 std::optional<Layout> ReadLayout(std::span<const uint8_t> bytes)
 {
     Layout layout;
-    layout.big_endian =
-        bytes.size() > kByteOrderMark + 1 && bytes[kByteOrderMark] == 0xFE && bytes[kByteOrderMark + 1] == 0xFF;
+    layout.big_endian = IsBigEndian(bytes);
     const xsflib::Reader r(bytes, layout.big_endian);
 
     // Everything before the FILE block's files keeps its place in the library's archive.
@@ -585,6 +599,20 @@ const Run* RunHolding(const std::vector<Run>& runs, const Span& span)
     return span.end <= run.bytes.end ? &run : nullptr;
 }
 
+// Appends the bytes of each of `runs` from `bytes` to `out`, each from a multiple of `alignment`. Sets each run's
+// start.
+void AppendRuns(std::vector<uint8_t>& out, std::span<const uint8_t> bytes, std::vector<Run>& runs,
+                std::size_t alignment)
+{
+    for (Run& run : runs)
+    {
+        Align(out, alignment);
+        run.start = out.size();
+        out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(run.bytes.start),
+                   bytes.begin() + static_cast<std::ptrdiff_t>(run.bytes.end));
+    }
+}
+
 // The library's archive: `bytes` up to the FILE block's files, then `runs`. Each run starts on the first multiple of
 // `alignment` bytes from the archive's start after the bytes before it. Each place whose bytes lie in a run moves with
 // it. Each other place with an offset loses it. The place then matches that of a file that only groups hold. The header
@@ -595,20 +623,10 @@ std::optional<std::vector<uint8_t>> CopyRuns(std::span<const uint8_t> bytes, con
 {
     const std::size_t data = layout.file_block + kBlockHeaderSize;
     std::vector<uint8_t> copy(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(data));
-    const auto align = [&copy, alignment]
-    {
-        copy.resize((copy.size() + alignment - 1) / alignment * alignment);
-    };
-    for (Run& run : runs)
-    {
-        align();
-        run.start = copy.size();
-        copy.insert(copy.end(), bytes.begin() + static_cast<std::ptrdiff_t>(run.bytes.start),
-                    bytes.begin() + static_cast<std::ptrdiff_t>(run.bytes.end));
-    }
+    AppendRuns(copy, bytes, runs, alignment);
     if (runs.empty())
     {
-        align(); // a FILE block without files ends on the first multiple after its size
+        Align(copy, alignment); // a FILE block without files ends on the first multiple after its size
     }
     if (copy.size() > std::numeric_limits<uint32_t>::max())
     {
@@ -617,8 +635,7 @@ std::optional<std::vector<uint8_t>> CopyRuns(std::span<const uint8_t> bytes, con
 
     const auto put = [&copy, &layout](std::size_t at, std::size_t value)
     {
-        const auto word = static_cast<uint32_t>(value);
-        layout.big_endian ? xsflib::StoreBe32(&copy[at], word) : xsflib::StoreLe32(&copy[at], word);
+        PutWord(copy, at, value, layout.big_endian);
     };
     for (const auto& [file, place] : layout.places)
     {
@@ -671,17 +688,21 @@ struct Copy
     Span bytes;
 };
 
-// `file`, a group file, cut down to the copies `kept` (see KeepGroupCopies). The first item of each copy keeps it.
-// Every other item with a copy becomes a link. Each run of kept bytes starts on the first multiple of `alignment` bytes
-// from the file's start after the bytes before it. Nothing when one of `kept` isn't an item's copy, or when the blocks
-// aren't the INFO block and the rest before the FILE block, and blocks after it.
-std::optional<std::vector<uint8_t>> CutGroupFile(std::span<const uint8_t> file, const std::set<Copy>& kept,
-                                                 std::size_t alignment)
+// The blocks of a group file that CutGroupFile changes: the INFO block, the FILE block with its entry in the table of
+// blocks and its end, and the entries of the blocks after the FILE block.
+struct GroupBlocks
 {
-    const bool big_endian =
-        file.size() > kByteOrderMark + 1 && file[kByteOrderMark] == 0xFE && file[kByteOrderMark + 1] == 0xFF;
-    const xsflib::Reader r(file, big_endian);
+    std::size_t info = 0;
+    std::size_t file_entry = 0;
+    uint64_t file_block = 0;
+    uint64_t file_end = 0;
+    std::vector<std::size_t> later;
+};
 
+// The blocks of the group file that `r` reads. Nothing when the blocks aren't the INFO block and the rest before the
+// FILE block, and blocks after it.
+std::optional<GroupBlocks> GroupBlocksOf(const xsflib::Reader& r)
+{
     // The FILE block, and the INFO block and the table of blocks before it. No other block overlaps it.
     const uint16_t count = r.U16(kBlockCount);
     const std::size_t table_end = kBlockTable + std::size_t{count} * kBlockEntrySize;
@@ -708,14 +729,14 @@ std::optional<std::vector<uint8_t>> CutGroupFile(std::span<const uint8_t> file, 
         return std::nullopt;
     }
 
-    const uint64_t file_block = r.U32(*file_entry + kEntryOffset);
-    const uint64_t file_end = file_block + r.U32(*file_entry + kEntrySize);
-    if (table_end > file_block || file_block + kBlockHeaderSize > file_end || file_end > file.size())
+    GroupBlocks blocks{*info, *file_entry, r.U32(*file_entry + kEntryOffset), 0, {}};
+    blocks.file_end = blocks.file_block + r.U32(*file_entry + kEntrySize);
+    if (table_end > blocks.file_block || blocks.file_block + kBlockHeaderSize > blocks.file_end ||
+        blocks.file_end > r.Size())
     {
         return std::nullopt;
     }
 
-    std::vector<std::size_t> later; // the entries of the blocks after the FILE block
     for (std::size_t entry = kBlockTable; entry < table_end; entry += kBlockEntrySize)
     {
         const uint64_t start = r.U32(entry + kEntryOffset);
@@ -723,25 +744,37 @@ std::optional<std::vector<uint8_t>> CutGroupFile(std::span<const uint8_t> file, 
         {
             continue;
         }
-        if (start >= file_end)
+        if (start >= blocks.file_end)
         {
-            later.push_back(entry);
+            blocks.later.push_back(entry);
         }
-        else if (start + r.U32(entry + kEntrySize) > file_block)
+        else if (start + r.U32(entry + kEntrySize) > blocks.file_block)
         {
             return std::nullopt;
         }
     }
 
-    // The items, all in the INFO block before the FILE block. The first item of each kept copy keeps it.
-    const std::size_t data = static_cast<std::size_t>(file_block) + kBlockHeaderSize;
-    const std::size_t items = *info + kBlockHeaderSize;
-    std::vector<std::pair<std::size_t, Span>> keep; // where each kept item lies, and its copy
-    std::vector<std::size_t> links;                 // where each item that becomes a link lies
+    return blocks;
+}
+
+// The items of a group file as CutGroupFile sorts them: where each kept item lies, with its copy, and where each item
+// that becomes a link lies.
+struct GroupItems
+{
+    std::vector<std::pair<std::size_t, Span>> keep;
+    std::vector<std::size_t> links;
+};
+
+// The items in the INFO block of `blocks`, all before the FILE block. The first item of each copy in `kept` keeps it.
+// Nothing when one of `kept` isn't an item's copy.
+std::optional<GroupItems> GroupItemsOf(const xsflib::Reader& r, const GroupBlocks& blocks, const std::set<Copy>& kept)
+{
+    const std::size_t data = static_cast<std::size_t>(blocks.file_block) + kBlockHeaderSize;
+    GroupItems items;
     std::set<Copy> found;
     const auto read_item = [&](uint32_t, std::size_t item)
     {
-        if (item + kItemLength > file_block)
+        if (item + kItemLength > blocks.file_block)
         {
             throw xsflib::FormatError("an item of the group file lies in its FILE block");
         }
@@ -756,41 +789,55 @@ std::optional<std::vector<uint8_t>> CutGroupFile(std::span<const uint8_t> file, 
         const Copy item_copy{r.U32(item), Span{start, start + r.U32(item + kItemCopySize)}};
         if (kept.contains(item_copy) && found.insert(item_copy).second)
         {
-            keep.push_back({item, item_copy.bytes});
+            items.keep.push_back({item, item_copy.bytes});
         }
         else
         {
-            links.push_back(item);
+            items.links.push_back(item);
         }
     };
-    ForEachEntry(r, items, read_item);
+    ForEachEntry(r, blocks.info + kBlockHeaderSize, read_item);
     if (found.size() != kept.size())
     {
         return std::nullopt;
     }
 
+    return items;
+}
+
+// `file`, a group file, cut down to the copies `kept` (see KeepGroupCopies). The first item of each copy keeps it.
+// Every other item with a copy becomes a link. Each run of kept bytes starts on the first multiple of `alignment` bytes
+// from the file's start after the bytes before it. Nothing when one of `kept` isn't an item's copy, or when the blocks
+// aren't the INFO block and the rest before the FILE block, and blocks after it.
+std::optional<std::vector<uint8_t>> CutGroupFile(std::span<const uint8_t> file, const std::set<Copy>& kept,
+                                                 std::size_t alignment)
+{
+    const bool big_endian = IsBigEndian(file);
+    const xsflib::Reader r(file, big_endian);
+    const std::optional<GroupBlocks> blocks = GroupBlocksOf(r);
+    if (!blocks)
+    {
+        return std::nullopt;
+    }
+    const std::optional<GroupItems> items = GroupItemsOf(r, *blocks, kept);
+    if (!items)
+    {
+        return std::nullopt;
+    }
+
     // The kept bytes, then the bytes after the FILE block, which hold the blocks after it.
+    const std::size_t data = static_cast<std::size_t>(blocks->file_block) + kBlockHeaderSize;
     std::vector<Span> spans;
-    for (const auto& [item, bytes] : keep)
+    for (const auto& [item, bytes] : items->keep)
     {
         spans.push_back(bytes);
     }
     std::vector<Run> runs = RunsOf(spans);
     std::vector<uint8_t> cut(file.begin(), file.begin() + static_cast<std::ptrdiff_t>(data));
-    const auto align = [&cut, alignment]
-    {
-        cut.resize((cut.size() + alignment - 1) / alignment * alignment);
-    };
-    for (Run& run : runs)
-    {
-        align();
-        run.start = cut.size();
-        cut.insert(cut.end(), file.begin() + static_cast<std::ptrdiff_t>(run.bytes.start),
-                   file.begin() + static_cast<std::ptrdiff_t>(run.bytes.end));
-    }
-    align();
+    AppendRuns(cut, file, runs, alignment);
+    Align(cut, alignment);
     const std::size_t cut_file_end = cut.size();
-    cut.insert(cut.end(), file.begin() + static_cast<std::ptrdiff_t>(file_end), file.end());
+    cut.insert(cut.end(), file.begin() + static_cast<std::ptrdiff_t>(blocks->file_end), file.end());
     if (cut.size() > std::numeric_limits<uint32_t>::max())
     {
         return std::nullopt;
@@ -798,30 +845,40 @@ std::optional<std::vector<uint8_t>> CutGroupFile(std::span<const uint8_t> file, 
 
     const auto put = [&cut, big_endian](std::size_t at, std::size_t value)
     {
-        const auto word = static_cast<uint32_t>(value);
-        big_endian ? xsflib::StoreBe32(&cut[at], word) : xsflib::StoreLe32(&cut[at], word);
+        PutWord(cut, at, value, big_endian);
     };
-    for (const auto& [item, bytes] : keep)
+    for (const auto& [item, bytes] : items->keep)
     {
         const Run* run = RunHolding(runs, bytes);
         put(item + kItemReference + kReferenceOffset, run->start + (bytes.start - run->bytes.start) - data);
     }
-    for (const std::size_t item : links)
+    for (const std::size_t item : items->links)
     {
         std::fill_n(cut.begin() + static_cast<std::ptrdiff_t>(item + kItemReference), kReferenceOffset, uint8_t{0});
         put(item + kItemReference + kReferenceOffset, kNoPlace);
         put(item + kItemCopySize, kNoPlace);
     }
-    for (const std::size_t entry : later)
+    for (const std::size_t entry : blocks->later)
     {
-        put(entry + kEntryOffset, r.U32(entry + kEntryOffset) - file_end + cut_file_end);
+        put(entry + kEntryOffset, r.U32(entry + kEntryOffset) - blocks->file_end + cut_file_end);
     }
 
     put(kSizeField, cut.size());
-    put(*file_entry + kEntrySize, cut_file_end - file_block);
-    put(static_cast<std::size_t>(file_block) + kBlockSizeField, cut_file_end - file_block);
+    put(blocks->file_entry + kEntrySize, cut_file_end - blocks->file_block);
+    put(static_cast<std::size_t>(blocks->file_block) + kBlockSizeField, cut_file_end - blocks->file_block);
 
     return cut;
+}
+
+// Whether `read`, an archive read back, gives the bytes of `files` as `archive` does.
+bool SameFiles(const sar::SoundArchive& archive, const sar::SoundArchive& read, const std::set<uint32_t>& files)
+{
+    const auto same = [&](uint32_t file)
+    {
+        return std::ranges::equal(read.FileData(file), archive.FileData(file));
+    };
+
+    return read.FileCount() == archive.FileCount() && std::ranges::all_of(files, same);
 }
 
 // Whether `cut`, read back by `rules` with the group files `beside` of `archive`, gives the bytes of `files` as
@@ -837,12 +894,7 @@ bool SameFiles(const sar::SoundArchive& archive, const std::vector<uint8_t>& cut
         read.AddGroupFile(archive.GroupFiles()[group]);
     }
 
-    const auto same = [&](uint32_t file)
-    {
-        return std::ranges::equal(read.FileData(file), archive.FileData(file));
-    };
-
-    return read.FileCount() == archive.FileCount() && std::ranges::all_of(files, same);
+    return SameFiles(archive, read, files);
 }
 
 } // namespace
@@ -868,10 +920,8 @@ std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive,
             return std::nullopt;
         }
 
-        // The tools start each file on a multiple of 64 bytes on the Switch, and of 32 bytes on the 3DS and the Wii U.
         std::vector<Run> runs = RunsOf(*spans);
-        const std::size_t alignment = archive.ReadOptions().flavor == sar::Flavor::kNx ? 64 : 32;
-        std::optional<std::vector<uint8_t>> cut = CopyRuns(archive.Bytes(), *layout, runs, alignment);
+        std::optional<std::vector<uint8_t>> cut = CopyRuns(archive.Bytes(), *layout, runs, FileAlignment(archive));
         if (!cut || !SameFiles(archive, *cut, beside, *files, archive.ReadOptions().rules))
         {
             return std::nullopt;
@@ -926,8 +976,7 @@ std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::Soun
             copies->second.insert({file, Span{start, start + data.size()}});
         }
 
-        // The tools start each file on a multiple of 64 bytes on the Switch, and of 32 bytes on the 3DS and the Wii U.
-        const std::size_t alignment = archive.ReadOptions().flavor == sar::Flavor::kNx ? 64 : 32;
+        const std::size_t alignment = FileAlignment(archive);
         std::vector<std::vector<uint8_t>> cuts;
         sar::SoundArchive read = sar::SoundArchive::Load(library.archive, archive.ReadOptions());
         for (const std::size_t group : library.group_files)
@@ -942,11 +991,7 @@ std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::Soun
         }
 
         // Each kept file reads back as before.
-        const auto same = [&](uint32_t file)
-        {
-            return std::ranges::equal(read.FileData(file), archive.FileData(file));
-        };
-        if (read.FileCount() != archive.FileCount() || !std::ranges::all_of(*files, same))
+        if (!SameFiles(archive, read, *files))
         {
             return std::nullopt;
         }
@@ -983,7 +1028,7 @@ std::optional<std::vector<uint8_t>> KeepLoadedFiles(const sar::SoundArchive& arc
             }
 
             const Span& span = *place->second.bytes;
-            const std::size_t rounded_end = (span.end + read_alignment - 1) / read_alignment * read_alignment;
+            const std::size_t rounded_end = AlignUp(span.end, read_alignment);
             read.push_back({span.start / read_alignment * read_alignment, std::min(rounded_end, bytes.size())});
         }
 

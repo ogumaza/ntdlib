@@ -108,11 +108,13 @@ inline Settings RevolutionSettings(const SndBuild& build)
 }
 
 // The build of NW4R SND that plays a Wii archive of RSAR version `version` when the game's main.dol isn't at hand: a
-// build from June 2008 for version 1.4 or later, and otherwise a build of 2007.
+// build from June 2008 for version 1.4 or later, and otherwise a build of 2007. The build of 2007 is dated 20070101,
+// not 0. In SndBuild, a date of 0 means a build without a banner. SndBuildWithAx plays such a build as the build of
+// October 2006. Every rule that reads the date starts in March 2008 or later.
 inline SndBuild BuildOfRsarVersion(uint16_t version)
 {
     SndBuild build;
-    build.date = version >= 0x0104 ? 20080620 : 0;
+    build.date = version >= 0x0104 ? 20080620 : 20070101;
 
     return build;
 }

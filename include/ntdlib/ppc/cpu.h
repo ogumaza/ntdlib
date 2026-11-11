@@ -242,7 +242,7 @@ private:
     void CheckInterrupts();
 
     uint32_t MfSpr(int number);
-    bool MtSpr(int number, uint32_t value);
+    void MtSpr(int number, uint32_t value);
     void SetMsr(uint32_t value);
     uint32_t Decrementer() const;
     void SetDecrementer(uint32_t value);
@@ -324,8 +324,10 @@ private:
     uint64_t dec_event_ = UINT64_MAX; // the cycle the decrementer next goes negative
     bool dec_pending_ = false;
 
-    // The instructions that Watch follows, and the call for them.
+    // The instructions that Watch follows, and the call for them. The filter has bit (pc / 4) % 64 set for each pc in
+    // the list. Run tests that bit before it searches the list.
     std::vector<uint32_t> watch_pcs_;
+    uint64_t watch_filter_ = 0;
     std::function<void(uint32_t pc)> on_watch_;
 };
 

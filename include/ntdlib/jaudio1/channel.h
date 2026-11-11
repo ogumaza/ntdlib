@@ -27,6 +27,15 @@ using jaudio2::DspChannelBlock;
 using jaudio2::DspMemory;
 using jaudio2::WaveInfo;
 
+// JASChannel::calc_sw_table: how each source of a level adds up, for the sound, the oscillators' effect and the
+// track's channel: 0 not at all, 1 as it is, 2 by its weight. The game reads the bytes after the table for a type
+// above 26. None of them is 1 or 2. The C JAudio's table holds the same 27 types.
+inline constexpr std::array<std::array<uint8_t, 3>, 27> kCalcTable = {{
+    {0, 0, 0}, {0, 0, 1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 1}, {0, 1, 2}, {0, 1, 0}, {0, 2, 1}, {0, 2, 2},
+    {1, 0, 0}, {1, 0, 1}, {1, 0, 2}, {1, 1, 0}, {1, 1, 1}, {1, 1, 2}, {1, 2, 0}, {1, 2, 1}, {1, 2, 2},
+    {1, 0, 0}, {2, 0, 1}, {2, 0, 2}, {2, 1, 0}, {2, 1, 1}, {2, 1, 2}, {2, 2, 0}, {2, 2, 1}, {2, 2, 2},
+}};
+
 // What a channel's oscillators do to its levels (JASChannel::EffectOscParam).
 struct EffectParams
 {
@@ -115,22 +124,8 @@ struct Channel
     }
 };
 
-// A DSP channel (JASDSPChannel): one of the 64 that the DSP renders.
-struct DspChannel
-{
-    enum Status : uint32_t
-    {
-        kActive = 0,
-        kInactive = 1,
-        kDrop = 2,
-    };
-
-    uint32_t status = kInactive;
-    int16_t priority = -1;
-    uint32_t flags = 0;                // bit 0: a start is pending, bit 1: a forced stop is pending
-    uint32_t updates = 0;              // sub-frames since the allocation: a new note takes the oldest channel first
-    uint32_t channel = Channel::kNone; // the channel that the callback reports to, or kNone with no callback
-};
+// A DSP channel (JASDSPChannel): one of the 64 that the DSP renders. JAudio2 keeps the same fields.
+using DspChannel = jaudio2::DspChannel;
 
 // The tracks' side of the channels' callbacks (JASTrack::channelUpdateCallback). `block` is null for kEventStop.
 class ChannelOwner
@@ -245,8 +240,11 @@ public:
     static int32_t Pitch(const Channel& channel, const EffectParams& effects);
 
 private:
+    // JASDriver's output mode: 0 mono, 1 stereo (the game's), 2 surround
+    static constexpr uint32_t kOutputMode = 1;
+
+    // JASDSPChannel::alloc. A DSP channel in use goes to the new channel, after a drop event for the old one.
     uint32_t Alloc(ChannelOwner* owner, uint32_t priority, uint32_t channel);
-    void Drop(ChannelOwner* owner, uint32_t dsp_channel);
 
     // The deletion of a channel: the stop event, then the channel's return to the pool.
     void DeleteChannel(ChannelOwner* owner, uint32_t channel);
@@ -255,7 +253,7 @@ private:
     int32_t FreeAndDelete(ChannelOwner* owner, uint32_t channel);
 
     void UpdateProc(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_channel);
-    int32_t Callback(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_channel, uint32_t event);
+    int32_t Callback(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_channel, DspChannel::Event event);
 
     // JASChannel::initialUpdateDSPChannel and updateDSPChannel.
     void InitialUpdate(ChannelOwner* owner, uint32_t channel, DspBlock& block);
@@ -270,7 +268,6 @@ private:
                      std::array<uint16_t, 6>& volumes) const;
 
     uint32_t blocks_;
-    uint32_t output_mode_ = 1; // JASDriver's output mode: 0 mono, 1 stereo (the game's), 2 surround
     uint16_t channel_level_ = 0x2ee0;
     uint16_t auto_level_ = 0x2ee0;
     float dac_rate_ = 32028.5f;

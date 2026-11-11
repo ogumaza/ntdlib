@@ -17,7 +17,6 @@
 
 #include "seqlib/testing/check.h"
 
-#include "brownie_cart.h"
 #include "ntdlib/agb/files.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
@@ -31,13 +30,14 @@
 #include "ntdlib/sequence_export/brownie/soundfont.h"
 #include "ntdlib/testing/agb_cart.h"
 #include "ntdlib/testing/agb_files.h"
+#include "ntdlib/testing/brownie_cart.h"
 
 namespace ntdlib::sequence_export::brownie
 {
 namespace
 {
 
-using namespace brownie_testing;
+using namespace ntdlib::testing::brownie_cart;
 
 namespace cc = seqlib::midi::cc;
 using ntdlib::agb::kRomBase;
@@ -609,12 +609,6 @@ void TestShortLoop()
 
 int RunTests()
 {
-    if (!ntdlib::testing::agb_files::MakeTempFolder())
-    {
-        std::fprintf(stderr, "couldn't make a temp folder\n");
-        return 1;
-    }
-
     TestDetection();
     TestPsgNotes();
     TestSamples();
@@ -629,8 +623,6 @@ int RunTests()
     TestVacationConversion();
     TestShortLoop();
 
-    std::error_code ec;
-    std::filesystem::remove_all(ntdlib::testing::agb_files::g_temp, ec);
     return seqlib::testing::Summary("brownie");
 }
 

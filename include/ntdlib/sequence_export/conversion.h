@@ -8,7 +8,9 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/writer.h"
+#include "xsflib/binary.h"
 
 namespace ntdlib::sequence_export
 {
@@ -52,7 +55,35 @@ void WriteSoundFont(Conversion& c, seqlib::sf2::SoundFont& sf, const std::string
     c.sf2 = seqlib::sf2::Write(sf);
 }
 
-// The attenuation in centibels that every zone of a sequence's SoundFont takes when its loudest zone plays at
+// The attenuation that every zone of a SoundFont takes when its loudest zone plays at `loudest` (see
+// CutAboveFullLevel), and the message that reports it. The message is empty for a cut under 0.5 cB.
+struct LevelCut
+{
+    double centibels = 0.0;
+    std::string message;
+};
+
+inline LevelCut LevelCutOf(double loudest)
+{
+    constexpr double kLeastReportedCut = 0.5;
+    LevelCut cut;
+    if (loudest > 1.0)
+    {
+        cut.centibels = 200.0 * std::log10(loudest);
+    }
+    if (cut.centibels >= kLeastReportedCut)
+    {
+        char what[160];
+        std::snprintf(what, sizeof(what),
+                      "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",
+                      cut.centibels / 10.0);
+        cut.message = what;
+    }
+
+    return cut;
+}
+
+// The attenuation in centibels that every zone of the SoundFont of a sequence takes when the loudest zone plays at
 // `loudest`, an amplitude where 1 is full level. SoundFont zones can't amplify their samples. The same attenuation in
 // every zone keeps their balance. Where the zones take 0.5 cB or more, `c.performance` records the approximation. The
 // report gives the attenuation in tenths of a decibel. A smaller one would read 0.0 dB. The SFZ files keep the levels.
@@ -60,22 +91,13 @@ void WriteSoundFont(Conversion& c, seqlib::sf2::SoundFont& sf, const std::string
 template <typename Conversion>
 double CutAboveFullLevel(Conversion& c, double loudest)
 {
-    constexpr double kLeastReportedCut = 0.5;
-    double quieter = 0.0;
-    if (loudest > 1.0)
+    const LevelCut cut = LevelCutOf(loudest);
+    if (!cut.message.empty())
     {
-        quieter = 200.0 * std::log10(loudest);
-    }
-    if (quieter >= kLeastReportedCut)
-    {
-        char what[160];
-        std::snprintf(what, sizeof(what),
-                      "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",
-                      quieter / 10.0);
-        c.performance.approximations[what] = seqlib::midi::NoteCount(c.performance);
+        c.performance.approximations[cut.message] = seqlib::midi::NoteCount(c.performance);
     }
 
-    return quieter;
+    return cut.centibels;
 }
 
 // Collects the conversion's warnings in the order that PrintConversion prints them: those of the MIDI writer, the
@@ -88,6 +110,43 @@ void CollectWarnings(Conversion& c, const seqlib::midi::MidiReport& midi, const 
     c.warnings.insert(c.warnings.end(), builder.begin(), builder.end());
     c.warnings.insert(c.warnings.end(), banks.begin(), banks.end());
     c.warnings.insert(c.warnings.end(), c.performance.warnings.begin(), c.performance.warnings.end());
+}
+
+// Runs `convert` and returns its Conversion. `errors` lists the errors that the input's reader has collected, and the
+// ones from `reported` on are new since the last conversion. A conversion that succeeds adds the new errors to its
+// warnings. A conversion that fails throws FormatError with the new errors added to its message, each after "; ". It
+// rethrows a failure unchanged when there are no new errors. Either way, `reported` moves to the end of `errors`. The
+// next conversion then doesn't report them again.
+template <typename Convert>
+auto ConvertReportingErrors(const std::vector<std::string>& errors, std::size_t& reported, Convert&& convert)
+    -> decltype(convert())
+{
+    decltype(convert()) c;
+    try
+    {
+        c = convert();
+    }
+    catch (const std::exception& e)
+    {
+        if (reported == errors.size())
+        {
+            throw;
+        }
+
+        std::string message = e.what();
+        for (; reported < errors.size(); reported++)
+        {
+            message += "; " + errors[reported];
+        }
+        throw xsflib::FormatError(message);
+    }
+
+    for (; reported < errors.size(); reported++)
+    {
+        c.warnings.push_back(errors[reported]);
+    }
+
+    return c;
 }
 
 } // namespace ntdlib::sequence_export

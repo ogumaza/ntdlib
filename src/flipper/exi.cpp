@@ -54,6 +54,7 @@ std::array<uint8_t, 64> DefaultSram(bool stereo)
     {
         sram[kFlags] = kStereo;
     }
+
     uint16_t sum = 0;
     uint16_t inverse_sum = 0;
     for (int at = 0x0c; at < 0x14; at += 2)

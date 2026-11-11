@@ -370,6 +370,7 @@ DspAdpcmChannel EncodeDspAdpcm(std::span<const int16_t> samples, uint32_t loop_s
         channel.pred_scale = channel.data[0];
         channel.loop_pred_scale = channel.data[std::min(start / kFrameSamples, frames - 1) * kFrameBytes];
     }
+
     channel.loop_yn1 = start >= 1 ? decoded[start - 1] : 0;
     channel.loop_yn2 = start >= 2 ? decoded[start - 2] : 0;
 

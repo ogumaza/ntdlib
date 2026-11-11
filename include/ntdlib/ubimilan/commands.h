@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -64,13 +65,8 @@ Decoded DecodeSequence(std::span<const uint8_t> data);
 // that names no byte of the ROM, or isn't a sequence.
 Decoded DecodeResource(const Rom& rom, const DriverInfo& info, int id);
 
-// The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
-// the end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a sequence, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence`. Throws std::invalid_argument for a value that the driver's bytes can't hold, and for a sequence
 // that the driver wouldn't read as its items say: one that doesn't start with the 4 bytes of a sequence and a wait, a

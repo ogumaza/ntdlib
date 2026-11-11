@@ -27,8 +27,7 @@ Dsp<Memory>::Dsp(Memory& memory)
 }
 
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::StepOnce(const uint16_t* iram, const Handler* handlers,
-                                                   const uint8_t* loop_end)
+NTDLIB_FORCE_INLINE void Dsp<Memory>::StepOnce(const uint16_t* iram, const Handler* handlers, const uint8_t* loop_end)
 {
     taken_exception_ = -1;
     if (pending_exceptions_ != 0)

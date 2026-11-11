@@ -32,9 +32,6 @@ constexpr std::array<std::array<uint32_t, 17>, 3> kCurveBits = {{
 }};
 // clang-format on
 
-// The table of a forced stop (JASOscillator's oscTableForceStop): a stop at once.
-constexpr std::array<OscPoint, 2> kForceStopTable = {{{0, 15, 0}, {15, 0, 0}}};
-
 float Curve(uint32_t mode, uint32_t index)
 {
     return std::bit_cast<float>(kCurveBits[mode - 1][index]);
@@ -90,12 +87,6 @@ void Oscillator::IncCounter(float dac_rate)
         table = data_->release;
         break;
 
-    case kForceStop:
-        // The forced stop's table steps by 1 whatever the rate.
-        fields_.countdown = fields_.countdown + -1.0f;
-        Calc({kForceStopTable.data(), kForceStopTable.size()}, dac_rate);
-        return;
-
     default:
         table = data_->attack;
         break;
@@ -134,13 +125,13 @@ bool Oscillator::Cycling() const
     for (std::size_t i = 0; i < table.size; i++)
     {
         const OscPoint point = table.At(i);
-        if (point.mode == 13)
+        if (point.mode == kPointJump)
         {
             const uint16_t to = static_cast<uint16_t>(point.value);
             return to < i && fields_.point > to;
         }
 
-        if (point.mode == 14 || point.mode == 15)
+        if (point.mode == kPointHold || point.mode == kPointStop)
         {
             return false;
         }
@@ -151,11 +142,6 @@ bool Oscillator::Cycling() const
 
 bool Oscillator::Release(float dac_rate)
 {
-    if (fields_.state == kForceStop)
-    {
-        return false;
-    }
-
     // A release table of its own starts from the value where the note is.
     if (!(data_->attack == data_->release))
     {
@@ -187,7 +173,7 @@ bool Oscillator::Release(float dac_rate)
     return true;
 }
 
-float Oscillator::Calc(OscTable table, float dac_rate)
+void Oscillator::Calc(OscTable table, float dac_rate)
 {
     // The next segments, while the current one's time has run out. A point of mode 13 jumps to the point that its
     // value names, 14 holds the value, and 15 stops. A point of no time moves the target at once.
@@ -202,17 +188,17 @@ float Oscillator::Calc(OscTable table, float dac_rate)
 
         const OscPoint point = table.At(fields_.point);
         const uint16_t mode = static_cast<uint16_t>(point.mode);
-        if (mode == 13)
+        if (mode == kPointJump)
         {
             fields_.point = static_cast<uint16_t>(point.value);
             continue;
         }
-        if (mode == 14)
+        if (mode == kPointHold)
         {
             fields_.state = kHold;
-            return fields_.target * data_->width + data_->vertex;
+            return;
         }
-        if (mode == 15)
+        if (mode == kPointStop)
         {
             fields_.state = kStop;
             break;
@@ -237,7 +223,7 @@ float Oscillator::Calc(OscTable table, float dac_rate)
 
     if (data_->width == 0.0f)
     {
-        return data_->vertex;
+        return;
     }
 
     float phase = 0.0f;
@@ -269,8 +255,6 @@ float Oscillator::Calc(OscTable table, float dac_rate)
         phase = fields_.rate < 0.0f ? fields_.target + along : fields_.target + -(fields_.rate - along);
     }
     fields_.phase = phase;
-
-    return phase * data_->width + data_->vertex;
 }
 
 void Vibrate::Init()

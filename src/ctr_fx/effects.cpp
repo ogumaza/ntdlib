@@ -325,7 +325,6 @@ Delay::Delay(const DelayParam& param, FrameFormat format) : format_(format), par
     }
 
     // Initialize gives each channel a line of the setup's frames.
-    setup_ = param;
     setup_frames_ = frames_;
     if (setup_frames_ * format.samples * channel_count_ > std::size_t{1} << 28)
     {
@@ -333,8 +332,6 @@ Delay::Delay(const DelayParam& param, FrameFormat format) : format_(format), par
     }
 
     memory_.assign(setup_frames_ * format.samples * channel_count_, 0);
-    frame_index_ = 0;
-    damping_state_ = {};
 }
 
 bool Delay::SetParam(const DelayParam& param)

@@ -105,6 +105,7 @@ public:
     std::span<const uint8_t> Arm7() const;
 
     // The DSi's binaries. Empty in an image for the DS alone.
+    // Empty too where a trimmed image ends before the binary.
     std::span<const uint8_t> Arm9i() const;
     std::span<const uint8_t> Arm7i() const;
 

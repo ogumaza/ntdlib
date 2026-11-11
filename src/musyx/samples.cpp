@@ -13,6 +13,7 @@
 #include "xsflib/binary.h"
 
 #include "ntdlib/wave/adpcm.h"
+#include "ntdlib/wave/encode.h"
 #include "ntdlib/wave/pcm.h"
 
 namespace ntdlib::musyx
@@ -41,7 +42,7 @@ std::size_t DataSize(const SampleInfo& info)
     {
     case SampleFormat::kAdpcm:
     case SampleFormat::kAdpcmPlus:
-        return (std::size_t{info.length} + kFrameSamples - 1) / kFrameSamples * kFrameBytes;
+        return wave::DspAdpcmBytes(info.length);
     case SampleFormat::kPcm16:
         return std::size_t{info.length} * 2;
     case SampleFormat::kPcm8:

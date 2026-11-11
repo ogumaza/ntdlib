@@ -43,6 +43,26 @@
 namespace ntdlib::sar
 {
 
+// The 3DS's versions of CSAR whose stream sounds, wave sounds and files the model lays out. Before 2.3.0.0, a stream
+// sound's details hold the tracks that play and the count of channels alone. In 2.0.0.0, its entry also holds a value
+// after its 3D settings. 2.3.0.0 adds the table of tracks, after options that hold the values of the extension. From
+// 2.3.2.0 on, the details take the layout of FSAR 2.2.0. A wave sound of 2.0.0.0 holds sends after its options. From
+// 2.3.1.0 on, it holds none. A file without a place has an entry that refers to nothing before 2.3.0.0. From 2.3.2.0
+// on, it has an internal file's entry whose place refers to nothing, as in FSAR.
+constexpr uint32_t kCtrFirstVersion = 0x02000000;
+constexpr uint32_t kCtrCountsVersion = 0x02020000;
+constexpr uint32_t kCtrTracksVersion = 0x02030000;
+constexpr uint32_t kCtrPlainWaveVersion = 0x02030100;
+constexpr uint32_t kCtrFieldsVersion = 0x02030200;
+
+// Whether the model and WithNewStreamSound (ntdlib/sar/tables.h) lay out the stream sounds of a 3DS archive of
+// `version`: 2.0.0.0, 2.2.0.0, 2.3.0.0, and 2.3.2.0 and later. They refuse the stream sounds of the other versions.
+constexpr bool LaysOutStreamSounds(uint32_t version)
+{
+    return version == kCtrFirstVersion || version == kCtrCountsVersion || version == kCtrTracksVersion ||
+           version >= kCtrFieldsVersion;
+}
+
 // A sound's 3D settings: the flags of the parameters that the distance changes, the ratio and the curve by which the
 // volume falls with the distance, and the doppler factor.
 struct Sound3dModel
@@ -213,6 +233,18 @@ struct FileModel
     std::string path = {};   // with kPath
     std::vector<uint32_t> groups = {}; // the item IDs of the groups that hold the file, in the list's order
 };
+
+// The place that `entry`, a file's entry of the file table of an archive of `flavor`, gives the file: kBytes for an
+// offset in the FILE block, kPath for a path beside the archive, and kGroupsOnly for an internal file's entry whose
+// place refers to nothing. An entry of another kind, such as an entry that refers to nothing on the 3DS before 2.3.0.0,
+// gives kGroupsOnly too. The entry alone doesn't tell a copy in a group's file (kCopy) from bytes that belong to the
+// file alone: both give kBytes. Throws xsflib::FormatError for an entry that ends before its place.
+FilePlace PlaceOfFile(std::span<const uint8_t> entry, Flavor flavor);
+
+// The item IDs of the groups that `entry`, a file's entry of the file table of an archive of `flavor`, lists, in the
+// list's order. Nothing for an entry without a list, such as an external file's, and on the 3DS, whose file table holds
+// no lists. Throws xsflib::FormatError for an entry that ends before its list does.
+std::optional<std::vector<uint32_t>> GroupsOfFile(std::span<const uint8_t> entry, Flavor flavor);
 
 // A sound archive of the 3DS, the Wii U or the Switch.
 struct ArchiveModel

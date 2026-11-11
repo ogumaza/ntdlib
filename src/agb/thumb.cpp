@@ -348,10 +348,12 @@ private:
             {
                 return false;
             }
+
             if (Passes(condition))
             {
                 next_ = pc_ + 4 + uint32_t(SignExtend(op, 8) * 2);
             }
+
             return true;
         }
         if ((op & 0xF800) == 0xE000)
@@ -379,6 +381,7 @@ private:
     {
         uint32_t address = r_[13] - 4 * Count(op);
         r_[13] = address;
+
         for (int i = 0; i < 9; i++)
         {
             if (op & (1 << i))

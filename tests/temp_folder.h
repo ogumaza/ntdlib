@@ -9,6 +9,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include "xsflib/files.h"
@@ -36,6 +38,38 @@ public:
 
         return path;
     }
+};
+
+// Empty folders that the test's process can't open. Each folder takes no permissions, and gets its owner's back at the
+// end, before its temporary folder goes. A system that keeps a folder open to its owner, such as Windows, leaves them
+// readable.
+class LockedFolders
+{
+public:
+    explicit LockedFolders(std::vector<std::filesystem::path> folders) : folders_(std::move(folders))
+    {
+        for (const std::filesystem::path& folder : folders_)
+        {
+            std::filesystem::create_directories(folder);
+            std::error_code ignored;
+            std::filesystem::permissions(folder, std::filesystem::perms::none, ignored);
+        }
+    }
+
+    LockedFolders(const LockedFolders&) = delete;
+    LockedFolders& operator=(const LockedFolders&) = delete;
+
+    ~LockedFolders()
+    {
+        for (const std::filesystem::path& folder : folders_)
+        {
+            std::error_code ignored;
+            std::filesystem::permissions(folder, std::filesystem::perms::owner_all, ignored);
+        }
+    }
+
+private:
+    std::vector<std::filesystem::path> folders_;
 };
 
 } // namespace ntdlib::testing

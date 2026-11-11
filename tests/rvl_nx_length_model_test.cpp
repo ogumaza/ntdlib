@@ -8,15 +8,12 @@
 // A counted loop that outlasts the limit counts as endless, and only the outermost counted loop of a track goes
 // endless.
 
-#include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "xsflib/bytes.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
 
@@ -30,42 +27,15 @@ namespace
 {
 
 using ntdlib::testing::rsar_files::Bytes;
+using ntdlib::testing::rsar_files::MakeAudibleArchive;
 using xsflib::testing::Check;
 using LengthConsole = ntdlib::rvl::nx::LengthConsole;
-
-// The archive of MakeArchive with a sequence of `commands` and the tracks in the mask `tracks`. MakeArchive's waves are
-// silent: each frame of their DSP-ADPCM holds only its header. Here each frame gives the samples of its nibbles at a
-// scale of 2^11.
-Bytes AudibleArchive(const Bytes& commands, uint32_t tracks)
-{
-    namespace rsar_files = ntdlib::testing::rsar_files;
-    Bytes bytes = rsar_files::MakeArchive(rsar_files::MakeSequence(commands), 0, tracks);
-    constexpr uint8_t kNibbles[] = {0x7F, 0x19, 0xE3, 0x5A, 0xC6, 0x2D, 0x91};
-    for (std::size_t at = 0; at + 4 <= bytes.size(); at++)
-    {
-        if (std::memcmp(&bytes[at], "RWAV", 4) != 0)
-        {
-            continue;
-        }
-
-        // The wave's DATA block holds 0x40 bytes of samples after its header of 8 bytes.
-        const uint32_t data = xsflib::LoadBe32(&bytes[at + 0x18]);
-        for (std::size_t frame = 0; frame < 0x40; frame += 8)
-        {
-            uint8_t* samples = &bytes[at + data + 8 + frame];
-            samples[0] = 0x0B;
-            std::memcpy(samples + 1, kNibbles, sizeof(kNibbles));
-        }
-    }
-
-    return bytes;
-}
 
 // The timing of the sequence of `commands` with the tracks in the mask `tracks`, on the model of the game's build.
 std::optional<xsflib::rip::Timing> Measure(const Bytes& commands, uint32_t tracks)
 {
     const ntdlib::rsar::SoundArchive archive =
-        ntdlib::rsar::SoundArchive::Load(AudibleArchive(commands, tracks), ntdlib::rvl::snd::kRsarOptions);
+        ntdlib::rsar::SoundArchive::Load(MakeAudibleArchive(commands, tracks), ntdlib::rvl::snd::kRsarOptions);
     const auto make_model = [&archive]
     {
         auto model = std::make_unique<LengthConsole::Model>();

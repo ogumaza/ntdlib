@@ -751,48 +751,8 @@ void FirmwareModel::RunLoop(uint64_t time)
         break;
 
     case Step::kLoop:
-        {
-            s.starting = false;
-            const bool sync = audio_->Word(firmware::internal::kSyncMode) != 0;
-            s.force = s.first || !sync || s.idle > 0x3f;
-            s.new_frame = s.force || audio_->Word(kArmCounter) != audio_->Word(kCounter);
-            if (s.force)
-            {
-                s.polls = 0;
-                audio_->UpdateLate();
-                if (audio_->Word(kArmCounter) == audio_->Word(kCounter))
-                {
-                    audio_->SetWord(firmware::internal::kPolling, 1);
-                    s.poll_handler = true;
-                    s.poll_timer = time + kPollArm + kPollTimer;
-                    s.step = Step::kPoll;
-                    break;
-                }
-
-                s.step = Step::kTakeParams;
-                s.step_at = time + kForcedTakeParams;
-                break;
-            }
-
-            if (s.new_frame)
-            {
-                s.step = Step::kTakeParams;
-                s.step_at = time + kLoopTakeParams;
-                break;
-            }
-
-            s.idle = static_cast<uint16_t>(std::min(s.idle + 1, 0x40));
-            if (s.skip)
-            {
-                s.skip = false;
-                s.step_at = time + kIdleMix;
-                break;
-            }
-
-            s.step = Step::kMix;
-            s.step_at = time + kIdleMix;
-            break;
-        }
+        RunLoopTop(time);
+        break;
 
     case Step::kTakeParams:
         {
@@ -861,6 +821,54 @@ void FirmwareModel::RunLoop(uint64_t time)
     case Step::kWait:
         break;
     }
+}
+
+// The top of the audio thread's loop (Step::kLoop): the next step, from the frame counters and the thread's flags.
+void FirmwareModel::RunLoopTop(uint64_t time)
+{
+    Schedule& s = *schedule_;
+    using firmware::internal::kArmCounter;
+    using firmware::internal::kCounter;
+
+    s.starting = false;
+    const bool sync = audio_->Word(firmware::internal::kSyncMode) != 0;
+    s.force = s.first || !sync || s.idle > 0x3f;
+    s.new_frame = s.force || audio_->Word(kArmCounter) != audio_->Word(kCounter);
+    if (s.force)
+    {
+        s.polls = 0;
+        audio_->UpdateLate();
+        if (audio_->Word(kArmCounter) == audio_->Word(kCounter))
+        {
+            audio_->SetWord(firmware::internal::kPolling, 1);
+            s.poll_handler = true;
+            s.poll_timer = time + kPollArm + kPollTimer;
+            s.step = Step::kPoll;
+            return;
+        }
+
+        s.step = Step::kTakeParams;
+        s.step_at = time + kForcedTakeParams;
+        return;
+    }
+
+    if (s.new_frame)
+    {
+        s.step = Step::kTakeParams;
+        s.step_at = time + kLoopTakeParams;
+        return;
+    }
+
+    s.idle = static_cast<uint16_t>(std::min(s.idle + 1, 0x40));
+    if (s.skip)
+    {
+        s.skip = false;
+        s.step_at = time + kIdleMix;
+        return;
+    }
+
+    s.step = Step::kMix;
+    s.step_at = time + kIdleMix;
 }
 
 // Sends `value` on command register 2 once the firmware has taken what's there. The ARM11 waits for the DSP meanwhile,

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include <teakra/impl/register.h>
 #include <teakra/teakra.h>
 
@@ -79,8 +80,8 @@ bool Compare(uint64_t seed, const char* what, const Outcome& expected, const Out
     // After an exception the interpreter's pc is the one it had when RunOrdinary began, which differs with the JIT, so
     // it isn't compared then (as in ctr_teakra_jit_test).
     const RegisterState layout;
-    const std::size_t pc_offset = static_cast<std::size_t>(reinterpret_cast<const uint8_t*>(&layout.pc) -
-                                                           reinterpret_cast<const uint8_t*>(&layout));
+    const std::size_t pc_offset =
+        reinterpret_cast<std::uintptr_t>(&layout.pc) - reinterpret_cast<std::uintptr_t>(&layout);
     int reported = 0;
     for (std::size_t i = 0; i < expected.registers.size(); ++i)
     {
@@ -109,9 +110,8 @@ bool Compare(uint64_t seed, const char* what, const Outcome& expected, const Out
             if (reported++ < 8)
             {
                 std::fprintf(stderr, "seed %llu, %s: memory word %05zx differs: %04x where the first run had %04x\n",
-                             static_cast<unsigned long long>(seed), what, i / 2,
-                             got.memory[i] | (got.memory[i + 1] << 8),
-                             expected.memory[i] | (expected.memory[i + 1] << 8));
+                             static_cast<unsigned long long>(seed), what, i / 2, xsflib::LoadLe16(&got.memory[i]),
+                             xsflib::LoadLe16(&expected.memory[i]));
             }
             same = false;
         }
@@ -164,12 +164,6 @@ bool CompareRegisters(uint64_t seed, const char* what, Teakra::Teakra& expected,
     }
 
     return same;
-}
-
-void Store(std::vector<uint8_t>& memory, uint32_t word, uint16_t value)
-{
-    memory[word * 2] = static_cast<uint8_t>(value);
-    memory[word * 2 + 1] = static_cast<uint8_t>(value >> 8);
 }
 
 // A program that idles in a branch to itself, with a short handler at each interrupt vector.
@@ -382,7 +376,7 @@ bool BadStates()
 
     bool ok = true;
 
-    const auto refused = [&](std::vector<uint8_t> bytes, const char* what)
+    const auto refused = [&](const std::vector<uint8_t>& bytes, const char* what)
     {
         try
         {

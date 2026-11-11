@@ -12,16 +12,16 @@
 #include <variant>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/sar/layout.h"
+#include "ntdlib/testing/ubimilan_image.h"
 #include "ntdlib/ubimilan/commands.h"
 #include "ntdlib/ubimilan/driver.h"
 #include "ntdlib/ubimilan/layout.h"
 #include "ntdlib/ubimilan/output.h"
-#include "xsflib/testing/check.h"
-
-#include "ubimilan_image.h"
 
 namespace
 {

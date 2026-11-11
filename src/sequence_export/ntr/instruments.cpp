@@ -302,7 +302,7 @@ BankSet::BankSet(const sdat::Archive& archive, uint16_t bank) : archive_(archive
 
 std::optional<uint16_t> BankSet::WaveArchiveOf(uint16_t slot) const
 {
-    if (slot >= wave_archives_.size() || wave_archives_[slot] == 0xFFFF)
+    if (slot >= wave_archives_.size() || wave_archives_[slot] == sdat::kNoWaveArchive)
     {
         return std::nullopt;
     }

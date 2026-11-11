@@ -39,9 +39,10 @@ xsflib_add_project_library(ntdlib ctr src/ctr/dsp/firmware_audio.cpp src/ctr/dsp
                            src/ctr/snd/sequence.cpp src/ctr/snd/sound_players.cpp src/ctr/snd/util.cpp
                            src/ctr/snd/voice.cpp)
 target_link_libraries(ntdlib_ctr PUBLIC ntdlib::ctr_starting_tracks ntdlib::nwsnd ntdlib::sar
-                      PRIVATE ntdlib::wave teakra)
+                      PRIVATE ntdlib::ctr_fx ntdlib::wave teakra)
 
-# Teakra's checks of its bounds, its state and its two ways of running, and the glue's checks on small firmwares.
+# Teakra's checks of its bounds, its state and its two ways of running, the glue's checks on small firmwares, and the
+# check of SilenceStdout with stdout closed.
 # Archive mode's test plays on the model of the firmware, and also on Teakra running a firmware that the environment
 # variable NTDLIB_CTR_FIRMWARE names.
 xsflib_add_project_test(ntdlib ctr_teakra_bounds teakra)
@@ -49,4 +50,5 @@ xsflib_add_project_test(ntdlib ctr_teakra_dsp ntdlib::ctr)
 xsflib_add_project_test(ntdlib ctr_teakra_jit teakra)
 xsflib_add_project_test(ntdlib ctr_teakra_state teakra)
 xsflib_add_project_test(ntdlib ctr_snd ntdlib::ctr)
+xsflib_add_project_test(ntdlib ctr_quiet_stdout ntdlib::ctr)
 xsflib_add_project_test(ntdlib ctr_enhanced ntdlib::ctr)

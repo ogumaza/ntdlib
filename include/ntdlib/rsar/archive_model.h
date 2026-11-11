@@ -3,7 +3,7 @@
 // A sound archive of the Wii (RSAR) as the fields of its items, and a builder that lays such an archive out as
 // NintendoWare for Revolution's tools do. ReadArchiveModel reads every field of an archive that the tools laid out.
 // BuildArchive gives that archive back byte for byte from its model. It builds an archive from a model made from
-// nothing the same way.
+// nothing the same way. WithNewWaveSounds and WithNewStreamSound add sounds that copy another sound's settings.
 //
 // The tools lay an archive out as follows. The header takes 64 bytes. It lists the SYMB, INFO and FILE blocks, in that
 // order, and gives the archive's size. Zeros fill its other bytes. The blocks follow the header without gaps. SYMB and
@@ -178,5 +178,40 @@ ArchiveModel ReadArchiveModel(std::span<const uint8_t> archive);
 // with bytes, a file whose size or wave data's size isn't a multiple of 32 bytes, a name with a zero byte, two names
 // alike in one tree, and an archive past 4 GB.
 std::vector<uint8_t> BuildArchive(const ArchiveModel& model);
+
+// A wave sound to add to an archive's model: a copy of sound `model` with another name, file and index.
+struct NewWaveSound
+{
+    uint32_t model = 0;   // the index of the sound that the new one copies: a wave sound or a sequence sound
+    std::string name;     // empty for a sound without a name
+    uint32_t file_id = 0; // the wave sound file that holds the wave sound
+    int32_t index = 0;    // the wave sound's index in the file
+};
+
+// `archive` with `sounds` at the end of its sound table, in order. Each new sound copies its model's player, volume,
+// player priority, remote filter, user parameters, pan mode, pan curve, actor player, 3D settings, channel priority and
+// release priority fix. It takes the new sound's name, file and index. A wave sound model gives its count of tracks,
+// and a sequence sound model a count of 1. The new sound's other fields keep the defaults of SoundModel. Throws
+// std::invalid_argument for a model past the sound table or of another kind, a file past the file table, and a name
+// that another sound holds.
+ArchiveModel WithNewWaveSounds(ArchiveModel archive, std::span<const NewWaveSound> sounds);
+
+// A stream sound to add to an archive's model: a copy of sound `model` with another name, file and stream fields.
+struct NewStreamSound
+{
+    uint32_t model = 0;   // the index of the sound that the new one copies: a sound of any kind
+    std::string name;     // empty for a sound without a name
+    uint32_t file_id = 0; // the stream file, such as a file beside the archive
+    uint32_t stream_start = 0;
+    uint16_t allocate_channel_count = 2; // a count from version 1.4 on, and a bit for each channel before
+    uint16_t stream_track_flags = 1;     // a bit for each track
+};
+
+// `archive` with `sound` at the end of its sound table. The new sound copies its model's player, volume, player
+// priority, remote filter, user parameters, pan mode, pan curve, actor player and 3D settings. A stream sound's entry
+// holds no channel priority and no release priority fix. The new sound takes its name, file, start, channels and tracks
+// from `sound`. Its other fields keep the defaults of SoundModel. Throws std::invalid_argument for a model past the
+// sound table, a file past the file table, and a name that another sound holds.
+ArchiveModel WithNewStreamSound(ArchiveModel archive, const NewStreamSound& sound);
 
 } // namespace ntdlib::rsar

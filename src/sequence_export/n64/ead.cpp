@@ -1384,6 +1384,7 @@ void Performer::RunChannelCommand(std::size_t index, const ScriptCommand& comman
     {
         return Be16At(bytes_, table + static_cast<uint32_t>(channel.value) * 2);
     };
+
     switch (command.op)
     {
     case ScriptOp::kDelay1:
@@ -2246,6 +2247,7 @@ void Performer::RunFramesToTick()
             {
                 ApplyCallVolume();
             }
+
             frame_++;
 
             random_ ^= random_ << 13;
@@ -2951,6 +2953,7 @@ std::vector<ntdlib::sequence_export::Sequence> EadGame::Sequences() const
             return std::ranges::equal(sequences_[earlier], sequences_[index]) &&
                    bank_sets_[earlier] == bank_sets_[index];
         };
+
         if (!has_track && later_files_ && std::ranges::any_of(std::views::iota(std::size_t{0}, index), same_as))
         {
             continue;

@@ -37,6 +37,9 @@ std::vector<int16_t> SquareCycle(int duty, int16_t amplitude);
 // Middle C, which the square and wave samples play on their root key.
 constexpr double kMiddleC = 261.6255653005986;
 
+// Returns the equal-tempered pitch of MIDI key `key` in Hz, with key 60 at middle C.
+double KeyHz(int key);
+
 // Returns the frequency in Hz of a square channel at frequency setting `setting` (0-2047). A cycle lasts for
 // 2048 - `setting` steps of a 131072 Hz clock. At the same setting, the wave channel's pattern of 32 steps plays an
 // octave lower.

@@ -345,12 +345,7 @@ public:
     // A DSP channel's place in its wave: whether it plays a wave, whether the wave loops, and a position that drops
     // each time the wave passes back to its loop's start. A DSP channel of an unheard note (QueueDemoEvents) plays no
     // wave here.
-    struct WavePlace
-    {
-        bool playing = false;
-        bool loops = false;
-        int64_t position = 0;
-    };
+    using WavePlace = jaudio2::WavePlace;
 
     WavePlace DspChannelPlace(uint32_t index) const;
 

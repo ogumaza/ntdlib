@@ -43,6 +43,7 @@ std::vector<uint8_t> PieceState::Bytes() const
     {
         words.push_back(std::bit_cast<uint32_t>(volume));
     }
+
     words.push_back(music_status);
     words.push_back(section_statuses);
     while (!words.empty() && words.back() == 0)
@@ -55,6 +56,7 @@ std::vector<uint8_t> PieceState::Bytes() const
     {
         xsflib::StoreBe32(bytes.data() + 4 * i, words[i]);
     }
+
     return bytes;
 }
 
@@ -74,16 +76,19 @@ PieceState PieceStateOf(const jaudio::MusicState& state)
             piece.partial_volumes[child] = volume;
         }
     }
+
     if (state.status_port >= 0)
     {
         piece.music_status =
             kMusicStatusSet | (state.status_later ? kMusicStatusLater : 0) | static_cast<uint32_t>(state.status_port);
     }
+
     for (std::size_t i = 0; i < state.section_statuses.size(); i++)
     {
         const jaudio::SectionStatus& s = state.section_statuses[i];
         piece.section_statuses |= static_cast<uint32_t>(s.section << 8 | s.status) << (16 * i);
     }
+
     return piece;
 }
 

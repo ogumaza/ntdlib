@@ -3,11 +3,12 @@
 #include "ntdlib/wave/adpcm.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
+
+#include "ntdlib/wave/afc.h"
 
 namespace ntdlib::wave
 {
@@ -26,37 +27,43 @@ constexpr uint32_t kAfcFrameSamples = 16;
 
 // A 2-bit sample stands for the top two bits of a 4-bit one. Its left shift before the frame's scale is therefore 13,
 // where a 4-bit sample's is 11.
+constexpr int kAfcSampleShift = 11;
 constexpr int kAfc2SampleShift = 13;
 
-// The predictor pairs that JAudio2 gives the GameCube's DSP program for AFC, in 2048ths.
-constexpr std::array<std::array<int32_t, 2>, 16> kAfcCoefficients{{
-    {0, 0},
-    {2048, 0},
-    {0, 2048},
-    {1024, 1024},
-    {4096, -2048},
-    {3584, -1536},
-    {3072, -1024},
-    {4608, -2560},
-    {4200, -2248},
-    {4800, -2300},
-    {5120, -3072},
-    {2048, -2048},
-    {1024, -1024},
-    {-1024, 1024},
-    {-1024, 0},
-    {-2048, 0},
-}};
+// Decodes the AFC frames of `frame_bytes` bytes in `data`, up to `samples` samples. Each frame starts with a byte whose
+// high nibble gives the scale (a shift) and whose low nibble picks the predictor pair. `sample(bytes, i)` gives the
+// frame's signed sample `i` from the bytes after that one. `sample_shift` is the sample's left shift before the scale.
+template <typename Sample>
+std::vector<int16_t> DecodeAfcFrames(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2,
+                                     std::size_t frame_bytes, int sample_shift, Sample sample)
+{
+    std::vector<int16_t> out;
+    out.reserve(samples);
+    int32_t h1 = hist1, h2 = hist2;
+    for (std::size_t frame = 0; out.size() < samples; frame++)
+    {
+        const std::size_t base = frame * frame_bytes;
+        if (base + frame_bytes > data.size())
+        {
+            break;
+        }
 
-// The standard IMA-ADPCM tables.
-constexpr int kImaIndex[16] = {-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8};
-constexpr int kImaStep[89] = {7,     8,     9,     10,    11,    12,    13,    14,    16,    17,    19,   21,    23,
-                              25,    28,    31,    34,    37,    41,    45,    50,    55,    60,    66,   73,    80,
-                              88,    97,    107,   118,   130,   143,   157,   173,   190,   209,   230,  253,   279,
-                              307,   337,   371,   408,   449,   494,   544,   598,   658,   724,   796,  876,   963,
-                              1060,  1166,  1282,  1411,  1552,  1707,  1878,  2066,  2272,  2499,  2749, 3024,  3327,
-                              3660,  4026,  4428,  4871,  5358,  5894,  6484,  7132,  7845,  8630,  9493, 10442, 11487,
-                              12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
+        const int32_t shift = data[base] >> 4;
+        const auto& [c1, c2] = kAfcCoefficients[data[base] & 0x0f];
+        const std::span<const uint8_t> bytes = data.subspan(base + 1, frame_bytes - 1);
+        for (uint32_t i = 0; i < kAfcFrameSamples && out.size() < samples; i++)
+        {
+            const int32_t value = sample(bytes, i);
+            const int64_t v = (int64_t{value} << shift << sample_shift) + int64_t{c1} * h1 + int64_t{c2} * h2;
+            const auto s = static_cast<int16_t>(std::clamp<int64_t>(v >> 11, -32768, 32767));
+            h2 = h1;
+            h1 = s;
+            out.push_back(s);
+        }
+    }
+
+    return out;
+}
 
 } // namespace
 
@@ -147,66 +154,26 @@ ImaAdpcmState ImaAdpcmNext(ImaAdpcmState state, uint8_t nibble)
 
 std::vector<int16_t> DecodeAfc(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2)
 {
-    // Each frame starts with a byte whose high nibble gives the scale (a shift) and whose low nibble picks the
-    // predictor pair. Sixteen signed nibbles follow, the high nibble of each byte first.
-    std::vector<int16_t> out;
-    out.reserve(samples);
-    int32_t h1 = hist1, h2 = hist2;
-    for (std::size_t frame = 0; out.size() < samples; frame++)
+    // Sixteen signed nibbles follow the frame's first byte. The high nibble of each byte comes first.
+    const auto nibble = [](std::span<const uint8_t> bytes, uint32_t i)
     {
-        const std::size_t base = frame * kAfcFrameBytes;
-        if (base + kAfcFrameBytes > data.size())
-        {
-            break;
-        }
+        const uint8_t byte = bytes[i / 2];
+        return SignedNibble((i & 1) ? (byte & 0x0f) : (byte >> 4));
+    };
 
-        const int32_t shift = data[base] >> 4;
-        const auto& [c1, c2] = kAfcCoefficients[data[base] & 0x0f];
-        for (uint32_t i = 0; i < kAfcFrameSamples && out.size() < samples; i++)
-        {
-            const uint8_t byte = data[base + 1 + i / 2];
-            const int32_t nibble = SignedNibble((i & 1) ? (byte & 0x0f) : (byte >> 4));
-            const int64_t v = (int64_t{nibble} << shift << 11) + int64_t{c1} * h1 + int64_t{c2} * h2;
-            const auto s = static_cast<int16_t>(std::clamp<int64_t>(v >> 11, -32768, 32767));
-            h2 = h1;
-            h1 = s;
-            out.push_back(s);
-        }
-    }
-
-    return out;
+    return DecodeAfcFrames(data, samples, hist1, hist2, kAfcFrameBytes, kAfcSampleShift, nibble);
 }
 
 std::vector<int16_t> DecodeAfc2(std::span<const uint8_t> data, uint32_t samples, int16_t hist1, int16_t hist2)
 {
-    // The frame's first byte is the 4-bit form's. Sixteen signed 2-bit samples follow, four to a byte, the high bits of
-    // each byte first.
-    std::vector<int16_t> out;
-    out.reserve(samples);
-    int32_t h1 = hist1, h2 = hist2;
-    for (std::size_t frame = 0; out.size() < samples; frame++)
+    // Sixteen signed 2-bit samples, four to a byte, follow the frame's first byte. Each byte's high bits come first.
+    const auto two_bits = [](std::span<const uint8_t> bytes, uint32_t i)
     {
-        const std::size_t base = frame * kAfc2FrameBytes;
-        if (base + kAfc2FrameBytes > data.size())
-        {
-            break;
-        }
+        const int32_t bits = bytes[i / 4] >> (6 - 2 * (i & 3)) & 3;
+        return bits >= 2 ? bits - 4 : bits;
+    };
 
-        const int32_t shift = data[base] >> 4;
-        const auto& [c1, c2] = kAfcCoefficients[data[base] & 0x0f];
-        for (uint32_t i = 0; i < kAfcFrameSamples && out.size() < samples; i++)
-        {
-            const int32_t bits = data[base + 1 + i / 4] >> (6 - 2 * (i & 3)) & 3;
-            const int32_t value = bits >= 2 ? bits - 4 : bits;
-            const int64_t v = (int64_t{value} << shift << kAfc2SampleShift) + int64_t{c1} * h1 + int64_t{c2} * h2;
-            const auto s = static_cast<int16_t>(std::clamp<int64_t>(v >> 11, -32768, 32767));
-            h2 = h1;
-            h1 = s;
-            out.push_back(s);
-        }
-    }
-
-    return out;
+    return DecodeAfcFrames(data, samples, hist1, hist2, kAfc2FrameBytes, kAfc2SampleShift, two_bits);
 }
 
 } // namespace ntdlib::wave

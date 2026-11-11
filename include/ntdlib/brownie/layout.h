@@ -20,6 +20,7 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/agb/layout.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
@@ -28,11 +29,8 @@
 namespace ntdlib::brownie
 {
 
-// The largest ROM that the GBA maps: 32 MiB.
-inline constexpr uint32_t kLargestRom = 0x02000000;
-
-// The bytes that the free space leaves clear of the data before it: data that happens to end with the run's byte.
-inline constexpr uint32_t kFreeSpaceMargin = 256;
+using agb::kFreeSpaceMargin;
+using agb::kLargestRom;
 
 // Where the regions that move can go, besides the places of the regions that move.
 struct FreeSpace

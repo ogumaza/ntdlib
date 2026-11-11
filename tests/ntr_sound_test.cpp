@@ -527,7 +527,7 @@ void TestCaptureValues()
     XSFLIB_CHECK(CaptureOf(0x7FFF, 0, 0, kCapturePcm8, 2) == std::vector<uint8_t>(8, 0x7F));
 
     // The captures take the mixer before the master volume of 10, and leave out a muted channel.
-    for (const uint16_t muted : {0, 1 << 2})
+    for (const uint16_t muted : {uint16_t{0}, uint16_t{1 << 2}})
     {
         Unit unit(Pcm16(std::vector<int16_t>(8, 0x100)));
         unit.unit.Write(0x04000500, 4, 0x8000 | 10);

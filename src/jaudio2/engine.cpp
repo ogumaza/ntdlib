@@ -56,61 +56,6 @@ constexpr uint8_t kMusicSection = 1;
 // The tracks that the sequence manager reserves for each piece of music.
 constexpr uint32_t kReservedTracks = 16;
 
-constexpr uint32_t Tag(const char (&name)[5])
-{
-    return static_cast<uint32_t>(static_cast<uint8_t>(name[0])) << 24 |
-           static_cast<uint32_t>(static_cast<uint8_t>(name[1])) << 16 |
-           static_cast<uint32_t>(static_cast<uint8_t>(name[2])) << 8 | static_cast<uint8_t>(name[3]);
-}
-
-// A bank that the start-up archive's commands load ("bnk "): the wave system it plays and its offset.
-struct BankCommand
-{
-    uint32_t wave_system = 0;
-    uint32_t offset = 0;
-};
-
-// The banks of a start-up archive, in the order of its commands. Each tag is a 32-bit word in the archive's byte order.
-// A little-endian archive starts with "<_AA".
-std::vector<BankCommand> BankCommands(std::span<const uint8_t> baa)
-{
-    const bool little = !baa.empty() && baa[0] == '<';
-    const xsflib::Reader r(baa, !little);
-    std::vector<BankCommand> banks;
-    for (std::size_t at = 4;;)
-    {
-        const uint32_t tag = r.U32(at);
-        at += 4;
-        if (tag == Tag(">_AA"))
-        {
-            return banks;
-        }
-
-        if (tag == Tag("bnk "))
-        {
-            banks.push_back({r.U32(at), r.U32(at + 4)});
-        }
-        if (tag == Tag("ws  ") || tag == Tag("bms "))
-        {
-            at += 12;
-        }
-        else if (tag == Tag("bnk ") || tag == Tag("bst ") || tag == Tag("bstn") || tag == Tag("bsc ") ||
-                 tag == Tag("bl_<") || tag == Tag("vbnk") || tag == Tag("baac"))
-        {
-            at += 8;
-        }
-        else if (tag == Tag("bmsa") || tag == Tag("dsqb") || tag == Tag("bsft") || tag == Tag("sect") ||
-                 tag == Tag("bfca"))
-        {
-            at += 4;
-        }
-        else if (tag != Tag(">_bl"))
-        {
-            throw xsflib::FormatError("start-up archive has a command of unknown kind at " + std::to_string(at - 4));
-        }
-    }
-}
-
 std::vector<uint8_t> Decoded(std::span<const uint8_t> data)
 {
     std::vector<uint8_t> decoded;
@@ -211,18 +156,14 @@ void SoundFiles::LoadWaves(const WaveArchives& waves)
         }
     }
 
-    uint32_t size = kWaves;
-    std::map<std::string, uint32_t> addresses;
+    std::map<std::string, std::size_t> sizes;
     for (const auto& [name, bytes] : archives)
     {
-        if (bytes != nullptr && !bytes->empty())
-        {
-            addresses[name] = size;
-            size = (size + static_cast<uint32_t>(bytes->size()) + 31) & ~31u;
-        }
+        sizes[name] = bytes != nullptr ? bytes->size() : 0;
     }
-    memory_ = std::make_unique<DspMemory>(size);
-    for (const auto& [name, address] : addresses)
+    const nj::WaveArchiveLayout layout = nj::LayOutWaveArchives(sizes, kWaves);
+    memory_ = std::make_unique<DspMemory>(layout.end);
+    for (const auto& [name, address] : layout.addresses)
     {
         const std::vector<uint8_t>& bytes = *archives[name];
         std::copy(bytes.begin(), bytes.end(), memory_->Bytes().begin() + address);
@@ -233,30 +174,20 @@ void SoundFiles::LoadWaves(const WaveArchives& waves)
         WaveBank& bank = wave_banks_[system.number];
         for (const auto& [id, info] : system.waves)
         {
-            const auto address = addresses.find(info.archive);
-            if (address == addresses.end())
+            const auto address = layout.addresses.find(info.archive);
+            if (address == layout.addresses.end())
             {
                 continue;
             }
 
-            WaveInfo wave;
-            wave.format = static_cast<uint8_t>(info.format);
-            wave.base_key = info.base_key;
-            wave.sample_rate = info.sample_rate;
-            wave.loop_flags = info.loop ? 0xffffffff : 0;
-            wave.loop_start = info.loop_start;
-            wave.loop_end = info.loop_end;
-            wave.sample_count = info.sample_count;
-            wave.last = info.loop_last;
-            wave.penult = info.loop_penult;
-            bank.Add(id, BankWave{wave, address->second + info.offset});
+            bank.Add(id, BankWave{ChannelWaveOf(info), address->second + info.offset});
         }
     }
 }
 
 void SoundFiles::LoadBanks()
 {
-    for (const BankCommand& command : BankCommands(baa_))
+    for (const nj::BankCommand& command : nj::BankCommands(baa_))
     {
         if (command.offset >= baa_.size())
         {
@@ -345,6 +276,46 @@ std::optional<std::string> Engine::Start(uint32_t id, const TrackStates& states)
         return std::string("the sound plays no sequence that the files hold");
     }
 
+    StartModel();
+    Model& m = *model_;
+    m.sound = SoundLevels(*sound);
+    m.root = m.tracks.StartSequence(*sequence.sequence, sequence.offset, &m.sound);
+    if (m.root == Track::kNone)
+    {
+        model_.reset();
+        return std::string("no root track is free");
+    }
+
+    // The sequence manager's start of a piece of music: JAISeq reserves 16 child tracks (JAISeqMgr's count, from its
+    // constructor at 0x235288).
+    if (sound->section == kMusicSection)
+    {
+        m.tracks.ReserveChildTracks(m.root, kReservedTracks);
+    }
+
+    StartControllers(states);
+
+    // AudBgmMgr::start then hands a rhythm piece to the rhythm system (AudRhythmMeSystem::setSeq, 0x1fbe0c). The root
+    // track and child track 0 take its parser, and child track 0 is muted. That track holds the beats and plays no
+    // sound. The system's number of the track (at +0x10) is 0 from its constructor (0x2361e8) on.
+    if (sound->section == kMusicSection && files_.RhythmPiece(*sound))
+    {
+        m.tracks.UseRhythmParser(m.root);
+        const uint32_t beats = m.tracks.ChildTrack(m.root, 0);
+        if (beats != Track::kNone)
+        {
+            m.tracks.UseRhythmParser(beats);
+            m.tracks.Mute(beats, true);
+        }
+    }
+
+    output_.assign(2 * Dsp::kSubframeSamples, int16_t{0});
+
+    return std::nullopt;
+}
+
+void Engine::StartModel()
+{
     // The memory below the waves starts again from zeros.
     std::fill(memory_->Bytes().begin(), memory_->Bytes().begin() + SoundFiles::kWaves, uint8_t{0});
     model_ = std::make_unique<Model>(*memory_);
@@ -364,18 +335,8 @@ std::optional<std::string> Engine::Start(uint32_t id, const TrackStates& states)
 
         const uint32_t at = kFxSettings + static_cast<uint32_t>(line * DspFxLine::kBytes);
         const uint32_t buffer = kFxBuffers + static_cast<uint32_t>(line) * kFxBufferBytes;
-        memory_->SetNative16(at, fx.flags);
-        memory_->SetNative16(at + 2, std::min(fx.subframes, FxLineSettings::kMaxSubframes));
-        memory_->SetNative32(at + 8, buffer);
-        for (std::size_t i = 0; i < 2; i++)
-        {
-            memory_->SetNative16(at + 0x10 + static_cast<uint32_t>(4 * i), fx.buses[i]);
-            memory_->SetNative16(at + 0x12 + static_cast<uint32_t>(4 * i), fx.levels[i]);
-        }
-        for (std::size_t i = 0; i < fx.filter.size(); i++)
-        {
-            memory_->SetNative16(at + 0x18 + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(fx.filter[i]));
-        }
+        WriteFxLine<Dsp::FxLayout::kJaudio2>(*memory_, at, buffer,
+                                             std::min(fx.subframes, FxLineSettings::kMaxSubframes), fx);
     }
 
     m.voices.SetDacRate(kDacRate);
@@ -387,39 +348,33 @@ std::optional<std::string> Engine::Start(uint32_t id, const TrackStates& states)
     {
         m.tracks.SetLoopHook(loop_hook_);
     }
+}
 
+SoundParams Engine::SoundLevels(const nj::SoundEntry& sound) const
+{
     // The sound's levels (JAISound::mixOut): the manager's volume, times the category's for an effect, times the sound
     // table's volume. The game may have written over the table's byte.
-    const auto written = settings_.sound_volumes.find(sound->Id());
-    const uint8_t volume = written != settings_.sound_volumes.end() ? written->second : sound->volume;
+    const auto written = settings_.sound_volumes.find(sound.Id());
+    const uint8_t volume = written != settings_.sound_volumes.end() ? written->second : sound.volume;
     const float table = static_cast<float>(volume) * kVolumeScale;
     float manager = 1.0f;
-    if (sound->section == kMusicSection)
+    if (sound.section == kMusicSection)
     {
         manager = settings_.music_volume;
     }
-    else if (sound->section == kEffectSection)
+    else if (sound.section == kEffectSection)
     {
-        manager = settings_.effect_volume * settings_.category_volumes[sound->group % Settings::kCategories];
-    }
-    m.sound = SoundParams{manager * table, 0.0f, 1.0f, 0.5f, 0.0f};
-
-    m.root = m.tracks.StartSequence(*sequence.sequence, sequence.offset, &m.sound);
-    if (m.root == Track::kNone)
-    {
-        model_.reset();
-        return std::string("no root track is free");
+        manager = settings_.effect_volume * settings_.category_volumes[sound.group % Settings::kCategories];
     }
 
-    // The sequence manager's start of a piece of music: JAISeq reserves 16 child tracks (JAISeqMgr's count, from its
-    // constructor at 0x235288).
-    if (sound->section == kMusicSection)
-    {
-        m.tracks.ReserveChildTracks(m.root, kReservedTracks);
-    }
+    return SoundParams{manager * table, 0.0f, 1.0f, 0.5f, 0.0f};
+}
 
+void Engine::StartControllers(const TrackStates& states)
+{
     // The BGM manager's track controllers (AudTrackController::setMuteState) act on the reserved tracks. A fade at the
     // start takes no time. A fade in also unmutes its track.
+    Model& m = *model_;
     for (std::size_t i = 0; i < states.size() && i < 16; i++)
     {
         const uint8_t state = states[i] & 7;
@@ -434,24 +389,6 @@ std::optional<std::string> Engine::Start(uint32_t id, const TrackStates& states)
             m.tracks.Mute(track, state == 2);
         }
     }
-
-    // AudBgmMgr::start then hands a rhythm piece to the rhythm system (AudRhythmMeSystem::setSeq, 0x1fbe0c). The root
-    // track and child track 0 take its parser, and child track 0 is muted. That track holds the beats and plays no
-    // sound. The system's number of the track (at +0x10) is 0 from its constructor (0x2361e8) on.
-    if (sound->section == kMusicSection && files_.RhythmPiece(*sound))
-    {
-        m.tracks.UseRhythmParser(m.root);
-        const uint32_t beats = m.tracks.ChildTrack(m.root, 0);
-        if (beats != Track::kNone)
-        {
-            m.tracks.UseRhythmParser(beats);
-            m.tracks.Mute(beats, true);
-        }
-    }
-
-    output_.assign(2 * Dsp::kSubframeSamples, int16_t{0});
-
-    return std::nullopt;
 }
 
 void Engine::MixOut()
@@ -485,13 +422,7 @@ void Engine::RunSubframe()
     }
 
     m.dsp.RenderSubframe();
-    const uint32_t offset = in_frame * 2 * Dsp::kSubframeSamples;
-    for (int i = 0; i < Dsp::kSubframeSamples; i++)
-    {
-        const auto at = static_cast<uint32_t>(2 * i) + offset;
-        output_[2 * static_cast<std::size_t>(i)] = static_cast<int16_t>(memory_->Big16(kLeft + at));
-        output_[2 * static_cast<std::size_t>(i) + 1] = static_cast<int16_t>(memory_->Big16(kRight + at));
-    }
+    CopyOutput(*memory_, kLeft, kRight, in_frame * 2 * Dsp::kSubframeSamples, output_);
 
     m.voices.UpdateDspChannels(*memory_, &m.tracks);
     m.tracks.SeqMain();
@@ -511,13 +442,7 @@ int Engine::ActiveChannels() const
         return 0;
     }
 
-    int count = 0;
-    for (uint32_t i = 0; i < Voices::kDspChannels; i++)
-    {
-        count += model_->voices.DspChannelAt(i).status == DspChannel::kActive ? 1 : 0;
-    }
-
-    return count;
+    return ActiveDspChannels(model_->voices);
 }
 
 bool Engine::Busy() const
@@ -554,35 +479,22 @@ void Engine::SetLoopHook(LoopHook hook)
 
 std::vector<uint32_t> Engine::TreeOrder() const
 {
-    std::vector<uint32_t> order;
     if (!model_ || model_->root == Track::kNone)
     {
-        return order;
+        return {};
     }
 
     const Tracks& tracks = model_->tracks;
-    std::vector<uint32_t> pending{model_->root};
-    while (!pending.empty())
+    const auto track_at = [&tracks](uint32_t index) -> const Track&
     {
-        const uint32_t index = pending.back();
-        pending.pop_back();
-        const Track& track = tracks.TrackAt(index);
-        if (track.status == Track::kFree)
-        {
-            continue;
-        }
+        return tracks.TrackAt(index);
+    };
+    const auto closed = [](uint32_t, const Track& track, const std::vector<uint32_t>&)
+    {
+        return track.status == Track::kFree;
+    };
 
-        order.push_back(index);
-        for (std::size_t slot = track.children.size(); slot-- > 0;)
-        {
-            if (track.children[slot] != Track::kNone)
-            {
-                pending.push_back(track.children[slot]);
-            }
-        }
-    }
-
-    return order;
+    return WalkTrees(std::span<const uint32_t>(&model_->root, 1), track_at, closed);
 }
 
 bool Engine::PlayedNotes(uint32_t track) const
@@ -723,13 +635,7 @@ Engine::WavePlace Engine::DspChannelPlace(uint32_t index) const
         return place;
     }
 
-    const uint32_t block = kBlocks + index * static_cast<uint32_t>(DspChannelBlock::kBytes);
-    place.playing = true;
-    place.loops = memory_->Native16(block + static_cast<uint32_t>(DspChannelBlock::kLoops)) != 0;
-    place.position =
-        -static_cast<int64_t>(memory_->Native32(block + static_cast<uint32_t>(DspChannelBlock::kRemaining)));
-
-    return place;
+    return PlayingWavePlace(*memory_, kBlocks + index * static_cast<uint32_t>(DspChannelBlock::kBytes));
 }
 
 } // namespace ntdlib::jaudio2

@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/agb/thumb.h"
 #include "table_bytes.h"
@@ -224,8 +226,7 @@ uint32_t FindPitchTable(const Rom& rom)
     uint8_t octave[sizeof kPitchOctave];
     for (size_t k = 0; k < std::size(kPitchOctave); k++)
     {
-        octave[2 * k] = uint8_t(kPitchOctave[k]);
-        octave[2 * k + 1] = uint8_t(kPitchOctave[k] >> 8);
+        xsflib::StoreLe16(&octave[2 * k], kPitchOctave[k]);
     }
 
     const uint8_t* data = rom.Ptr(kRomBase);
@@ -248,9 +249,9 @@ uint32_t FindPitchTable(const Rom& rom)
     return 0;
 }
 
-} // namespace
-
-bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error)
+// Finds the driver's routines, and the sine table from the LFO routine. Returns false without an error when the game
+// doesn't have this driver.
+bool FindRoutines(const Rom& rom, DriverInfo& info, std::string& error)
 {
     info.play_routine = FindFirstThumb(rom, kPlayRoutine);
     if (!info.play_routine)
@@ -289,6 +290,12 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         return false;
     }
 
+    return true;
+}
+
+// Finds the PSG's tables, the pitch table and the bank table.
+bool FindTables(const Rom& rom, DriverInfo& info, std::string& error)
+{
     // The PSG's tables and the pitch table.
     const uint32_t noise_lookup = FindFirstThumb(rom, kNoiseLookup);
     const uint32_t wave_lookup = FindFirstThumb(rom, kWaveLevelLookup);
@@ -331,7 +338,13 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         return false;
     }
 
-    // The mixer's rate and the players, from the init.
+    return true;
+}
+
+// Reads the mixer's rate and the players from the init. Sets `player_count`.
+bool ReadInit(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error,
+              int& player_count)
+{
     info.mix_rate = int(ThumbLiteral(rom, info.init_routine + kInitRate));
     uint32_t players = 0, players_end = 0, voices = 0;
     for (uint32_t at = info.init_routine; at < info.init_routine + 0x100; at += 2)
@@ -357,7 +370,7 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
 
     info.player_setup = ThumbLiteral(rom, players + 2);
     info.voices = rom.U8(voices + 2);
-    const int player_count = rom.U8(players_end + 6) + 1;
+    player_count = rom.U8(players_end + 6) + 1;
     if (player_count > kMaxPlayers || info.voices < 1 || info.voices > kMaxVoices)
     {
         error = "Nintendo R&D1's sound driver has more players or voices than " + overrides.program + " supports";
@@ -374,12 +387,12 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         info.players.push_back(s);
     }
 
-    if (!FindEchoCall(rom, info))
-    {
-        info.echo = {0x23, 2, 2, 4};
-        info.warnings.push_back("didn't find the game's call that sets the echo; took the settings of WarioWare, Inc.");
-    }
+    return true;
+}
 
+// Counts the entries of the song table, and returns how many of them are songs.
+int CountSongs(const Rom& rom, DriverInfo& info)
+{
     // The song table runs until an entry that's neither empty nor a record.
     for (;;)
     {
@@ -402,12 +415,13 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
     {
         songs += rom.U32(info.song_table + kSongEntryBytes * uint32_t(s)) != 0;
     }
-    if (!songs)
-    {
-        error = "the song table of Nintendo R&D1's sound driver at " + Hex(info.song_table) + " has no songs";
-        return false;
-    }
 
+    return songs;
+}
+
+// Adds what detection found to the log.
+void LogDetection(DriverInfo& info, int player_count, int songs)
+{
     info.log.push_back("play routine " + Hex(info.play_routine) + ", start routine " + Hex(info.start_routine) +
                        ", per-frame routine " + Hex(info.frame_routine));
     info.log.push_back("song table " + Hex(info.song_table) + ": " + std::to_string(info.song_count) + " entries, " +
@@ -422,6 +436,33 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
     info.log.push_back("echo settings " + std::to_string(info.echo[0]) + ", " + std::to_string(info.echo[1]) + ", " +
                        std::to_string(info.echo[2]) + ", " + std::to_string(info.echo[3]) +
                        (info.echo_call ? " (the game's call at " + Hex(info.echo_call) + ")" : std::string()));
+}
+
+} // namespace
+
+bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error)
+{
+    int player_count = 0;
+    if (!FindRoutines(rom, info, error) || !FindTables(rom, info, error) ||
+        !ReadInit(rom, overrides, info, error, player_count))
+    {
+        return false;
+    }
+
+    if (!FindEchoCall(rom, info))
+    {
+        info.echo = {0x23, 2, 2, 4};
+        info.warnings.push_back("didn't find the game's call that sets the echo; took the settings of WarioWare, Inc.");
+    }
+
+    const int songs = CountSongs(rom, info);
+    if (!songs)
+    {
+        error = "the song table of Nintendo R&D1's sound driver at " + Hex(info.song_table) + " has no songs";
+        return false;
+    }
+
+    LogDetection(info, player_count, songs);
 
     return true;
 }

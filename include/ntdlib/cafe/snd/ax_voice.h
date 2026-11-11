@@ -155,6 +155,9 @@ private:
     void UpdatePlayPosition();                                                  // 0x022A4D48
     void UpdateParams(const std::array<OutputMode, 2>& modes);
 
+    // UpdateStatePlay's step for a voice that AX has stopped.
+    void StartNextBuffer(const std::array<OutputMode, 2>& modes);
+
     void SetupVoice(const WaveBuffer& buffer, const std::array<OutputMode, 2>& modes); // 0x022A3E3C
     void SetupOffset(const WaveBuffer& buffer);                                        // 0x022A2EC4
     void SetupAdpcm(const WaveBuffer& buffer);                                         // 0x022A2FA0

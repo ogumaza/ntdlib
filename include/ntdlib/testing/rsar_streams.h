@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -22,6 +21,8 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/rsar/formats.h"
+#include "ntdlib/testing/byte_writer.h"
+#include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/wave/encode.h"
 
 namespace ntdlib::testing::rsar_streams
@@ -81,11 +82,6 @@ inline EncodedChannel Encode(const StreamSpec& spec, std::span<const int16_t> sa
     return channel;
 }
 
-inline uint32_t RoundUp(uint32_t value, uint32_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
-
 // The bytes of `count` samples of `encoding`, up to the nibble or byte of the last one.
 inline uint32_t BytesOf(rsar::WaveEncoding encoding, uint32_t count)
 {
@@ -97,59 +93,31 @@ inline uint32_t BytesOf(rsar::WaveEncoding encoding, uint32_t count)
     return count == 0 ? 0 : (count - 1) / 14 * 8 + 2 + (count - 1) % 14 / 2;
 }
 
-inline void PutRef(Bytes& file, std::size_t at, uint8_t data_type, uint32_t offset)
+using rsar_files::Grow;
+using rsar_files::PutRef;
+
+// How the samples of a stream's channels split into blocks: the samples of each channel, the samples of a full block,
+// the number of blocks, and the samples, the bytes and the padded bytes of the last block.
+struct StreamBlocks
 {
-    file[at] = 1;
-    file[at + 1] = data_type;
-    xsflib::StoreBe32(&file[at + 4], offset);
-}
+    uint32_t count = 0;
+    uint32_t block_samples = 0;
+    uint32_t blocks = 0;
+    uint32_t last_samples = 0;
+    uint32_t last_size = 0;
+    uint32_t last_padded = 0;
+};
 
-// Appends `count` zero bytes and returns their offset.
-inline std::size_t Grow(Bytes& file, std::size_t count)
+// Appends HEAD to the stream file `file`, and returns where its settings start.
+inline std::size_t AppendHead(Bytes& file, const StreamSpec& spec, const StreamBlocks& layout,
+                              const std::vector<EncodedChannel>& encoded)
 {
-    const std::size_t at = file.size();
-    file.resize(at + count, 0);
-
-    return at;
-}
-
-// The stream file of `spec`. Throws std::invalid_argument for a spec without channels or samples, channels of
-// different lengths, or an encoding other than DSP-ADPCM and 16-bit PCM.
-inline Bytes MakeStream(const StreamSpec& spec)
-{
-    if (spec.channels.empty() || spec.channels.front().empty())
-    {
-        throw std::invalid_argument("a stream without channels or samples");
-    }
-    const auto count = static_cast<uint32_t>(spec.channels.front().size());
-    std::vector<EncodedChannel> encoded;
-    for (const std::vector<int16_t>& samples : spec.channels)
-    {
-        if (samples.size() != count)
-        {
-            throw std::invalid_argument("channels of different lengths");
-        }
-        encoded.push_back(Encode(spec, samples));
-    }
-
+    const auto [count, block_samples, blocks, last_samples, last_size, last_padded] = layout;
     const bool adpcm = spec.encoding == rsar::WaveEncoding::kDspAdpcm;
-    const uint32_t block_samples = adpcm ? 14336 : 4096;
-    const uint32_t blocks = (count + block_samples - 1) / block_samples;
-    const uint32_t last_samples = count - (blocks - 1) * block_samples;
-    const uint32_t last_size = BytesOf(spec.encoding, last_samples);
-    const uint32_t last_padded = RoundUp(last_size, 32);
     const auto channels = static_cast<uint32_t>(spec.channels.size());
 
-    Bytes file(0x40, 0);
-    std::memcpy(file.data(), "RSTM", 4);
-    xsflib::StoreBe16(&file[4], 0xFEFF);
-    xsflib::StoreBe16(&file[6], 0x0100);
-    xsflib::StoreBe16(&file[0xC], 0x40);
-    xsflib::StoreBe16(&file[0xE], 2);
-
     // HEAD: its references, the settings, the tracks and the channels.
-    const std::size_t head = Grow(file, 8);
-    std::memcpy(&file[head], "HEAD", 4);
+    const std::size_t head = rsar_files::Block(file, "HEAD", 0);
     const std::size_t base = file.size();
     Grow(file, 24);
     const std::size_t settings = Grow(file, 0x34);
@@ -181,7 +149,8 @@ inline Bytes MakeStream(const StreamSpec& spec)
     for (std::size_t t = 0; t < spec.tracks.size(); ++t)
     {
         const Track& track = spec.tracks[t];
-        const std::size_t info = Grow(file, (spec.extended_tracks ? 8 : 0) + RoundUp(1 + track.channels.size(), 4));
+        const std::size_t info =
+            Grow(file, (spec.extended_tracks ? 8 : 0) + AlignUp(static_cast<uint32_t>(1 + track.channels.size()), 4));
         PutRef(file, tracks + 4 + t * 8, track_type, static_cast<uint32_t>(info - base));
         std::size_t at = info;
         if (spec.extended_tracks)
@@ -218,43 +187,55 @@ inline Bytes MakeStream(const StreamSpec& spec)
         xsflib::StoreBe16(&file[at + 0x2A], static_cast<uint16_t>(channel.loop_yn1));
         xsflib::StoreBe16(&file[at + 0x2C], static_cast<uint16_t>(channel.loop_yn2));
     }
-    file.resize(RoundUp(static_cast<uint32_t>(file.size()), 32), 0);
-    xsflib::StoreBe32(&file[head + 4], static_cast<uint32_t>(file.size() - head));
-    xsflib::StoreBe32(&file[0x10], static_cast<uint32_t>(head));
-    xsflib::StoreBe32(&file[0x14], static_cast<uint32_t>(file.size() - head));
+    file.resize(AlignUp(static_cast<uint32_t>(file.size()), 32), 0);
+    rsar_files::EndBlock(file, head, 0);
+
+    return settings;
+}
+
+// Appends ADPC to the stream file `file`. Only a stream in DSP-ADPCM has ADPC.
+inline void AppendAdpc(Bytes& file, const StreamSpec& spec, const StreamBlocks& layout)
+{
+    const uint32_t count = layout.count;
+    const uint32_t blocks = layout.blocks;
+    const uint32_t last_size = layout.last_size;
+    const auto channels = static_cast<uint32_t>(spec.channels.size());
 
     // ADPC: the samples before each point, as the tools count the points (for each block, its bytes over the
     // interval, rounded up).
-    if (adpcm)
+    const std::size_t adpc = rsar_files::Block(file, "ADPC", 1);
+    const uint32_t interval = spec.history_interval;
+    const std::size_t entries =
+        std::size_t{blocks - 1} * ((0x2000 + interval - 1) / interval) + (last_size + interval - 1) / interval;
+    for (std::size_t e = 0; e < entries; ++e)
     {
-        const std::size_t adpc = Grow(file, 8);
-        std::memcpy(&file[adpc], "ADPC", 4);
-        const uint32_t interval = spec.history_interval;
-        const std::size_t entries =
-            std::size_t{blocks - 1} * ((0x2000 + interval - 1) / interval) + (last_size + interval - 1) / interval;
-        for (std::size_t e = 0; e < entries; ++e)
+        const std::size_t point = e * interval;
+        for (uint32_t c = 0; c < channels; ++c)
         {
-            const std::size_t point = e * interval;
-            for (uint32_t c = 0; c < channels; ++c)
-            {
-                const std::vector<int16_t>& samples = spec.channels[c];
-                const std::size_t at = Grow(file, 4);
-                const int16_t yn1 = point >= 1 && point - 1 < count ? samples[point - 1] : 0;
-                const int16_t yn2 = point >= 2 && point - 2 < count ? samples[point - 2] : 0;
-                xsflib::StoreBe16(&file[at], static_cast<uint16_t>(yn1));
-                xsflib::StoreBe16(&file[at + 2], static_cast<uint16_t>(yn2));
-            }
+            const std::vector<int16_t>& samples = spec.channels[c];
+            const std::size_t at = Grow(file, 4);
+            const int16_t yn1 = point >= 1 && point - 1 < count ? samples[point - 1] : 0;
+            const int16_t yn2 = point >= 2 && point - 2 < count ? samples[point - 2] : 0;
+            xsflib::StoreBe16(&file[at], static_cast<uint16_t>(yn1));
+            xsflib::StoreBe16(&file[at + 2], static_cast<uint16_t>(yn2));
         }
-        file.resize(RoundUp(static_cast<uint32_t>(file.size()), 32), 0);
-        xsflib::StoreBe32(&file[adpc + 4], static_cast<uint32_t>(file.size() - adpc));
-        xsflib::StoreBe32(&file[0x18], static_cast<uint32_t>(adpc));
-        xsflib::StoreBe32(&file[0x1C], static_cast<uint32_t>(file.size() - adpc));
     }
+    file.resize(AlignUp(static_cast<uint32_t>(file.size()), 32), 0);
+    rsar_files::EndBlock(file, adpc, 1);
+}
+
+// Appends DATA to the stream file `file`, and stores where its samples start in the settings at `settings`.
+inline void AppendData(Bytes& file, const StreamSpec& spec, const StreamBlocks& layout,
+                       const std::vector<EncodedChannel>& encoded, std::size_t settings)
+{
+    const uint32_t blocks = layout.blocks;
+    const uint32_t last_size = layout.last_size;
+    const uint32_t last_padded = layout.last_padded;
+    const auto channels = static_cast<uint32_t>(spec.channels.size());
 
     // DATA: each block's piece of each channel, the last ones padded to 32 bytes.
-    const std::size_t data = Grow(file, 32);
-    std::memcpy(&file[data], "DATA", 4);
-    xsflib::StoreBe32(&file[data + 8], 0x18);
+    const std::size_t data = rsar_files::Block(file, "DATA", 2);
+    xsflib::StoreBe32(&file[Grow(file, 24)], 0x18);
     xsflib::StoreBe32(&file[settings + 0x10], static_cast<uint32_t>(data + 32));
     for (uint32_t b = 0; b < blocks; ++b)
     {
@@ -270,10 +251,43 @@ inline Bytes MakeStream(const StreamSpec& spec)
                         file.begin() + static_cast<std::ptrdiff_t>(at));
         }
     }
-    xsflib::StoreBe32(&file[data + 4], static_cast<uint32_t>(file.size() - data));
-    xsflib::StoreBe32(&file[0x20], static_cast<uint32_t>(data));
-    xsflib::StoreBe32(&file[0x24], static_cast<uint32_t>(file.size() - data));
-    xsflib::StoreBe32(&file[8], static_cast<uint32_t>(file.size()));
+    rsar_files::EndBlock(file, data, 2);
+}
+
+// The stream file of `spec`. Throws std::invalid_argument for a spec without channels or samples, channels of
+// different lengths, or an encoding other than DSP-ADPCM and 16-bit PCM.
+inline Bytes MakeStream(const StreamSpec& spec)
+{
+    if (spec.channels.empty() || spec.channels.front().empty())
+    {
+        throw std::invalid_argument("a stream without channels or samples");
+    }
+    const auto count = static_cast<uint32_t>(spec.channels.front().size());
+    std::vector<EncodedChannel> encoded;
+    for (const std::vector<int16_t>& samples : spec.channels)
+    {
+        if (samples.size() != count)
+        {
+            throw std::invalid_argument("channels of different lengths");
+        }
+        encoded.push_back(Encode(spec, samples));
+    }
+
+    const bool adpcm = spec.encoding == rsar::WaveEncoding::kDspAdpcm;
+    const uint32_t block_samples = adpcm ? 14336 : 4096;
+    const uint32_t blocks = (count + block_samples - 1) / block_samples;
+    const uint32_t last_samples = count - (blocks - 1) * block_samples;
+    const uint32_t last_size = BytesOf(spec.encoding, last_samples);
+    const uint32_t last_padded = AlignUp(last_size, 32);
+    const StreamBlocks layout = {count, block_samples, blocks, last_samples, last_size, last_padded};
+
+    Bytes file = rsar_files::Header("RSTM", 0x0100, 2, 0x40);
+    const std::size_t settings = AppendHead(file, spec, layout, encoded);
+    if (adpcm)
+    {
+        AppendAdpc(file, spec, layout);
+    }
+    AppendData(file, spec, layout, encoded, settings);
 
     return file;
 }

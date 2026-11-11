@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/ntr/arm7.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/snd/driver.h"
@@ -69,7 +71,7 @@ DriverPlayer::DriverPlayer(const Rom& rom)
     {
         const std::span<const uint8_t> memory = system_.MainMemory();
         const uint32_t at = (kArm7ReadyTags - kMainMemory) & static_cast<uint32_t>(memory.size() - 1);
-        return static_cast<uint32_t>(memory[at] | memory[at + 1] << 8 | memory[at + 2] << 16 | memory[at + 3] << 24);
+        return xsflib::LoadLe32(&memory[at]);
     };
     std::vector<SoundOutput> out;
     bool slot_answered = false;

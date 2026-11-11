@@ -15,7 +15,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <map>
 #include <optional>
 #include <span>
@@ -67,12 +66,8 @@ sf2::Zone GlobalZone(const PresetKey& key)
     const double hz = LfoHz(key.lfo_speed);
     const bool pitch = hz > 0.0 && key.lfo_target == kPitchTarget;
     const bool volume = hz > 0.0 && key.lfo_target == kVolumeTarget;
-    const auto amount = [](double value)
-    {
-        return static_cast<int16_t>(std::clamp(std::lround(value), -32768L, 32767L));
-    };
     global.modulators.push_back({sf2::kSrcModWheel, sf2::kVibLfoToPitch,
-                                 amount(pitch ? kPitchLfoCents * 128.0 / 127.0 * key.lfo_range : 0.0), 0});
+                                 sf2::ToAmount(pitch ? kPitchLfoCents * 128.0 / 127.0 * key.lfo_range : 0.0), 0});
     const int delay = sf2::ToTimecents(key.lfo_delay * kFrameMs, -12000, 5000);
     if (pitch)
     {
@@ -81,8 +76,8 @@ sf2::Zone GlobalZone(const PresetKey& key)
     }
     if (volume)
     {
-        global.modulators.push_back(
-            {sf2::kSrcModWheel, sf2::kModLfoToVolume, amount(kVolumeLfoDb * 10.0 * 128.0 / 127.0 * key.lfo_range), 0});
+        global.modulators.push_back({sf2::kSrcModWheel, sf2::kModLfoToVolume,
+                                     sf2::ToAmount(kVolumeLfoDb * 10.0 * 128.0 / 127.0 * key.lfo_range), 0});
         global.generators.push_back(sf2::Generator::Value(sf2::kFreqModLfo, sf2::LfoFrequency(hz)));
         global.generators.push_back(sf2::Generator::Value(sf2::kDelayModLfo, delay));
     }
@@ -281,15 +276,12 @@ ntdlib::sequence_export::BankConversion ConvertBank(const sdat::Archive& archive
     playing.erase(std::ranges::unique(playing).begin(), playing.end());
 
     // SoundFont zones can't amplify their samples. A zone above full level makes every zone quieter.
-    const double quieter = loudest > 1.0 ? 200.0 * std::log10(loudest) : 0.0;
-    if (quieter >= 0.5)
+    const ntdlib::sequence_export::LevelCut cut = ntdlib::sequence_export::LevelCutOf(loudest);
+    if (!cut.message.empty())
     {
-        char what[160];
-        std::snprintf(what, sizeof(what),
-                      "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",
-                      quieter / 10.0);
-        c.warnings.push_back(what);
+        c.warnings.push_back(cut.message);
     }
+    const double quieter = cut.centibels;
 
     const auto part = [&](std::span<const uint32_t> run)
     {

@@ -17,6 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/sf2/presets.h"
+#include "xsflib/bytes.h"
+
 #include "converted_notes.h"
 #include "ntdlib/agb/files.h"
 #include "ntdlib/agb/gba.h"
@@ -91,9 +94,11 @@ using ntdlib::rd2::Track;
 using ntdlib::rd2::TraitsOf;
 using ntdlib::rd2::VersionSettings;
 using ntdlib::rd2::Voice;
+using ntdlib::sequence_export::agb::AddTuning;
 using ntdlib::sequence_export::agb::BankProgram;
 using ntdlib::sequence_export::agb::BendRangeFor;
 using ntdlib::sequence_export::agb::BendValue;
+using ntdlib::sequence_export::agb::KeyHz;
 using ntdlib::sequence_export::agb::kSmallBend;
 using ntdlib::sequence_export::agb::LevelsToControllers;
 using ntdlib::sequence_export::agb::Looped;
@@ -104,6 +109,7 @@ using ntdlib::sequence_export::agb::PsgModel;
 using ntdlib::sequence_export::agb::PsgRegisters;
 using ntdlib::sequence_export::agb::PsgSemitones;
 using ntdlib::sequence_export::agb::SampleZone;
+using ntdlib::sequence_export::agb::SettingCents;
 using ntdlib::sequence_export::agb::SidesPan;
 using ntdlib::sequence_export::agb::SongNumber;
 using ntdlib::sequence_export::agb::SongStem;
@@ -179,7 +185,7 @@ PsgRegisters ChannelRegisters(const Sequencer& seq, int c)
     const std::array<uint8_t, 0x40>& r = seq.Registers();
     const auto half = [&r](size_t at)
     {
-        return uint16_t(r[at] | r[at + 1] << 8);
+        return xsflib::LoadLe16(&r[at]);
     };
 
     return {half(kNr10), half(kEnvelopeRegisters[c]), half(kFrequencyRegisters[c]), half(kNr30),
@@ -595,8 +601,8 @@ struct ZoneSound
 {
     bool operator<(const ZoneSound& o) const
     {
-        return std::tie(type, sound, release, root, coarse, pan, own_pan) <
-               std::tie(o.type, o.sound, o.release, o.root, o.coarse, o.pan, o.own_pan);
+        return std::tie(type, sound, release, root, coarse, cents, pan, own_pan) <
+               std::tie(o.type, o.sound, o.release, o.root, o.coarse, o.cents, o.pan, o.own_pan);
     }
 
     bool operator==(const ZoneSound& o) const
@@ -609,6 +615,7 @@ struct ZoneSound
     uint8_t release = 0;  // a sample's release
     int root = 60;        // the key that plays the sound at its original pitch
     int coarse = 0;       // semitones added to it
+    int cents = 0;        // a square's or the wave's cents from equal temperament to the driver's frequency table
     int pan = 0;          // the SoundFont's pan, from -500 to 500
     bool own_pan = false; // a drum's: the track's pan doesn't move it
 };
@@ -893,6 +900,15 @@ private:
         WarnOnce(warnings_, text);
     }
 
+    // Returns the cents from the equal-tempered pitch of key `index` + 12 up to a square's pitch at entry `index` of
+    // the driver's frequency table. The wave plays an octave below a square at the same setting, and its zone plays key
+    // `index` an octave below too.
+    int TableCents(int index) const
+    {
+        const int setting = rom_.U16(info_.frequency_table + 2 * uint32_t(index)) & 0x7FF;
+        return SettingCents(setting, KeyHz(index + 12));
+    }
+
     // Returns the zone that plays a note, and sets the note's key. Returns nothing for a voice of a type that the
     // conversion doesn't handle.
     std::optional<ZoneSound> ZoneFor(const Event& e, int& key) const
@@ -943,12 +959,14 @@ private:
         case kSquare2Type:
             z.sound = SettledDuty(e) & 3u;
             key = index + 12;
+            z.cents = TableCents(index);
             break;
 
         case kWaveType:
             z.sound = e.psg;
             z.root = 48;
             key = index;
+            z.cents = TableCents(index);
             break;
 
         case kNoiseType:
@@ -1104,6 +1122,7 @@ std::vector<std::string> AddPresets(SoundfontBuilder& sf, const std::vector<Prog
             {
                 zone.generators.push_back(sf2::Generator::Value(sf2::kCoarseTune, z.coarse));
             }
+            AddTuning(zone, z.cents);
             if (z.pan)
             {
                 zone.generators.push_back(sf2::Generator::Value(sf2::kPan, z.pan));
@@ -1126,7 +1145,7 @@ std::vector<std::string> AddPresets(SoundfontBuilder& sf, const std::vector<Prog
             if (z.type == kSampleType)
             {
                 const int release = SampleRelease(z.release);
-                zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(sf2::kReleaseVolEnv, release));
+                sf2::AddGenerator(zone, sf2::kReleaseVolEnv, release);
             }
             zones.push_back(zone);
         }

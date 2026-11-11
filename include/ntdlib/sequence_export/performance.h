@@ -204,7 +204,7 @@ struct Performance : PerformanceBase
 };
 
 // The most voices that --voices takes. Without --voices, a track can start this many new notes in one tick.
-constexpr uint32_t kMaxVoiceLimit = 1024;
+inline constexpr uint32_t kMaxVoiceLimit = 1024;
 
 // How a game plays a companion: a sequence that it starts before a piece and plays beside it, and that talks with the
 // piece through the global variables (PerformBeside). The game starts the companion, and writes `writes` from the
@@ -327,6 +327,7 @@ struct PerformOptions
     // 0xFFFFFFFF leaves a slot empty. Without a value, the archive's banks hold. The 3DS's conversion reads them. The
     // other consoles' conversions ignore them.
     std::optional<std::array<uint32_t, 4>> banks = std::nullopt;
+
     // The reverbs that a game's code puts on aux buses A, B and C while the sound plays: each one's dry gain, the share
     // of its input that it passes on unchanged, from 0 to 1. None for a bus without a reverb. On the Switch
     // (Sends::kReverbDry), a send to bus B or C without a reverb adds to the dry level in full. With a reverb, it adds

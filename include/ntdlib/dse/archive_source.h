@@ -119,7 +119,9 @@ struct ArchiveTraits
 
     static std::unique_ptr<Player> MakeModel(const ArchiveSelection& selection, LoadedFiles&)
     {
-        return std::make_unique<Player>(PlayerOptions{.build = selection.build});
+        PlayerOptions options;
+        options.build = selection.build;
+        return std::make_unique<Player>(options);
     }
 
     // Loads the banks as the game does, and starts the sequence (Player::Start).

@@ -31,7 +31,7 @@ namespace ntdlib::rsar
 namespace
 {
 
-using sar::core::Distance;
+using sar::core::BytesOf;
 using sar::core::Location;
 using sar::core::Start;
 using sar::core::Structure;
@@ -107,20 +107,14 @@ struct Item
     Location wave_data;
 };
 
-// What the cutter reads of the tables of `archive`: where each group holds a copy of a file and of its wave data, the
-// fields that hold their offsets and sizes, and the sequence sounds' starts. Throws xsflib::FormatError for tables that
-// can't be read.
-Structure ReadStructure(std::span<const uint8_t> archive)
-{
-    const xsflib::Reader r(archive, true);
-    if (!r.Magic(0, "RSAR"))
-    {
-        throw xsflib::FormatError("not a sound archive of the Wii (RSAR)");
-    }
+// The copies of each group of an archive, by group and item. An external group's items have none.
+using GroupItems = std::vector<std::vector<std::optional<Item>>>;
 
-    // The header holds the archive's size, and each block's offset and size. A block's header holds its size again.
-    // An archive without names has no SYMB block.
-    Structure structure;
+// Adds to `structure` the distances of the header of the archive that `r` reads, and of its blocks. The header holds
+// the archive's size, and each block's offset and size. A block's header holds its size again. An archive without
+// names has no SYMB block.
+void AddBlockDistances(const xsflib::Reader& r, Structure& structure)
+{
     structure.distances.push_back({0x08, 0, r.U32(0x08), true});
     for (std::size_t i = 0; i < kBlocks; ++i)
     {
@@ -132,12 +126,16 @@ Structure ReadStructure(std::span<const uint8_t> archive)
             structure.distances.push_back({block + 4, block, block + r.U32(block + 4), true});
         }
     }
+}
 
-    // A group holds its files at offsets from its start, and their wave data at offsets from the start of its wave
-    // data. A group with the path of an external file keeps them in that file (SoundArchiveFileReader::ReadGroupInfo,
-    // main.dol 0x80042ac4). An item without wave data holds 0 for its wave data's offset.
-    const std::size_t base = r.U32(0x18) + std::size_t{8};
-    std::vector<std::vector<std::optional<Item>>> groups;
+// Adds to `structure` the copies that the groups of the archive that `r` reads hold, and the distances of their
+// fields. `base` is the start of INFO's payload. Returns the copies of each group. A group holds its files at offsets
+// from its start, and their wave data at offsets from the start of its wave data. A group with the path of an external
+// file keeps them in that file (SoundArchiveFileReader::ReadGroupInfo, main.dol 0x80042ac4). An item without wave data
+// holds 0 for its wave data's offset.
+GroupItems AddGroupCopies(const xsflib::Reader& r, std::size_t base, Structure& structure)
+{
+    GroupItems groups;
     for (const auto& [group, entry] : EntriesOf(r, base, base + 0x20))
     {
         std::vector<std::optional<Item>>& items = groups.emplace_back();
@@ -175,8 +173,14 @@ Structure ReadStructure(std::span<const uint8_t> archive)
         }
     }
 
-    // The file table holds each file's size and its wave data's, those of each copy. The first copy in the archive
-    // gives the fields' places.
+    return groups;
+}
+
+// Adds to `structure` the distances of the file table of the archive that `r` reads, whose INFO payload starts at
+// `base`. The file table holds each file's size and its wave data's, those of each copy in `groups`. The first copy in
+// the archive gives the fields' places.
+void AddFileSizes(const xsflib::Reader& r, std::size_t base, const GroupItems& groups, Structure& structure)
+{
     for (const auto& [file, entry] : EntriesOf(r, base, base + 0x18))
     {
         for (const auto& [position, position_entry] : EntriesOf(r, base, file + 0x14))
@@ -198,7 +202,24 @@ Structure ReadStructure(std::span<const uint8_t> archive)
             break;
         }
     }
+}
 
+// What the cutter reads of the tables of `archive`: where each group holds a copy of a file and of its wave data, the
+// fields that hold their offsets and sizes, and the sequence sounds' starts. Throws xsflib::FormatError for tables that
+// can't be read.
+Structure ReadStructure(std::span<const uint8_t> archive)
+{
+    const xsflib::Reader r(archive, true);
+    if (!r.Magic(0, "RSAR"))
+    {
+        throw xsflib::FormatError("not a sound archive of the Wii (RSAR)");
+    }
+
+    Structure structure;
+    AddBlockDistances(r, structure);
+    const std::size_t base = r.U32(0x18) + std::size_t{8};
+    const GroupItems groups = AddGroupCopies(r, base, structure);
+    AddFileSizes(r, base, groups, structure);
     for (const std::optional<Start>& start : SoundStarts(r))
     {
         if (start)
@@ -248,14 +269,6 @@ sar::core::Container ContainerOf(const SndBuild& build)
     };
 
     return container;
-}
-
-// The bytes of `location` that `archive` holds: all of them, or those before its end.
-std::span<const uint8_t> BytesOf(std::span<const uint8_t> archive, const Location& location)
-{
-    const std::size_t start = std::min(location.start, archive.size());
-
-    return archive.subspan(start, std::min(location.size, archive.size() - start));
 }
 
 // `bytes` with zeros up to a multiple of kAlignment bytes, as NW4R's tools pad each file and each wave data.
@@ -320,6 +333,7 @@ Layout Cut(std::span<const uint8_t> archive, const SndBuild& build, const sar::K
     }
     catch (const xsflib::FormatError&)
     {
+        // Tables that the cutter can't read, or a field that the pieces can't place. The archive then becomes one run.
     }
 
     Layout layout;

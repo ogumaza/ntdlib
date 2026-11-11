@@ -3,7 +3,6 @@
 #include "ntdlib/jaudio1/channel.h"
 
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -15,19 +14,6 @@ namespace ntdlib::jaudio1
 
 namespace
 {
-
-// main's constants, by their bits: a surround level's curve in a mixer's second level.
-const float kSurroundScale = std::bit_cast<float>(0x3eb20d99u); // 0.34776
-const float kSurroundBase = std::bit_cast<float>(0x3ea6f933u);  // 0.32612
-
-// JASChannel::calc_sw_table: how each source of a level adds up, for the sound, the oscillators' effect and the
-// track's channel: 0 not at all, 1 as it is, 2 by its weight. The game reads the bytes after the table for a type
-// above 26. None of them is 1 or 2.
-constexpr std::array<std::array<uint8_t, 3>, 27> kCalcTable = {{
-    {0, 0, 0}, {0, 0, 1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 1}, {0, 1, 2}, {0, 1, 0}, {0, 2, 1}, {0, 2, 2},
-    {1, 0, 0}, {1, 0, 1}, {1, 0, 2}, {1, 1, 0}, {1, 1, 1}, {1, 1, 2}, {1, 2, 0}, {1, 2, 1}, {1, 2, 2},
-    {1, 0, 0}, {2, 0, 1}, {2, 0, 2}, {2, 1, 0}, {2, 1, 1}, {2, 1, 2}, {2, 2, 0}, {2, 2, 1}, {2, 2, 2},
-}};
 
 std::array<uint8_t, 3> CalcTypes(uint8_t type)
 {
@@ -134,65 +120,22 @@ uint32_t Voices::NewChannel(uint32_t owner)
 
 uint32_t Voices::LowestChannel(uint32_t priority) const
 {
-    uint32_t best = Channel::kNone;
-    int32_t best_priority = 0xff;
-    uint32_t best_updates = 0;
-    for (uint32_t i = 0; i < kDspChannels; i++)
-    {
-        const DspChannel& dsp = dsp_channels_[i];
-        const int32_t level = dsp.priority;
-        if (level < 0)
-        {
-            return i;
-        }
-        if (level > best_priority || level > static_cast<int32_t>(priority & 0xff))
-        {
-            continue;
-        }
-        if (level != best_priority || dsp.updates > best_updates)
-        {
-            best = i;
-            best_priority = level;
-            best_updates = dsp.updates;
-        }
-    }
-
-    return best;
-}
-
-void Voices::Drop(ChannelOwner* owner, uint32_t index)
-{
-    // JASDSPChannel::drop: the channel on the DSP channel ends. A DSP channel that plays stops at its next update.
-    DspChannel& dsp = dsp_channels_[index];
-    if (dsp.channel != Channel::kNone)
-    {
-        FreeAndDelete(owner, dsp.channel);
-    }
-    dsp.channel = Channel::kNone;
-    dsp.priority = -1;
-    dsp.flags &= ~1u;
-    if (dsp.status == DspChannel::kActive)
-    {
-        dsp.flags |= 2;
-        dsp.status = DspChannel::kDrop;
-    }
+    return jaudio2::LowestDspChannel(dsp_channels_, priority & 0xff);
 }
 
 uint32_t Voices::Alloc(ChannelOwner* owner, uint32_t priority, uint32_t channel)
 {
-    const uint32_t index = LowestChannel(priority);
-    if (index == Channel::kNone)
+    // JASDSPChannel::drop's report: the channel on the DSP channel ends.
+    const auto report_drop = [this, owner](uint32_t index)
     {
-        return Channel::kNone;
-    }
+        const uint32_t dropped = dsp_channels_[index].channel;
+        if (dropped != Channel::kNone)
+        {
+            FreeAndDelete(owner, dropped);
+        }
+    };
 
-    Drop(owner, index);
-    DspChannel& dsp = dsp_channels_[index];
-    dsp.priority = static_cast<int16_t>(priority & 0xff);
-    dsp.updates = 0;
-    dsp.channel = channel;
-
-    return index;
+    return jaudio2::AllocDspChannel(dsp_channels_, priority & 0xff, channel, false, report_drop);
 }
 
 bool Voices::Play(ChannelOwner* owner, uint32_t channel)
@@ -234,10 +177,10 @@ void Voices::Release(uint32_t index, uint16_t direct_release)
     channel.status = Channel::kRelease;
 }
 
-void Voices::SetPanPower(uint32_t index, float sound, float effect, float track)
+void Voices::SetPanPower(uint32_t channel, float sound, float effect, float track)
 {
     const float sum = (sound + effect) + track;
-    channels_[index].pan_power = {sound / sum, effect / sum, track / sum};
+    channels_[channel].pan_power = {sound / sum, effect / sum, track / sum};
 }
 
 void Voices::SetKeySweepTarget(uint32_t index, uint32_t key, uint32_t steps)
@@ -278,22 +221,22 @@ int32_t Voices::FreeAndDelete(ChannelOwner* owner, uint32_t channel)
     return -1;
 }
 
-int32_t Voices::Callback(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_channel, uint32_t event)
+int32_t Voices::Callback(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_channel, DspChannel::Event event)
 {
     // JASChannel::dspUpdateCallback.
     const uint32_t channel = dsp_channels_[dsp_channel].channel;
     DspBlock block = Block(memory, dsp_channel);
     switch (event)
     {
-    case 0:
+    case DspChannel::kEventPlay:
         return Update(owner, channel, block);
 
-    case 1:
+    case DspChannel::kEventStart:
         InitialUpdate(owner, channel, block);
         return 0;
 
-    case 2:
-    case 3:
+    case DspChannel::kEventStop:
+    case DspChannel::kEventDrop:
         return FreeAndDelete(owner, channel);
 
     default:
@@ -303,66 +246,12 @@ int32_t Voices::Callback(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_ch
 
 void Voices::UpdateProc(DspMemory& memory, ChannelOwner* owner, uint32_t index)
 {
-    DspChannel& dsp = dsp_channels_[index];
     DspBlock block = Block(memory, index);
-
-    // Without a callback, a stop reports -1.
-    const auto stop = [&]
+    const auto callback = [&](DspChannel::Event event)
     {
-        const int32_t result = dsp.channel != Channel::kNone ? Callback(memory, owner, index, 2) : -1;
-        if (result < 0)
-        {
-            dsp.priority = -1;
-        }
+        return Callback(memory, owner, index, event);
     };
-
-    if (block.IsFinish())
-    {
-        dsp.flags &= ~2u;
-        if (dsp.status == DspChannel::kActive)
-        {
-            stop();
-        }
-        dsp.status = DspChannel::kInactive;
-        block.ReplyFinishRequest();
-        return;
-    }
-    if ((dsp.flags & 2) != 0)
-    {
-        dsp.flags &= ~2u;
-        block.ForceStop();
-        return;
-    }
-    if (dsp.status == DspChannel::kDrop)
-    {
-        return;
-    }
-
-    if ((dsp.flags & 1) != 0 && dsp.status == DspChannel::kInactive)
-    {
-        dsp.flags &= ~1u;
-        dsp.status = DspChannel::kActive;
-        block.Init();
-        if (dsp.channel != Channel::kNone)
-        {
-            Callback(memory, owner, index, 1);
-        }
-        block.PlayStart();
-        return;
-    }
-    if (dsp.status == DspChannel::kInactive)
-    {
-        return;
-    }
-
-    if (dsp.channel != Channel::kNone && Callback(memory, owner, index, 0) < 0)
-    {
-        dsp.status = DspChannel::kInactive;
-        stop();
-        block.PlayStop();
-        return;
-    }
-    dsp.updates++;
+    jaudio2::UpdateDspChannel<false>(dsp_channels_[index], block, callback);
 }
 
 void Voices::UpdateDspChannels(DspMemory& memory, ChannelOwner* owner)
@@ -375,11 +264,7 @@ void Voices::UpdateDspChannels(DspMemory& memory, ChannelOwner* owner)
 
 void Voices::Notify(ChannelOwner* owner, uint32_t channel, Channel::Event event, DspBlock* block)
 {
-    const uint32_t target = channels_[channel].owner;
-    if (owner != nullptr && target != Channel::kNone)
-    {
-        owner->OnChannel(target, event, channel, block);
-    }
+    jaudio2::NotifyOwner(owner, channels_[channel].owner, event, channel, block);
 }
 
 void Voices::UpdateEffectorParam(const Channel& channel, DspBlock& block, std::array<uint16_t, 6>& volumes,
@@ -393,15 +278,15 @@ void Voices::UpdateEffectorParam(const Channel& channel, DspBlock& block, std::a
     float pan = 0.5f;
     float fxmix = 0.0f;
     float dolby = 0.0f;
-    if (output_mode_ <= 2)
+    if (kOutputMode <= 2)
     {
         fxmix = CalcEffect(fxmixes, channel.pan_power, channel.fxmix_calc);
     }
-    if ((output_mode_ == 1 || output_mode_ == 2) && channel.pan_calc != 0)
+    if ((kOutputMode == 1 || kOutputMode == 2) && channel.pan_calc != 0)
     {
         pan = CalcPan(pans, channel.pan_power, channel.pan_calc);
     }
-    if (output_mode_ == 2)
+    if (kOutputMode == 2)
     {
         dolby = CalcEffect(dolbies, channel.pan_power, channel.dolby_calc);
     }
@@ -480,7 +365,7 @@ void Voices::UpdateMixer(const Channel& channel, float volume, float pan, float 
             pick(second);
             if (second == 3 || second == 7)
             {
-                level = level * SinRadian((scale * kSurroundScale + kSurroundBase) * kHalfPi);
+                level = level * SinRadian((scale * jaudio2::kSurroundScale + jaudio2::kSurroundBase) * kHalfPi);
             }
             else if (second == 2 || second == 6)
             {
@@ -519,11 +404,11 @@ void Voices::InitialUpdate(ChannelOwner* owner, uint32_t index, DspBlock& block)
     for (uint32_t i = 0; i < channel.mix_configs.size(); i++)
     {
         uint32_t bus = channel.mix_configs[i] >> 8;
-        if (output_mode_ == 0)
+        if (kOutputMode == 0)
         {
             bus = bus == 8 ? 11 : bus == 9 ? 2 : bus;
         }
-        else if (output_mode_ == 1 && bus == 8)
+        else if (kOutputMode == 1 && bus == 8)
         {
             bus = 11;
         }

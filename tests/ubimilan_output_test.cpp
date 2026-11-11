@@ -14,15 +14,15 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/testing/agb_files.h"
+#include "ntdlib/testing/ubimilan_image.h"
 #include "ntdlib/ubimilan/driver.h"
 #include "ntdlib/ubimilan/output.h"
 #include "ntdlib/ubimilan/sequencer.h"
-#include "xsflib/testing/check.h"
-
-#include "ubimilan_image.h"
 
 namespace
 {

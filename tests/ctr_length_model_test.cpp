@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 // Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
-// Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
 // (ntdlib/testing/length_cases.h), on the 3DS's model: archive mode on the model of the DSP's audio firmware. The
 // analysis waits for the loops of the tracks other than the main track. A tie gives its channel the velocity's volume
 // without the region's. The cases take the lengths that the Wii U and the Switch give them: a pass that only drops the
@@ -42,6 +41,7 @@ std::optional<xsflib::rip::Timing> Measure(const ntdlib::sar::SoundArchive& arch
     {
         auto model = std::make_unique<ArchiveModel>();
         Check(model->Start(archive), "the model starts");
+
         return model;
     };
     const auto measure = [&make_model, sound]

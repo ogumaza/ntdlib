@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/yaz0.h"
+
 namespace ntdlib::jaudio
 {
 
@@ -40,15 +42,10 @@ inline constexpr std::size_t kWideRarcEntrySize = 24;
 // archives that way. Throws FormatError if it isn't an archive.
 std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc, std::size_t entry_size = kRarcEntrySize);
 
-// Whether `data` is compressed with Yaz0: whether it starts with "Yaz0".
-bool IsYaz0(std::span<const uint8_t> data);
-
-// Decodes data compressed with Yaz0. Throws FormatError if it's damaged, or if it decodes to more than 64 MiB.
-std::vector<uint8_t> DecodeYaz0(std::span<const uint8_t> data);
-
-// `data` as a game reads it: `data` itself, or `data` decoded into `decoded` if it's compressed with Yaz0. The result
-// points into one of the two. Throws FormatError as DecodeYaz0 does.
-std::span<const uint8_t> DecodeIfYaz0(std::span<const uint8_t> data, std::vector<uint8_t>& decoded);
+// The Yaz0 decoder (ntdlib/yaz0.h), under the names that programs call it by.
+using ntdlib::DecodeIfYaz0;
+using ntdlib::DecodeYaz0;
+using ntdlib::IsYaz0;
 
 // A sequence archive with the sequences of another release's sequence table. The table is a 32-bit count, zeros up to
 // 0x20, and then a 32-bit offset and size for each sequence. The result is `rarc` with each file's data replaced by the

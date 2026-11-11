@@ -377,12 +377,11 @@ public:
     void Frame(uint32_t f, const TrackOutput& o, const FrameState& state, std::vector<Event>& out,
                std::vector<std::string>& warnings)
     {
-        const bool bus0_from_5 = info_.revision == Revision::kWct2004 || info_.revision == Revision::kMinnaNoOujisama;
+        const bool bus0_from_5 = MixesBus0FromVoice5(info_.revision);
         if (!IsPsgTrack(t_))
         {
             // CC91 stands in for bus 0's echo, the one the songs set up. A voice routed to buses 0 and 1 is mixed into
-            // bus 1 alone. The mixer of the WCT 2004 and Minna no Ouji-sama revisions takes only voices 5 to 11 from
-            // bus 0.
+            // bus 1 alone. The mixer of some revisions takes only voices 5 to 11 from bus 0.
             const int voice = t_ - kPsgTracks;
             const bool wet =
                 ((state.bus0 >> voice) & 1) && !((state.bus1 >> voice) & 1) && (!bus0_from_5 || voice >= 5);

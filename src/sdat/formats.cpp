@@ -266,33 +266,12 @@ Wave Wave::ParseFile(std::span<const uint8_t> swav)
 
 uint32_t Wave::Samples() const
 {
-    const uint32_t words = loop_start + loop_length;
-    switch (encoding)
-    {
-    case WaveEncoding::kPcm8:
-        return words * 4;
-    case WaveEncoding::kPcm16:
-        return words * 2;
-    case WaveEncoding::kImaAdpcm:
-        return words > 0 ? (words - 1) * 8 : 0;
-    }
-
-    return 0;
+    return SamplesInWords(encoding, loop_start + loop_length);
 }
 
 uint32_t Wave::LoopStartSample() const
 {
-    switch (encoding)
-    {
-    case WaveEncoding::kPcm8:
-        return uint32_t{loop_start} * 4;
-    case WaveEncoding::kPcm16:
-        return uint32_t{loop_start} * 2;
-    case WaveEncoding::kImaAdpcm:
-        return loop_start > 0 ? (uint32_t{loop_start} - 1) * 8 : 0;
-    }
-
-    return 0;
+    return SamplesInWords(encoding, loop_start);
 }
 
 WaveArchive WaveArchive::Parse(std::span<const uint8_t> swar)

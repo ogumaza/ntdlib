@@ -8,13 +8,13 @@
 #pragma once
 
 #include <algorithm>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <regex>
 #include <span>
@@ -31,6 +31,7 @@
 
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/shortest_decimal.h"
 
 namespace ntdlib::rip
 {
@@ -85,6 +86,12 @@ struct ArchiveRipTool
         return false;
     };
 
+    // The sounds of `archive`, the rip's archive, that the jobs play without being jobs themselves, such as a sound
+    // that a job's script starts. A library that holds only the files that its sequences play (keeps_sequence_data)
+    // keeps theirs too. Null for none.
+    std::function<std::vector<uint32_t>(const Rip&, const sar::SoundArchive& archive, const std::vector<Job>& jobs)>
+        played_sounds;
+
     // The factor that the game's code gives a sound, outside the sound archive. The sound's mini holds it as its volume
     // tag. Null for none.
     std::function<float(const Rip&, const Job&)> sound_volume;
@@ -108,6 +115,10 @@ struct ArchiveRipTool
     // The text of a variant's variables in its label and in variables_tag. By default, the form of the PSF tag
     // 3sf_var (xsflib::psf::FormatVariables).
     std::function<std::string(const xsflib::psf::Variables&)> format_variables = xsflib::psf::FormatVariables;
+
+    // Whether the tag `<format>_sound` of a later state or a variant holds the sound's label alone. Otherwise the tag
+    // holds the job's label, as the title does: the sound's label with the state's or the variant's name.
+    bool sound_tag_holds_sound_label = false;
 
     // The library of a rip that plays the sequences at `sounds`, by their indices in the archive, with `tags`. By
     // default it's an archive-mode library (BuildArchiveLibrary). The default doesn't use `sounds`.
@@ -143,11 +154,10 @@ inline void SetVolumeTag(float volume, xsflib::psf::Tags& tags)
         return;
     }
 
-    char text[48];
-    const auto [end, error] = std::to_chars(text, text + sizeof(text), volume, std::chars_format::fixed);
-    if (error == std::errc())
+    std::string text = ShortestDecimal(volume);
+    if (!text.empty())
     {
-        tags["volume"] = std::string(text, end);
+        tags["volume"] = std::move(text);
     }
 }
 
@@ -204,17 +214,19 @@ std::vector<Job> AddVariants(const ArchiveRipTool<Format, Rip>& tool, const Rip&
     return ripped;
 }
 
-// Cuts `to_rip`'s archive down to the files that `jobs` play, and its group files down to those that hold any of them
-// (KeepSequenceData). `archive` is `to_rip`'s archive, with the group files that the rip plays with. Leaves both
-// whole, after a warning, when those files can't be cut out of the archive.
+// Cuts `to_rip`'s archive down to the files that `jobs` and `more_sounds` play, and its group files down to those that
+// hold any of them (KeepSequenceData). `archive` is `to_rip`'s archive, with the group files that the rip plays with.
+// Leaves both whole, after a warning, when those files can't be cut out of the archive.
 template <typename Format, typename Rip>
-void KeepJobsData(const sar::SoundArchive& archive, const std::vector<Job>& jobs, Rip& to_rip)
+void KeepJobsData(const sar::SoundArchive& archive, const std::vector<Job>& jobs, std::span<const uint32_t> more_sounds,
+                  Rip& to_rip)
 {
     std::vector<uint32_t> sounds;
     for (const Job& job : jobs)
     {
         sounds.push_back(job.index);
     }
+    sounds.insert(sounds.end(), more_sounds.begin(), more_sounds.end());
 
     std::optional<LibraryArchive> kept = KeepSequenceData(archive, sounds);
     if (!kept)
@@ -264,6 +276,11 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
 
     // --only picks from the sounds' states (WithSoundStates), whose labels can differ from the sounds'.
     const std::vector<Job> selected = SelectSounds(*archive, std::regex(""), o.bgm);
+    std::map<uint32_t, std::string> sound_labels;
+    for (const Job& job : selected)
+    {
+        sound_labels.emplace(job.index, job.label);
+    }
     std::vector<Job> jobs = WithSoundStates(tool, to_rip, selected, o.only);
     matched += jobs.size();
     if (jobs.empty())
@@ -308,7 +325,9 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
             archive = sar::SoundArchive::Load(to_rip.archive.data, tool.sar_options);
             AddGroupFiles(tool, to_rip, *archive);
         }
-        KeepJobsData<Format>(*archive, complete, to_rip);
+        const std::vector<uint32_t> played =
+            tool.played_sounds ? tool.played_sounds(to_rip, *archive, complete) : std::vector<uint32_t>{};
+        KeepJobsData<Format>(*archive, complete, played, to_rip);
         archive.reset();
     }
 
@@ -323,18 +342,21 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
     }
 
     const xsflib::psf::Tags common = xsflib::cli::RipTags(o, game_name, tool.format, tool.mode(to_rip));
-    const std::vector<uint8_t> lib = tool.build_library(to_rip, sounds, common);
-    const std::string lib_name = names.LibraryIn(out_dir, lib_base, lib);
-    std::filesystem::create_directories(out_dir);
-    if (!xsflib::rip::WriteFile(out_dir / xsflib::PathFromUtf8(lib_name), lib))
+    const std::optional<std::string> written_lib =
+        xsflib::cli::WriteLibrary(out_dir, names, lib_base, tool.build_library(to_rip, sounds, common));
+    if (!written_lib)
     {
-        std::fprintf(stderr, "error: can't write %s\n", lib_name.c_str());
         return -1;
     }
-    std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
+    const std::string& lib_name = *written_lib;
 
-    const auto build_mini = [&tool, &to_rip, &lib_name](const Job& job, xsflib::psf::Tags tags)
+    const auto build_mini = [&tool, &to_rip, &lib_name, &sound_labels](const Job& job, xsflib::psf::Tags tags)
     {
+        const auto sound_label = sound_labels.find(job.index);
+        if (tool.sound_tag_holds_sound_label && sound_label != sound_labels.end())
+        {
+            tags[tool.format + "_sound"] = sound_label->second;
+        }
         SetVolumeTag(job.volume, tags);
         if (!job.variables.empty() && !tool.variables_tag.empty())
         {
@@ -516,12 +538,14 @@ int RipLooseArchive(const ArchiveRipTool<Format, Rip>& tool, const std::string& 
     }
 
     // A group file is found by its name in the archive's folder or a folder below it. The group file is kept at its
-    // path from there. The search passes over an entry whose type can't be read, such as a broken symbolic link.
+    // path from there. The search passes over an entry whose type can't be read, such as a broken symbolic link. It
+    // also passes over a folder that can't be opened.
     const fs::path folder = path.parent_path();
     const auto find_group = [&folder](const std::string& name) -> std::optional<FileChunk>
     {
         std::error_code ec;
-        for (fs::recursive_directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec))
+        for (fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end; it.increment(ec))
         {
             FileChunk group{it->path().lexically_relative(folder).generic_string(), {}};
             std::error_code type_error;

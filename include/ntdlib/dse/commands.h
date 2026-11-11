@@ -32,6 +32,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -48,6 +49,23 @@ commands::Sequence DecodeTracks(std::span<const Track> tracks);
 // The item that starts a track of channel `channel` with the number `number`. A sequence's tracks follow one another,
 // and each ends with kEnd.
 commands::Command TrackOpening(uint8_t number, uint8_t channel);
+
+// The number and the channel of a track, as the item that starts it gives them.
+struct TrackStart
+{
+    friend bool operator==(const TrackStart&, const TrackStart&) = default;
+
+    uint8_t number = 0;
+    uint8_t channel = 0;
+};
+
+// The number and the channel of the track that `command` starts: a kData item of 20 bytes that starts with the label
+// of a track chunk and the 8 bytes after it, as TrackOpening makes it. Nothing for another item.
+std::optional<TrackStart> ReadTrackOpening(const commands::Command& command);
+
+// Writes `start` into `opening`, an item that starts a track. Keeps its other bytes. Throws std::invalid_argument for
+// an item that ReadTrackOpening doesn't read.
+void SetTrackOpening(commands::Command& opening, const TrackStart& start);
 
 // The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
 // the end. A note that starts its bytes with the command that sets the octave has the offset of its code, where the

@@ -481,6 +481,13 @@ private:
     // Plays a channel's entry of a row: its note and instrument, its volume column and its effect.
     void PlayEntry(const RowEntry& entry);
 
+    // The parts of PlayEntry(). EntryInstrument() sets the sample, its volume and its pan, and sets `sample_set` if it
+    // took the sample from the note. EntryInstrument() and EntryVolume() return true if they set the volume.
+    // EntryNote() releases the note, sets the goal of a slide or makes the note ready to start.
+    bool EntryInstrument(Channel& c, const RowEntry& entry, bool& sample_set);
+    bool EntryVolume(Channel& c, const RowEntry& entry);
+    void EntryNote(Channel& c, const RowEntry& entry, bool sample_set);
+
     // Returns true if the mixer channel `m` plays a note of a muted channel. Meter() keeps the part of a mixer channel
     // that has `volume` on a side, for points from `low` to `high`, as its channel's peak on that side.
     bool Muted(const MixChannel& m) const;

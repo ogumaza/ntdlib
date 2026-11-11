@@ -507,6 +507,12 @@ bool OlderOutputStage(Revision r)
     return Wct2004Layout(r) || RaveMasterLayout(r) || EternalDuelistLayout(r);
 }
 
+bool MixesBus0FromVoice5(Revision r)
+{
+    return r == Revision::kLiveStart || r == Revision::kPrinceOfTennis || r == Revision::kWct2004 ||
+           r == Revision::kMinnaNoOujisama;
+}
+
 bool RaveMasterLayout(Revision r)
 {
     return r == Revision::kRaveMaster || r == Revision::kHunterXHunter;
@@ -736,8 +742,8 @@ std::string Describe(const Command& c, int track, Revision revision)
     case Op::kDuty:
         if (track == 0 || track == 1)
         {
-            constexpr const char* duties[4] = {"12.5%", "25%", "50%", "75%"};
-            std::snprintf(buf, sizeof buf, "duty       %s", duties[(c.value >> 6) & 3]);
+            constexpr const char* kDuties[4] = {"12.5%", "25%", "50%", "75%"};
+            std::snprintf(buf, sizeof buf, "duty       %s", kDuties[(c.value >> 6) & 3]);
         }
         else if (track == 2 && !dungeon_dice)
         {

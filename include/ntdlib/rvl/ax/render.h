@@ -93,6 +93,21 @@ private:
     bool Process(uint32_t first);
     bool ProcessVoice();
     bool ProcessVoiceOctober2006();
+
+    // The build of October 2006: the updates of part `part`. `update` is the place of the next pair in DRAM.
+    void ApplyUpdates(int part, uint16_t& update);
+
+    // The build of October 2006: the ITD shifts' step after a part that ends at `write`, and the next part's `left`
+    // and `right` channels.
+    void MoveItdOctober2006(uint16_t write, uint16_t& left, uint16_t& right);
+
+    // Converts `samples` of the voice's samples into DRAM at `to` with the sample rate converter `src` and the 4-tap
+    // filter `filter`. Gives false for a converter or a filter that the microcode doesn't have.
+    bool Convert(uint16_t src, uint16_t filter, uint16_t to, int samples);
+
+    // Sets the PB's depop values of the main and aux buses and of the Wii Remotes to 0, before the mixes.
+    void ClearDepop();
+
     void LoadAccelerator();
     int16_t ReadSample();
     void AtEnd();

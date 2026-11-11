@@ -13,35 +13,35 @@
 #include "seqlib/testing/check.h"
 #include "xsflib/testing/check.h"
 
-#include "brownie_cart.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/brownie/driver.h"
 #include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/brownie/convert.h"
 #include "ntdlib/sequence_export/brownie/performance.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/testing/brownie_cart.h"
 
 namespace
 {
 
-using namespace brownie_testing;
+using namespace ntdlib::testing::brownie_cart;
 
-namespace export_ = ntdlib::sequence_export;
-namespace perf_ = export_::brownie;
-using export_::Entry;
-using export_::EventKind;
-using export_::Mix;
-using export_::MixChange;
-using export_::Stretch;
-using export_::TrackEvent;
+namespace sequence_export = ntdlib::sequence_export;
+namespace driver_export = sequence_export::brownie;
+using sequence_export::Entry;
+using sequence_export::EventKind;
+using sequence_export::Mix;
+using sequence_export::MixChange;
+using sequence_export::Stretch;
+using sequence_export::TrackEvent;
 
-using Settings = export_::agb::ConvertSettings;
+using Settings = sequence_export::agb::ConvertSettings;
 
 // The address of a sound's list and of its first channel's data: sound 0's list takes a word.
 constexpr uint32_t kList = kSongLists + 4;
 
 // Returns the offset of byte `at` of the first channel's data from the performance's base.
-uint32_t DataOffset(const perf_::Performance& perf, uint32_t at)
+uint32_t DataOffset(const driver_export::Performance& perf, uint32_t at)
 {
     return kSequences + at - perf.base;
 }
@@ -97,7 +97,7 @@ void TestNotesAndStretches()
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
 
-    const perf_::Performance perf = perf_::PerformSong(rom, info, 1, Settings());
+    const driver_export::Performance perf = driver_export::PerformSong(rom, info, 1, Settings());
 
     SEQLIB_CHECK_EQ(perf.base, kList);
     const std::vector<TrackEvent> notes = NotesOf(perf.tracks[0]);
@@ -110,8 +110,8 @@ void TestNotesAndStretches()
     SEQLIB_CHECK_EQ(perf.note_commands[1].offset, DataOffset(perf, 12));
     SEQLIB_CHECK_EQ(perf.note_commands[2].offset, DataOffset(perf, 9));
     SEQLIB_REQUIRE(perf.note_causes.size() == 3);
-    SEQLIB_CHECK(perf.note_causes[0] == perf_::NoteCause::kNote);
-    SEQLIB_CHECK(perf.note_causes[2] == perf_::NoteCause::kNote);
+    SEQLIB_CHECK(perf.note_causes[0] == driver_export::NoteCause::kNote);
+    SEQLIB_CHECK(perf.note_causes[2] == driver_export::NoteCause::kNote);
 
     // The stretches: from the start to the call, the call's note and return, and on from the return to the end.
     const std::vector<Stretch>& stretches = perf.stretches[0];
@@ -156,7 +156,7 @@ void TestRepeat()
     Cart cart;
     cart.Sound(1, {{0, data, {}}});
     const Rom rom = cart.ToRom();
-    const perf_::Performance perf = perf_::PerformSong(rom, Detect(rom), 1, Settings());
+    const driver_export::Performance perf = driver_export::PerformSong(rom, Detect(rom), 1, Settings());
 
     const std::vector<Stretch>& stretches = perf.stretches[0];
     SEQLIB_REQUIRE(stretches.size() == 2);
@@ -177,7 +177,7 @@ void TestLoop()
     cart.Sound(1, {{0, {0xF0, kPsgHold, 0xF1, 0x80, 0x89, 24, 26, 0xF8, 0}, {0}}});
     const Rom rom = cart.ToRom();
     const Settings settings;
-    const perf_::Performance perf = perf_::PerformSong(rom, Detect(rom), 1, settings);
+    const driver_export::Performance perf = driver_export::PerformSong(rom, Detect(rom), 1, settings);
 
     SEQLIB_REQUIRE(perf.loop.has_value());
     SEQLIB_CHECK_EQ(perf.loop->start, 1);
@@ -212,7 +212,7 @@ void TestMix()
     Cart cart;
     cart.Sound(1, {{0, square, {}}, {8, samples, {}}});
     const Rom rom = cart.ToRom();
-    const perf_::Performance perf = perf_::PerformSong(rom, Detect(rom), 1, Settings());
+    const driver_export::Performance perf = driver_export::PerformSong(rom, Detect(rom), 1, Settings());
 
     const std::vector<MixChange> volumes = ChangesOf(perf.mix[0], Mix::kVolume);
     SEQLIB_REQUIRE(volumes.size() == 2);
@@ -241,7 +241,7 @@ void TestVacationMix()
     Cart cart(true, Revision::kMagicalVacation);
     cart.Sound(1, {{8, {0xE1, 0, 0xF0, kSampleHold, 0xE2, 0x7F, 0xEA, 0xF0, 0x89, 48, 0xEF}, {}}});
     const Rom rom = cart.ToRom();
-    const perf_::Performance perf = perf_::PerformSong(rom, Detect(rom), 1, Settings());
+    const driver_export::Performance perf = driver_export::PerformSong(rom, Detect(rom), 1, Settings());
 
     const std::vector<MixChange> volumes = ChangesOf(perf.mix[8], Mix::kVolume);
     SEQLIB_REQUIRE(volumes.size() == 1);
@@ -262,14 +262,14 @@ void TestEarlierNote()
     cart.PutBytes(envelope, {2, 0xF0, 2, 0x00, 0, 0xF0});
     cart.Sound(1, {{0, {0xF0, uint8_t(entry), 0xF1, 0x80, 0x89, 24, 0xFF}, {}}});
     const Rom rom = cart.ToRom();
-    const perf_::Performance perf = perf_::PerformSong(rom, Detect(rom), 1, Settings());
+    const driver_export::Performance perf = driver_export::PerformSong(rom, Detect(rom), 1, Settings());
 
     const std::vector<TrackEvent> notes = NotesOf(perf.tracks[0]);
     SEQLIB_REQUIRE(notes.size() == 2);
     SEQLIB_CHECK_EQ(notes[0].tick, 1);
     SEQLIB_CHECK_EQ(notes[1].tick, 5);
-    SEQLIB_CHECK(perf.note_causes[0] == perf_::NoteCause::kNote);
-    SEQLIB_CHECK(perf.note_causes[1] == perf_::NoteCause::kEarlier);
+    SEQLIB_CHECK(perf.note_causes[0] == driver_export::NoteCause::kNote);
+    SEQLIB_CHECK(perf.note_causes[1] == driver_export::NoteCause::kEarlier);
     SEQLIB_CHECK_EQ(perf.note_commands[0].offset, perf.note_commands[1].offset);
     SEQLIB_CHECK_EQ(perf.note_commands[1].offset, DataOffset(perf, 5));
 }
@@ -282,8 +282,8 @@ void TestMidiFile()
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
     const Settings settings;
-    const perf_::Performance perf = perf_::PerformSong(rom, info, 1, settings);
-    const perf_::SongFiles files = perf_::ConvertSongFiles(rom, info, 1, settings);
+    const driver_export::Performance perf = driver_export::PerformSong(rom, info, 1, settings);
+    const driver_export::SongFiles files = driver_export::ConvertSongFiles(rom, info, 1, settings);
     SEQLIB_REQUIRE(files.report.ok);
     SEQLIB_CHECK(!files.sf2.empty());
 
@@ -318,12 +318,12 @@ void TestEmpty()
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
 
-    const perf_::Performance silent = perf_::PerformSong(rom, info, 1, Settings());
+    const driver_export::Performance silent = driver_export::PerformSong(rom, info, 1, Settings());
     SEQLIB_CHECK(silent.note_commands.empty());
     SEQLIB_CHECK_EQ(silent.stretches[0].size(), 1);
     SEQLIB_CHECK_EQ(ChangesOf(silent.mix[0], Mix::kVolume).size(), 1);
 
-    const perf_::Performance unread = perf_::PerformSong(rom, info, 2, Settings());
+    const driver_export::Performance unread = driver_export::PerformSong(rom, info, 2, Settings());
     SEQLIB_CHECK(!unread.warnings.empty());
     SEQLIB_CHECK(unread.note_commands.empty());
     SEQLIB_CHECK_EQ(unread.base, 0);

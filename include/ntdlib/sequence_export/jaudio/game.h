@@ -121,6 +121,10 @@ struct GameRules
     // when the effects sequence is the sound table's first sequence.
     std::string effects_sequence;
 
+    // Whether the game is one whose effects convert with GameOptions::known_effects. Each of these games plays its
+    // effects in its effects sequence (effects_sequence), or in Pikmin's two sequences (jac_effects).
+    bool known_effects = false;
+
     // Whether a JAudio1 game plays an effect at the volume and the pitch that the effect's entry in the sound table
     // gives (JAIBasic::setSeExtParameter). Luigi's Mansion's sound class replaces that function with one that gives
     // effects neither.
@@ -276,6 +280,10 @@ struct GameOptions
     // (GameRules::category_volumes).
     bool jaudio1_effects = false;
 
+    // List the effects as jaudio1_effects does, only for a game whose rules list them (GameRules::known_effects). The
+    // effects of the other games stay out.
+    bool known_effects = false;
+
     // The game runs on the Wii U, in a port of a GameCube or Wii game's sound code, such as Twilight Princess HD. A
     // port can share its start-up archive with the game that it ports. A port's rules follow the port's code where it
     // differs, such as Twilight Princess HD's echo (GameRules::echo).
@@ -329,7 +337,7 @@ public:
     // The sequences to convert: the sounds of the sound table that play sequences, in its order, then the files of the
     // sequence archive that no sound plays, named after their files. A JAudio1 game's effects play in its effects
     // sequence. The list leaves that sequence out. It leaves the effects out too, unless GameOptions::jaudio1_effects
-    // lists them at its end. Its sequences take their names from the name file or their files.
+    // or known_effects lists them at its end. Its sequences take their names from the name file or their files.
     const std::vector<SequenceSound>& Sequences() const
     {
         return sequences_;
@@ -355,6 +363,9 @@ private:
 
     // List the sequences once the archive and the sequence archive are read.
     void FindSequences();
+
+    // Whether the sequences list a JAudio1 game's effects (GameOptions::jaudio1_effects and known_effects).
+    bool ListsEffects() const;
 
     // The sequence of JAudio1 effect `s`, which plays in the effects sequence `sequence` (GameOptions).
     SequenceSound EffectSound(const SoundEntry& s, std::span<const uint8_t> sequence) const;

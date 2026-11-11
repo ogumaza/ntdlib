@@ -419,8 +419,6 @@ void TestCompactList()
     XSFLIB_CHECK(volumes == 0);
 }
 
-} // namespace
-
 // The commands of the second chunk of a voice that starts at full volume with no attack. `update` runs after the
 // first chunk.
 template <typename Update>
@@ -478,6 +476,7 @@ void TestLaterCompact()
         synth.SetVolume(voice, 0, 1000000);
         synth.SetVolume(voice, 0, 1000000);
     };
+
     XSFLIB_CHECK((CommandWith(SecondChunk(true, two_updates), kSetCurrentLeft).w0 & 0xFFFF) == 1);
     XSFLIB_CHECK((CommandWith(SecondChunk(false, two_updates), kSetCurrentLeft).w0 & 0xFFFF) > 1);
 
@@ -487,6 +486,7 @@ void TestLaterCompact()
         synth.SetParamSamples(synth.CurrentSamples());
         synth.SetVolume(voice, 0, 0);
     };
+
     XSFLIB_CHECK(CommandWith(SecondChunk(true, no_time), kSetTargetLeft).w1 == 0);
     XSFLIB_CHECK(CommandWith(SecondChunk(false, no_time), kSetTargetLeft).w1 == 0x80000000);
 
@@ -497,14 +497,18 @@ void TestLaterCompact()
         synth.SetParamSamples(synth.CurrentSamples() - 100);
         synth.SetPitch(voice, 1.0F);
     };
+
     const auto mixers = [](const std::vector<n64::AudioCommand>& commands)
     {
         return std::count_if(commands.begin(), commands.end(),
                              [](const n64::AudioCommand& command) { return (command.w0 >> 24) == kEnvMixer; });
     };
+
     XSFLIB_CHECK(mixers(SecondChunk(true, behind)) == 2);
     XSFLIB_CHECK(mixers(SecondChunk(false, behind)) == 1);
 }
+
+} // namespace
 
 int main()
 {

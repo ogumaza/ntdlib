@@ -11,12 +11,15 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/ascii.h"
 #include "xsflib/binary.h"
 
 #include "ntdlib/ntr/archive_player.h"
+#include "ntdlib/rip/names.h"
+#include "ntdlib/rip/player_names.h"
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sdat/layout.h"
 
@@ -26,8 +29,6 @@ namespace ntdlib::ntr::rip
 namespace
 {
 
-constexpr uint16_t kNoWaveArchive = 0xFFFF;
-constexpr uint32_t kFileIdBits = 0xFFFFFF;
 constexpr uint32_t kNoSequence = 0xFFFFFFFF;
 
 template <typename Info>
@@ -88,11 +89,6 @@ std::optional<SequenceParts> PartsOf(const sdat::Archive& archive, const Sequenc
                  : std::nullopt;
 }
 
-std::string NameOrNumber(const std::string& name, const char* kind, std::size_t index)
-{
-    return name.empty() ? kind + std::to_string(index) : name;
-}
-
 } // namespace
 
 bool IsMusic(const sdat::Archive& archive, const SequenceRef& sequence)
@@ -109,21 +105,7 @@ bool IsMusic(const sdat::Archive& archive, const SequenceRef& sequence)
         return false;
     }
 
-    // The player's name, word by word, each without the digits it ends in (PLAYER_BGM1).
-    bool music = false;
-    bool effects = false;
-    const std::string name = xsflib::AsciiLower(player->name);
-    for (std::size_t start = 0; start <= name.size();)
-    {
-        const std::size_t end = std::min(name.find('_', start), name.size());
-        std::string word = name.substr(start, end - start);
-        word.erase(word.find_last_not_of("0123456789") + 1);
-        music = music || word == "bgm" || word == "music" || word == "song" || word == "fanfare";
-        effects = effects || word == "se";
-        start = end + 1;
-    }
-
-    return music && !effects;
+    return ntdlib::rip::IsMusicPlayerName(player->name);
 }
 
 std::vector<Job> SelectSequences(const sdat::Archive& archive, const std::regex& only, bool bgm)
@@ -163,11 +145,11 @@ std::vector<std::string> MissingData(const sdat::Archive& archive, const Sequenc
     }
     if (FileOf(archive, bank->file_id).empty())
     {
-        missing.push_back("bank " + NameOrNumber(bank->name, "#", parts->bank));
+        missing.push_back("bank " + ntdlib::rip::NameOrNumber(bank->name, parts->bank));
     }
     for (const uint16_t index : bank->wave_archives)
     {
-        if (index == kNoWaveArchive)
+        if (index == sdat::kNoWaveArchive)
         {
             continue;
         }
@@ -177,9 +159,9 @@ std::vector<std::string> MissingData(const sdat::Archive& archive, const Sequenc
         {
             missing.push_back("wave archive " + std::to_string(index) + ", which the archive doesn't list");
         }
-        else if (FileOf(archive, wave_archive->file_id & kFileIdBits).empty())
+        else if (FileOf(archive, wave_archive->file_id & sdat::kFileIdBits).empty())
         {
-            missing.push_back("wave archive " + NameOrNumber(wave_archive->name, "#", index));
+            missing.push_back("wave archive " + ntdlib::rip::NameOrNumber(wave_archive->name, index));
         }
     }
 
@@ -203,9 +185,9 @@ std::optional<std::vector<uint8_t>> KeepSequenceData(const sdat::Archive& archiv
         kept.insert(bank.file_id);
         for (const uint16_t index : bank.wave_archives)
         {
-            if (index != kNoWaveArchive)
+            if (index != sdat::kNoWaveArchive)
             {
-                kept.insert(archive.wave_archives[index]->file_id & kFileIdBits);
+                kept.insert(archive.wave_archives[index]->file_id & sdat::kFileIdBits);
             }
         }
     }

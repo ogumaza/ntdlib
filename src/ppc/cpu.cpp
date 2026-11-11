@@ -14,8 +14,8 @@
 
 #include "xsflib/bytes.h"
 
+#include "common/force_inline.h"
 #include "ntdlib/types.h"
-#include "ppc/inline.h"
 
 namespace ntdlib::ppc
 {
@@ -113,6 +113,12 @@ bool Traps(uint32_t to, int32_t x, int32_t y)
            ((to & 1) && static_cast<uint32_t>(x) > static_cast<uint32_t>(y));
 }
 
+// The bit of the watch filter (Cpu::watch_filter_) for the instruction at `pc`: bit (pc / 4) % 64.
+uint64_t WatchBit(uint32_t pc)
+{
+    return uint64_t{1} << (pc >> 2 & 63);
+}
+
 // A BAT pair: an upper and a lower register that map a block of effective addresses to physical ones.
 struct Bat
 {
@@ -165,11 +171,15 @@ StopReason Cpu::Run(uint64_t cycles)
 
         CheckInterrupts();
         next_check_ = std::min(end_, dec_event_);
+
         // Whether anything is watched is checked once for the batch. A check before every instruction slowed the loop.
+        // The filter rules out most instructions before the search of the list. A search before every instruction
+        // slowed a length analysis too.
         const bool watching = !watch_pcs_.empty();
         while (cycles_ < next_check_)
         {
-            if (watching && std::find(watch_pcs_.begin(), watch_pcs_.end(), state_.pc) != watch_pcs_.end()) [[unlikely]]
+            if (watching && (watch_filter_ & WatchBit(state_.pc)) != 0 &&
+                std::find(watch_pcs_.begin(), watch_pcs_.end(), state_.pc) != watch_pcs_.end()) [[unlikely]]
             {
                 on_watch_(state_.pc);
             }
@@ -199,6 +209,12 @@ StopReason Cpu::Run(uint64_t cycles)
 void Cpu::Watch(std::vector<uint32_t> pcs, std::function<void(uint32_t pc)> on_watch)
 {
     watch_pcs_ = std::move(pcs);
+    watch_filter_ = 0;
+    for (const uint32_t pc : watch_pcs_)
+    {
+        watch_filter_ |= WatchBit(pc);
+    }
+
     on_watch_ = std::move(on_watch);
 }
 
@@ -328,7 +344,7 @@ std::string Cpu::Describe() const
     return text;
 }
 
-NTDLIB_PPC_FORCE_INLINE bool Cpu::Step(uint32_t op)
+NTDLIB_FORCE_INLINE bool Cpu::Step(uint32_t op)
 {
     State& s = state_;
     const int d = Rd(op);
@@ -677,7 +693,7 @@ bool Cpu::Op19(uint32_t op)
     const int d = Rd(op);
     const int a = Ra(op);
     const int b = Rb(op);
-    const auto cr_op = [&](auto combine) NTDLIB_PPC_INLINE_LAMBDA
+    const auto cr_op = [&](auto combine) NTDLIB_INLINE_LAMBDA
     {
         const bool value = combine(CrBit(a), CrBit(b));
         const uint32_t bit = 1u << (31 - d);
@@ -772,7 +788,7 @@ bool Cpu::Op31(uint32_t op)
     const bool oe = (op & 0x400) != 0;
 
     // The forms with OE set record an overflow in XER.
-    const auto set_overflow = [&](bool overflow) NTDLIB_PPC_INLINE_LAMBDA
+    const auto set_overflow = [&](bool overflow) NTDLIB_INLINE_LAMBDA
     {
         if (oe)
         {
@@ -781,7 +797,7 @@ bool Cpu::Op31(uint32_t op)
     };
 
     // The arithmetic forms: the sum of x, y and a carry in, with the carry and overflow out.
-    const auto arith = [&](uint32_t x, uint32_t y, uint32_t carry_in, bool set_carry) NTDLIB_PPC_INLINE_LAMBDA
+    const auto arith = [&](uint32_t x, uint32_t y, uint32_t carry_in, bool set_carry) NTDLIB_INLINE_LAMBDA
     {
         const uint64_t sum = uint64_t{x} + y + carry_in;
         const auto result = static_cast<uint32_t>(sum);
@@ -800,7 +816,7 @@ bool Cpu::Op31(uint32_t op)
         return true;
     };
 
-    const auto logical = [&](uint32_t result) NTDLIB_PPC_INLINE_LAMBDA
+    const auto logical = [&](uint32_t result) NTDLIB_INLINE_LAMBDA
     {
         s.gpr[a] = result;
         if (Rc(op))
@@ -974,7 +990,8 @@ bool Cpu::Op31(uint32_t op)
         return true;
 
     case 467: // mtspr
-        return MtSpr(static_cast<int>((op >> 16 & 31) | (op >> 6 & 0x3e0)), s.gpr[d]);
+        MtSpr(static_cast<int>((op >> 16 & 31) | (op >> 6 & 0x3e0)), s.gpr[d]);
+        return true;
 
     case 595: // mfsr
         s.gpr[d] = s.sr[a & 15];
@@ -1347,39 +1364,39 @@ uint32_t Cpu::MfSpr(int number)
     }
 }
 
-bool Cpu::MtSpr(int number, uint32_t value)
+void Cpu::MtSpr(int number, uint32_t value)
 {
     State& s = state_;
     switch (number)
     {
     case spr::kXer:
         s.xer = value;
-        return true;
+        return;
 
     case spr::kLr:
         s.lr = value;
-        return true;
+        return;
 
     case spr::kCtr:
         s.ctr = value;
-        return true;
+        return;
 
     case spr::kDec:
         SetDecrementer(value);
-        return true;
+        return;
 
     case spr::kTblWrite:
         tb_base_ = (TimeBase() & 0xffffffff00000000) | value;
         tb_cycle_ = cycles_;
-        return true;
+        return;
 
     case spr::kTbuWrite:
         tb_base_ = (TimeBase() & 0xffffffff) | (uint64_t{value} << 32);
         tb_cycle_ = cycles_;
-        return true;
+        return;
 
     case spr::kPvr:
-        return true;
+        return;
 
     default:
         break;
@@ -1391,8 +1408,6 @@ bool Cpu::MtSpr(int number, uint32_t value)
     {
         InvalidateTranslation();
     }
-
-    return true;
 }
 
 void Cpu::SetMsr(uint32_t value)
@@ -1663,8 +1678,8 @@ bool Cpu::Fetch(uint32_t address, uint32_t& op)
     }
 
     PAddr physical = 0;
-    const uint8_t* page = nullptr;
-    if (!Translate(address, true, physical) || (page = bus_.RamPage(physical & ~kPageMask)) == nullptr)
+    const uint8_t* page = Translate(address, true, physical) ? bus_.RamPage(physical & ~kPageMask) : nullptr;
+    if (page == nullptr)
     {
         stop_pc_ = address;
         fault_address_ = address;

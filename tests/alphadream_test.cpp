@@ -988,12 +988,6 @@ void TestPerformance()
 
 int RunTests()
 {
-    if (!ntdlib::testing::agb_files::MakeTempFolder())
-    {
-        std::fprintf(stderr, "couldn't make a temp folder\n");
-        return 1;
-    }
-
     TestDetection();
     TestVersions();
     TestHamtaroNotes();
@@ -1010,8 +1004,6 @@ int RunTests()
     TestReleasedNote();
     TestPerformance();
 
-    std::error_code ec;
-    std::filesystem::remove_all(ntdlib::testing::agb_files::g_temp, ec);
 
     return seqlib::testing::Summary("alphadream");
 }

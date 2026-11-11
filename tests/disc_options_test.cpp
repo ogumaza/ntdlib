@@ -231,9 +231,10 @@ void TestDefaults()
 }
 
 // An extracted disc's files are those in its files/ folder, sorted by path. The walk passes over an entry whose type
-// can't be read: broken symbolic links here. The list leaves out AppleDouble files. macOS writes one, named "._" and
-// the file's name, beside each file that it copies to a FAT or exFAT drive. On a system that doesn't let the test
-// make the links, such as Windows without developer mode, the test checks the rest.
+// can't be read: broken symbolic links here. It passes over a folder that can't be opened too. The list leaves out
+// AppleDouble files. macOS writes one, named "._" and the file's name, beside each file that it copies to a FAT or
+// exFAT drive. On a system that doesn't let the test make the links, such as Windows without developer mode, the test
+// checks the rest.
 void TestExtractedDisc()
 {
     const TempFolder folder("disc_options_test");
@@ -262,6 +263,8 @@ void TestExtractedDisc()
         fs::create_symlink(root / "missing.bin", root / "files" / name, ignored);
     }
 
+    const ntdlib::testing::LockedFolders locked(
+        {root / "files" / "0_locked", root / "files" / "n_locked", root / "files" / "Audio" / "z_locked"});
     disc::GameFiles game;
     const std::optional<std::string> error = disc::LoadGame(root, game, {disc::Console::kGameCube, "xyz"});
 
@@ -273,7 +276,7 @@ void TestExtractedDisc()
 
     Check(!error, "an extracted disc loads: " + error.value_or(""));
     Check(paths == std::vector<std::string>{"Audio/b.bin", "a.bin", "m.bin", "z.bin"},
-          "an extracted disc's files, past the broken links and without the AppleDouble files");
+          "an extracted disc's files, past the broken links and the locked folders, and without the AppleDouble files");
 }
 
 // A GameCube disc whose header leaves out the magic word loads if the rest of it is intact, from an image or from a

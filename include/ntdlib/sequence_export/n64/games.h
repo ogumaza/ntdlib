@@ -12,8 +12,6 @@
 #include <string>
 #include <vector>
 
-#include "xsflib/rip/rom_set.h"
-
 #include "ntdlib/n64/ead_script.h"
 
 namespace ntdlib::sequence_export::n64
@@ -379,9 +377,6 @@ struct GameProfile
     const EadProfile* ead = nullptr;       // the game's engine is one of EAD's, if it isn't null
     const LibmusProfile* libmus = nullptr; // the game's engine is the N64 Music Tools, if it isn't null
     const SbnProfile* sbn = nullptr;       // the game's engine is Intelligent Systems', if it isn't null
-
-    // The chips of an arcade game's ROM set. Put together, they make the image with `sha1`.
-    std::span<const xsflib::rip::RomChip> chips;
 
     // The game streams its music from the cartridge as waves. It has no sequences to convert.
     bool streamed_music = false;

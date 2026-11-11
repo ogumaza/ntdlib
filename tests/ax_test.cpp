@@ -115,6 +115,61 @@ bool Same(const ax::Voices& voices, const Model& model)
     return true;
 }
 
+// Random acquires, frees and priority changes on `count` voices, against the model: whether the lists stay the
+// model's.
+bool SameAfterRandomOperations(int count, std::mt19937& random)
+{
+    ax::Voices tested(count);
+    Model model(count);
+    bool same = true;
+    for (int step = 0; step < 20000 && same; step++)
+    {
+        const uint32_t v = random() % static_cast<uint32_t>(count);
+        const uint32_t priority = random() % (ax::kPriorityMax + 1);
+        switch (random() % 4)
+        {
+        case 0:
+        case 1: // AXAcquireVoice
+            {
+                const auto a = tested.Take(priority);
+                const auto b = model.Take(priority);
+                same = a.has_value() == b.has_value() && (!a || (a->voice == b->voice && a->stolen == b->stolen));
+
+                if (a)
+                {
+                    tested.Push(a->voice, priority);
+                    model.Push(b->voice, priority);
+                }
+                break;
+            }
+
+        case 2: // AXFreeVoice
+            if (tested.Priority(v) != ax::kPriorityFree)
+            {
+                tested.Remove(v);
+                model.Remove(v);
+                tested.Push(v, ax::kPriorityFree);
+                model.Push(v, ax::kPriorityFree);
+            }
+            break;
+
+        default: // AXSetVoicePriority
+            if (tested.Priority(v) != ax::kPriorityFree && priority != ax::kPriorityFree)
+            {
+                tested.Remove(v);
+                model.Remove(v);
+                tested.Push(v, priority);
+                model.Push(v, priority);
+            }
+            break;
+        }
+
+        same = same && Same(tested, model);
+    }
+
+    return same;
+}
+
 void TestVoices()
 {
     ax::Voices voices;
@@ -174,55 +229,7 @@ void TestVoices()
     std::mt19937 random(20261011);
     for (const int count : {96, 64, 5})
     {
-        ax::Voices tested(count);
-        Model model(count);
-        bool same = true;
-        for (int step = 0; step < 20000 && same; step++)
-        {
-            const uint32_t v = random() % static_cast<uint32_t>(count);
-            const uint32_t priority = random() % (ax::kPriorityMax + 1);
-            switch (random() % 4)
-            {
-            case 0:
-            case 1: // AXAcquireVoice
-                {
-                    const auto a = tested.Take(priority);
-                    const auto b = model.Take(priority);
-                    same = a.has_value() == b.has_value() && (!a || (a->voice == b->voice && a->stolen == b->stolen));
-
-                    if (a)
-                    {
-                        tested.Push(a->voice, priority);
-                        model.Push(b->voice, priority);
-                    }
-                    break;
-                }
-
-            case 2: // AXFreeVoice
-                if (tested.Priority(v) != ax::kPriorityFree)
-                {
-                    tested.Remove(v);
-                    model.Remove(v);
-                    tested.Push(v, ax::kPriorityFree);
-                    model.Push(v, ax::kPriorityFree);
-                }
-                break;
-
-            default: // AXSetVoicePriority
-                if (tested.Priority(v) != ax::kPriorityFree && priority != ax::kPriorityFree)
-                {
-                    tested.Remove(v);
-                    model.Remove(v);
-                    tested.Push(v, priority);
-                    model.Push(v, priority);
-                }
-                break;
-            }
-
-            same = same && Same(tested, model);
-        }
-
-        Check(same, "random operations keep the model's lists");
+        Check(SameAfterRandomOperations(count, random), "random operations keep the model's lists");
     }
 }
 

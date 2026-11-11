@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "ntdlib/n64/audio_list.h"
@@ -114,6 +115,9 @@ public:
     std::function<void(const EadNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     static constexpr int kNoLayer = -1;
     static constexpr int kNoChannel = -1;
     static constexpr int kNoVoice = -1;
@@ -383,6 +387,25 @@ private:
         kActive = 3,
     };
 
+    // A sample that a voice decodes in an update, and the place in the part that the voice decodes.
+    struct SampleDecode
+    {
+        const EadSample* sample = nullptr;
+        const EadBank* bank = nullptr;
+        const BankLoop* loop = nullptr;
+        int32_t end_position = 0;
+        uint32_t address = 0;
+        uint32_t book_address = 0;
+        int wanted = 0;
+        int processed = 0;
+        int written = 0;
+    };
+
+    // The parts of the constructor.
+    void InitVoiceLists();
+    void AllocateVoices(AudioMemory& memory);
+    void AllocateReverbs(AudioMemory& memory);
+
     // Lists of voices: a voice's index or a list's head. A voice that's in no list has no previous item.
     int Head(int pool, ListKind kind) const;
     int PlayerPool(int player) const;
@@ -429,7 +452,12 @@ private:
     void ChannelSound(int channel, bool recalculate_volume);
 
     void ProcessVoices();
+    void ProcessVoice(int index);
+    bool StopWithLayer(int index);
+    bool EndOrReuseVoice(int index);
     float UpdateAdsr(Adsr& adsr);
+    void FollowEnvelope(Adsr& adsr, uint8_t state) const;
+    void ReadEnvelopePoint(Adsr& adsr) const;
     void UpdateVibrato(Voice& voice);
     float VibratoScale(Vibrato& vibrato);
     void InitVibrato(int voice);
@@ -446,12 +474,24 @@ private:
     int AllocFromActive(int pool, int layer);
     int AllocVoice(int layer);
 
+    // The parts of RunFrame.
+    void RunUpdate(int update);
+    int UpdateLength(int remaining, int left);
+
     void EnsureBank(AudioMemory& memory, int bank);
     void StartReverbItem(AudioMemory& memory, Reverb& reverb, int length, int update);
     void LoadReverbSamples(AudioList& list, const Reverb& reverb, int length, int update);
     void SaveReverbSamples(AudioList& list, Reverb& reverb, int update);
     void BuildUpdate(AudioList& list, AudioMemory& memory, uint32_t output, int length, int update);
     void BuildVoice(AudioList& list, AudioMemory& memory, int voice, UpdateState& state, int length, int update);
+    static uint32_t LoadWave(AudioList& list, const UpdateState& state, Voice& voice, int32_t to_load);
+    std::optional<uint32_t> DecodeSample(AudioList& list, AudioMemory& memory, int voice, UpdateState& state,
+                                         int32_t to_load, uint32_t flags, int update);
+    bool DecodeChunk(AudioList& list, int voice, UpdateState& state, SampleDecode& decode, uint32_t& flags,
+                     int& skip_bytes, int update);
+    void DisableLaterUpdates(int voice, int update);
+    std::optional<SampleDecode> StartDecode(AudioMemory& memory, const UpdateState& state);
+    static void AdvancePosition(Voice& voice, const SampleDecode& decode, bool restart, int to_process);
     void BuildEnvelope(AudioList& list, const UpdateState& state, Voice& voice, int length, int side);
     void BuildDelay(AudioList& list, const UpdateState& state, Voice& voice, int size, uint32_t flags, int side);
 
@@ -467,6 +507,11 @@ private:
     void SaveReverbStandard(AudioList& list, Reverb& reverb, int update) const;
     void BuildUpdateStandard(AudioList& list, AudioMemory& memory, uint32_t output, int length, int update);
     void BuildVoiceStandard(AudioList& list, AudioMemory& memory, int voice, UpdateState& state, int length);
+    static uint32_t LoadWaveStandard(AudioList& list, const UpdateState& state, Voice& voice, int32_t to_load);
+    std::optional<uint32_t> DecodeSampleStandard(AudioList& list, AudioMemory& memory, Voice& voice, UpdateState& state,
+                                                 int32_t to_load, uint8_t flags);
+    bool DecodeChunkStandard(AudioList& list, Voice& voice, UpdateState& state, SampleDecode& decode, uint8_t& flags,
+                             uint32_t& skip_bytes);
     void BuildEnvelopeStandard(AudioList& list, const UpdateState& state, Voice& voice, int length, int side,
                                bool use_reverb);
     static void BuildDelayStandard(AudioList& list, const UpdateState& state, Voice& voice, int size, uint32_t flags,

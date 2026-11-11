@@ -152,38 +152,9 @@ void ArchivePlayer::Frame(std::vector<int16_t>* out, std::vector<float>* enhance
         }
     };
 
-    // The PSG's channels of muted tracks stay out of the output, those of the grown units too. The hardware plays up
-    // to the driver's routine, whose writes then take effect. A note there can give a channel to another track.
-    std::vector<uint8_t> muted_units;
-    const auto mute_psg = [&]()
-    {
-        uint8_t muted = 0;
-        muted_units.assign(size_t(apu_.PsgUnits() - 1), 0);
-        for (int c = kFirstPsgChannel; c < sequencer_->ChannelCount(); c++)
-        {
-            const Channel& channel = sequencer_->GetChannel(c);
-            const int owner = sequencer_->ChannelTrack(c);
-            if (!channel.part || owner < 0 || !(muted_ >> owner & 1))
-            {
-                continue;
-            }
-            if (channel.unit == 0)
-            {
-                muted = uint8_t(muted | 1u << (channel.part - 1));
-            }
-            else if (size_t(channel.unit) <= muted_units.size())
-            {
-                uint8_t& unit = muted_units[size_t(channel.unit) - 1];
-                unit = uint8_t(unit | 1u << (channel.part - 1));
-            }
-        }
-        apu_.SetMuted(muted);
-        if (!muted_units.empty())
-        {
-            apu_.SetMutedUnits(muted_units);
-        }
-    };
-    mute_psg();
+    // The hardware plays up to the driver's routine, whose writes then take effect. A note there can give a channel to
+    // another track.
+    MutePsg();
     run(store_cycle_);
     for (const auto& [index, value] : writes_)
     {
@@ -196,7 +167,7 @@ void ArchivePlayer::Frame(std::vector<int16_t>* out, std::vector<float>* enhance
     {
         apu_.Store(write.address, write.size, write.value);
     }
-    mute_psg();
+    MutePsg();
     apu_.Queue(0, sequencer_->Right());
     apu_.Queue(1, sequencer_->Left());
     if (enhanced_)
@@ -210,6 +181,52 @@ void ArchivePlayer::Frame(std::vector<int16_t>* out, std::vector<float>* enhance
     // The FIFOs play the frame's points in the next frame, and the last of them in the frame after.
     tail_ = !sequencer_->Ended() || !sequencer_->MixerSilent() ? 2 : std::max(tail_ - 1, 0);
 
+    UpdatePeaks(metering);
+
+    if (on_note)
+    {
+        for (const Action& action : actions_)
+        {
+            if (action.kind == Action::kNoteOn)
+            {
+                on_note(action);
+            }
+        }
+    }
+}
+
+void ArchivePlayer::MutePsg()
+{
+    std::vector<uint8_t> muted_units;
+    uint8_t muted = 0;
+    muted_units.assign(size_t(apu_.PsgUnits() - 1), 0);
+    for (int c = kFirstPsgChannel; c < sequencer_->ChannelCount(); c++)
+    {
+        const Channel& channel = sequencer_->GetChannel(c);
+        const int owner = sequencer_->ChannelTrack(c);
+        if (!channel.part || owner < 0 || !(muted_ >> owner & 1))
+        {
+            continue;
+        }
+        if (channel.unit == 0)
+        {
+            muted = uint8_t(muted | 1u << (channel.part - 1));
+        }
+        else if (size_t(channel.unit) <= muted_units.size())
+        {
+            uint8_t& unit = muted_units[size_t(channel.unit) - 1];
+            unit = uint8_t(unit | 1u << (channel.part - 1));
+        }
+    }
+    apu_.SetMuted(muted);
+    if (!muted_units.empty())
+    {
+        apu_.SetMutedUnits(muted_units);
+    }
+}
+
+void ArchivePlayer::UpdatePeaks(bool metering)
+{
     // A point that the mixer adds counts 4 or 2 times in the output's 10 bits: the FIFO's volume at 100% or 50%. The
     // stereo mixer's right side goes to FIFO A, and its left to FIFO B. The mono mixer's goes to FIFO A.
     peaks_ = {};
@@ -240,17 +257,6 @@ void ArchivePlayer::Frame(std::vector<int16_t>* out, std::vector<float>* enhance
     for (int t = 0; t < kMaxTracks; t++)
     {
         mixed_[size_t(t)] = metering ? sequencer_->MixerPeaks(t) : std::array<int32_t, 2>{};
-    }
-
-    if (on_note)
-    {
-        for (const Action& action : actions_)
-        {
-            if (action.kind == Action::kNoteOn)
-            {
-                on_note(action);
-            }
-        }
     }
 }
 

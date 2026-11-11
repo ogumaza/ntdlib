@@ -16,6 +16,7 @@
 #include "ntdlib/cafe/ax/voice.h"
 #include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/fused.h"
+#include "ntdlib/wave/adpcm.h"
 
 namespace ntdlib::cafe::snd
 {
@@ -192,7 +193,7 @@ uint32_t AxVoice::OffsetOf(uint32_t sample) const
         return sample;
     }
 
-    return sample / 14 * 16 + sample % 14 + 2;
+    return wave::DspAdpcmNibbleAddress(sample);
 }
 
 void AxVoice::SetupNextWaveBuffer(const WaveBuffer& buffer)
@@ -437,39 +438,44 @@ void AxVoice::UpdateParams(const std::array<OutputMode, 2>& modes)
     UpdateBiquadFilter(false);
 }
 
-void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& modes)
+void AxVoice::StartNextBuffer(const std::array<OutputMode, 2>& modes)
 {
-    if (!running)
+    // A voice that has stopped finishes its buffer and starts the next one waiting.
+    WaveBuffer* buffer = head_;
+    if (!buffer)
     {
-        // A voice that has stopped finishes its buffer and starts the next one waiting.
-        WaveBuffer* buffer = head_;
+        return;
+    }
+
+    if (buffer->status == WaveBuffer::Status::kPlay)
+    {
+        head_ = buffer->next;
+        if (tail_ == buffer)
+        {
+            tail_ = nullptr;
+        }
+        buffer->status = WaveBuffer::Status::kDone;
+        buffer = head_;
         if (!buffer)
         {
             return;
         }
+    }
+    if (buffer->status != WaveBuffer::Status::kWait)
+    {
+        return;
+    }
 
-        if (buffer->status == WaveBuffer::Status::kPlay)
-        {
-            head_ = buffer->next;
-            if (tail_ == buffer)
-            {
-                tail_ = nullptr;
-            }
-            buffer->status = WaveBuffer::Status::kDone;
-            buffer = head_;
-            if (!buffer)
-            {
-                return;
-            }
-        }
-        if (buffer->status != WaveBuffer::Status::kWait)
-        {
-            return;
-        }
+    SetupVoice(*buffer, modes);
+    system_->SetVoiceState(*ax_voice_, ax::VoiceState::kRun);
+    buffer->status = WaveBuffer::Status::kPlay;
+}
 
-        SetupVoice(*buffer, modes);
-        system_->SetVoiceState(*ax_voice_, ax::VoiceState::kRun);
-        buffer->status = WaveBuffer::Status::kPlay;
+void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& modes)
+{
+    if (!running)
+    {
+        StartNextBuffer(modes);
         return;
     }
 

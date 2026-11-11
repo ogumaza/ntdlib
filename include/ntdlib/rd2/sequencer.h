@@ -456,6 +456,10 @@ private:
     void FreeTrack(int slot);
     void ReleaseTrackVoices(int slot);
     bool RunTrack(int slot);
+
+    // Runs command `op`, from C2 on, of the track in `slot`, read at `at`. Returns false if the track ends.
+    bool RunCommand(int slot, uint8_t op, uint32_t at);
+
     void PlayNote(int slot, uint8_t op);
     void StartTrackFrom(int slot, uint32_t at);
     uint32_t ReadVarLength(Track& t);

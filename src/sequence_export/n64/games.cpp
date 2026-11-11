@@ -947,30 +947,6 @@ constexpr SbnProfile kPaperMario = {.output_rate = 32006,
                                     .names = kPaperMarioNames,
                                     .changes = kPaperMarioChanges};
 
-// The chips of the ROM sets of Seta's Aleck64 arcade board. Every chip of a set is stored with each pair of bytes
-// reversed. Put together in order, a set's chips make the image of a cartridge.
-using xsflib::rip::RomChip;
-
-const std::array kElevenBeatChips = {RomChip{"824911452639cedf6a8186c05cd046e61fc98896", 0x800000, 0, true}};
-const std::array kHiPaiParadiseChips = {
-    RomChip{"e909ea5b71b81087da07821c4f57244576363678", 0x1000000, 0, true},
-    RomChip{"7c3e59f6520dc3f0aa592e682fa82e30ffd1f4d0", 0x1000000, 0x1000000, true}};
-const std::array kHiPaiParadise2Chips = {
-    RomChip{"279a006436069232383b2065e7416d8ccc76e3ca", 0x1000000, 0, true},
-    RomChip{"a6d2d805f96f0ad7294ebf41b13573320154b2a4", 0x1000000, 0x1000000, true}};
-const std::array kTowerAndShaftChips = {RomChip{"7dfa3447d2c489c0448c4004dc12d3037c05a0f3", 0x1000000, 0, true}};
-const std::array kHanabiDeDoonChips = {RomChip{"4f41ee23edc18110be1218ba333d1c58376ab175", 0x1000000, 0, true},
-                                       RomChip{"c8cc6c0a456b593aef711d0a75b2342ba2f8203f", 0x1000000, 0x1000000, true}};
-const std::array kKurukuruFeverChips = {
-    RomChip{"824fdce01fffdfcbcc9b1fbda4ab389a10b2b418", 0x1000000, 0, true},
-    RomChip{"2b6ca1a769dee74e112c2b287dacd0bf46dda091", 0x1000000, 0x1000000, true}};
-const std::array kMagicalTetrisChallengeChips = {
-    RomChip{"59932c70b43ff8e9264c670f37b3abbe939b7f95", 0x1000000, 0, true}};
-const std::array kMayjinsen3Chips = {RomChip{"b5834bfde5b8a7e20415b2593abd76ec95ab27c7", 0x800000, 0, true}};
-const std::array kStarSoldierChips = {RomChip{"3794606c008fb69f5d16dcccece94d03da23bf8a", 0xC00000, 0, true}};
-const std::array kSuperRealMahjongVsChips = {RomChip{"a78de955f2fcd99dda14e782984368b320eb5415", 0x2000000, 0, true}};
-const std::array kVividDollsChips = {RomChip{"06d8b808cc19378b046803f4dc75c7d791b7767f", 0x800000, 0, true}};
-
 // Hi Pai Paradise (Aleck64). The game's code runs from 0x80025C00, from 0x1000 in the image. The function at
 // 0x8002E870 reads a song's file from the cartridge through the table of files at 0x80091CA0, from 0x140000 in the
 // image. The halfwords at 0x800918A0 give the files of songs 1 to 13. At boot, the code at 0x8002E334 reads the table
@@ -1123,8 +1099,7 @@ const std::array kProfiles = {
                              .bank = 0x36D9B8,
                              .hudson_sequences = true,
                              .oscillators = true,
-                             .effect = BusEffect::kSmallRoom},
-                .chips = kElevenBeatChips},
+                             .effect = BusEffect::kSmallRoom}},
 
     // Mayjinsen 3 (Aleck64). The game's code at 0x800288C4 gives the compressed sequence player the volume at
     // 0x80108DAC. The volume there is 0x3FFF. Its player has no oscillators. The code at 0x80029124 gives its
@@ -1135,8 +1110,7 @@ const std::array kProfiles = {
                              .sequences = 0x600660,
                              .bank = 0x444250,
                              .volume = 0x3FFF,
-                             .effect = BusEffect::kSmallRoom},
-                .chips = kMayjinsen3Chips},
+                             .effect = BusEffect::kSmallRoom}},
 
     // Star Soldier: Vanishing Earth (Aleck64). The songs play on libultra's compressed sequence player, under Hudson's
     // sound code. The function at 0x80002B84 reads the record of a song. The code at 0x80002D78 gives the player the
@@ -1149,8 +1123,7 @@ const std::array kProfiles = {
                              .bank = 0x9B3F8,
                              .hudson_sequences = true,
                              .oscillators = true,
-                             .effect = BusEffect::kCustom},
-                .chips = kStarSoldierChips},
+                             .effect = BusEffect::kCustom}},
 
     // Super Real Mahjong VS (Aleck64). The sequence file holds 40 sequences. The first 20 play in stereo on the bank
     // file at 0x8E040. The next 20 hold the same songs for mono, on the bank file at 0x81F90. Sequences 13 to 19 and 33
@@ -1170,8 +1143,7 @@ const std::array kProfiles = {
                              .first_song = 20,
                              .song_count = 13,
                              .other_sets = kSuperRealMahjongVsSets,
-                             .volume = 0x7FFF},
-                .chips = kSuperRealMahjongVsChips},
+                             .volume = 0x7FFF}},
 
     // Vivid Dolls (Aleck64). The game's code at 0x8000D344 gives the compressed sequence player the volume at
     // 0x800A236C. The volume there is 0x7800. Its player has no oscillators. The code at 0x8000DB84 gives its
@@ -1182,36 +1154,24 @@ const std::array kProfiles = {
                              .sequences = 0x1D7720,
                              .bank = 0x196CC0,
                              .volume = 0x7800,
-                             .effect = BusEffect::kSmallRoom},
-                .chips = kVividDollsChips},
+                             .effect = BusEffect::kSmallRoom}},
 
-    GameProfile{.sha1 = "68329c94e1b9342ee60713e9e0945ea2663210c7",
-                .title = "Hi Pai Paradise",
-                .libmus = &kHiPaiParadise,
-                .chips = kHiPaiParadiseChips},
-    GameProfile{.sha1 = "ba4474dc4967adb2a41cf3b0022c6215990c0e64",
-                .title = "Tower & Shaft",
-                .libmus = &kTowerAndShaft,
-                .chips = kTowerAndShaftChips},
+    GameProfile{
+        .sha1 = "68329c94e1b9342ee60713e9e0945ea2663210c7", .title = "Hi Pai Paradise", .libmus = &kHiPaiParadise},
+    GameProfile{
+        .sha1 = "ba4474dc4967adb2a41cf3b0022c6215990c0e64", .title = "Tower & Shaft", .libmus = &kTowerAndShaft},
 
     // Four games of the Aleck64 stream each song from the cartridge as one wave, through Software Creations' music
     // library. Hi Pai Paradise 2 gives the library a bank of 17 waves, one for each song, from the table of waves at
     // 0x13D7970 in the image.
     GameProfile{.sha1 = "2a77e47d34b8d9d89eb37ffc062e9ec0c2121abc",
                 .title = "Hanabi de Doon! - Don-chan Puzzle",
-                .chips = kHanabiDeDoonChips,
                 .streamed_music = true},
-    GameProfile{.sha1 = "47fdc89620ddf68972e861dee1536a26a309e35c",
-                .title = "Hi Pai Paradise 2",
-                .chips = kHiPaiParadise2Chips,
-                .streamed_music = true},
-    GameProfile{.sha1 = "f59c121e4d4c2c57c2ea4728919775a8d5d5e02e",
-                .title = "Kurukuru Fever",
-                .chips = kKurukuruFeverChips,
-                .streamed_music = true},
+    GameProfile{
+        .sha1 = "47fdc89620ddf68972e861dee1536a26a309e35c", .title = "Hi Pai Paradise 2", .streamed_music = true},
+    GameProfile{.sha1 = "f59c121e4d4c2c57c2ea4728919775a8d5d5e02e", .title = "Kurukuru Fever", .streamed_music = true},
     GameProfile{.sha1 = "7e357995def4078a54ba8e4486f361d631ff3329",
                 .title = "Magical Tetris Challenge",
-                .chips = kMagicalTetrisChallengeChips,
                 .streamed_music = true},
 };
 

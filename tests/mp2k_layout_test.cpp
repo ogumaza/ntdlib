@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -839,6 +840,23 @@ void TestRefusals()
     SEQLIB_CHECK(refuses(backwards));
 }
 
+// Join's free space starts on the first multiple of kFreeSpaceMargin that lies kFreeSpaceMargin bytes or more into the
+// run of 0xFF bytes at the ROM's end, or else at the ROM's end, on a multiple of 4 bytes. Given the ROM's last bytes
+// and their offset, the run counts only those bytes.
+void TestFreeSpaceStart()
+{
+    std::vector<uint8_t> image(0x1003, 0x11);
+    const uint64_t without_run = ntdlib::mp2k::FreeSpaceStart(image);
+    image.resize(0x1023, 0xFF);
+    const std::span<const uint8_t> last = std::span(image).subspan(0x1000);
+    const std::vector<uint8_t> run(0x20, 0xFF);
+
+    SEQLIB_CHECK(without_run == 0x1004);
+    SEQLIB_CHECK(ntdlib::mp2k::FreeSpaceStart(image) == 0x1200);
+    SEQLIB_CHECK(ntdlib::mp2k::FreeSpaceStart(last, 0x1000) == 0x1200);
+    SEQLIB_CHECK(ntdlib::mp2k::FreeSpaceStart(run, 0x2000) == 0x2000 + kFreeSpaceMargin);
+}
+
 } // namespace
 
 int main()
@@ -856,6 +874,7 @@ int main()
     TestHeaderTracks();
     TestShortNotes();
     TestRefusals();
+    TestFreeSpaceStart();
 
     return seqlib::testing::Summary("mp2k layout");
 }

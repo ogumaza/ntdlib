@@ -226,4 +226,10 @@ enum class SpareChannels
 std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const std::array<uint8_t, 16>& used,
                                  SpareChannels spare = SpareChannels::kForParts);
 
+// The parts that each track of `perf` may have, when the parts that the tracks used, `used`, don't fit MIDI's
+// channels (FitParts with `spare`). Nothing when they fit.
+std::optional<std::array<uint8_t, 16>> FittedParts(const seqlib::midi::Performance& perf,
+                                                   const std::array<uint8_t, 16>& used,
+                                                   SpareChannels spare = SpareChannels::kForParts);
+
 } // namespace ntdlib::sequence_export

@@ -10,9 +10,13 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::dse
 {
@@ -41,22 +45,6 @@ constexpr std::array<int8_t, 0x70> kCommandArguments = {
     5, 4,  2,  3,  -1, -1, 1,  -1, 2,  -1, -1, -1, -1, -1, -1, -1, // 0xF0
 };
 
-uint16_t Get16(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return static_cast<uint16_t>(bytes[at] | bytes[at + 1] << 8);
-}
-
-uint32_t Get32(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return static_cast<uint32_t>(bytes[at]) | static_cast<uint32_t>(bytes[at + 1]) << 8 |
-           static_cast<uint32_t>(bytes[at + 2]) << 16 | static_cast<uint32_t>(bytes[at + 3]) << 24;
-}
-
-std::size_t Align(std::size_t value, std::size_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
-
 template <std::size_t N>
 std::array<uint8_t, N> Take(const xsflib::Reader& r, std::size_t at)
 {
@@ -78,7 +66,7 @@ uint32_t ChunkSize(const xsflib::Reader& r, std::size_t at, const char* label, c
         throw xsflib::FormatError(std::string("the ") + label + " chunk's header isn't one that the file's kind has");
     }
 
-    return Get32(head, 12);
+    return xsflib::LoadLe32(&head[12]);
 }
 
 // Checks the magic word and the version, and gives the file's size.
@@ -104,7 +92,7 @@ Track ReadTrack(const xsflib::Reader& r, std::size_t at, std::size_t& next)
     {
         throw xsflib::FormatError("a track chunk is shorter than its preamble");
     }
-    const std::size_t padded = std::min(Align(end, 4), r.Size());
+    const std::size_t padded = std::min(AlignUp(end, 4), r.Size());
 
     Track track{.number = r.U8(start), .channel = r.U8(start + 1), .reserved = {r.U8(start + 2), r.U8(start + 3)}};
     std::size_t place = start + 4;
@@ -151,7 +139,7 @@ Track ReadTrack(const xsflib::Reader& r, std::size_t at, std::size_t& next)
         track.unread.assign(unread.begin(), unread.end());
     }
 
-    next = Align(end, 4);
+    next = AlignUp(end, 4);
     return track;
 }
 
@@ -189,7 +177,7 @@ public:
     // Pads to a multiple of `alignment` with `filler`'s bytes while they last, then with `value`.
     void Pad(std::size_t alignment, std::span<const uint8_t> filler, uint8_t value)
     {
-        const std::size_t count = Align(bytes_.size(), alignment) - bytes_.size();
+        const std::size_t count = AlignUp(bytes_.size(), alignment) - bytes_.size();
         for (std::size_t i = 0; i < count; i++)
         {
             U8(i < filler.size() && filler.size() == count ? filler[i] : value);
@@ -198,8 +186,7 @@ public:
 
     void Put16(std::size_t at, uint32_t value)
     {
-        bytes_[at] = static_cast<uint8_t>(value);
-        bytes_[at + 1] = static_cast<uint8_t>(value >> 8);
+        xsflib::StoreLe16(&bytes_[at], static_cast<uint16_t>(value));
     }
 
     void Put32(std::size_t at, uint32_t value)
@@ -370,7 +357,7 @@ int ArgumentBytes(uint8_t code, uint8_t next)
 
 uint16_t SequenceInfo::TicksPerQuarter() const
 {
-    return Get16(bytes, 2);
+    return xsflib::LoadLe16(&bytes[2]);
 }
 
 uint8_t SequenceInfo::TrackCount() const
@@ -381,6 +368,21 @@ uint8_t SequenceInfo::TrackCount() const
 uint8_t SequenceInfo::ChannelCount() const
 {
     return bytes[7];
+}
+
+void SequenceInfo::SetTicksPerQuarter(uint16_t ticks)
+{
+    xsflib::StoreLe16(&bytes[2], ticks);
+}
+
+void SequenceInfo::SetTrackCount(uint8_t count)
+{
+    bytes[6] = count;
+}
+
+void SequenceInfo::SetChannelCount(uint8_t count)
+{
+    bytes[7] = count;
 }
 
 Song Song::Parse(std::span<const uint8_t> file)
@@ -423,12 +425,12 @@ std::vector<uint8_t> Song::Write() const
 
 uint16_t WaveInfo::Id() const
 {
-    return Get16(bytes, 0x02);
+    return xsflib::LoadLe16(&bytes[0x02]);
 }
 
 uint16_t WaveInfo::Format() const
 {
-    return Get16(bytes, 0x12);
+    return xsflib::LoadLe16(&bytes[0x12]);
 }
 
 bool WaveInfo::Loops() const
@@ -438,27 +440,77 @@ bool WaveInfo::Loops() const
 
 uint32_t WaveInfo::SampleRate() const
 {
-    return Get32(bytes, 0x20);
+    return xsflib::LoadLe32(&bytes[0x20]);
 }
 
 uint32_t WaveInfo::SamplePosition() const
 {
-    return Get32(bytes, 0x24);
+    return xsflib::LoadLe32(&bytes[0x24]);
 }
 
 uint32_t WaveInfo::LoopStart() const
 {
-    return Get32(bytes, 0x28);
+    return xsflib::LoadLe32(&bytes[0x28]);
 }
 
 uint32_t WaveInfo::LoopLength() const
 {
-    return Get32(bytes, 0x2C);
+    return xsflib::LoadLe32(&bytes[0x2C]);
+}
+
+void WaveInfo::SetId(uint16_t id)
+{
+    xsflib::StoreLe16(&bytes[0x02], id);
+}
+
+void WaveInfo::SetFormat(uint16_t format)
+{
+    xsflib::StoreLe16(&bytes[0x12], format);
+}
+
+void WaveInfo::SetLoops(bool loops)
+{
+    bytes[0x15] = loops ? 1 : 0;
+}
+
+void WaveInfo::SetSampleRate(uint32_t rate)
+{
+    xsflib::StoreLe32(&bytes[0x20], rate);
+}
+
+void WaveInfo::SetSamplePosition(uint32_t position)
+{
+    xsflib::StoreLe32(&bytes[0x24], position);
+}
+
+void WaveInfo::SetLoopStart(uint32_t start)
+{
+    xsflib::StoreLe32(&bytes[0x28], start);
+}
+
+void WaveInfo::SetLoopLength(uint32_t length)
+{
+    xsflib::StoreLe32(&bytes[0x2C], length);
 }
 
 uint16_t Program::Id() const
 {
-    return Get16(header, 0x00);
+    return xsflib::LoadLe16(&header[0x00]);
+}
+
+std::vector<uint8_t> Program::Bytes() const
+{
+    std::vector<uint8_t> bytes(header.begin(), header.end());
+    for (const auto& lfo : lfos)
+    {
+        bytes.insert(bytes.end(), lfo.begin(), lfo.end());
+    }
+    bytes.insert(bytes.end(), filler.begin(), filler.end());
+    for (const auto& split : splits)
+    {
+        bytes.insert(bytes.end(), split.begin(), split.end());
+    }
+    return bytes;
 }
 
 WaveBank WaveBank::Parse(std::span<const uint8_t> file)
@@ -489,7 +541,7 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
         }
         bank.waves.push_back(wave);
     }
-    at = Align(end, 16);
+    at = AlignUp(end, 16);
 
     if (std::memcmp(r.Sub(at, 4).data(), "prgi", 4) == 0)
     {
@@ -512,7 +564,7 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
             {
                 throw xsflib::FormatError("a program's slot isn't its number");
             }
-            const std::size_t splits = Get16(program.header, 0x02);
+            const std::size_t splits = xsflib::LoadLe16(&program.header[0x02]);
             const std::size_t lfos = program.header[0x0B];
             p += 0x10;
             for (std::size_t i = 0; i < lfos; i++, p += 0x10)
@@ -531,7 +583,7 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
             }
             instruments.programs.push_back(std::move(program));
         }
-        at = Align(end, 16);
+        at = AlignUp(end, 16);
 
         const uint32_t kgrp_size = ChunkSize(r, at, "kgrp", kBankChunk);
         base = at + 16;
@@ -540,9 +592,9 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
             instruments.key_groups.push_back(Take<8>(r, base + i));
         }
         end = base + r.Sub(base, kgrp_size).size();
-        const std::span<const uint8_t> pad = r.Sub(end, std::min(Align(end, 16), r.Size()) - end);
+        const std::span<const uint8_t> pad = r.Sub(end, std::min(AlignUp(end, 16), r.Size()) - end);
         instruments.after_key_groups.assign(pad.begin(), pad.end());
-        at = Align(end, 16);
+        at = AlignUp(end, 16);
         bank.instruments = std::move(instruments);
     }
 
@@ -552,9 +604,9 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
         const std::span<const uint8_t> samples = r.Sub(at + 16, pcmd_size);
         bank.samples.emplace(samples.begin(), samples.end());
         end = at + 16 + samples.size();
-        const std::span<const uint8_t> pad = r.Sub(end, std::min(Align(end, 16), r.Size()) - end);
+        const std::span<const uint8_t> pad = r.Sub(end, std::min(AlignUp(end, 16), r.Size()) - end);
         bank.after_samples.assign(pad.begin(), pad.end());
-        at = Align(end, 16);
+        at = AlignUp(end, 16);
     }
 
     if (ChunkSize(r, at, "eod ", kBankChunk) != 0 || at + 16 != file.size())
@@ -698,15 +750,15 @@ SoundEffects SoundEffects::Parse(std::span<const uint8_t> file)
         last = p + 16 - base;
         effects.sequences.push_back(std::move(sequence));
     }
-    at = Align(end, 16);
+    at = AlignUp(end, 16);
 
     const uint32_t mcrl_size = ChunkSize(r, at, "mcrl", kBankChunk);
     effects.macros = ReadRecords(r, at + 16, at + 16 + r.Sub(at + 16, mcrl_size).size());
-    at = Align(at + 16 + mcrl_size, 16);
+    at = AlignUp(at + 16 + mcrl_size, 16);
 
     const uint32_t bnkl_size = ChunkSize(r, at, "bnkl", kBankChunk);
     effects.bank_lists = ReadRecords(r, at + 16, at + 16 + r.Sub(at + 16, bnkl_size).size());
-    at = Align(at + 16 + bnkl_size, 16);
+    at = AlignUp(at + 16 + bnkl_size, 16);
 
     if (ChunkSize(r, at, "eod ", kBankChunk) != 0 || at + 16 != file.size())
     {
@@ -766,7 +818,7 @@ std::vector<uint16_t> SoundEffects::BankIds(std::size_t effect) const
     const std::size_t count = record[0] | record[1] << 8;
     for (std::size_t i = 0; i < count && 4 + 2 * i + 1 < record.size(); i++)
     {
-        ids.push_back(static_cast<uint16_t>(record[4 + 2 * i] | record[4 + 2 * i + 1] << 8));
+        ids.push_back(xsflib::LoadLe16(&record[4 + 2 * i]));
     }
     return ids;
 }

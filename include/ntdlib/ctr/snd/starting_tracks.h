@@ -33,6 +33,7 @@ struct SequenceVariable
 
     uint8_t index = kNone;
     int16_t value = -1;
+
     // The sound frame at whose start the variable takes the value, before the frame's ticks. Frame 0 is the frame of
     // the sequence's first tick: the variable has the value as the sequence starts.
     uint32_t frame = 0;
@@ -66,37 +67,47 @@ struct SequenceStart
     // The tracks that the game mutes (SequenceSoundHandle::SetTrackMute). They run their commands, and none of their
     // notes starts.
     uint16_t muted = 0;
+
     // The tracks that the game silences (SequenceSoundHandle::SetTrackSilence) or sets to a volume of 0. Their notes
     // start and take their voices, at a volume of 0.
     uint16_t silenced = 0;
+
     // The volumes other than 0 that the game gives the tracks (SequenceSoundHandle::SetTrackVolume), track 0 first, as
     // factors of amplitude. The driver multiplies each into the volume of the track's channels (UpdateChannelParam,
     // 0x31DE18 in Pokémon X's code.bin). A volume of 0 here plays as the track's bit in `silenced`.
     std::array<float, kSequenceTracks> track_volumes = kFullTrackVolumes;
+
     // The variables that the game sets as the sequence starts or plays, in the order of their frames. Entries with the
     // index kNone set nothing. A reader reads every entry and skips those.
     std::array<SequenceVariable, kStartVariables> variables = {};
+
     // The random generator's state at the sequence's first tick, for an effect that the game plays only on some draws.
     // The sequence's first random command draws the number after it. Without a value, the player's state holds.
     std::optional<uint32_t> seed = std::nullopt;
+
     // The tempo ratio that the game sets (SequenceSoundHandle::SetTempoRatio). The sequence's ticks come at its tempo
     // times the ratio.
     float tempo_ratio = 1.0f;
+
     // The pitch that the game sets (SoundHandle::SetPitch), as a ratio of frequencies. Every voice of the sequence
     // plays at its pitch times the ratio.
     float pitch = 1.0f;
+
     // The volume that the game sets (SoundHandle::SetVolume), as a factor of amplitude. It multiplies everything that
     // the sequence plays.
     float volume = 1.0f;
+
     // The banks that the game gives the sequence's four bank slots in place of the archive's, as item IDs: nw::snd's
     // SeqSoundInfo, which a StartInfo with flag 0x10 holds. The four replace all of the archive's slots, and kNoBank
     // leaves a slot empty. Without a value, the archive's banks hold.
     std::optional<std::array<uint32_t, 4>> banks = std::nullopt;
+
     // The sends on aux buses A and B that the game gives the sound: what the sound's handle (BasicSound::SetFxSend) and
     // its sound player (SoundPlayer::SetFxSend) set, added together (BasicSound's update, 0x52B7F8 to 0x52B818 in
     // Animal Crossing: New Leaf's code.bin). The driver adds them to each track's sends (SequenceTrack::
     // UpdateChannelParam: Pokémon X 0x31E03C to 0x31E068, New Leaf 0x533F84 to 0x533FB0).
     std::array<float, 2> fx_send = {};
+
     // The effect that the game runs on the aux buses while the sequence plays, by the game's number for it, or
     // kArchiveEffects. A tool looks the number up in its table of the game's effects.
     uint8_t game_effect = kArchiveEffects;

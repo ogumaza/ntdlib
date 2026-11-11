@@ -214,22 +214,23 @@ public:
     bool Held() const;
     bool Moving() const;
     bool WaitsForNotes(uint32_t track) const;
-    bool WaitsForEver(uint32_t track) const;
+    bool WaitsForEver(uint32_t index) const;
     bool Waiting() const;
 
     // A DSP channel's place in its wave, for a length analysis: whether it plays a wave, whether the wave loops, and a
     // position that drops each time the wave passes back to its loop's start.
-    struct WavePlace
-    {
-        bool playing = false;
-        bool loops = false;
-        int64_t position = 0;
-    };
+    using WavePlace = jaudio2::WavePlace;
 
     WavePlace DspChannelPlace(uint32_t index) const;
 
 private:
     struct Model;
+
+    // Start's steps: a new model with the DSP's start-up, the FX lines and the banks; the sound's levels from the
+    // sound table and the managers' volumes; and the BGM manager's track controllers for `states`.
+    void StartModel();
+    SoundParams SoundLevels(const ntdlib::jaudio::SoundEntry& sound) const;
+    void StartControllers(const TrackStates& states);
 
     // JAISeq's mix-out at a frame's start: the sound's levels into the root track, and the levels that the BGM
     // manager's track controllers give the child tracks.

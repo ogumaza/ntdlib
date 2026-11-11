@@ -60,7 +60,7 @@ inline bool LengthenedLoop(const seqlib::sf2::Sample& s, uint32_t loop_start, ui
 inline ConvertSettings TempSettings(const std::string& base_name)
 {
     ConvertSettings settings;
-    settings.out_dir = Utf8(g_temp);
+    settings.out_dir = Utf8(TempFolderPath());
     settings.base_name = base_name;
 
     return settings;

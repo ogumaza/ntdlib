@@ -2,6 +2,7 @@
 
 // Tests of the command-line frame: the text and file helpers, the options, and the batch with a converter made up here.
 // The batch's files go in a temporary folder. Also the help of a converter of sound archives.
+// MakeArchiveConverter's converters open both kinds of sound archive.
 
 #include <cstddef>
 #include <cstdint>
@@ -13,16 +14,21 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/consoles.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sound_pieces.h"
+#include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
 #include "temp_folder.h"
 
@@ -463,6 +469,47 @@ void TestFolderInputs()
     Check(parent == 0 && parent_beside, "a folder's path that ends in ..");
 }
 
+void TestFolderInputThroughALink()
+{
+    // For "linked/link/..", where link is a symbolic link to real/inner, the frame reads the folder that the system
+    // opens and writes its output beside it (R-A97). macOS resolves the ".." from the link's target and opens real.
+    // Windows removes "link/.." from the path and opens linked.
+    const TempFolder folder("sequence_export_frame_test");
+    const fs::path real = folder.Path() / "real";
+    const fs::path linked = folder.Path() / "linked";
+    fs::create_directories(real / "inner");
+    fs::create_directories(linked);
+    WriteFile(real / "names.txt", std::string("Real\n"));
+    WriteFile(linked / "names.txt", std::string("Linked\n"));
+    std::error_code error;
+    fs::create_directory_symlink(real / "inner", linked / "link", error);
+    if (error)
+    {
+        // Windows makes symbolic links only with Developer Mode or as an administrator.
+        std::printf("frame: can't make a symbolic link (%s). The check of a path through one is skipped.\n",
+                    error.message().c_str());
+        return;
+    }
+    FakeConverter fake;
+    fake.converter.reads_folders = true;
+    const auto open = fake.converter.open;
+    fake.converter.open = [open](const fs::path& input, const std::string& name)
+    {
+        return open(input / "names.txt", name);
+    };
+
+    const bool target_side = Text(ReadFile(linked / "link" / ".." / "names.txt")) == "Real\n";
+    const std::string opened = target_side ? "real" : "linked";
+    const std::string other = target_side ? "linked" : "real";
+    const std::string sequence = target_side ? "Real" : "Linked";
+
+    const int result = Run({"fake", "--quiet", Utf8(linked / "link") + "/.."}, fake.converter);
+
+    Check(result == 0 && Text(ReadFile(folder.Path() / (opened + "_fake") / (sequence + ".mid"))) == "MIDI " + sequence,
+          "a folder's path that ends in .. after a symbolic link names the folder that the system opens, " + opened);
+    Check(!fs::exists(folder.Path() / (other + "_fake")), "the other folder gets no output");
+}
+
 void TestOnlyPicksAPieceByItsLabels()
 {
     // A piece of several sequences answers --only to its name and to the label of each of its sequences.
@@ -481,6 +528,79 @@ void TestOnlyPicksAPieceByItsLabels()
 
     Check(label == 0 && fs::exists(out / "Piece.mid") && !fs::exists(out / "Other.mid"), "--only picks a label");
     Check(none == 1, "--only that picks no name and no label");
+}
+
+// A stand-in for a sound archive: the sounds that ArchiveSequences reads.
+struct FakeArchive
+{
+    std::vector<ntdlib::sar::SoundInfo> sounds;
+
+    const std::vector<ntdlib::sar::SoundInfo>& Sounds() const
+    {
+        return sounds;
+    }
+};
+
+void TestArchiveSequencesWithPieces()
+{
+    // A piece of sounds 1 and 3 takes sound 1's place with its name and its labels. Sound 3 leaves the list. Sound 2 is
+    // a stream.
+    FakeArchive archive;
+    for (const char* name : {"FIRST", "PIECE_A", "STREAM", "PIECE_B", "LAST"})
+    {
+        ntdlib::sar::SoundInfo sound;
+        sound.name = name;
+        sound.type =
+            std::string_view(name) == "STREAM" ? ntdlib::sar::SoundType::kStream : ntdlib::sar::SoundType::kSequence;
+        archive.sounds.push_back(sound);
+    }
+    const std::vector<ntdlib::SoundPiece> pieces = {{"PIECE", {1, 3}}};
+
+    const std::vector<Sequence> sequences = ArchiveSequences(archive, pieces);
+
+    Check(sequences.size() == 3, "a piece's later sequence leaves the list");
+    Check(sequences.size() == 3 && sequences[0].index == 0 && sequences[0].labels.empty() && sequences[2].index == 4,
+          "the other sequences stay as they are");
+    Check(sequences.size() == 3 && sequences[1].index == 1 && sequences[1].name == "PIECE" &&
+              sequences[1].labels == std::vector<std::string>{"PIECE_A", "PIECE_B"},
+          "a piece takes its first sequence's place, with its name and labels");
+}
+
+void TestArchiveConverters()
+{
+    // MakeArchiveConverter makes a converter for each kind of sound archive. It opens an archive and lists its
+    // sequences. A file that can't be read opens nothing.
+    namespace rsar_files = ntdlib::testing::rsar_files;
+    namespace sar_files = ntdlib::testing::sar_files;
+    constexpr ntdlib::sar::Flavor kCtr = ntdlib::sar::Flavor::kCtr;
+    const TempFolder folder("sequence_export_frame_test");
+
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {{.name = "SEQ", .file = 0, .player = 0}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{sar_files::Sequence(kCtr, {0xFF}, {}), "", false}};
+    ArchiveConverter<ntdlib::sar::SoundArchive> sar_converter;
+    sar_converter.settings = CtrSettings();
+    const Converter<PerformOptions, ntdlib::sar::SoundArchive, Conversion> sar = MakeArchiveConverter(sar_converter);
+    const std::optional<ntdlib::sar::SoundArchive> sar_archive =
+        sar.open(folder.Write("Sound.bcsar", sar_files::Archive(kCtr, spec)), "Sound.bcsar");
+
+    Check(sar.input_word == "archive" && sar_archive && sar.sequences(*sar_archive).size() == 1 &&
+              sar.sequences(*sar_archive)[0].name == "SEQ",
+          "a converter of CSAR, FSAR and BFSAR archives lists their sequences");
+    Check(!sar.open(folder.Path() / "missing.bcsar", "missing.bcsar"), "a missing CSAR archive opens nothing");
+
+    ArchiveConverter<ntdlib::rsar::SoundArchive> rsar_converter;
+    const Converter<PerformOptions, ntdlib::rsar::SoundArchive, Conversion> rsar = MakeArchiveConverter(rsar_converter);
+    const std::optional<ntdlib::rsar::SoundArchive> rsar_archive =
+        rsar.open(folder.Write("Sound.brsar",
+                               rsar_files::MakeSoundTable({{"SEQ_FIELD", 1, 0}, {"STRM_TITLE", 2, 0}}, {"PLAYER_BGM"})),
+                  "Sound.brsar");
+
+    Check(rsar_archive && rsar.sequences(*rsar_archive).size() == 1 &&
+              rsar.sequences(*rsar_archive)[0].name == "SEQ_FIELD",
+          "a converter of RSAR archives lists their sequences");
+    Check(!rsar.open(folder.Path() / "missing.brsar", "missing.brsar"), "a missing RSAR archive opens nothing");
 }
 
 void TestOtherInputs()
@@ -590,7 +710,10 @@ int main()
     TestBatch();
     TestBatchInputs();
     TestFolderInputs();
+    TestFolderInputThroughALink();
     TestOnlyPicksAPieceByItsLabels();
+    TestArchiveSequencesWithPieces();
+    TestArchiveConverters();
     TestOtherInputs();
     TestRunMain();
     TestUsage();

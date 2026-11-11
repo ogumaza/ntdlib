@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/wave/adpcm.h"
 
 namespace ntdlib::rvl::nx
 {
@@ -455,8 +456,7 @@ void Layer::AppendWaveBuffer(const ax::Voice& voice, Record& record, std::size_t
         end_index = AdpcmIndex(end, base) - 1;
         loop_end_index = AdpcmIndex(loop_end, base) - 1;
         loop_start_index = AdpcmIndex(loop, base) - 2;
-        const uint64_t last = base + 2 + end_index / ax::kAdpcmSamplesPerFrame * ax::kAdpcmNibblesPerFrame +
-                              end_index % ax::kAdpcmSamplesPerFrame;
+        const uint64_t last = base + wave::DspAdpcmNibbleAddress(end_index);
         size = (last >> 1) - record.base + 1;
     }
     else
@@ -563,9 +563,7 @@ void Layer::ServiceWaveBuffers(ax::Voice& voice, Record& record)
     else
     {
         const uint64_t sample = static_cast<uint64_t>(buffer.start) + played;
-        current =
-            static_cast<uint32_t>(2 * record.base + sample / ax::kAdpcmSamplesPerFrame * ax::kAdpcmNibblesPerFrame +
-                                  sample % ax::kAdpcmSamplesPerFrame + 2);
+        current = static_cast<uint32_t>(2 * record.base + wave::DspAdpcmNibbleAddress(sample));
     }
 
     SetAddress(address.current_address_hi, address.current_address_lo, current);

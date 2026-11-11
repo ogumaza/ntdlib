@@ -22,6 +22,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -182,6 +183,18 @@ bool VoicesOption(const std::string& option, OptionReader& reader, Perform& perf
 template <typename Perform>
 using OptionHandler = std::function<bool(const std::string& option, OptionReader& reader, Perform& perform)>;
 
+// The help lines of --loops. ParseOptions reads --loops for every program. Each line ends with a newline.
+inline constexpr std::string_view kLoopsHelp =
+    "  --loops N      repeat the main loop N times (default 1)\n"
+    "                 MIDI loop markers are included for players that support them\n";
+
+// The help lines of --list, --quiet and --version. ParseOptions reads these options for every program. A program's
+// help ends with these lines. Each line ends with a newline.
+inline constexpr std::string_view kListQuietVersionHelp =
+    "  --list         list sequences without converting\n"
+    "  --quiet        print errors only\n"
+    "  --version      show the version\n";
+
 // Parses arguments up to --help or --version. `extra` reads the program's extra options. Throws std::runtime_error for
 // unknown options, missing values or invalid values.
 template <typename Perform>
@@ -251,6 +264,13 @@ struct Sequence
     std::string name;
     std::vector<std::string> labels = {};
 };
+
+// The sequences of `sequences` whose names or labels `only` matches, in order (ConvertInput).
+std::vector<Sequence> MatchingSequences(std::vector<Sequence> sequences, const std::regex& only);
+
+// Prints the names of `selected` for --list. With `several` inputs, the list starts with the input's name `name`, and
+// the names are indented.
+void ListSequences(const std::string& name, const std::vector<Sequence>& selected, bool several);
 
 // Converts the selected sequences to `out_dir` and reports each result unless `quiet` is set. `convert` converts a
 // sequence by its index. The SFZ files' shared samples go in sfz/<samples_folder>. Returns the failure count.
@@ -360,6 +380,14 @@ struct Converter
     std::function<Conversion(Source& source, std::size_t index, const Perform& perform)> convert;
 };
 
+// The folder that `input`, the path of a folder, names (ConvertInput). The path may end in a separator, "." or "..".
+std::filesystem::path FolderPath(std::filesystem::path input);
+
+// Throws std::runtime_error when `out_dir` is the output folder of an earlier input in `used_folders` (ConvertInput).
+// `used_folders` maps output folders to the inputs written there.
+void CheckOutputFolder(const std::filesystem::path& out_dir,
+                       const std::vector<std::pair<std::filesystem::path, std::string>>& used_folders);
+
 // Converts or lists the selected sequences in `path`. Returns 1 on any failure, otherwise 0. If `several` is set, the
 // listings start with the input's name. `used_folders` maps output directories to inputs already processed. Throws for
 // corrupt data, directory creation failure or a conflicting output directory.
@@ -380,20 +408,7 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
             return 1;
         }
 
-        // A folder's path may end in a separator, "." or "..". Its name and its output folder come from the folder
-        // itself.
-        if (!input.has_filename())
-        {
-            input = input.parent_path();
-        }
-        if (input.filename() == "." || input.filename() == "..")
-        {
-            input = std::filesystem::absolute(input, error).lexically_normal();
-            if (!input.has_filename())
-            {
-                input = input.parent_path();
-            }
-        }
+        input = FolderPath(std::move(input));
     }
 
     const std::string name = Utf8(input.filename());
@@ -404,29 +419,10 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
         return 1;
     }
 
-    std::vector<Sequence> selected;
-    const auto matches = [&only](const std::string& text)
-    {
-        return std::regex_search(text, only);
-    };
-    for (Sequence& sequence : converter.sequences(*source))
-    {
-        if (matches(sequence.name) || std::ranges::any_of(sequence.labels, matches))
-        {
-            selected.push_back(std::move(sequence));
-        }
-    }
-
+    const std::vector<Sequence> selected = MatchingSequences(converter.sequences(*source), only);
     if (options.list)
     {
-        if (several)
-        {
-            std::printf("%s:\n", name.c_str());
-        }
-        for (const Sequence& sequence : selected)
-        {
-            std::printf("%s%s\n", several ? "  " : "", sequence.name.c_str());
-        }
+        ListSequences(name, selected, several);
         return 0;
     }
 
@@ -441,19 +437,7 @@ int ConvertInput(const std::string& path, const Options<Perform>& options, const
             ? input.parent_path() / PathFromUtf8(seqlib::SafeFileName(Utf8(input.stem()) + "_" + converter.program))
             : PathFromUtf8(options.output);
 
-    // Input names differing only in extension produce the same output directory. Whether case differences collide too
-    // depends on the filesystem. Before writing anything, use the filesystem to check whether the directory already
-    // belongs to an earlier input.
-    for (const auto& [folder, earlier] : used_folders)
-    {
-        std::error_code ignored; // no existing directory to compare
-        if (std::filesystem::equivalent(out_dir, folder, ignored))
-        {
-            throw std::runtime_error("not converted: output would overwrite files from " + earlier + " in " +
-                                     Utf8(out_dir));
-        }
-    }
-
+    CheckOutputFolder(out_dir, used_folders);
     std::filesystem::create_directories(out_dir);
     used_folders.emplace_back(out_dir, name);
     if (!options.quiet)

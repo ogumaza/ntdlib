@@ -8,11 +8,12 @@
 // 3DS's is ntdlib::ctr::snd::LengthConsole (ntdlib/ctr/snd/length_model.h), and the Wii's is
 // ntdlib::rvl::snd::LengthConsole (ntdlib/rvl/snd/length_model.h).
 //
-// A struct may give two more things. Where the console's engine doesn't run frames by itself, `static bool
+// A struct may give three more things. Where the console's engine doesn't run frames by itself, `static bool
 // RunFrame(Model&)` runs a frame of the model and returns false if the model fails. Where an open of a track keeps the
-// track's wait, `kOpenKeepsWait` is true (see LengthModel::OnLoop). The Wii's struct gives both. The console's engine
-// gives SetEndlessLoops (see MeasureSequence).
-// The engines' hooks for the analysis are in length_hooks.h.
+// track's wait, `kOpenKeepsWait` is true (see TrackPasses::SetHooks). The Wii's struct gives both. Where the game's
+// code takes later steps that can change the sound, such as a script that starts the sound and sets its variables,
+// `static bool Pending(const Model&)` says whether a step is still to come. The console's engine gives SetEndlessLoops
+// (see MeasureSequence). The engines' hooks for the analysis are in length_hooks.h.
 
 #pragma once
 
@@ -65,10 +66,99 @@ constexpr bool OpenKeepsWait()
     }
 }
 
+// The passes of each track of a sequence player that changed the sound. A model for xsflib's length analysis counts
+// them for OthersLooped. A looping sequence's fade then waits for the tracks that loop at other lengths than the main
+// track. A track that another track opens again makes a pass each time. The fade therefore doesn't wait for the tracks
+// that a looping track opens again in each of its loops. Set `kOpenKeepsWait` where an open of a track keeps the
+// track's wait (OpenKeepsWait). The engine's hooks point to the object. The object therefore can't be copied.
+template <class Engine, class Player, bool kOpenKeepsWait = false>
+class TrackPasses
+{
+public:
+    TrackPasses(Engine& engine, const Player& player) : engine_(engine), player_(player)
+    {
+    }
+
+    TrackPasses(const TrackPasses&) = delete;
+    TrackPasses& operator=(const TrackPasses&) = delete;
+
+    // Sets the engine's hooks for every track's passes and for each open of a track. Only the passes that changed the
+    // sound count. An open of a track that a track opened before is such a pass: the track starts its part again. The
+    // first open isn't a pass. On most consoles, the open clears the track's wait, and the track starts again at once.
+    // Where the open keeps the wait, the pass counts at the track's next command. Two opens during one wait then make
+    // one pass.
+    void SetHooks()
+    {
+        const auto count_pass = [this](int track, uint32_t)
+        {
+            const auto* looping = player_.Track(track);
+            if (looping && !looping->IsIdle())
+            {
+                ++passes_[static_cast<std::size_t>(track)];
+            }
+        };
+        engine_.SetTrackLoopHook(count_pass);
+        const auto count_open = [this](int, int opened, uint32_t)
+        {
+            const auto index = static_cast<std::size_t>(opened);
+            if (opened_[index])
+            {
+                if constexpr (kOpenKeepsWait)
+                {
+                    reopened_[index] = true;
+                }
+                else
+                {
+                    ++passes_[index];
+                }
+            }
+
+            opened_[index] = true;
+        };
+        engine_.SetOpenTrackHook(count_open);
+        if constexpr (kOpenKeepsWait)
+        {
+            const auto count_start = [this](int track, uint32_t)
+            {
+                const auto index = static_cast<std::size_t>(track);
+                if (reopened_[index])
+                {
+                    ++passes_[index];
+                    reopened_[index] = false;
+                }
+            };
+            engine_.SetCommandStartHook(count_start);
+        }
+    }
+
+    // Whether every open track other than `track` has made kLengthLoops passes that changed the sound. Only the tracks
+    // in `tracks`, a bit for each, count. A track whose last pass changed nothing, that waits for ever or that isn't in
+    // `tracks` doesn't hold the fade back.
+    bool OthersLooped(int track, uint32_t tracks = ~0u) const
+    {
+        for (int i = 0; i < kTrackCount; ++i)
+        {
+            const auto* other = player_.Track(i);
+            if (i != track && (tracks & (1u << i)) != 0 && other && other->IsOpen() && !other->IsIdle() &&
+                !other->WaitsForEver(engine_) && passes_[static_cast<std::size_t>(i)] < xsflib::rip::kLengthLoops)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+private:
+    Engine& engine_;
+    const Player& player_;
+    std::array<int, kTrackCount> passes_{};    // each track's passes that changed the sound
+    std::array<bool, kTrackCount> opened_{};   // whether another track has opened each track
+    std::array<bool, kTrackCount> reopened_{}; // whether each track's next command starts its part again after an open
+};
+
 // The model that xsflib's length analysis (xsflib::rip::MeasureLength) reads: the console's model and the sound's
-// player. The model also counts each track's passes. A looping sequence's fade then waits for the tracks that loop at
-// other lengths than the main track (OthersLooped). A track that another track opens again makes a pass each time. The
-// fade therefore doesn't wait for the tracks that a looping track opens again in each of its loops.
+// player. The model also counts each track's passes (TrackPasses).
 template <class Console>
 class LengthModel
 {
@@ -77,7 +167,8 @@ public:
     using Engine = std::remove_reference_t<decltype(*std::declval<Model&>().engine)>;
     using Player = std::remove_pointer_t<decltype(std::declval<Engine&>().StartSequence(0))>;
 
-    LengthModel(Model& model, Player& player) : model_(model), engine_(*model.engine), player_(player)
+    LengthModel(Model& model, Player& player)
+        : model_(model), engine_(*model.engine), player_(player), passes_(engine_, player_)
     {
     }
 
@@ -130,14 +221,15 @@ public:
         return player_.IsActive();
     }
 
+    // A sequence that waits for a value from a step still to come (Pending) isn't settled or stuck.
     bool Settled() const
     {
-        return player_.IsSettled(engine_);
+        return player_.IsSettled(engine_) && !Pending();
     }
 
     bool Stuck() const
     {
-        return player_.IsStuck(engine_);
+        return player_.IsStuck(engine_) && !Pending();
     }
 
     bool Moving() const
@@ -150,9 +242,10 @@ public:
         return player_.ChangedAt();
     }
 
+    // The steps still to come keep the sound going.
     bool Busy() const
     {
-        return engine_.IsBusy();
+        return engine_.IsBusy() || Pending();
     }
 
     bool ChannelsChanging() const
@@ -165,82 +258,38 @@ public:
         return engine_.Channels().ActiveCount();
     }
 
-    // Sets the hooks for the analysis's loops, for every track's passes and for each open of a track. Only the passes
-    // that changed the sound count. An open of a track that a track opened before is such a pass: the track starts its
-    // part again. The first open isn't a pass. On most consoles, the open clears the track's wait, and the track starts
-    // again at once. Where the open keeps the wait (OpenKeepsWait), the pass counts at the track's next command. Two
-    // opens during one wait then make one pass.
+    // Sets the hooks for the analysis's loops and for every track's passes (TrackPasses::SetHooks).
     template <typename Hook>
     void OnLoop(Hook hook)
     {
         engine_.SetLoopHook(std::move(hook));
-        const auto count_pass = [this](int track, uint32_t)
-        {
-            const auto* looping = player_.Track(track);
-            if (looping && !looping->IsIdle())
-            {
-                ++passes_[static_cast<std::size_t>(track)];
-            }
-        };
-        engine_.SetTrackLoopHook(count_pass);
-        const auto count_open = [this](int, int opened, uint32_t)
-        {
-            const auto index = static_cast<std::size_t>(opened);
-            if (opened_[index])
-            {
-                if constexpr (OpenKeepsWait<Console>())
-                {
-                    reopened_[index] = true;
-                }
-                else
-                {
-                    ++passes_[index];
-                }
-            }
-
-            opened_[index] = true;
-        };
-        engine_.SetOpenTrackHook(count_open);
-        if constexpr (OpenKeepsWait<Console>())
-        {
-            const auto count_start = [this](int track, uint32_t)
-            {
-                const auto index = static_cast<std::size_t>(track);
-                if (reopened_[index])
-                {
-                    ++passes_[index];
-                    reopened_[index] = false;
-                }
-            };
-            engine_.SetCommandStartHook(count_start);
-        }
+        passes_.SetHooks();
     }
 
-    // Whether every open track other than `track` has made kLengthLoops passes that changed the sound. A track whose
-    // last pass changed nothing, or that waits for ever, doesn't hold the fade back.
     bool OthersLooped(int track) const
     {
-        for (int i = 0; i < kTrackCount; ++i)
-        {
-            const auto* other = player_.Track(i);
-            if (i != track && other && other->IsOpen() && !other->IsIdle() && !other->WaitsForEver(engine_) &&
-                passes_[static_cast<std::size_t>(i)] < xsflib::rip::kLengthLoops)
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return passes_.OthersLooped(track);
     }
 
 private:
+    // Whether a step of the game's code is still to come: the struct's Pending, or false.
+    bool Pending() const
+    {
+        if constexpr (requires { Console::Pending(model_); })
+        {
+            return Console::Pending(model_);
+        }
+        else
+        {
+            return false;
+        }
+    }
+
     Model& model_;
     Engine& engine_;
     Player& player_;
+    TrackPasses<Engine, Player, OpenKeepsWait<Console>()> passes_;
     uint64_t frames_ = 0;
-    std::array<int, kTrackCount> passes_{};    // each track's passes that changed the sound
-    std::array<bool, kTrackCount> opened_{};   // whether another track has opened each track
-    std::array<bool, kTrackCount> reopened_{}; // whether each track's next command starts its part again after an open
 };
 
 // The loops that a measure at the limit makes endless: the outermost loop that each of the player's open tracks is in,

@@ -220,14 +220,8 @@ Conversion ConvertTogether(const rsar::SoundArchive& archive, std::span<const ui
     RsarBankSet banks(archive, archive.Sounds()[sound_indices[0]], settings);
     Performance performance = PerformTogether(archive, sound_indices, banks, options, settings);
 
-    // The SoundFont's comment lists the sequences: "sequences A, B and C together".
-    std::vector<std::string> labels;
-    for (const uint32_t index : sound_indices)
-    {
-        labels.push_back(archive.Sounds()[index].name);
-    }
-
-    return ConvertPerformance(std::move(performance), banks, name, SequencesText(labels), settings, program);
+    return ConvertPerformance(std::move(performance), banks, name, SequencesText(archive, sound_indices), settings,
+                              program);
 }
 
 BankConversion ConvertBank(const rsar::SoundArchive& archive, std::size_t bank, uint8_t pan_mode,
@@ -273,23 +267,13 @@ BankConversion ConvertBank(const rsar::SoundArchive& archive, std::size_t bank, 
     const bool balance = pan_mode == 1 && !settings.wii_build.October2006();
     const bool since_march_2008 = settings.wii_build.SinceMarch2008();
     const Performance kNone;
-    const auto build = [&](std::span<const uint32_t> run)
+    const auto make = [&]
     {
-        SoundFontBuilder builder(banks, quieter, balance, since_march_2008, kNone, settings);
-        for (const uint32_t p : run)
-        {
-            builder.Add(p, StartingPresetKey(p, settings), "Program " + std::to_string(p));
-        }
-
-        return builder;
+        return SoundFontBuilder(banks, quieter, balance, since_march_2008, kNone, settings);
     };
-    SoundFontBuilder whole = build(programs);
     const std::string& name = banks.BankName();
-    c.sound_fonts = BankSoundFonts(
-        whole.Result(), programs, [&](std::span<const uint32_t> run) { return std::move(build(run).Result()); }, name,
-        program);
+    c.sound_fonts = ProgramSoundFonts(programs, make, settings, name, program, c.warnings);
     c.sfz = BuildBankSfz(programs, banks, name, balance, settings, program);
-    c.warnings.insert(c.warnings.end(), whole.Warnings().begin(), whole.Warnings().end());
     c.warnings.insert(c.warnings.end(), banks.Errors().begin(), banks.Errors().end());
 
     return c;

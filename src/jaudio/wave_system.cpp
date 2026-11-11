@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
@@ -116,6 +118,32 @@ WaveScene ReadScene(const xsflib::Reader& r, std::size_t at, uint32_t w)
     return scene;
 }
 
+// The first group of `system` that holds the most of the `missing` waves, and the number of them that it holds.
+std::pair<std::size_t, std::size_t> MostMissing(const WaveSystem& system, const std::set<uint16_t>& missing)
+{
+    std::size_t best = 0;
+    std::size_t most = 0;
+    for (std::size_t g = 0; g < system.groups.size(); g++)
+    {
+        std::set<uint16_t> held;
+        for (const uint16_t id : system.groups[g].waves)
+        {
+            if (missing.contains(id))
+            {
+                held.insert(id);
+            }
+        }
+
+        if (held.size() > most)
+        {
+            best = g;
+            most = held.size();
+        }
+    }
+
+    return {best, most};
+}
+
 } // namespace
 
 // Reads a wave system: its archives (WINF) and the wave ids that its scenes give their waves (WBCT). JAudio2 gives each
@@ -182,26 +210,7 @@ std::vector<uint32_t> WaveGroups(const std::vector<WaveSystem>& systems, const s
 
         while (!missing.empty())
         {
-            std::size_t best = 0;
-            std::size_t most = 0;
-            for (std::size_t g = 0; g < system.groups.size(); g++)
-            {
-                std::set<uint16_t> held;
-                for (const uint16_t id : system.groups[g].waves)
-                {
-                    if (missing.contains(id))
-                    {
-                        held.insert(id);
-                    }
-                }
-
-                if (held.size() > most)
-                {
-                    best = g;
-                    most = held.size();
-                }
-            }
-
+            const auto [best, most] = MostMissing(system, missing);
             if (most == 0)
             {
                 break;
@@ -289,6 +298,22 @@ std::vector<std::string> GroupArchives(const std::vector<WaveSystem>& systems, s
     }
 
     return std::vector<std::string>(names.begin(), names.end());
+}
+
+WaveArchiveLayout LayOutWaveArchives(const std::map<std::string, std::size_t>& sizes, uint32_t start)
+{
+    WaveArchiveLayout layout;
+    layout.end = start;
+    for (const auto& [name, size] : sizes)
+    {
+        if (size != 0)
+        {
+            layout.addresses[name] = layout.end;
+            layout.end = (layout.end + static_cast<uint32_t>(size) + 31) & ~31u;
+        }
+    }
+
+    return layout;
 }
 
 } // namespace ntdlib::jaudio

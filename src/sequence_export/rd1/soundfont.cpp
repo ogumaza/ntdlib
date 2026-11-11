@@ -42,6 +42,7 @@ using ntdlib::sequence_export::agb::AddTuning;
 using ntdlib::sequence_export::agb::AddVolumeEnvelope;
 using ntdlib::sequence_export::agb::Centibels;
 using ntdlib::sequence_export::agb::FadeSeconds;
+using ntdlib::sequence_export::agb::KeyHz;
 using ntdlib::sequence_export::agb::KeyTuning;
 using ntdlib::sequence_export::agb::kFifoLevel;
 using ntdlib::sequence_export::agb::kInstant;
@@ -101,12 +102,6 @@ constexpr sf2::Modulator kNoReverb = {sf2::kController | 91, sf2::kReverbEffects
 // modulator from the pitch wheel.
 constexpr sf2::Modulator kNoBend = {sf2::kSrcPitchWheel, sf2::kFineTune, 0, sf2::kSrcPitchWheelSensitivity,
                                     sf2::kLinear};
-
-// Returns the equal-tempered pitch of key `key` in Hz, with key 60 at middle C.
-double KeyHz(int key)
-{
-    return kMiddleC * std::exp2((key - 60) / 12.0);
-}
 
 // Returns the cents by which the driver's pitch table puts a sample's key `key` off equal temperament, with the
 // sample's root key `root` at its rate.

@@ -26,18 +26,18 @@
 #include "xsflib/player/archive_source.h"
 #include "xsflib/testing/check.h"
 
-#include "brownie_cart.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/brownie/archive_player.h"
 #include "ntdlib/brownie/archive_source.h"
 #include "ntdlib/brownie/driver.h"
 #include "ntdlib/brownie/sequencer.h"
+#include "ntdlib/testing/brownie_cart.h"
 
 namespace
 {
 
-using namespace brownie_testing;
+using namespace ntdlib::testing::brownie_cart;
 
 using ntdlib::agb::kEnhancedFrameSamples;
 using ntdlib::agb::kEnhancedRate;

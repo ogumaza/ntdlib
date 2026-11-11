@@ -371,6 +371,126 @@ uint32_t OffsetOf(const std::vector<Object>& objects, int32_t index)
     return index == kNoObject ? 0 : objects[static_cast<std::size_t>(index)].offset;
 }
 
+// Places an envelope at the end when it has no place, and writes its points.
+void WriteEnvelope(Layout& layout, EadEnvelope& envelope)
+{
+    if (envelope.offset == kNoOffset)
+    {
+        envelope.offset = layout.Place(envelope.points.size() * kEnvelopePointSize);
+    }
+
+    for (std::size_t i = 0; i < envelope.points.size(); i++)
+    {
+        layout.U16(envelope.offset + i * kEnvelopePointSize, static_cast<uint16_t>(envelope.points[i].delay));
+        layout.U16(envelope.offset + i * kEnvelopePointSize + 2, static_cast<uint16_t>(envelope.points[i].target));
+    }
+}
+
+// Places a loop at the end when it has no place, and writes its fields and any VADPCM state.
+void WriteLoop(Layout& layout, BankLoop& loop)
+{
+    if (loop.offset == kNoOffset)
+    {
+        loop.offset = layout.Place(kLoopHeaderSize + (loop.has_state ? kLoopStateSize : 0));
+    }
+
+    layout.U32(loop.offset, loop.start);
+    layout.U32(loop.offset + 4, loop.end);
+    layout.U32(loop.offset + 8, loop.count);
+    layout.U32(loop.offset + 12, loop.sample_end);
+    if (loop.has_state)
+    {
+        for (std::size_t i = 0; i < kVadpcmFrameSamples; i++)
+        {
+            layout.U16(loop.offset + kLoopHeaderSize + i * 2, static_cast<uint16_t>(loop.state[i]));
+        }
+    }
+}
+
+// Places a codebook at the end when it has no place, and writes its header and coefficients.
+void WriteBook(Layout& layout, BankBook& book)
+{
+    if (book.offset == kNoOffset)
+    {
+        book.offset = layout.Place(kBookHeaderSize + book.book.coefficients.size() * 2);
+    }
+
+    layout.U32(book.offset, static_cast<uint32_t>(book.book.order));
+    layout.U32(book.offset + 4, static_cast<uint32_t>(book.book.predictor_count));
+    for (std::size_t i = 0; i < book.book.coefficients.size(); i++)
+    {
+        layout.U16(book.offset + kBookHeaderSize + i * 2, static_cast<uint16_t>(book.book.coefficients[i]));
+    }
+}
+
+// Places a sample at the end when it has no place, and writes its fields in the form of the early or the later engine.
+// The loops and books of `placed` already have their places.
+void WriteSample(Layout& layout, EadSample& sample, bool early, const EadBank& placed)
+{
+    if (sample.offset == kNoOffset)
+    {
+        sample.offset = layout.Place(early ? kEarlySampleSize : kLaterSampleSize);
+    }
+
+    if (early)
+    {
+        layout.U8(sample.offset + 1, sample.loaded);
+        layout.U32(sample.offset + 16, sample.size);
+    }
+    else
+    {
+        const uint32_t fields = (static_cast<uint32_t>(sample.codec) << 28) |
+                                (static_cast<uint32_t>(sample.medium & 3) << 26) |
+                                (static_cast<uint32_t>(sample.unknown_bit ? 1 : 0) << 25) |
+                                (static_cast<uint32_t>(sample.loaded & 1) << 24) | (sample.size & 0x00FFFFFF);
+        layout.U32(sample.offset, fields);
+    }
+
+    layout.U32(sample.offset + 4, sample.address);
+    layout.U32(sample.offset + 8, OffsetOf(placed.loops, sample.loop));
+    layout.U32(sample.offset + 12, OffsetOf(placed.books, sample.book));
+}
+
+// Writes a sample and its tuning at `at`. The samples of `placed` already have their places.
+void WriteTuned(Layout& layout, std::size_t at, const EadTunedSample& tuned, const EadBank& placed)
+{
+    layout.U32(at, OffsetOf(placed.samples, tuned.sample));
+    layout.U32(at + 4, std::bit_cast<uint32_t>(tuned.tuning));
+}
+
+// Places an instrument at the end when it has no place, and writes its fields and its three tuned samples.
+void WriteInstrument(Layout& layout, EadInstrument& instrument, const EadBank& placed)
+{
+    if (instrument.offset == kNoOffset)
+    {
+        instrument.offset = layout.Place(kInstrumentSize);
+    }
+
+    layout.U8(instrument.offset, instrument.loaded);
+    layout.U8(instrument.offset + 1, instrument.normal_range_low);
+    layout.U8(instrument.offset + 2, instrument.normal_range_high);
+    layout.U8(instrument.offset + 3, instrument.release_rate);
+    layout.U32(instrument.offset + 4, OffsetOf(placed.envelopes, instrument.envelope));
+    WriteTuned(layout, instrument.offset + 8, instrument.low, placed);
+    WriteTuned(layout, instrument.offset + 16, instrument.normal, placed);
+    WriteTuned(layout, instrument.offset + 24, instrument.high, placed);
+}
+
+// Places a drum at the end when it has no place, and writes its fields.
+void WriteDrum(Layout& layout, EadDrum& drum, const EadBank& placed)
+{
+    if (drum.offset == kNoOffset)
+    {
+        drum.offset = layout.Place(kDrumSize);
+    }
+
+    layout.U8(drum.offset, drum.release_rate);
+    layout.U8(drum.offset + 1, drum.pan);
+    layout.U8(drum.offset + 2, drum.loaded);
+    WriteTuned(layout, drum.offset + 4, drum.sound, placed);
+    layout.U32(drum.offset + 12, OffsetOf(placed.envelopes, drum.envelope));
+}
+
 } // namespace
 
 EadBank EadBank::ParseEarly(std::span<const uint8_t> data)
@@ -407,114 +527,32 @@ std::vector<uint8_t> EadBank::Write() const
 
     for (EadEnvelope& envelope : placed.envelopes)
     {
-        if (envelope.offset == kNoOffset)
-        {
-            envelope.offset = layout.Place(envelope.points.size() * kEnvelopePointSize);
-        }
-
-        for (std::size_t i = 0; i < envelope.points.size(); i++)
-        {
-            layout.U16(envelope.offset + i * kEnvelopePointSize, static_cast<uint16_t>(envelope.points[i].delay));
-            layout.U16(envelope.offset + i * kEnvelopePointSize + 2, static_cast<uint16_t>(envelope.points[i].target));
-        }
+        WriteEnvelope(layout, envelope);
     }
 
     for (BankLoop& loop : placed.loops)
     {
-        if (loop.offset == kNoOffset)
-        {
-            loop.offset = layout.Place(kLoopHeaderSize + (loop.has_state ? kLoopStateSize : 0));
-        }
-
-        layout.U32(loop.offset, loop.start);
-        layout.U32(loop.offset + 4, loop.end);
-        layout.U32(loop.offset + 8, loop.count);
-        layout.U32(loop.offset + 12, loop.sample_end);
-        if (loop.has_state)
-        {
-            for (std::size_t i = 0; i < kVadpcmFrameSamples; i++)
-            {
-                layout.U16(loop.offset + kLoopHeaderSize + i * 2, static_cast<uint16_t>(loop.state[i]));
-            }
-        }
+        WriteLoop(layout, loop);
     }
 
     for (BankBook& book : placed.books)
     {
-        if (book.offset == kNoOffset)
-        {
-            book.offset = layout.Place(kBookHeaderSize + book.book.coefficients.size() * 2);
-        }
-
-        layout.U32(book.offset, static_cast<uint32_t>(book.book.order));
-        layout.U32(book.offset + 4, static_cast<uint32_t>(book.book.predictor_count));
-        for (std::size_t i = 0; i < book.book.coefficients.size(); i++)
-        {
-            layout.U16(book.offset + kBookHeaderSize + i * 2, static_cast<uint16_t>(book.book.coefficients[i]));
-        }
+        WriteBook(layout, book);
     }
 
     for (EadSample& sample : placed.samples)
     {
-        if (sample.offset == kNoOffset)
-        {
-            sample.offset = layout.Place(early ? kEarlySampleSize : kLaterSampleSize);
-        }
-
-        if (early)
-        {
-            layout.U8(sample.offset + 1, sample.loaded);
-            layout.U32(sample.offset + 16, sample.size);
-        }
-        else
-        {
-            const uint32_t fields = (static_cast<uint32_t>(sample.codec) << 28) |
-                                    (static_cast<uint32_t>(sample.medium & 3) << 26) |
-                                    (static_cast<uint32_t>(sample.unknown_bit ? 1 : 0) << 25) |
-                                    (static_cast<uint32_t>(sample.loaded & 1) << 24) | (sample.size & 0x00FFFFFF);
-            layout.U32(sample.offset, fields);
-        }
-
-        layout.U32(sample.offset + 4, sample.address);
-        layout.U32(sample.offset + 8, OffsetOf(placed.loops, sample.loop));
-        layout.U32(sample.offset + 12, OffsetOf(placed.books, sample.book));
+        WriteSample(layout, sample, early, placed);
     }
-
-    const auto write_tuned = [&](std::size_t at, const EadTunedSample& tuned)
-    {
-        layout.U32(at, OffsetOf(placed.samples, tuned.sample));
-        layout.U32(at + 4, std::bit_cast<uint32_t>(tuned.tuning));
-    };
 
     for (EadInstrument& instrument : placed.instruments)
     {
-        if (instrument.offset == kNoOffset)
-        {
-            instrument.offset = layout.Place(kInstrumentSize);
-        }
-
-        layout.U8(instrument.offset, instrument.loaded);
-        layout.U8(instrument.offset + 1, instrument.normal_range_low);
-        layout.U8(instrument.offset + 2, instrument.normal_range_high);
-        layout.U8(instrument.offset + 3, instrument.release_rate);
-        layout.U32(instrument.offset + 4, OffsetOf(placed.envelopes, instrument.envelope));
-        write_tuned(instrument.offset + 8, instrument.low);
-        write_tuned(instrument.offset + 16, instrument.normal);
-        write_tuned(instrument.offset + 24, instrument.high);
+        WriteInstrument(layout, instrument, placed);
     }
 
     for (EadDrum& drum : placed.drums)
     {
-        if (drum.offset == kNoOffset)
-        {
-            drum.offset = layout.Place(kDrumSize);
-        }
-
-        layout.U8(drum.offset, drum.release_rate);
-        layout.U8(drum.offset + 1, drum.pan);
-        layout.U8(drum.offset + 2, drum.loaded);
-        write_tuned(drum.offset + 4, drum.sound);
-        layout.U32(drum.offset + 12, OffsetOf(placed.envelopes, drum.envelope));
+        WriteDrum(layout, drum, placed);
     }
 
     const std::size_t instruments_at = early ? 4 : 8;
@@ -537,7 +575,7 @@ std::vector<uint8_t> EadBank::Write() const
         layout.U32(4, effects_offset);
         for (std::size_t i = 0; i < effects.size(); i++)
         {
-            write_tuned(effects_offset + i * kEffectSize, effects[i].sound);
+            WriteTuned(layout, effects_offset + i * kEffectSize, effects[i].sound, placed);
         }
     }
 

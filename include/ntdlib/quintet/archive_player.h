@@ -86,8 +86,15 @@ private:
         bool dma = false;
     };
 
+    // Empties each FIFO that a store to the high byte of SOUNDCNT_H resets.
+    void ResetFifos(const agb::RegisterWrite& write);
+
     void StoreTimer(int timer, uint32_t offset, int size, uint32_t value);
     void StoreDma(int fifo, uint32_t offset, int size, uint32_t value);
+
+    // Plays the bytes of FIFO `f` for a frame at each overflow of its timer, and refills it by DMA. In the enhanced
+    // mode, adds the samples between the bytes to `enhanced`.
+    void PlayFifo(int f, std::vector<float>& enhanced);
 
     // Puts `count` bytes from `address` in FIFO `fifo`, as the DMA or the CPU does.
     void Fill(int fifo, uint32_t address, uint32_t count);

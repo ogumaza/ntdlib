@@ -71,9 +71,8 @@ sf2::Zone GlobalZone(const PresetKey& key)
 sf2::Zone RegionZone(const PresetZone& z, const FilterLayer& layer, double quieter, uint16_t sample, bool loop)
 {
     const Sf2Envelope e = ConvertEnvelope(z.envelope);
-    const double level_db =
-        (z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0) + e.peak_db + 20.0 * std::log10(layer.gain);
-    const int cents = static_cast<int>(std::lround(std::clamp(z.cents, -12000.0, 12000.0)));
+    const double level_db = ZoneVolumeDb(z) + e.peak_db + 20.0 * std::log10(layer.gain);
+    const int cents = ZoneCents(z);
 
     sf2::ZoneValues values;
     values.keys = {z.low_key, z.high_key};
@@ -100,12 +99,11 @@ sf2::Zone RegionZone(const PresetZone& z, const FilterLayer& layer, double quiet
     sf2::Zone zone = sf2::RegionZone(values);
     if (z.fixed_pitch)
     {
-        zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(sf2::kScaleTuning, 0));
+        sf2::AddGenerator(zone, sf2::kScaleTuning, 0);
     }
     if (layer.cutoff_cents)
     {
-        zone.generators.insert(zone.generators.end() - 1,
-                               sf2::Generator::Value(sf2::kInitialFilterFc, *layer.cutoff_cents));
+        sf2::AddGenerator(zone, sf2::kInitialFilterFc, *layer.cutoff_cents);
     }
 
     return zone;

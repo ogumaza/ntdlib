@@ -387,6 +387,20 @@ void TestRefusals()
     Check(Throws(sequence), "MP2K has no sends");
 }
 
+// The usual length code of a length is the code of the longest length up to it in the driver's clock table: every
+// length up to 24 ticks, then 28, 30, 32 and on up to 92 and 96.
+void TestUsualLengthCode()
+{
+    using ntdlib::mp2k::UsualLengthCode;
+
+    Check(ntdlib::mp2k::kLengthCodes == 49, "TIE's code and N01 to N96");
+    Check(UsualLengthCode(-1) == 0 && UsualLengthCode(0) == 0, "no length");
+    Check(UsualLengthCode(1) == 1 && UsualLengthCode(24) == 24, "the lengths up to 24 ticks");
+    Check(UsualLengthCode(27) == 24 && UsualLengthCode(28) == 25, "a length between two codes");
+    Check(UsualLengthCode(95) == 47 && UsualLengthCode(96) == 48, "N92 and N96");
+    Check(UsualLengthCode(1000) == 48, "a length past N96");
+}
+
 } // namespace
 
 int main()
@@ -399,6 +413,7 @@ int main()
     TestUnreached();
     TestOpaque();
     TestRefusals();
+    TestUsualLengthCode();
 
     return xsflib::testing::Summary("MP2K's commands");
 }

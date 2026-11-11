@@ -101,6 +101,25 @@ void TestDsiBinaries()
     XSFLIB_CHECK(rom.Arm7i().size() == 0x20 && rom.Arm7i().data() == image.data() + 0x300);
 }
 
+// A trimmed image may end in or before a DSi binary. The image parses without that binary.
+void TestTrimmedDsiImage()
+{
+    nds_files::Image spec = Spec();
+    spec.unit_code = 2;
+    auto [image, ids] = nds_files::BuildImage(spec);
+    const auto size = static_cast<uint32_t>(image.size());
+    xsflib::StoreLe32(&image[0x1C0], size - 0x10);
+    xsflib::StoreLe32(&image[0x1CC], 0x10);
+    xsflib::StoreLe32(&image[0x1D0], size - 0x10);
+    xsflib::StoreLe32(&image[0x1DC], 0x20);
+
+    const Rom rom = Rom::Parse(image);
+
+    XSFLIB_CHECK(rom.Arm9i().size() == 0x10 && rom.Arm9i().data() == image.data() + size - 0x10);
+    XSFLIB_CHECK(!rom.Header().arm7i && rom.Arm7i().empty());
+    XSFLIB_CHECK(rom.Find("sound/sound_data.sdat") != nullptr);
+}
+
 void TestRefusals()
 {
     const auto [image, ids] = nds_files::BuildImage(Spec());
@@ -129,6 +148,7 @@ int main()
     TestOverlays();
     TestFiles();
     TestDsiBinaries();
+    TestTrimmedDsiImage();
     TestRefusals();
 
     return xsflib::testing::Summary("DS ROM");

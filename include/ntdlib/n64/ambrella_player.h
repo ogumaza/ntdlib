@@ -96,6 +96,9 @@ public:
     std::function<void(const AmbrellaNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     static constexpr int kHeldNotes = 32;
     static constexpr int kEventBytes = 20;
 
@@ -187,6 +190,10 @@ private:
 
     // The reader. Each returns whether `event` holds an event.
     bool ReadFromFile(Player& player, double& delta);
+    bool FlushHeld(Player& player);
+    uint32_t ReadFileEvent(Player& player);
+    bool PassEvent(Player& player);
+    bool PassController(Player& player, uint8_t channel);
     bool ReadEvent(Player& player);
     uint8_t NextByte(Player& player);
     uint32_t NextLength(Player& player);

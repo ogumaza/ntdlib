@@ -427,6 +427,9 @@ private:
         }
     }
 
+    // The parameters of a voice that Acquire has just given its AX voices.
+    void InitParam(int channels, ChannelId owner);
+
     bool IsPlayFinished() const;
     void CalcAxSrc(bool initial);
 

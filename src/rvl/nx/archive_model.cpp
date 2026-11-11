@@ -49,11 +49,7 @@ void ArchiveModel::RunFrame(std::vector<int16_t>& output)
         throw std::logic_error("the layer's renderer gave a frame of the wrong size");
     }
 
-    for (std::size_t i = 0; i < kOutputFrameSamples; i++)
-    {
-        output.push_back(samples[i * kSinkChannels]);
-        output.push_back(samples[i * kSinkChannels + 1]);
-    }
+    audio::DownmixFrame(samples, downmix, output);
 }
 
 ArchiveModel::Snapshot ArchiveModel::Save(const Snapshot* previous) const

@@ -440,6 +440,12 @@ private:
     // The mixer of the TV or the GamePads, or nullptr for any other device.
     Mixer* MixerOf(Device device);
 
+    // The frame's voices, into `order_`, and the stop of the free ones.
+    void TakeVoices();
+
+    // The mix of the frame's voices into the buses.
+    void MixVoices();
+
     // The rest of a frame without mixing, after the voices have taken their changes.
     void AdvanceWithoutMixing();
 
@@ -452,6 +458,11 @@ private:
                   bool shift) const;
     static void UpsampleLinear(std::span<const int32_t> in, std::span<int32_t> out, int32_t& history, bool shift);
     static void UpsampleFir(std::span<const int32_t> in, std::span<int32_t> out, FirHistory& history, bool shift);
+
+    // The mixer's matrix from `channels_in` channels to a device's two, or nullptr if it has none that takes at most
+    // `channels` inputs.
+    static const RemixMatrix* RemixMatrixOf(const Mixer& mixer, uint16_t channels_in, std::size_t channels);
+
     static void Remix(const Mixer& mixer, uint16_t channels_in, std::span<Samples* const> channels);
     static void RemixEnhanced(const Mixer& mixer, uint16_t channels_in, std::span<FloatBuses::Channel* const> channels);
 

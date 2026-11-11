@@ -4,6 +4,7 @@
 // nothing, read back by the model's reader and by ntdlib's reader of the tables, the layout's choices, and the models
 // that the builder refuses.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -24,11 +25,14 @@ namespace
 
 using ntdlib::rsar::ArchiveModel;
 using ntdlib::rsar::BuildArchive;
-using ntdlib::rsar::FileModel;
+using ntdlib::rsar::NewStreamSound;
+using ntdlib::rsar::NewWaveSound;
 using ntdlib::rsar::ReadArchiveModel;
 using ntdlib::rsar::SoundArchive;
 using ntdlib::rsar::SoundModel;
 using ntdlib::rsar::SoundType;
+using ntdlib::rsar::WithNewStreamSound;
+using ntdlib::rsar::WithNewWaveSounds;
 using Bytes = std::vector<uint8_t>;
 
 // Bytes of `size` that count up from `first`.
@@ -223,6 +227,102 @@ void TestRefusals()
     XSFLIB_CHECK(!xsflib::testing::ErrorOf<xsflib::FormatError>([&] { ReadArchiveModel(archive); }).empty());
 }
 
+// New wave sounds copy their model's settings: a wave sound's tracks, and a sequence sound's settings without its
+// details. The archive keeps its other sounds, and builds and reads back with the new ones.
+void TestNewWaveSounds()
+{
+    ArchiveModel model = Model();
+    model.sounds[2].allocate_track_count = 3;
+    model.sounds[2].channel_priority = 90;
+    const NewWaveSound sounds[] = {{.model = 2, .name = "WSD_NEW", .file_id = 3, .index = 0},
+                                   {.model = 0, .name = "WSD_FROM_SEQ", .file_id = 3, .index = 1}};
+
+    const ArchiveModel added = WithNewWaveSounds(model, sounds);
+
+    SoundModel from_wave;
+    from_wave.name = "WSD_NEW";
+    from_wave.type = SoundType::kWaveSound;
+    from_wave.file_id = 3;
+    from_wave.player_id = 1;
+    from_wave.remote_filter = 5;
+    from_wave.channel_priority = 90;
+    from_wave.allocate_track_count = 3;
+    SoundModel from_sequence;
+    from_sequence.name = "WSD_FROM_SEQ";
+    from_sequence.type = SoundType::kWaveSound;
+    from_sequence.file_id = 3;
+    from_sequence.volume = 100;
+    from_sequence.player_priority = 70;
+    from_sequence.user_params = {7, 0};
+    from_sequence.pan_mode = 1;
+    from_sequence.pan_curve = 2;
+    from_sequence.settings_3d = {.flags = 0xF, .decay_curve = 2, .decay_ratio = 64, .doppler_factor = 16};
+    from_sequence.channel_priority = 80;
+    from_sequence.release_priority_fix = true;
+    from_sequence.wave_sound_index = 1;
+    XSFLIB_CHECK(added.sounds.size() == 6);
+    XSFLIB_CHECK(std::equal(model.sounds.begin(), model.sounds.end(), added.sounds.begin()));
+    XSFLIB_CHECK(added.sounds[4] == from_wave && added.sounds[5] == from_sequence);
+    XSFLIB_CHECK(ReadArchiveModel(BuildArchive(added)) == added);
+
+    // A model past the sound table, a stream sound, a file past the file table, and a name that another sound holds.
+    auto refused = [&model](const NewWaveSound& sound)
+    {
+        return !xsflib::testing::ErrorOf<std::invalid_argument>([&] { WithNewWaveSounds(model, std::span(&sound, 1)); })
+                    .empty();
+    };
+    XSFLIB_CHECK(refused({.model = 4, .name = "WSD_NEW", .file_id = 3}));
+    XSFLIB_CHECK(refused({.model = 3, .name = "WSD_NEW", .file_id = 3}));
+    XSFLIB_CHECK(refused({.model = 2, .name = "WSD_NEW", .file_id = 5}));
+    XSFLIB_CHECK(refused({.model = 2, .name = "WSD_HIT", .file_id = 3}));
+    const NewWaveSound twice[] = {sounds[0], sounds[0]};
+    XSFLIB_CHECK(!xsflib::testing::ErrorOf<std::invalid_argument>([&] { WithNewWaveSounds(model, twice); }).empty());
+}
+
+// A new stream sound copies its model's settings that every sound holds, and takes its stream fields. A model of any
+// kind will do.
+void TestNewStreamSound()
+{
+    const ArchiveModel model = Model();
+    const NewStreamSound sound = {.model = 0,
+                                  .name = "STRM_NEW",
+                                  .file_id = 4,
+                                  .stream_start = 0x40,
+                                  .allocate_channel_count = 4,
+                                  .stream_track_flags = 3};
+
+    const ArchiveModel added = WithNewStreamSound(model, sound);
+
+    SoundModel expected;
+    expected.name = "STRM_NEW";
+    expected.type = SoundType::kStream;
+    expected.file_id = 4;
+    expected.volume = 100;
+    expected.player_priority = 70;
+    expected.user_params = {7, 0};
+    expected.pan_mode = 1;
+    expected.pan_curve = 2;
+    expected.settings_3d = {.flags = 0xF, .decay_curve = 2, .decay_ratio = 64, .doppler_factor = 16};
+    expected.stream_start = 0x40;
+    expected.allocate_channel_count = 4;
+    expected.stream_track_flags = 3;
+    XSFLIB_CHECK(added.sounds.size() == 5);
+    XSFLIB_CHECK(std::equal(model.sounds.begin(), model.sounds.end(), added.sounds.begin()));
+    XSFLIB_CHECK(added.sounds[4] == expected);
+    XSFLIB_CHECK(ReadArchiveModel(BuildArchive(added)) == added);
+    const ArchiveModel from_wave = WithNewStreamSound(model, {.model = 2, .name = "STRM_NEW", .file_id = 4});
+    XSFLIB_CHECK(from_wave.sounds[4].remote_filter == 5 && from_wave.sounds[4].player_id == 1);
+
+    // A model past the sound table, a file past the file table, and a name that another sound holds.
+    auto refused = [&model](const NewStreamSound& other)
+    {
+        return !xsflib::testing::ErrorOf<std::invalid_argument>([&] { WithNewStreamSound(model, other); }).empty();
+    };
+    XSFLIB_CHECK(refused({.model = 4, .name = "STRM_NEW", .file_id = 4}));
+    XSFLIB_CHECK(refused({.model = 3, .name = "STRM_NEW", .file_id = 5}));
+    XSFLIB_CHECK(refused({.model = 3, .name = "STRM_BGM", .file_id = 4}));
+}
+
 } // namespace
 
 int main()
@@ -233,5 +333,7 @@ int main()
                                         TestFromNothing();
                                         TestChoices();
                                         TestRefusals();
+                                        TestNewWaveSounds();
+                                        TestNewStreamSound();
                                     });
 }

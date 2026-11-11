@@ -403,6 +403,7 @@ void DspInterface<Memory>::AramDma()
             }
         }
     }
+
     aram_dma_count_ &= kAramToMain;
 }
 

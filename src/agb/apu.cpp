@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "xsflib/bytes.h"
+
 namespace ntdlib::agb
 {
 namespace
@@ -596,7 +598,7 @@ void Apu::SetEnhancedGains()
     // unit's NR51 sends its channels to the sides. The console's registers give the rest.
     const std::array<uint8_t, kSoundRegisterBytes>& registers = Registers();
     const bool powered = (registers[kSoundCntX] & kMasterEnable) != 0;
-    const uint16_t control = uint16_t(registers[kSoundCntH] | registers[kSoundCntH + 1] << 8);
+    const uint16_t control = xsflib::LoadLe16(&registers[kSoundCntH]);
     constexpr int kShares[4] = {2, 1, 0, 0};
     for (size_t unit = 0; unit < psgs_.size(); ++unit)
     {
@@ -717,7 +719,7 @@ void Apu::TakeEnhancedSamples(std::vector<float>* out)
     // Side 0 is the left. The left takes SOUNDCNT_H's odd enables.
     const std::array<uint8_t, kSoundRegisterBytes>& registers = Registers();
     const bool powered = (registers[kSoundCntX] & kMasterEnable) != 0;
-    const uint16_t control = uint16_t(registers[kSoundCntH] | registers[kSoundCntH + 1] << 8);
+    const uint16_t control = xsflib::LoadLe16(&registers[kSoundCntH]);
     std::array<std::array<float, 2>, 2> volumes{}; // each FIFO's volume on each side, in steps of a 16-bit sample
     for (size_t f = 0; f < 2; ++f)
     {
@@ -750,7 +752,7 @@ void Apu::TakeEnhancedSamples(std::vector<float>* out)
 
 void Apu::OverflowTimers()
 {
-    const uint16_t control = uint16_t(Registers()[kSoundCntH] | Registers()[kSoundCntH + 1] << 8);
+    const uint16_t control = xsflib::LoadLe16(&Registers()[kSoundCntH]);
     for (int t = 0; t < 2; ++t)
     {
         Timer& timer = timers_[size_t(t)];
@@ -908,7 +910,7 @@ int Apu::Level(const Psg& psg, int channel)
 int16_t Apu::Output(int side)
 {
     const std::array<uint8_t, kSoundRegisterBytes>& registers = Registers();
-    const int bias = (registers[kSoundBias] | registers[kSoundBias + 1] << 8) & 0x3FE;
+    const int bias = xsflib::LoadLe16(&registers[kSoundBias]) & 0x3FE;
     if ((registers[kSoundCntX] & kMasterEnable) == 0)
     {
         return 0;
@@ -916,7 +918,7 @@ int16_t Apu::Output(int side)
     // Side 0 is the left. The left takes the high bits of NR50 and NR51 and SOUNDCNT_H's odd enables. A unit's NR51
     // sends its channels to the sides.
     const int master = (side == 0 ? registers[kNr50] >> 4 : registers[kNr50]) & 7;
-    const uint16_t control = uint16_t(registers[kSoundCntH] | registers[kSoundCntH + 1] << 8);
+    const uint16_t control = xsflib::LoadLe16(&registers[kSoundCntH]);
     constexpr int kShares[4] = {2, 1, 0, 0}; // 25%, 50%, 100%, and 100% for the prohibited setting
     int levels = 0;
     for (size_t unit = 0; unit < psgs_.size(); ++unit)

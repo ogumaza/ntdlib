@@ -119,7 +119,8 @@ private:
     const sdat::Archive& archive_;
     uint16_t number_ = 0;
     std::optional<sdat::Bank> bank_;
-    std::array<uint16_t, 4> wave_archives_{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
+    std::array<uint16_t, sdat::kWaveArchiveSlots> wave_archives_{sdat::kNoWaveArchive, sdat::kNoWaveArchive,
+                                                                 sdat::kNoWaveArchive, sdat::kNoWaveArchive};
     std::map<uint16_t, std::optional<sdat::WaveArchive>> parsed_;
     std::map<std::string, std::optional<Pcm>> waves_;
     std::vector<std::string> warnings_;

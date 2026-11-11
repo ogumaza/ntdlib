@@ -17,6 +17,7 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/ntr/snd/commands.h"
+#include "ntdlib/rounding.h"
 #include "ntdlib/sdat/formats.h"
 
 namespace ntdlib::sdat
@@ -34,11 +35,6 @@ constexpr uint32_t kFileBlockHeader = 12;
 // The alignment of a file's start, from the archive's start, and of a sequence file's end.
 constexpr uint32_t kFileAlignment = 32;
 constexpr uint32_t kSequenceAlignment = 4;
-
-uint64_t AlignUp(uint64_t value, uint64_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
 
 bool Zeros(std::span<const uint8_t> bytes)
 {
@@ -360,7 +356,7 @@ Layout Cut(std::span<const uint8_t> sdat)
         // its multiple.
         CutFile file{start, end, end, false, false, 0, {}};
         const uint32_t next = e + 1 < entries.size() ? entries[e + 1].first : size;
-        if (next == AlignUp(end, kFileAlignment) && Zeros(bytes.subspan(end, next - end)))
+        if (next == AlignUp(uint64_t{end}, kFileAlignment) && Zeros(bytes.subspan(end, next - end)))
         {
             file.next = next;
             file.padded = true;

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include <teakra/disassembler.h>
 #include <teakra/impl/register.h>
 #include <teakra/teakra.h>
@@ -101,7 +102,7 @@ bool RunBoth(const std::string& label, Teakra::Teakra& jit, Teakra::Teakra& refe
             if (reported++ < 8)
             {
                 std::fprintf(stderr, "%s: memory word %05zx differs: %04x with the JIT, %04x without\n", label.c_str(),
-                             i / 2, ma[i] | (ma[i + 1] << 8), mb[i] | (mb[i + 1] << 8));
+                             i / 2, xsflib::LoadLe16(&ma[i]), xsflib::LoadLe16(&mb[i]));
             }
             same = false;
         }
@@ -176,8 +177,7 @@ bool LoopEndTrial()
 
     uint8_t* memory = jit->GetDspMemory();
     std::memset(memory, 0, kMemoryBytes); // nops
-    memory[kInnerEnd * 2] = static_cast<uint8_t>(kPushLc);
-    memory[kInnerEnd * 2 + 1] = static_cast<uint8_t>(kPushLc >> 8);
+    xsflib::StoreLe16(&memory[kInnerEnd * 2], kPushLc);
 
     RegisterState& r = jit->GetRegisterState();
     r.pc = kStart;
@@ -226,7 +226,7 @@ void Bisect(uint64_t seed)
 
         const auto word = [&](uint32_t a)
         {
-            return static_cast<uint16_t>(memory[a * 2] | (memory[a * 2 + 1] << 8));
+            return xsflib::LoadLe16(&memory[a * 2]);
         };
 
         std::fprintf(stderr, "  %c %05x  %04x  %s\n", address == pc ? '>' : ' ', address, word(address),

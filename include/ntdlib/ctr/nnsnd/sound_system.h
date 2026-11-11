@@ -118,6 +118,19 @@ public:
     // A volume of 0 or less returns nothing. A change reaches the DSP with the frame's parameters.
     void SetAuxReturnVolume(int bus, float volume);
 
+    // Turns on the firmware's delay on aux bus `bus` (0 or 1), with the line, the channels, the frames, the feedback
+    // and the damping of `params`. The line is in FCRAM at `params.buffer`. A game's DSP delay sends the line, then its
+    // parameters, then its enable (0x22d6e4, 0x22d8cc and 0x22d774 in Luigi's Mansion of 2018). Each goes into the
+    // bus's record with its dirty bit, and the record's dirty bit goes into the mixer's (0x26c2cc). The DSP takes them
+    // with the frame's parameters.
+    void SetFirmwareDelay(int bus, const FirmwareDelayParams& params);
+
+    // Sets the firmware's reverb on aux bus `bus` (0 or 1) to the record `params`, with its enable and its dirty bits.
+    // A game's DSP reverb sends its lines and its parameters together, then its enable (0x2eeda8 and 0x2eed1c in
+    // StreetPass Mii Plaza's update v14.6.0), in the same way as the delay (0x161848). The record's dirty bits join
+    // those that the DSP hasn't taken yet.
+    void SetFirmwareReverb(int bus, const FirmwareReverbParams& params);
+
     // Runs the DSP to the end of the current frame and processes the returned statuses.
     bool WaitForDspSync();
 

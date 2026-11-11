@@ -51,6 +51,7 @@ public:
     void PrintWarnings(const std::string& name) const;
 
     // Convert the game's sequence `index` as `program`, with the banks' errors since the last conversion as warnings.
+    // When the conversion fails, those errors follow its message, after "; ", in a FormatError.
     Conversion Convert(std::size_t index, const PerformOptions& perform, const std::string& program);
 
     // Whether the game's sequence `index` gets a conversion. A variant of the sound before it

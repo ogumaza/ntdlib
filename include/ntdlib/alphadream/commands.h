@@ -53,6 +53,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/alphadream/driver.h"
 #include "ntdlib/commands/sequence.h"
@@ -99,13 +100,8 @@ int SequenceOfSong(const Rom& rom, const DriverInfo& info, int song);
 // Decodes sequence `sequence`. Throws std::out_of_range past SequenceCount().
 Decoded DecodeRomSequence(const Rom& rom, const DriverInfo& info, int sequence);
 
-// The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
-// the end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a sequence, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence` for the driver's version `version`. Throws std::invalid_argument for a command that the version's
 // bytes can't hold, for a target missing from the sequence, for a sequence that doesn't start with its header, for an

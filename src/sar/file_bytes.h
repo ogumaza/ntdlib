@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT
 
-// The bytes of a file that the sar module's writers build, in the file's byte order.
+// The bytes of a file that the sar module's writers build, in the file's byte order, and the error for an archive that
+// the writers can't build again byte for byte.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
 namespace ntdlib::sar::detail
@@ -80,5 +83,34 @@ private:
     std::vector<uint8_t> bytes_;
     bool big_endian_ = false;
 };
+
+// The error for an archive that the tools would lay out another way: "an archive laid out another way: " and `what`.
+inline xsflib::FormatError OtherLayout(const std::string& what)
+{
+    return xsflib::FormatError("an archive laid out another way: " + what);
+}
+
+// Stores the 16-bit `value` at `at` in `bytes`, in big-endian order or in little-endian.
+inline void Store16(std::vector<uint8_t>& bytes, std::size_t at, bool big_endian, uint16_t value)
+{
+    big_endian ? xsflib::StoreBe16(&bytes[at], value) : xsflib::StoreLe16(&bytes[at], value);
+}
+
+// Stores `value` at `at` in `bytes`, in big-endian order or in little-endian.
+inline void Store32(std::vector<uint8_t>& bytes, std::size_t at, bool big_endian, uint32_t value)
+{
+    big_endian ? xsflib::StoreBe32(&bytes[at], value) : xsflib::StoreLe32(&bytes[at], value);
+}
+
+// Replaces the bytes of `bytes` from `at` on with `list` as a list of 32-bit values: their count, then the values.
+inline void WriteList(std::vector<uint8_t>& bytes, std::size_t at, bool big_endian, std::span<const uint32_t> list)
+{
+    bytes.resize(at + 4 + 4 * list.size());
+    Store32(bytes, at, big_endian, static_cast<uint32_t>(list.size()));
+    for (std::size_t k = 0; k < list.size(); ++k)
+    {
+        Store32(bytes, at + 4 + 4 * k, big_endian, list[k]);
+    }
+}
 
 } // namespace ntdlib::sar::detail

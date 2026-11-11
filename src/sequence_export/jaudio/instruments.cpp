@@ -422,6 +422,22 @@ bool PastPitchLimit(float pitch)
 namespace
 {
 
+// The first key of `z` whose notes of `sound` start past the DSP's pitch limit on `wave`, or nothing. The keys above it
+// pass the limit too.
+std::optional<int> FirstKeyPastLimit(const PresetZone& z, const NoteSound& sound, const WaveInfo& wave)
+{
+    const float init_pitch = sound.pitch * (wave.sample_rate / kDacRate);
+    for (int k = z.low_key; k <= z.high_key; k++)
+    {
+        if (PastPitchLimit(DspPitch(init_pitch, 1.0f, static_cast<float>(k - z.root_key) / 12.0f, 1.0f)))
+        {
+            return k;
+        }
+    }
+
+    return std::nullopt;
+}
+
 // Builds a preset's zones (PresetZones and OscillatorZones). The track's oscillators replace the sound's, and the
 // track's direct release replaces the sound's. Each set of volume oscillators and release has its envelope traced once.
 // With `limit_pitch`, the keys past the DSP's pitch limit get zones that play at the limit.
@@ -448,6 +464,10 @@ public:
     }
 
 private:
+    // Adds zone `z`, played from `wave`. From key `limited` on, its notes start past the DSP's pitch limit. The keys
+    // below `limited` keep the zone. A separate zone plays the others, all at the limit.
+    void AddLimited(PresetZone z, int limited, const WaveInfo& wave);
+
     const Oscillator* volume_override_;
     const Oscillator* pitch_override_;
     uint16_t direct_release_;
@@ -510,38 +530,31 @@ void ZoneBuilder::Add(const NoteSound& sound, const WaveInfo* wave, const Played
     }
     z.envelope = it->second;
 
-    // The first key whose notes start past the DSP's pitch limit. The keys above it pass the limit too. A separate zone
-    // plays them all at the limit.
-    int limited = z.high_key + 1;
     if (limit_pitch_ && wave != nullptr)
     {
-        const float init_pitch = sound.pitch * (wave->sample_rate / kDacRate);
-        for (int k = z.low_key; k <= z.high_key; k++)
+        if (const std::optional<int> limited = FirstKeyPastLimit(z, sound, *wave))
         {
-            if (PastPitchLimit(DspPitch(init_pitch, 1.0f, static_cast<float>(k - z.root_key) / 12.0f, 1.0f)))
-            {
-                limited = k;
-                break;
-            }
+            AddLimited(std::move(z), *limited, *wave);
+            return;
         }
-    }
-    if (limited <= z.high_key)
-    {
-        PresetZone fixed = z;
-        fixed.low_key = limited;
-        fixed.fixed_pitch = true;
-        fixed.cents = 1200.0 * std::log2(static_cast<double>(kPitchLimit) / 4096.0 * static_cast<double>(kDacRate) /
-                                         static_cast<double>(wave->sample_rate));
-        if (limited > z.low_key)
-        {
-            z.high_key = limited - 1;
-            zones_.push_back(std::move(z));
-        }
-        zones_.push_back(std::move(fixed));
-        return;
     }
 
     zones_.push_back(std::move(z));
+}
+
+void ZoneBuilder::AddLimited(PresetZone z, int limited, const WaveInfo& wave)
+{
+    PresetZone fixed = z;
+    fixed.low_key = limited;
+    fixed.fixed_pitch = true;
+    fixed.cents = 1200.0 * std::log2(static_cast<double>(kPitchLimit) / 4096.0 * static_cast<double>(kDacRate) /
+                                     static_cast<double>(wave.sample_rate));
+    if (limited > z.low_key)
+    {
+        z.high_key = limited - 1;
+        zones_.push_back(std::move(z));
+    }
+    zones_.push_back(std::move(fixed));
 }
 
 } // namespace
@@ -582,6 +595,16 @@ std::vector<PresetZone> PresetZones(const Bank& bank, const SoundArchive& archiv
     }
 
     return builder.Take();
+}
+
+double ZoneVolumeDb(const PresetZone& z)
+{
+    return z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0;
+}
+
+int ZoneCents(const PresetZone& z)
+{
+    return static_cast<int>(std::lround(std::clamp(z.cents, -12000.0, 12000.0)));
 }
 
 std::vector<PresetZone> OscillatorZones(uint32_t program, const Oscillator* volume_override,

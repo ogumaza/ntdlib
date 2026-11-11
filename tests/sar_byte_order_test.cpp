@@ -157,7 +157,7 @@ void TestSharedTable()
         const std::size_t first = table + r.U32(table + 8);
         const std::size_t second = table + r.U32(table + 16);
         std::fill(file.begin() + static_cast<std::ptrdiff_t>(second),
-                  file.begin() + static_cast<std::ptrdiff_t>(r.U32(0x18) + r.U32(0x1C)), uint8_t{0});
+                  file.begin() + static_cast<std::ptrdiff_t>(std::size_t{r.U32(0x18)} + r.U32(0x1C)), uint8_t{0});
         big_endian ? xsflib::StoreBe32(&file[table + 16], static_cast<uint32_t>(first - table))
                    : xsflib::StoreLe32(&file[table + 16], static_cast<uint32_t>(first - table));
 

@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/held_notes.h"
 
 namespace ntdlib::ntr::snd
 {
@@ -267,7 +268,7 @@ struct Track
     uint16_t channel_mask = 0;
     int32_t wait = 0;
     uint32_t base = 0;
-    uint32_t position = 0; // 0 once the track has ended
+    uint32_t position = 0; // 0 until a 0x93 opens the track
     std::array<uint32_t, kCallDepth> calls = {};
     std::array<uint8_t, kCallDepth> loop_counts = {};
     uint8_t call_depth = 0;
@@ -424,7 +425,7 @@ public:
 
     // A held note, for the length analysis: one of this many ticks or more. That's 200 beats, and minutes at any usual
     // tempo. A sound that plays until the game stops it gives a note this length.
-    static constexpr int32_t kHeldTicks = 9600;
+    static constexpr int32_t kHeldTicks = ntdlib::kHeldTicks;
 
 private:
     // What the length analysis follows of a track and of a player (FollowLengths).

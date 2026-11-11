@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <optional>
+#include <set>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -26,6 +28,7 @@
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
+#include "ntdlib/sound_pieces.h"
 
 namespace ntdlib::sequence_export
 {
@@ -154,8 +157,7 @@ std::string UsageText(const ArchiveConverter<Archive>& archive_converter)
     text += "options:\n";
     text += "  --output DIR   write to DIR (one archive only)\n";
     text += "  --only REGEX   convert matching sequence names (for example --only BGM)\n";
-    text += "  --loops N      repeat the main loop N times (default 1)\n";
-    text += "                 MIDI loop markers are included for players that support them\n";
+    text += kLoopsHelp;
     text += "  --seed N       " + c.seed_option + "\n";
     text += "  --var N=V      set variable N (0-15 player, 16-31 global) to V before each\n";
     text += "                 sequence starts; repeat for more variables\n";
@@ -168,9 +170,7 @@ std::string UsageText(const ArchiveConverter<Archive>& archive_converter)
         text += "  --voices off   keep every note (default)\n";
     }
     text += c.extra_options;
-    text += "  --list         list sequences without converting\n";
-    text += "  --quiet        print errors only\n";
-    text += "  --version      show the version\n";
+    text += kListQuietVersionHelp;
 
     return text;
 }
@@ -210,6 +210,44 @@ std::vector<Sequence> ArchiveSequences(const Archive& archive)
     return sequences;
 }
 
+// The archive's sequences, in the order of its sounds, with each of `pieces`, the archive's pieces of several sequences
+// (sound_pieces.h), in the place of its first sequence. The entry of a piece takes the name of the piece and the labels
+// of its sequences. Its other sequences leave the list.
+template <typename Archive>
+std::vector<Sequence> ArchiveSequences(const Archive& archive, std::span<const SoundPiece> pieces)
+{
+    std::set<std::size_t> later;
+    for (const SoundPiece& piece : pieces)
+    {
+        if (!piece.sounds.empty())
+        {
+            later.insert(piece.sounds.begin() + 1, piece.sounds.end());
+        }
+    }
+
+    std::vector<Sequence> sequences;
+    for (Sequence& sequence : ArchiveSequences(archive))
+    {
+        if (later.contains(sequence.index))
+        {
+            continue;
+        }
+
+        if (const SoundPiece* piece = PieceStartingAt(pieces, sequence.index))
+        {
+            sequence.name = piece->name;
+            for (const uint32_t sound : piece->sounds)
+            {
+                sequence.labels.push_back(archive.Sounds()[sound].name);
+            }
+        }
+
+        sequences.push_back(std::move(sequence));
+    }
+
+    return sequences;
+}
+
 // The frame's converter of the archives of `archive_converter`: it reads an archive (OpenArchive) and converts its
 // sequences with the console's settings. `archive_converter` has to outlive the converter.
 template <typename Archive>
@@ -231,7 +269,10 @@ Converter<PerformOptions, Archive, Conversion> MakeArchiveConverter(const Archiv
     {
         return OpenArchive<Archive>(input, name, c->settings, c->group_files);
     };
-    converter.sequences = ArchiveSequences<Archive>;
+    converter.sequences = [](const Archive& archive)
+    {
+        return ArchiveSequences(archive);
+    };
     converter.convert = [c](Archive& archive, std::size_t index, const PerformOptions& perform)
     {
         return ConvertSequence(archive, static_cast<uint32_t>(index), perform, c->settings, c->program);

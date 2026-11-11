@@ -14,15 +14,13 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
-#include <optional>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
 
+#include "ntdlib/agb/archive_source.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/rd1/archive_player.h"
 #include "ntdlib/rd1/driver.h"
@@ -68,87 +66,11 @@ struct LoadedRom
     DriverInfo info;
 };
 
+// Archive mode's steps. StartSequence returns the messages of ArchivePlayer::Start: the entry has no song, or an option
+// is out of range. It also returns the message of a failure of the game's code.
 template <typename Program>
-struct ArchiveTraits
+struct ArchiveTraits : agb::RomArchiveTraits<Program, ArchiveSelection, LoadedRom, ArchivePlayer>
 {
-    using Set = typename Program::Set;
-    using Prepared = ArchiveSelection;
-    using Archive = LoadedRom;
-    using Model = ArchivePlayer;
-    using Snapshot = ArchivePlayer::Snapshot;
-
-    static constexpr bool kKeepArchive = false;
-
-    static std::optional<std::string> Prepare(Set& set, ArchiveSelection& selection)
-    {
-        return Program::Select(set, selection);
-    }
-
-    // The ROM's bytes move out of the set. A const set keeps them, and the ROM takes a copy.
-    static std::optional<std::string> LoadArchive(Set& set, const ArchiveSelection& selection,
-                                                  std::optional<LoadedRom>& archive)
-    {
-        auto* bytes = set.File(selection.rom_path);
-        if (!bytes)
-        {
-            return "the set has no file " + selection.rom_path;
-        }
-
-        archive.emplace(std::move(*bytes), selection.overrides);
-        return std::nullopt;
-    }
-
-    static std::unique_ptr<ArchivePlayer> MakeModel(const ArchiveSelection&, LoadedRom& archive)
-    {
-        return std::make_unique<ArchivePlayer>(archive.rom, archive.info);
-    }
-
-    // The player has nothing to start before the song.
-    static std::optional<std::string> StartModel(ArchivePlayer&, LoadedRom&, const ArchiveSelection&)
-    {
-        return std::nullopt;
-    }
-
-    // The messages of ArchivePlayer::Start: the entry holds no song, or an option is out of range. A failure of the
-    // game's code gives its message too.
-    static std::optional<std::string> StartSequence(ArchivePlayer& model, Set&, const ArchiveSelection& selection)
-    {
-        try
-        {
-            model.Start(selection.song, selection.options);
-        }
-        catch (const std::invalid_argument& e)
-        {
-            return e.what();
-        }
-        catch (const std::runtime_error& e)
-        {
-            return e.what();
-        }
-
-        return std::nullopt;
-    }
-
-    static bool RunFrame(ArchivePlayer& model, std::vector<int16_t>& out)
-    {
-        model.RunFrame(out);
-        return true;
-    }
-
-    static bool Busy(const ArchivePlayer& model)
-    {
-        return model.Busy();
-    }
-
-    static Snapshot Save(const ArchivePlayer& model, const Snapshot* previous)
-    {
-        return model.Save(previous);
-    }
-
-    static void Restore(ArchivePlayer& model, const Snapshot& snapshot)
-    {
-        model.Restore(snapshot);
-    }
 };
 
 } // namespace ntdlib::rd1

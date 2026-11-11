@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -13,6 +14,8 @@
 
 #include "xsflib/binary.h"
 #include "xsflib/rip/rom_set.h"
+
+#include "ntdlib/n64/aleck64.h"
 
 namespace ntdlib::sequence_export::n64
 {
@@ -31,11 +34,13 @@ std::vector<uint8_t> ReadSetImage(const std::filesystem::path& path, std::string
     std::vector<xsflib::rip::RomSetGame> games;
     for (const GameProfile& profile : Profiles())
     {
-        for (const xsflib::rip::RomChip& chip : profile.chips)
+        const std::span<const xsflib::rip::RomChip> chips = ntdlib::n64::Aleck64Chips(profile.sha1);
+        for (const xsflib::rip::RomChip& chip : chips)
         {
             sizes.insert(chip.size);
         }
-        games.push_back({profile.title, profile.chips});
+
+        games.push_back({profile.title, chips});
     }
 
     std::vector<xsflib::rip::SetFile> files;

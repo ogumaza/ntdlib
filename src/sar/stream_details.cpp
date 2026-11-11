@@ -11,17 +11,12 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/format_ids.h"
 
 namespace ntdlib::sar::detail
 {
 namespace
 {
-
-constexpr uint16_t kListReference = 0x0100;  // a list of 32-bit values
-constexpr uint16_t kTableReference = 0x0101; // a table of references
-constexpr uint16_t kStreamTrack = 0x220E;
-constexpr uint16_t kSends = 0x220F;
-constexpr uint32_t kNone = 0xFFFFFFFF;
 
 // Appends sends of `size` bytes to `out`: the main send, a send to each aux bus, and padding.
 void AppendSends(Out& out, uint8_t main, const std::array<uint8_t, 3>& aux, std::size_t size)

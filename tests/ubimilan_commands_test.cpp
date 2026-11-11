@@ -10,14 +10,14 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
+#include "ntdlib/testing/ubimilan_image.h"
 #include "ntdlib/ubimilan/commands.h"
 #include "ntdlib/ubimilan/driver.h"
 #include "ntdlib/ubimilan/song.h"
-#include "xsflib/testing/check.h"
-
-#include "ubimilan_image.h"
 
 namespace
 {

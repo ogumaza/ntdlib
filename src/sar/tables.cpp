@@ -15,14 +15,18 @@
 #include <vector>
 
 #include "xsflib/binary.h"
-#include "xsflib/bytes.h"
 
+#include "ntdlib/rounding.h"
+#include "ntdlib/sar/archive_model.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/groups.h"
 #include "ntdlib/sar/info_block.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sar/string_block.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/format_ids.h"
+#include "sar/info_entries.h"
 #include "sar/stream_details.h"
 
 namespace ntdlib::sar
@@ -30,47 +34,19 @@ namespace ntdlib::sar
 namespace
 {
 
-constexpr uint16_t kStringBlock = 0x2000;
-constexpr uint16_t kInfoBlock = 0x2001;
-constexpr uint16_t kFileBlock = 0x2002;
-constexpr uint16_t kInternalFile = 0x220C;  // from a file's entry to its place in the FILE block
-constexpr uint16_t kDataReference = 0x1F00; // a file's place in the FILE block
-constexpr uint16_t kListReference = 0x0100; // a list of 32-bit values
-constexpr uint16_t kExternalFile = 0x220D;  // from a file's entry to its path
-constexpr uint16_t kStreamDetails = 0x2201;
-constexpr uint16_t kWaveSoundDetails = 0x2202;
-constexpr uint16_t kSequenceDetails = 0x2203;
-constexpr uint16_t kTableReference = 0x0101;  // a table of references
 constexpr std::size_t kMaxStreamTracks = 8;   // the tracks of a stream sound that ntdlib's reader reads
 constexpr std::size_t kMaxTrackChannels = 16; // the channels of a stream sound's track that ntdlib's reader reads
-constexpr std::size_t kVersionField = 0x08;
 constexpr uint32_t kSequencePriority = 2;  // the option of a sequence sound's details that gives its channel priority
 constexpr uint32_t kWaveSoundPriority = 1; // the option of a wave sound's details that gives its channel priority
 
 // The option of a wave sound's details in a 3DS archive of CSAR 2.0.0.0 that gives the offset of its sends, and the
 // sends that the tools write there: 127 to the main bus, a count of 2 aux buses, and 0 to each.
-constexpr uint32_t kCtrFirstVersion = 0x02000000;
 constexpr uint32_t kCtrWaveSends = 1u << 8;
 constexpr std::array<uint8_t, 8> kCtrWaveSoundSends = {0x7F, 0x02, 0, 0, 0, 0, 0, 0};
 
-// The other versions of a 3DS archive whose stream sounds WithNewStreamSound lays out. Before 2.3.0.0, a stream sound's
-// details hold the tracks that play and the count of channels alone. 2.3.0.0 adds a table of tracks without sends,
-// after a field of options. From 2.3.2.0 on, the details take the layout of FSAR 2.2.0.
-constexpr uint32_t kCtrCountsVersion = 0x02020000;
-constexpr uint32_t kCtrTracksVersion = 0x02030000;
-constexpr uint32_t kCtrFieldsVersion = 0x02030200;
-
-constexpr uint32_t kNone = 0xFFFFFFFF;
-constexpr std::size_t kHeaderSizeField = 0x06;
-constexpr std::size_t kSizeField = 0x0C; // the archive's size
-constexpr std::size_t kBlockCount = 0x10;
-constexpr std::size_t kBlockTable = 0x14;
-constexpr std::size_t kBlockEntrySize = 12; // a type, two bytes of padding, an offset and a size
-constexpr std::size_t kBlockHeaderSize = 8; // a block's magic and size
-constexpr std::size_t kSoundOptions = 20;   // where a sound's entry holds its options
-constexpr std::size_t kSoundDetails = 12;   // where a sound's entry refers to its details
-constexpr uint32_t kNameOption = 1;         // the option that gives the string index
-constexpr std::size_t kSettingsSize = 16;   // a sound's 3D settings
+constexpr std::size_t kSoundOptions = 20; // where a sound's entry holds its options
+constexpr std::size_t kSoundDetails = 12; // where a sound's entry refers to its details
+constexpr uint32_t kNameOption = 1;       // the option that gives the string index
 
 // The options of a sound's entry that give its pan and its priorities, and the one that gives the offset of its 3D
 // settings.
@@ -78,32 +54,56 @@ constexpr uint32_t kPanOption = 1u << 1;
 constexpr uint32_t kPriorityOption = 1u << 2;
 constexpr uint32_t kSettingsOption = 1u << 8;
 
-// The options of a sound's entry that the tools write: the string index, the pan, the priorities, bit 3, the 3D
-// settings, bit 17 and the user's bits 28 to 31. Only the offset of the 3D settings leads to other bytes.
-constexpr uint32_t kKnownSoundOptions = 0xF002010F;
-
-// The options of a sequence sound's details that the tools write: the start and the channel priority.
-constexpr uint32_t kKnownSequenceOptions = 3;
-
 // What the reader reads for a sound's priorities and its channel priority without their options: a priority of 64 in
 // the low byte, and an actor player of 0 or no release priority fix in the next.
 constexpr uint32_t kUnsetPriority = 64;
 
-// Where an entry of each table that holds names keeps its options, in the order of InfoBlock's tables: the sounds, the
-// sound groups, the banks, the wave archives, the groups and the players.
+// Where an entry of each table that holds names keeps its options, in the order of InfoTables: the sounds, the sound
+// groups, the banks, the wave archives, the groups and the players.
 constexpr std::array<std::size_t, 6> kOptionsAt = {kSoundOptions, 24, 12, 8, 4, 4};
 
-// The places of the tables of sounds, banks and wave archives in kOptionsAt.
-constexpr std::size_t kSoundTable = 0;
-constexpr std::size_t kBankTable = 2;
-constexpr std::size_t kWaveArchiveTable = 3;
-constexpr std::size_t kGroupTable = 4;
+// The places of the tables of sounds, banks, wave archives and groups in InfoTables and kOptionsAt.
+constexpr std::size_t kSoundsPlace = 0;
+constexpr std::size_t kBanksPlace = 2;
+constexpr std::size_t kWaveArchivesPlace = 3;
+constexpr std::size_t kGroupsPlace = 4;
 
+using detail::BankEntry;
+using detail::GroupEntry;
+using detail::InfoTables;
+using detail::InternalOffsetAt;
+using detail::kBlockCount;
+using detail::kBlockEntrySize;
+using detail::kBlockHeaderSize;
+using detail::kBlockTable;
+using detail::kDataReference;
+using detail::kExternalFile;
+using detail::kFileBlock;
+using detail::kFileSizeField;
+using detail::kHeaderSizeField;
+using detail::kInfoBlock;
+using detail::kInternalFile;
+using detail::kKnownSequenceOptions;
+using detail::kKnownSoundOptions;
+using detail::kListReference;
+using detail::kNone;
 using detail::kNothingVersion;
 using detail::kSendsVersion;
+using detail::kSequenceDetails;
+using detail::kSettings3dSize;
+using detail::kStreamDetails;
+using detail::kStringBlock;
+using detail::kTableReference;
+using detail::kVersionField;
+using detail::kWaveSoundDetails;
+using detail::OtherLayout;
 using detail::Out;
+using detail::Store16;
+using detail::Store32;
 using detail::StreamDetailsOf;
 using detail::StreamHeader;
+using detail::WaveArchiveEntry;
+using detail::WriteList;
 
 // A block that the header's table lists: where its entry is in the table, and the block's offset and size.
 struct BlockEntry
@@ -117,16 +117,13 @@ struct BlockEntry
 // that the table doesn't list.
 std::optional<BlockEntry> EntryOf(const xsflib::Reader& r, uint16_t type)
 {
-    for (std::size_t i = 0; i < r.U16(kBlockCount); ++i)
+    const std::optional<std::size_t> entry = detail::FindBlockEntry(r, type);
+    if (!entry)
     {
-        const std::size_t entry = kBlockTable + i * kBlockEntrySize;
-        if (r.U16(entry) == type)
-        {
-            return BlockEntry{entry, r.U32(entry + 4), r.U32(entry + 8)};
-        }
+        return std::nullopt;
     }
 
-    return std::nullopt;
+    return BlockEntry{*entry, r.U32(*entry + 4), r.U32(*entry + 8)};
 }
 
 // The bytes of the block that `entry` lists in `archive`. Throws xsflib::FormatError for a block past the archive's
@@ -145,26 +142,7 @@ std::span<const uint8_t> BytesOf(std::span<const uint8_t> archive, const BlockEn
 // alignment after the block's size.
 std::size_t FirstFile(std::size_t block, Flavor flavor)
 {
-    const std::size_t alignment = flavor == Flavor::kNx ? 64 : 32;
-
-    return (block + kBlockHeaderSize + alignment - 1) / alignment * alignment;
-}
-
-xsflib::FormatError OtherLayout(const std::string& what)
-{
-    return xsflib::FormatError("an archive laid out another way: " + what);
-}
-
-// Stores `value` at `at` in `bytes`, in big-endian order or in little-endian.
-void Store32(std::vector<uint8_t>& bytes, std::size_t at, bool big_endian, uint32_t value)
-{
-    big_endian ? xsflib::StoreBe32(&bytes[at], value) : xsflib::StoreLe32(&bytes[at], value);
-}
-
-// Stores the 16-bit `value` at `at` in `bytes`, in big-endian order or in little-endian.
-void Store16(std::vector<uint8_t>& bytes, std::size_t at, bool big_endian, uint16_t value)
-{
-    big_endian ? xsflib::StoreBe16(&bytes[at], value) : xsflib::StoreLe16(&bytes[at], value);
+    return AlignUp(block + kBlockHeaderSize, detail::FileAlignment(flavor));
 }
 
 // Adds `shift` to the offset of each file of `info` that the FILE block holds. Throws xsflib::FormatError for a file
@@ -176,23 +154,18 @@ void MoveFiles(InfoBlock& info, int64_t shift, uint32_t first)
     {
         std::vector<uint8_t>& entry = info.files[i];
         const xsflib::Reader r(entry, big_endian);
-        if (r.U16(0) != kInternalFile)
+        const std::optional<std::size_t> at = InternalOffsetAt(r);
+        if (!at)
         {
             continue;
         }
-
-        const std::size_t at = std::size_t{r.U32(4)} + 4; // the offset in the location
-        const uint32_t offset = r.U32(at);
-        if (offset == kNone)
-        {
-            continue;
-        }
+        const uint32_t offset = r.U32(*at);
         if (offset < first)
         {
             throw xsflib::FormatError("an archive whose file " + std::to_string(i) + " starts before its first file");
         }
 
-        Store32(entry, at, big_endian, static_cast<uint32_t>(offset + shift));
+        Store32(entry, *at, big_endian, static_cast<uint32_t>(offset + shift));
     }
 }
 
@@ -215,7 +188,7 @@ std::vector<uint8_t> WithFileAppended(std::span<const uint8_t> archive, Flavor f
     const auto size = static_cast<uint32_t>(out.Size() - files->offset);
     out.U32(files->offset + 4, size);
     out.U32(files->entry + 8, size);
-    out.U32(kSizeField, static_cast<uint32_t>(out.Size()));
+    out.U32(kFileSizeField, static_cast<uint32_t>(out.Size()));
 
     return out.Take();
 }
@@ -286,20 +259,13 @@ std::optional<std::size_t> NameCount(const std::optional<StringBlock>& strings)
     return strings ? std::optional<std::size_t>(strings->names.size()) : std::nullopt;
 }
 
-// The tables of `info` whose entries hold names, in the order of InfoBlock's tables.
-template <class Info>
-auto NamedTables(Info& info)
-{
-    return std::array{&info.sounds, &info.sound_groups, &info.banks, &info.wave_archives, &info.groups, &info.players};
-}
-
-// The string index of a new name for an item at the end of table `table` of `info`, in the order of NamedTables: one
+// The string index of a new name for an item at the end of table `table` of `info`, in the order of InfoTables: one
 // past the last string index that the entries of that table and the tables before it hold. Throws xsflib::FormatError
 // for an index past `names`, the string table's count of names, in an archive with names.
 uint32_t NewStringIndex(const InfoBlock& info, std::size_t table, std::optional<std::size_t> names)
 {
     const bool big_endian = info.flavor == Flavor::kCafe;
-    const auto tables = NamedTables(info);
+    const auto tables = InfoTables(info);
     uint32_t string = 0;
     for (std::size_t k = 0; k <= table; ++k)
     {
@@ -347,8 +313,8 @@ void CheckName(const std::optional<StringBlock>& strings, const std::string& nam
 void MakeRoomForName(InfoBlock& info, uint32_t first)
 {
     const bool big_endian = info.flavor == Flavor::kCafe;
-    const auto tables = NamedTables(info);
-    for (std::size_t k = 0; k < tables.size(); ++k)
+    const auto tables = InfoTables(info);
+    for (std::size_t k = 0; k < kOptionsAt.size(); ++k)
     {
         for (std::vector<uint8_t>& entry : *tables[k])
         {
@@ -359,6 +325,21 @@ void MakeRoomForName(InfoBlock& info, uint32_t first)
                 Store32(entry, *at, big_endian, index + 1);
             }
         }
+    }
+}
+
+// Adds `entry` to the end of `table`, a table of `info`, as the entry of a new item of `type` whose name has the string
+// index `string`. The string indices from `string` on move up by one first. In an archive with names, `name` then goes
+// in at `string` in `strings`.
+void AddNamedEntry(InfoBlock& info, std::optional<StringBlock>& strings, std::vector<std::vector<uint8_t>>& table,
+                   uint32_t type, uint32_t string, const std::string& name, std::vector<uint8_t> entry)
+{
+    MakeRoomForName(info, string);
+    const auto index = static_cast<uint32_t>(table.size());
+    table.push_back(std::move(entry));
+    if (strings)
+    {
+        strings->names.insert(strings->names.begin() + string, ItemName{name, ItemId(type, index)});
     }
 }
 
@@ -402,18 +383,6 @@ bool IsWaveSound(std::span<const uint8_t> entry, bool big_endian)
            xsflib::Reader(entry, big_endian).U16(kSoundDetails) == kWaveSoundDetails;
 }
 
-// `entry`, a sequence sound's entry whose list of banks starts at `banks`, with `list` as its list, in the byte order
-// that `big_endian` gives.
-void WriteBanks(std::vector<uint8_t>& entry, std::size_t banks, bool big_endian, std::span<const uint32_t> list)
-{
-    entry.resize(banks + 4 + 4 * list.size());
-    Store32(entry, banks, big_endian, static_cast<uint32_t>(list.size()));
-    for (std::size_t k = 0; k < list.size(); ++k)
-    {
-        Store32(entry, banks + 4 + 4 * k, big_endian, list[k]);
-    }
-}
-
 // The entry of `sound` in an archive of `flavor`, from `model`, the entry of a sequence sound. NewSequenceSound
 // describes the new entry. The sound takes string index `string`. Throws xsflib::FormatError for a model whose details
 // are laid out another way than the tools lay them out, and std::invalid_argument for a start that the model has no
@@ -432,7 +401,7 @@ std::vector<uint8_t> SequenceSoundEntry(std::span<const uint8_t> model, Flavor f
 
     // The copy, with the sound's file, name, start and banks.
     std::vector<uint8_t> entry(model.begin(), model.begin() + static_cast<std::ptrdiff_t>(banks));
-    WriteBanks(entry, banks, big_endian, sound.banks);
+    WriteList(entry, banks, big_endian, sound.banks);
     Store32(entry, 0, big_endian, sound.file);
     if (const std::optional<std::size_t> at = StringIndexAt(entry, kSoundOptions, big_endian))
     {
@@ -650,12 +619,12 @@ std::size_t StreamDetailsStart(std::span<const uint8_t> entry, bool big_endian)
         return end;
     }
     const std::size_t settings = r.U32(OptionPlace(entry, kSoundOptions, kSettingsOption, big_endian));
-    if (settings < end || settings + kSettingsSize > entry.size())
+    if (settings < end || settings + kSettings3dSize > entry.size())
     {
         throw OtherLayout("a sound's 3D settings that don't follow its options");
     }
 
-    return settings + kSettingsSize;
+    return settings + kSettings3dSize;
 }
 
 // A new stream sound's details for `stream` in an archive of `flavor` and `version`, from `model`, the entry of the
@@ -750,14 +719,13 @@ std::optional<uint32_t> GroupFileVersion(std::span<const uint8_t> archive, Flavo
             continue;
         }
         const xsflib::Reader entry(info.files[file], big_endian);
-        if (entry.U16(0) != kInternalFile)
+        const std::optional<std::size_t> place = InternalOffsetAt(entry);
+        if (!place)
         {
             continue;
         }
-        const std::size_t location = entry.U32(4);
-        const uint32_t offset = entry.U32(location + 4);
-        const std::size_t at = std::size_t{files->offset} + kBlockHeaderSize + offset;
-        if (offset != kNone && at + kVersionField + 4 <= archive.size())
+        const std::size_t at = std::size_t{files->offset} + kBlockHeaderSize + entry.U32(*place);
+        if (at + kVersionField + 4 <= archive.size())
         {
             highest = std::max(highest.value_or(0), r.U32(at + kVersionField));
         }
@@ -772,8 +740,7 @@ ArchiveWithFile WithFileAdded(std::span<const uint8_t> archive, Flavor flavor, s
                               uint16_t data)
 {
     // The file's place: the first multiple of the alignment from the archive's end.
-    const std::size_t alignment = flavor == Flavor::kNx ? 64 : 32;
-    const std::size_t start = (archive.size() + alignment - 1) / alignment * alignment;
+    const std::size_t start = AlignUp(archive.size(), detail::FileAlignment(flavor));
     if (start + bytes.size() > kNone)
     {
         throw std::invalid_argument("an archive that would pass 4 GB");
@@ -794,6 +761,153 @@ ArchiveWithFile WithFileAdded(std::span<const uint8_t> archive, Flavor flavor, s
     result.archive = WithTables(WithFileAppended(archive, flavor, start, bytes), flavor, strings, std::move(info));
 
     return result;
+}
+
+// The size of an archive's header, and the entries of its STRG, INFO and FILE blocks in the header's table.
+struct ArchiveBlocks
+{
+    std::size_t header_size = 0;
+    BlockEntry strings;
+    BlockEntry info;
+    BlockEntry files;
+};
+
+// The blocks of the archive of `size` bytes that `r` reads. The header lists the STRG, INFO and FILE blocks in that
+// order. They follow it in that order, without gaps. An archive without names lists a STRG block whose offset is none.
+// Throws OtherLayout for other blocks or another order, std::invalid_argument for an archive with names without
+// `has_strings` or one without names with it, and xsflib::FormatError for an archive cut short or one that doesn't
+// end with its FILE block.
+ArchiveBlocks ListedBlocks(const xsflib::Reader& r, std::size_t size, bool has_strings)
+{
+    const std::size_t header_size = r.U16(kHeaderSizeField);
+    const std::optional<BlockEntry> old_strings = EntryOf(r, kStringBlock);
+    const std::optional<BlockEntry> old_info = EntryOf(r, kInfoBlock);
+    const std::optional<BlockEntry> files = EntryOf(r, kFileBlock);
+    if (r.U16(kBlockCount) != 3 || !old_strings || !old_info || !files || old_strings->entry != kBlockTable ||
+        old_info->entry != kBlockTable + kBlockEntrySize || files->entry != kBlockTable + 2 * kBlockEntrySize ||
+        header_size < kBlockTable + 3 * kBlockEntrySize)
+    {
+        throw OtherLayout("its header doesn't list its STRG, INFO and FILE blocks in that order");
+    }
+    const bool named = old_strings->offset != kNone;
+    if (named != has_strings)
+    {
+        throw std::invalid_argument(named ? "no STRG block for an archive with one"
+                                          : "a STRG block for an archive without one");
+    }
+
+    std::size_t at = header_size;
+    if (named)
+    {
+        if (old_strings->offset != at)
+        {
+            throw OtherLayout("its STRG block doesn't follow its header");
+        }
+        at += old_strings->size;
+    }
+    if (old_info->offset != at)
+    {
+        throw OtherLayout("its INFO block doesn't follow its STRG block");
+    }
+    if (files->offset != at + old_info->size)
+    {
+        throw OtherLayout("its FILE block doesn't follow its INFO block");
+    }
+    if (r.U32(kFileSizeField) != size || files->offset + std::size_t{files->size} != size)
+    {
+        throw xsflib::FormatError("an archive cut short, or one that doesn't end with its FILE block");
+    }
+
+    return {header_size, *old_strings, *old_info, *files};
+}
+
+// Where a file's entry holds the file's offset in the FILE block, with the offset and the size.
+struct FileLocation
+{
+    std::size_t at = 0;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+};
+
+// The location that `entry`, a file's entry, gives. Nothing for a file that the FILE block doesn't hold.
+std::optional<FileLocation> LocationOf(std::span<const uint8_t> entry, bool big_endian)
+{
+    const xsflib::Reader r(entry, big_endian);
+    const std::optional<std::size_t> at = InternalOffsetAt(r);
+    if (!at)
+    {
+        return std::nullopt;
+    }
+
+    return FileLocation{*at, r.U32(*at), r.U32(*at + 4)};
+}
+
+// The places in an archive of a file that new bytes replace: where the file starts and ends and where its padding
+// ends, and where the new bytes and their padding end.
+struct Replacement
+{
+    std::size_t start = 0;
+    std::size_t end = 0;
+    std::size_t padded = 0;
+    std::size_t new_end = 0;
+    std::size_t new_padded = 0;
+};
+
+// Moves the entries of the files of `info` for `new_size` new bytes in place of file `name` at `old`, at `places`. The
+// FILE block's body starts at `body`. The files after it move, and the file IDs that name the same bytes take the new
+// size. The files inside it move where `inner` says. Throws std::invalid_argument for a file that would run past the
+// new bytes, and OtherLayout for a file that overlaps the old bytes otherwise.
+void MoveFileEntries(InfoBlock& info, bool big_endian, std::size_t body, const FileLocation& old,
+                     const Replacement& places, std::size_t new_size, std::span<const InnerFile> inner,
+                     const std::string& name)
+{
+    const auto shift = static_cast<int64_t>(places.new_padded) - static_cast<int64_t>(places.padded);
+    const auto inner_at = [&](std::size_t at, uint32_t size) -> std::optional<uint32_t>
+    {
+        if (at < places.start || at + size > places.end)
+        {
+            return std::nullopt;
+        }
+
+        const auto found = std::ranges::find(inner, at - places.start, &InnerFile::from);
+        if (found == inner.end())
+        {
+            return std::nullopt;
+        }
+
+        return found->to;
+    };
+    for (std::size_t i = 0; i < info.files.size(); ++i)
+    {
+        const std::optional<FileLocation> location = LocationOf(info.files[i], big_endian);
+        if (!location)
+        {
+            continue;
+        }
+
+        const std::size_t at = body + location->offset;
+        if (location->offset == old.offset && location->size == old.size)
+        {
+            Store32(info.files[i], location->at + 4, big_endian, static_cast<uint32_t>(new_size));
+        }
+        else if (at >= places.padded)
+        {
+            Store32(info.files[i], location->at, big_endian, static_cast<uint32_t>(location->offset + shift));
+        }
+        else if (const std::optional<uint32_t> to = inner_at(at, location->size))
+        {
+            if (std::size_t{*to} + location->size > new_size)
+            {
+                throw std::invalid_argument("file " + std::to_string(i) + " would run past the new bytes of " + name);
+            }
+
+            Store32(info.files[i], location->at, big_endian, old.offset + *to);
+        }
+        else if (at >= places.start || at + location->size > places.start)
+        {
+            throw OtherLayout("file " + std::to_string(i) + " overlaps " + name);
+        }
+    }
 }
 
 } // namespace
@@ -826,51 +940,16 @@ std::vector<uint8_t> WithTables(std::span<const uint8_t> archive, Flavor flavor,
         throw std::invalid_argument("tables of another flavor than the archive's");
     }
 
-    // The header lists the STRG, INFO and FILE blocks in that order. They follow it in that order, without gaps.
     const bool big_endian = flavor == Flavor::kCafe;
     const xsflib::Reader r(archive, big_endian);
-    const std::size_t header_size = r.U16(kHeaderSizeField);
-    const std::optional<BlockEntry> old_strings = EntryOf(r, kStringBlock);
-    const std::optional<BlockEntry> old_info = EntryOf(r, kInfoBlock);
-    const std::optional<BlockEntry> files = EntryOf(r, kFileBlock);
-    if (r.U16(kBlockCount) != 3 || !old_strings || !old_info || !files || old_strings->entry != kBlockTable ||
-        old_info->entry != kBlockTable + kBlockEntrySize || files->entry != kBlockTable + 2 * kBlockEntrySize ||
-        header_size < kBlockTable + 3 * kBlockEntrySize)
-    {
-        throw OtherLayout("its header doesn't list its STRG, INFO and FILE blocks in that order");
-    }
-    const bool named = old_strings->offset != kNone;
-    if (named != strings.has_value())
-    {
-        throw std::invalid_argument(named ? "no STRG block for an archive with one"
-                                          : "a STRG block for an archive without one");
-    }
-
-    std::size_t at = header_size;
-    if (named)
-    {
-        if (old_strings->offset != at)
-        {
-            throw OtherLayout("its STRG block doesn't follow its header");
-        }
-        at += old_strings->size;
-    }
-    if (old_info->offset != at)
-    {
-        throw OtherLayout("its INFO block doesn't follow its STRG block");
-    }
-    if (files->offset != at + old_info->size)
-    {
-        throw OtherLayout("its FILE block doesn't follow its INFO block");
-    }
-    if (r.U32(kSizeField) != archive.size() || files->offset + std::size_t{files->size} != archive.size())
-    {
-        throw xsflib::FormatError("an archive cut short, or one that doesn't end with its FILE block");
-    }
+    const ArchiveBlocks blocks = ListedBlocks(r, archive.size(), strings.has_value());
+    const std::size_t header_size = blocks.header_size;
+    const BlockEntry& files = blocks.files;
+    const bool named = blocks.strings.offset != kNone;
 
     // The FILE block: its magic and size, then zeros up to its first file.
-    const std::size_t first = FirstFile(files->offset, flavor);
-    if (!r.Magic(files->offset, "FILE") || r.U32(files->offset + 4) != files->size)
+    const std::size_t first = FirstFile(files.offset, flavor);
+    if (!r.Magic(files.offset, "FILE") || r.U32(files.offset + 4) != files.size)
     {
         throw OtherLayout("its FILE block has another magic, or another size than its header gives");
     }
@@ -879,7 +958,7 @@ std::vector<uint8_t> WithTables(std::span<const uint8_t> archive, Flavor flavor,
         throw OtherLayout("its FILE block ends before its first file's place");
     }
     const std::span<const uint8_t> lead =
-        archive.subspan(files->offset + kBlockHeaderSize, first - files->offset - kBlockHeaderSize);
+        archive.subspan(files.offset + kBlockHeaderSize, first - files.offset - kBlockHeaderSize);
     if (std::ranges::any_of(lead, [](uint8_t byte) { return byte != 0; }))
     {
         throw OtherLayout("its FILE block holds bytes other than zeros before its first file");
@@ -891,7 +970,7 @@ std::vector<uint8_t> WithTables(std::span<const uint8_t> archive, Flavor flavor,
     std::vector<uint8_t> new_info = info.Write();
     const std::size_t new_files = header_size + new_strings.size() + new_info.size();
     const std::size_t new_first = FirstFile(new_files, flavor);
-    const auto shift = static_cast<int64_t>(new_first - new_files) - static_cast<int64_t>(first - files->offset);
+    const auto shift = static_cast<int64_t>(new_first - new_files) - static_cast<int64_t>(first - files.offset);
     if (shift != 0)
     {
         MoveFiles(info, shift, static_cast<uint32_t>(lead.size()));
@@ -908,15 +987,15 @@ std::vector<uint8_t> WithTables(std::span<const uint8_t> archive, Flavor flavor,
 
     if (named)
     {
-        out.U32(old_strings->entry + 4, static_cast<uint32_t>(header_size));
-        out.U32(old_strings->entry + 8, static_cast<uint32_t>(new_strings.size()));
+        out.U32(blocks.strings.entry + 4, static_cast<uint32_t>(header_size));
+        out.U32(blocks.strings.entry + 8, static_cast<uint32_t>(new_strings.size()));
     }
-    out.U32(old_info->entry + 4, static_cast<uint32_t>(header_size + new_strings.size()));
-    out.U32(old_info->entry + 8, static_cast<uint32_t>(new_info.size()));
-    out.U32(files->entry + 4, static_cast<uint32_t>(new_files));
-    out.U32(files->entry + 8, static_cast<uint32_t>(out.Size() - new_files));
+    out.U32(blocks.info.entry + 4, static_cast<uint32_t>(header_size + new_strings.size()));
+    out.U32(blocks.info.entry + 8, static_cast<uint32_t>(new_info.size()));
+    out.U32(files.entry + 4, static_cast<uint32_t>(new_files));
+    out.U32(files.entry + 8, static_cast<uint32_t>(out.Size() - new_files));
     out.U32(new_files + 4, static_cast<uint32_t>(out.Size() - new_files));
-    out.U32(kSizeField, static_cast<uint32_t>(out.Size()));
+    out.U32(kFileSizeField, static_cast<uint32_t>(out.Size()));
 
     return out.Take();
 }
@@ -965,120 +1044,43 @@ std::vector<uint8_t> WithFileBytes(std::span<const uint8_t> archive, Flavor flav
     {
         throw xsflib::FormatError("an archive without a FILE block");
     }
-
-    // Where an entry holds a file's offset in the FILE block, with the offset and the size. Nothing for a file that the
-    // FILE block doesn't hold.
-    struct Location
-    {
-        std::size_t at = 0;
-        uint32_t offset = 0;
-        uint32_t size = 0;
-    };
-    const auto location_of = [&](std::size_t i) -> std::optional<Location>
-    {
-        const xsflib::Reader r(info.files[i], big_endian);
-        if (r.U16(0) != kInternalFile)
-        {
-            return std::nullopt;
-        }
-
-        const std::size_t at = std::size_t{r.U32(4)} + 4;
-        const uint32_t offset = r.U32(at);
-        if (offset == kNone)
-        {
-            return std::nullopt;
-        }
-
-        return Location{at, offset, r.U32(at + 4)};
-    };
-    const std::optional<Location> old = location_of(file);
+    const std::optional<FileLocation> old = LocationOf(info.files[file], big_endian);
     if (!old)
     {
         throw std::invalid_argument("the archive's FILE block holds no copy of " + name);
     }
 
     // The file and its padding, then the new bytes and theirs. The padding of a file that ends the archive is empty.
-    const std::size_t alignment = flavor == Flavor::kNx ? 64 : 32;
-    const auto align = [alignment](std::size_t at)
-    {
-        return (at + alignment - 1) / alignment * alignment;
-    };
+    const std::size_t alignment = detail::FileAlignment(flavor);
     const std::size_t body = files->offset + kBlockHeaderSize;
-    const std::size_t start = body + old->offset;
-    const std::size_t end = start + old->size;
-    const bool last = end == archive.size();
-    const std::size_t padded = last ? end : align(end);
-    if (padded > archive.size() ||
-        std::ranges::any_of(archive.subspan(end, padded - end), [](uint8_t byte) { return byte != 0; }))
+    Replacement places;
+    places.start = body + old->offset;
+    places.end = places.start + old->size;
+    const bool last = places.end == archive.size();
+    places.padded = last ? places.end : AlignUp(places.end, alignment);
+    if (places.padded > archive.size() || std::ranges::any_of(archive.subspan(places.end, places.padded - places.end),
+                                                              [](uint8_t byte) { return byte != 0; }))
     {
         throw OtherLayout(name + " runs past its end, or bytes other than zeros pad it");
     }
-    const std::size_t new_end = start + bytes.size();
-    const std::size_t new_padded = last ? new_end : align(new_end);
-    if (archive.size() - padded + new_padded > kNone)
+    places.new_end = places.start + bytes.size();
+    places.new_padded = last ? places.new_end : AlignUp(places.new_end, alignment);
+    if (archive.size() - places.padded + places.new_padded > kNone)
     {
         throw std::invalid_argument("an archive that would pass 4 GB");
     }
 
-    // The files after it move, and the file IDs that name the same bytes take the new size. The files inside it move
-    // where `inner` says.
-    const auto shift = static_cast<int64_t>(new_padded) - static_cast<int64_t>(padded);
-    const auto inner_at = [&](std::size_t at, uint32_t size) -> std::optional<uint32_t>
-    {
-        if (at < start || at + size > end)
-        {
-            return std::nullopt;
-        }
-
-        const auto found = std::ranges::find(inner, at - start, &InnerFile::from);
-        if (found == inner.end())
-        {
-            return std::nullopt;
-        }
-
-        return found->to;
-    };
-    for (std::size_t i = 0; i < info.files.size(); ++i)
-    {
-        const std::optional<Location> location = location_of(i);
-        if (!location)
-        {
-            continue;
-        }
-
-        const std::size_t at = body + location->offset;
-        if (location->offset == old->offset && location->size == old->size)
-        {
-            Store32(info.files[i], location->at + 4, big_endian, static_cast<uint32_t>(bytes.size()));
-        }
-        else if (at >= padded)
-        {
-            Store32(info.files[i], location->at, big_endian, static_cast<uint32_t>(location->offset + shift));
-        }
-        else if (const std::optional<uint32_t> to = inner_at(at, location->size))
-        {
-            if (std::size_t{*to} + location->size > bytes.size())
-            {
-                throw std::invalid_argument("file " + std::to_string(i) + " would run past the new bytes of " + name);
-            }
-
-            Store32(info.files[i], location->at, big_endian, old->offset + *to);
-        }
-        else if (at >= start || at + location->size > start)
-        {
-            throw OtherLayout("file " + std::to_string(i) + " overlaps " + name);
-        }
-    }
+    MoveFileEntries(info, big_endian, body, *old, places, bytes.size(), inner, name);
 
     Out out(big_endian);
-    out.Append(archive.first(start));
+    out.Append(archive.first(places.start));
     out.Append(bytes);
-    out.Zeros(new_padded - new_end);
-    out.Append(archive.subspan(padded));
+    out.Zeros(places.new_padded - places.new_end);
+    out.Append(archive.subspan(places.padded));
     const auto size = static_cast<uint32_t>(out.Size() - files->offset);
     out.U32(files->offset + 4, size);
     out.U32(files->entry + 8, size);
-    out.U32(kSizeField, static_cast<uint32_t>(out.Size()));
+    out.U32(kFileSizeField, static_cast<uint32_t>(out.Size()));
 
     return WithTables(out.Take(), flavor, strings, std::move(info));
 }
@@ -1111,15 +1113,9 @@ std::vector<uint8_t> WithNewSequenceSound(std::span<const uint8_t> archive, Flav
     }
 
     // The entry, the room for the name after the sounds' names, and the name.
-    const uint32_t string = NewStringIndex(info, kSoundTable, NameCount(strings));
-    std::vector<uint8_t> entry = SequenceSoundEntry(model, flavor, sound, string);
-    MakeRoomForName(info, string);
-    const auto index = static_cast<uint32_t>(info.sounds.size());
-    info.sounds.push_back(std::move(entry));
-    if (strings)
-    {
-        strings->names.insert(strings->names.begin() + string, ItemName{sound.name, ItemId(kSoundItem, index)});
-    }
+    const uint32_t string = NewStringIndex(info, kSoundsPlace, NameCount(strings));
+    AddNamedEntry(info, strings, info.sounds, kSoundItem, string, sound.name,
+                  SequenceSoundEntry(model, flavor, sound, string));
 
     return WithTables(archive, flavor, strings, std::move(info));
 }
@@ -1154,15 +1150,9 @@ std::vector<uint8_t> WithNewWaveSounds(std::span<const uint8_t> archive, Flavor 
         }
 
         // The entry, the room for the name after the sounds' names, and the name.
-        const uint32_t string = NewStringIndex(info, kSoundTable, NameCount(strings));
-        std::vector<uint8_t> entry = WaveSoundEntry(model, flavor, version, sound, string);
-        MakeRoomForName(info, string);
-        const auto index = static_cast<uint32_t>(info.sounds.size());
-        info.sounds.push_back(std::move(entry));
-        if (strings)
-        {
-            strings->names.insert(strings->names.begin() + string, ItemName{sound.name, ItemId(kSoundItem, index)});
-        }
+        const uint32_t string = NewStringIndex(info, kSoundsPlace, NameCount(strings));
+        AddNamedEntry(info, strings, info.sounds, kSoundItem, string, sound.name,
+                      WaveSoundEntry(model, flavor, version, sound, string));
     }
 
     return WithTables(archive, flavor, strings, std::move(info));
@@ -1174,8 +1164,7 @@ std::vector<uint8_t> WithNewStreamSound(std::span<const uint8_t> archive, Flavor
     const bool ctr = flavor == Flavor::kCtr;
     auto [strings, info] = ReadTables(archive, flavor);
     const uint32_t version = xsflib::Reader(archive, big_endian).U32(kVersionField);
-    if (ctr && version != kCtrFirstVersion && version != kCtrCountsVersion && version != kCtrTracksVersion &&
-        version < kCtrFieldsVersion)
+    if (ctr && !LaysOutStreamSounds(version))
     {
         throw std::invalid_argument("an archive of the 3DS of a version whose stream sounds ntdlib doesn't lay out");
     }
@@ -1225,20 +1214,14 @@ std::vector<uint8_t> WithNewStreamSound(std::span<const uint8_t> archive, Flavor
     Store16(entry, kSoundDetails, big_endian, kStreamDetails);
     Store32(entry, kSoundDetails + 4, big_endian, static_cast<uint32_t>(start));
     Store32(entry, 0, big_endian, sound.file);
-    const uint32_t string = NewStringIndex(info, kSoundTable, NameCount(strings));
+    const uint32_t string = NewStringIndex(info, kSoundsPlace, NameCount(strings));
     if (const std::optional<std::size_t> at = StringIndexAt(entry, kSoundOptions, big_endian))
     {
         Store32(entry, *at, big_endian, string);
     }
 
     // The room for the name after the sounds' names, and the name.
-    MakeRoomForName(info, string);
-    const auto index = static_cast<uint32_t>(info.sounds.size());
-    info.sounds.push_back(std::move(entry));
-    if (strings)
-    {
-        strings->names.insert(strings->names.begin() + string, ItemName{sound.name, ItemId(kSoundItem, index)});
-    }
+    AddNamedEntry(info, strings, info.sounds, kSoundItem, string, sound.name, std::move(entry));
 
     return WithTables(archive, flavor, strings, std::move(info));
 }
@@ -1261,7 +1244,7 @@ std::vector<uint8_t> WithBankLists(std::span<const uint8_t> archive, Flavor flav
         }
         CheckBanks(info, list);
 
-        WriteBanks(entry, PlacesOfDetails(entry, big_endian).banks, big_endian, list);
+        WriteList(entry, PlacesOfDetails(entry, big_endian).banks, big_endian, list);
     }
 
     return WithTables(archive, flavor, strings, std::move(info));
@@ -1327,30 +1310,11 @@ std::vector<uint8_t> WithNewBank(std::span<const uint8_t> archive, Flavor flavor
     }
     CheckName(strings, bank.name, true);
 
-    // The entry: the file, the reference to the list, the options with the string index after the banks' names, and
-    // the list.
-    const uint32_t string = NewStringIndex(info, kBankTable, NameCount(strings));
-    const std::size_t list = kOptionsAt[kBankTable] + 8;
-    Out entry(flavor == Flavor::kCafe);
-    entry.Zeros(list + 4 + 4 * bank.wave_archives.size());
-    entry.U32(0, bank.file);
-    entry.Reference(4, kListReference, static_cast<uint32_t>(list));
-    entry.U32(kOptionsAt[kBankTable], kNameOption);
-    entry.U32(kOptionsAt[kBankTable] + 4, string);
-    entry.U32(list, static_cast<uint32_t>(bank.wave_archives.size()));
-    for (std::size_t k = 0; k < bank.wave_archives.size(); ++k)
-    {
-        entry.U32(list + 4 + 4 * k, bank.wave_archives[k]);
-    }
-
-    // The room for the name, and the name.
-    MakeRoomForName(info, string);
-    const auto index = static_cast<uint32_t>(info.banks.size());
-    info.banks.push_back(entry.Take());
-    if (strings)
-    {
-        strings->names.insert(strings->names.begin() + string, ItemName{bank.name, ItemId(kBankItem, index)});
-    }
+    // The entry with the string index after the banks' names, the room for the name, and the name.
+    const uint32_t string = NewStringIndex(info, kBanksPlace, NameCount(strings));
+    AddNamedEntry(
+        info, strings, info.banks, kBankItem, string, bank.name,
+        BankEntry({.file_id = bank.file, .wave_archives = bank.wave_archives}, string, flavor == Flavor::kCafe));
 
     return WithTables(archive, flavor, strings, std::move(info));
 }
@@ -1365,24 +1329,22 @@ std::vector<uint8_t> WithNewWaveArchive(std::span<const uint8_t> archive, Flavor
     }
     CheckName(strings, wave_archive.name, false);
 
-    // The entry: the file, a word of zeros for a wave archive that loads whole, and the options. A name's string index
-    // goes after the wave archives' names.
-    const bool named = !wave_archive.name.empty();
-    const std::size_t options = kOptionsAt[kWaveArchiveTable];
-    Out entry(flavor == Flavor::kCafe);
-    entry.Zeros(options + (named ? 8 : 4));
-    entry.U32(0, wave_archive.file);
-    const auto index = static_cast<uint32_t>(info.wave_archives.size());
-    if (named)
+    // The entry of a wave archive that loads whole. A name's string index goes after the wave archives' names.
+    std::optional<uint32_t> string;
+    if (!wave_archive.name.empty())
     {
-        const uint32_t string = NewStringIndex(info, kWaveArchiveTable, NameCount(strings));
-        entry.U32(options, kNameOption);
-        entry.U32(options + 4, string);
-        MakeRoomForName(info, string);
-        strings->names.insert(strings->names.begin() + string,
-                              ItemName{wave_archive.name, ItemId(kWaveArchiveItem, index)});
+        string = NewStringIndex(info, kWaveArchivesPlace, NameCount(strings));
     }
-    info.wave_archives.push_back(entry.Take());
+    std::vector<uint8_t> entry = WaveArchiveEntry({.file_id = wave_archive.file}, string, flavor == Flavor::kCafe);
+    if (string)
+    {
+        AddNamedEntry(info, strings, info.wave_archives, kWaveArchiveItem, *string, wave_archive.name,
+                      std::move(entry));
+    }
+    else
+    {
+        info.wave_archives.push_back(std::move(entry));
+    }
 
     return WithTables(archive, flavor, strings, std::move(info));
 }
@@ -1404,23 +1366,10 @@ std::vector<uint8_t> WithNewGroup(std::span<const uint8_t> archive, Flavor flavo
         WithFileAdded(archive, flavor, std::span(group).first(GroupSizeInArchive(group, flavor)), 0);
     auto [strings, info] = ReadTables(with.archive, flavor);
 
-    // The entry: the file, then the options with the string index after the groups' names.
-    const uint32_t string = NewStringIndex(info, kGroupTable, NameCount(strings));
-    const std::size_t options = kOptionsAt[kGroupTable];
-    Out entry(flavor == Flavor::kCafe);
-    entry.Zeros(options + 8);
-    entry.U32(0, with.file);
-    entry.U32(options, kNameOption);
-    entry.U32(options + 4, string);
-
-    // The room for the name, and the name.
-    MakeRoomForName(info, string);
-    const auto index = static_cast<uint32_t>(info.groups.size());
-    info.groups.push_back(entry.Take());
-    if (strings)
-    {
-        strings->names.insert(strings->names.begin() + string, ItemName{name, ItemId(kGroupItem, index)});
-    }
+    // The entry with the string index after the groups' names, the room for the name, and the name.
+    const uint32_t string = NewStringIndex(info, kGroupsPlace, NameCount(strings));
+    AddNamedEntry(info, strings, info.groups, kGroupItem, string, name,
+                  GroupEntry({.file_id = with.file}, string, flavor == Flavor::kCafe));
 
     return WithTables(with.archive, flavor, strings, std::move(info));
 }

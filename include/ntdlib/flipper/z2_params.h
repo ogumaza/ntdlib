@@ -84,14 +84,17 @@ struct Profile
     std::array<uint32_t, kMaxFirstSceneWaves> first_scene_waves{}; // (bank << 16) | group, as in WaveList
     uint32_t room_wave_count = 0;
     std::array<uint32_t, kMaxRoomWaves> room_waves{}; // (bank << 16) | group, as in WaveList
+
     // The variable that holds the music manager, Z2SeqMgr, and its setChildTrackVolume. After the driver starts a
     // sound, it gives the children of track 0 the volumes that a rip writes from kMutedChildrenOffset on. A console
     // that sets none leaves both at 0.
     uint32_t music_manager = 0;
     uint32_t set_child_volume = 0;
+
     // Z2SoundStarter::setPortData. The driver writes a rip's status (kMusicStatusOffset) to port 9 of the sound's root
     // track with it. A console that writes none leaves it at 0.
     uint32_t set_port_data = 0;
+
     // Z2SoundStarter::getPortData. The driver reads port 10 of the sound's root track with it, for a rip's statuses by
     // section (kSectionStatusesOffset). A console that writes none leaves it at 0.
     uint32_t get_port_data = 0;

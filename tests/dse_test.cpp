@@ -4,6 +4,8 @@
 // that formats.h describes. The reader has to find its parts, and the writer has to give the file back byte for byte.
 // The bytes of the edited files were worked out by hand from the same layout.
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -23,10 +25,12 @@ namespace
 
 namespace dse_files = ntdlib::testing::dse_files;
 namespace dse = ntdlib::dse;
+using dse_files::BankChunk;
 using dse_files::Builder;
 using dse_files::Bytes;
 using dse_files::HeaderStart;
 using dse_files::SequenceInfoBytes;
+using dse_files::TrackChunk;
 
 // A song with two tracks. Track 0 sets the tempo, plays a note with a length of one byte, pauses, ends, and holds two
 // bytes after its end. Track 1 sets its volume, and its chunk's size leaves out its end, which lies in the padding.
@@ -35,12 +39,12 @@ Bytes SongFile()
     Builder b;
     HeaderStart(b, "smdl", 0x7901);
     b.U32(1).U32(1).U32(0xFFFFFFFF).U32(0xFFFFFFFF);
-    b.Text("song").Raw({0x00, 0x00, 0x00, 0x01, 0x10, 0xFF, 0x00, 0x00, 0xB0, 0xFF, 0xFF, 0xFF});
-    b.Raw(SequenceInfoBytes(2, 2));
+    b.Text("song").Append({0x00, 0x00, 0x00, 0x01, 0x10, 0xFF, 0x00, 0x00, 0xB0, 0xFF, 0xFF, 0xFF});
+    b.Append(SequenceInfoBytes(2, 2));
 
-    b.TrackChunk("trk ", 13).Raw({0, 0, 0, 0, 0xA4, 0x78, 0x64, 0x60, 0x30, 0x80, 0x98, 0x8D, 0x92}).Fill(3, 0x98);
-    b.TrackChunk("trk ", 6).Raw({1, 1, 0, 0, 0xE0, 0x7F}).Fill(2, 0x98);
-    b.TrackChunk("eoc ", 0);
+    TrackChunk(b, "trk ", 13).Append({0, 0, 0, 0, 0xA4, 0x78, 0x64, 0x60, 0x30, 0x80, 0x98, 0x8D, 0x92}).Fill(3, 0x98);
+    TrackChunk(b, "trk ", 6).Append({1, 1, 0, 0, 0xE0, 0x7F}).Fill(2, 0x98);
+    TrackChunk(b, "eoc ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
     return b.Take();
 }
@@ -110,8 +114,9 @@ void TestSongRefusals()
     // has no padding, and the wait's second byte lies past the chunk.
     file = SongFile();
     Builder b;
-    b.Raw(Bytes(file.begin(), file.begin() + 0xA0));
-    b.TrackChunk("trk ", 8).Raw({1, 1, 0, 0, 0xE0, 0x7F, 0x93, 0x10}).TrackChunk("eoc ", 0);
+    b.Append(Bytes(file.begin(), file.begin() + 0xA0));
+    TrackChunk(b, "trk ", 8).Append({1, 1, 0, 0, 0xE0, 0x7F, 0x93, 0x10});
+    TrackChunk(b, "eoc ", 0);
     const Bytes endless = b.Take();
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { dse::Song::Parse(endless); }) == "a track has no end");
 }
@@ -122,8 +127,9 @@ void TestTrackFillsItsChunk()
 {
     const Bytes file = SongFile();
     Builder b;
-    b.Raw(Bytes(file.begin(), file.begin() + 0xA0));
-    b.TrackChunk("trk ", 8).Raw({1, 1, 0, 0, 0xE0, 0x7F, 0xE0, 0x7F}).TrackChunk("eoc ", 0);
+    b.Append(Bytes(file.begin(), file.begin() + 0xA0));
+    TrackChunk(b, "trk ", 8).Append({1, 1, 0, 0, 0xE0, 0x7F, 0xE0, 0x7F});
+    TrackChunk(b, "eoc ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
     const Bytes filled = b.Take();
     const dse::Song song = dse::Song::Parse(filled);
@@ -141,10 +147,10 @@ void TestTrackFillsItsChunk()
 Bytes WaveEntry(uint16_t id)
 {
     Builder b;
-    b.Raw({0x01, 0xAA}).U16(id).Raw({0x30, 0xF9, 0x3C, 0x00, 0x7F, 0x40, 0x00, 0x02, 0x00, 0x00, 0xAA, 0xAA});
-    b.U16(0x0415).U16(0x0200).Raw({0x09, 0x01, 0x01, 0x08, 0x00, 0x04, 0x01, 0x01}).U32(0);
+    b.Append({0x01, 0xAA}).U16(id).Append({0x30, 0xF9, 0x3C, 0x00, 0x7F, 0x40, 0x00, 0x02, 0x00, 0x00, 0xAA, 0xAA});
+    b.U16(0x0415).U16(0x0200).Append({0x09, 0x01, 0x01, 0x08, 0x00, 0x04, 0x01, 0x01}).U32(0);
     b.U32(22050).U32(0x10 * id).U32(0xBE).U32(0x26B);
-    b.Raw({0x01, 0x01, 0x01, 0x03, 0x03, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x7F, 0x28, 0xFF});
+    b.Append({0x01, 0x01, 0x01, 0x03, 0x03, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x7F, 0x28, 0xFF});
     return b.Take();
 }
 
@@ -154,27 +160,27 @@ Bytes WaveBankFile()
 {
     Builder b;
     HeaderStart(b, "swdl", 0x7F00);
-    b.Raw({0x00, 0xAA, 0xAA, 0xAA}).Fill(8, 0).U32(0x10);
+    b.Append({0x00, 0xAA, 0xAA, 0xAA}).Fill(8, 0).U32(0x10);
     b.U32(5).U16(0).U16(3).U16(2).U16(0x0202).U32(16 + 0x80);
 
-    b.BankChunk("wavi", 16 + 0x80).U16(16).U16(0).U16(16 + 0x40).Fill(10, 0xAA);
-    b.Raw(WaveEntry(0)).Raw(WaveEntry(2));
+    BankChunk(b, "wavi", 16 + 0x80).U16(16).U16(0).U16(16 + 0x40).Fill(10, 0xAA);
+    b.Append(WaveEntry(0)).Append(WaveEntry(2));
 
     // Program 1: a header, one LFO, the filler and two splits.
-    b.BankChunk("prgi", 16 + 0x20 + 0x10 + 0x60).U16(0).U16(16).Fill(12, 0);
-    b.U16(1).U16(2).Raw({0x7F, 0x40, 0x00, 0x0F, 0x00, 0x02, 0x00, 0x01, 0xAA, 0x00, 0x00, 0x00});
-    b.Raw({0x01, 0x00, 0x01, 0x01, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
+    BankChunk(b, "prgi", 16 + 0x20 + 0x10 + 0x60).U16(0).U16(16).Fill(12, 0);
+    b.U16(1).U16(2).Append({0x7F, 0x40, 0x00, 0x0F, 0x00, 0x02, 0x00, 0x01, 0xAA, 0x00, 0x00, 0x00});
+    b.Append({0x01, 0x00, 0x01, 0x01, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
     b.Fill(16, 0xAA);
     for (uint8_t split = 0; split < 2; split++)
     {
-        b.Raw({0x00, split, 0x02, 0x00, static_cast<uint8_t>(split * 64), static_cast<uint8_t>(split * 64 + 63)});
+        b.Append({0x00, split, 0x02, 0x00, static_cast<uint8_t>(split * 64), static_cast<uint8_t>(split * 64 + 63)});
         b.Fill(0x2A, split);
     }
 
-    b.BankChunk("kgrp", 8).Raw({0x00, 0x00, 0x08, 0x08, 0x00, 0x0F, 0x00, 0x00});
-    b.Raw({0x97, 0xCB, 0x40, 0x02, 0x00, 0x00, 0x00, 0x00});
-    b.BankChunk("pcmd", 5).Raw({1, 2, 3, 4, 5}).Raw({0x68, 0x00, 0x68, 0, 0, 0, 0, 0, 0, 0, 0});
-    b.BankChunk("eod ", 0);
+    BankChunk(b, "kgrp", 8).Append({0x00, 0x00, 0x08, 0x08, 0x00, 0x0F, 0x00, 0x00});
+    b.Append({0x97, 0xCB, 0x40, 0x02, 0x00, 0x00, 0x00, 0x00});
+    BankChunk(b, "pcmd", 5).Append({1, 2, 3, 4, 5}).Append({0x68, 0x00, 0x68, 0, 0, 0, 0, 0, 0, 0, 0});
+    BankChunk(b, "eod ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
     return b.Take();
 }
@@ -249,16 +255,19 @@ Bytes SoundEffectsFile()
 {
     Builder b;
     HeaderStart(b, "sedl", 0x0024);
-    b.U16(3).Raw({0x01, 0x00, 0x00, 0x01, 0x00, 0x00}).Fill(8, 0xFF);
+    b.U16(3).Append({0x01, 0x00, 0x00, 0x01, 0x00, 0x00}).Fill(8, 0xFF);
 
     const uint32_t second = 16 + 0x30 + 16 + 8 + 16;
-    b.BankChunk("seq ", second + 0x30 + 16).U16(0).U16(16).U16(static_cast<uint16_t>(second)).Fill(10, 0);
-    b.Raw(SequenceInfoBytes(1, 1)).TrackChunk("trk ", 5).Raw({0, 0, 0, 0, 0x98}).Fill(3, 0x98).TrackChunk("eoc ", 0);
-    b.Raw(SequenceInfoBytes(0, 0)).TrackChunk("eoc ", 0).Fill(8, 0);
+    BankChunk(b, "seq ", second + 0x30 + 16).U16(0).U16(16).U16(static_cast<uint16_t>(second)).Fill(10, 0);
+    b.Append(SequenceInfoBytes(1, 1));
+    TrackChunk(b, "trk ", 5).Append({0, 0, 0, 0, 0x98}).Fill(3, 0x98);
+    TrackChunk(b, "eoc ", 0);
+    b.Append(SequenceInfoBytes(0, 0));
+    TrackChunk(b, "eoc ", 0).Fill(8, 0);
 
-    b.BankChunk("mcrl", 16).U16(8).U16(10).U16(0).U16(12).Raw({0, 0, 0, 0, 1, 0, 0x45, 0x64});
-    b.BankChunk("bnkl", 10).U16(0).U16(4).Raw({1, 0, 0, 0, 0x45, 0x64}).Fill(6, 0);
-    b.BankChunk("eod ", 0);
+    BankChunk(b, "mcrl", 16).U16(8).U16(10).U16(0).U16(12).Append({0, 0, 0, 0, 1, 0, 0x45, 0x64});
+    BankChunk(b, "bnkl", 10).U16(0).U16(4).Append({1, 0, 0, 0, 0x45, 0x64}).Fill(6, 0);
+    BankChunk(b, "eod ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
     return b.Take();
 }
@@ -299,6 +308,121 @@ void TestSoundEffects()
                  reread.bank_lists == edited.bank_lists);
 }
 
+// Each setter of a sequence's settings writes its value where SequenceInfoBytes holds it, and leaves the other bytes.
+void TestSequenceInfoSetters()
+{
+    const Bytes original = SequenceInfoBytes(2, 3);
+    dse::SequenceInfo info;
+    std::ranges::copy(original, info.bytes.begin());
+
+    info.SetTicksPerQuarter(0x1E0);
+    info.SetTrackCount(17);
+    info.SetChannelCount(16);
+
+    XSFLIB_CHECK(info.TicksPerQuarter() == 0x1E0 && info.TrackCount() == 17 && info.ChannelCount() == 16);
+    Bytes expected = original;
+    expected[2] = 0xE0;
+    expected[3] = 0x01;
+    expected[6] = 17;
+    expected[7] = 16;
+    XSFLIB_CHECK(Bytes(info.bytes.begin(), info.bytes.end()) == expected);
+}
+
+// Each setter of a wave's parameters writes its value where WaveEntry holds it, and leaves the other bytes.
+void TestWaveInfoSetters()
+{
+    const Bytes entry = WaveEntry(2);
+    dse::WaveInfo wave;
+    std::ranges::copy(entry, wave.bytes.begin());
+
+    wave.SetId(7);
+    wave.SetFormat(0x100);
+    wave.SetLoops(false);
+    wave.SetSampleRate(32000);
+    wave.SetSamplePosition(0x1234);
+    wave.SetLoopStart(3);
+    wave.SetLoopLength(0x40);
+
+    XSFLIB_CHECK(wave.Id() == 7 && wave.Format() == 0x100 && !wave.Loops());
+    XSFLIB_CHECK(wave.SampleRate() == 32000 && wave.SamplePosition() == 0x1234);
+    XSFLIB_CHECK(wave.LoopStart() == 3 && wave.LoopLength() == 0x40);
+    Bytes expected = entry;
+    xsflib::StoreLe16(&expected[0x02], 7);
+    xsflib::StoreLe16(&expected[0x12], 0x100);
+    expected[0x15] = 0;
+    xsflib::StoreLe32(&expected[0x20], 32000);
+    xsflib::StoreLe32(&expected[0x24], 0x1234);
+    xsflib::StoreLe32(&expected[0x28], 3);
+    xsflib::StoreLe32(&expected[0x2C], 0x40);
+    XSFLIB_CHECK(Bytes(wave.bytes.begin(), wave.bytes.end()) == expected);
+
+    wave.SetLoops(true);
+    XSFLIB_CHECK(wave.Loops() && wave.bytes[0x15] == 1);
+}
+
+// A split's view reads each value where the driver reads it: the index at 1, the bend range at 2, the key range at 4
+// and 5, the velocity range at 8 and 9, the wave at 0x12, the tuning at 0x14, the coarse tuning at 0x17, the volume,
+// the pan and the key group from 0x18, and the envelope's 16 bytes from 0x20. Split 1 of WaveBankFile's program 1
+// holds 1 in each byte after the key range.
+void TestSplitView()
+{
+    const dse::WaveBank bank = dse::WaveBank::Parse(WaveBankFile());
+    if (!bank.instruments || bank.instruments->programs.size() != 2 || !bank.instruments->programs[1] ||
+        bank.instruments->programs[1]->splits.size() != 2)
+    {
+        XSFLIB_CHECK(false);
+        return;
+    }
+    const std::array<uint8_t, 0x30>& held = bank.instruments->programs[1]->splits[1];
+
+    const dse::SplitView split(held);
+
+    XSFLIB_CHECK(split.Index() == 1 && split.BendRange() == 2);
+    XSFLIB_CHECK(split.LowKey() == 64 && split.HighKey() == 127);
+    XSFLIB_CHECK(split.LowVelocity() == 1 && split.HighVelocity() == 1);
+    XSFLIB_CHECK(split.Wave() == 0x0101 && split.Tuning() == 0x0101 && split.RootKey() == 1);
+    XSFLIB_CHECK(split.CoarseTuning() == 1 && split.Volume() == 1 && split.Pan() == 1 && split.KeyGroup() == 1);
+    XSFLIB_CHECK(split.Envelope().data() == held.data() + 0x20);
+    XSFLIB_CHECK(split.EnvelopeMultiplier() == 1 && split.AttackBegin() == 1 && split.AttackTime() == 1);
+    XSFLIB_CHECK(split.DecayTime() == 1 && split.SustainLevel() == 1 && split.HoldTime() == 1);
+    XSFLIB_CHECK(split.SustainTime() == 1 && split.ReleaseTime() == 1);
+}
+
+// The setters of a split's view write the ranges and their copies 2 bytes on, and the values of more than one byte
+// little-endian. The other bytes stay.
+void TestSplitViewSetters()
+{
+    std::array<uint8_t, 0x30> bytes = {};
+    bytes.fill(0xAA);
+    const dse::MutableSplitView split(bytes);
+
+    split.SetKeys(10, 20);
+    split.SetVelocities(30, 40);
+    split.SetWave(0x0203);
+    split.SetTuning(-2);
+    split.SetCoarseTuning(-5);
+
+    XSFLIB_CHECK(split.LowKey() == 10 && split.HighKey() == 20);
+    XSFLIB_CHECK(split.LowVelocity() == 30 && split.HighVelocity() == 40);
+    XSFLIB_CHECK(split.Wave() == 0x0203 && split.Tuning() == -2 && split.CoarseTuning() == -5);
+    std::array<uint8_t, 0x30> expected = {};
+    expected.fill(0xAA);
+    expected[0x04] = 10;
+    expected[0x05] = 20;
+    expected[0x06] = 10;
+    expected[0x07] = 20;
+    expected[0x08] = 30;
+    expected[0x09] = 40;
+    expected[0x0A] = 30;
+    expected[0x0B] = 40;
+    expected[0x12] = 0x03;
+    expected[0x13] = 0x02;
+    expected[0x14] = 0xFE;
+    expected[0x15] = 0xFF;
+    expected[0x17] = 0xFB;
+    XSFLIB_CHECK(bytes == expected);
+}
+
 } // namespace
 
 int main()
@@ -310,6 +434,10 @@ int main()
     TestWaveBank();
     TestWaveBankRefusals();
     TestSoundEffects();
+    TestSequenceInfoSetters();
+    TestWaveInfoSetters();
+    TestSplitView();
+    TestSplitViewSetters();
 
     return xsflib::testing::Summary("DSE files");
 }

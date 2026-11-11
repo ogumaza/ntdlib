@@ -44,9 +44,14 @@ std::string Text(const xsflib::Reader& r, std::size_t at, std::size_t size)
     return s;
 }
 
+bool Fits(const xsflib::Reader& r, uint32_t offset, uint32_t size)
+{
+    return offset <= r.Size() && size <= r.Size() - offset;
+}
+
 void CheckSpan(const xsflib::Reader& r, uint32_t offset, uint32_t size, const char* what)
 {
-    if (offset > r.Size() || size > r.Size() - offset)
+    if (!Fits(r, offset, size))
     {
         throw xsflib::FormatError(std::string(what) + " lies past the end of the image");
     }
@@ -148,21 +153,22 @@ Rom Rom::Parse(std::span<const uint8_t> image)
     if (h.unit_code & 2)
     {
         // The extended header holds each DSi binary's ROM offset, a word, its RAM address and its size.
+        // A trimmed image may end before a DSi binary. The header then has no entry for it. The rest of the image
+        // parses as before.
         const Binary arm9i = ReadBinary(r, 0x1C0);
         const Binary arm7i = ReadBinary(r, 0x1D0);
-        h.arm9i = Binary{arm9i.rom_offset, 0, arm9i.ram_address, arm9i.size};
-        h.arm7i = Binary{arm7i.rom_offset, 0, arm7i.ram_address, arm7i.size};
+        if (Fits(r, arm9i.rom_offset, arm9i.size))
+        {
+            h.arm9i = Binary{arm9i.rom_offset, 0, arm9i.ram_address, arm9i.size};
+        }
+        if (Fits(r, arm7i.rom_offset, arm7i.size))
+        {
+            h.arm7i = Binary{arm7i.rom_offset, 0, arm7i.ram_address, arm7i.size};
+        }
     }
 
     CheckSpan(r, h.arm9.rom_offset, h.arm9.size, "the ARM9 binary");
     CheckSpan(r, h.arm7.rom_offset, h.arm7.size, "the ARM7 binary");
-    for (const std::optional<Binary>& binary : {h.arm9i, h.arm7i})
-    {
-        if (binary)
-        {
-            CheckSpan(r, binary->rom_offset, binary->size, "a DSi binary");
-        }
-    }
     rom.arm9_overlays_ = ReadOverlays(r, h.arm9_overlay_offset, h.arm9_overlay_size);
     rom.arm7_overlays_ = ReadOverlays(r, h.arm7_overlay_offset, h.arm7_overlay_size);
 

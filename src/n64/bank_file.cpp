@@ -422,6 +422,159 @@ uint32_t OffsetOf(const std::vector<Object>& objects, int32_t index)
     return index == kNoObject ? 0 : objects[static_cast<std::size_t>(index)].offset;
 }
 
+// Places an envelope at the end when it has no place, and writes its fields.
+void WriteEnvelope(Layout& layout, BankEnvelope& envelope)
+{
+    if (envelope.offset == kNoOffset)
+    {
+        envelope.offset = layout.Place(kEnvelopeSize + 2);
+    }
+
+    layout.U32(envelope.offset, static_cast<uint32_t>(envelope.attack_time));
+    layout.U32(envelope.offset + 4, static_cast<uint32_t>(envelope.decay_time));
+    layout.U32(envelope.offset + 8, static_cast<uint32_t>(envelope.release_time));
+    layout.U8(envelope.offset + 12, envelope.attack_volume);
+    layout.U8(envelope.offset + 13, envelope.decay_volume);
+}
+
+// Places a key map at the end when it has no place, and writes its fields.
+void WriteKeyMap(Layout& layout, BankKeyMap& key_map)
+{
+    if (key_map.offset == kNoOffset)
+    {
+        key_map.offset = layout.Place(kKeyMapSize);
+    }
+
+    layout.U8(key_map.offset, key_map.velocity_min);
+    layout.U8(key_map.offset + 1, key_map.velocity_max);
+    layout.U8(key_map.offset + 2, key_map.key_min);
+    layout.U8(key_map.offset + 3, key_map.key_max);
+    layout.U8(key_map.offset + 4, key_map.key_base);
+    layout.U8(key_map.offset + 5, static_cast<uint8_t>(key_map.detune));
+}
+
+// Places a loop at the end when it has no place, and writes its fields and any VADPCM state.
+void WriteLoop(Layout& layout, BankLoop& loop)
+{
+    if (loop.offset == kNoOffset)
+    {
+        loop.offset = layout.Place(loop.has_state ? kVadpcmLoopSize : kRawLoopSize);
+    }
+
+    layout.U32(loop.offset, loop.start);
+    layout.U32(loop.offset + 4, loop.end);
+    layout.U32(loop.offset + 8, loop.count);
+    if (loop.has_state)
+    {
+        for (std::size_t i = 0; i < kVadpcmFrameSamples; i++)
+        {
+            layout.U16(loop.offset + kRawLoopSize + i * 2, static_cast<uint16_t>(loop.state[i]));
+        }
+    }
+}
+
+// Places a codebook at the end when it has no place, and writes its header and coefficients.
+void WriteBook(Layout& layout, BankBook& book)
+{
+    if (book.offset == kNoOffset)
+    {
+        book.offset = layout.Place(kBookHeaderSize + book.book.coefficients.size() * 2);
+    }
+
+    layout.U32(book.offset, static_cast<uint32_t>(book.book.order));
+    layout.U32(book.offset + 4, static_cast<uint32_t>(book.book.predictor_count));
+    for (std::size_t i = 0; i < book.book.coefficients.size(); i++)
+    {
+        layout.U16(book.offset + kBookHeaderSize + i * 2, static_cast<uint16_t>(book.book.coefficients[i]));
+    }
+}
+
+// Places a wave at the end when it has no place, and writes its fields. The loops and books of `placed` already have
+// their places.
+void WriteWave(Layout& layout, BankWave& wave, const BankFile& placed)
+{
+    if (wave.offset == kNoOffset)
+    {
+        wave.offset = layout.Place(kWaveSize);
+    }
+
+    layout.U32(wave.offset, wave.base);
+    layout.U32(wave.offset + 4, wave.length);
+    layout.U8(wave.offset + 8, wave.type);
+    layout.U8(wave.offset + 9, wave.flags);
+    layout.U32(wave.offset + 12, OffsetOf(placed.loops, wave.loop));
+    if (wave.type == kWaveVadpcm)
+    {
+        layout.U32(wave.offset + 16, OffsetOf(placed.books, wave.book));
+    }
+}
+
+// Places a sound at the end when it has no place, and writes its fields. The envelopes, key maps and waves of
+// `placed` already have their places.
+void WriteSound(Layout& layout, BankSound& sound, const BankFile& placed)
+{
+    if (sound.offset == kNoOffset)
+    {
+        sound.offset = layout.Place(kSoundSize);
+    }
+
+    layout.U32(sound.offset, OffsetOf(placed.envelopes, sound.envelope));
+    layout.U32(sound.offset + 4, OffsetOf(placed.key_maps, sound.key_map));
+    layout.U32(sound.offset + 8, OffsetOf(placed.waves, sound.wave));
+    layout.U8(sound.offset + 12, sound.pan);
+    layout.U8(sound.offset + 13, sound.volume);
+    layout.U8(sound.offset + 14, sound.flags);
+}
+
+// Places an instrument at the end when it has no place or its list of sounds outgrew it, and writes its fields and
+// sounds. The sounds of `placed` already have their places.
+void WriteInstrument(Layout& layout, BankInstrument& instrument, const BankFile& placed)
+{
+    if (instrument.offset == kNoOffset || instrument.sounds.size() > instrument.capacity)
+    {
+        instrument.offset = layout.Place(kInstrumentHeaderSize + instrument.sounds.size() * 4);
+    }
+
+    layout.U8(instrument.offset, instrument.volume);
+    layout.U8(instrument.offset + 1, instrument.pan);
+    layout.U8(instrument.offset + 2, instrument.priority);
+    layout.U8(instrument.offset + 3, instrument.flags);
+    layout.U8(instrument.offset + 4, instrument.tremolo_type);
+    layout.U8(instrument.offset + 5, instrument.tremolo_rate);
+    layout.U8(instrument.offset + 6, instrument.tremolo_depth);
+    layout.U8(instrument.offset + 7, instrument.tremolo_delay);
+    layout.U8(instrument.offset + 8, instrument.vibrato_type);
+    layout.U8(instrument.offset + 9, instrument.vibrato_rate);
+    layout.U8(instrument.offset + 10, instrument.vibrato_depth);
+    layout.U8(instrument.offset + 11, instrument.vibrato_delay);
+    layout.U16(instrument.offset + 12, static_cast<uint16_t>(instrument.bend_range));
+    layout.U16(instrument.offset + 14, static_cast<uint16_t>(instrument.sounds.size()));
+    for (std::size_t i = 0; i < instrument.sounds.size(); i++)
+    {
+        layout.U32(instrument.offset + kInstrumentHeaderSize + i * 4, OffsetOf(placed.sounds, instrument.sounds[i]));
+    }
+}
+
+// Places a bank at the end when it has no place or its list of instruments outgrew it, and writes its fields and
+// instruments. The instruments of `placed` already have their places.
+void WriteBank(Layout& layout, Bank& bank, const BankFile& placed)
+{
+    if (bank.offset == kNoOffset || bank.instruments.size() > bank.capacity)
+    {
+        bank.offset = layout.Place(kBankHeaderSize + bank.instruments.size() * 4);
+    }
+
+    layout.U16(bank.offset, static_cast<uint16_t>(bank.instruments.size()));
+    layout.U8(bank.offset + 2, bank.flags);
+    layout.U8(bank.offset + 3, bank.padding);
+    layout.U32(bank.offset + 4, static_cast<uint32_t>(bank.sample_rate));
+    layout.U32(bank.offset + 8, OffsetOf(placed.instruments, bank.percussion));
+    for (std::size_t i = 0; i < bank.instruments.size(); i++)
+    {
+        layout.U32(bank.offset + kBankHeaderSize + i * 4, OffsetOf(placed.instruments, bank.instruments[i]));
+    }
+}
+
 } // namespace
 
 BankFile BankFile::Parse(std::span<const uint8_t> data)
@@ -478,126 +631,37 @@ std::vector<uint8_t> BankFile::Write() const
 
     for (BankEnvelope& envelope : placed.envelopes)
     {
-        if (envelope.offset == kNoOffset)
-        {
-            envelope.offset = layout.Place(kEnvelopeSize + 2);
-        }
-
-        layout.U32(envelope.offset, static_cast<uint32_t>(envelope.attack_time));
-        layout.U32(envelope.offset + 4, static_cast<uint32_t>(envelope.decay_time));
-        layout.U32(envelope.offset + 8, static_cast<uint32_t>(envelope.release_time));
-        layout.U8(envelope.offset + 12, envelope.attack_volume);
-        layout.U8(envelope.offset + 13, envelope.decay_volume);
+        WriteEnvelope(layout, envelope);
     }
 
     for (BankKeyMap& key_map : placed.key_maps)
     {
-        if (key_map.offset == kNoOffset)
-        {
-            key_map.offset = layout.Place(kKeyMapSize);
-        }
-
-        layout.U8(key_map.offset, key_map.velocity_min);
-        layout.U8(key_map.offset + 1, key_map.velocity_max);
-        layout.U8(key_map.offset + 2, key_map.key_min);
-        layout.U8(key_map.offset + 3, key_map.key_max);
-        layout.U8(key_map.offset + 4, key_map.key_base);
-        layout.U8(key_map.offset + 5, static_cast<uint8_t>(key_map.detune));
+        WriteKeyMap(layout, key_map);
     }
 
     for (BankLoop& loop : placed.loops)
     {
-        if (loop.offset == kNoOffset)
-        {
-            loop.offset = layout.Place(loop.has_state ? kVadpcmLoopSize : kRawLoopSize);
-        }
-
-        layout.U32(loop.offset, loop.start);
-        layout.U32(loop.offset + 4, loop.end);
-        layout.U32(loop.offset + 8, loop.count);
-        if (loop.has_state)
-        {
-            for (std::size_t i = 0; i < kVadpcmFrameSamples; i++)
-            {
-                layout.U16(loop.offset + kRawLoopSize + i * 2, static_cast<uint16_t>(loop.state[i]));
-            }
-        }
+        WriteLoop(layout, loop);
     }
 
     for (BankBook& book : placed.books)
     {
-        if (book.offset == kNoOffset)
-        {
-            book.offset = layout.Place(kBookHeaderSize + book.book.coefficients.size() * 2);
-        }
-
-        layout.U32(book.offset, static_cast<uint32_t>(book.book.order));
-        layout.U32(book.offset + 4, static_cast<uint32_t>(book.book.predictor_count));
-        for (std::size_t i = 0; i < book.book.coefficients.size(); i++)
-        {
-            layout.U16(book.offset + kBookHeaderSize + i * 2, static_cast<uint16_t>(book.book.coefficients[i]));
-        }
+        WriteBook(layout, book);
     }
 
     for (BankWave& wave : placed.waves)
     {
-        if (wave.offset == kNoOffset)
-        {
-            wave.offset = layout.Place(kWaveSize);
-        }
-
-        layout.U32(wave.offset, wave.base);
-        layout.U32(wave.offset + 4, wave.length);
-        layout.U8(wave.offset + 8, wave.type);
-        layout.U8(wave.offset + 9, wave.flags);
-        layout.U32(wave.offset + 12, OffsetOf(placed.loops, wave.loop));
-        if (wave.type == kWaveVadpcm)
-        {
-            layout.U32(wave.offset + 16, OffsetOf(placed.books, wave.book));
-        }
+        WriteWave(layout, wave, placed);
     }
 
     for (BankSound& sound : placed.sounds)
     {
-        if (sound.offset == kNoOffset)
-        {
-            sound.offset = layout.Place(kSoundSize);
-        }
-
-        layout.U32(sound.offset, OffsetOf(placed.envelopes, sound.envelope));
-        layout.U32(sound.offset + 4, OffsetOf(placed.key_maps, sound.key_map));
-        layout.U32(sound.offset + 8, OffsetOf(placed.waves, sound.wave));
-        layout.U8(sound.offset + 12, sound.pan);
-        layout.U8(sound.offset + 13, sound.volume);
-        layout.U8(sound.offset + 14, sound.flags);
+        WriteSound(layout, sound, placed);
     }
 
     for (BankInstrument& instrument : placed.instruments)
     {
-        if (instrument.offset == kNoOffset || instrument.sounds.size() > instrument.capacity)
-        {
-            instrument.offset = layout.Place(kInstrumentHeaderSize + instrument.sounds.size() * 4);
-        }
-
-        layout.U8(instrument.offset, instrument.volume);
-        layout.U8(instrument.offset + 1, instrument.pan);
-        layout.U8(instrument.offset + 2, instrument.priority);
-        layout.U8(instrument.offset + 3, instrument.flags);
-        layout.U8(instrument.offset + 4, instrument.tremolo_type);
-        layout.U8(instrument.offset + 5, instrument.tremolo_rate);
-        layout.U8(instrument.offset + 6, instrument.tremolo_depth);
-        layout.U8(instrument.offset + 7, instrument.tremolo_delay);
-        layout.U8(instrument.offset + 8, instrument.vibrato_type);
-        layout.U8(instrument.offset + 9, instrument.vibrato_rate);
-        layout.U8(instrument.offset + 10, instrument.vibrato_depth);
-        layout.U8(instrument.offset + 11, instrument.vibrato_delay);
-        layout.U16(instrument.offset + 12, static_cast<uint16_t>(instrument.bend_range));
-        layout.U16(instrument.offset + 14, static_cast<uint16_t>(instrument.sounds.size()));
-        for (std::size_t i = 0; i < instrument.sounds.size(); i++)
-        {
-            layout.U32(instrument.offset + kInstrumentHeaderSize + i * 4,
-                       OffsetOf(placed.sounds, instrument.sounds[i]));
-        }
+        WriteInstrument(layout, instrument, placed);
     }
 
     layout.U16(0, kBankFileRevision);
@@ -605,21 +669,7 @@ std::vector<uint8_t> BankFile::Write() const
     for (std::size_t b = 0; b < placed.banks.size(); b++)
     {
         Bank& bank = placed.banks[b];
-        if (bank.offset == kNoOffset || bank.instruments.size() > bank.capacity)
-        {
-            bank.offset = layout.Place(kBankHeaderSize + bank.instruments.size() * 4);
-        }
-
-        layout.U16(bank.offset, static_cast<uint16_t>(bank.instruments.size()));
-        layout.U8(bank.offset + 2, bank.flags);
-        layout.U8(bank.offset + 3, bank.padding);
-        layout.U32(bank.offset + 4, static_cast<uint32_t>(bank.sample_rate));
-        layout.U32(bank.offset + 8, OffsetOf(placed.instruments, bank.percussion));
-        for (std::size_t i = 0; i < bank.instruments.size(); i++)
-        {
-            layout.U32(bank.offset + kBankHeaderSize + i * 4, OffsetOf(placed.instruments, bank.instruments[i]));
-        }
-
+        WriteBank(layout, bank, placed);
         layout.U32(kBanksOffset + b * 4, bank.offset);
     }
 

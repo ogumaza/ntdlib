@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -20,6 +21,7 @@
 
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/rarc.h"
+#include "ntdlib/sequence_export/conversion.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/jaudio/convert.h"
 #include "ntdlib/sequence_export/jaudio/game.h"
@@ -96,13 +98,9 @@ void GameInput::PrintWarnings(const std::string& name) const
 
 Conversion GameInput::Convert(std::size_t index, const PerformOptions& perform, const std::string& program)
 {
-    Conversion c = ConvertSequence(game_.Sequences()[index], banks_, perform, program);
-    for (; errors_reported_ < banks_.Errors().size(); errors_reported_++)
-    {
-        c.warnings.push_back(banks_.Errors()[errors_reported_]);
-    }
-
-    return c;
+    // This conversion reports the errors that the banks collected since the last conversion.
+    return ConvertReportingErrors(banks_.Errors(), errors_reported_,
+                                  [&] { return ConvertSequence(game_.Sequences()[index], banks_, perform, program); });
 }
 
 bool GameInput::Converts(std::size_t index, const std::string& program)

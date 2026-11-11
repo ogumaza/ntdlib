@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <stdexcept>
+#include <utility>
 
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
@@ -204,6 +205,71 @@ void VoiceRenderer::Restore(const Snapshot& snapshot)
     mark_ = static_cast<int>(mark);
 }
 
+namespace
+{
+
+// The left and right gains of channel `channel` of a voice by its pan `pan`, for output mode `mode`: the centre for a
+// mono output, and for stereo or surround the balance, a stream's balance or the dual pan. Any other mode gets no
+// gains.
+std::pair<float, float> PanRatios(const MultiVoice& voice, int channel, float pan, const PanInfo& info, OutputMode mode)
+{
+    if (mode == OutputMode::kMono)
+    {
+        const float centre = util::CalcPanRatio(0.0f, info, OutputMode::kMono);
+
+        return {centre, centre};
+    }
+    if (mode != OutputMode::kStereo && mode != OutputMode::kSurround)
+    {
+        return {0.0f, 0.0f};
+    }
+
+    const uint32_t side = voice.Side();
+
+    // Balance: each channel keeps its side.
+    if (voice.ChannelCount() >= 2 && voice.PanMode() == 1)
+    {
+        if (channel == 0)
+        {
+            return {util::CalcPanRatio(pan, info, mode), 0.0f};
+        }
+        if (channel == 1)
+        {
+            return {0.0f, util::CalcPanRatio(0.0f - pan, info, mode)};
+        }
+
+        return {0.0f, 0.0f};
+    }
+
+    // Balance for a stream's channel: the left channel keeps the left, and the right one the right.
+    if (side != 0 && voice.PanMode() != 0 && !info.surround_curves)
+    {
+        if (side == 1)
+        {
+            return {util::CalcPanRatio(pan, info, mode), 0.0f};
+        }
+
+        return {0.0f, util::CalcPanRatio(0.0f - pan, info, mode)};
+    }
+
+    // Dual: a stereo wave's channels start at the sides and move with the pan. So do the channels of a stream's pair,
+    // by their sides. The second channel of a stereo wave on the left side takes the left.
+    float dual = pan;
+    const bool stereo = voice.ChannelCount() == 2;
+    if ((stereo && channel == 0) || (stereo && channel == 1 && side == 1) || (!stereo && side == 1))
+    {
+        dual = dual + -1.0f;
+    }
+    else if ((stereo && channel == 1) || side == 2)
+    {
+        dual = dual + 1.0f;
+    }
+
+    return {util::CalcPanRatio(dual, info, mode), util::CalcPanRatio(0.0f - dual, info, mode)};
+}
+
+} // namespace
+
 VoiceRenderer::Gains VoiceRenderer::CalcMixVolume(const MultiVoice& voice, int channel) const
 {
     const HardwareSettings& hardware = *hardware_;
@@ -229,58 +295,7 @@ VoiceRenderer::Gains VoiceRenderer::CalcMixVolume(const MultiVoice& voice, int c
     {
         PanInfo info = PanInfoOf(voice.PanCurve());
         info.surround_curves = hardware.surround_pan_curves;
-        float left = 0.0f;
-        float right = 0.0f;
-        if (mode == OutputMode::kMono)
-        {
-            left = util::CalcPanRatio(0.0f, info, OutputMode::kMono);
-            right = left;
-        }
-        else if (mode == OutputMode::kStereo || mode == OutputMode::kSurround)
-        {
-            const uint32_t side = voice.Side();
-            if (voice.ChannelCount() >= 2 && voice.PanMode() == 1)
-            {
-                // Balance: each channel keeps its side.
-                if (channel == 0)
-                {
-                    left = util::CalcPanRatio(output.pan, info, mode);
-                }
-                else if (channel == 1)
-                {
-                    right = util::CalcPanRatio(0.0f - output.pan, info, mode);
-                }
-            }
-            else if (side != 0 && voice.PanMode() != 0 && !hardware.surround_pan_curves)
-            {
-                // Balance for a stream's channel: the left channel keeps the left, and the right one the right.
-                if (side == 1)
-                {
-                    left = util::CalcPanRatio(output.pan, info, mode);
-                }
-                else
-                {
-                    right = util::CalcPanRatio(0.0f - output.pan, info, mode);
-                }
-            }
-            else
-            {
-                // Dual: a stereo wave's channels start at the sides and move with the pan. So do the channels of a
-                // stream's pair, by their sides. The second channel of a stereo wave on the left side takes the left.
-                float pan = output.pan;
-                const bool stereo = voice.ChannelCount() == 2;
-                if ((stereo && channel == 0) || (stereo && channel == 1 && side == 1) || (!stereo && side == 1))
-                {
-                    pan = pan + -1.0f;
-                }
-                else if ((stereo && channel == 1) || side == 2)
-                {
-                    pan = pan + 1.0f;
-                }
-                left = util::CalcPanRatio(pan, info, mode);
-                right = util::CalcPanRatio(0.0f - pan, info, mode);
-            }
-        }
+        const auto [left, right] = PanRatios(voice, channel, output.pan, info, mode);
 
         // Any other mode gets no gains at all.
         float front = 0.0f;

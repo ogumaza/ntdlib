@@ -1782,6 +1782,7 @@ void TestProcedureChangeComesInsideTheCall()
                 ticks.push_back(e.tick);
             }
         }
+
         return ticks;
     };
     const auto frame = [](double ms)
@@ -1817,6 +1818,7 @@ void TestProcedureModelRunsInsideTheCall()
         {
             track[14] = 7;
         }
+
         return false;
     };
     XSFLIB_CHECK(NoteKeys(PerformOnBank(draw, OneRegionFbnk({{0x05000000, 0}}), 1, with_model)) ==
@@ -1839,6 +1841,7 @@ void TestProcedureModelRunsInsideTheCall()
             local[3] = 1;
             global[1] = 9;
         }
+
         return false;
     };
     XSFLIB_CHECK(NoteKeys(PerformOnBank(order, OneRegionFbnk({{0x05000000, 0}}), 1, both)) ==
@@ -3316,6 +3319,17 @@ void TestBankSfzFilesPlayEachInstrumentByItself()
     }
 }
 
+// A bank's SFZ file names pad a program with zeros to the digits of the bank's last program.
+void TestProgramSuffixPadsToTheLastProgram()
+{
+    XSFLIB_CHECK(ProgramSuffix(0, 0) == "_0");
+    XSFLIB_CHECK(ProgramSuffix(7, 130) == "_007");
+    XSFLIB_CHECK(ProgramSuffix(42, 130) == "_042");
+    XSFLIB_CHECK(ProgramSuffix(130, 130) == "_130");
+    XSFLIB_CHECK(ProgramSuffix(5, 9) == "_5");
+    XSFLIB_CHECK(ProgramSuffix(1000, 130) == "_1000");
+}
+
 // Programs above 127 take the SoundFont's next banks: program 130 is program 2 of bank 1. The SFZ files' names pad the
 // programs to the digits of the last one.
 void TestBankProgramsAbove127TakeTheNextBank()
@@ -4099,6 +4113,7 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestSfzCommentKeepsTheNameOnItsLine,
     TestBankSoundFontHoldsEachInstrumentAtItsProgram,
     TestBankSfzFilesPlayEachInstrumentByItself,
+    TestProgramSuffixPadsToTheLastProgram,
     TestBankProgramsAbove127TakeTheNextBank,
     TestLoudBankIsAttenuatedAndAMissingBankThrows,
     TestLargeBankSplitsItsSoundFont,

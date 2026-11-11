@@ -42,18 +42,29 @@ public:
     using RecordingEngine::RecordingEngine;
 };
 
+// An archive whose one sequence plays `commands` on `bank` and the wave archive of `wave`. If `channel_priority` is
+// given, the sound sets it: the channels' priority | release priority fix << 8.
+SoundArchive OneSequenceArchive(const std::vector<uint8_t>& commands, const std::vector<uint8_t>& bank,
+                                const std::vector<uint8_t>& wave,
+                                std::optional<uint32_t> channel_priority = std::nullopt)
+{
+    std::vector<ArchiveFile> files(3);
+    files[0].data = Fseq(commands);
+    files[1].data = bank;
+    files[2].data = Fwar({wave});
+    const SequenceSound sound = {.banks = {0x03000000}, .channel_priority = channel_priority};
+    return SoundArchive::Load(Fsar(files, {.sequences = {sound}, .banks = {1}, .wave_archives = {2}}),
+                              console->settings.archive);
+}
+
 // Performs `commands` with `voice_limit` voices. If `channel_priority` is given, the sound sets it: the channels'
 // priority | release priority fix << 8.
 Performance PerformOnVoices(const std::vector<uint8_t>& commands, int voice_limit,
                             std::optional<uint32_t> channel_priority = std::nullopt)
 {
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq(commands);
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SequenceSound sound = {.banks = {0x03000000}, .channel_priority = channel_priority};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {sound}, .banks = {1}, .wave_archives = {2}}), console->settings.archive);
+    const SoundArchive archive =
+        OneSequenceArchive(commands, OneRegionFbnk({{0x05000000, 0}}),
+                           Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true), channel_priority);
     BankSet banks(archive, archive.Sounds()[0], console->settings);
 
     return Perform(archive, 0, banks, {.voice_limit = voice_limit});
@@ -126,13 +137,9 @@ void TestOneShotWaveEndsAsTheDspPlaysIt()
     // position is 1 + (160 n - 1) * 4. That adds 3 samples to the effective length. Playback takes 11 frames after
     // note-on, not 10. The channel disappears in frame 13 (63.5 ms); execution resumes at tick 7 (72.9 ms), the first
     // tick in that frame.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0x3c, 0x7f, 0x00, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(6399, std::vector<int16_t>(6399, 1000), 1, false, 4 * 32728)});
     const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
+        OneSequenceArchive({0x3c, 0x7f, 0x00, 0xff}, OneRegionFbnk({{0x05000000, 0}}),
+                           Pcm16Fwav(6399, std::vector<int16_t>(6399, 1000), 1, false, 4 * 32728));
     BankSet banks(archive, archive.Sounds()[0], console->settings);
 
     const Performance p = Perform(archive, 0, banks, {});
@@ -194,13 +201,9 @@ void TestSfzRegionFollowsTheDspsInterpolation()
     // that selects the polyphase filter (0) keeps sfizz's default.
     auto convert = [](uint8_t interpolation)
     {
-        std::vector<ArchiveFile> files(3);
-        files[0].data = Fseq({0x3c, 0x64, 0x18, 0xff});
-        files[1].data = OneRegionFbnk({{0x05000000, 0}}, 127, 64, false, interpolation);
-        files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true, 32728)});
-        const SoundArchive archive =
-            SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                               console->settings.archive);
+        const SoundArchive archive = OneSequenceArchive({0x3c, 0x64, 0x18, 0xff},
+                                                        OneRegionFbnk({{0x05000000, 0}}, 127, 64, false, interpolation),
+                                                        Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true, 32728));
         BankSet banks(archive, archive.Sounds()[0], console->settings);
         const Performance p = Perform(archive, 0, banks, {});
         MidiReport midi;
@@ -229,13 +232,9 @@ void TestRecordingEngineEndsTheOneShotAtTheSameFrame()
     // The one-shot of TestOneShotWaveEndsAsTheDspPlaysIt, on the recording engine. The note starts in frame 0, and the
     // DSP plays the wave from frame 1 to frame 11. The voice update of frame 12 frees the channel: it sounds after 12
     // frames, and not after 13. The note's volume is its velocity squared times the region's volume, times 1/127^3.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0x3c, 0x7f, 0x00, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(6399, std::vector<int16_t>(6399, 1000), 1, false, 4 * 32728)});
     const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
+        OneSequenceArchive({0x3c, 0x7f, 0x00, 0xff}, OneRegionFbnk({{0x05000000, 0}}),
+                           Pcm16Fwav(6399, std::vector<int16_t>(6399, 1000), 1, false, 4 * 32728));
     BankSet banks(archive, archive.Sounds()[0], console->settings);
     const ntdlib::sar::Sequence sequence =
         ntdlib::sar::Sequence::Parse(archive.FileData(archive.Sounds()[0].file_id), console->settings.archive);
@@ -270,13 +269,10 @@ void TestOneShotLeadFollowsTheRate()
     const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, region}}};
     const files::KeyTable keys{files::KeyTable::kDirect, 0, {{127, velocities}}};
     const std::vector<std::pair<uint32_t, uint32_t>> kWaves = {{0x05000000, 0}};
-    std::vector<ArchiveFile> archive_files(3);
-    archive_files[0].data = Fseq({0xd3, 100, 0xc9, 66, 0xcf, 5, 49, 110, 4, 0xff}); // release, porta, its time, note
-    archive_files[1].data = files::Bank(console->settings.archive.flavor, {kWaves, {keys}});
-    archive_files[2].data = Fwar({Pcm16Fwav(7935, std::vector<int16_t>(7935, 1000), 1, false, 22050)});
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(archive_files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-        console->settings.archive);
+    const SoundArchive archive =
+        OneSequenceArchive({0xd3, 100, 0xc9, 66, 0xcf, 5, 49, 110, 4, 0xff}, // release, porta, its time, note
+                           files::Bank(console->settings.archive.flavor, {kWaves, {keys}}),
+                           Pcm16Fwav(7935, std::vector<int16_t>(7935, 1000), 1, false, 22050));
     BankSet banks(archive, archive.Sounds()[0], console->settings);
     const ntdlib::sar::Sequence sequence =
         ntdlib::sar::Sequence::Parse(archive.FileData(archive.Sounds()[0].file_id), console->settings.archive);
@@ -297,13 +293,9 @@ void TestRecordingEngineDropsTheLowestPriorityVoice()
 {
     // Two notes of the same priority in one tick, with note waits off, on a pool of one voice. The second note's voice
     // takes the place of the first note's voice. The first note's channel goes, and the second note sounds.
-    std::vector<ArchiveFile> files(3);
-    files[0].data = Fseq({0xc7, 0x00, 0x3c, 0x7f, 0x30, 0x40, 0x7f, 0x30, 0x80, 0x60, 0xff});
-    files[1].data = OneRegionFbnk({{0x05000000, 0}});
-    files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0, {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-                           console->settings.archive);
+        OneSequenceArchive({0xc7, 0x00, 0x3c, 0x7f, 0x30, 0x40, 0x7f, 0x30, 0x80, 0x60, 0xff},
+                           OneRegionFbnk({{0x05000000, 0}}), Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true));
     BankSet banks(archive, archive.Sounds()[0], console->settings);
     const ntdlib::sar::Sequence sequence =
         ntdlib::sar::Sequence::Parse(archive.FileData(archive.Sounds()[0].file_id), console->settings.archive);

@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 
+#include "ntdlib/jaudio1/oscillator.h"
 #include "ntdlib/jaudio2/oscillator.h"
 
 namespace ntdlib::jac
@@ -18,29 +18,13 @@ namespace ntdlib::jac
 
 using jaudio2::OscPoint;
 
-// A table of points as the game holds it: a pointer into the data, or null. Bank_OscToOfs compares the pointers of a
-// setting's two tables. `size` counts the points that the data holds from the pointer on. A point past it reads as a
-// stop.
-struct OscTable
-{
-    const OscPoint* points = nullptr;
-    std::size_t size = 0;
+// A table of points as the game holds it. JAudio1 holds its tables the same way.
+using jaudio1::OscTable;
 
-    bool Null() const
-    {
-        return points == nullptr;
-    }
-
-    OscPoint At(std::size_t index) const
-    {
-        return index < size ? points[index] : OscPoint{15, 0, 0};
-    }
-
-    bool operator==(const OscTable& other) const
-    {
-        return points == other.points;
-    }
-};
+// The modes of a point that move no value.
+using jaudio1::kPointHold;
+using jaudio1::kPointJump;
+using jaudio1::kPointStop;
 
 // An oscillator's settings: what it moves, the speed of its tables, the tables for the note's start and its release,
 // and the scale and offset of its output. A track copies settings by value. The game does the same.

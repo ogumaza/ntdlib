@@ -17,7 +17,9 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/ctr/dsp/fcram.h"
+#include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/coef_rom.h"
+#include "ntdlib/wave/adpcm.h"
 
 namespace ntdlib::ctr::dsp::firmware
 {
@@ -25,14 +27,9 @@ namespace
 {
 
 using internal::kBusChannel;
+using ntdlib::dsp::Wrap40;
 
 constexpr uint64_t kMask40 = (uint64_t{1} << 40) - 1;
-
-// The value of a 40-bit accumulator that holds the low 40 bits of `value`.
-int64_t Wrap40(int64_t value)
-{
-    return static_cast<int64_t>(static_cast<uint64_t>(value) << 24) >> 24;
-}
 
 int64_t Saturate32(int64_t value)
 {
@@ -103,9 +100,7 @@ uint32_t ToRate(uint32_t bits)
 // The nibbles that `samples` ADPCM samples take, with the headers of their frames (0x2958).
 uint64_t Nibbles(uint32_t samples)
 {
-    const uint32_t rest = samples % 14;
-
-    return uint64_t{samples / 14} * 16 + (rest ? rest + 2 : 0);
+    return wave::DspAdpcmNibbleCount(uint64_t{samples});
 }
 
 // The 16-bit word that holds ADPCM sample `samples`.
@@ -207,7 +202,7 @@ std::span<const int16_t> Audio::MixedFrame() const
     {
         for (std::size_t i = 0; i < mixed.size(); i++)
         {
-            mixed[i] = Saturate16(std::lround(host_.frame[i] * 32768.0f));
+            mixed[i] = Saturate16(std::llround(host_.frame[i] * 32768.0f));
         }
 
         return mixed;
@@ -558,56 +553,8 @@ void Audio::MixFrame()
         }
     }
 
-    // The enhanced mode mixes the sources apart from the firmware's buses. They then stay silent.
-    for (int i = 0; i < (enhanced_ ? 0 : kSources); i++)
-    {
-        const uint32_t s = SourceState(i);
-        const uint32_t report = Word(s + state::kReport);
-        const uint32_t voice = Word(s + state::kVoice);
-        const bool enabled = (Word(report + report::kEnabled) & 0xff) == 1;
-        if (enabled)
-        {
-            metering_ = source_meters_[static_cast<std::size_t>(i)];
-            ProcessSource(i);
-            metering_ = -1;
-        }
-        else if (Word(s + state::kFlags) & state::kPlayed)
-        {
-            AddStoppedOutputs(voice);
-        }
-
-        const uint16_t flags = Word(s + state::kFlags);
-        SetWord(s + state::kFlags, enabled ? flags | state::kPlayed : flags & ~state::kPlayed);
-    }
-
-    switch (Word(internal::kOutputMode))
-    {
-    case 0:
-        Add(internal::kMainBus, internal::kBypassBus, 2 * kFrameSamples);
-        MixRear();
-        for (uint32_t n = 0; n < kFrameSamples; n++)
-        {
-            const uint32_t left = internal::kOutput + 2 * n;
-            const uint32_t right = left + kBusChannel;
-            const int32_t sum = static_cast<int32_t>(Long(left) + Long(right));
-            SetLong(left, static_cast<uint32_t>(Scaled(sum, 0x4000)));
-            SetLong(right, Long(left));
-        }
-        break;
-
-    case 1:
-        Add(internal::kMainBus, internal::kBypassBus, 2 * kFrameSamples);
-        MixRear();
-        break;
-
-    case 2:
-        MixSurround();
-        Add(internal::kOutput, internal::kBypassBus, 2 * kFrameSamples);
-        break;
-
-    default:
-        break;
-    }
+    MixSources();
+    MixOutput();
 
     const uint16_t declick = Word(internal::kDeclick);
     for (int bus = 0; bus < 3; bus++)
@@ -649,7 +596,69 @@ void Audio::MixFrame()
         return;
     }
 
-    // The meters' peaks: the rear joins the front as MixRear joins them.
+    UpdateMeterPeaks();
+}
+
+void Audio::MixSources()
+{
+    // The enhanced mode mixes the sources apart from the firmware's buses. They then stay silent.
+    for (int i = 0; i < (enhanced_ ? 0 : kSources); i++)
+    {
+        const uint32_t s = SourceState(i);
+        const uint32_t report = Word(s + state::kReport);
+        const uint32_t voice = Word(s + state::kVoice);
+        const bool enabled = (Word(report + report::kEnabled) & 0xff) == 1;
+        if (enabled)
+        {
+            metering_ = source_meters_[static_cast<std::size_t>(i)];
+            ProcessSource(i);
+            metering_ = -1;
+        }
+        else if (Word(s + state::kFlags) & state::kPlayed)
+        {
+            AddStoppedOutputs(voice);
+        }
+
+        const uint16_t flags = Word(s + state::kFlags);
+        SetWord(s + state::kFlags, enabled ? flags | state::kPlayed : flags & ~state::kPlayed);
+    }
+}
+
+void Audio::MixOutput()
+{
+    switch (Word(internal::kOutputMode))
+    {
+    case 0:
+        Add(internal::kMainBus, internal::kBypassBus, 2 * kFrameSamples);
+        MixRear();
+        for (uint32_t n = 0; n < kFrameSamples; n++)
+        {
+            const uint32_t left = internal::kOutput + 2 * n;
+            const uint32_t right = left + kBusChannel;
+            const int32_t sum = static_cast<int32_t>(Long(left) + Long(right));
+            SetLong(left, static_cast<uint32_t>(Scaled(sum, 0x4000)));
+            SetLong(right, Long(left));
+        }
+        break;
+
+    case 1:
+        Add(internal::kMainBus, internal::kBypassBus, 2 * kFrameSamples);
+        MixRear();
+        break;
+
+    case 2:
+        MixSurround();
+        Add(internal::kOutput, internal::kBypassBus, 2 * kFrameSamples);
+        break;
+
+    default:
+        break;
+    }
+}
+
+void Audio::UpdateMeterPeaks()
+{
+    // The rear joins the front as MixRear joins them.
     const uint16_t ratio = Word(internal::kRearRatio);
     for (std::size_t m = 0; m < meter_sums_.size(); m++)
     {
@@ -1171,32 +1180,52 @@ uint16_t Audio::Chunk(uint16_t limit, std::array<uint16_t, 3>& counts) const
 uint16_t Audio::Decode(uint32_t s, std::array<uint16_t, 3>& counts)
 {
     const uint16_t format = Word(s + state::kFormat);
+    if (((format >> 2) & 3) == 3)
+    {
+        return 0;
+    }
+
+    const uint16_t take = Chunk(ChunkLimit(format), counts);
+    DecodeChunk(s, format, take);
+
+    return take;
+}
+
+uint16_t Audio::ChunkLimit(uint16_t format)
+{
     const bool stereo = (format & 3) == 2;
     switch ((format >> 2) & 3)
     {
     case 0:
-        {
-            const uint16_t take = Chunk(stereo ? 0x400 : 0x800, counts);
-            DecodePcm(s, take, stereo, true);
-            return take;
-        }
+        return stereo ? 0x400 : 0x800;
+    case 1:
+        return stereo ? 0x200 : 0x400;
+    default:
+        return 0xe00;
+    }
+}
+
+void Audio::DecodeChunk(uint32_t s, uint16_t format, uint16_t count)
+{
+    const bool stereo = (format & 3) == 2;
+    switch ((format >> 2) & 3)
+    {
+    case 0:
+        DecodePcm(s, count, stereo, true);
+        break;
 
     case 1:
-        {
-            const uint16_t take = Chunk(stereo ? 0x200 : 0x400, counts);
-            DecodePcm(s, take, stereo, false);
-            return take;
-        }
+        DecodePcm(s, count, stereo, false);
+        break;
 
     case 2:
-        {
-            const uint16_t take = Chunk(0xe00, counts);
-            DecodeAdpcm(s, take, stereo);
-            return take;
-        }
+        DecodeAdpcm(s, count, stereo);
+        break;
 
     default:
-        return 0;
+        Clear(internal::kDecode + 4, count);
+        Clear(internal::kDecode + internal::kDecodeChannel + 4, count);
+        break;
     }
 }
 
@@ -1217,56 +1246,11 @@ void Audio::DecodePcm(uint32_t s, uint16_t count, bool stereo, bool pcm8)
             const uint32_t address = Long(s + state::kAddress);
             if (pcm8)
             {
-                const uint32_t m = position & (stereo ? 0x1f : 0x3f);
-                Dma(address + ((position - m) << (stereo ? 1 : 0)),
-                    (((((m + n + 1) & ~1u) >> (stereo ? 0 : 1)) + 15) & ~15u));
-                if (stereo)
-                {
-                    for (uint32_t i = 0; i < n; i++)
-                    {
-                        const uint16_t word = Word(internal::kDmaBuffer + m + i);
-                        SetWord(out0 + i, static_cast<uint16_t>(word << 8));
-                        SetWord(out1 + i, word & 0xff00);
-                    }
-                }
-                else
-                {
-                    uint32_t input = internal::kDmaBuffer + m / 2;
-                    uint32_t i = 0;
-                    if (position & 1)
-                    {
-                        SetWord(out0 + i++, Word(input++) & 0xff00);
-                    }
-
-                    for (; i + 1 < n; i += 2)
-                    {
-                        const uint16_t word = Word(input++);
-                        SetWord(out0 + i, static_cast<uint16_t>(word << 8));
-                        SetWord(out0 + i + 1, word & 0xff00);
-                    }
-
-                    if (i < n)
-                    {
-                        SetWord(out0 + i, static_cast<uint16_t>(Word(input) << 8));
-                    }
-                }
+                CopyPcm8(address, position, n, stereo, out0, out1);
             }
             else
             {
-                const uint32_t m = position & (stereo ? 0x7 : 0xf);
-                Dma(address + ((position - m) << (stereo ? 2 : 1)), ((((m + n) << (stereo ? 1 : 0)) + 15) & ~15u));
-                if (stereo)
-                {
-                    for (uint32_t i = 0; i < n; i++)
-                    {
-                        SetWord(out0 + i, Word(internal::kDmaBuffer + 2 * (m + i)));
-                        SetWord(out1 + i, Word(internal::kDmaBuffer + 2 * (m + i) + 1));
-                    }
-                }
-                else
-                {
-                    Copy(out0, internal::kDmaBuffer + m, n);
-                }
+                CopyPcm16(address, position, n, stereo, out0, out1);
             }
 
             left -= n;
@@ -1292,6 +1276,59 @@ void Audio::DecodePcm(uint32_t s, uint16_t count, bool stereo, bool pcm8)
             break;
         }
     } while (left != 0);
+}
+
+void Audio::CopyPcm8(uint32_t address, uint32_t position, uint32_t n, bool stereo, uint32_t out0, uint32_t out1)
+{
+    const uint32_t m = position & (stereo ? 0x1f : 0x3f);
+    Dma(address + ((position - m) << (stereo ? 1 : 0)), (((((m + n + 1) & ~1u) >> (stereo ? 0 : 1)) + 15) & ~15u));
+    if (stereo)
+    {
+        for (uint32_t i = 0; i < n; i++)
+        {
+            const uint16_t word = Word(internal::kDmaBuffer + m + i);
+            SetWord(out0 + i, static_cast<uint16_t>(word << 8));
+            SetWord(out1 + i, word & 0xff00);
+        }
+
+        return;
+    }
+
+    uint32_t input = internal::kDmaBuffer + m / 2;
+    uint32_t i = 0;
+    if (position & 1)
+    {
+        SetWord(out0 + i++, Word(input++) & 0xff00);
+    }
+
+    for (; i + 1 < n; i += 2)
+    {
+        const uint16_t word = Word(input++);
+        SetWord(out0 + i, static_cast<uint16_t>(word << 8));
+        SetWord(out0 + i + 1, word & 0xff00);
+    }
+
+    if (i < n)
+    {
+        SetWord(out0 + i, static_cast<uint16_t>(Word(input) << 8));
+    }
+}
+
+void Audio::CopyPcm16(uint32_t address, uint32_t position, uint32_t n, bool stereo, uint32_t out0, uint32_t out1)
+{
+    const uint32_t m = position & (stereo ? 0x7 : 0xf);
+    Dma(address + ((position - m) << (stereo ? 2 : 1)), ((((m + n) << (stereo ? 1 : 0)) + 15) & ~15u));
+    if (!stereo)
+    {
+        Copy(out0, internal::kDmaBuffer + m, n);
+        return;
+    }
+
+    for (uint32_t i = 0; i < n; i++)
+    {
+        SetWord(out0 + i, Word(internal::kDmaBuffer + 2 * (m + i)));
+        SetWord(out1 + i, Word(internal::kDmaBuffer + 2 * (m + i) + 1));
+    }
 }
 
 void Audio::DecodeAdpcm(uint32_t s, uint16_t count, bool stereo)
@@ -1461,6 +1498,41 @@ void Audio::Dma(uint32_t source, uint32_t words)
     }
 }
 
+// One output of the interpolator: from the decoded samples at `place`, with the fraction `fraction` of a sample.
+uint16_t Audio::Interpolate(uint16_t interpolation, uint32_t place, uint16_t fraction) const
+{
+    const auto sample = [&](int32_t i)
+    {
+        return int64_t{Signed(static_cast<uint16_t>(place + i))};
+    };
+
+    switch (interpolation & 0xff)
+    {
+    case 0:
+        {
+            const uint32_t table = static_cast<uint16_t>(internal::kPolyphase + ((interpolation << 1) & 0xfe00));
+            const uint32_t row = table + (fraction >> 9) * 4;
+            int64_t sum = 0;
+            for (int t = 0; t < 4; t++)
+            {
+                sum += 2 * int64_t{Signed(static_cast<uint16_t>(row + t))} * sample(t);
+            }
+
+            return High16(Wrap40(sum));
+        }
+
+    case 1:
+        {
+            const int64_t s0 = sample(1);
+            const int64_t difference = Saturate16(sample(2) - s0);
+            return High16(Wrap40(s0 * 65536 + difference * fraction));
+        }
+
+    default:
+        return static_cast<uint16_t>(sample(1));
+    }
+}
+
 void Audio::Resample(uint32_t s, uint32_t output, uint32_t phases, uint16_t count)
 {
     const uint32_t y = Word(s + state::kVoice);
@@ -1475,43 +1547,7 @@ void Audio::Resample(uint32_t s, uint32_t output, uint32_t phases, uint16_t coun
         for (uint32_t n = 0; n < count; n++)
         {
             position += Signed(phases + 2 * n);
-            const uint16_t fraction = Word(phases + 2 * n + 1);
-            const auto sample = [&](int32_t i)
-            {
-                return int64_t{Signed(static_cast<uint16_t>(base + position + i))};
-            };
-
-            uint16_t value;
-            switch (interpolation & 0xff)
-            {
-            case 0:
-                {
-                    const uint32_t table =
-                        static_cast<uint16_t>(internal::kPolyphase + ((interpolation << 1) & 0xfe00));
-                    const uint32_t row = table + (fraction >> 9) * 4;
-                    int64_t sum = 0;
-                    for (int t = 0; t < 4; t++)
-                    {
-                        sum += 2 * int64_t{Signed(static_cast<uint16_t>(row + t))} * sample(t);
-                    }
-
-                    value = High16(Wrap40(sum));
-                    break;
-                }
-
-            case 1:
-                {
-                    const int64_t s0 = sample(1);
-                    const int64_t difference = Saturate16(sample(2) - s0);
-                    value = High16(Wrap40(s0 * 65536 + difference * fraction));
-                    break;
-                }
-
-            default:
-                value = static_cast<uint16_t>(sample(1));
-                break;
-            }
-
+            const uint16_t value = Interpolate(interpolation, base + position, Word(phases + 2 * n + 1));
             SetWord(out + n, value);
             if (!stereo)
             {

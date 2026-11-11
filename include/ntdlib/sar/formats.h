@@ -13,9 +13,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -107,6 +109,41 @@ inline std::string GroupFileName(const std::string& name, Flavor flavor)
 inline bool IsGroupFileName(const std::string& file_name, const std::string& name, Flavor flavor)
 {
     return xsflib::AsciiLower(file_name) == xsflib::AsciiLower(GroupFileName(name, flavor));
+}
+
+// The sound archives of Nintendo's consoles, by the first bytes of their files: the magic and, in an FSAR archive, the
+// byte order mark. A tool that reads one console's archives can name another console's archive by them.
+enum class SoundArchiveKind
+{
+    kOther,       // no sound archive's magic
+    kSdat,        // the DS: SDAT
+    kRsar,        // the Wii: RSAR
+    kCsar,        // the 3DS: CSAR
+    kFsarBig,     // the Wii U: FSAR with a big-endian byte order mark, FE FF
+    kFsarLittle,  // the Switch: FSAR with a little-endian byte order mark, FF FE
+    kFsarUnknown, // FSAR with no byte order mark, or with neither
+};
+
+// The kind of sound archive whose file starts with `head`.
+inline SoundArchiveKind SoundArchiveKindOf(std::string_view head)
+{
+    constexpr std::array<std::pair<std::string_view, SoundArchiveKind>, 6> kKinds = {{
+        {"SDAT", SoundArchiveKind::kSdat},
+        {"RSAR", SoundArchiveKind::kRsar},
+        {"CSAR", SoundArchiveKind::kCsar},
+        {"FSAR\xFE\xFF", SoundArchiveKind::kFsarBig},
+        {"FSAR\xFF\xFE", SoundArchiveKind::kFsarLittle},
+        {"FSAR", SoundArchiveKind::kFsarUnknown},
+    }};
+    for (const auto& [magic, kind] : kKinds)
+    {
+        if (head.starts_with(magic))
+        {
+            return kind;
+        }
+    }
+
+    return SoundArchiveKind::kOther;
 }
 
 // The rules that the readers follow. kReadPastDamage reads on past damage and reports it. kStopAtFirstProblem stops at
@@ -609,6 +646,15 @@ private:
     // Reads tables through `r` and locates files stored in groups. Throws FormatError if the tables cannot be read.
     void ReadTables(const xsflib::Reader& r);
 
+    // The steps of ReadTables: the sounds, banks, wave archives and sound groups, the files, and the groups and the
+    // files that only they hold. `tables` gives the places of INFO's tables by type, and `names` the items' names. The
+    // FILE block starts at `file_off`.
+    void ReadItems(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
+                   const std::map<uint32_t, std::string>& names);
+    void ReadFiles(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables, std::size_t file_off);
+    void ReadGroups(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
+                    const std::map<uint32_t, std::string>& names);
+
     // Locates files stored only in groups using group `name`. Keeps locations already found in earlier groups. `group`
     // is the group file's table entry. Appends truncated files to `cut_short` with the group name, and the error to
     // `unreadable` if the group can't be read.
@@ -617,6 +663,16 @@ private:
 
     // Reads tables through `r` with kStopAtFirstProblem.
     void ReadTablesStrictly(const xsflib::Reader& r);
+
+    // The steps of ReadTablesStrictly: the sounds, banks, wave archives, sound groups, players and the Wii U's and the
+    // Switch's groups, the files, and the 3DS's groups and the files that only groups hold. They take the arguments of
+    // the steps of ReadTables.
+    void ReadItemsStrictly(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
+                           const std::map<uint32_t, std::string>& names);
+    void ReadFilesStrictly(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
+                           std::size_t file_off);
+    void ReadGroupsStrictly(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
+                            const std::map<uint32_t, std::string>& names);
 
     Options options_;
     std::vector<uint8_t> bytes_;

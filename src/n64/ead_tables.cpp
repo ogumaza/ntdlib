@@ -8,6 +8,7 @@
 
 namespace ntdlib::n64::ead_tables
 {
+
 // Offset 0xEE994.
 const std::array<float, 128> kNoteFrequencies = {
     0x1.ae89ecp-4F, 0x1.c82386p-4F, 0x1.e3433p-4F,  0x1.p-3F,       0x1.0f3908p-3F, 0x1.1f59ccp-3F, 0x1.306ffp-3F,

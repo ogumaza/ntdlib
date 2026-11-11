@@ -7,13 +7,14 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstdio>
 #include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+#include "xsflib/text.h"
 
 #include "arm/cpu_impl.h"
 
@@ -351,14 +352,6 @@ StopReason Core::Run(uint64_t cycles)
 namespace
 {
 
-std::string Hex(uint32_t value)
-{
-    char text[16];
-    std::snprintf(text, sizeof(text), "0x%08X", value);
-
-    return text;
-}
-
 const char* ReasonText(StopReason reason)
 {
     switch (reason)
@@ -452,13 +445,14 @@ uint32_t Cpu::Call(uint32_t address, std::span<const uint32_t> args, uint64_t ma
 
     if (reason == StopReason::kCycles)
     {
-        throw std::runtime_error("the call to " + Hex(address) + " didn't return within " + std::to_string(max_cycles) +
-                                 " cycles");
+        throw std::runtime_error("the call to " + xsflib::Hex(address, 8, true) + " didn't return within " +
+                                 std::to_string(max_cycles) + " cycles");
     }
 
     if (!returned)
     {
-        throw std::runtime_error("the call to " + Hex(address) + " didn't return: " + ReasonText(reason));
+        throw std::runtime_error("the call to " + xsflib::Hex(address, 8, true) +
+                                 " didn't return: " + ReasonText(reason));
     }
 
     return core.regs_[0];

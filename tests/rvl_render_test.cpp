@@ -10,12 +10,13 @@
 // whole bus. The build of October 2006 takes a PB's updates before each third of the frame.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <vector>
 
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/sets.h"
 
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/rvl/ax/pb.h"
@@ -26,6 +27,7 @@
 #include "ntdlib/types.h"
 
 using xsflib::testing::Check;
+using xsflib::testing::Peak;
 
 namespace
 {
@@ -247,18 +249,6 @@ void TestOctober2006Updates()
     Check(parts, "the build of October 2006 takes each third's updates before the third");
     Check(model.ax.ReadPb(voice->index).state == static_cast<uint16_t>(ntdlib::ax::VoiceState::kStop),
           "the October 2006 PB keeps the state that an update gave it");
-}
-
-// The largest magnitude of `samples`.
-int Peak(const std::vector<int16_t>& samples)
-{
-    int peak = 0;
-    for (const int16_t sample : samples)
-    {
-        peak = std::max(peak, std::abs(int{sample}));
-    }
-
-    return peak;
 }
 
 void TestMeters()

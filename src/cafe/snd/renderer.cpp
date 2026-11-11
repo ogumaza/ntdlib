@@ -14,6 +14,7 @@
 #include "ntdlib/cafe/snd/voice.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/wave/adpcm.h"
 
 namespace ntdlib::cafe::snd
 {
@@ -28,19 +29,74 @@ uint32_t FrameToByte(uint32_t frames, SampleFormat format)
     {
     case SampleFormat::kPcm8:
         return frames;
-
     case SampleFormat::kPcm16:
         return frames * 2;
-
     case SampleFormat::kDspAdpcm:
-        {
-            const uint32_t rest = frames % 14;
-            const uint32_t nibble = frames / 14 * 16 + (rest != 0 ? rest + 2 : 0);
-            return nibble >> 1;
-        }
+        return wave::DspAdpcmNibbleCount(frames) >> 1;
     }
 
     return 0;
+}
+
+// The gains that a channel's pan and surround pan give in output mode `mode`, without the mix parameters (part of
+// AxRenderer::CalcPreMixVolume): front left, front right, rear left and rear right.
+std::array<float, 4> PannedGains(const MultiVoice& voice, const OutputParam& param, int channel, OutputMode mode)
+{
+    const PanInfo info = ntdlib::nwsnd::PanInfoOf(voice.PanCurve());
+    float left = 0.0f, right = 0.0f;
+    float front = 0.0f, rear = 0.0f;
+    if (mode == OutputMode::kMono)
+    {
+        left = util::CalcPanRatio(0.0f, info, OutputMode::kMono);
+        right = left;
+    }
+    else if (mode == OutputMode::kStereo || mode == OutputMode::kSurround)
+    {
+        if (voice.ChannelCount() > 1 && voice.PanMode() == 1)
+        {
+            // Balance: each channel keeps its side.
+            if (channel == 0)
+            {
+                left = util::CalcPanRatio(param.pan, info, mode);
+            }
+            else if (channel == 1)
+            {
+                right = util::CalcPanRatio(-param.pan, info, mode);
+            }
+        }
+        else
+        {
+            // Dual: a stereo wave's channels start at the sides and move with the pan.
+            float pan = param.pan;
+            if (voice.ChannelCount() == 2)
+            {
+                if (channel == 0)
+                {
+                    pan = pan - 1.0f;
+                }
+                else if (channel == 1)
+                {
+                    pan = pan + 1.0f;
+                }
+            }
+            left = util::CalcPanRatio(pan, info, mode);
+            right = util::CalcPanRatio(-pan, info, mode);
+        }
+    }
+
+    // Nothing here uses Dolby Pro Logic II output. It gets no gains at all: the game's code leaves them 0.
+    if (mode == OutputMode::kSurround)
+    {
+        front = util::CalcSurroundPanRatio(param.span, info);
+        rear = util::CalcSurroundPanRatio(2.0f - param.span, info);
+    }
+    else if (mode != OutputMode::kDpl2)
+    {
+        front = util::CalcSurroundPanRatio(0.0f, info);
+        rear = util::CalcSurroundPanRatio(2.0f, info);
+    }
+
+    return {front * left, front * right, rear * left, rear * right};
 }
 
 } // namespace
@@ -281,63 +337,11 @@ AxRenderer::PreMixVolume AxRenderer::CalcPreMixVolume(const MultiVoice& voice, c
     }
     else
     {
-        const PanInfo info = ntdlib::nwsnd::PanInfoOf(voice.PanCurve());
-        float left = 0.0f, right = 0.0f;
-        float front = 0.0f, rear = 0.0f;
-        if (mode == OutputMode::kMono)
-        {
-            left = util::CalcPanRatio(0.0f, info, OutputMode::kMono);
-            right = left;
-        }
-        else if (mode == OutputMode::kStereo || mode == OutputMode::kSurround)
-        {
-            if (voice.ChannelCount() > 1 && voice.PanMode() == 1)
-            {
-                // Balance: each channel keeps its side.
-                if (channel == 0)
-                {
-                    left = util::CalcPanRatio(param.pan, info, mode);
-                }
-                else if (channel == 1)
-                {
-                    right = util::CalcPanRatio(-param.pan, info, mode);
-                }
-            }
-            else
-            {
-                // Dual: a stereo wave's channels start at the sides and move with the pan.
-                float pan = param.pan;
-                if (voice.ChannelCount() == 2)
-                {
-                    if (channel == 0)
-                    {
-                        pan = pan - 1.0f;
-                    }
-                    else if (channel == 1)
-                    {
-                        pan = pan + 1.0f;
-                    }
-                }
-                left = util::CalcPanRatio(pan, info, mode);
-                right = util::CalcPanRatio(-pan, info, mode);
-            }
-        }
-
-        // Nothing here uses Dolby Pro Logic II output. It gets no gains at all: the game's code leaves them 0.
-        if (mode == OutputMode::kSurround)
-        {
-            front = util::CalcSurroundPanRatio(param.span, info);
-            rear = util::CalcSurroundPanRatio(2.0f - param.span, info);
-        }
-        else if (mode != OutputMode::kDpl2)
-        {
-            front = util::CalcSurroundPanRatio(0.0f, info);
-            rear = util::CalcSurroundPanRatio(2.0f, info);
-        }
-        rear_left = rear * left;
-        front_right = front * right;
-        front_left = front * left;
-        rear_right = rear * right;
+        const std::array<float, 4> panned = PannedGains(voice, param, channel, mode);
+        front_left = panned[0];
+        front_right = panned[1];
+        rear_left = panned[2];
+        rear_right = panned[3];
     }
 
     // The device's mode as the system reports it: a mono device gets the fronts' centre, a stereo one folds a surround

@@ -27,6 +27,7 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/agb/layout.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/krawall/commands.h"
@@ -38,40 +39,17 @@ namespace ntdlib::krawall
 
 using ntdlib::agb::Rom;
 
-// The largest ROM that the GBA maps: 32 MiB.
-inline constexpr uint32_t kLargestRom = 0x02000000;
+using agb::kFreeSpaceMargin;
+using agb::kLargestRom;
+using agb::Span;
 
-// The bytes that the free space and a filler run leave clear of the data before them: data that happens to end with the
-// run's byte. A filler run also ends this many bytes before its run's end.
-inline constexpr uint32_t kFreeSpaceMargin = 256;
+// The free space (FreeSpace::start) starts past the bytes past the ROM's end that the player reads, and past the bytes
+// of the run that it reads. An entry of the game's table of samples near the ROM's end can be there. It can be the
+// entry for one of an instrument's notes that no row plays, or for a note past the instrument's map.
+using agb::FreeSpace;
 
 // The least run of 0xFF or of zeros that FillerRuns takes: 4 KiB.
 inline constexpr uint32_t kLeastFillerRun = 0x1000;
-
-// `size` bytes of a ROM from `start`, counted from the ROM's start.
-struct Span
-{
-    friend bool operator==(const Span&, const Span&) = default;
-
-    uint32_t start = 0;
-    uint32_t size = 0;
-};
-
-// Where the sequences that move can go, besides the places of the sequences that move.
-struct FreeSpace
-{
-    friend bool operator==(const FreeSpace&, const FreeSpace&) = default;
-
-    // Where the free space at the ROM's end starts, from the ROM's start. It lies 256 bytes or more into the run of
-    // 0xFF or of zeros at the ROM's end, on a multiple of 256 bytes, and past every byte of that run that the player
-    // reads. Without such a run, it lies at the ROM's end, on a multiple of 4 bytes. It can lie past the ROM's end.
-    // It lies past the bytes past the ROM's end that the player reads, as it does the bytes of the run: an entry of
-    // the game's table of samples near the ROM's end can lie there. It can be the entry for one of an instrument's
-    // notes that no row plays, or for a note past the instrument's map.
-    uint32_t start = 0;
-    uint8_t padding = 0xFF;   // what fills the bytes that the ROM grows by, up to a sequence
-    std::vector<Span> filler; // FillerRuns
-};
 
 // How Join writes a ROM.
 struct JoinOptions

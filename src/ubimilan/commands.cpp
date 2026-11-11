@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/ubimilan/song.h"
 
 namespace ntdlib::ubimilan
@@ -87,7 +89,7 @@ Decoded DecodeSequence(std::span<const uint8_t> data)
             return false;
         }
 
-        decoded.sequence.items.push_back(WaitItem(uint16_t(data[at] | data[at + 1] << 8)));
+        decoded.sequence.items.push_back(WaitItem(xsflib::LoadLe16(&data[at])));
         at += 2;
         return true;
     };

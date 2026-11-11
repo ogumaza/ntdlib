@@ -231,11 +231,11 @@ private:
 class Engine
 {
 public:
-    static constexpr int kSubframesPerFrame = 7;
+    static constexpr int kSubframesPerFrame = static_cast<int>(Voices::kSubframes);
 
     // A loop of a track: its index, the command that its jump goes to, and whether the track started a note since
     // its last such jump or since it opened.
-    using LoopHook = std::function<void(uint32_t track, uint32_t target, bool played)>;
+    using LoopHook = Tracks::LoopHook;
 
     Engine(const SoundFiles& files, const Settings& settings);
     Engine(const Engine&) = delete;
@@ -318,12 +318,7 @@ public:
 
     // A DSP channel's place in its wave, for a length analysis: whether it plays a wave, whether the wave loops, and a
     // position that drops each time the wave passes back to its loop's start.
-    struct WavePlace
-    {
-        bool playing = false;
-        bool loops = false;
-        int64_t position = 0;
-    };
+    using WavePlace = jaudio2::WavePlace;
 
     WavePlace DspChannelPlace(uint32_t index) const;
 
@@ -332,6 +327,18 @@ private:
 
     // The game's answer to a track's request (PSGame's seqCpuSync).
     uint16_t Sync(uint32_t track, uint32_t value);
+
+    // The groups of requests that Sync answers. The levels of a child of the root track (kSyncLevels).
+    void SyncLevels(uint32_t track);
+
+    // The beat of a directed piece (kSyncBeat). Returns the answer.
+    uint16_t SyncBeat(bool directed);
+
+    // The set-up of the object of a root or a child track (kSyncRootInit and kSyncChildInit).
+    void SyncObjectInit(uint32_t track, uint32_t value, bool directed);
+
+    // The levels of an effect's slot track (kSyncSeLevels).
+    void SyncSeLevels(uint32_t track);
 
     // The start of the sequence for Start and StartEffect: the DSP and its FX lines, the banks, JAI's volume for the
     // sequence and the root track.

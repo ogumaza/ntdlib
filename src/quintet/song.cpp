@@ -42,50 +42,12 @@ std::string Format(const char* format, int a, int b = 0, int c = 0, int d = 0)
     return text;
 }
 
-} // namespace
-
-bool ReadSongHeader(const Rom& rom, uint32_t address, SongHeader& header)
+// Decodes the note at `address` of channel `channel` into `cmd`. Returns false if the byte there starts a command.
+bool DecodeNote(const Rom& rom, const DriverInfo& info, uint32_t address, int channel, Command& cmd)
 {
-    header = SongHeader();
-    header.address = address;
-    header.length = rom.U16(address) & ~1u;
-    if (header.length < kHeaderSize || !rom.Contains(address, header.length))
-    {
-        return false;
-    }
-
-    for (uint32_t c = 0; c < header.channels.size(); c++)
-    {
-        const uint32_t offset = rom.U16(address + 2 + 2 * c);
-        if (offset < kHeaderSize || offset >= header.length)
-        {
-            return false;
-        }
-
-        header.channels[c] = address + offset;
-    }
-
-    return true;
-}
-
-uint8_t CommandOfS(uint8_t command)
-{
-    static constexpr uint8_t kCommands[] = {0x0E, 0x0F, 0x1E, 0x1F, 0x2E, 0x2F, 0x3E, 0x3F, 0x4E, 0x4F, 0x5E, 0x5F,
-                                            0x6E, 0x6F, 0x7E, 0x7F, 0x8E, 0x8F, 0x9E, 0x9F, 0xAE, 0xAF, 0xBE, 0xBF,
-                                            0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9,
-                                            0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5,
-                                            0xF2, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF};
-    const size_t index = size_t(command - kFirstCommandS);
-    return command == 0xFF ? 0xFF : command >= kFirstCommandS && index < std::size(kCommands) ? kCommands[index] : 0xF2;
-}
-
-Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, int channel)
-{
-    Command cmd;
     const bool byte_notes = TraitsOf(info.revision).byte_notes;
     const uint8_t first = rom.U8(address);
     const int arg = rom.U8(address + 1);
-    const int sarg = int8_t(arg);
     const bool pcm = channel >= kPcmA;
 
     // A note: the low nibble is the pitch, 12 to play again or 13 to rest, and the high nibble picks the length. In the
@@ -121,42 +83,18 @@ Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, 
             cmd.text = "rest, " + len;
         }
 
-        return cmd;
+        return true;
     }
 
-    // The S revision's command that skips a byte. Its other commands are the A revision's under other numbers.
-    if (byte_notes && first == kSkipByteS)
-    {
-        cmd.size = 2;
-        cmd.command = CommandOfS(first);
-        cmd.text = "nothing: skips a byte";
-        return cmd;
-    }
+    return false;
+}
 
-    const uint8_t b = byte_notes ? CommandOfS(first) : first;
-    cmd.command = b;
-
-    // The commands with arguments.
-    struct Argument
-    {
-        uint8_t command;
-        uint32_t size;
-    };
-
-    static constexpr Argument kSizes[] = {
-        {0x0E, 2}, {0x1F, 2}, {0x2E, 2}, {0x2F, 2}, {0x3E, 2}, {0x4F, 2}, {0x5E, 2}, {0x7F, 2}, {0x8E, 2}, {0x8F, 2},
-        {0x9E, 2}, {0x9F, 2}, {0xAE, 2}, {0xAF, 2}, {0xBE, 2}, {0xCE, 2}, {0xCF, 2}, {0xD0, 3}, {0xD2, 6}, {0xD5, 2},
-        {0xD7, 2}, {0xDA, 2}, {0xDB, 2}, {0xDC, 2}, {0xDD, 2}, {0xDE, 4}, {0xDF, 4}, {0xE2, 6}, {0xE4, 2}, {0xE5, 2},
-        {0xE6, 3}, {0xE7, 4}, {0xE8, 2}, {0xE9, 2}, {0xEA, 2}, {0xEC, 2}, {0xED, 2}, {0xF1, 2}};
-    for (const Argument& a : kSizes)
-    {
-        if (a.command == b)
-        {
-            cmd.size = a.size;
-        }
-    }
-
-    cmd.end = b == 0xFF;
+// Sets the text of `cmd`, the command `b` at `address` of channel `channel`.
+void DescribeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, int channel, uint8_t b, Command& cmd)
+{
+    const int arg = rom.U8(address + 1);
+    const int sarg = int8_t(arg);
+    const bool pcm = channel >= kPcmA;
 
     auto at = [&](uint32_t i)
     {
@@ -362,6 +300,175 @@ Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, 
         cmd.text = "nothing";
         break;
     }
+}
+
+// Adds the listing of channel `c`, whose data starts at `start`, to `text`: each command as the driver plays it, up to
+// the end of the channel or its loop.
+void ListChannel(const Rom& rom, const DriverInfo& info, int c, uint32_t start, std::string& text)
+{
+    char line[320];
+    const bool byte_notes = TraitsOf(info.revision).byte_notes;
+    uint32_t address = start;
+    uint64_t tick = 0;
+    uint32_t dot_ticks = 0;                        // the length of the note just before, which a dot adds half of
+    int tie_note = -1;                             // the first byte of the note just before: D4 can tie to it
+    std::vector<std::pair<uint32_t, int>> repeats; // each open repeat's start and the passes left
+    for (int n = 0; n < kMaxListedCommands; n++)
+    {
+        // A dot or a tie only counts right after a note.
+        // D4 ties a note of the same pitch: the same first byte in the S revision.
+        Command cmd = DecodeCommand(rom, info, address, c);
+        const uint8_t b = cmd.command;
+        const uint8_t next = rom.U8(address + 1);
+        const bool tie = b == 0xD4 && tie_note >= 0 &&
+                         (byte_notes ? next == tie_note : (next & 15) == (tie_note & 15) && (next >> 4) <= 12);
+        if (b == 0xD1 && dot_ticks == 0)
+        {
+            cmd.text = "nothing: a dot that doesn't follow a note";
+        }
+        else if (b == 0xD4)
+        {
+            cmd.text = tie ? "tie: the next note adds to this one" : "slide into the next note";
+        }
+
+        const std::string bytes = HexBytes(rom, address, cmd.size);
+        std::snprintf(line, sizeof line, "0x%08X %8llu  %-18s %s\n", unsigned(address),
+                      static_cast<unsigned long long>(tick), bytes.c_str(), cmd.text.c_str());
+        text += line;
+        if (cmd.end)
+        {
+            break;
+        }
+
+        // Follow the channel as the driver does: notes take up time, a dot after a note adds half of it again, and
+        // a repeat goes back to its start until its passes run out.
+        address += cmd.size;
+        if (cmd.note)
+        {
+            tick += cmd.ticks;
+            dot_ticks = cmd.ticks;
+            tie_note = rom.U8(address - cmd.size);
+            continue;
+        }
+        if (b == 0xD1 && dot_ticks)
+        {
+            tick += dot_ticks / 2;
+            dot_ticks = 0;
+            continue;
+        }
+        if (tie)
+        {
+            dot_ticks = 0;
+            continue;
+        }
+
+        dot_ticks = 0;
+        tie_note = -1;
+        if (b == 0xD6 && repeats.size() < kMaxRepeatDepth)
+        {
+            repeats.emplace_back(address, 0);
+        }
+        else if (b == 0xD7 && !repeats.empty())
+        {
+            int& left = repeats.back().second;
+            if (left == 0)
+            {
+                left = rom.U8(address - 1) ? rom.U8(address - 1) : 256;
+            }
+            if (--left > 0)
+            {
+                address = repeats.back().first;
+            }
+            else
+            {
+                repeats.pop_back();
+            }
+        }
+    }
+}
+
+} // namespace
+
+bool ReadSongHeader(const Rom& rom, uint32_t address, SongHeader& header)
+{
+    header = SongHeader();
+    header.address = address;
+    header.length = rom.U16(address) & ~1u;
+    if (header.length < kHeaderSize || !rom.Contains(address, header.length))
+    {
+        return false;
+    }
+
+    for (uint32_t c = 0; c < header.channels.size(); c++)
+    {
+        const uint32_t offset = rom.U16(address + 2 + 2 * c);
+        if (offset < kHeaderSize || offset >= header.length)
+        {
+            return false;
+        }
+
+        header.channels[c] = address + offset;
+    }
+
+    return true;
+}
+
+uint8_t CommandOfS(uint8_t command)
+{
+    static constexpr uint8_t kCommands[] = {0x0E, 0x0F, 0x1E, 0x1F, 0x2E, 0x2F, 0x3E, 0x3F, 0x4E, 0x4F, 0x5E, 0x5F,
+                                            0x6E, 0x6F, 0x7E, 0x7F, 0x8E, 0x8F, 0x9E, 0x9F, 0xAE, 0xAF, 0xBE, 0xBF,
+                                            0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9,
+                                            0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5,
+                                            0xF2, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF};
+    const size_t index = size_t(command - kFirstCommandS);
+    return command == 0xFF ? 0xFF : command >= kFirstCommandS && index < std::size(kCommands) ? kCommands[index] : 0xF2;
+}
+
+Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, int channel)
+{
+    Command cmd;
+    if (DecodeNote(rom, info, address, channel, cmd))
+    {
+        return cmd;
+    }
+
+    const bool byte_notes = TraitsOf(info.revision).byte_notes;
+    const uint8_t first = rom.U8(address);
+
+    // The S revision's command that skips a byte. Its other commands are the A revision's under other numbers.
+    if (byte_notes && first == kSkipByteS)
+    {
+        cmd.size = 2;
+        cmd.command = CommandOfS(first);
+        cmd.text = "nothing: skips a byte";
+        return cmd;
+    }
+
+    const uint8_t b = byte_notes ? CommandOfS(first) : first;
+    cmd.command = b;
+
+    // The commands with arguments.
+    struct Argument
+    {
+        uint8_t command;
+        uint32_t size;
+    };
+
+    static constexpr Argument kSizes[] = {
+        {0x0E, 2}, {0x1F, 2}, {0x2E, 2}, {0x2F, 2}, {0x3E, 2}, {0x4F, 2}, {0x5E, 2}, {0x7F, 2}, {0x8E, 2}, {0x8F, 2},
+        {0x9E, 2}, {0x9F, 2}, {0xAE, 2}, {0xAF, 2}, {0xBE, 2}, {0xCE, 2}, {0xCF, 2}, {0xD0, 3}, {0xD2, 6}, {0xD5, 2},
+        {0xD7, 2}, {0xDA, 2}, {0xDB, 2}, {0xDC, 2}, {0xDD, 2}, {0xDE, 4}, {0xDF, 4}, {0xE2, 6}, {0xE4, 2}, {0xE5, 2},
+        {0xE6, 3}, {0xE7, 4}, {0xE8, 2}, {0xE9, 2}, {0xEA, 2}, {0xEC, 2}, {0xED, 2}, {0xF1, 2}};
+    for (const Argument& a : kSizes)
+    {
+        if (a.command == b)
+        {
+            cmd.size = a.size;
+        }
+    }
+
+    cmd.end = b == 0xFF;
+    DescribeCommand(rom, info, address, channel, b, cmd);
 
     return cmd;
 }
@@ -378,7 +485,6 @@ bool DumpSong(const Rom& rom, const DriverInfo& info, int song, const std::strin
 
     std::string text;
     char line[320];
-    const bool byte_notes = TraitsOf(info.revision).byte_notes;
     const int effect = EffectIndex(info, song);
     const std::string name = effect >= 0 ? "song " + std::to_string(song) + ", sound effect " + std::to_string(effect)
                                          : "song " + std::to_string(song);
@@ -395,83 +501,7 @@ bool DumpSong(const Rom& rom, const DriverInfo& info, int song, const std::strin
                       unsigned(h.channels[size_t(c)]));
         text += line;
 
-        uint32_t address = h.channels[size_t(c)];
-        uint64_t tick = 0;
-        uint32_t dot_ticks = 0;                        // the length of the note just before, which a dot adds half of
-        int tie_note = -1;                             // the first byte of the note just before: D4 can tie to it
-        std::vector<std::pair<uint32_t, int>> repeats; // each open repeat's start and the passes left
-        for (int n = 0; n < kMaxListedCommands; n++)
-        {
-            // A dot or a tie only counts right after a note.
-            // D4 ties a note of the same pitch: the same first byte in the S revision.
-            Command cmd = DecodeCommand(rom, info, address, c);
-            const uint8_t b = cmd.command;
-            const uint8_t next = rom.U8(address + 1);
-            const bool tie = b == 0xD4 && tie_note >= 0 &&
-                             (byte_notes ? next == tie_note : (next & 15) == (tie_note & 15) && (next >> 4) <= 12);
-            if (b == 0xD1 && dot_ticks == 0)
-            {
-                cmd.text = "nothing: a dot that doesn't follow a note";
-            }
-            else if (b == 0xD4)
-            {
-                cmd.text = tie ? "tie: the next note adds to this one" : "slide into the next note";
-            }
-
-            const std::string bytes = HexBytes(rom, address, cmd.size);
-            std::snprintf(line, sizeof line, "0x%08X %8llu  %-18s %s\n", unsigned(address),
-                          static_cast<unsigned long long>(tick), bytes.c_str(), cmd.text.c_str());
-            text += line;
-            if (cmd.end)
-            {
-                break;
-            }
-
-            // Follow the channel as the driver does: notes take up time, a dot after a note adds half of it again, and
-            // a repeat goes back to its start until its passes run out.
-            address += cmd.size;
-            if (cmd.note)
-            {
-                tick += cmd.ticks;
-                dot_ticks = cmd.ticks;
-                tie_note = rom.U8(address - cmd.size);
-                continue;
-            }
-            if (b == 0xD1 && dot_ticks)
-            {
-                tick += dot_ticks / 2;
-                dot_ticks = 0;
-                continue;
-            }
-            if (tie)
-            {
-                dot_ticks = 0;
-                continue;
-            }
-
-            dot_ticks = 0;
-            tie_note = -1;
-            if (b == 0xD6 && repeats.size() < kMaxRepeatDepth)
-            {
-                repeats.emplace_back(address, 0);
-            }
-            else if (b == 0xD7 && !repeats.empty())
-            {
-                int& left = repeats.back().second;
-                if (left == 0)
-                {
-                    left = rom.U8(address - 1) ? rom.U8(address - 1) : 256;
-                }
-                if (--left > 0)
-                {
-                    address = repeats.back().first;
-                }
-                else
-                {
-                    repeats.pop_back();
-                }
-            }
-        }
+        ListChannel(rom, info, c, h.channels[size_t(c)], text);
     }
 
     return WriteTextFile(path, text, error);

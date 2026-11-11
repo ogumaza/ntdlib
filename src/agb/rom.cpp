@@ -19,8 +19,8 @@
 #include "xsflib/bytes.h"
 #include "xsflib/psf/psf.h"
 
-#include "agb/inflate.h"
 #include "ntdlib/agb/files.h"
+#include "ntdlib/inflate.h"
 
 namespace ntdlib::agb
 {

@@ -18,6 +18,7 @@
 #include "enhanced_mix.h"
 #include "ntdlib/agb/apu.h"
 #include "ntdlib/agb/gba.h"
+#include "ntdlib/agb/output_peaks.h"
 #include "ntdlib/rd1/sequencer.h"
 #include "table_bytes.h"
 
@@ -451,26 +452,7 @@ void ArchivePlayer::Frame(std::vector<int16_t>* out, std::vector<float>* enhance
         mixed_.erase(mixed_.begin());
     }
 
-    const auto keep = [this](size_t i, int32_t value)
-    {
-        int32_t& peak = output_peaks_[i % 2];
-        peak = std::max(peak, std::abs(value));
-    };
-
-    if (out)
-    {
-        for (size_t i = first_sample; i < out->size(); i++)
-        {
-            keep(i - first_sample, (*out)[i]);
-        }
-    }
-    else
-    {
-        for (size_t i = first_sample; i < enhanced_out->size(); i++)
-        {
-            keep(i - first_sample, int32_t(std::lround(double((*enhanced_out)[i]) * 32768.0)));
-        }
-    }
+    agb::KeepOutputPeaks(output_peaks_, out, enhanced_out, first_sample);
 }
 
 ArchivePlayer::TrackParts ArchivePlayer::EnhancedParts() const

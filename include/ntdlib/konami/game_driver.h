@@ -157,6 +157,21 @@ private:
     // DMA's interrupt routine runs. Appends the bytes that the DMA takes to `out`.
     void TickFifo(int index, std::vector<int8_t>& out);
 
+    // Mixes a frame for a revision without a mixer. The frame's stores reset and fill the FIFOs, and the timer of
+    // each FIFO plays its samples.
+    void MixFifos(std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b);
+
+    // Applies the frame's resets of the FIFOs and stores to them.
+    void ApplyFifoWrites();
+
+    // Plays FIFO `index` for a frame, and records the changes of its timer's period. Appends the bytes that its DMA
+    // takes to `out`.
+    void RunFifo(int index, std::vector<int8_t>& out);
+
+    // Mixes a frame for a ring mixer. Moves the ring's position on for each of `blocks` blocks, and reads the ring up
+    // to it.
+    void MixRing(uint32_t blocks, std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b);
+
     GameRoutines routines_;
     agb::System system_;
     bool recording_ = true;

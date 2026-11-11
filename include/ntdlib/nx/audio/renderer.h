@@ -10,10 +10,11 @@
 // reverb or a light limiter runs in the renderer. A voice's splitter follows the build in Skyward Sword HD's sdk
 // (NintendoSDK 11.4.0, REV8). With splitters in use, that renderer orders the mixes by a topological sort
 // (MixContext::TsortInfo). The model keeps the order by distance from the final mix. Not modelled yet: the renderer's
-// I3DL2 reverb, compressor and other effects, a sub-mix's splitter, the topological order, voice dropping, the
-// downmix, and the exchange of a 6-channel effect's buffers 2 and 3 with 4 and 5 before REV11. That exchange leaves the
-// front left and right as they are. A renderer at 32 kHz feeds its device sink through the upsampler to 48 kHz
-// (UpsampleFrame).
+// I3DL2 reverb, compressor and other effects, a sub-mix's splitter, the topological order, voice dropping, a device
+// sink's downmix to 2 channels (SetDownMixParameter), and the exchange of a 6-channel effect's buffers 2 and 3 with 4
+// and 5 before REV11. That exchange leaves the front left and right as they are. A renderer at 32 kHz feeds its device
+// sink through the upsampler to 48 kHz (UpsampleFrame). For a stereo output, the system mixes the device sink's 6
+// channels down to 2 after the renderer (downmix.h).
 
 #pragma once
 
@@ -21,6 +22,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -717,17 +719,32 @@ private:
     int32_t ReadAuxSend(int aux, std::span<int32_t> samples);
     int32_t WriteAuxReturn(int aux, std::span<const int32_t> samples);
 
+    // The update: each voice's parameters and wave buffers, the splitters and the effects.
     void Update();
+    void UpdateVoice(Voice& voice, int slot);
+    void TakeWaveBuffers(Voice& voice);
+    void MuteAtOnce(Voice& voice);
+    void ReportStatuses(Voice& voice);
+
     void Generate();
     void GenerateWithoutMixing();
     void LayOutMixes();
-    void RenderVoice(Voice& voice);
 
-    // The destinations of a voice's channel, as the renderer has them: the destination and its mix, for each one in
-    // use that has a mix in use (CommandGenerator::GenerateVoiceCommand, 0x5cd3c). For the depop, every channel's
-    // destinations (GenerateDataSourceCommand, 0x5c0c0).
-    std::vector<std::pair<SplitterDestination*, const Mix*>> SplitterMixes(const Voice::Server& server, int channel);
-    std::vector<std::pair<SplitterDestination*, const Mix*>> SplitterDepopMixes(const Voice::Server& server);
+    // A voice's commands: a new voice's start, the play state, then the processing in the console's mode, the enhanced
+    // mode or a frame without mixing.
+    void RenderVoice(Voice& voice);
+    void StartNewVoice(Voice& voice);
+    bool UpdatePlayState(Voice& voice);
+    void RenderVoiceConsole(Voice& voice, const Mix* destination);
+    void LeaveToDepop(const Voice::Server& server, VoiceState& state, const Mix* destination);
+    DecodeFromWaveBuffersArgs DecodeArgs(const Voice& voice, VoiceState& state, int channel, int32_t* out) const;
+
+    // The destinations of a voice's splitter, as the renderer has them: the destination and its mix, for each one in
+    // use that has a mix in use. Channel c takes those from place c, the voice's channel count apart
+    // (CommandGenerator::GenerateVoiceCommand, 0x5cd3c). The depop takes every channel's destinations, from place 0, 1
+    // apart (GenerateDataSourceCommand, 0x5c0c0).
+    std::vector<std::pair<SplitterDestination*, const Mix*>> SplitterMixes(const Voice::Server& server, int first,
+                                                                           int step);
 
     // The client's destination of a splitter's channel (SplitterInfo::GetDestinationData, 0x45d10), and the
     // renderer's destination `index` places down a splitter's list, or -1 (SplitterContext::GetDestinationData,
@@ -746,6 +763,13 @@ private:
                          const std::array<float, kMaxMixBuffers>& to);
     void RenderVoiceEnhanced(Voice& voice, const Mix* destination);
     void AdvanceVoice(Voice& voice, const Mix* destination);
+
+    // Copies the volume and the mute of a voice, and whether each biquad is on, for the next frame to start from.
+    static void KeepFrameValues(Voice::Server& server);
+
+    // Where the output of a metered voice to buffer `buffer` of mix `mix` goes in the meter sums: the index of the
+    // first sample, or none.
+    std::optional<std::size_t> MeterSum(const Voice::Server& server, int mix, int buffer) const;
     void AddToMeter(const Voice::Server& server, int mix, int buffer, const int32_t* work, int32_t start, int32_t end);
     void AddToMeterEnhanced(const Voice::Server& server, int buffer, const float* work, float start, float end);
     void RenderSubMix(int id);
@@ -760,12 +784,25 @@ private:
     void UpdateRendererEffects();
     void RenderDelay(const Mix& mix, Delay& delay);
     void RenderReverb(const Mix& mix, Reverb& reverb);
-
-    // The reverb that a setter changes, with its state at 1 unless it's 0.
-    Reverb& ChangeReverb(int reverb);
     void RenderLightLimiter(const Mix& mix, LightLimiter& limiter);
     void StartRendererEffects();
     void FinishRendererEffects();
+    static void PrepareCommand(Delay& delay);
+    static void PrepareCommand(Reverb& reverb);
+    static void PrepareCommand(LightLimiter& limiter);
+
+    // Whether the command of a delay, a reverb or a light limiter runs on `mix`: an update has taken the effect, its
+    // channel count is 1, 2, 4 or 6, and its buffers are all among the mix buffers. RenderCommand runs the command.
+    // `apply` does the processing.
+    template <typename EffectType>
+    bool CommandRuns(const Mix& mix, const EffectType& effect) const;
+
+    template <typename EffectType, typename Apply>
+    void RenderCommand(const Mix& mix, EffectType& effect, Apply apply);
+
+    // The delay or the reverb that a setter changes, with its state at 1 unless it's 0.
+    Delay& ChangeDelay(int delay);
+    Reverb& ChangeReverb(int reverb);
 
     // An effect's channels take inputs[k] to outputs[k] of the mix's buffers. A command whose buffers aren't all among
     // the mix buffers doesn't run. PassThrough copies each input to its output where they differ. TakeEffectBuffers

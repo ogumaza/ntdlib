@@ -24,50 +24,6 @@ namespace ntdlib::rsar
 {
 namespace detail
 {
-namespace
-{
-
-constexpr uint32_t kFrameNibbles = 16;
-constexpr uint32_t kFrameSamples = 14;
-constexpr uint32_t kMaxRate = 0xFFFFFF;
-
-// The DSP address of sample `sample` in `encoding`: a nibble's for DSP-ADPCM, past the two of each frame's header.
-uint32_t AddressOf(uint32_t sample, WaveEncoding encoding)
-{
-    if (encoding != WaveEncoding::kDspAdpcm)
-    {
-        return sample;
-    }
-
-    return sample / kFrameSamples * kFrameNibbles + sample % kFrameSamples + 2;
-}
-
-// The sample at DSP address `address` (formats.cpp's SampleAt).
-uint32_t SampleAt(uint32_t address, WaveEncoding encoding)
-{
-    if (encoding != WaveEncoding::kDspAdpcm)
-    {
-        return address;
-    }
-
-    return address / kFrameNibbles * kFrameSamples + std::max(address % kFrameNibbles, 2u) - 2;
-}
-
-// The bytes that `length` samples take in `encoding`: whole frames of 8 bytes for DSP-ADPCM.
-std::size_t SamplesSize(WaveEncoding encoding, uint32_t length)
-{
-    switch (encoding)
-    {
-    case WaveEncoding::kDspAdpcm:
-        return (std::size_t{length} + kFrameSamples - 1) / kFrameSamples * 8;
-    case WaveEncoding::kPcm16:
-        return std::size_t{length} * 2;
-    default:
-        return length;
-    }
-}
-
-} // namespace
 
 std::size_t LastSamplesEnd(std::span<const uint8_t> bytes, std::size_t start, std::size_t stop, const WaveFile& wave)
 {
@@ -94,7 +50,7 @@ void PutWaveInfo(sar::detail::Out& out, std::size_t at, const WaveFile& wave, ui
     {
         throw std::invalid_argument("a wave holds " + std::to_string(channels) + " channels");
     }
-    if (wave.sample_rate > kMaxRate)
+    if (wave.sample_rate > kMostRate)
     {
         throw std::invalid_argument("a wave's rate passes 24 bits");
     }
@@ -108,8 +64,7 @@ void PutWaveInfo(sar::detail::Out& out, std::size_t at, const WaveFile& wave, ui
     out.U8(at, static_cast<uint8_t>(wave.encoding));
     out.U8(at + 1, wave.loop ? 1 : 0);
     out.U8(at + 2, static_cast<uint8_t>(channels));
-    out.U8(at + 3, static_cast<uint8_t>(wave.sample_rate >> 16));
-    out.U16(at + 4, static_cast<uint16_t>(wave.sample_rate));
+    WriteRate(out, at + 3, wave.sample_rate);
     out.U32(at + 8, AddressOf(wave.loop_start, wave.encoding));
     out.U32(at + 0xC, AddressOf(wave.loop_end - 1, wave.encoding));
     out.U32(at + 0x10, static_cast<uint32_t>(kWaveInfoSize));
@@ -140,18 +95,7 @@ void PutWaveInfo(sar::detail::Out& out, std::size_t at, const WaveFile& wave, ui
 
         const std::size_t a = adpcm_infos + c * kAdpcmInfoSize;
         out.U32(at + info + 4, static_cast<uint32_t>(a));
-        const DspAdpcmInfo& d = *channel.adpcm;
-        for (std::size_t k = 0; k < d.coefs.size(); ++k)
-        {
-            out.U16(at + a + k * 2, static_cast<uint16_t>(d.coefs[k]));
-        }
-        out.U16(at + a + 0x20, d.gain);
-        out.U16(at + a + 0x22, d.pred_scale);
-        out.U16(at + a + 0x24, static_cast<uint16_t>(d.yn1));
-        out.U16(at + a + 0x26, static_cast<uint16_t>(d.yn2));
-        out.U16(at + a + 0x28, d.loop_pred_scale);
-        out.U16(at + a + 0x2A, static_cast<uint16_t>(d.loop_yn1));
-        out.U16(at + a + 0x2C, static_cast<uint16_t>(d.loop_yn2));
+        WriteDspAdpcm(out, at + a, *channel.adpcm);
     }
 }
 
@@ -168,7 +112,7 @@ ReadInfo ReadWaveInfo(const xsflib::Reader& r, std::size_t offset)
     wave.encoding = static_cast<WaveEncoding>(encoding);
     wave.loop = r.U8(offset + 1) != 0;
     const uint8_t channels = r.U8(offset + 2);
-    wave.sample_rate = static_cast<uint32_t>(r.U8(offset + 3)) << 16 | r.U16(offset + 4);
+    wave.sample_rate = ReadRate(r, offset + 3);
     wave.loop_start = SampleAt(r.U32(offset + 8), wave.encoding);
     wave.loop_end = SampleAt(r.U32(offset + 0xC), wave.encoding) + 1;
     read.place = r.U32(offset + 0x14);
@@ -190,19 +134,7 @@ ReadInfo ReadWaveInfo(const xsflib::Reader& r, std::size_t offset)
             continue;
         }
 
-        const std::size_t a = offset + adpcm;
-        DspAdpcmInfo& d = channel.adpcm.emplace();
-        for (std::size_t k = 0; k < d.coefs.size(); ++k)
-        {
-            d.coefs[k] = r.S16(a + k * 2);
-        }
-        d.gain = r.U16(a + 0x20);
-        d.pred_scale = r.U16(a + 0x22);
-        d.yn1 = r.S16(a + 0x24);
-        d.yn2 = r.S16(a + 0x26);
-        d.loop_pred_scale = r.U16(a + 0x28);
-        d.loop_yn1 = r.S16(a + 0x2A);
-        d.loop_yn2 = r.S16(a + 0x2C);
+        channel.adpcm = ReadDspAdpcm(r, offset + adpcm);
     }
 
     return read;
@@ -273,6 +205,28 @@ RawWaves LayRawWaves(std::span<const WaveFile> waves)
     raw.wave_data = out.Take();
 
     return raw;
+}
+
+std::vector<WaveFile> ReadArchivedWaves(std::span<const uint8_t> wave_data)
+{
+    std::vector<WaveFile> waves;
+    for (const std::vector<uint8_t>& rwav : WaveArchiveFile::Read(wave_data).waves)
+    {
+        waves.push_back(WaveFile::Read(rwav));
+    }
+
+    return waves;
+}
+
+std::vector<uint8_t> ArchiveWaves(std::span<const WaveFile> waves)
+{
+    WaveArchiveFile archive;
+    for (const WaveFile& wave : waves)
+    {
+        archive.waves.push_back(wave.Write());
+    }
+
+    return archive.Write();
 }
 
 } // namespace detail

@@ -2,15 +2,18 @@
 
 #include "ntdlib/sequence_export/frame.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <regex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -133,6 +136,81 @@ std::pair<uint8_t, int64_t> ParseAssignment(const std::string& option, const std
     }
 
     return {static_cast<uint8_t>(assignment->index), assignment->value};
+}
+
+std::vector<Sequence> MatchingSequences(std::vector<Sequence> sequences, const std::regex& only)
+{
+    std::vector<Sequence> selected;
+    const auto matches = [&only](const std::string& text)
+    {
+        return std::regex_search(text, only);
+    };
+    for (Sequence& sequence : sequences)
+    {
+        if (matches(sequence.name) || std::ranges::any_of(sequence.labels, matches))
+        {
+            selected.push_back(std::move(sequence));
+        }
+    }
+
+    return selected;
+}
+
+void ListSequences(const std::string& name, const std::vector<Sequence>& selected, bool several)
+{
+    if (several)
+    {
+        std::printf("%s:\n", name.c_str());
+    }
+    for (const Sequence& sequence : selected)
+    {
+        std::printf("%s%s\n", several ? "  " : "", sequence.name.c_str());
+    }
+}
+
+fs::path FolderPath(fs::path input)
+{
+    // A folder's path may end in a separator, "." or "..". Its name and its output folder come from the folder
+    // itself. canonical() names the folder that the system opens. macOS resolves a ".." after a symbolic link from
+    // the link's target. lexically_normal() would give the folder that contains the link. Windows removes a ".."
+    // and the name before it from the path. So does lexically_normal(). Some file systems on Windows can't give
+    // canonical() a path. lexically_normal() then names the same folder.
+    if (!input.has_filename())
+    {
+        input = input.parent_path();
+    }
+    if (input.filename() == "." || input.filename() == "..")
+    {
+        std::error_code error;
+        std::filesystem::path resolved = std::filesystem::canonical(input, error);
+        if (error)
+        {
+            resolved = std::filesystem::absolute(input, error).lexically_normal();
+        }
+        input = std::move(resolved);
+        if (!input.has_filename())
+        {
+            input = input.parent_path();
+        }
+    }
+
+    return input;
+}
+
+void CheckOutputFolder(const fs::path& out_dir, const std::vector<std::pair<fs::path, std::string>>& used_folders)
+{
+    // Input names differing only in extension produce the same output directory. Whether case differences collide too
+    // depends on the filesystem. Before writing anything, use the filesystem to check whether the directory already
+    // belongs to an earlier input.
+    for (const auto& [folder, earlier] : used_folders)
+    {
+        std::error_code ignored; // no existing directory to compare
+        if (std::filesystem::equivalent(out_dir, folder, ignored))
+        {
+            throw std::runtime_error("not converted: output would overwrite files from " + earlier + " in " +
+                                     Utf8(out_dir));
+        }
+    }
 }
 
 } // namespace ntdlib::sequence_export

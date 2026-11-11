@@ -19,6 +19,7 @@
 #include <variant>
 #include <vector>
 
+#include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio1/calc.h"
 #include "ntdlib/jaudio1/oscillator.h"
 #include "ntdlib/jaudio2/instruments.h"
@@ -49,6 +50,10 @@ struct InstParam
     bool percussion = false; // a drum's wave plays at its rate whatever the key
     uint16_t release = 0;    // a direct release for the first oscillator, or 0 for none
 };
+
+// JASInstSense's curve (the C JAudio's Bank_SenseToOfs): the factor at key or velocity `x` of a curve from `low` at 0,
+// through 1 at `center`, to `high` at 127. A center of 0 or 127 gives a straight line from `low` to `high`.
+float SenseCurve(float low, float high, uint32_t center, uint32_t x);
 
 // An instrument bank (JASBasicBank) of version 0, as JASBNKParser::createBasicBank builds it.
 class InstrumentBank
@@ -88,63 +93,18 @@ public:
     bool HasProgram(uint32_t program) const;
 
 private:
-    struct Effect
-    {
-        bool random = false;
-        uint32_t target = 0;
-        float base = 1.0f; // JASInstRand
-        float width = 0.0f;
-        uint8_t trigger = 0; // JASInstSense: 1 velocity, 2 key
-        uint8_t center = 60;
-        float low = 1.0f;
-        float high = 1.0f;
-    };
-
-    struct VelocityRegion
-    {
-        int32_t high_velocity = 0;
-        uint32_t wave_id = 0;
-        float volume = 1.0f;
-        float pitch = 1.0f;
-    };
-
-    struct KeyRegion
-    {
-        int32_t high_key = 0;
-        std::vector<VelocityRegion> velocities;
-    };
-
-    struct Instrument
-    {
-        float volume = 1.0f;
-        float pitch = 1.0f;
-        std::array<const OscData*, 2> oscillators{};
-        std::vector<Effect> effects;
-        std::vector<KeyRegion> keys;
-    };
-
-    struct Drum
-    {
-        float volume = 1.0f;
-        float pitch = 1.0f;
-        float pan = 0.5f;
-        uint16_t release = 1000;
-        std::vector<Effect> effects;
-        std::vector<VelocityRegion> velocities;
-    };
-
-    struct DrumSet
-    {
-        std::array<std::optional<Drum>, 128> keys;
-    };
-
-    using Program = std::variant<std::monostate, Instrument, DrumSet>;
+    using Programs = jaudio2::BankPrograms<OscData, int32_t>;
+    using Effect = jaudio2::BankEffect;
+    using VelocityRegion = Programs::VelocityRegion;
+    using KeyRegion = Programs::KeyRegion;
+    using Instrument = Programs::Instrument;
+    using Drum = Programs::Drum;
+    using DrumSet = Programs::DrumSet;
+    using Program = Programs::Program;
 
     // The effect's value for the note, and its change to the note's levels.
     static void ApplyEffect(const Effect& effect, uint32_t key, uint32_t velocity, InstParam& param,
                             RandomFast& random);
-
-    static const VelocityRegion* FindVelocity(std::span<const VelocityRegion> regions, uint32_t velocity);
 
     uint32_t number_ = 0;
     std::vector<std::unique_ptr<std::vector<OscPoint>>> tables_;

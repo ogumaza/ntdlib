@@ -14,6 +14,7 @@
 
 #include "ntdlib/aarch64.h"
 #include "nx/audio/arithmetic.h"
+#include "nx/audio/effect_channels.h"
 
 namespace ntdlib::nx::audio
 {
@@ -45,11 +46,6 @@ constexpr double kC2 = std::bit_cast<double>(uint64_t{0x3F962E42FF0C52D6});
 // The range beyond which expf overflows (88.72...) and underflows (-103.97...).
 constexpr uint32_t kOverflowBits = 0x42B17217;
 constexpr uint32_t kUnderflowBits = 0xC2CFF1B4;
-
-bool Processes(int channels)
-{
-    return channels == 1 || channels == 2 || channels == 4 || channels == 6;
-}
 
 // The reciprocal of the envelope: the processor's estimate, refined twice by Newton's method unless the processing
 // mode leaves it as it is.
@@ -148,15 +144,7 @@ void InitializeLightLimiter(const LightLimiterParameter& parameter, LightLimiter
 void PassLightLimiter(const LightLimiterParameter& parameter, std::span<const int32_t* const> inputs,
                       std::span<int32_t* const> outputs, int count)
 {
-    const auto channels =
-        std::min({static_cast<std::size_t>(std::max(parameter.channel_count, 0)), inputs.size(), outputs.size()});
-    for (std::size_t k = 0; k < channels; ++k)
-    {
-        if (inputs[k] != outputs[k])
-        {
-            std::copy(inputs[k], inputs[k] + count, outputs[k]);
-        }
-    }
+    PassChannels(parameter.channel_count, inputs, outputs, count);
 }
 
 void ApplyLightLimiter(const LightLimiterParameter& parameter, LightLimiterState& state,
@@ -167,7 +155,7 @@ void ApplyLightLimiter(const LightLimiterParameter& parameter, LightLimiterState
     {
         return;
     }
-    if (!Processes(channels))
+    if (!ProcessesChannels(channels))
     {
         PassLightLimiter(parameter, inputs, outputs, count);
         return;

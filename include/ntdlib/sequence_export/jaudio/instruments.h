@@ -104,6 +104,12 @@ struct PresetZone
     EnvelopeCurve envelope;
 };
 
+// The volume of zone `z` in decibels, with -144 dB for a volume of 0.
+double ZoneVolumeDb(const PresetZone& z);
+
+// The tuning of zone `z` in whole cents, within 12,000 cents either way.
+int ZoneCents(const PresetZone& z);
+
 // The zones of `program` in `bank`, whose waves are in `archive`, played with `volume_override` and `pitch_override` in
 // place of the instrument's oscillators (nullptr for none), with the track's `direct_release` (0 for none) and with the
 // game's `default_release` (TraceEnvelope). A drum plays its wave at its rate whatever the key: its zone's root key is

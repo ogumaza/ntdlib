@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
@@ -155,6 +156,28 @@ std::vector<std::string> WaveArchiveNames(std::span<const uint8_t> baa, const Ba
 // The archive's wave systems ("ws  "), in the order of their commands, each with the number that its command gives.
 // Reads nothing else of the archive. Throws FormatError.
 std::vector<WaveSystem> ReadWaveSystems(std::span<const uint8_t> baa, const BaaOptions& options = {});
+
+// Walks the archive's list of commands, from "AA_<" to ">_AA" (JAUAudioArcInterpreter). For each command, calls
+// visit(tag, at), where `at` is the offset of the command's first argument. In a little-endian archive, `tag` is the
+// tag with its characters in the order of a big-endian one. Throws FormatError, with the messages of `options`, for
+// data that isn't a start-up archive and for a command that isn't known.
+void ForEachCommand(std::span<const uint8_t> baa, const BaaOptions& options,
+                    const std::function<void(const std::string& tag, std::size_t at)>& visit);
+
+// The block of the archive that a command gives by its start and its end, the two words at `at`. Throws FormatError for
+// a block that ends before it starts or runs past the end of the archive.
+std::span<const uint8_t> CommandBlock(std::span<const uint8_t> baa, std::size_t at, const BaaOptions& options = {});
+
+// A bank that the archive's commands load ("bnk "): the number of the wave system it plays, and its offset.
+struct BankCommand
+{
+    uint32_t wave_system = 0;
+    uint32_t offset = 0;
+};
+
+// The banks that the archive's commands load, in the order of the commands. Reads nothing else of the archive. Throws
+// FormatError.
+std::vector<BankCommand> BankCommands(std::span<const uint8_t> baa, const BaaOptions& options = {});
 
 // A start-up archive, JAudio2's BAA or JAudio1's AAF: the sound table and its names, the sequence collection, the wave
 // systems and the banks.

@@ -508,7 +508,7 @@ void Dsp<Memory>::Execute(uint16_t op)
 }
 
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
+NTDLIB_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
 {
     Registers& r = regs_;
     HeldWrites held;
@@ -521,7 +521,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
 
     // The helpers are inlined into every case. Out of line, they took about a fifth of the time of a busy piece that
     // runs JAudio's DSP program.
-    const auto mul = [this](uint16_t a, uint16_t b, bool a_signed, bool b_signed) NTDLIB_DSP_INLINE_LAMBDA
+    const auto mul = [this](uint16_t a, uint16_t b, bool a_signed, bool b_signed) NTDLIB_INLINE_LAMBDA
     {
         // The exact product, doubled when AM is clear.
         const int64_t x = a_signed ? Sext16(a) : int64_t{a};
@@ -536,7 +536,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
     };
 
     // MULX's operands: unsigned where SU selects it.
-    const auto mulx = [&](int s, int t) NTDLIB_DSP_INLINE_LAMBDA
+    const auto mulx = [&](int s, int t) NTDLIB_INLINE_LAMBDA
     {
         const uint16_t a = s ? r.ax_h[0] : r.ax_l[0];
         const uint16_t b = t ? r.ax_h[1] : r.ax_l[1];
@@ -547,7 +547,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         return mul(a, b, a_signed, b_signed);
     };
 
-    const auto add = [this](int d, int64_t b) NTDLIB_DSP_INLINE_LAMBDA
+    const auto add = [this](int d, int64_t b) NTDLIB_INLINE_LAMBDA
     {
         const int64_t a = regs_.ac[d];
         const int64_t result = Wrap40(a + b);
@@ -555,7 +555,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         SetFlagsAdd(a, b, result);
     };
 
-    const auto sub = [this](int d, int64_t b) NTDLIB_DSP_INLINE_LAMBDA
+    const auto sub = [this](int d, int64_t b) NTDLIB_INLINE_LAMBDA
     {
         const int64_t a = regs_.ac[d];
         const int64_t result = Wrap40(a - b);
@@ -563,19 +563,19 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
         SetFlagsSub(a, b, result);
     };
 
-    const auto compare = [this](int64_t a, int64_t b) NTDLIB_DSP_INLINE_LAMBDA
+    const auto compare = [this](int64_t a, int64_t b) NTDLIB_INLINE_LAMBDA
     {
         SetFlagsSub(a, b, Wrap40(a - b));
     };
 
-    const auto logic = [this](int d, uint16_t m) NTDLIB_DSP_INLINE_LAMBDA
+    const auto logic = [this](int d, uint16_t m) NTDLIB_INLINE_LAMBDA
     {
         SetAcM(d, m);
         const int64_t value = regs_.ac[d];
         SetFlags16(m, value < kS32Min || value > kS32Max);
     };
 
-    const auto set_acc = [this](int d, int64_t value) NTDLIB_DSP_INLINE_LAMBDA
+    const auto set_acc = [this](int d, int64_t value) NTDLIB_INLINE_LAMBDA
     {
         SetAc(d, value);
         SetFlags40(regs_.ac[d], false, false);
@@ -1184,14 +1184,14 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::ExecuteOp(uint16_t op, uint8_t kind)
 }
 
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& held)
+NTDLIB_FORCE_INLINE void Dsp<Memory>::Extension(uint8_t field, HeldWrites& held)
 {
     // Stores happen before loads. All memory accesses happen before the main instruction. The extension reads the
     // registers as they were before the step.
     Registers& r = regs_;
 
     // The step of $arI after an access: an increment, or an add of $ixI.
-    const auto step = [this, &held](int i, bool add_index) NTDLIB_DSP_INLINE_LAMBDA
+    const auto step = [this, &held](int i, bool add_index) NTDLIB_INLINE_LAMBDA
     {
         Hold(held, static_cast<uint8_t>(i), SteppedAddress(i, add_index ? kAddIndexStep : kIncrementStep));
     };

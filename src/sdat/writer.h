@@ -14,12 +14,6 @@
 namespace ntdlib::sdat::detail
 {
 
-// `value` rounded up to a multiple of `alignment`.
-inline std::size_t Align(std::size_t value, std::size_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
-
 // Bytes that grow as they're written, with fields to fill in later.
 class Writer
 {

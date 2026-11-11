@@ -21,32 +21,22 @@
 #include "ntdlib/sar/string_block.h"
 #include "ntdlib/sar/tables.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/format_ids.h"
+#include "sar/info_entries.h"
 
 namespace ntdlib::sar
 {
 namespace
 {
 
-constexpr uint16_t kFileBlock = 0x2002;
-constexpr uint16_t kGroupInfoBlock = 0x7800;
-constexpr uint16_t kGroupFileBlock = 0x7801;
 constexpr uint16_t kGroupItemBlock = 0x7802; // INFX
 constexpr uint16_t kFileEntry = 0x7900;      // a reference to an entry of INFO
 constexpr uint16_t kItemEntry = 0x7901;      // a reference to an entry of INFX
-constexpr uint16_t kDataReference = 0x1F00;  // a copy's place in the FILE block
-constexpr uint16_t kInternalFile = 0x220C;   // from a file's entry to its place in the FILE block
-constexpr uint16_t kListReference = 0x0100;  // a list of 32-bit values
-constexpr uint32_t kNone = 0xFFFFFFFF;
 constexpr std::size_t kHeaderSize = 0x40;
-constexpr std::size_t kSizeField = 0x0C;
-constexpr std::size_t kBlockCount = 0x10;
-constexpr std::size_t kBlockTable = 0x14;
-constexpr std::size_t kBlockEntrySize = 12; // a type, two bytes of padding, an offset and a size
-constexpr std::size_t kBlockHeaderSize = 8; // a block's magic and size
 constexpr std::size_t kInfoAlignment = 32;
 constexpr std::size_t kFileEntrySize = 16; // an entry of INFO
 constexpr std::size_t kItemEntrySize = 8;  // an entry of INFX
-constexpr std::size_t kReferenceSize = 8;
 
 // The versions of a group's file: 1.0.0 on the Wii U and the Switch, with INFX. On the 3DS, 1.0.0.0 without INFX, and
 // 1.1.0.0 with it.
@@ -54,6 +44,21 @@ constexpr uint32_t kGroupVersion = 0x00010000;
 constexpr uint32_t kCtrGroupVersion = 0x01000000;
 constexpr uint32_t kCtrItemsVersion = 0x01010000;
 
+using detail::kBlockCount;
+using detail::kBlockEntrySize;
+using detail::kBlockHeaderSize;
+using detail::kBlockTable;
+using detail::kDataReference;
+using detail::kFileBlock;
+using detail::kFileSizeField;
+using detail::kGroupFileBlock;
+using detail::kGroupInfoBlock;
+using detail::kInternalFile;
+using detail::kListReference;
+using detail::kNone;
+using detail::kReferenceSize;
+using detail::ListOf;
+using detail::OtherLayout;
 using detail::Out;
 
 // The magic of a group's file of `flavor`.
@@ -66,12 +71,6 @@ const char* MagicOf(Flavor flavor)
 bool HasItems(Flavor flavor, uint32_t version)
 {
     return flavor != Flavor::kCtr || version >= kCtrItemsVersion;
-}
-
-// The alignment of the copies in a group's file and of the group's end: that of an archive's files.
-std::size_t AlignmentOf(Flavor flavor)
-{
-    return flavor == Flavor::kNx ? 64 : 32;
 }
 
 // The blocks of a group's file: where each starts and its size.
@@ -91,33 +90,17 @@ GroupBlocks BlocksOf(const xsflib::Reader& r, Flavor flavor)
         throw xsflib::FormatError("bytes that aren't a group's file of the console");
     }
 
-    std::optional<std::size_t> info;
-    std::optional<std::size_t> file;
-    GroupBlocks blocks;
-    for (std::size_t i = 0; i < r.U16(kBlockCount); ++i)
-    {
-        const std::size_t entry = kBlockTable + i * kBlockEntrySize;
-        const uint16_t type = r.U16(entry);
-        const std::size_t offset = r.U32(entry + 4);
-        if (type == kGroupInfoBlock)
-        {
-            info = offset;
-        }
-        else if (type == kGroupFileBlock)
-        {
-            file = offset;
-        }
-        else if (type == kGroupItemBlock)
-        {
-            blocks.items = {offset, r.U32(entry + 8)};
-        }
-    }
+    const auto info = detail::FindBlock(r, kGroupInfoBlock);
+    const auto file = detail::FindBlock(r, kGroupFileBlock);
     if (!info || !file)
     {
         throw xsflib::FormatError("a group's file without an INFO or a FILE block");
     }
-    blocks.info = *info;
-    blocks.file = *file;
+
+    GroupBlocks blocks;
+    blocks.info = info->first;
+    blocks.file = file->first;
+    blocks.items = detail::FindBlock(r, kGroupItemBlock);
 
     return blocks;
 }
@@ -153,16 +136,10 @@ std::vector<CopyEntry> EntriesOf(const xsflib::Reader& r, const GroupBlocks& blo
     return entries;
 }
 
-// The group's file that holds `contents`, laid out as the tools lay it out after `header`, the header's 64 bytes. Zeros
-// pad INFX when `padded` says so. A file of a version without INFX lists no items.
-std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents& contents, Flavor flavor, bool padded)
+// Appends the INFO block of a group's file that holds `contents`: the count, a reference to each entry, then the
+// entries. Each copy's offset waits for FILE. Returns where the block starts.
+std::size_t AppendGroupInfo(Out& out, const GroupContents& contents)
 {
-    const bool has_items = HasItems(flavor, xsflib::Reader(header, flavor == Flavor::kCafe).U32(8));
-    const std::size_t alignment = AlignmentOf(flavor);
-    Out out(flavor == Flavor::kCafe);
-    out.Append(header);
-
-    // INFO: the count, a reference to each entry, then the entries. Each copy's offset waits for FILE.
     const std::size_t files = contents.files.size();
     const std::size_t info = out.Append(std::span(reinterpret_cast<const uint8_t*>("INFO"), 4));
     out.Zeros(4 + 4 + (kReferenceSize + kFileEntrySize) * files);
@@ -180,7 +157,17 @@ std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents&
         out.U32(info_body + entry + 12, kNone);
     }
 
-    // FILE: the copies, each on a multiple of the alignment, and zeros up to the next one.
+    return info;
+}
+
+// Appends the FILE block of a group's file that holds `contents`: the copies, each on a multiple of `alignment`, and
+// zeros up to the next one. Sets each copy's place in its entry of the INFO block at `info`. Returns where the block
+// starts.
+std::size_t AppendGroupFile(Out& out, const GroupContents& contents, std::size_t info, std::size_t alignment)
+{
+    const std::size_t files = contents.files.size();
+    const std::size_t info_body = info + kBlockHeaderSize;
+    const std::size_t entries = 4 + kReferenceSize * files;
     const std::size_t file = out.Append(std::span(reinterpret_cast<const uint8_t*>("FILE"), 4));
     out.Zeros(4);
     for (std::size_t i = 0; i < files; ++i)
@@ -198,25 +185,14 @@ std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents&
     }
     out.Align(alignment);
     out.U32(file + 4, static_cast<uint32_t>(out.Size() - file));
-    if (!has_items)
-    {
-        out.U32(kSizeField, static_cast<uint32_t>(out.Size()));
-        out.U16(kBlockCount, 2);
-        const std::size_t blocks[][2] = {{kGroupInfoBlock, info}, {kGroupFileBlock, file}};
-        const std::size_t sizes[] = {file - info, out.Size() - file};
-        for (std::size_t i = 0; i < 2; ++i)
-        {
-            const std::size_t entry = kBlockTable + kBlockEntrySize * i;
-            out.U16(entry, static_cast<uint16_t>(blocks[i][0]));
-            out.U16(entry + 2, 0);
-            out.U32(entry + 4, static_cast<uint32_t>(blocks[i][1]));
-            out.U32(entry + 8, static_cast<uint32_t>(sizes[i]));
-        }
 
-        return out.Take();
-    }
+    return file;
+}
 
-    // INFX: the count, a reference to each entry, then the entries.
+// Appends the INFX block of a group's file that holds `contents`: the count, a reference to each entry, then the
+// entries. Zeros pad it to `alignment` when `padded` says so. Returns where the block starts.
+std::size_t AppendGroupItems(Out& out, const GroupContents& contents, bool padded, std::size_t alignment)
+{
     const std::size_t items = contents.items.size();
     const std::size_t infx = out.Append(std::span(reinterpret_cast<const uint8_t*>("INFX"), 4));
     out.Zeros(4 + 4 + (kReferenceSize + kItemEntrySize) * items);
@@ -235,8 +211,61 @@ std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents&
         out.U32(infx_body + entry + 4, contents.items[i].load);
     }
 
-    // The header: the group's size and its three blocks.
-    out.U32(kSizeField, static_cast<uint32_t>(out.Size()));
+    return infx;
+}
+
+// Where each copy of the group's file `old` lies in `grown`, the group's file with more members: the copies keep their
+// order, so the copy at an entry of `old` lies at the same entry of `grown`.
+std::vector<InnerFile> MovedCopies(std::span<const uint8_t> old, std::span<const uint8_t> grown, Flavor flavor)
+{
+    const bool big_endian = flavor == Flavor::kCafe;
+    const xsflib::Reader old_reader(old, big_endian);
+    const xsflib::Reader grown_reader(grown, big_endian);
+    const std::vector<CopyEntry> from = EntriesOf(old_reader, BlocksOf(old_reader, flavor));
+    const std::vector<CopyEntry> to = EntriesOf(grown_reader, BlocksOf(grown_reader, flavor));
+    std::vector<InnerFile> inner;
+    for (std::size_t k = 0; k < from.size() && k < to.size(); ++k)
+    {
+        if (from[k].place && to[k].place)
+        {
+            inner.push_back({static_cast<uint32_t>(*from[k].place), static_cast<uint32_t>(*to[k].place)});
+        }
+    }
+
+    return inner;
+}
+
+// The group's file that holds `contents`, laid out as the tools lay it out after `header`, the header's 64 bytes. Zeros
+// pad INFX when `padded` says so. A file of a version without INFX lists no items.
+std::vector<uint8_t> Build(std::span<const uint8_t> header, const GroupContents& contents, Flavor flavor, bool padded)
+{
+    const bool has_items = HasItems(flavor, xsflib::Reader(header, flavor == Flavor::kCafe).U32(8));
+    const std::size_t alignment = detail::FileAlignment(flavor);
+    Out out(flavor == Flavor::kCafe);
+    out.Append(header);
+    const std::size_t info = AppendGroupInfo(out, contents);
+    const std::size_t file = AppendGroupFile(out, contents, info, alignment);
+    if (!has_items)
+    {
+        out.U32(kFileSizeField, static_cast<uint32_t>(out.Size()));
+        out.U16(kBlockCount, 2);
+        const std::size_t blocks[][2] = {{kGroupInfoBlock, info}, {kGroupFileBlock, file}};
+        const std::size_t sizes[] = {file - info, out.Size() - file};
+        for (std::size_t i = 0; i < 2; ++i)
+        {
+            const std::size_t entry = kBlockTable + kBlockEntrySize * i;
+            out.U16(entry, static_cast<uint16_t>(blocks[i][0]));
+            out.U16(entry + 2, 0);
+            out.U32(entry + 4, static_cast<uint32_t>(blocks[i][1]));
+            out.U32(entry + 8, static_cast<uint32_t>(sizes[i]));
+        }
+
+        return out.Take();
+    }
+
+    // INFX, then the header: the group's size and its three blocks.
+    const std::size_t infx = AppendGroupItems(out, contents, padded, alignment);
+    out.U32(kFileSizeField, static_cast<uint32_t>(out.Size()));
     out.U16(kBlockCount, 3);
     const std::size_t blocks[][3] = {
         {kGroupInfoBlock, info, file - info}, {kGroupFileBlock, file, infx - file}, {kGroupItemBlock, infx, 0}};
@@ -270,7 +299,7 @@ std::size_t ItemsEnd(std::span<const uint8_t> group, Flavor flavor)
             }
         }
 
-        return end.value_or(r.U32(kSizeField));
+        return end.value_or(r.U32(kFileSizeField));
     }
     if (!blocks.items)
     {
@@ -313,33 +342,6 @@ ToolsLayout ToolsLayoutOf(std::span<const uint8_t> group, Flavor flavor)
     }
 
     return layout;
-}
-
-// The groups that the list of `entry`, a file's entry of the file table, names. Nothing for an entry that holds no
-// list: an external file's. Throws xsflib::FormatError for an entry that ends before its list does.
-std::optional<std::vector<uint32_t>> ListOf(std::span<const uint8_t> entry, bool big_endian)
-{
-    const xsflib::Reader r(entry, big_endian);
-    if (r.U16(0) != kInternalFile)
-    {
-        return std::nullopt;
-    }
-
-    const std::size_t location = r.U32(4);
-    const Reference list = ReadRef(r, location + 12);
-    if (list.type != kListReference)
-    {
-        return std::nullopt;
-    }
-
-    const std::size_t at = location + static_cast<uint32_t>(list.offset);
-    std::vector<uint32_t> groups;
-    for (uint32_t k = 0; k < r.U32(at); ++k)
-    {
-        groups.push_back(r.U32(at + 4 + 4 * std::size_t{k}));
-    }
-
-    return groups;
 }
 
 } // namespace
@@ -557,8 +559,7 @@ std::vector<uint8_t> WithGroupLists(std::span<const uint8_t> archive, Flavor fla
         const std::size_t at = location + static_cast<uint32_t>(ReadRef(r, location + 12).offset);
         if (!named || at + 4 + 4 * named->size() != entry.size())
         {
-            throw xsflib::FormatError("an archive laid out another way: the entry of " + name +
-                                      " holds no list of groups, or bytes after it");
+            throw OtherLayout("the entry of " + name + " holds no list of groups, or bytes after it");
         }
         if (std::ranges::find(*named, id) != named->end())
         {
@@ -566,15 +567,7 @@ std::vector<uint8_t> WithGroupLists(std::span<const uint8_t> archive, Flavor fla
         }
 
         named->insert(std::ranges::find_if(*named, [id](uint32_t other) { return other > id; }), id);
-        Out out(big_endian);
-        out.Append(std::span(entry).first(at));
-        out.Zeros(4 + 4 * named->size());
-        out.U32(at, static_cast<uint32_t>(named->size()));
-        for (std::size_t k = 0; k < named->size(); ++k)
-        {
-            out.U32(at + 4 + 4 * k, (*named)[k]);
-        }
-        entry = out.Take();
+        detail::WriteList(entry, at, big_endian, *named);
     }
 
     return WithTables(archive, flavor, strings, std::move(info));
@@ -603,35 +596,22 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
     // Where the FILE block holds a file: its offset from the block's body, and its size. Nothing for a file that the
     // block doesn't hold.
     const xsflib::Reader r(archive, big_endian);
-    std::optional<std::size_t> body;
-    for (std::size_t i = 0; i < r.U16(kBlockCount); ++i)
-    {
-        const std::size_t entry = kBlockTable + i * kBlockEntrySize;
-        if (r.U16(entry) == kFileBlock)
-        {
-            body = std::size_t{r.U32(entry + 4)} + kBlockHeaderSize;
-        }
-    }
-    if (!body)
+    const auto block = detail::FindBlock(r, kFileBlock);
+    if (!block)
     {
         throw xsflib::FormatError("an archive without a FILE block");
     }
+    const std::size_t body = block->first + kBlockHeaderSize;
     const auto location_of = [&](uint32_t id) -> std::optional<std::pair<std::size_t, std::size_t>>
     {
         const xsflib::Reader entry(info.files[id], big_endian);
-        if (entry.U16(0) != kInternalFile)
+        const std::optional<std::size_t> at = detail::InternalOffsetAt(entry);
+        if (!at)
         {
             return std::nullopt;
         }
 
-        const std::size_t location = entry.U32(4);
-        const uint32_t offset = entry.U32(location + 4);
-        if (offset == kNone)
-        {
-            return std::nullopt;
-        }
-
-        return std::pair<std::size_t, std::size_t>{*body + offset, entry.U32(location + 8)};
+        return std::pair<std::size_t, std::size_t>{body + entry.U32(*at), entry.U32(*at + 4)};
     };
 
     // The group's file: the header gives its size, and the file table the end of INFX's entries, or the end of the last
@@ -641,7 +621,7 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
     {
         throw xsflib::FormatError("an archive whose FILE block doesn't hold the file of " + name);
     }
-    const std::size_t size = r.U32(place->first + kSizeField);
+    const std::size_t size = r.U32(place->first + kFileSizeField);
     const bool last = place->first + place->second == archive.size();
     std::vector<uint8_t> old(size);
     const std::span<const uint8_t> held = r.Sub(place->first, last ? std::min(size, place->second) : size);
@@ -665,20 +645,8 @@ std::vector<uint8_t> WithGroupMembers(std::span<const uint8_t> archive, Flavor f
     // A file whose entry names its copy in the group's file moves with the copy. GroupWith keeps the copies in their
     // order, and the new ones follow them.
     const std::vector<uint8_t> grown = GroupWith(old, flavor, files, items);
-    const xsflib::Reader old_reader(old, big_endian);
-    const xsflib::Reader grown_reader(grown, big_endian);
-    const std::vector<CopyEntry> from = EntriesOf(old_reader, BlocksOf(old_reader, flavor));
-    const std::vector<CopyEntry> to = EntriesOf(grown_reader, BlocksOf(grown_reader, flavor));
-    std::vector<InnerFile> inner;
-    for (std::size_t k = 0; k < from.size() && k < to.size(); ++k)
-    {
-        if (from[k].place && to[k].place)
-        {
-            inner.push_back({static_cast<uint32_t>(*from[k].place), static_cast<uint32_t>(*to[k].place)});
-        }
-    }
-    const std::vector<uint8_t> moved =
-        WithFileBytes(archive, flavor, file, std::span(grown).first(ItemsEnd(grown, flavor)), inner);
+    const std::vector<uint8_t> moved = WithFileBytes(
+        archive, flavor, file, std::span(grown).first(ItemsEnd(grown, flavor)), MovedCopies(old, grown, flavor));
 
     return WithGroupLists(moved, flavor, group, files);
 }

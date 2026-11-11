@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstdio>
 #include <deque>
 #include <iterator>
 #include <limits>
@@ -16,10 +15,16 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+#include "xsflib/text.h"
+
+#include "bios.h"
+#include "io.h"
 #include "ntdlib/arm/cpu.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/snd/tables.h"
 #include "ntdlib/ntr/sound.h"
+#include "ntdlib/ntr/timers.h"
 #include "spi_devices.h"
 
 namespace ntdlib::ntr
@@ -29,16 +34,11 @@ namespace
 {
 
 constexpr uint32_t kBiosSize = 0x4000;
-constexpr uint32_t kMainSize = 0x400000;
 constexpr uint32_t kSharedWramSize = 0x8000;
 constexpr uint32_t kWramSize = 0x10000;
 constexpr uint32_t kVramSize = 0x40000;
 
-constexpr uint32_t kIo = 0x04000000;
-constexpr uint32_t kIpcFifoReceive = 0x04100000;
 constexpr uint32_t kIpcFifoSend = 0x04000188;
-constexpr uint32_t kCardData = 0x04100010;
-constexpr std::size_t kFifoWords = 16;
 
 // Where the firmware leaves the cartridge's header, and the lock that the ARM9's OS_InitLock takes before the ARM7's
 // OS_InitLock goes on: the lock word's owner, the ARM9's initial ID.
@@ -191,44 +191,7 @@ enum Io : uint32_t
     kIoEnd = 0x400,
 };
 
-constexpr uint16_t kKeysReleased = 0x03FF;
 constexpr uint16_t kExtendedKeysIdle = 0x007F; // X and Y released, the pen up, the hinge open
-
-// DISPSTAT's bits.
-constexpr uint16_t kVblankFlag = 1u << 0;
-constexpr uint16_t kHblankFlag = 1u << 1;
-constexpr uint16_t kVcountFlag = 1u << 2;
-constexpr uint16_t kVblankIrq = 1u << 3;
-constexpr uint16_t kHblankIrq = 1u << 4;
-constexpr uint16_t kVcountIrq = 1u << 5;
-constexpr uint16_t kDispstatWritable = 0xFFB8;
-
-// The horizontal blank starts at dot 256.
-constexpr uint64_t kHblankCycle = 256 * 6;
-
-// Timer control bits.
-constexpr uint16_t kTimerCascade = 1u << 2;
-constexpr uint16_t kTimerIrq = 1u << 6;
-constexpr uint16_t kTimerStartBit = 1u << 7;
-constexpr uint16_t kTimerWritable = 0x00C7;
-constexpr std::array<uint64_t, 4> kPrescales = {1, 64, 256, 1024};
-
-// IPCFIFOCNT's bits.
-constexpr uint16_t kSendEmpty = 1u << 0;
-constexpr uint16_t kSendFull = 1u << 1;
-constexpr uint16_t kSendEmptyIrq = 1u << 2;
-constexpr uint16_t kSendClear = 1u << 3;
-constexpr uint16_t kReceiveEmpty = 1u << 8;
-constexpr uint16_t kReceiveFull = 1u << 9;
-constexpr uint16_t kReceiveIrq = 1u << 10;
-constexpr uint16_t kFifoError = 1u << 14;
-constexpr uint16_t kFifoEnable = 1u << 15;
-constexpr uint16_t kFifoWritable = kSendEmptyIrq | kReceiveIrq | kFifoEnable;
-
-// IPCSYNC's bits.
-constexpr uint16_t kSyncOutput = 0x0F00;
-constexpr uint16_t kSyncRequest = 1u << 13;
-constexpr uint16_t kSyncIrqEnable = 1u << 14;
 
 // SPICNT's bits.
 constexpr uint16_t kSpiHold = 1u << 11;
@@ -239,27 +202,9 @@ constexpr uint16_t kSpiEnable = 1u << 15;
 constexpr uint8_t kHaltMode = 0x80;
 constexpr uint8_t kHaltModeMask = 0xC0;
 
-// DMA control bits.
-constexpr uint32_t kDmaEnable = 1u << 31;
-constexpr uint32_t kDmaIrq = 1u << 30;
-constexpr uint32_t kDmaWords = 1u << 26;
-
-// The line of DISPSTAT's V-count match: bits 8 to 15, with bit 8 of the line in bit 7.
-uint64_t VcountSetting(uint16_t dispstat)
-{
-    return static_cast<uint64_t>(dispstat >> 8) | static_cast<uint64_t>(dispstat & 0x80) << 1;
-}
-
 bool IsCardRegister(uint32_t address)
 {
     return (address >= kIo + kCardStart && address < kIo + kCardEnd - 4) || address == kCardData;
-}
-
-std::string Hex(uint32_t value)
-{
-    std::array<char, 16> text{};
-    std::snprintf(text.data(), text.size(), "0x%08X", value);
-    return text.data();
 }
 
 } // namespace
@@ -298,20 +243,21 @@ Arm7System::Arm7System(const Rom& rom, Arm9Link* link)
         const uint32_t address = arm7.ram_address + i;
         if (address < arm7.ram_address || (Page(address & ~0xFFFu) == nullptr && address >> 24 != 0x02))
         {
-            throw std::runtime_error("the ARM7 binary doesn't fit in the memory at " + Hex(arm7.ram_address));
+            throw std::runtime_error("the ARM7 binary doesn't fit in the memory at " +
+                                     xsflib::Hex(arm7.ram_address, 8, true));
         }
-        Store(address, 1, binary[i]);
+        StoreToBus(*this, address, 1, binary[i]);
     }
 
     const std::span<const uint8_t> image = rom.Image();
     for (uint32_t i = 0; i < kHeaderCopySize && i < image.size(); i++)
     {
-        Store(kHeaderCopy + i, 1, image[i]);
+        StoreToBus(*this, kHeaderCopy + i, 1, image[i]);
     }
     if (link_ == nullptr)
     {
-        Store(kInitLockOwner, 2, kArm9InitLockId);
-        Store(kArm9ReadyTags, 4, 0xFFFFFFFF);
+        StoreToBus(*this, kInitLockOwner, 2, kArm9InitLockId);
+        StoreToBus(*this, kArm9ReadyTags, 4, 0xFFFFFFFF);
     }
 
     io_[kPostFlag] = 1;
@@ -385,7 +331,7 @@ void Arm7System::Run(uint64_t until, std::vector<SoundOutput>& out)
         if (reason == arm::StopReason::kStopAddress)
         {
             // The undefined mode's LR holds the address after the instruction.
-            Fail("an undefined instruction before " + Hex(cpu_->Reg(14)));
+            Fail("an undefined instruction before " + xsflib::Hex(cpu_->Reg(14), 8, true));
         }
         else if (reason == arm::StopReason::kHalted)
         {
@@ -599,14 +545,13 @@ void Arm7System::AnswerArm9(uint32_t offset, int size)
     const uint32_t arm7_counter = kArm7StartCounter & (kMainSize - 1);
     if (offset < arm7_counter + 2 && arm7_counter < offset + static_cast<uint32_t>(size))
     {
-        const auto count = static_cast<uint16_t>(main_[arm7_counter] | main_[arm7_counter + 1] << 8);
+        const auto count = xsflib::LoadLe16(&main_[arm7_counter]);
         if (count != arm7_start_counter_)
         {
             arm7_start_counter_ = count;
             const uint32_t arm9_counter = kArm9StartCounter & (kMainSize - 1);
-            const auto answer = static_cast<uint16_t>((main_[arm9_counter] | main_[arm9_counter + 1] << 8) + 1);
-            main_[arm9_counter] = static_cast<uint8_t>(answer);
-            main_[arm9_counter + 1] = static_cast<uint8_t>(answer >> 8);
+            const auto answer = static_cast<uint16_t>(xsflib::LoadLe16(&main_[arm9_counter]) + 1);
+            xsflib::StoreLe16(&main_[arm9_counter], answer);
         }
         return;
     }
@@ -770,7 +715,7 @@ uint16_t Arm7System::ReadIo16(uint32_t offset)
 {
     const auto stored = [this](uint32_t at)
     {
-        return static_cast<uint16_t>(io_[at] | io_[at + 1] << 8);
+        return xsflib::LoadLe16(&io_[at]);
     };
 
     if (offset >= kDmaStart && offset < kDmaEnd)
@@ -783,7 +728,7 @@ uint16_t Arm7System::ReadIo16(uint32_t offset)
     if (offset >= kTimerStart && offset < kTimerEnd)
     {
         const int timer = static_cast<int>((offset - kTimerStart) / 4);
-        return offset % 4 == 0 ? TimerCounter(timer) : timers_[static_cast<std::size_t>(timer)].control;
+        return offset % 4 == 0 ? timers_.Counter(timer, clock_) : timers_.Control(timer);
     }
 
     switch (offset)
@@ -857,10 +802,9 @@ void Arm7System::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
 {
     const auto store = [this, value, mask](uint32_t at)
     {
-        const uint16_t old = static_cast<uint16_t>(io_[at] | io_[at + 1] << 8);
+        const uint16_t old = xsflib::LoadLe16(&io_[at]);
         const uint16_t merged = static_cast<uint16_t>((old & ~mask) | (value & mask));
-        io_[at] = static_cast<uint8_t>(merged);
-        io_[at + 1] = static_cast<uint8_t>(merged >> 8);
+        xsflib::StoreLe16(&io_[at], merged);
         return merged;
     };
     const auto merge = [value, mask](uint16_t old)
@@ -901,14 +845,13 @@ void Arm7System::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
     if (offset >= kTimerStart && offset < kTimerEnd)
     {
         const int timer = static_cast<int>((offset - kTimerStart) / 4);
-        Timer& t = timers_[static_cast<std::size_t>(timer)];
         if (offset % 4 == 0)
         {
-            t.reload = merge(t.reload);
+            timers_.SetReload(timer, merge(timers_.Reload(timer)));
         }
         else
         {
-            WriteTimerControl(timer, merge(t.control));
+            timers_.SetControl(timer, merge(timers_.Control(timer)), clock_);
         }
         return;
     }
@@ -963,7 +906,7 @@ void Arm7System::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
             }
             else if ((halt & kHaltModeMask) != 0)
             {
-                Fail("HALTCNT " + Hex(halt) + ": a mode that the system doesn't model");
+                Fail("HALTCNT " + xsflib::Hex(halt, 8, true) + ": a mode that the system doesn't model");
             }
         }
         return;
@@ -995,7 +938,7 @@ void Arm7System::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
         return;
     case kSpiData:
         {
-            const uint16_t control = static_cast<uint16_t>(io_[kSpiControl] | io_[kSpiControl + 1] << 8);
+            const uint16_t control = xsflib::LoadLe16(&io_[kSpiControl]);
             if (spi_ == nullptr)
             {
                 Unknown(kIo + offset, 2, true);
@@ -1025,39 +968,6 @@ void Arm7System::Unknown(uint32_t address, int size, bool write)
     }
 }
 
-uint32_t Arm7System::Load(uint32_t address, int size)
-{
-    address &= ~static_cast<uint32_t>(size - 1);
-    const uint8_t* page = Page(address & ~0xFFFu);
-    if (page == nullptr)
-    {
-        return Read(address, size);
-    }
-
-    uint32_t value = 0;
-    for (int i = 0; i < size; i++)
-    {
-        value |= static_cast<uint32_t>(page[(address & 0xFFF) + static_cast<uint32_t>(i)]) << (8 * i);
-    }
-    return value;
-}
-
-void Arm7System::Store(uint32_t address, int size, uint32_t value)
-{
-    address &= ~static_cast<uint32_t>(size - 1);
-    uint8_t* page = Page(address & ~0xFFFu);
-    if (page == nullptr)
-    {
-        Write(address, size, value);
-        return;
-    }
-
-    for (int i = 0; i < size; i++)
-    {
-        page[(address & 0xFFF) + static_cast<uint32_t>(i)] = static_cast<uint8_t>(value >> (8 * i));
-    }
-}
-
 bool Arm7System::Swi(arm::Cpu& cpu, uint32_t comment)
 {
     // In ARM state, the BIOS takes the number from bits 16 to 23 of the comment.
@@ -1083,88 +993,24 @@ bool Arm7System::Swi(arm::Cpu& cpu, uint32_t comment)
             return true;
         }
     case kDiv:
+        if (!bios::Div(cpu))
         {
-            const auto numerator = static_cast<int32_t>(cpu.Reg(0));
-            const auto denominator = static_cast<int32_t>(cpu.Reg(1));
-            if (denominator == 0 || (numerator == std::numeric_limits<int32_t>::min() && denominator == -1))
-            {
-                Fail("Div with " + Hex(cpu.Reg(0)) + " / " + Hex(cpu.Reg(1)));
-                return true;
-            }
-            const int32_t quotient = numerator / denominator;
-            cpu.SetReg(0, static_cast<uint32_t>(quotient));
-            cpu.SetReg(1, static_cast<uint32_t>(numerator % denominator));
-            cpu.SetReg(3, static_cast<uint32_t>(quotient < 0 ? -static_cast<int64_t>(quotient) : quotient));
-            return true;
+            Fail("Div with " + xsflib::Hex(cpu.Reg(0), 8, true) + " / " + xsflib::Hex(cpu.Reg(1), 8, true));
         }
+        return true;
     case kCpuSet:
     case kCpuFastSet:
-        {
-            const uint32_t control = cpu.Reg(2);
-            const bool fill = (control & (1u << 24)) != 0;
-            const bool fast = number == kCpuFastSet;
-            const int size = fast || (control & (1u << 26)) != 0 ? 4 : 2;
-            uint32_t count = control & 0x1FFFFF;
-            if (fast)
-            {
-                count = (count + 7) & ~7u;
-            }
-            uint32_t source = cpu.Reg(0) & ~static_cast<uint32_t>(size - 1);
-            uint32_t destination = cpu.Reg(1) & ~static_cast<uint32_t>(size - 1);
-            const uint32_t first = Load(source, size);
-            for (uint32_t i = 0; i < count; i++)
-            {
-                Store(destination, size, fill ? first : Load(source, size));
-                destination += static_cast<uint32_t>(size);
-                source += fill ? 0 : static_cast<uint32_t>(size);
-            }
-            return true;
-        }
+        bios::CpuSet(
+            cpu, number == kCpuFastSet,
+            [this](uint32_t address, int size) { return LoadFromBus(*this, address, size); },
+            [this](uint32_t address, int size, uint32_t value) { StoreToBus(*this, address, size, value); });
+        return true;
     case kSqrt:
-        {
-            const uint32_t value = cpu.Reg(0);
-            uint32_t root = 0;
-            for (uint32_t bit = 1u << 15; bit != 0; bit >>= 1)
-            {
-                const uint32_t trial = root | bit;
-                if (static_cast<uint64_t>(trial) * trial <= value)
-                {
-                    root = trial;
-                }
-            }
-            cpu.SetReg(0, root);
-            return true;
-        }
+        bios::Sqrt(cpu);
+        return true;
     case kGetCrc16:
-        {
-            // GBATEK's CRC-16, a byte at a time. r3 returns the last halfword read.
-            constexpr std::array<uint16_t, 8> kValues = {0xC0C1, 0xC181, 0xC301, 0xC601,
-                                                         0xCC01, 0xD801, 0xF001, 0xA001};
-            uint32_t crc = cpu.Reg(0) & 0xFFFF;
-            const uint32_t start = cpu.Reg(1) & ~1u;
-            const uint32_t length = cpu.Reg(2) & ~1u;
-            uint32_t last = 0;
-            for (uint32_t at = start; at < start + length; at += 2)
-            {
-                last = Load(at, 2);
-                for (const uint32_t byte : {last & 0xFF, last >> 8})
-                {
-                    crc ^= byte;
-                    for (std::size_t j = 0; j < kValues.size(); j++)
-                    {
-                        const bool carry = (crc & 1) != 0;
-                        crc >>= 1;
-                        if (carry)
-                        {
-                            crc ^= static_cast<uint32_t>(kValues[j]) << (7 - j);
-                        }
-                    }
-                }
-            }
-            cpu.SetReg(0, crc & 0xFFFF);
-            cpu.SetReg(3, last);
-            return true;
-        }
+        bios::GetCrc16(cpu, [this](uint32_t address, int size) { return LoadFromBus(*this, address, size); });
+        return true;
     case kIsDebugger:
         cpu.SetReg(0, 0);
         return true;
@@ -1176,7 +1022,7 @@ bool Arm7System::Swi(arm::Cpu& cpu, uint32_t comment)
                 number == kGetPitchTable ? std::size(snd::tables::kPitch) : std::size(snd::tables::kVolume);
             if (index >= count)
             {
-                Fail("a read past the BIOS's table at " + Hex(index));
+                Fail("a read past the BIOS's table at " + xsflib::Hex(index, 8, true));
                 return true;
             }
             cpu.SetReg(0, number == kGetPitchTable ? snd::tables::kPitch[index] : snd::tables::kVolume[index]);
@@ -1186,7 +1032,8 @@ bool Arm7System::Swi(arm::Cpu& cpu, uint32_t comment)
         WriteIo(kIo + kPostFlag + 1, 1, cpu.Reg(2) & 0xFF);
         return true;
     default:
-        Fail("SWI " + Hex(number) + ", which the BIOS doesn't model, at " + Hex(cpu.Pc()));
+        Fail("SWI " + xsflib::Hex(number, 8, true) + ", which the BIOS doesn't model, at " +
+             xsflib::Hex(cpu.Pc(), 8, true));
         return true;
     }
 }
@@ -1215,14 +1062,7 @@ void Arm7System::SyncSound()
 
 uint64_t Arm7System::NextEvent() const
 {
-    uint64_t next = next_display_;
-    for (int timer = 0; timer < 4; timer++)
-    {
-        if (Counting(timer))
-        {
-            next = std::min(next, TimerOverflow(timer));
-        }
-    }
+    uint64_t next = timers_.NextOverflow(next_display_);
     return next;
 }
 
@@ -1241,12 +1081,10 @@ void Arm7System::Advance(uint64_t until)
         {
             DisplayEvent(next);
         }
-        for (int timer = 0; timer < 4; timer++)
+        // Timer n's IRQ is irq::kTimer0 << n.
+        if (const uint32_t timers = timers_.Overflow(next); timers != 0)
         {
-            if (Counting(timer) && TimerOverflow(timer) == next)
-            {
-                OverflowTimer(timer, next);
-            }
+            Request(irq::kTimer0 * timers);
         }
     }
     clock_ = std::max(clock_, until);
@@ -1267,90 +1105,6 @@ void Arm7System::Halt()
 {
     halted_ = true;
     cpu_->Stop();
-}
-
-uint64_t Arm7System::Prescale(int timer) const
-{
-    return kPrescales[timers_[static_cast<std::size_t>(timer)].control & 3];
-}
-
-bool Arm7System::Counting(int timer) const
-{
-    const uint16_t control = timers_[static_cast<std::size_t>(timer)].control;
-    return (control & kTimerStartBit) != 0 && (timer == 0 || (control & kTimerCascade) == 0);
-}
-
-uint16_t Arm7System::TimerCounter(int timer) const
-{
-    const Timer& t = timers_[static_cast<std::size_t>(timer)];
-    if (!Counting(timer))
-    {
-        return t.counter;
-    }
-    return static_cast<uint16_t>(t.counter + (clock_ - t.base) / Prescale(timer));
-}
-
-uint64_t Arm7System::TimerOverflow(int timer) const
-{
-    const Timer& t = timers_[static_cast<std::size_t>(timer)];
-    return t.base + (0x10000 - static_cast<uint64_t>(t.counter)) * Prescale(timer);
-}
-
-void Arm7System::RebaseTimer(int timer)
-{
-    if (!Counting(timer))
-    {
-        return;
-    }
-
-    Timer& t = timers_[static_cast<std::size_t>(timer)];
-    const uint64_t counts = (clock_ - t.base) / Prescale(timer);
-    t.counter = static_cast<uint16_t>(t.counter + counts);
-    t.base += counts * Prescale(timer);
-}
-
-void Arm7System::OverflowTimer(int timer, uint64_t at)
-{
-    Timer& t = timers_[static_cast<std::size_t>(timer)];
-    t.counter = t.reload;
-    t.base = at;
-    if ((t.control & kTimerIrq) != 0)
-    {
-        Request(irq::kTimer0 << timer);
-    }
-
-    if (timer < 3)
-    {
-        Timer& next = timers_[static_cast<std::size_t>(timer) + 1];
-        if ((next.control & (kTimerStartBit | kTimerCascade)) == (kTimerStartBit | kTimerCascade))
-        {
-            if (next.counter == 0xFFFF)
-            {
-                OverflowTimer(timer + 1, at);
-            }
-            else
-            {
-                next.counter++;
-            }
-        }
-    }
-}
-
-void Arm7System::WriteTimerControl(int timer, uint16_t control)
-{
-    RebaseTimer(timer);
-    Timer& t = timers_[static_cast<std::size_t>(timer)];
-    const uint16_t old = t.control;
-    t.control = static_cast<uint16_t>(control & kTimerWritable);
-    if ((old & kTimerStartBit) == 0 && (control & kTimerStartBit) != 0)
-    {
-        t.counter = t.reload;
-        t.base = clock_;
-    }
-    else if ((old & 3) != (control & 3))
-    {
-        t.base = clock_;
-    }
 }
 
 uint64_t Arm7System::Line() const
@@ -1420,7 +1174,7 @@ void Arm7System::WriteDmaControl(int channel, uint32_t control)
     const uint32_t timing = (control >> 28) & 3;
     if (timing != 0)
     {
-        Fail("a DMA that starts on an event (" + Hex(control) + ")");
+        Fail("a DMA that starts on an event (" + xsflib::Hex(control, 8, true) + ")");
         return;
     }
 
@@ -1441,7 +1195,7 @@ void Arm7System::WriteDmaControl(int channel, uint32_t control)
     uint32_t destination = dma.destination & ~static_cast<uint32_t>(size - 1);
     for (uint32_t i = 0; i < count; i++)
     {
-        Store(destination, size, Load(source, size));
+        StoreToBus(*this, destination, size, LoadFromBus(*this, source, size));
         source += static_cast<uint32_t>(source_step);
         destination += static_cast<uint32_t>(destination_step);
     }

@@ -17,7 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/file_name.h"
 #include "seqlib/loop.h"
 #include "seqlib/sfz/opcodes.h"
 #include "seqlib/sfz/text.h"
@@ -30,6 +29,7 @@
 #include "ntdlib/sequence_export/ntr/convert.h"
 #include "ntdlib/sequence_export/ntr/instruments.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
+#include "sequence_export/sfz_bank_file.h"
 
 namespace ntdlib::sequence_export::ntr
 {
@@ -45,9 +45,6 @@ constexpr double kFrameSeconds = static_cast<double>(snd::kFrameClocks) / ntdlib
 
 // The bend range that a track starts with, in semitones.
 constexpr int kStartingBendRange = 2;
-
-// The custom curve of CC10 to the pan. seqlib's track files give it the same number. sfizz reserves curves 0 to 6.
-constexpr int kPanCurve = 7;
 
 // The samples of a sequence's SFZ files: a WAV file for each wave, made once, on first use.
 class SfzSamples
@@ -218,28 +215,13 @@ seqlib::sfz::Instruments BuildBankSfz(std::span<const uint32_t> programs, BankSe
 {
     SfzSamples samples;
     seqlib::sfz::Instruments out;
-    const std::size_t digits = programs.empty() ? 1 : std::to_string(programs.back()).size();
     for (const uint32_t p : programs)
     {
-        // The frame of seqlib's track files: the samples' folder, CC10's pan curve, the bend range, and CC7, CC10 and
-        // CC11 without smoothing. SFZ's documentation gives bend ranges in whole cents.
-        const std::string name = "Program " + std::to_string(p);
-        std::string s = "// " + seqlib::sfz::CommentText(name) + " of " + seqlib::sfz::CommentText(title) +
-                        ", converted by " + program + ".\n\n";
-        s += "<control>\ndefault_path=../" + seqlib::sfz::kSamplesFolder + "/\nhint_ram_based=1\n\n";
-        s += seqlib::sfz::Curve(kPanCurve, "CC10 to pan", [](int v) { return (v - 64) / 64.0; });
-        const std::string bend = std::to_string(kStartingBendRange * 100);
-        s += "<global>\nbend_up=" + bend + " bend_down=-" + bend + "\n";
-        s += "pan_oncc10=100 pan_curvecc10=" + std::to_string(kPanCurve) + " pan_smoothcc10=0\n";
-        s += "amplitude_oncc7=100 amplitude_curvecc7=4 amplitude_smoothcc7=0 amplitude_oncc11=100 "
-             "amplitude_curvecc11=4 amplitude_smoothcc11=0\n";
-
+        std::string s = SfzBankFileStart("Program " + std::to_string(p), title, program, kStartingBendRange);
         const PresetKey key{.program = static_cast<uint16_t>(p)};
         s += "\n" + LfoOpcodes(key) + "<group>\n" + PresetRegions(banks, samples, key, 0.0, build);
 
-        std::string number = std::to_string(p);
-        number.insert(0, digits - number.size(), '0');
-        out.files.push_back({seqlib::SafeFileName(title) + "_" + number + ".sfz", std::move(s)});
+        out.files.push_back({SfzBankFileName(title, p, programs.back()), std::move(s)});
     }
     out.samples = samples.Take();
 

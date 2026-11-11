@@ -217,6 +217,15 @@ void TestPlaceWaves()
     XSFLIB_CHECK(driver.PlaceWaves(kBankId, main_bank, kSamples) == (64 + 32 + 32) * 4);
 }
 
+// Without a song, every view of the followed sequence is empty.
+void TestViewsWithoutSong()
+{
+    const dse::Driver driver;
+    XSFLIB_CHECK(!driver.SequencePlays() && driver.SequenceTick() == 0 && driver.ChannelCount() == 0 &&
+                 driver.TrackCount() == 0);
+    XSFLIB_CHECK(driver.GetChannel(0) == dse::ChannelView{});
+}
+
 // Plays `driver` for each block of `hashes`, and checks each block's hash of the model's commands against the game's.
 // Each tick takes the channels' status of `status`, and `act` runs before each tick with the tick's number.
 template <std::size_t kBlocks, typename StatusChange, std::size_t kChanges, typename Act>
@@ -531,6 +540,7 @@ int main(int argc, char** argv)
     }
     TestFilesRead();
     TestPlaceWaves();
+    TestViewsWithoutSong();
     TestSong();
     TestEarlierSong();
     TestBuildOf();

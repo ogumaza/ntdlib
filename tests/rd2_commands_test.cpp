@@ -16,7 +16,7 @@
 #include "ntdlib/commands/units.h"
 #include "ntdlib/rd2/commands.h"
 #include "ntdlib/rd2/driver.h"
-#include "rd2_cart.h"
+#include "ntdlib/testing/rd2_cart.h"
 
 using xsflib::testing::Check;
 

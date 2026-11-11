@@ -46,10 +46,15 @@ if (MSVC)
         /Zi
         /Zo
         /EHsc
-        /Zc:throwingNew # Assumes new never returns null
         /Zc:inline # Omits inline functions from object-file output
         /DNOMINMAX
         /D_CRT_SECURE_NO_WARNINGS)
+
+    # clang-cl doesn't support /Zc:throwingNew and warns of it.
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        list(APPEND TEAKRA_CXX_FLAGS
+             /Zc:throwingNew) # Assumes new never returns null
+    endif()
 
     if (TEAKRA_WARNINGS_AS_ERRORS)
         list(APPEND TEAKRA_CXX_FLAGS

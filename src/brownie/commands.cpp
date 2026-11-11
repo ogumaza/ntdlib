@@ -457,6 +457,343 @@ void CheckChannel(const commands::Sequence& sequence, const std::vector<uint32_t
     }
 }
 
+// Returns the tables that a channel reads. Each starts on a multiple of 4, where the driver reads its words, even when
+// its first word is no call's or jump's.
+std::set<uint32_t> ReadTables(const commands::Sequence& sequence)
+{
+    std::set<uint32_t> tables;
+    for (size_t i = 0; i + 1 < sequence.items.size(); i++)
+    {
+        const Item& open = sequence.items[i];
+        const Item& table = sequence.items[i + 1];
+        if (open.kind == Kind::kOpenTrack && table.kind == Kind::kJump && table.encoding.opcode == kAddressWord &&
+            !table.target_outside && !open.target_outside && ReadsTable(sequence, open.target))
+        {
+            tables.insert(table.target);
+        }
+    }
+
+    return tables;
+}
+
+// Writes the bytes of `item`, a note or a command, at `out`.
+void WriteCommand(const Item& item, Revision revision, uint8_t* out)
+{
+    if (item.kind == Kind::kNote)
+    {
+        if (item.key >= 0x80)
+        {
+            throw std::invalid_argument("a note's byte lies past the driver's notes");
+        }
+
+        *out = item.key;
+        return;
+    }
+
+    out[0] = OpcodeOf(item, revision);
+    switch (item.kind)
+    {
+    case Kind::kCall:
+    case Kind::kJump:
+        out[1] = item.index;
+        break;
+    case Kind::kRelease:
+    case Kind::kProgram:
+    case Kind::kPan:
+    case Kind::kVolume:
+    case Kind::kLoopStart:
+        out[1] = ByteOf(item, revision, 0, 255);
+        break;
+    case Kind::kSweep:
+        if (item.index == 0)
+        {
+            out[1] = ByteOf(item, revision, 0, 255);
+        }
+        break;
+    case Kind::kTranspose:
+    case Kind::kTune:
+        out[1] = ByteOf(item, revision, -128, 127);
+        break;
+    case Kind::kOther:
+        if (item.bytes.size() != CommandSize(revision, out[0]) - 1)
+        {
+            throw std::invalid_argument("a command holds another number of bytes than the driver reads");
+        }
+        std::copy(item.bytes.begin(), item.bytes.end(), out + 1);
+        break;
+    default:
+        break;
+    }
+}
+
+// Checks that each list's channels read their commands as the items say. Throws std::invalid_argument otherwise.
+void CheckLists(const commands::Sequence& sequence, const Encoded& encoded, const std::map<uint32_t, uint32_t>& item_at)
+{
+    std::set<std::pair<uint32_t, uint32_t>> seen;
+    for (uint32_t i = 0; i < sequence.items.size(); i++)
+    {
+        const Item& item = sequence.items[i];
+        if (item.kind != Kind::kOpenTrack)
+        {
+            continue;
+        }
+
+        if (i + 1 >= sequence.items.size() || sequence.items[i + 1].kind != Kind::kJump ||
+            sequence.items[i + 1].encoding.opcode != kAddressWord)
+        {
+            throw std::invalid_argument("a list's channel has no word with its table's address");
+        }
+
+        const Item& table = sequence.items[i + 1];
+        CheckChannel(sequence, encoded.offsets, item_at, item.target,
+                     table.target_outside ? uint32_t(sequence.items.size()) : table.target, seen);
+    }
+}
+
+// Decodes a region's sounds into one sequence. A region that can't be read safely stays opaque: one item of data.
+class RegionDecoder
+{
+public:
+    RegionDecoder(const Rom& rom, const DriverInfo& info, const Region& region)
+        : rom_(rom), info_(info), region_(region)
+    {
+        decoded_.sounds = region.sounds;
+    }
+
+    // Each item of each sound, by its address: the list of its channels, the commands that they reach, and the words
+    // of the tables that the commands read. Returns false if the region stays opaque.
+    bool ReadSounds()
+    {
+        for (const int sound : region_.sounds)
+        {
+            const SoundWalk walk = WalkSound(rom_, info_, sound, channels_);
+            if (walk.targets_differ)
+            {
+                Opaque("a call or a jump that two channels of sound " + std::to_string(sound) +
+                       " read with other targets");
+                return false;
+            }
+
+            const uint32_t list = SongAddress(rom_, info_, sound);
+            list_addresses_.push_back(list);
+            uint32_t at = list;
+            bool same = true;
+            for (const SongChannel& channel : channels_)
+            {
+                Item open;
+                open.kind = Kind::kOpenTrack;
+                open.index = uint8_t(channel.channel);
+                same = Add(at, {open, 8, channel.data}) && same;
+                Item table;
+                table.kind = Kind::kJump;
+                table.encoding.opcode = kAddressWord;
+                same = Add(at + 8, {table, 4, channel.subroutines}) && same;
+                boundaries_.insert(channel.subroutines);
+                at += kListEntryWords * 4;
+            }
+
+            Item end;
+            end.kind = Kind::kEnd;
+            end.index = 1;
+            same = Add(at, {end, 4, std::nullopt}) && same;
+            for (const auto& [address, size] : walk.commands)
+            {
+                const auto target = walk.targets.find(address);
+                std::optional<uint32_t> names;
+                if (target != walk.targets.end())
+                {
+                    names = target->second;
+                    const auto [known, fresh] = call_targets_.insert({address, target->second});
+                    if (known->second != target->second)
+                    {
+                        Opaque("a call or a jump that two sounds read with other targets");
+                        return false;
+                    }
+                }
+
+                same = Add(address, {ItemOf(rom_, info_, address), size, names}) && same;
+            }
+
+            for (const uint32_t word : walk.table_words)
+            {
+                Item table;
+                table.kind = Kind::kJump;
+                table.encoding.opcode = kAddressWord;
+                same = Add(word, {table, 4, rom_.U32(word)}) && same;
+            }
+
+            used_tables_.insert(walk.tables.begin(), walk.tables.end());
+            if (!same)
+            {
+                Opaque("the bytes at " + agb::Hex(clash_) + " read as two different items");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // No item may overlap the next. Returns false if one does.
+    bool CheckOverlaps()
+    {
+        uint32_t reached = region_.start;
+        for (const auto& [address, placed] : items_)
+        {
+            if (address < reached)
+            {
+                Opaque("the bytes at " + agb::Hex(address) + " read as two different items");
+                return false;
+            }
+
+            reached = address + placed.size;
+        }
+
+        return true;
+    }
+
+    // The items in the order of their addresses, with the bytes between them as data, split where a table starts.
+    void NumberItems()
+    {
+        const uint32_t end = region_.start + region_.size;
+        uint32_t at = region_.start;
+        const auto add_data = [&](uint32_t to)
+        {
+            while (at < to)
+            {
+                const auto boundary = boundaries_.upper_bound(at);
+                const uint32_t stop = boundary != boundaries_.end() && *boundary < to ? *boundary : to;
+                Item data;
+                data.kind = Kind::kData;
+                data.bytes.assign(rom_.Ptr(at), rom_.Ptr(at) + (stop - at));
+                number_[at] = uint32_t(decoded_.sequence.items.size());
+                decoded_.sequence.items.push_back(std::move(data));
+                at = stop;
+            }
+        };
+
+        for (const auto& [address, placed] : items_)
+        {
+            add_data(address);
+            number_[address] = uint32_t(decoded_.sequence.items.size());
+            decoded_.sequence.items.push_back(placed.item);
+            at = address + placed.size;
+        }
+        add_data(end);
+    }
+
+    // A table that a command reads has to move with its words. Each item that names a place gets the number of the
+    // item there. Returns false if a table's start or a target falls inside another item.
+    bool SetTargets()
+    {
+        for (const uint32_t table : used_tables_)
+        {
+            if (!number_.count(table))
+            {
+                Opaque("a table's start that falls inside another item");
+                return false;
+            }
+        }
+
+        for (const auto& [address, placed] : items_)
+        {
+            if (!placed.names)
+            {
+                continue;
+            }
+
+            Item& item = decoded_.sequence.items[number_[address]];
+            const auto target = number_.find(*placed.names);
+            if (target != number_.end())
+            {
+                item.target = target->second;
+            }
+            else if (item.kind == Kind::kJump && item.encoding.opcode == kAddressWord)
+            {
+                item.target = *placed.names;
+                item.target_outside = true;
+            }
+            else
+            {
+                Opaque("a command's target that falls inside another item");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // The item where each sound starts its list, with its label.
+    void AddLists()
+    {
+        for (size_t s = 0; s < region_.sounds.size(); s++)
+        {
+            decoded_.lists.push_back(number_[list_addresses_[s]]);
+            decoded_.sequence.labels.push_back({"SOUND_" + std::to_string(region_.sounds[s]), decoded_.lists.back()});
+        }
+    }
+
+    Decoded Result()
+    {
+        return std::move(decoded_);
+    }
+
+private:
+    // An item at its address. An item that names a place holds the address until every item has its number.
+    struct Placed
+    {
+        Item item;
+        uint32_t size = 0;
+        std::optional<uint32_t> names;
+    };
+
+    // Keeps the whole region as data, for `reason`.
+    void Opaque(const std::string& reason)
+    {
+        Item data;
+        data.kind = Kind::kData;
+        const uint8_t* bytes = rom_.Ptr(region_.start);
+        data.bytes.assign(bytes, bytes + region_.size);
+        decoded_.sequence = {};
+        decoded_.sequence.items.push_back(std::move(data));
+        decoded_.lists.clear();
+        decoded_.opaque = true;
+        decoded_.reason = reason;
+    }
+
+    // Adds the item at `address`. Returns false if another item that starts there differs from it.
+    bool Add(uint32_t address, Placed placed)
+    {
+        const auto [place, fresh] = items_.insert({address, placed});
+        if (!fresh && place->second.item.kind == Kind::kEnd && placed.item.kind == Kind::kEnd)
+        {
+            // A channel's FF can be the first byte of a list's word of 0xFF.
+            if (placed.item.index == 1)
+            {
+                place->second = placed;
+            }
+            return true;
+        }
+
+        const bool same = fresh || (place->second.size == placed.size && place->second.names == placed.names &&
+                                    place->second.item == placed.item);
+        clash_ = same ? clash_ : address;
+        return same;
+    }
+
+    const Rom& rom_;
+    const DriverInfo& info_;
+    const Region& region_;
+    Decoded decoded_;
+    std::map<uint32_t, Placed> items_;
+    std::set<uint32_t> boundaries_; // the addresses that have to start an item: the tables' starts
+    std::set<uint32_t> used_tables_;
+    std::map<uint32_t, uint32_t> call_targets_;
+    std::vector<SongChannel> channels_;
+    std::vector<uint32_t> list_addresses_;
+    uint32_t clash_ = 0;
+    std::map<uint32_t, uint32_t> number_; // the number of the item at each address
+};
+
 } // namespace
 
 std::vector<Region> FindRegions(const Rom& rom, const DriverInfo& info)
@@ -505,203 +842,17 @@ std::vector<Region> FindRegions(const Rom& rom, const DriverInfo& info)
 
 Decoded DecodeRegion(const Rom& rom, const DriverInfo& info, const Region& region)
 {
-    Decoded decoded;
-    decoded.sounds = region.sounds;
-    const auto opaque = [&](const std::string& reason)
+    RegionDecoder decoder(rom, info, region);
+    if (decoder.ReadSounds() && decoder.CheckOverlaps())
     {
-        Item data;
-        data.kind = Kind::kData;
-        const uint8_t* bytes = rom.Ptr(region.start);
-        data.bytes.assign(bytes, bytes + region.size);
-        decoded.sequence = {};
-        decoded.sequence.items.push_back(std::move(data));
-        decoded.lists.clear();
-        decoded.opaque = true;
-        decoded.reason = reason;
-    };
-
-    // Each item, by its address. An item that names a place holds the address until every item has its number.
-    struct Placed
-    {
-        Item item;
-        uint32_t size = 0;
-        std::optional<uint32_t> names;
-    };
-
-    std::map<uint32_t, Placed> items;
-    std::set<uint32_t> boundaries; // the addresses that have to start an item: the tables' starts
-    std::set<uint32_t> used_tables;
-    std::map<uint32_t, uint32_t> call_targets;
-    std::vector<SongChannel> channels;
-    std::vector<uint32_t> list_addresses;
-    uint32_t clash = 0;
-    const auto add = [&](uint32_t address, Placed placed)
-    {
-        const auto [place, fresh] = items.insert({address, placed});
-        if (!fresh && place->second.item.kind == Kind::kEnd && placed.item.kind == Kind::kEnd)
+        decoder.NumberItems();
+        if (decoder.SetTargets())
         {
-            // A channel's FF can be the first byte of a list's word of 0xFF.
-            if (placed.item.index == 1)
-            {
-                place->second = placed;
-            }
-            return true;
-        }
-
-        const bool same = fresh || (place->second.size == placed.size && place->second.names == placed.names &&
-                                    place->second.item == placed.item);
-        clash = same ? clash : address;
-        return same;
-    };
-
-    for (const int sound : region.sounds)
-    {
-        const SoundWalk walk = WalkSound(rom, info, sound, channels);
-        if (walk.targets_differ)
-        {
-            opaque("a call or a jump that two channels of sound " + std::to_string(sound) + " read with other targets");
-            return decoded;
-        }
-
-        const uint32_t list = SongAddress(rom, info, sound);
-        list_addresses.push_back(list);
-        uint32_t at = list;
-        bool same = true;
-        for (const SongChannel& channel : channels)
-        {
-            Item open;
-            open.kind = Kind::kOpenTrack;
-            open.index = uint8_t(channel.channel);
-            same = add(at, {open, 8, channel.data}) && same;
-            Item table;
-            table.kind = Kind::kJump;
-            table.encoding.opcode = kAddressWord;
-            same = add(at + 8, {table, 4, channel.subroutines}) && same;
-            boundaries.insert(channel.subroutines);
-            at += kListEntryWords * 4;
-        }
-
-        Item end;
-        end.kind = Kind::kEnd;
-        end.index = 1;
-        same = add(at, {end, 4, std::nullopt}) && same;
-        for (const auto& [address, size] : walk.commands)
-        {
-            const auto target = walk.targets.find(address);
-            std::optional<uint32_t> names;
-            if (target != walk.targets.end())
-            {
-                names = target->second;
-                const auto [known, fresh] = call_targets.insert({address, target->second});
-                if (known->second != target->second)
-                {
-                    opaque("a call or a jump that two sounds read with other targets");
-                    return decoded;
-                }
-            }
-
-            same = add(address, {ItemOf(rom, info, address), size, names}) && same;
-        }
-
-        for (const uint32_t word : walk.table_words)
-        {
-            Item table;
-            table.kind = Kind::kJump;
-            table.encoding.opcode = kAddressWord;
-            same = add(word, {table, 4, rom.U32(word)}) && same;
-        }
-
-        used_tables.insert(walk.tables.begin(), walk.tables.end());
-        if (!same)
-        {
-            opaque("the bytes at " + agb::Hex(clash) + " read as two different items");
-            return decoded;
+            decoder.AddLists();
         }
     }
 
-    // No item may overlap the next.
-    uint32_t reached = region.start;
-    for (const auto& [address, placed] : items)
-    {
-        if (address < reached)
-        {
-            opaque("the bytes at " + agb::Hex(address) + " read as two different items");
-            return decoded;
-        }
-
-        reached = address + placed.size;
-    }
-
-    // The bytes between the items, split where a table starts.
-    const uint32_t end = region.start + region.size;
-    uint32_t at = region.start;
-    std::map<uint32_t, uint32_t> number;
-    const auto add_data = [&](uint32_t to)
-    {
-        while (at < to)
-        {
-            const auto boundary = boundaries.upper_bound(at);
-            const uint32_t stop = boundary != boundaries.end() && *boundary < to ? *boundary : to;
-            Item data;
-            data.kind = Kind::kData;
-            data.bytes.assign(rom.Ptr(at), rom.Ptr(at) + (stop - at));
-            number[at] = uint32_t(decoded.sequence.items.size());
-            decoded.sequence.items.push_back(std::move(data));
-            at = stop;
-        }
-    };
-
-    for (const auto& [address, placed] : items)
-    {
-        add_data(address);
-        number[address] = uint32_t(decoded.sequence.items.size());
-        decoded.sequence.items.push_back(placed.item);
-        at = address + placed.size;
-    }
-    add_data(end);
-
-    // A table that a command reads has to move with its words.
-    for (const uint32_t table : used_tables)
-    {
-        if (!number.count(table))
-        {
-            opaque("a table's start that falls inside another item");
-            return decoded;
-        }
-    }
-
-    for (const auto& [address, placed] : items)
-    {
-        if (!placed.names)
-        {
-            continue;
-        }
-
-        Item& item = decoded.sequence.items[number[address]];
-        const auto target = number.find(*placed.names);
-        if (target != number.end())
-        {
-            item.target = target->second;
-        }
-        else if (item.kind == Kind::kJump && item.encoding.opcode == kAddressWord)
-        {
-            item.target = *placed.names;
-            item.target_outside = true;
-        }
-        else
-        {
-            opaque("a command's target that falls inside another item");
-            return decoded;
-        }
-    }
-
-    for (size_t s = 0; s < region.sounds.size(); s++)
-    {
-        decoded.lists.push_back(number[list_addresses[s]]);
-        decoded.sequence.labels.push_back({"SOUND_" + std::to_string(region.sounds[s]), decoded.lists.back()});
-    }
-
-    return decoded;
+    return decoder.Result();
 }
 
 Decoded DecodeSong(const Rom& rom, const DriverInfo& info, int song)
@@ -747,19 +898,8 @@ Encoded EncodeSequence(const commands::Sequence& sequence, Revision revision, ui
     Encoded encoded;
     encoded.offsets.reserve(sequence.items.size() + 1);
 
-    // The offsets first: the words name items after them. A table that a channel reads starts on a multiple of 4
-    // too, where the driver reads its words, even when its first word is no call's or jump's.
-    std::set<uint32_t> tables;
-    for (size_t i = 0; i + 1 < sequence.items.size(); i++)
-    {
-        const Item& open = sequence.items[i];
-        const Item& table = sequence.items[i + 1];
-        if (open.kind == Kind::kOpenTrack && table.kind == Kind::kJump && table.encoding.opcode == kAddressWord &&
-            !table.target_outside && !open.target_outside && ReadsTable(sequence, open.target))
-        {
-            tables.insert(table.target);
-        }
-    }
+    // The offsets first: the words name items after them. A table that a channel reads starts on a multiple of 4.
+    const std::set<uint32_t> tables = ReadTables(sequence);
 
     uint32_t offset = 0;
     std::map<uint32_t, uint32_t> item_at;
@@ -826,73 +966,10 @@ Encoded EncodeSequence(const commands::Sequence& sequence, Revision revision, ui
             continue;
         }
 
-        if (item.kind == Kind::kNote)
-        {
-            if (item.key >= 0x80)
-            {
-                throw std::invalid_argument("a note's byte lies past the driver's notes");
-            }
-
-            *out = item.key;
-            continue;
-        }
-
-        out[0] = OpcodeOf(item, revision);
-        switch (item.kind)
-        {
-        case Kind::kCall:
-        case Kind::kJump:
-            out[1] = item.index;
-            break;
-        case Kind::kRelease:
-        case Kind::kProgram:
-        case Kind::kPan:
-        case Kind::kVolume:
-        case Kind::kLoopStart:
-            out[1] = ByteOf(item, revision, 0, 255);
-            break;
-        case Kind::kSweep:
-            if (item.index == 0)
-            {
-                out[1] = ByteOf(item, revision, 0, 255);
-            }
-            break;
-        case Kind::kTranspose:
-        case Kind::kTune:
-            out[1] = ByteOf(item, revision, -128, 127);
-            break;
-        case Kind::kOther:
-            if (item.bytes.size() != CommandSize(revision, out[0]) - 1)
-            {
-                throw std::invalid_argument("a command holds another number of bytes than the driver reads");
-            }
-            std::copy(item.bytes.begin(), item.bytes.end(), out + 1);
-            break;
-        default:
-            break;
-        }
+        WriteCommand(item, revision, out);
     }
 
-    // Each list's channels read their commands as the items say.
-    std::set<std::pair<uint32_t, uint32_t>> seen;
-    for (uint32_t i = 0; i < sequence.items.size(); i++)
-    {
-        const Item& item = sequence.items[i];
-        if (item.kind != Kind::kOpenTrack)
-        {
-            continue;
-        }
-
-        if (i + 1 >= sequence.items.size() || sequence.items[i + 1].kind != Kind::kJump ||
-            sequence.items[i + 1].encoding.opcode != kAddressWord)
-        {
-            throw std::invalid_argument("a list's channel has no word with its table's address");
-        }
-
-        const Item& table = sequence.items[i + 1];
-        CheckChannel(sequence, encoded.offsets, item_at, item.target,
-                     table.target_outside ? uint32_t(sequence.items.size()) : table.target, seen);
-    }
+    CheckLists(sequence, encoded, item_at);
 
     return encoded;
 }

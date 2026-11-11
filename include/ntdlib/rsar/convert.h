@@ -30,6 +30,52 @@
 namespace ntdlib::rsar
 {
 
+// `region`, a region of the Wii, as the values of a velocity region of the 3DS, the Wii U or the Switch: its wave index
+// as the entry of the table of waves, its original key, volume and pan, its tune as the pitch, and its envelope. A
+// note-off type of 1 ignores the note-off. NW4R SND's voices interpolate with the 4-tap filters, and the values take
+// the interpolation 0. Builds before March 2008 read no hold, note-off type or key group, and the values for such a
+// `build` take none. Without a build, the values take every field that the region holds, as the builds from March 2008
+// on read them.
+inline sar::VelocityRegion ValuesOf(const Region& region, const std::optional<SndBuild>& build = std::nullopt)
+{
+    const bool march_2008 = !build || build->SinceMarch2008();
+    sar::VelocityRegion values;
+    values.wave_id_index = static_cast<uint32_t>(region.wave_index);
+    values.original_key = region.original_key;
+    values.volume = region.volume;
+    values.pan = region.pan;
+    values.pitch = region.tune;
+    values.ignore_note_off = march_2008 && region.note_off_type == 1;
+    values.key_group = march_2008 ? region.key_group : 0;
+    values.interpolation = 0;
+    values.adshr = {region.attack, region.decay, region.sustain, march_2008 ? region.hold : uint8_t{0}, region.release};
+
+    return values;
+}
+
+// `values`, the values of a velocity region of the 3DS, the Wii U or the Switch, as a region of the Wii that plays wave
+// `wave_index` of its bank: the original key, volume and pan, the pitch as the tune, the envelope, the note-off type
+// and the key group. A region that ignores the note-off takes the note-off type 1. The Wii holds no interpolation, and
+// the region leaves it out. The region takes no surround pan. Its wave index counts in the bank's waves.
+inline Region RegionOf(const sar::VelocityRegion& values, int32_t wave_index)
+{
+    Region region;
+    region.wave_index = wave_index;
+    region.attack = values.adshr.attack;
+    region.decay = values.adshr.decay;
+    region.sustain = values.adshr.sustain;
+    region.release = values.adshr.release;
+    region.hold = values.adshr.hold;
+    region.note_off_type = values.ignore_note_off ? 1 : 0;
+    region.key_group = values.key_group;
+    region.original_key = values.original_key;
+    region.volume = values.volume;
+    region.pan = values.pan;
+    region.tune = values.pitch;
+
+    return region;
+}
+
 // `wave`, a wave of the Wii, as a wave file of `flavor` and `version`: its encoding, its rate, its loop, and the
 // samples of its first two channels up to the wave's end. NW4R SND plays only those. A DSP-ADPCM channel keeps its
 // coefficients, its history at the start and its state at the loop's start. A 16-bit sample takes the file's byte

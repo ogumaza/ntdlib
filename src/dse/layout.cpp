@@ -23,6 +23,7 @@
 
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::dse
 {
@@ -45,11 +46,6 @@ constexpr uint32_t kSongTracks = 0x80;       // a song's header, its song chunk 
 constexpr uint32_t kEffectsChunkSize = 0x4C; // the seq chunk's size in a bank of sound effects
 constexpr uint32_t kEffectsBase = 0x50;      // what the seq chunk's table counts from
 constexpr uint32_t kEndChunk = 16;           // an eoc chunk
-
-uint64_t AlignUp(uint64_t value, uint64_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
 
 bool HasMagic(std::span<const uint8_t> bytes, const char* magic)
 {

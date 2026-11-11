@@ -16,6 +16,8 @@
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/testing/byte_writer.h"
+
 namespace ntdlib::testing::nds_files
 {
 
@@ -44,7 +46,7 @@ inline void Put32(Bytes& file, std::size_t at, uint32_t value)
 
 inline std::size_t Place(Bytes& image, const Bytes& data)
 {
-    image.resize((image.size() + 0x1FF) / 0x200 * 0x200, 0xFF);
+    image.resize(AlignUp(image.size(), 0x200), 0xFF);
     const std::size_t at = image.size();
     image.insert(image.end(), data.begin(), data.end());
 
@@ -71,13 +73,9 @@ inline void Number(Directory& directory, uint16_t& next, std::vector<Directory*>
     }
 }
 
-} // namespace detail
-
-// The image, and the file ID of each of Image::files in order. The overlays take IDs 0 and 1.
-inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
+// The header's 0x4000 bytes, with the title, the game code, the maker code, the unit code and the version.
+inline Bytes HeaderOf(const Image& spec)
 {
-    using detail::Put32;
-
     Bytes image(0x4000, 0);
     for (std::size_t i = 0; i < spec.title.size() && i < 12; i++)
     {
@@ -92,10 +90,15 @@ inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
     image[0x12] = spec.unit_code;
     image[0x1E] = spec.version;
 
-    // The binaries and their overlay tables. Each table holds one overlay.
+    return image;
+}
+
+// The binaries and their overlay tables. Each table holds one overlay.
+inline void AppendBinaries(Bytes& image, const Image& spec)
+{
     const auto binary = [&](std::size_t field, const Bytes& data, uint32_t ram)
     {
-        const std::size_t at = detail::Place(image, data);
+        const std::size_t at = Place(image, data);
         Put32(image, field, static_cast<uint32_t>(at));
         Put32(image, field + 4, ram);
         Put32(image, field + 8, ram);
@@ -107,7 +110,7 @@ inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
         Put32(table, 4, ram);
         Put32(table, 8, static_cast<uint32_t>(size));
         Put32(table, 24, file_id);
-        const std::size_t at = detail::Place(image, table);
+        const std::size_t at = Place(image, table);
         Put32(image, field, static_cast<uint32_t>(at));
         Put32(image, field + 4, 32);
     };
@@ -115,12 +118,16 @@ inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
     overlay_table(0x50, 0x02100000, 0, spec.arm9_overlay.size());
     binary(0x30, spec.arm7, 0x02380000);
     overlay_table(0x58, 0x02390000, 1, spec.arm7_overlay.size());
+}
 
+// The FNT of the files of `spec`, and the file ID of each of Image::files in order.
+inline std::pair<Bytes, std::vector<uint32_t>> FntOf(const Image& spec)
+{
     // The directory tree, numbered from the root in depth-first order.
-    detail::Directory root;
+    Directory root;
     for (std::size_t i = 0; i < spec.files.size(); i++)
     {
-        detail::Directory* directory = &root;
+        Directory* directory = &root;
         std::string path = spec.files[i].first;
         for (std::size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/'))
         {
@@ -130,8 +137,8 @@ inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
         directory->files.emplace_back(path, i);
     }
     uint16_t next = 0;
-    std::vector<detail::Directory*> order;
-    detail::Number(root, next, order);
+    std::vector<Directory*> order;
+    Number(root, next, order);
 
     // The files take IDs from 2, a directory's files together.
     std::vector<uint32_t> ids(spec.files.size());
@@ -167,18 +174,20 @@ inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
         }
         fnt.push_back(0);
     }
-    const std::size_t fnt_at = detail::Place(image, fnt);
-    Put32(image, 0x40, static_cast<uint32_t>(fnt_at));
-    Put32(image, 0x44, static_cast<uint32_t>(fnt.size()));
 
-    // The FAT, then the files' bytes.
+    return {fnt, ids};
+}
+
+// The FAT, then the files' bytes. `ids` gives the file ID of each of Image::files.
+inline void AppendFat(Bytes& image, const Image& spec, const std::vector<uint32_t>& ids)
+{
     const std::size_t count = 2 + spec.files.size();
-    const std::size_t fat_at = detail::Place(image, Bytes(count * 8, 0));
+    const std::size_t fat_at = Place(image, Bytes(count * 8, 0));
     Put32(image, 0x48, static_cast<uint32_t>(fat_at));
     Put32(image, 0x4C, static_cast<uint32_t>(count * 8));
     const auto place_file = [&](uint32_t file_id, const Bytes& data)
     {
-        const std::size_t at = detail::Place(image, data);
+        const std::size_t at = Place(image, data);
         Put32(image, fat_at + file_id * 8, static_cast<uint32_t>(at));
         Put32(image, fat_at + file_id * 8 + 4, static_cast<uint32_t>(at + data.size()));
     };
@@ -188,6 +197,22 @@ inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
     {
         place_file(ids[i], spec.files[i].second);
     }
+}
+
+} // namespace detail
+
+// The image, and the file ID of each of Image::files in order. The overlays take IDs 0 and 1.
+inline std::pair<Bytes, std::vector<uint32_t>> BuildImage(const Image& spec)
+{
+    using detail::Put32;
+
+    Bytes image = detail::HeaderOf(spec);
+    detail::AppendBinaries(image, spec);
+    const auto [fnt, ids] = detail::FntOf(spec);
+    const std::size_t fnt_at = detail::Place(image, fnt);
+    Put32(image, 0x40, static_cast<uint32_t>(fnt_at));
+    Put32(image, 0x44, static_cast<uint32_t>(fnt.size()));
+    detail::AppendFat(image, spec, ids);
     Put32(image, 0x80, static_cast<uint32_t>(image.size()));
     Put32(image, 0x84, 0x4000);
 

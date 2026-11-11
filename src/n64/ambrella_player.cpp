@@ -134,6 +134,7 @@ int AmbrellaPlayer::StartSong(std::span<const uint8_t> file)
         return (static_cast<uint32_t>(file[at]) << 24) | (static_cast<uint32_t>(file[at + 1]) << 16) |
                (static_cast<uint32_t>(file[at + 2]) << 8) | file[at + 3];
     };
+
     const auto half = [&file](std::size_t at)
     {
         return static_cast<uint32_t>((file[at] << 8) | file[at + 1]);
@@ -267,48 +268,12 @@ void AmbrellaPlayer::StopReader(Player& player)
 // The code at 0x8000530C.
 bool AmbrellaPlayer::ReadFromFile(Player& player, double& delta)
 {
-    auto& event = player.event;
     delta = 0.0;
     for (;;)
     {
-        if (player.flush_pedals)
+        if (FlushHeld(player))
         {
-            bool sent = false;
-            for (int c = 0; c < kChannels && !sent; c++)
-            {
-                uint8_t& pedal = player.pedals[static_cast<std::size_t>(c)];
-                if (pedal >= kPedalDown)
-                {
-                    pedal = 0;
-                    event[0] = static_cast<uint8_t>(kStatusController | c);
-                    event[1] = kControllerSustain;
-                    event[2] = 0;
-                    sent = true;
-                }
-            }
-
-            if (sent)
-            {
-                return true;
-            }
-
-            player.flush_pedals = false;
-        }
-
-        if (player.flush_notes)
-        {
-            if (player.held_notes != 0)
-            {
-                player.held_notes--;
-                const auto held = static_cast<std::size_t>(player.held_notes);
-                event[0] = static_cast<uint8_t>(kStatusNoteOn | player.held_channels[held]);
-                event[1] = player.held_keys[held];
-                event[2] = 0;
-
-                return true;
-            }
-
-            player.flush_notes = false;
+            return true;
         }
 
         if (player.stopped)
@@ -324,152 +289,229 @@ bool AmbrellaPlayer::ReadFromFile(Player& player, double& delta)
             continue;
         }
 
-        const uint32_t ticks = NextLength(player);
-        player.event_offset = static_cast<uint32_t>(player.position);
-        const uint8_t first = NextByte(player);
-        event[0] = first;
-        if (first == kStatusSystem || first == kStatusSystemEnd)
-        {
-            const uint32_t length = NextLength(player);
-            player.position += length;
-        }
-        else if (first == kStatusMeta)
-        {
-            event[1] = NextByte(player);
-            event[2] = NextByte(player);
-            player.running_status = 0;
-            const std::size_t length = event[2];
-            for (std::size_t i = 0; i < length; i++)
-            {
-                const uint8_t byte = NextByte(player);
-                if (i + 3 < event.size())
-                {
-                    event[i + 3] = byte;
-                }
-            }
-        }
-        else
-        {
-            if ((first & 0x80) != 0)
-            {
-                event[1] = NextByte(player);
-                player.running_status = first;
-            }
-            else
-            {
-                event[1] = first;
-                event[0] = player.running_status;
-            }
-
-            const uint8_t kind = event[0] & 0xF0;
-            if (kind != kStatusProgram && kind != 0xD0)
-            {
-                event[2] = NextByte(player);
-            }
-        }
-
+        const uint32_t ticks = ReadFileEvent(player);
         delta += static_cast<double>(ticks) * kMicroseconds * static_cast<double>(player.tempo) /
                  static_cast<double>(player.division) / player.speed;
 
-        const uint8_t status = event[0];
-        const uint8_t kind = status & 0xF0;
-        const uint8_t channel = status & 0x0F;
-        if (kind == kStatusNoteOn && event[2] != 0)
+        if (PassEvent(player))
         {
-            if (((player.channel_mask >> channel) & 1) == 0 || player.held_notes >= kHeldNotes)
-            {
-                continue;
-            }
+            return true;
+        }
+    }
+}
 
+// Makes the next event of a flush: a release of each pedal that is down, then a note on of velocity 0 for each held
+// note. Returns false when the flush has no events left.
+bool AmbrellaPlayer::FlushHeld(Player& player)
+{
+    auto& event = player.event;
+    if (player.flush_pedals)
+    {
+        bool sent = false;
+        for (int c = 0; c < kChannels && !sent; c++)
+        {
+            uint8_t& pedal = player.pedals[static_cast<std::size_t>(c)];
+            if (pedal >= kPedalDown)
+            {
+                pedal = 0;
+                event[0] = static_cast<uint8_t>(kStatusController | c);
+                event[1] = kControllerSustain;
+                event[2] = 0;
+                sent = true;
+            }
+        }
+
+        if (sent)
+        {
+            return true;
+        }
+
+        player.flush_pedals = false;
+    }
+
+    if (player.flush_notes)
+    {
+        if (player.held_notes != 0)
+        {
+            player.held_notes--;
             const auto held = static_cast<std::size_t>(player.held_notes);
-            player.held_channels[held] = channel;
-            player.held_keys[held] = event[1];
-            player.held_notes++;
+            event[0] = static_cast<uint8_t>(kStatusNoteOn | player.held_channels[held]);
+            event[1] = player.held_keys[held];
+            event[2] = 0;
 
             return true;
         }
 
-        if (kind == kStatusNoteOff || kind == kStatusNoteOn)
-        {
-            for (int i = 0; i < player.held_notes; i++)
-            {
-                const auto held = static_cast<std::size_t>(i);
-                if (player.held_channels[held] == channel && player.held_keys[held] == event[1])
-                {
-                    player.held_notes--;
-                    const auto last = static_cast<std::size_t>(player.held_notes);
-                    player.held_channels[held] = player.held_channels[last];
-                    player.held_keys[held] = player.held_keys[last];
-                    break;
-                }
-            }
+        player.flush_notes = false;
+    }
 
-            return true;
+    return false;
+}
+
+// Reads the next event of the file into `event`, with the running status where the file leaves out the status. Skips
+// the bytes of a system exclusive message. Returns the ticks before the event.
+uint32_t AmbrellaPlayer::ReadFileEvent(Player& player)
+{
+    auto& event = player.event;
+    const uint32_t ticks = NextLength(player);
+    player.event_offset = static_cast<uint32_t>(player.position);
+    const uint8_t first = NextByte(player);
+    event[0] = first;
+    if (first == kStatusSystem || first == kStatusSystemEnd)
+    {
+        const uint32_t length = NextLength(player);
+        player.position += length;
+    }
+    else if (first == kStatusMeta)
+    {
+        event[1] = NextByte(player);
+        event[2] = NextByte(player);
+        player.running_status = 0;
+        const std::size_t length = event[2];
+        for (std::size_t i = 0; i < length; i++)
+        {
+            const uint8_t byte = NextByte(player);
+            if (i + 3 < event.size())
+            {
+                event[i + 3] = byte;
+            }
+        }
+    }
+    else
+    {
+        if ((first & 0x80) != 0)
+        {
+            event[1] = NextByte(player);
+            player.running_status = first;
+        }
+        else
+        {
+            event[1] = first;
+            event[0] = player.running_status;
         }
 
-        if (kind == kStatusController)
+        const uint8_t kind = event[0] & 0xF0;
+        if (kind != kStatusProgram && kind != 0xD0)
         {
-            if (event[1] == kControllerSustain)
-            {
-                player.pedals[channel] = event[2];
-            }
-            else if (event[1] == kControllerLoopStart)
-            {
-                player.loop_position = player.position;
-                player.loop_status = player.running_status;
-                player.has_loop = true;
-                continue;
-            }
-            else if (event[1] == kControllerLoopEnd)
-            {
-                // From the sixth pass on, two passes of every three leave out a random set of the upper channels.
-                player.flush_notes = true;
-                if (player.passes % 3 > 0 && player.passes >= 4)
-                {
-                    player.channel_mask = static_cast<uint16_t>((random ? random() : uint32_t{0xFFFF}) | 0xFF);
-                }
-                else
-                {
-                    player.channel_mask = 0xFFFF;
-                }
+            event[2] = NextByte(player);
+        }
+    }
 
-                player.passes++;
-                if (player.has_loop)
-                {
-                    player.position = player.loop_position;
-                    player.running_status = player.loop_status;
-                }
+    return ticks;
+}
 
-                continue;
-            }
-
-            return true;
+// Updates the held notes, pedals, loops and tempo for the event in `event`. Returns false for an event that the reader
+// drops.
+bool AmbrellaPlayer::PassEvent(Player& player)
+{
+    const auto& event = player.event;
+    const uint8_t status = event[0];
+    const uint8_t kind = status & 0xF0;
+    const uint8_t channel = status & 0x0F;
+    if (kind == kStatusNoteOn && event[2] != 0)
+    {
+        if (((player.channel_mask >> channel) & 1) == 0 || player.held_notes >= kHeldNotes)
+        {
+            return false;
         }
 
-        if (kind == kStatusSystem)
+        const auto held = static_cast<std::size_t>(player.held_notes);
+        player.held_channels[held] = channel;
+        player.held_keys[held] = event[1];
+        player.held_notes++;
+
+        return true;
+    }
+
+    if (kind == kStatusNoteOff || kind == kStatusNoteOn)
+    {
+        for (int i = 0; i < player.held_notes; i++)
         {
-            if (status == kStatusSystem || status == kStatusSystemEnd)
+            const auto held = static_cast<std::size_t>(i);
+            if (player.held_channels[held] == channel && player.held_keys[held] == event[1])
             {
-                continue;
-            }
-
-            if (status == kStatusMeta)
-            {
-                if (event[1] == kMetaEnd)
-                {
-                    StopReader(player);
-                }
-                else if (event[1] == kMetaTempo)
-                {
-                    player.tempo = (event[3] << 16) | (event[4] << 8) | event[5];
-                }
-
-                continue;
+                player.held_notes--;
+                const auto last = static_cast<std::size_t>(player.held_notes);
+                player.held_channels[held] = player.held_channels[last];
+                player.held_keys[held] = player.held_keys[last];
+                break;
             }
         }
 
         return true;
     }
+
+    if (kind == kStatusController)
+    {
+        return PassController(player, channel);
+    }
+
+    if (kind == kStatusSystem)
+    {
+        if (status == kStatusSystem || status == kStatusSystemEnd)
+        {
+            return false;
+        }
+
+        if (status == kStatusMeta)
+        {
+            if (event[1] == kMetaEnd)
+            {
+                StopReader(player);
+            }
+            else if (event[1] == kMetaTempo)
+            {
+                player.tempo = (event[3] << 16) | (event[4] << 8) | event[5];
+            }
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Updates the pedals and the loop for a controller event. Returns false for a loop start or a loop end. The reader
+// drops both.
+bool AmbrellaPlayer::PassController(Player& player, uint8_t channel)
+{
+    const auto& event = player.event;
+    if (event[1] == kControllerSustain)
+    {
+        player.pedals[channel] = event[2];
+    }
+    else if (event[1] == kControllerLoopStart)
+    {
+        player.loop_position = player.position;
+        player.loop_status = player.running_status;
+        player.has_loop = true;
+
+        return false;
+    }
+    else if (event[1] == kControllerLoopEnd)
+    {
+        // From the sixth pass on, two passes of every three leave out a random set of the upper channels.
+        player.flush_notes = true;
+        if (player.passes % 3 > 0 && player.passes >= 4)
+        {
+            player.channel_mask = static_cast<uint16_t>((random ? random() : uint32_t{0xFFFF}) | 0xFF);
+        }
+        else
+        {
+            player.channel_mask = 0xFFFF;
+        }
+
+        player.passes++;
+        if (player.has_loop)
+        {
+            player.position = player.loop_position;
+            player.running_status = player.loop_status;
+        }
+
+        return false;
+    }
+
+    return true;
 }
 
 // The code at 0x800059E4 and 0x80006068.

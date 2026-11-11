@@ -45,10 +45,15 @@ SfzInstruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport&
                         const std::string& title, const std::vector<std::string>& preset_names, bool balance,
                         const Settings& settings, const std::string& program);
 
+// The end of the name of program `program`'s SFZ file in a bank whose last program is `last_program`, before ".sfz":
+// "_", then the program padded with zeros to the digits of `last_program`. A program with more digits isn't padded.
+std::string ProgramSuffix(uint32_t program, uint32_t last_program);
+
 // Builds an SFZ file for each of `programs` of the bank in slot 0 of `banks`, for the CSAR and FSAR formats. Each file
 // plays its instrument by itself, as a track plays it with its starting settings. Program p's file is
-// "<title>_<p>.sfz", with p padded to the digits of the last program. `title` names the bank. The files find their
-// samples in the samples' folder beside their folder. `program` is the name that goes in each file's first comment.
+// "<title>_<p>.sfz", with p padded to the digits of the last program (ProgramSuffix). `title` names the bank. The files
+// find their samples in the samples' folder beside their folder. `program` is the name that goes in each file's first
+// comment.
 SfzInstruments BuildBankSfz(const std::vector<uint32_t>& programs, BankSet& banks, const std::string& title,
                             const Settings& settings, const std::string& program);
 

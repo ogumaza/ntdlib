@@ -129,6 +129,9 @@ public:
     std::function<void(const AlNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     enum class EventType : uint8_t
     {
         kPeriodic,
@@ -283,8 +286,23 @@ private:
     int32_t StartOscillator(int& state, float& value, uint8_t type, uint8_t rate, uint8_t depth, uint8_t delay);
     bool NeedsNoteKill(int voice, int32_t kill_time);
 
+    void EndVoice(AlSynth& synth, int voice);
+    void StepOscillator(AlSynth& synth);
+    void NextEnvelopeSegment(AlSynth& synth);
+    void FinishStop(AlSynth& synth);
+    void StartStopping(AlSynth& synth);
+    void LoadSequence();
     void HandleSequenceEvent(AlSynth& synth);
     void HandleMidi(AlSynth& synth, const Event& event);
+    void StartNote(AlSynth& synth, const Event& event, uint8_t channel_number);
+    void StartVoiceOscillators(int index, const ChannelState& channel);
+    void ReleaseNote(AlSynth& synth, uint8_t channel_number, uint8_t byte1);
+    void SetPitchBend(AlSynth& synth, uint8_t channel_number, uint8_t byte1, uint8_t byte2);
+    void HandleController(AlSynth& synth, uint8_t channel_number, uint8_t byte1, uint8_t byte2);
+    void ApplyChannelPan(AlSynth& synth, uint8_t channel_number);
+    void ApplyChannelLevel(AlSynth& synth, uint8_t channel_number);
+    void ApplySustain(AlSynth& synth, uint8_t channel_number, uint8_t byte2);
+    void ApplyFxMix(AlSynth& synth, uint8_t channel_number, uint8_t byte2);
     void HandleTempo(const SequenceEvent& event);
     void PostNextSequenceEvent();
     void ReleaseVoice(AlSynth& synth, int voice, int32_t time);
@@ -310,6 +328,7 @@ private:
     bool CompressedNextDelta(int32_t& ticks);
     SequenceEvent CompressedNextEvent();
     SequenceEvent CompressedTrackEvent(int track);
+    void CompressedLoopEnd(Track& track);
     uint8_t TrackByte(int track);
     uint32_t TrackVarLen(int track);
     uint8_t SequenceByte(uint32_t place) const;

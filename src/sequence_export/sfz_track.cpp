@@ -14,7 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/file_name.h"
 #include "seqlib/loop.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/units.h"
@@ -33,6 +32,8 @@
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/wave/decode.h"
 #include "sequence_export/pcm.h"
+#include "sequence_export/sf2_build.h"
+#include "sequence_export/sfz_bank_file.h"
 
 namespace ntdlib::sequence_export
 {
@@ -42,11 +43,11 @@ namespace
 using seqlib::sfz::Curve;
 using seqlib::sfz::Number;
 
-// Custom curve IDs; sfizz reserves 0-6, and seqlib's track file uses 7 for CC10's pan.
-constexpr int kLowPassCurve = 8;          // kSfzLowPassController to the low-pass's cutoff
-constexpr int kBiquadCutoffCurve = 9;     // kSfzBiquadController to the biquad filter's cutoff
-constexpr int kBiquadResonanceCurve = 10; // ... and resonance
-constexpr int kBiquadGainCurve = 11;      // ... and gain
+// The custom curves after seqlib's curve for CC10's pan.
+constexpr int kLowPassCurve = seqlib::sfz::kPanCurve + 1; // kSfzLowPassController to the low-pass's cutoff
+constexpr int kBiquadCutoffCurve = kLowPassCurve + 1;     // kSfzBiquadController to the biquad filter's cutoff
+constexpr int kBiquadResonanceCurve = kLowPassCurve + 2;  // ... and resonance
+constexpr int kBiquadGainCurve = kLowPassCurve + 3;       // ... and gain
 
 // Modulation amounts at curve value 1: cutoff in cents, resonance and volume in dB. The curves' values stay within the
 // range that sfzformat.com gives them. The cutoffs move from kCutoffBase and the resonance from 0 dB. Curve values from
@@ -302,11 +303,7 @@ std::string RegionLines(const std::vector<std::pair<int, int>>& keys,
 
 std::string SfzPitchOpcodes(uint8_t original_key, float tune)
 {
-    std::string s = " pitch_keycenter=" + std::to_string(original_key);
-    const double cents = tune > 0 ? std::clamp(1200.0 * std::log2(tune), -12000.0, 12000.0) : 0.0;
-    s += seqlib::sfz::TuneOpcodes(static_cast<int>(std::lround(cents)));
-
-    return s;
+    return " pitch_keycenter=" + std::to_string(original_key) + seqlib::sfz::TuneOpcodes(TuneCents(tune));
 }
 
 std::string SfzFixedPitchOpcodes(int cents)
@@ -381,20 +378,9 @@ SfzInstruments BuildTrackFiles(const Performance& perf, const seqlib::midi::Midi
 std::string InstrumentFile(const PresetKey& key, const std::string& name, const std::string& title,
                            const Settings& settings, const std::string& program, const PresetRegionsFunction& regions)
 {
-    // The frame of seqlib's track files: the samples' folder, CC10's pan curve, the bend range, and CC7, CC10 and CC11
-    // without smoothing. A track's bend range starts at 2 semitones. SFZ's documentation gives bend ranges in whole
-    // cents.
-    constexpr int kPanCurve = 7;
+    // A track's bend range starts at 2 semitones.
     constexpr int kBendRange = 2;
-    std::string s = "// " + seqlib::sfz::CommentText(name) + " of " + seqlib::sfz::CommentText(title) +
-                    ", converted by " + program + ".\n\n";
-    s += "<control>\ndefault_path=../" + seqlib::sfz::kSamplesFolder + "/\nhint_ram_based=1\n\n";
-    s += Curve(kPanCurve, "CC10 to pan", [](int v) { return (v - 64) / 64.0; });
-    const std::string bend = std::to_string(kBendRange * 100);
-    s += "<global>\nbend_up=" + bend + " bend_down=-" + bend + "\n";
-    s += "pan_oncc10=100 pan_curvecc10=" + std::to_string(kPanCurve) + " pan_smoothcc10=0\n";
-    s += "amplitude_oncc7=100 amplitude_curvecc7=4 amplitude_smoothcc7=0 amplitude_oncc11=100 amplitude_curvecc11=4 "
-         "amplitude_smoothcc11=0\n";
+    std::string s = SfzBankFileStart(name, title, program, kBendRange);
 
     // The preset's LFO and regions, as a track's file gives them. With no track filter, the regions' low-passes take
     // filter slot 1.
@@ -403,18 +389,20 @@ std::string InstrumentFile(const PresetKey& key, const std::string& name, const 
     return s;
 }
 
+std::string ProgramSuffix(uint32_t program, uint32_t last_program)
+{
+    return "_" + SfzBankFileNumber(program, last_program);
+}
+
 std::vector<SfzFile> BankFiles(const std::vector<uint32_t>& programs, const std::string& title,
                                const Settings& settings, const std::string& program,
                                const PresetRegionsFunction& regions)
 {
     std::vector<SfzFile> files;
-    const std::size_t digits = programs.empty() ? 1 : std::to_string(programs.back()).size();
     for (const uint32_t p : programs)
     {
         const PresetKey key = StartingPresetKey(p, settings);
-        std::string number = std::to_string(p);
-        number.insert(0, digits - number.size(), '0');
-        files.push_back({seqlib::SafeFileName(title) + "_" + number + ".sfz",
+        files.push_back({SfzBankFileName(title, p, programs.back()),
                          InstrumentFile(key, "Program " + std::to_string(p), title, settings, program, regions)});
     }
 

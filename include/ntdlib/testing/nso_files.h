@@ -14,6 +14,8 @@
 #include "xsflib/bytes.h"
 #include "xsflib/sha256.h"
 
+#include "ntdlib/testing/byte_writer.h"
+
 namespace ntdlib::testing
 {
 
@@ -80,7 +82,7 @@ inline std::vector<uint8_t> NsoFile(const NsoSegmentSpec& text, const NsoSegment
         }
 
         file.insert(file.end(), stored.begin(), stored.end());
-        address += (size + 0xfff) & ~0xfffu;
+        address += AlignUp(size, 0x1000);
     }
 
     xsflib::StoreLe32(&file[0xc], flags);

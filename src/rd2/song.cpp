@@ -125,14 +125,11 @@ void ListTrack(const Rom& rom, const DriverInfo& info, uint32_t sequence, uint32
     }
 }
 
-} // namespace
-
-Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, uint16_t length, uint8_t velocity,
-                      uint16_t wait)
+// Decodes the note, wait or slide at `address` into `c`, with the running `length`, `velocity` and `wait`. Returns
+// false if the byte there starts another command.
+bool DecodeTimed(const Rom& rom, uint32_t address, uint16_t length, uint8_t velocity, uint16_t wait, Command& c)
 {
-    Command c;
     const uint8_t op = rom.U8(address);
-    c.op = op;
     char text[160];
     if (op <= 0xBF)
     {
@@ -153,7 +150,7 @@ Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, 
         std::snprintf(text, sizeof text, "note %d (%s), length %u, velocity %u", note, NoteName(note).c_str(),
                       unsigned(length), unsigned(velocity));
         c.text = text;
-        return c;
+        return true;
     }
     if (op == 0xC0 || op == 0xC1)
     {
@@ -168,7 +165,7 @@ Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, 
 
         c.ticks = wait;
         c.text = "wait " + std::to_string(wait);
-        return c;
+        return true;
     }
     if ((op & 0xF0) == 0xD0)
     {
@@ -181,6 +178,23 @@ Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, 
                       (flags & 1) ? (", after " + std::to_string(rom.U8(address + 3)) + " frames").c_str() : "",
                       (flags & 4) ? ", and each note after it from the last" : "");
         c.text = text;
+        return true;
+    }
+
+    return false;
+}
+
+} // namespace
+
+Command DecodeCommand(const Rom& rom, const DriverInfo& info, uint32_t address, uint16_t length, uint8_t velocity,
+                      uint16_t wait)
+{
+    Command c;
+    const uint8_t op = rom.U8(address);
+    c.op = op;
+    char text[160];
+    if (DecodeTimed(rom, address, length, velocity, wait, c))
+    {
         return c;
     }
 

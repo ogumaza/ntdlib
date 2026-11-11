@@ -248,6 +248,18 @@ private:
     std::set<uint32_t> seen_;
 };
 
+// Adds the start of each track that a phrase plays to `tracks`.
+void AddPhraseTracks(const BgmFile& file, uint32_t phrase, std::set<uint32_t>& tracks)
+{
+    for (const BgmTrackInfo& track : file.Phrase(phrase))
+    {
+        if (track.offset != 0 && !track.disabled)
+        {
+            tracks.insert(track.offset);
+        }
+    }
+}
+
 } // namespace
 
 SbnArchive SbnArchive::Parse(std::span<const uint8_t> data)
@@ -637,13 +649,7 @@ BgmWalk WalkBgm(const BgmFile& file)
             if (phrases.insert(phrase).second)
             {
                 walk.phrases++;
-                for (const BgmTrackInfo& track : file.Phrase(phrase))
-                {
-                    if (track.offset != 0 && !track.disabled)
-                    {
-                        tracks.insert(track.offset);
-                    }
-                }
+                AddPhraseTracks(file, phrase, tracks);
             }
         }
     }

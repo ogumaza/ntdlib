@@ -467,7 +467,7 @@ void TestHeldSound()
 {
     const TestFiles test;
     const Bytes select = {0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xE0, 0x7F, 0xE8, 0x40};
-    for (const uint8_t last : {0x18, 0x32})
+    for (const uint8_t last : {uint8_t{0x18}, uint8_t{0x32}})
     {
         const ntdlib::dse::Song song = ntdlib::dse::Song::Parse(files::SongFile(
             {files::Join({{0, 0, 0, 0, 0xA4, 0x78, 0x98}}),

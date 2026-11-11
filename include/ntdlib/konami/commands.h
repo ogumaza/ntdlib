@@ -59,6 +59,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/konami/driver.h"
@@ -96,13 +97,8 @@ Decoded DecodeSong(const Rom& rom, const DriverInfo& info, int song);
 // The most bytes between a song's tracks and the next song's base that DecodeSong takes for the song.
 inline constexpr uint32_t kSongGap = 16;
 
-// The bytes of a song, and each item's offset in them. `offsets` holds one more entry than the sequence has items: the
-// end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a song, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence`, with its tracks at the items `entries`, in the console's values nearest its units. Throws
 // std::invalid_argument for a command that the revision's bytes can't hold, a call's target before its track's start or

@@ -21,7 +21,7 @@
 #include "ntdlib/sequence_export/rd2/convert.h"
 #include "ntdlib/sequence_export/rd2/performance.h"
 #include "ntdlib/testing/agb_files.h"
-#include "rd2_cart.h"
+#include "ntdlib/testing/rd2_cart.h"
 
 using xsflib::testing::Check;
 
@@ -30,20 +30,20 @@ namespace
 
 using namespace ntdlib::testing::rd2_cart;
 
-namespace export_ = ntdlib::sequence_export;
-namespace perf_ = export_::rd2;
+namespace sequence_export = ntdlib::sequence_export;
+namespace driver_export = sequence_export::rd2;
 namespace rd2 = ntdlib::rd2;
-using export_::Entry;
-using export_::Mix;
-using export_::MixChange;
-using export_::Stretch;
-using export_::TrackEvent;
+using driver_export::Performance;
 using ntdlib::agb::kFrameRate;
 using ntdlib::agb::Rom;
 using ntdlib::testing::agb_files::ReadMidi;
 using ntdlib::testing::agb_files::TempSettings;
-using perf_::Performance;
 using rd2::DriverInfo;
+using sequence_export::Entry;
+using sequence_export::Mix;
+using sequence_export::MixChange;
+using sequence_export::Stretch;
+using sequence_export::TrackEvent;
 
 DriverInfo Detect(const Rom& rom)
 {
@@ -72,11 +72,11 @@ std::vector<Note> NotesOf(const std::vector<TrackEvent>& track)
     uint32_t preset = 0;
     for (const TrackEvent& e : track)
     {
-        if (e.kind == export_::EventKind::kPreset)
+        if (e.kind == sequence_export::EventKind::kPreset)
         {
             preset = e.preset;
         }
-        else if (e.kind == export_::EventKind::kNoteOn)
+        else if (e.kind == sequence_export::EventKind::kNoteOn)
         {
             notes.push_back({e.tick, e.key, e.value, preset});
         }
@@ -89,7 +89,7 @@ std::vector<Note> NotesOf(const std::vector<TrackEvent>& track)
 std::vector<uint32_t> OffsetsOf(const Performance& perf)
 {
     std::vector<uint32_t> offsets;
-    for (const export_::NoteCommand& command : perf.note_commands)
+    for (const sequence_export::NoteCommand& command : perf.note_commands)
     {
         offsets.push_back(command.offset);
     }
@@ -100,9 +100,9 @@ std::vector<uint32_t> OffsetsOf(const Performance& perf)
 // Checks that the performance's notes are the MIDI file's, at the same ticks and with the same keys.
 void CheckAgainstMidi(const Rom& rom, const DriverInfo& info, int song, const Performance& perf)
 {
-    export_::agb::ConvertSettings settings = TempSettings("rd2_performance");
+    sequence_export::agb::ConvertSettings settings = TempSettings("rd2_performance");
     settings.program = "test";
-    const export_::agb::SongReport report = perf_::ConvertSong(rom, info, song, settings, nullptr);
+    const sequence_export::agb::SongReport report = driver_export::ConvertSong(rom, info, song, settings, nullptr);
     Check(report.ok && !report.silent, "the conversion writes the song");
     const seqlib::midi::File midi = ReadMidi(report.midi_path);
 
@@ -123,7 +123,7 @@ void CheckAgainstMidi(const Rom& rom, const DriverInfo& info, int song, const Pe
     {
         for (const TrackEvent& e : track)
         {
-            if (e.kind == export_::EventKind::kNoteOn)
+            if (e.kind == sequence_export::EventKind::kNoteOn)
             {
                 in_performance.emplace_back(perf.midi_places[e.note - 1].on, e.key);
             }
@@ -154,7 +154,7 @@ void TestOneTrack()
                          .End()}});              // 29: the end, at tick 72
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 0, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 0, sequence_export::agb::ConvertSettings());
 
     Check(perf.base == kSequenceData, "offsets count from the sequence's start");
     Check(perf.timebase == 24, "24 of the driver's ticks make a quarter note");
@@ -198,7 +198,7 @@ void TestCallsAndLoop()
                          .End()}});              // 22: the return, at tick 12
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 0, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 0, sequence_export::agb::ConvertSettings());
 
     Check(perf.loop && perf.loop->start == 12 && perf.loop->end == 24, "the loop");
     Check(perf.loops == 2 && perf.end_tick == 36, "two passes of the loop");
@@ -233,7 +233,7 @@ void TestNoteWait()
                          .End()}});              // 16: the end at tick 12
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 0, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 0, sequence_export::agb::ConvertSettings());
 
     const std::vector<Stretch> stretches = {{0, 4, 10, Entry::kOpen, 0, false}, {6, 13, 16, Entry::kJump, 0, true}};
     Check(perf.stretches[0] == stretches, "the stretch after C8 starts with the note wait");
@@ -261,7 +261,7 @@ void TestStartedTrack()
     cart.Sequences({{track}});
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 0, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 0, sequence_export::agb::ConvertSettings());
 
     const std::vector<Stretch> stretches = {{2, 18, 23, Entry::kOpen, 0, false}};
     Check(perf.stretches[3] == stretches, "the started track's stretch, at the nearest tick");
@@ -292,7 +292,7 @@ void TestStartedTrackMix()
     cart.Sequences({{track}});
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 0, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 0, sequence_export::agb::ConvertSettings());
 
     const std::vector<MixChange> first = {{0, Mix::kVolume, 0x50}, {0, Mix::kPan, -16}};
     Check(perf.mix[0] == first, "the first track's mix");
@@ -317,7 +317,7 @@ void TestEffect()
                        .End()}});              // 10: the end at tick 24
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 1, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 1, sequence_export::agb::ConvertSettings());
 
     Check(perf.base == kEffectData, "offsets count from the effects' sequence");
     Check(perf.end_tick == 24, "the effect's end");
@@ -338,7 +338,7 @@ void TestWithoutNotes()
     cart.Effects({{{}, TrackData().End()}});
     const Rom rom = cart.ToRom();
     const DriverInfo info = Detect(rom);
-    const Performance perf = perf_::PerformSong(rom, info, 0, export_::agb::ConvertSettings());
+    const Performance perf = driver_export::PerformSong(rom, info, 0, sequence_export::agb::ConvertSettings());
 
     Check(perf.note_commands.empty() && perf.tracks[0].empty(), "no notes");
     const std::vector<Stretch> stretches = {{0, 4, 8, Entry::kOpen, 0, false}};
@@ -349,7 +349,7 @@ void TestWithoutNotes()
     // An effect's entry that gives no track, and a song past the last, give a warning and no tracks.
     for (const int song : {1, 99})
     {
-        const Performance none = perf_::PerformSong(rom, info, song, export_::agb::ConvertSettings());
+        const Performance none = driver_export::PerformSong(rom, info, song, sequence_export::agb::ConvertSettings());
         Check(!none.warnings.empty() && none.base == 0 && none.tempo.empty(), "a song without a track");
     }
 }

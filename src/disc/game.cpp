@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "xsflib/ascii.h"
+#include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 
@@ -440,6 +441,20 @@ private:
     std::vector<uint8_t> tmd_;
 };
 
+// Reads bi2, the apploader and main.dol of `game` into `out`, after the disc header in `out.boot`. The apploader starts
+// with a 0x20-byte header that gives its size and the size of its trailer. The disc header gives main.dol's offset,
+// shifted right by `shift`.
+void ReadSystemFiles(GameData& game, int shift, GameFiles& out)
+{
+    out.bi2 = game.Read(kHeaderSize, 0x2000);
+    const std::vector<uint8_t> apploader = game.Read(0x2440, 0x20);
+    out.apploader = game.Read(
+        0x2440, 0x20 + uint64_t{xsflib::LoadBe32(apploader.data() + 0x14)} + xsflib::LoadBe32(apploader.data() + 0x18));
+    const uint64_t dol_offset = uint64_t{xsflib::LoadBe32(out.boot.data() + kHeaderDolOffset)} << shift;
+    const std::vector<uint8_t> dol_header = game.Read(dol_offset, 0x100);
+    out.dol = game.Read(dol_offset, Dol::Size(dol_header));
+}
+
 void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
 {
     std::shared_ptr<GameData> game;
@@ -458,21 +473,14 @@ void LoadImage(const fs::path& path, GameFiles& out, const GameOptions& options)
         out.region = xsflib::LoadBe32(game->Read(kHeaderSize + kBi2Region, 4).data());
     }
 
-    // The system files: the header, bi2, the apploader, main.dol and the file system table. The apploader starts with a
-    // 0x20-byte header that gives its size and the size of its trailer. The disc header gives the offsets of main.dol
-    // and the file system table, and the table's size. A Wii disc gives all three divided by 4. Its file system table
-    // gives the files' offsets divided by 4 too.
+    // The system files: the header, bi2, the apploader, main.dol and the file system table. The disc header gives the
+    // offsets of main.dol and the file system table, and the table's size. A Wii disc gives all three divided by 4. Its
+    // file system table gives the files' offsets divided by 4 too.
     const int shift = options.console == Console::kWii ? 2 : 0;
     out.boot = game->Read(0, kHeaderSize);
     if (options.system_files)
     {
-        out.bi2 = game->Read(kHeaderSize, 0x2000);
-        const std::vector<uint8_t> apploader = game->Read(0x2440, 0x20);
-        out.apploader = game->Read(0x2440, 0x20 + uint64_t{xsflib::LoadBe32(apploader.data() + 0x14)} +
-                                               xsflib::LoadBe32(apploader.data() + 0x18));
-        const uint64_t dol_offset = uint64_t{xsflib::LoadBe32(out.boot.data() + kHeaderDolOffset)} << shift;
-        const std::vector<uint8_t> dol_header = game->Read(dol_offset, 0x100);
-        out.dol = game->Read(dol_offset, Dol::Size(dol_header));
+        ReadSystemFiles(*game, shift, out);
     }
 
     // With `file_past_end`, a file system that runs past the image's end is damaged.
@@ -532,6 +540,7 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     {
         throw Error("the extracted disc must contain sys/boot.bin, sys/main.dol and sys/fst.bin");
     }
+
     CheckConsole(out.boot.data(), options,
                  options.console == Console::kWii ? "sys/boot.bin isn't a Wii disc's header"
                                                   : "sys/boot.bin isn't a GameCube disc's header",
@@ -552,14 +561,14 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     }
 
     // The files are those in the folder. There may be fewer than the file system table lists. An entry whose type or
-    // size can't be read, such as a broken symbolic link, is left out. The walk goes on past it. AppleDouble files are
-    // left out too. macOS writes one, named "._" and the file's name, beside each file that it copies to a FAT or
-    // exFAT drive.
+    // size can't be read, such as a broken symbolic link, is left out. So is a folder that can't be opened. The walk
+    // goes on past both. AppleDouble files are left out too. macOS writes one, named "._" and the file's name, beside
+    // each file that it copies to a FAT or exFAT drive.
     const fs::path files = root / "files";
     std::error_code error;
     out.files.clear();
-    for (auto it = fs::recursive_directory_iterator(files, error); !error && it != fs::recursive_directory_iterator();
-         it.increment(error))
+    for (auto it = fs::recursive_directory_iterator(files, fs::directory_options::skip_permission_denied, error);
+         !error && it != fs::recursive_directory_iterator(); it.increment(error))
     {
         std::error_code entry_error;
         if (!it->is_regular_file(entry_error) || it->path().filename().u8string().starts_with(u8"._"))
@@ -580,6 +589,7 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     {
         out.files[i].index = static_cast<uint32_t>(i);
     }
+
     out.read_file = [files](const std::string& name, std::vector<uint8_t>& data)
     {
         return ReadHostFile(files / xsflib::PathFromUtf8(name), data);
@@ -645,6 +655,24 @@ std::vector<std::string> GameFiles::SoundArchives() const
     }
 
     return archives;
+}
+
+std::vector<uint8_t> ReadGameFile(const GameFiles& game, const std::string& path)
+{
+    std::vector<uint8_t> data;
+    try
+    {
+        if (!game.read_file || !game.read_file(path, data))
+        {
+            throw xsflib::FormatError("can't read " + path);
+        }
+    }
+    catch (const Error& e)
+    {
+        throw xsflib::FormatError(e.what());
+    }
+
+    return data;
 }
 
 std::optional<Console> DiscConsole(std::span<const uint8_t> header)

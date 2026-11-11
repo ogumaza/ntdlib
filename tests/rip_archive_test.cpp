@@ -3,6 +3,8 @@
 // Tests the parts of a rip tool that rip sound archives (rip/archive.h): item IDs, and on archives built with
 // sar_files.h the sounds that --only and --bgm pick, the groups kept outside the archive, by name and in SARC archives,
 // the data a sound requires, and the part of an archive and of its group files that a library holds.
+// It also tests the search for group files and SARC archives among the paths of the files of a game, and the kinds of
+// sound archive (sar/formats.h).
 
 #include <algorithm>
 #include <array>
@@ -14,12 +16,15 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/rip/archive.h"
+#include "ntdlib/rip/player_names.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
 
@@ -32,6 +37,20 @@ namespace
 
 namespace rip = ntdlib::rip;
 namespace sar = ntdlib::sar;
+
+using sar_files::kBlockCountField;
+using sar_files::kBlockEntrySize;
+using sar_files::kBlockTable;
+using sar_files::kFileSizeField;
+
+// The third entry of the table of blocks, where WithInfx lists a group file's INFX block.
+constexpr std::size_t kThirdBlockEntry = kBlockTable + 2 * kBlockEntrySize;
+
+// The types of the blocks: the archive's FILE block, and a group file's INFO, FILE and INFX blocks.
+constexpr uint16_t kArchiveFileBlock = 0x2002;
+constexpr uint16_t kGroupInfoBlock = 0x7800;
+constexpr uint16_t kGroupFileBlock = 0x7801;
+constexpr uint16_t kGroupInfxBlock = 0x7802;
 
 const sar::Options kStrictRules{sar::Flavor::kNx, {}, false, sar::Rules::kStopAtFirstProblem};
 
@@ -103,6 +122,10 @@ void TestArchive()
     XSFLIB_CHECK(!rip::IsMusic(archive, 3)); // a player of both
     XSFLIB_CHECK(!rip::IsMusic(archive, 4)); // a stream
     XSFLIB_CHECK(!rip::IsMusic(archive, 6)); // past the sounds
+
+    // The players' names alone, in any case.
+    XSFLIB_CHECK(rip::IsMusicPlayerName("Music_2") && rip::IsMusicPlayerName("FANFARE"));
+    XSFLIB_CHECK(!rip::IsMusicPlayerName("PLAYER") && !rip::IsMusicPlayerName("") && !rip::IsMusicPlayerName("SE_BGM"));
 
     const auto indices = [](const std::vector<rip::Job>& jobs)
     {
@@ -311,14 +334,8 @@ void PutField32(std::span<uint8_t> bytes, sar::Flavor flavor, std::size_t at, ui
 // Where the header's table of blocks lists the FILE block, or the end of the table.
 std::size_t FileBlockEntry(std::span<const uint8_t> bytes, sar::Flavor flavor)
 {
-    const std::size_t end = 0x14 + std::size_t{12} * Field16(bytes, flavor, 0x10);
-    std::size_t entry = 0x14;
-    while (entry < end && Field16(bytes, flavor, entry) != 0x2002)
-    {
-        entry += 12;
-    }
-
-    return entry;
+    return sar_files::FindBlockEntry(bytes, flavor, kArchiveFileBlock)
+        .value_or(kBlockTable + kBlockEntrySize * Field16(bytes, flavor, kBlockCountField));
 }
 
 // The cut of `archive` for `sounds` and the banks `start_banks`, read back with the group files beside the archive that
@@ -372,7 +389,7 @@ bool HoldsOnly(const sar::SoundArchive& archive, const sar::SoundArchive& cut, c
     const std::size_t entry = FileBlockEntry(bytes, flavor);
     const std::size_t file_block = Field32(bytes, flavor, entry + 4);
 
-    return holds && Field32(bytes, flavor, 0x0C) == bytes.size() &&
+    return holds && Field32(bytes, flavor, kFileSizeField) == bytes.size() &&
            Field32(bytes, flavor, entry + 8) == bytes.size() - file_block &&
            Field32(bytes, flavor, file_block + 4) == bytes.size() - file_block;
 }
@@ -537,6 +554,25 @@ void TestKeepGroupFilesBeside()
     }
 }
 
+// Where the file table of `bytes`, an archive of `flavor`, gives `file` its place: the offset of the place's offset and
+// size, which follow the reference's type. The tables lie before the FILE block. Nothing if no place matches.
+std::optional<std::size_t> PlaceOf(std::span<const uint8_t> bytes, sar::Flavor flavor, const sar::SoundArchive& archive,
+                                   uint32_t file)
+{
+    const std::size_t file_block = Field32(bytes, flavor, FileBlockEntry(bytes, flavor) + 4);
+    std::array<uint8_t, 8> offset_and_size{};
+    PutField32(offset_and_size, flavor, 0, static_cast<uint32_t>(*archive.FileOffset(file) - (file_block + 8)));
+    PutField32(offset_and_size, flavor, 4, static_cast<uint32_t>(archive.FileData(file).size()));
+    const std::span<const uint8_t> tables = bytes.first(file_block);
+    const auto found = std::ranges::search(tables, offset_and_size);
+    if (found.empty())
+    {
+        return std::nullopt;
+    }
+
+    return static_cast<std::size_t>(found.begin() - tables.begin());
+}
+
 // Gives file `file` of `bytes`, an archive of `flavor`, the place of its copy in file `group`, a group's file. The
 // file's place then lies inside the group's file. Returns false when the group's file holds no copy of the file, or
 // when the file table's place isn't found.
@@ -551,22 +587,15 @@ bool PlaceInGroup(std::vector<uint8_t>& bytes, sar::Flavor flavor, uint32_t file
         return false;
     }
 
-    // The file table holds the place's offset, then its size. The tables lie before the FILE block.
-    const std::size_t file_block = Field32(bytes, flavor, FileBlockEntry(bytes, flavor) + 4);
-    const std::size_t files = file_block + 8;
-    std::array<uint8_t, 8> place{};
-    PutField32(place, flavor, 0, static_cast<uint32_t>(*archive.FileOffset(file) - files));
-    PutField32(place, flavor, 4, static_cast<uint32_t>(data.size()));
-    const std::span<uint8_t> tables = std::span(bytes).first(file_block);
-    const auto at = std::ranges::search(tables, place);
-    if (at.empty())
+    const std::optional<std::size_t> place = PlaceOf(bytes, flavor, archive, file);
+    if (!place)
     {
         return false;
     }
 
+    const std::size_t files = Field32(bytes, flavor, FileBlockEntry(bytes, flavor) + 4) + 8;
     const auto copy_start = static_cast<std::size_t>(copy.begin() - holder.begin());
-    PutField32(bytes, flavor, static_cast<std::size_t>(at.begin() - tables.begin()),
-               static_cast<uint32_t>(*archive.FileOffset(group) + copy_start - files));
+    PutField32(bytes, flavor, *place, static_cast<uint32_t>(*archive.FileOffset(group) + copy_start - files));
 
     return true;
 }
@@ -684,22 +713,16 @@ void TestKeepNothing()
 bool MovePlace(std::vector<uint8_t>& bytes, sar::Flavor flavor, uint32_t file, int64_t to)
 {
     const sar::SoundArchive archive = sar::SoundArchive::Load(bytes, StrictRules(flavor));
-    const std::size_t file_block = Field32(bytes, flavor, FileBlockEntry(bytes, flavor) + 4);
-    const std::size_t files = file_block + 8;
 
     // A place holds a reference's type, then the file's offset and its size. A file's entry refers to its place by the
-    // place's offset from the entry. The tables lie before the FILE block.
-    std::array<uint8_t, 8> offset_and_size{};
-    PutField32(offset_and_size, flavor, 0, static_cast<uint32_t>(*archive.FileOffset(file) - files));
-    PutField32(offset_and_size, flavor, 4, static_cast<uint32_t>(archive.FileData(file).size()));
-    const std::span<uint8_t> tables = std::span(bytes).first(file_block);
-    const auto found = std::ranges::search(tables, offset_and_size);
-    if (found.empty())
+    // place's offset from the entry.
+    const std::optional<std::size_t> offset_and_size = PlaceOf(bytes, flavor, archive, file);
+    if (!offset_and_size)
     {
         return false;
     }
 
-    const auto place = static_cast<std::size_t>(found.begin() - tables.begin()) - 4;
+    const std::size_t place = *offset_and_size - 4;
     for (std::size_t entry = 0; entry + 8 <= place; entry += 4)
     {
         if (Field16(bytes, flavor, entry) == 0x220C && entry + Field32(bytes, flavor, entry + 4) == place)
@@ -891,16 +914,13 @@ void PutField16(std::span<uint8_t> bytes, sar::Flavor flavor, std::size_t at, ui
 std::optional<std::pair<std::size_t, std::size_t>> BlockIn(std::span<const uint8_t> bytes, sar::Flavor flavor,
                                                            uint16_t type)
 {
-    for (std::size_t entry = 0x14; entry < 0x14 + std::size_t{12} * Field16(bytes, flavor, 0x10); entry += 12)
+    const std::optional<std::size_t> entry = sar_files::FindBlockEntry(bytes, flavor, type);
+    if (!entry)
     {
-        if (Field16(bytes, flavor, entry) == type)
-        {
-            return std::pair<std::size_t, std::size_t>{Field32(bytes, flavor, entry + 4),
-                                                       Field32(bytes, flavor, entry + 8)};
-        }
+        return std::nullopt;
     }
 
-    return std::nullopt;
+    return std::pair<std::size_t, std::size_t>{Field32(bytes, flavor, *entry + 4), Field32(bytes, flavor, *entry + 8)};
 }
 
 // `group`, a group file of `flavor`, with an INFX block after its FILE block, as the tools write one. The builder
@@ -914,11 +934,11 @@ std::vector<uint8_t> WithInfx(std::vector<uint8_t> group, sar::Flavor flavor)
     PutField32(group, flavor, start + 4, 24);
     PutField32(group, flavor, start + 8, 1);
     PutField32(group, flavor, start + 16, sar::ItemId(sar::kSoundItem, 0));
-    PutField16(group, flavor, 0x10, 3);
-    PutField16(group, flavor, 0x2C, 0x7802);
-    PutField32(group, flavor, 0x30, static_cast<uint32_t>(start));
-    PutField32(group, flavor, 0x34, 24);
-    PutField32(group, flavor, 0x0C, static_cast<uint32_t>(group.size()));
+    PutField16(group, flavor, kBlockCountField, 3);
+    PutField16(group, flavor, kThirdBlockEntry, kGroupInfxBlock);
+    PutField32(group, flavor, kThirdBlockEntry + 4, static_cast<uint32_t>(start));
+    PutField32(group, flavor, kThirdBlockEntry + 8, 24);
+    PutField32(group, flavor, kFileSizeField, static_cast<uint32_t>(group.size()));
 
     return group;
 }
@@ -954,7 +974,7 @@ struct GroupItem
 // The items of `group`, a group file of `flavor`.
 std::vector<GroupItem> ItemsOf(std::span<const uint8_t> group, sar::Flavor flavor)
 {
-    const std::size_t table = BlockIn(group, flavor, 0x7800).value().first + 8;
+    const std::size_t table = BlockIn(group, flavor, kGroupInfoBlock).value().first + 8;
     std::vector<GroupItem> items;
     for (uint32_t i = 0; i < Field32(group, flavor, table); i++)
     {
@@ -972,8 +992,8 @@ std::vector<GroupItem> ItemsOf(std::span<const uint8_t> group, sar::Flavor flavo
 bool KeepsCopies(std::span<const uint8_t> group, std::span<const uint8_t> cut, sar::Flavor flavor,
                  const std::set<uint32_t>& kept, std::size_t alignment)
 {
-    const auto file_block = BlockIn(cut, flavor, 0x7801);
-    const auto whole_file_block = BlockIn(group, flavor, 0x7801);
+    const auto file_block = BlockIn(cut, flavor, kGroupFileBlock);
+    const auto whole_file_block = BlockIn(group, flavor, kGroupFileBlock);
     if (!file_block || !whole_file_block || ItemsOf(cut, flavor).size() != ItemsOf(group, flavor).size())
     {
         return false;
@@ -981,7 +1001,7 @@ bool KeepsCopies(std::span<const uint8_t> group, std::span<const uint8_t> cut, s
 
     const std::size_t data = file_block->first + 8;
     const std::size_t file_end = file_block->first + file_block->second;
-    bool keeps = Field32(cut, flavor, 0x0C) == cut.size() &&
+    bool keeps = Field32(cut, flavor, kFileSizeField) == cut.size() &&
                  Field32(cut, flavor, file_block->first + 4) == file_block->second && file_end % alignment == 0 &&
                  cut.size() < group.size();
     const std::vector<GroupItem> items = ItemsOf(cut, flavor);
@@ -1005,8 +1025,8 @@ bool KeepsCopies(std::span<const uint8_t> group, std::span<const uint8_t> cut, s
     }
 
     // The blocks after the FILE block keep their bytes.
-    const auto infx = BlockIn(group, flavor, 0x7802);
-    const auto cut_infx = BlockIn(cut, flavor, 0x7802);
+    const auto infx = BlockIn(group, flavor, kGroupInfxBlock);
+    const auto cut_infx = BlockIn(cut, flavor, kGroupInfxBlock);
     return keeps && (!infx || (cut_infx && cut_infx->first == file_end && cut_infx->second == infx->second &&
                                std::ranges::equal(cut.subspan(cut_infx->first, cut_infx->second),
                                                   group.subspan(infx->first, infx->second))));
@@ -1107,7 +1127,8 @@ void TestKeepGroupCopies()
 
         // A block that overlaps the FILE block gives no cut.
         std::vector<uint8_t> overlapping = CommonGroup(flavor);
-        PutField32(overlapping, flavor, 0x30, BlockIn(overlapping, flavor, 0x7801).value().first + 8);
+        PutField32(overlapping, flavor, kThirdBlockEntry + 4,
+                   static_cast<uint32_t>(BlockIn(overlapping, flavor, kGroupFileBlock).value().first + 8));
         sar::SoundArchive with_overlap = sar::SoundArchive::Load(CopiesBeside(flavor), StrictRules(flavor));
         with_overlap.AddGroupFile(overlapping);
         const std::optional<rip::LibraryArchive> library =
@@ -1119,8 +1140,71 @@ void TestKeepGroupCopies()
 
 } // namespace
 
+// A group file among a game's paths: by its file name in any case, the first that can be read. A folder's name doesn't
+// count.
+void TestFindGroupFile()
+{
+    const std::vector<std::string> paths = {"content/Sound/GROUP_A.BFGRP", "content/group_b.bfgrp",
+                                            "content/group_b.bfgrp/x", "group_b.bfgrp", "content/Sound/x.bfsar"};
+    std::vector<std::string> tried;
+    const auto read = [&tried](const std::string& path, std::vector<uint8_t>& data)
+    {
+        tried.push_back(path);
+        if (path == "content/group_b.bfgrp")
+        {
+            return false;
+        }
+
+        data = {static_cast<uint8_t>(path.size())};
+        return true;
+    };
+
+    const std::optional<Chunk> a = rip::FindGroupFile<Chunk>(paths, read, "group_a");
+    XSFLIB_CHECK(a && a->path == "content/Sound/GROUP_A.BFGRP" && a->data == std::vector<uint8_t>{27});
+
+    tried.clear();
+    const std::optional<Chunk> b = rip::FindGroupFile<Chunk>(paths, read, "GROUP_B");
+    XSFLIB_CHECK(b && b->path == "group_b.bfgrp");
+    XSFLIB_CHECK((tried == std::vector<std::string>{"content/group_b.bfgrp", "group_b.bfgrp"}));
+    XSFLIB_CHECK(!rip::FindGroupFile<Chunk>(paths, read, "group_c"));
+}
+
+// The SARC archives in the folder of a sound archive, sorted, and none from a folder below it or with another
+// extension.
+void TestSarcsBeside()
+{
+    const std::vector<std::string> paths = {"content/Sound/b.sarc", "content/Sound/sub/c.sarc", "content/Sound/a.sarc",
+                                            "content/Sound/d.szs",  "content/e.sarc",           "content/Sound/A.SARC"};
+    XSFLIB_CHECK((rip::SarcsBeside(paths, "content/Sound/x.bfsar") ==
+                  std::vector<std::string>{"content/Sound/a.sarc", "content/Sound/b.sarc"}));
+    XSFLIB_CHECK((rip::SarcsBeside(paths, "x.bfsar").empty()));
+    XSFLIB_CHECK((rip::SarcsBeside(std::vector<std::string>{"a.sarc", "b/c.sarc"}, "x.bfsar") ==
+                  std::vector<std::string>{"a.sarc"}));
+}
+
+// The kind of a sound archive by its first bytes. An FSAR archive's kind follows its byte order mark.
+void TestSoundArchiveKinds()
+{
+    using sar::SoundArchiveKind;
+    using sar::SoundArchiveKindOf;
+
+    XSFLIB_CHECK(SoundArchiveKindOf("SDAT\xFF\xFE\x00\x01") == SoundArchiveKind::kSdat);
+    XSFLIB_CHECK(SoundArchiveKindOf("RSAR\xFE\xFF") == SoundArchiveKind::kRsar);
+    XSFLIB_CHECK(SoundArchiveKindOf("CSAR\xFF\xFE") == SoundArchiveKind::kCsar);
+    XSFLIB_CHECK(SoundArchiveKindOf(std::string_view("FSAR\xFE\xFF\x00\x14", 8)) == SoundArchiveKind::kFsarBig);
+    XSFLIB_CHECK(SoundArchiveKindOf("FSAR\xFF\xFE") == SoundArchiveKind::kFsarLittle);
+    XSFLIB_CHECK(SoundArchiveKindOf("FSAR") == SoundArchiveKind::kFsarUnknown);
+    XSFLIB_CHECK(SoundArchiveKindOf("FSAR\xFE\xFE") == SoundArchiveKind::kFsarUnknown);
+    XSFLIB_CHECK(SoundArchiveKindOf("FSA") == SoundArchiveKind::kOther);
+    XSFLIB_CHECK(SoundArchiveKindOf("fsar\xFE\xFF") == SoundArchiveKind::kOther);
+    XSFLIB_CHECK(SoundArchiveKindOf("") == SoundArchiveKind::kOther);
+}
+
 int main()
 {
+    TestSoundArchiveKinds();
+    TestFindGroupFile();
+    TestSarcsBeside();
     TestItems();
     TestArchive();
     TestGroupsInSarcs();

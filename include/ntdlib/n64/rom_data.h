@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Finding sound data in a Nintendo 64 image, and the compressed formats that hold it.
-//
-// MIO0 and Yay0 keep three streams: a stream of bits that say which comes next, a stream of literal bytes and a stream
-// of references back into the output. Yaz0 keeps them mixed. A header gives the decoded size.
+// Finding sound data in a Nintendo 64 image, and the compressed formats that hold it. The decoders of Yay0 and Yaz0
+// are in ntdlib/yay0.h and ntdlib/yaz0.h.
 //
 // Nintendo EAD's games with a file table (Ocarina of Time, Majora's Mask) list their files in a table of 16-byte
 // entries: the start and the end in the game's virtual addresses, and the start and the end in the image. An end of 0
@@ -25,10 +23,7 @@
 namespace ntdlib::n64
 {
 
-// A compressed block's decoded bytes. Bad data throws xsflib::FormatError. Each reads the block at the start of `data`.
-std::vector<uint8_t> DecodeMio0(std::span<const uint8_t> data);
-std::vector<uint8_t> DecodeYay0(std::span<const uint8_t> data);
-std::vector<uint8_t> DecodeYaz0(std::span<const uint8_t> data);
+// The decoded bytes of Rare's block at the start of `data`. Bad data throws xsflib::FormatError.
 std::vector<uint8_t> DecodeRare(std::span<const uint8_t> data);
 
 // A table of Rare's sequences. Reading the table decodes nothing.

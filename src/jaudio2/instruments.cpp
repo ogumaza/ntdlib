@@ -15,6 +15,7 @@
 #include "xsflib/binary.h"
 
 #include "ntdlib/jaudio/bank.h"
+#include "ntdlib/jaudio/calc.h"
 
 namespace ntdlib::jaudio2
 {
@@ -66,6 +67,12 @@ InstrumentBank::InstrumentBank(const ntdlib::jaudio::Bank& bank, std::span<const
     }
 
     number_ = bank.number;
+    ReadOscillators(file);
+    CopyPrograms<Programs>(bank, programs_, [this](std::size_t i) { return &oscillators_[i]; });
+}
+
+void InstrumentBank::ReadOscillators(std::span<const uint8_t> file)
+{
     const bool big_endian = file.size() >= 4 && file[0] == 'I';
     const xsflib::Reader r(file, big_endian);
     const uint32_t bank_size = r.U32(4);
@@ -106,76 +113,25 @@ InstrumentBank::InstrumentBank(const ntdlib::jaudio::Bank& bank, std::span<const
         osc.scale = r.F32(at + 16);
         osc.offset = r.F32(at + 20);
     }
+}
 
-    const auto effects = [](const std::vector<ntdlib::jaudio::InstEffect>& from)
+std::vector<BankEffect> CopyEffects(const std::vector<ntdlib::jaudio::InstEffect>& from)
+{
+    std::vector<BankEffect> to;
+    for (const ntdlib::jaudio::InstEffect& e : from)
     {
-        std::vector<Effect> to;
-        for (const ntdlib::jaudio::InstEffect& e : from)
-        {
-            Effect& effect = to.emplace_back();
-            effect.random = e.kind == ntdlib::jaudio::InstEffect::Kind::kRandom;
-            effect.target = e.target;
-            effect.base = e.base;
-            effect.width = e.width;
-            effect.trigger = e.trigger;
-            effect.center = e.center;
-            effect.low = e.low;
-            effect.high = e.high;
-        }
-
-        return to;
-    };
-    const auto velocities = [](const std::vector<ntdlib::jaudio::VelocityRegion>& from)
-    {
-        std::vector<VelocityRegion> to;
-        for (const ntdlib::jaudio::VelocityRegion& v : from)
-        {
-            to.push_back({v.high_velocity, v.wave_id, v.volume, v.pitch});
-        }
-
-        return to;
-    };
-
-    for (const auto& [number, program] : bank.programs)
-    {
-        if (number >= programs_.size())
-        {
-            continue;
-        }
-
-        if (const auto* inst = std::get_if<ntdlib::jaudio::Instrument>(&program))
-        {
-            Instrument& to = programs_[number].emplace<Instrument>();
-            to.volume = inst->volume;
-            to.pitch = inst->pitch;
-            for (std::size_t k = 0; k < std::min<std::size_t>(inst->oscillators.size(), 2); k++)
-            {
-                to.oscillators[k] = &oscillators_[inst->oscillators[k]];
-            }
-            to.effects = effects(inst->effects);
-            for (const ntdlib::jaudio::KeyRegion& key : inst->keys)
-            {
-                to.keys.push_back({key.high_key, velocities(key.velocities)});
-            }
-        }
-        else
-        {
-            const auto& drums = std::get<ntdlib::jaudio::DrumSet>(program);
-            DrumSet& to = programs_[number].emplace<DrumSet>();
-            for (std::size_t key = 0; key < drums.keys.size(); key++)
-            {
-                if (const auto& drum = drums.keys[key])
-                {
-                    to.keys[key] = Drum{drum->volume,
-                                        drum->pitch,
-                                        drum->pan,
-                                        drum->release,
-                                        effects(drum->effects),
-                                        velocities(drum->velocities)};
-                }
-            }
-        }
+        BankEffect& effect = to.emplace_back();
+        effect.random = e.kind == ntdlib::jaudio::InstEffect::Kind::kRandom;
+        effect.target = e.target;
+        effect.base = e.base;
+        effect.width = e.width;
+        effect.trigger = e.trigger;
+        effect.center = e.center;
+        effect.low = e.low;
+        effect.high = e.high;
     }
+
+    return to;
 }
 
 void InstrumentBank::ApplyEffect(const Effect& effect, uint32_t key, uint32_t velocity, InstParam& param,
@@ -184,14 +140,14 @@ void InstrumentBank::ApplyEffect(const Effect& effect, uint32_t key, uint32_t ve
     float y = 0.0f;
     if (effect.random)
     {
-        // JMath's TRandom_fast_: a float from 1 to 2 by the generator's top 23 bits.
-        random = random * 0x19660du + 0x3c6ef35fu;
+        // JMath's TRandom_fast_: a number from 0 to 1 by the generator's top 23 bits.
+        random = ntdlib::jaudio::NextFastRandom(random);
         if (effect.target > 4)
         {
             return;
         }
 
-        float unit = std::bit_cast<float>(0x3f800000u | random >> 9) + -1.0f;
+        float unit = ntdlib::jaudio::FastRandomUnit(random);
         unit = unit + unit;
         unit = unit + kRandomCenter;
         y = effect.base + effect.width * unit;
@@ -240,20 +196,6 @@ void InstrumentBank::ApplyEffect(const Effect& effect, uint32_t key, uint32_t ve
     }
 }
 
-const InstrumentBank::VelocityRegion* InstrumentBank::FindVelocity(std::span<const VelocityRegion> regions,
-                                                                   uint32_t velocity)
-{
-    for (const VelocityRegion& region : regions)
-    {
-        if (static_cast<int32_t>(region.high_velocity) >= static_cast<int32_t>(velocity))
-        {
-            return &region;
-        }
-    }
-
-    return nullptr;
-}
-
 bool InstrumentBank::GetInstParam(uint32_t program, uint32_t key, uint32_t velocity, InstParam& param,
                                   uint32_t& random) const
 {
@@ -276,21 +218,13 @@ bool InstrumentBank::GetInstParam(uint32_t program, uint32_t key, uint32_t veloc
             ApplyEffect(effect, key, velocity, param, random);
         }
 
-        const KeyRegion* region = nullptr;
-        for (const KeyRegion& k : inst->keys)
-        {
-            if (static_cast<int32_t>(k.high_key) >= static_cast<int32_t>(key))
-            {
-                region = &k;
-                break;
-            }
-        }
+        const KeyRegion* region = FindKeyRegion(inst->keys, key);
         if (region == nullptr)
         {
             return false;
         }
 
-        const VelocityRegion* v = FindVelocity(region->velocities, velocity);
+        const VelocityRegion* v = FindVelocity<int32_t>(region->velocities, velocity);
         if (v == nullptr)
         {
             return false;
@@ -325,7 +259,7 @@ bool InstrumentBank::GetInstParam(uint32_t program, uint32_t key, uint32_t veloc
             ApplyEffect(effect, key, velocity, param, random);
         }
 
-        const VelocityRegion* v = FindVelocity(drum.velocities, velocity);
+        const VelocityRegion* v = FindVelocity<int32_t>(drum.velocities, velocity);
         if (v == nullptr)
         {
             return false;

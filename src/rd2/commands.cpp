@@ -14,6 +14,9 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
+#include "ntdlib/agb/data_items.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/rd2/sequencer.h"
 
@@ -28,6 +31,7 @@ using commands::Kind;
 using commands::kOne;
 using commands::ToUnit;
 using Item = commands::Command;
+using agb::DataItem;
 
 // A track's settings for the notes and waits that give none, as the driver starts a track.
 struct Running
@@ -286,7 +290,7 @@ Header ReadHeader(std::span<const uint8_t> data, bool effects)
     Header header;
     const auto halfword = [&data](uint32_t at)
     {
-        return uint16_t(data[at] | data[at + 1] << 8);
+        return xsflib::LoadLe16(&data[at]);
     };
 
     if (effects)
@@ -518,15 +522,6 @@ bool IsHeaderEntry(const Item& item)
     return item.kind == Kind::kOpenTrack && item.encoding.opcode == kHeaderEntry;
 }
 
-Item DataItem(std::span<const uint8_t> bytes)
-{
-    Item item;
-    item.kind = Kind::kData;
-    item.bytes.assign(bytes.begin(), bytes.end());
-
-    return item;
-}
-
 // Keeps a sequence whose commands can't be read safely as data, split at the tracks' starts.
 Decoded Opaque(std::span<const uint8_t> data, const Header& header, std::string reason)
 {
@@ -534,7 +529,7 @@ Decoded Opaque(std::span<const uint8_t> data, const Header& header, std::string 
     decoded.opaque = true;
     decoded.reason = std::move(reason);
 
-    std::set<uint32_t> splits = {0};
+    std::set<uint32_t> splits;
     for (const uint16_t offset : header.offsets)
     {
         if (offset != 0 && offset < data.size())
@@ -543,14 +538,7 @@ Decoded Opaque(std::span<const uint8_t> data, const Header& header, std::string 
         }
     }
 
-    std::map<uint32_t, uint32_t> items;
-    for (auto it = splits.begin(); it != splits.end(); ++it)
-    {
-        const auto next = std::next(it);
-        const uint32_t end = next == splits.end() ? uint32_t(data.size()) : *next;
-        items[*it] = uint32_t(decoded.sequence.items.size());
-        decoded.sequence.items.push_back(DataItem(data.subspan(*it, end - *it)));
-    }
+    const std::map<uint32_t, uint32_t> items = agb::AppendDataItems(data, splits, decoded.sequence.items);
     for (const uint16_t offset : header.offsets)
     {
         const auto found = items.find(offset);
@@ -829,6 +817,54 @@ std::vector<uint8_t> ItemBytes(const Item& item, const RevisionTraits& traits)
     }
 }
 
+// Checks that the driver reads `encoded` as `items` say: its header names the tracks at `starts`, and each command that
+// a track reaches reads as its item. Throws std::invalid_argument otherwise.
+void CheckReadBack(const std::vector<Item>& items, const Encoded& encoded, const RevisionTraits& traits,
+                   const std::vector<uint16_t>& starts)
+{
+    const bool effects = IsHeaderEntry(items.front());
+    const Header header = ReadHeader(encoded.bytes, effects);
+    if (!header.problem.empty())
+    {
+        throw std::invalid_argument("the sequence's header doesn't read back: " + header.problem);
+    }
+    if (header.offsets != starts)
+    {
+        throw std::invalid_argument("the sequence's header doesn't read back as its items");
+    }
+
+    const Flow flow(encoded.bytes, traits, header);
+    if (!flow.Problem().empty())
+    {
+        throw std::invalid_argument("the sequence's items don't read back: " + flow.Problem());
+    }
+
+    std::map<uint32_t, size_t> item_at;
+    for (size_t i = 0; i < items.size(); i++)
+    {
+        if (encoded.offsets[i + 1] > encoded.offsets[i])
+        {
+            item_at[encoded.offsets[i]] = i;
+        }
+    }
+    for (const auto& [offset, read] : flow.Items())
+    {
+        const auto found = item_at.find(offset);
+        if (found == item_at.end() || items[found->second].kind == Kind::kData)
+        {
+            throw std::invalid_argument("a track reaches bytes that no item starts at");
+        }
+
+        const Kind kind = items[found->second].kind;
+        const bool both_end =
+            (kind == Kind::kEnd || kind == Kind::kReturn) && (read.kind == Kind::kEnd || read.kind == Kind::kReturn);
+        if (kind != read.kind && !both_end)
+        {
+            throw std::invalid_argument("a command's opcode reads as a command of another kind");
+        }
+    }
+}
+
 } // namespace
 
 Decoded DecodeSequence(std::span<const uint8_t> data, Revision revision, bool effects)
@@ -973,47 +1009,7 @@ Encoded EncodeSequence(const commands::Sequence& sequence, Revision revision)
     // The driver has to read the bytes as the items say. A sequence kept as data holds no commands.
     if (any_command)
     {
-        const bool effects = IsHeaderEntry(items.front());
-        const Header header = ReadHeader(encoded.bytes, effects);
-        if (!header.problem.empty())
-        {
-            throw std::invalid_argument("the sequence's header doesn't read back: " + header.problem);
-        }
-        if (header.offsets != starts)
-        {
-            throw std::invalid_argument("the sequence's header doesn't read back as its items");
-        }
-
-        const Flow flow(encoded.bytes, traits, header);
-        if (!flow.Problem().empty())
-        {
-            throw std::invalid_argument("the sequence's items don't read back: " + flow.Problem());
-        }
-
-        std::map<uint32_t, size_t> item_at;
-        for (size_t i = 0; i < items.size(); i++)
-        {
-            if (encoded.offsets[i + 1] > encoded.offsets[i])
-            {
-                item_at[encoded.offsets[i]] = i;
-            }
-        }
-        for (const auto& [offset, read] : flow.Items())
-        {
-            const auto found = item_at.find(offset);
-            if (found == item_at.end() || items[found->second].kind == Kind::kData)
-            {
-                throw std::invalid_argument("a track reaches bytes that no item starts at");
-            }
-
-            const Kind kind = items[found->second].kind;
-            const bool both_end = (kind == Kind::kEnd || kind == Kind::kReturn) &&
-                                  (read.kind == Kind::kEnd || read.kind == Kind::kReturn);
-            if (kind != read.kind && !both_end)
-            {
-                throw std::invalid_argument("a command's opcode reads as a command of another kind");
-            }
-        }
+        CheckReadBack(items, encoded, traits, starts);
     }
 
     return encoded;

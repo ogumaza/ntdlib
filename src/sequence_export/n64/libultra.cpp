@@ -1513,8 +1513,15 @@ std::shared_ptr<const Wave> LibultraGame::WaveAt(Banks& banks, int32_t index) co
         wave.loop == n64::kNoObject ? nullptr : &file.loops[static_cast<std::size_t>(wave.loop)];
     const n64::VadpcmBook* book =
         wave.type == n64::kWaveVadpcm ? &file.books.at(static_cast<std::size_t>(wave.book)).book : nullptr;
-    std::shared_ptr<const Wave> out = DecodeWave(image_.subspan(banks.samples + wave.base, wave.length), book, loop,
-                                                 HexName(wave.base), profile_.output_rate);
+    // FindBankSamples checks only the first loops of a bank. A wave further on can run past the image.
+    const std::size_t start = banks.samples + wave.base;
+    if (start > image_.size() || wave.length > image_.size() - start)
+    {
+        throw xsflib::FormatError("a wave of the bank runs past the image");
+    }
+
+    std::shared_ptr<const Wave> out =
+        DecodeWave(image_.subspan(start, wave.length), book, loop, HexName(wave.base), profile_.output_rate);
     banks.waves[index] = out;
 
     return out;

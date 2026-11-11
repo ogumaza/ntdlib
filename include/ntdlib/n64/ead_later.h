@@ -150,6 +150,9 @@ public:
     std::function<void(const EadNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     static constexpr int kNoLayer = -1;
 
     struct Script
@@ -525,6 +528,14 @@ private:
         kActive = 3,
     };
 
+    // The steps of the constructor.
+    void SetRates(int frequency);
+    void SetDecayTable();
+    void InitLayers();
+    void InitVoices(int count, AudioMemory& memory);
+    void LoadTables(AudioMemory& memory);
+    void InitReverb(Reverb& reverb, const EadLaterReverb& settings, AudioMemory& memory);
+
     // Lists of voices: a voice's index or a list's head.
     int Head(int pool, ListKind kind) const;
     int PlayerPool(int player) const;
@@ -544,7 +555,6 @@ private:
     uint16_t Peek16(const Player& player, uint32_t place) const;
     EadEnvelope::Point EnvelopePoint(const EnvelopeRef& envelope, int index) const;
     std::array<int16_t, 8> FilterTaps(const Voice& voice, const FilterRef& filter) const;
-    int RealFont(int font) const;
 
     const EadInstrument* Instrument(int font, int program) const;
     const EadDrum* Drum(int font, int note) const;
@@ -578,19 +588,43 @@ private:
     void RunLayer(int layer);
     int LayerCommands(int layer);
     int LayerNote(int layer, int command);
+    uint16_t ReadLargeNote(Layer& layer, const Player& player, int command);
+    uint16_t ReadSmallNote(Layer& layer, const Player& player, int command);
+    void SetVariedVelocity(Layer& layer, const Channel& channel);
+    void VaryGate(Layer& layer, const Channel& channel);
     int LayerSound(int layer, int command);
+    bool SetDrumSound(Layer& layer, const Channel& channel, uint8_t semitone);
+    bool SetEffectSound(Layer& layer, const Channel& channel, uint8_t semitone);
+    bool SetInstrumentSound(Layer& layer, const Channel& channel, const Player& player, uint8_t semitone,
+                            bool& same_sound);
+    bool StartPortamento(Layer& layer, const Channel& channel, const Player& player, const EadInstrument* instrument,
+                         uint8_t semitone);
+    void SetSampleLength(Layer& layer, const Player& player);
     void LayerVoice(int layer, bool same_sound);
+    void ReportNoteStart(int layer);
     void PlayerSound(int player);
     void ChannelSound(int channel, bool recalculate_volume, bool apply_bend);
+    static void SetLayerNoteStadium2(Layer& layer, const Channel& channel, float frequency, uint8_t note_pan,
+                                     bool recalculate_volume);
+    static void SetLayerNote(Layer& layer, const Channel& channel, float frequency, uint8_t note_pan,
+                             bool recalculate_volume);
     void ProcessVoices(int state_offset);
+    void ReleaseStoppedVoice(Voice& voice, int index);
+    void RetireVoice(Voice& voice, int index);
+    void StartWantedLayer(Voice& voice, int index);
+    void RecordUpdate(Voice& voice, UpdateState& recorded);
     void InitUpdateState(Voice& voice, UpdateState& state, float frequency, float velocity, uint8_t pan, uint8_t reverb,
                          uint8_t stereo, uint8_t gain, const std::optional<FilterRef>& filter, uint8_t comb_size,
                          uint16_t comb_gain);
+    std::array<float, 2> ApplyPan(const Voice& voice, UpdateState& state, uint8_t pan, uint8_t stereo) const;
     float UpdateAdsr(Adsr& adsr);
+    void ReadEnvelopePoints(Adsr& adsr);
+    static void FadeAdsr(Adsr& adsr, AdsrPhase phase);
     void UpdateVibrato(Voice& voice);
     float VibratoScale(Vibrato& vibrato);
     void InitVibrato(int voice);
     void DecayOrRelease(int layer, AdsrPhase target);
+    void SaveNoteAttributes(Voice& voice, const Layer& layer, const Channel& channel);
     void InitVoice(Voice& voice);
     void DisableVoice(Voice& voice);
     void InitVoiceForLayer(int voice, int layer);
@@ -602,10 +636,62 @@ private:
     int AllocFromActive(int pool, int layer);
     int AllocVoice(int layer);
 
+    // The decoding of the sample of a voice in an update. The flags, the skip, the finished flag and the place of the
+    // sample apply to every part of the update. The wanted, processed and written samples are those of one part.
+    struct SampleDecode
+    {
+        const EadSample* sample = nullptr;
+        const BankLoop* loop = nullptr;
+        bool ends_early = false;
+        int32_t end_position = 0;
+        uint32_t address = 0;
+        uint32_t flags = 0;
+        int skip_bytes = 0;
+        bool finished = false;
+        int wanted = 0;
+        int processed = 0;
+        int written = 0;
+    };
+
+    // One pass of the decoding of a part: the samples to skip in the first frame and those left in it, the frames and
+    // samples to decode, the samples after the end of the pass, and whether the pass reaches the loop or the end.
+    struct ChunkPlan
+    {
+        int ignored_first = 0;
+        int in_first = 0;
+        int frames = 0;
+        int to_decode = 0;
+        int trailing = 0;
+        bool restart = false;
+        bool note_finished = false;
+    };
+
+    void RunFrameUpdates();
+    int UpdateLength(int remaining, int left) const;
     void EnsureBank(AudioMemory& memory, int font);
     void StartReverbItems(AudioMemory& memory, int length, int update, int reverb);
     void BuildUpdate(AudioList& list, AudioMemory& memory, uint32_t output, int length, int update);
+    std::vector<int> VoiceOrder(std::size_t base) const;
+    void BuildReverbStart(AudioList& list, Reverb& reverb, int length, int update);
+    void BuildReverbEnd(AudioList& list, Reverb& reverb, int length, int update);
+    void SaveAndSendReverb(AudioList& list, Reverb& reverb, int update);
     void BuildVoice(AudioList& list, AudioMemory& memory, int voice, UpdateState& state, int length, int update);
+    static void ResetVoicePlayback(Voice& voice, const UpdateState& state);
+    std::optional<uint32_t> BuildSampleDecode(AudioList& list, AudioMemory& memory, int voice, const UpdateState& state,
+                                              uint32_t flags, bool finished, int to_load, int update);
+    void LoadBook(AudioList& list, const UpdateState& state, const EadSample& sample, const EadBank& bank);
+    void DecodePart(AudioList& list, int voice, const UpdateState& state, SampleDecode& decode, int update);
+    static ChunkPlan PlanChunk(int position, bool restarting, int until_end, int to_process, bool loops);
+    uint32_t LoadFrames(AudioList& list, const SampleDecode& decode, const Voice& voice, ChunkPlan& plan,
+                        int frame_size) const;
+    void DecodeFrames(AudioList& list, const UpdateState& state, SampleDecode& decode, Voice& voice, ChunkPlan& plan,
+                      int frame_size);
+    void DisableLaterUpdates(int voice, int update);
+    void BuildResample(AudioList& list, const UpdateState& state, const Voice& voice, uint32_t before_resampling,
+                       int length, uint32_t flags);
+    void BuildVoiceFilters(AudioList& list, AudioMemory& memory, const UpdateState& state, Voice& voice, int length,
+                           uint32_t flags);
+    static int DelaySide(const UpdateState& state, const Voice& voice);
     void BuildEnvelope(AudioList& list, const UpdateState& state, Voice& voice, int length, int delay_side);
     void BuildDelay(AudioList& list, const UpdateState& state, Voice& voice, int size, uint32_t flags, int delay_side);
     void BuildSurround(AudioList& list, UpdateState& state, Voice& voice, int length, uint32_t flags);
@@ -614,6 +700,8 @@ private:
     void LoadReverbSamples(AudioList& list, const Reverb& reverb, int length, int update);
     void SaveReverbSamples(AudioList& list, Reverb& reverb, int update);
     void SendReverb(AudioList& list, const Reverb& reverb, int update);
+    static void LoadReverbItem(AudioList& list, const Reverb& reverb, const ReverbItem& item, uint32_t dmem);
+    static void SaveReverbItem(AudioList& list, const Reverb& reverb, const ReverbItem& item, uint32_t dmem);
 
     // The places in the RSP's memory that the engine's commands name.
     struct DmemLayout

@@ -20,37 +20,36 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/format_ids.h"
 
 namespace ntdlib::sar
 {
 namespace
 {
 
-constexpr uint16_t kInfoBlock = 0x5800;
-constexpr uint16_t kWaveTableReference = 0x0100;       // from INFO to the table of waves
-constexpr uint16_t kInstrumentTableReference = 0x0101; // from INFO to the table of instruments
-constexpr uint16_t kInstrumentReference = 0x5900;
-constexpr uint16_t kKeyRegionReference = 0x5901;
-constexpr uint16_t kVelocityRegionReference = 0x5902;
-constexpr uint16_t kNoItemReference = 0x5903;
-constexpr uint16_t kEnvelopeReference = 0x0000;
-constexpr uint16_t kDirectTable = 0x6000;
-constexpr uint16_t kRangeTable = 0x6001;
-constexpr uint16_t kIndexTable = 0x6002;
-constexpr uint32_t kNoOffset = 0xFFFFFFFF;
 constexpr std::size_t kHeaderSize = 0x20;
-constexpr std::size_t kEnvelopeBytes = 5;
-constexpr std::size_t kAlignment = 4;
 constexpr int kLastValue = 127;
 
 // The most runs that a range table holds, not counting the gap after the last region.
 constexpr std::size_t kMostRangeRuns = 11;
 
-// The options of a velocity region: the original key, the volume, the pan, the pitch, the flags and the envelope. Each
-// has a value of 4 bytes, in the order of the bits. The flags hold whether the region ignores a note-off, its key group
-// and its interpolation.
-constexpr uint32_t kRegionOptions = 0x21F;
-
+using detail::kBankAlignment;
+using detail::kBankInfoBlock;
+using detail::kDirectTable;
+using detail::kEnvelopeBytes;
+using detail::kEnvelopeReference;
+using detail::kIndexTable;
+using detail::kInstrumentReference;
+using detail::kKeyRegionReference;
+using detail::kListReference;
+using detail::kNoItemReference;
+using detail::kNone;
+using detail::kNoOffset;
+using detail::kRangeTable;
+using detail::kRegionOptions;
+using detail::kTableReference;
+using detail::kVelocityRegionReference;
 using detail::Out;
 
 // A run of keys or velocities that a table names one item for: the item's place, and the run's first and last value.
@@ -101,7 +100,7 @@ std::vector<Run> RunsOf(const xsflib::Reader& r, std::size_t owner)
         next = last + 1;
         const std::size_t reference = references + i * 8;
         const int32_t offset = r.S32(reference + 4);
-        if (r.U16(reference) == kNoItemReference || offset == -1)
+        if (r.U16(reference) == kNoItemReference || offset == kNoOffset)
         {
             continue;
         }
@@ -297,7 +296,7 @@ private:
             const std::optional<std::size_t> region = entries[i].region;
             if (!region)
             {
-                out_.Reference(reference, kNoItemReference, kNoOffset);
+                out_.Reference(reference, kNoItemReference, kNone);
                 continue;
             }
 
@@ -343,7 +342,7 @@ private:
 
         const std::size_t reference = out_.Zeros(8);
         const std::size_t bytes = out_.Zeros(kEnvelopeBytes);
-        out_.Align(kAlignment);
+        out_.Align(kBankAlignment);
         out_.U32(place + 28, static_cast<uint32_t>(reference - place));
         out_.Reference(reference, kEnvelopeReference, static_cast<uint32_t>(bytes - reference));
         out_.U8(bytes, values.adshr.attack);
@@ -386,30 +385,16 @@ std::vector<uint32_t> LaidOrder(const BankFile& bank)
     return bank.order;
 }
 
-} // namespace
-
-BankFile BankFile::Read(std::span<const uint8_t> file)
+// Where the INFO block of the bank file that `r` reads holds its table of waves and its table of instruments. INFO is
+// the last block of its type that the table of blocks lists. Throws xsflib::FormatError for a file without INFO or
+// without the references to its tables.
+std::pair<std::size_t, std::size_t> InfoTablesOf(const xsflib::Reader& r)
 {
-    if (file.size() < kHeaderSize || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, "BNK", 3) != 0)
-    {
-        throw xsflib::FormatError("not a bank file (CBNK or FBNK)");
-    }
-    const bool big_endian = file[4] == 0xFE && file[5] == 0xFF;
-    if ((!big_endian && (file[4] != 0xFF || file[5] != 0xFE)) || (file[0] == 'C' && big_endian))
-    {
-        throw xsflib::FormatError("a bank file without the byte order of its console");
-    }
-
-    // The header and the places of INFO's two tables.
-    const xsflib::Reader r(file, big_endian);
-    BankFile bank;
-    bank.flavor = file[0] == 'C' ? Flavor::kCtr : big_endian ? Flavor::kCafe : Flavor::kNx;
-    bank.version = r.U32(8);
     std::optional<std::size_t> info;
     for (uint16_t i = 0; i < r.U16(0x10); ++i)
     {
         const std::size_t entry = 0x14 + std::size_t{i} * 12;
-        if (r.U16(entry) == kInfoBlock)
+        if (r.U16(entry) == kBankInfoBlock)
         {
             info = r.U32(entry + 4);
         }
@@ -419,19 +404,18 @@ BankFile BankFile::Read(std::span<const uint8_t> file)
         throw xsflib::FormatError("a bank file without an INFO block");
     }
     const std::size_t body = *info + 8;
-    if (r.U16(body) != kWaveTableReference || r.U16(body + 8) != kInstrumentTableReference)
+    if (r.U16(body) != kListReference || r.U16(body + 8) != kTableReference)
     {
         throw xsflib::FormatError("a bank's INFO block without its tables");
     }
-    const std::size_t waves = body + static_cast<std::size_t>(r.S32(body + 4));
-    const std::size_t instruments = body + static_cast<std::size_t>(r.S32(body + 12));
 
-    // The waves, the instruments and the order of their places.
-    for (uint32_t i = 0; i < r.U32(waves); ++i)
-    {
-        const std::size_t entry = waves + 4 + std::size_t{i} * 8;
-        bank.waves.push_back({r.U32(entry), r.U32(entry + 4)});
-    }
+    return {body + static_cast<std::size_t>(r.S32(body + 4)), body + static_cast<std::size_t>(r.S32(body + 12))};
+}
+
+// Reads into `bank` the instruments of the table at `instruments`, and the order of their places, which is empty for
+// the order of their programs.
+void ReadInstruments(const xsflib::Reader& r, std::size_t instruments, BankFile& bank)
+{
     std::vector<std::pair<std::size_t, uint32_t>> places;
     for (uint32_t i = 0; i < r.U32(instruments); ++i)
     {
@@ -455,6 +439,36 @@ BankFile BankFile::Read(std::span<const uint8_t> file)
     {
         bank.order.clear();
     }
+}
+
+} // namespace
+
+BankFile BankFile::Read(std::span<const uint8_t> file)
+{
+    if (file.size() < kHeaderSize || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, "BNK", 3) != 0)
+    {
+        throw xsflib::FormatError("not a bank file (CBNK or FBNK)");
+    }
+    const bool big_endian = file[4] == 0xFE && file[5] == 0xFF;
+    if ((!big_endian && (file[4] != 0xFF || file[5] != 0xFE)) || (file[0] == 'C' && big_endian))
+    {
+        throw xsflib::FormatError("a bank file without the byte order of its console");
+    }
+
+    // The header and the places of INFO's two tables.
+    const xsflib::Reader r(file, big_endian);
+    BankFile bank;
+    bank.flavor = file[0] == 'C' ? Flavor::kCtr : big_endian ? Flavor::kCafe : Flavor::kNx;
+    bank.version = r.U32(8);
+    const auto [waves, instruments] = InfoTablesOf(r);
+
+    // The waves, the instruments and the order of their places.
+    for (uint32_t i = 0; i < r.U32(waves); ++i)
+    {
+        const std::size_t entry = waves + 4 + std::size_t{i} * 8;
+        bank.waves.push_back({r.U32(entry), r.U32(entry + 4)});
+    }
+    ReadInstruments(r, instruments, bank);
 
     // The tools' layout has to give the file back.
     std::vector<uint8_t> written;
@@ -483,24 +497,17 @@ std::vector<uint8_t> BankFile::Write() const
     // The header, with its table of one block.
     Writer writer(flavor);
     Out& out = writer.Bytes();
-    const char* magic = flavor == Flavor::kCtr ? "CBNK" : "FBNK";
-    out.Append(std::span(reinterpret_cast<const uint8_t*>(magic), 4));
-    out.Zeros(kHeaderSize - 4);
-    out.U16(4, 0xFEFF);
-    out.U16(6, static_cast<uint16_t>(kHeaderSize));
-    out.U32(8, version);
-    out.U16(0x10, 1);
+    detail::AppendHeader(out, flavor == Flavor::kCtr ? "CBNK" : "FBNK", version, 1);
 
     // INFO: the references to the two tables, the table of instruments, the instruments and the table of waves.
-    const std::size_t info = out.Append(std::span(reinterpret_cast<const uint8_t*>("INFO"), 4));
-    out.Zeros(4);
+    const std::size_t info = detail::StartBlock(out, "INFO");
     const std::size_t body = out.Zeros(16);
     const std::size_t table = out.Zeros(4 + instruments.size() * 8);
-    out.Reference(body + 8, kInstrumentTableReference, static_cast<uint32_t>(table - body));
+    out.Reference(body + 8, kTableReference, static_cast<uint32_t>(table - body));
     out.U32(table, static_cast<uint32_t>(instruments.size()));
     for (std::size_t i = 0; i < instruments.size(); ++i)
     {
-        out.Reference(table + 4 + i * 8, kNoItemReference, kNoOffset);
+        out.Reference(table + 4 + i * 8, kNoItemReference, kNone);
     }
     for (const uint32_t program : programs)
     {
@@ -508,7 +515,7 @@ std::vector<uint8_t> BankFile::Write() const
         out.Reference(table + 4 + std::size_t{program} * 8, kInstrumentReference, static_cast<uint32_t>(place - table));
     }
     const std::size_t wave_table = out.Zeros(4 + waves.size() * 8);
-    out.Reference(body, kWaveTableReference, static_cast<uint32_t>(wave_table - body));
+    out.Reference(body, kListReference, static_cast<uint32_t>(wave_table - body));
     out.U32(wave_table, static_cast<uint32_t>(waves.size()));
     for (std::size_t i = 0; i < waves.size(); ++i)
     {
@@ -517,10 +524,8 @@ std::vector<uint8_t> BankFile::Write() const
     }
 
     // The sizes.
-    out.U32(info + 4, static_cast<uint32_t>(out.Size() - info));
+    detail::SetBlock(out, 0, kBankInfoBlock, info);
     out.U32(0x0C, static_cast<uint32_t>(out.Size()));
-    out.Reference(0x14, kInfoBlock, static_cast<uint32_t>(info));
-    out.U32(0x1C, static_cast<uint32_t>(out.Size() - info));
 
     return out.Take();
 }

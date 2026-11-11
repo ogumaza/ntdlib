@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <vector>
@@ -380,6 +381,8 @@ private:
     uint8_t PeekByte(const Player& player, uint32_t place) const;
     EadEnvelope::Point EnvelopePoint(const EnvelopeRef& envelope, int index) const;
 
+    void InitVoices(AudioMemory& memory);
+    void WriteBooksAndLoops(AudioMemory& memory);
     void ResetPlayer(int player);
     void DisablePlayer(int player);
     void InitChannels(int player, uint16_t mask);
@@ -402,7 +405,10 @@ private:
     void ChannelSound(int channel);
     void ReclaimVoices();
     void ProcessVoices();
+    bool RetireVoice(int voice);
     void UpdateAdsr(Voice& voice);
+    void ReadEnvelopePoint(Adsr& adsr) const;
+    static void StepDecayOrRelease(Adsr& adsr);
     void UpdateVibrato(Voice& voice);
     float VibratoScale(Vibrato& vibrato);
     void InitVibrato(int voice);
@@ -417,12 +423,18 @@ private:
     int AllocFromDisabled(int pool, int layer);
     int AllocFromDecaying(int pool, int layer);
     int AllocFromActive(int pool, int layer);
+    int AllocFromPools(int layer, std::initializer_list<int> pools);
     int AllocVoice(int layer);
 
     void Update(AudioList& list, AudioMemory& memory, uint32_t output, int samples);
     void BuildReverbStart(AudioList& list, int samples);
     void BuildReverbEnd(AudioList& list);
     void BuildVoices(AudioList& list, uint32_t output, int samples);
+    void BuildVoice(AudioList& list, Voice& voice, int samples, const BankBook*& loaded_book);
+    static uint32_t LoadWave(AudioList& list, Voice& voice, int32_t whole_samples);
+    uint32_t DecodeSample(AudioList& list, Voice& voice, int parts, int32_t whole_samples, int flags,
+                          const BankBook*& loaded_book);
+    void DecodeAdpcm(AudioList& list, Voice& voice, const EadSample& sample, int wanted, int& flags, int& first_offset);
     void BuildEnvelope(AudioList& list, Voice& voice, int samples, int headset);
     void BuildHeadset(AudioList& list, Voice& voice, int length, int flags, int headset);
 

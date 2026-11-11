@@ -3,69 +3,27 @@
 #include "ntdlib/wave/blep.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
+
+#include "wave/kaiser_sinc.h"
 
 namespace ntdlib::wave
 {
 namespace
 {
 
-// The double nearest pi, the cutoff and the window's beta.
-constexpr double kPi = 3.141592653589793;
-constexpr double kCutoff = 0.92;
-constexpr double kBeta = 8.0;
-
 constexpr int kHalfWidth = BandLimitedSteps::kHalfWidth;
 constexpr int kPhases = BandLimitedSteps::kPhases;
 constexpr int kTaps = 2 * kHalfWidth;
-
-// sin(x), from its Taylor series once x lies between -pi and pi. The terms to x^31 leave an error far below a float's
-// precision.
-double Sine(double x)
-{
-    const double turns = std::floor(x / (2.0 * kPi) + 0.5);
-    const double r = x - turns * (2.0 * kPi);
-    const double r2 = r * r;
-    double term = r;
-    double sum = r;
-    for (int k = 1; k <= 15; ++k)
-    {
-        term = -term * r2 / static_cast<double>((2 * k) * (2 * k + 1));
-        sum += term;
-    }
-
-    return sum;
-}
-
-// The modified Bessel function of the first kind and order 0, from its power series: the sum of ((z/2)^k / k!)^2.
-double BesselI0(double z)
-{
-    const double half = z / 2.0;
-    double term = 1.0;
-    double sum = 1.0;
-    for (int k = 1; k <= 50; ++k)
-    {
-        term *= half / static_cast<double>(k);
-        sum += term * term;
-    }
-
-    return sum;
-}
 
 // The filter's impulse response at `x` output samples from its middle: the low-pass at the cutoff under the Kaiser
 // window.
 double Impulse(double x)
 {
-    const double t = x / kHalfWidth;
-    const double window = BesselI0(kBeta * std::sqrt(std::max(0.0, 1.0 - t * t))) / BesselI0(kBeta);
-    const double y = kCutoff * x;
-    const double low_pass = y == 0.0 ? kCutoff : kCutoff * Sine(kPi * y) / (kPi * y);
-
-    return low_pass * window;
+    return detail::LowPass(detail::kCutoff, x) * detail::KaiserWindow(x, kHalfWidth);
 }
 
 // The residuals: kPhases + 1 rows of kTaps. Row p holds the residuals of a change p 256ths of a sample after the
@@ -106,9 +64,9 @@ std::vector<float> MakeResiduals()
 
 const std::vector<float>& Residuals()
 {
-    static const std::vector<float> residuals = MakeResiduals();
+    static const std::vector<float> kResiduals = MakeResiduals();
 
-    return residuals;
+    return kResiduals;
 }
 
 } // namespace
@@ -119,6 +77,7 @@ BandLimitedSteps::BandLimitedSteps(uint64_t clocks, uint32_t samples) : clocks_(
     {
         throw std::invalid_argument("a period of band-limited steps without clocks or samples");
     }
+
     Residuals();
 }
 
@@ -152,6 +111,7 @@ void BandLimitedSteps::Step(uint64_t clock, float delta)
         changes_.resize(start + kTaps);
         residuals_.resize(start + kTaps);
     }
+
     changes_[start] += delta;
     total_ += delta;
     for (std::size_t k = 0; k < kTaps; ++k)

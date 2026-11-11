@@ -37,6 +37,7 @@
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sar/string_block.h"
 #include "ntdlib/sar/tables.h"
+#include "ntdlib/testing/byte_writer.h"
 #include "ntdlib/testing/sar_files.h"
 
 namespace ntdlib::testing::sar_tools
@@ -77,7 +78,7 @@ public:
 inline std::vector<uint8_t> SoundEntry(sar::Flavor flavor, const sar_files::SoundSpec& sound, std::size_t index,
                                        Names& names)
 {
-    sar_files::Bytes entry(flavor == sar::Flavor::kCafe);
+    sar_files::Bytes entry(sar_files::BigEndian(flavor));
     entry.Add(20);
     entry.U32(0, sound.file);
     entry.U32(4, sar::ItemId(sar::kPlayerItem, sound.player));
@@ -134,9 +135,10 @@ inline std::vector<uint8_t> SoundEntry(sar::Flavor flavor, const sar_files::Soun
 
 // The entry of an item that holds its file's ID, then a reference to a list of 32-bit values, then its options: a bank
 // and its list of wave archives, which the specs leave empty.
-inline std::vector<uint8_t> BankEntry(sar::Flavor flavor, uint32_t file, std::vector<std::pair<int, uint32_t>> options)
+inline std::vector<uint8_t> BankEntry(sar::Flavor flavor, uint32_t file,
+                                      const std::vector<std::pair<int, uint32_t>>& options)
 {
-    sar_files::Bytes entry(flavor == sar::Flavor::kCafe);
+    sar_files::Bytes entry(sar_files::BigEndian(flavor));
     entry.Add(12);
     entry.U32(0, file);
     entry.Options(options);
@@ -149,9 +151,9 @@ inline std::vector<uint8_t> BankEntry(sar::Flavor flavor, uint32_t file, std::ve
 // The entry of an item that holds a 32-bit value or two, then its options: a wave archive's file and its count of
 // waves, a group's file, and a player's limit of sounds.
 inline std::vector<uint8_t> PlainEntry(sar::Flavor flavor, const std::vector<uint32_t>& fields,
-                                       std::vector<std::pair<int, uint32_t>> options)
+                                       const std::vector<std::pair<int, uint32_t>>& options)
 {
-    sar_files::Bytes entry(flavor == sar::Flavor::kCafe);
+    sar_files::Bytes entry(sar_files::BigEndian(flavor));
     entry.Add(4 * fields.size());
     for (std::size_t i = 0; i < fields.size(); ++i)
     {
@@ -167,7 +169,7 @@ inline std::vector<uint8_t> PlainEntry(sar::Flavor flavor, const std::vector<uin
 inline std::vector<uint8_t> FileEntry(sar::Flavor flavor, const sar_files::FileSpec& file, uint32_t offset,
                                       bool group_file)
 {
-    sar_files::Bytes entry(flavor == sar::Flavor::kCafe);
+    sar_files::Bytes entry(sar_files::BigEndian(flavor));
     entry.Add(12);
     if (!file.external.empty())
     {
@@ -214,16 +216,12 @@ inline std::pair<std::vector<std::size_t>, std::size_t> FilePlaces(sar::Flavor f
                                                                    std::size_t block)
 {
     const std::size_t alignment = flavor == sar::Flavor::kNx ? 64 : 32;
-    const auto align = [alignment](std::size_t at)
-    {
-        return (at + alignment - 1) / alignment * alignment;
-    };
     std::vector<std::size_t> starts;
-    std::size_t end = align(block + 8);
+    std::size_t end = AlignUp(block + 8, alignment);
     for (const sar_files::FileSpec& file : spec.files)
     {
         const bool internal = file.external.empty() && !file.group_only;
-        starts.push_back(internal ? align(end) : 0);
+        starts.push_back(internal ? AlignUp(end, alignment) : 0);
         if (internal)
         {
             end = starts.back() + file.bytes.size();
@@ -259,19 +257,15 @@ inline std::pair<std::vector<uint8_t>, std::size_t> GroupAndSize(sar::Flavor fla
     const bool ctr = flavor == sar::Flavor::kCtr;
     const bool has_items = !ctr || spec.ctr_version >= 0x01010000;
     const std::size_t alignment = flavor == sar::Flavor::kNx ? 64 : 32;
-    const auto align = [](std::size_t at, std::size_t to)
-    {
-        return (at + to - 1) / to * to;
-    };
     const std::size_t files = spec.files.size();
     const std::size_t items = has_items ? spec.items.size() : 0;
 
     // The blocks and the copies, by hand.
     const std::size_t kInfo = kHeaderSize;
-    const std::size_t file = kInfo + align(8 + 4 + 24 * files, 32);
+    const std::size_t file = kInfo + AlignUp(8 + 4 + 24 * files, 32);
     std::vector<std::size_t> copies;
     std::optional<std::size_t> copies_end;
-    std::size_t at = align(file + 8, alignment);
+    std::size_t at = AlignUp(file + 8, alignment);
     for (const auto& [id, copy] : spec.files)
     {
         copies.push_back(copy ? at : 0);
@@ -279,32 +273,28 @@ inline std::pair<std::vector<uint8_t>, std::size_t> GroupAndSize(sar::Flavor fla
         {
             copies_end = at + copy->size();
         }
-        at = copy ? align(at + copy->size(), alignment) : at;
+        at = copy ? AlignUp(at + copy->size(), alignment) : at;
     }
     const std::size_t infx = at;
     const std::size_t entries_end = infx + 8 + 4 + 16 * items;
-    const std::size_t end = !has_items ? infx : spec.padded ? align(entries_end, alignment) : entries_end;
+    const std::size_t end = !has_items ? infx : spec.padded ? AlignUp(entries_end, alignment) : entries_end;
 
-    sar_files::Bytes group(flavor == sar::Flavor::kCafe);
+    sar_files::Bytes group(sar_files::BigEndian(flavor));
     group.Add(end);
-    std::memcpy(group.data.data(), ctr ? "CGRP" : "FGRP", 4);
-    group.U16(4, 0xFEFF);
-    group.U16(6, static_cast<uint16_t>(kHeaderSize));
-    group.U32(8, ctr ? spec.ctr_version : 0x00010000);
-    group.U32(0x0C, static_cast<uint32_t>(end));
     const std::size_t block_count = has_items ? 3 : 2;
-    group.U16(0x10, static_cast<uint16_t>(block_count));
     const std::size_t blocks[][3] = {
         {0x7800, kInfo, file - kInfo}, {0x7801, file, infx - file}, {0x7802, infx, end - infx}};
-    const char* magics[] = {"INFO", "FILE", "INFX"};
+    constexpr const char* kMagics[] = {"INFO", "FILE", "INFX"};
+    std::vector<sar_files::BlockEntry> entries;
     for (std::size_t i = 0; i < block_count; ++i)
     {
-        group.U16(0x14 + 12 * i, static_cast<uint16_t>(blocks[i][0]));
-        group.U32(0x18 + 12 * i, static_cast<uint32_t>(blocks[i][1]));
-        group.U32(0x1C + 12 * i, static_cast<uint32_t>(blocks[i][2]));
-        std::memcpy(group.data.data() + blocks[i][1], magics[i], 4);
+        entries.push_back({static_cast<uint16_t>(blocks[i][0]), static_cast<uint32_t>(blocks[i][1]),
+                           static_cast<uint32_t>(blocks[i][2])});
+        std::memcpy(group.data.data() + blocks[i][1], kMagics[i], 4);
         group.U32(blocks[i][1] + 4, static_cast<uint32_t>(blocks[i][2]));
     }
+    sar_files::WriteFileHeader(group, sar_files::Magic(flavor, "GRP"), static_cast<uint16_t>(kHeaderSize),
+                               sar_files::Version(flavor, spec.ctr_version, 0x00010000), entries);
 
     // INFO: each file's entry, with its copy's place in FILE's body, or no place and no size for a link.
     group.U32(kInfo + 8, static_cast<uint32_t>(files));
@@ -364,7 +354,7 @@ inline std::vector<uint8_t> GroupInArchive(sar::Flavor flavor, const GroupSpec& 
 // 0xFFFFFFFF, and the entries keep their string indices.
 inline std::vector<uint8_t> Archive(sar::Flavor flavor, const sar_files::ArchiveSpec& spec)
 {
-    const bool big_endian = flavor == sar::Flavor::kCafe;
+    const bool big_endian = sar_files::BigEndian(flavor);
 
     // The entries in the order of the tables, and the names in the same order.
     detail::Names names(flavor);
@@ -432,11 +422,6 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const sar_files::Archive
     // The header, the blocks and the files.
     sar_files::Bytes archive(big_endian);
     archive.Add(detail::kHeaderSize);
-    std::memcpy(archive.data.data(), flavor == sar::Flavor::kCtr ? "CSAR" : "FSAR", 4);
-    archive.U16(4, 0xFEFF);
-    archive.U16(6, static_cast<uint16_t>(detail::kHeaderSize));
-    archive.U32(8, flavor == sar::Flavor::kCtr ? 0x02030000 : 0x00020200);
-    archive.U16(0x10, 3);
     const uint32_t string_place = spec.names ? static_cast<uint32_t>(archive.Add(strings)) : detail::kNone;
     const std::size_t info_place = archive.Add(tables);
     archive.Add(end - block);
@@ -449,18 +434,13 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const sar_files::Archive
         }
     }
     archive.U32(block + 4, static_cast<uint32_t>(end - block));
-    const uint32_t block_entries[][3] = {
-        {0x2000, string_place, static_cast<uint32_t>(strings.size())},
-        {0x2001, static_cast<uint32_t>(info_place), static_cast<uint32_t>(tables.size())},
-        {0x2002, static_cast<uint32_t>(block), static_cast<uint32_t>(end - block)},
-    };
-    for (std::size_t i = 0; i < 3; ++i)
-    {
-        archive.U16(0x14 + 12 * i, static_cast<uint16_t>(block_entries[i][0]));
-        archive.U32(0x18 + 12 * i, block_entries[i][1]);
-        archive.U32(0x1C + 12 * i, block_entries[i][2]);
-    }
-    archive.U32(0x0C, static_cast<uint32_t>(archive.Size()));
+    sar_files::WriteFileHeader(archive, sar_files::Magic(flavor, "SAR"), static_cast<uint16_t>(detail::kHeaderSize),
+                               sar_files::Version(flavor, 0x02030000, 0x00020200),
+                               {
+                                   {0x2000, string_place, static_cast<uint32_t>(strings.size())},
+                                   {0x2001, static_cast<uint32_t>(info_place), static_cast<uint32_t>(tables.size())},
+                                   {0x2002, static_cast<uint32_t>(block), static_cast<uint32_t>(end - block)},
+                               });
 
     return archive.data;
 }
@@ -475,7 +455,7 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const sar_files::Archive
 inline std::vector<uint8_t> WithoutValuePlaces(std::span<const uint8_t> archive, sar::Flavor flavor,
                                                const std::map<uint32_t, sar::ValuePlaces>& places)
 {
-    const bool big_endian = flavor == sar::Flavor::kCafe;
+    const bool big_endian = sar_files::BigEndian(flavor);
     const sar::Tables tables = sar::TablesOf(archive, flavor);
     std::optional<sar::StringBlock> strings;
     if (tables.strings)
@@ -563,7 +543,7 @@ inline std::vector<uint8_t> WithoutValuePlaces(std::span<const uint8_t> archive,
 inline std::vector<uint8_t> Bank(sar::Flavor flavor, const sar_files::BankSpec& spec,
                                  std::vector<std::size_t> order = {})
 {
-    const bool big_endian = sar_files::detail::BigEndian(flavor);
+    const bool big_endian = sar_files::BigEndian(flavor);
     const bool by_program = order.empty();
     for (std::size_t i = 0; i < spec.instruments.size(); ++i)
     {
@@ -587,33 +567,20 @@ inline std::vector<uint8_t> Bank(sar::Flavor flavor, const sar_files::BankSpec& 
     {
         const std::size_t instrument = info.Add(8);
         info.Ref(instruments + 4 + 8 * program, 0x5900, instrument, instruments);
-        sar_files::detail::PutTable(info, instrument, *spec.instruments[program], sar_files::detail::PutVelocityTable);
+        sar_files::PutTable(info, instrument, *spec.instruments[program], sar_files::PutVelocityTable);
     }
-    const std::size_t waves = info.Add(4 + 8 * spec.waves.size());
-    info.Ref(0, 0x0100, waves, 0);
-    info.U32(waves, static_cast<uint32_t>(spec.waves.size()));
-    for (std::size_t i = 0; i < spec.waves.size(); ++i)
-    {
-        info.U32(waves + 4 + 8 * i, spec.waves[i].first);
-        info.U32(waves + 8 + 8 * i, spec.waves[i].second);
-    }
+    sar_files::PutWaveTable(info, spec.waves);
 
     // The header with its table of one block, then the block.
     sar_files::Bytes file(big_endian);
     file.Add(0x20);
-    std::memcpy(file.data.data(), sar_files::detail::Magic(flavor, "BNK").c_str(), 4);
-    file.U16(4, 0xFEFF);
-    file.U16(6, 0x20);
-    file.U32(8, sar_files::detail::Version(flavor, 0x01000100, 0x00010000));
-    file.U16(0x10, 1);
-    file.U16(0x14, 0x5800);
-    file.U32(0x18, 0x20);
-    file.U32(0x1C, static_cast<uint32_t>(8 + info.Size()));
     const std::size_t block = file.Add(8);
     std::memcpy(file.data.data() + block, "INFO", 4);
-    file.U32(block + 4, static_cast<uint32_t>(8 + info.Size()));
+    const auto size = static_cast<uint32_t>(8 + info.Size());
+    file.U32(block + 4, size);
     file.Add(info.data);
-    file.U32(0x0C, static_cast<uint32_t>(file.Size()));
+    sar_files::WriteFileHeader(file, sar_files::Magic(flavor, "BNK"), 0x20,
+                               sar_files::Version(flavor, 0x01000100, 0x00010000), {{0x5800, 0x20, size}});
 
     return file.data;
 }

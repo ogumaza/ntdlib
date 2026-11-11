@@ -59,12 +59,6 @@ int Timecents(double ms, int longest)
     return sf2::ToTimecents(ms, kShortestTimecents, longest);
 }
 
-// Adds generator `oper` with `value` to `zone`, before its sample.
-void AddGenerator(sf2::Zone& zone, uint16_t oper, int value)
-{
-    zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(oper, value));
-}
-
 // The instrument's global zone holds seqlib's kGlobalZoneModulators. The Nintendo 64's engines don't filter by
 // velocity. A pitch wheel covers its full range. CC10 pans at the amount of 500 that most synthesizers play. The mod
 // wheel moves nothing: SoundFont's default CC1 modulator would add 50 cents of vibrato.
@@ -136,23 +130,22 @@ sf2::Zone SoundFontZone(const Zone& z, uint16_t sample, bool loop, double quiete
 
     if (!z.follows_key)
     {
-        AddGenerator(zone, sf2::kScaleTuning, 0);
+        sf2::AddGenerator(zone, sf2::kScaleTuning, 0);
     }
 
     if (z.low_pass_hz > 0.0)
     {
-        AddGenerator(zone, sf2::kInitialFilterFc,
-                     static_cast<int>(std::lround(1200.0 * std::log2(z.low_pass_hz / 8.176))));
+        sf2::AddGenerator(zone, sf2::kInitialFilterFc, sf2::AbsoluteCents(z.low_pass_hz));
     }
 
     if (z.vibrato)
     {
         if (z.vibrato->delay_ms > 0.0)
         {
-            AddGenerator(zone, sf2::kDelayVibLfo, Timecents(z.vibrato->delay_ms, kLongestHoldTimecents));
+            sf2::AddGenerator(zone, sf2::kDelayVibLfo, Timecents(z.vibrato->delay_ms, kLongestHoldTimecents));
         }
 
-        AddGenerator(zone, sf2::kFreqVibLfo, sf2::LfoFrequency(z.vibrato->hz));
+        sf2::AddGenerator(zone, sf2::kFreqVibLfo, sf2::LfoFrequency(z.vibrato->hz));
         const int depth = static_cast<int>(std::lround(z.vibrato->depth));
         if (z.vibrato->wheel)
         {
@@ -160,7 +153,7 @@ sf2::Zone SoundFontZone(const Zone& z, uint16_t sample, bool loop, double quiete
         }
         else
         {
-            AddGenerator(zone, sf2::kVibLfoToPitch, depth);
+            sf2::AddGenerator(zone, sf2::kVibLfoToPitch, depth);
         }
     }
 
@@ -168,10 +161,10 @@ sf2::Zone SoundFontZone(const Zone& z, uint16_t sample, bool loop, double quiete
     {
         if (z.tremolo->delay_ms > 0.0)
         {
-            AddGenerator(zone, sf2::kDelayModLfo, Timecents(z.tremolo->delay_ms, kLongestHoldTimecents));
+            sf2::AddGenerator(zone, sf2::kDelayModLfo, Timecents(z.tremolo->delay_ms, kLongestHoldTimecents));
         }
 
-        AddGenerator(zone, sf2::kFreqModLfo, sf2::LfoFrequency(z.tremolo->hz));
+        sf2::AddGenerator(zone, sf2::kFreqModLfo, sf2::LfoFrequency(z.tremolo->hz));
         const int depth = static_cast<int>(std::lround(z.tremolo->depth * 10.0));
         if (z.tremolo->wheel)
         {
@@ -179,7 +172,7 @@ sf2::Zone SoundFontZone(const Zone& z, uint16_t sample, bool loop, double quiete
         }
         else
         {
-            AddGenerator(zone, sf2::kModLfoToVolume, depth);
+            sf2::AddGenerator(zone, sf2::kModLfoToVolume, depth);
         }
     }
 

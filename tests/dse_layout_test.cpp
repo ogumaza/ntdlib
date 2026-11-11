@@ -23,6 +23,7 @@
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/layout.h"
 #include "ntdlib/dse/sets.h"
+#include "ntdlib/rounding.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/testing/dse_song_files.h"
 
@@ -32,6 +33,7 @@ namespace
 namespace dse = ntdlib::dse;
 namespace files = ntdlib::testing::dse_song_files;
 using Bytes = std::vector<uint8_t>;
+using ntdlib::AlignUp;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
@@ -51,11 +53,6 @@ Sequence DecodeSong(const Bytes& song)
 Bytes TracksOf(const Bytes& song)
 {
     return {song.begin() + kSongTracks, song.end() - kEocChunk};
-}
-
-std::size_t AlignUp(std::size_t value, std::size_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
 }
 
 Command CommandOf(Kind kind, int64_t value = 0)
@@ -115,6 +112,37 @@ void TestNewTrack()
     const Bytes expected = {'t', 'r', 'k', ' ', 0, 0, 0, 1, 4,    0xFF, 0,    0,
                             5,   0,   0,   0,   3, 5, 0, 0, 0x98, 0x98, 0x98, 0x98};
     XSFLIB_CHECK(dse::EncodeTracks(sequence).bytes == expected);
+}
+
+void TestReadTrackOpening()
+{
+    // The start of OneTrack's track gives its number 1 and its channel 2. A start of 20 bytes needs the whole label of
+    // a track chunk.
+    const Sequence sequence = DecodeSong(OneTrack({0x98}));
+    Command other = sequence.items[0];
+    other.bytes[4] = 1;
+    const Command end = sequence.items[1];
+
+    const std::optional<dse::TrackStart> read = dse::ReadTrackOpening(sequence.items[0]);
+
+    XSFLIB_CHECK(read == (dse::TrackStart{.number = 1, .channel = 2}));
+    XSFLIB_CHECK(dse::ReadTrackOpening(dse::TrackOpening(3, 5)) == (dse::TrackStart{.number = 3, .channel = 5}));
+    XSFLIB_CHECK(!dse::ReadTrackOpening(other));
+    XSFLIB_CHECK(!dse::ReadTrackOpening(end));
+}
+
+void TestSetTrackOpening()
+{
+    // The number and the channel go after the chunk's header. The preamble's other two bytes stay.
+    Command opening = dse::TrackOpening(0, 0);
+    opening.bytes[18] = 0xAA;
+    Command end = CommandOf(Kind::kEnd);
+
+    dse::SetTrackOpening(opening, {.number = 4, .channel = 15});
+
+    const Bytes expected = {'t', 'r', 'k', ' ', 0, 0, 0, 1, 4, 0xFF, 0, 0, 0, 0, 0, 0, 4, 15, 0xAA, 0};
+    XSFLIB_CHECK(opening.bytes == expected);
+    XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { dse::SetTrackOpening(end, {}); }).empty());
 }
 
 void TestNotes()
@@ -867,6 +895,8 @@ int main()
 {
     TestTrackOpening();
     TestNewTrack();
+    TestReadTrackOpening();
+    TestSetTrackOpening();
     TestNotes();
     TestKeysThatANewNoteDoesNotTake();
     TestWaits();

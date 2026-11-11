@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// NW4R SND's effects on AX's aux buses. Each effect class of NW4R SND wraps an effect of the
-// SDK's AXFX library. AxManager keeps a list of effects for each bus. While a bus has effects, AxManager's callback for
-// the bus runs them in each AX frame.
+// NW4R SND's effects on AX's aux buses. Each effect class of NW4R SND wraps an effect of the SDK's AXFX library. The
+// Photo Channel 1.1 defines one more class. Its effect isn't part of AXFX (axfx::PhotoMood). AxManager keeps a list
+// of effects for each bus. While a bus has effects, AxManager's callback for the bus runs them in each AX frame.
 
 #pragma once
 
@@ -17,6 +17,7 @@
 #include "ntdlib/rvl/axfx/axfx.h"
 #include "ntdlib/rvl/axfx/chorus.h"
 #include "ntdlib/rvl/axfx/delay.h"
+#include "ntdlib/rvl/axfx/photo_mood.h"
 #include "ntdlib/rvl/axfx/reverb_hi.h"
 #include "ntdlib/rvl/axfx/reverb_std.h"
 #include "ntdlib/rvl/snd/effect_setup.h"
@@ -25,11 +26,24 @@
 namespace ntdlib::rvl::snd
 {
 
-// The build of the AXFX library that a game links, by its build of NW4R SND.
-axfx::Build AxfxBuild(const SndBuild& build);
+// The build of the AXFX library that a game links. AXFX comes with AX. AX of October 2006 comes with AXFX of October
+// 2006. With a later AX, the build of NW4R SND gives the build of AXFX: that of September 2008 for a build from March
+// 2008 on, and that of December 2006 for an older one.
+axfx::Build AxfxBuild(const SndBuild& build, ax::Build ax_build);
 
-// An object of one of NW4R SND's effect classes (FxBase), on the model of the AXFX effect that it wraps. A copy holds
-// the whole state of the effect.
+// FxChorus::SetParam of 2009 (Pokémon Rumble, 0x8027b800): ChorusExp's parameters for the five words of a
+// kChorus2009. The class holds delayTime to 0.1 to 50 ms, depth to 0 to 1, rate to 0.1 to 2 Hz, feedback to 0 to 0.99
+// and outGain to 0 to 1. It sets no other bus and no send. The class of 2009 runs AXFX's ChorusExp of February 2009.
+axfx::ChorusExp::Params Chorus2009Params(const EffectParams& params);
+
+// FxDelay::SetParam of 2009 (Pokémon Rumble, 0x8027bc20): DelayExp's parameters for the five words of a kDelay2009.
+// The longest delay is at least 0.04 ms. The delay is the longest delay as given where it's longer, and otherwise at
+// least 0.04 ms. The class holds feedback to 0 to 0.99, and lpf and outGain to 0 to 1. It sets no other bus and no
+// send.
+axfx::DelayExp::Params Delay2009Params(const EffectParams& params);
+
+// An object of one of NW4R SND's effect classes (FxBase), on the model of the AXFX effect that it wraps. The Photo
+// Channel 1.1's class holds its effect itself. A copy holds the whole state of the effect.
 //
 // The game gives each object a work buffer that holds the AXFX effect's memory. NW4R SND's StartUp and SetParam fail
 // if the buffer is too small. The model leaves that out: the games give each effect a buffer large enough.
@@ -58,7 +72,8 @@ private:
     };
 
     using Slots = std::variant<Slot<axfx::ReverbHi>, Slot<axfx::ReverbHiExp>, Slot<axfx::Chorus>, Slot<axfx::Delay>,
-                               Slot<axfx::ReverbStd>, Slot<axfx::ReverbStdExp>>;
+                               Slot<axfx::ReverbStd>, Slot<axfx::ReverbStdExp>, Slot<axfx::PhotoMood>,
+                               Slot<axfx::ChorusExp>, Slot<axfx::DelayExp>>;
 
     static Slots MakeSlot(EffectType type, axfx::Build build);
 

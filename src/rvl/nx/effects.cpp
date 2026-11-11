@@ -4,11 +4,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <span>
+#include <vector>
+
+#include "ntdlib/aarch64.h"
 
 namespace ntdlib::rvl::nx
 {
@@ -28,21 +29,10 @@ constexpr std::array<int8_t, kReverbChannels> kReverbBlocks{0, 1, 2, 3};
 // The late modes for the fused modes 0 to 5 (0x13a8130).
 constexpr std::array<int32_t, 6> kLateModes{4, 2, 0, 0, 1, 3};
 
-// AArch64's fmax: NaN if either value is NaN.
-float Max(float a, float b)
-{
-    if (std::isnan(a) || std::isnan(b))
-    {
-        return std::numeric_limits<float>::quiet_NaN();
-    }
-
-    return a > b || (a == b && !std::signbit(a)) ? a : b;
-}
-
 // A value held to 0 and 1, as SetParam holds it: fmax with 0, and 1 for what's above 1.
 float Unit(float value)
 {
-    const float low = Max(value, 0.0f);
+    const float low = ntdlib::aarch64::Fmax(value, 0.0f);
     return value > 1.0f ? 1.0f : low;
 }
 
@@ -52,8 +42,9 @@ audio::ReverbParameterSet ReverbParameters(const ReverbParam& param)
 {
     // SetParam (0x10104e8).
     const float predelay_max = param.predelay_time_max;
-    const float predelay = param.predelay_time > predelay_max ? predelay_max : Max(param.predelay_time, 0.0f);
-    const float fused_time = Max(param.fused_time, 0.0f);
+    const float predelay =
+        param.predelay_time > predelay_max ? predelay_max : ntdlib::aarch64::Fmax(param.predelay_time, 0.0f);
+    const float fused_time = ntdlib::aarch64::Fmax(param.fused_time, 0.0f);
 
     // StartUp (0x1010aac to 0x1010b90).
     audio::ReverbParameterSet set;

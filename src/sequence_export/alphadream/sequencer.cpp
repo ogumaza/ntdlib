@@ -20,7 +20,7 @@ namespace ntdlib::sequence_export::alphadream
 using ntdlib::alphadream::kRootKey;
 using ntdlib::alphadream::SampleHeader;
 using ntdlib::alphadream::Version;
-using ntdlib::sequence_export::agb::kMiddleC;
+using ntdlib::sequence_export::agb::KeyHz;
 using ntdlib::sequence_export::agb::PsgRegisters;
 using ntdlib::sequence_export::agb::SquareHz;
 using ntdlib::sequence_export::agb::WaveShare;
@@ -1063,7 +1063,7 @@ void Sequencer::Record(int index)
         // and so does its sample.
         const int h = t.channel & 3;
         const PsgChannel& p = psg_[size_t(h)];
-        const double key_hz = kMiddleC * std::exp2((n.key - 60) / 12.0);
+        const double key_hz = KeyHz(n.key);
         c.pitch = h == kNoiseChannel ? 0 : 12 * std::log2(SquareHz(std::min<int>(p.frequency, 2047)) / key_hz);
         const double volume =
             h == kWaveChannel ? 15 * WaveShare(registers_.control[kWaveChannel]) : psg_levels_[size_t(h)];

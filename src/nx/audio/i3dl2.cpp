@@ -50,6 +50,53 @@ int32_t ToSample(float x)
     return ToInt(Fmin(Fmax(x * 65536.0f, -8388608.0f), 8388607.0f));
 }
 
+// The input's low-pass, a one-pole filter for the room's loss of high frequencies, from the root of a quadratic.
+// Returns the filter's feedback: 0 for a room that loses none.
+float LowPassFeedback(const I3dl2ReverbParameterSet& p, int32_t sample_rate)
+{
+    const int32_t room_hf = ToQ14(p.room_hf_gain / 2000.0f);
+    const float q = Power(room_hf);
+    if (room_hf >= 0 || q >= 1.0f)
+    {
+        return 0.0f;
+    }
+
+    const auto rate = static_cast<float>(static_cast<uint32_t>(sample_rate));
+    const int32_t angle = ToQ14(p.hf_reference * 256.0f / rate);
+    const float negative_cosine = static_cast<float>(Sine(WrapAdd(angle, kQuarterTurn))) * -0x1p-14f;
+    const float one_minus = 1.0f - q;
+    const float b = negative_cosine * (q + q) + 2.0f;
+    const float discriminant = b * b + one_minus * (one_minus * -4.0f);
+    const float root = static_cast<float>(SquareRoot(ToQ14(discriminant))) * -0x1p-14f;
+
+    return Fmin((b + root) / (one_minus + one_minus), 0x1.fe9456p-1f);
+}
+
+// A feedback line's shelf filter.
+struct Shelf
+{
+    float feedback;
+    float gain;
+    float feedforward;
+};
+
+// The shelf filter of a feedback line whose loop takes `total` samples, at `rate` Hz.
+Shelf ShelfOf(const I3dl2ReverbParameterSet& p, int32_t total, float rate)
+{
+    const float half_angle = p.hf_reference * 0.5f * 128.0f / rate;
+    const float a = static_cast<float>(static_cast<uint32_t>(total)) * -60.0f / (p.late_reverb_decay_time * rate);
+    const int32_t angle = ToQ14(half_angle);
+    const float cosine = static_cast<float>(Sine(WrapAdd(angle, kQuarterTurn))) * 0x1p-14f;
+    const float b = a / p.late_reverb_hf_decay_ratio;
+    const float sine = static_cast<float>(Sine(angle)) * 0x1p-14f;
+    const float d = Power(ToQ14((b - a) / 40.0f));
+    const float e = Power(ToQ14((a + b) / 40.0f)) * 0.7071f;
+    const float c = cosine / sine;
+    const float cd = c * d;
+
+    return {(c - d) / (c + d), (cd + 1.0f) * e / (c + d), (1.0f - cd) * e / (c + d)};
+}
+
 } // namespace
 
 AuxI3dl2Reverb::AuxI3dl2Reverb(int32_t sample_rate) : sample_rate_(sample_rate)
@@ -160,27 +207,9 @@ void AuxI3dl2Reverb::Update(bool reset)
     s.early_gain = Power(ToQ14(Fmin(p.room_gain + p.reflections_gain, 5000.0f) / 2000.0f));
     s.late_gain = Power(ToQ14(Fmin(p.room_gain + p.reverb_gain, 5000.0f) / 2000.0f));
 
-    // The input's low-pass, a one-pole filter for the room's loss of high frequencies, from the root of a quadratic.
-    const int32_t room_hf = ToQ14(p.room_hf_gain / 2000.0f);
-    const float q = Power(room_hf);
-    if (room_hf >= 0 || q >= 1.0f)
-    {
-        s.lowpass_feedback = 0.0f;
-        s.lowpass_input = 1.0f;
-    }
-    else
-    {
-        const auto rate = static_cast<float>(static_cast<uint32_t>(sample_rate_));
-        const int32_t angle = ToQ14(p.hf_reference * 256.0f / rate);
-        const float negative_cosine = static_cast<float>(Sine(WrapAdd(angle, kQuarterTurn))) * -0x1p-14f;
-        const float one_minus = 1.0f - q;
-        const float b = negative_cosine * (q + q) + 2.0f;
-        const float discriminant = b * b + one_minus * (one_minus * -4.0f);
-        const float root = static_cast<float>(SquareRoot(ToQ14(discriminant))) * -0x1p-14f;
-        const float feedback = Fmin((b + root) / (one_minus + one_minus), 0x1.fe9456p-1f);
-        s.lowpass_feedback = feedback;
-        s.lowpass_input = 1.0f - feedback;
-    }
+    // The input's low-pass.
+    s.lowpass_feedback = LowPassFeedback(p, sample_rate_);
+    s.lowpass_input = 1.0f - s.lowpass_feedback;
 
     // Where the late reverb takes the input: after the reflections' delay and then the late reverb's delay.
     const int64_t k = KilohertzQ14(sample_rate_);
@@ -210,20 +239,11 @@ void AuxI3dl2Reverb::Update(bool reset)
             delay = fdn.delay;
         }
 
-        const float half_angle = p.hf_reference * 0.5f * 128.0f / rate;
         const int32_t total = WrapAdd(WrapAdd(delay, s.decay1[i].delay), s.decay2[i].delay);
-        const float a = static_cast<float>(static_cast<uint32_t>(total)) * -60.0f / (p.late_reverb_decay_time * rate);
-        const int32_t angle = ToQ14(half_angle);
-        const float cosine = static_cast<float>(Sine(WrapAdd(angle, kQuarterTurn))) * 0x1p-14f;
-        const float b = a / p.late_reverb_hf_decay_ratio;
-        const float sine = static_cast<float>(Sine(angle)) * 0x1p-14f;
-        const float d = Power(ToQ14((b - a) / 40.0f));
-        const float e = Power(ToQ14((a + b) / 40.0f)) * 0.7071f;
-        const float c = cosine / sine;
-        const float cd = c * d;
-        s.shelf_feedback[i] = (c - d) / (c + d);
-        s.shelf_gain[i] = (cd + 1.0f) * e / (c + d);
-        s.shelf_feedforward[i] = (1.0f - cd) * e / (c + d);
+        const Shelf shelf = ShelfOf(p, total, rate);
+        s.shelf_feedback[i] = shelf.feedback;
+        s.shelf_gain[i] = shelf.gain;
+        s.shelf_feedforward[i] = shelf.feedforward;
         s.decay1[i].gain = echo;
         s.decay2[i].gain = echo * -0.9f;
     }

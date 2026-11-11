@@ -23,7 +23,6 @@
 
 namespace ntdlib::sequence_export::dse
 {
-
 namespace
 {
 
@@ -40,6 +39,7 @@ std::string StemOf(const std::string& path)
     {
         name.erase(dot);
     }
+
     return name;
 }
 
@@ -59,6 +59,7 @@ public:
         {
             return found->second;
         }
+
         std::shared_ptr<const T> file;
         try
         {
@@ -69,6 +70,7 @@ public:
             warnings_.push_back(files_[index].path + ": the " + what_ + " can't be read (" + e.what() + ")");
         }
         read_.emplace(index, file);
+
         return file;
     }
 
@@ -92,6 +94,7 @@ SequenceFiles SequenceInput::Files() const
         files.banks.push_back(bank.get());
     }
     files.main_bank = main_bank.get();
+
     return files;
 }
 
@@ -118,6 +121,7 @@ std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile>
         {
             continue;
         }
+
         input.banks.push_back(bank);
         if (set.main_bank)
         {
@@ -134,12 +138,14 @@ std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile>
         {
             continue;
         }
+
         for (std::size_t slot = 0; slot < read->sequences.size() && slot < set.slots.size(); slot++)
         {
             if (!read->sequences[slot])
             {
                 continue;
             }
+
             char number[16];
             std::snprintf(number, sizeof(number), "_%03zu", slot);
             SequenceInput input{.folder = FolderOf(path),
@@ -147,6 +153,7 @@ std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile>
                                 .ref = {path, static_cast<uint16_t>(slot)},
                                 .effects = read,
                                 .effect = static_cast<uint16_t>(slot)};
+
             const ntdlib::dse::EffectBanks& slot_banks = set.slots[slot];
             for (const uint16_t id : slot_banks.missing)
             {
@@ -154,6 +161,7 @@ std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile>
                 std::snprintf(line, sizeof(line), ": no file holds bank 0x%04X of sound effect %zu", id, slot);
                 warnings.push_back(path + line);
             }
+
             for (const std::size_t bank : slot_banks.banks)
             {
                 if (const std::shared_ptr<const ntdlib::dse::WaveBank> read_bank = banks.Get(bank))
@@ -168,6 +176,7 @@ std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile>
             inputs.push_back(std::move(input));
         }
     }
+
     return inputs;
 }
 

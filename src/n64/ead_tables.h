@@ -7,6 +7,7 @@
 
 namespace ntdlib::n64::ead_tables
 {
+
 // The frequency scale of each note.
 extern const std::array<float, 128> kNoteFrequencies;
 

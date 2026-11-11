@@ -92,7 +92,8 @@ std::vector<Sheet::Target> Sheet::ReadSymbols(const std::vector<uint8_t>& data, 
             continue;
         }
 
-        const Header& strings = headers[h.link];
+        // The names lie in the section that the table links to. A section without bytes in the file holds none.
+        const Section& strings = sections_[h.link];
         for (uint64_t at = h.offset; at + 24 <= h.offset + h.size; at += 24)
         {
             const uint32_t name = xsflib::LoadLe32(&data[at]);
@@ -104,11 +105,12 @@ std::vector<Sheet::Target> Sheet::ReadSymbols(const std::vector<uint8_t>& data, 
                 continue;
             }
 
-            const auto* text = reinterpret_cast<const char*>(&data[strings.offset + name]);
-            const std::size_t length = std::string(text, static_cast<std::size_t>(strings.size - name)).find('\0');
-            if (length != std::string::npos)
+            const std::string_view rest(reinterpret_cast<const char*>(&data[strings.offset + name]),
+                                        static_cast<std::size_t>(strings.size - name));
+            const std::size_t length = rest.find('\0');
+            if (length != std::string_view::npos)
             {
-                symbols_[std::string(text, length)] = {section, value, xsflib::LoadLe64(&data[at + 16])};
+                symbols_[std::string(rest.substr(0, length))] = {section, value, xsflib::LoadLe64(&data[at + 16])};
             }
         }
     }

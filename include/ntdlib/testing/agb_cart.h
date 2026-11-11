@@ -6,17 +6,15 @@
 #pragma once
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <random>
 #include <string>
-#include <system_error>
 #include <vector>
 
 #include "xsflib/bytes.h"
+#include "xsflib/testing/temp_folder.h"
 
 #include "ntdlib/agb/files.h"
 #include "ntdlib/agb/gba.h"
@@ -31,8 +29,13 @@ using ntdlib::agb::RegisterWrite;
 using ntdlib::agb::Rom;
 using ntdlib::agb::Utf8;
 
-// Output folder for this test run.
-inline std::filesystem::path g_temp;
+// The folder for the files that this test run writes: a unique folder in the system's temporary folder, made at the
+// first call and deleted when the test ends.
+inline const std::filesystem::path& TempFolderPath()
+{
+    static const xsflib::testing::TempFolder folder("ntdlib_agb_tests");
+    return folder.Path();
+}
 
 // Returns the path of `name` in this run's temp folder.
 inline std::filesystem::path TempPath(const std::string& name);
@@ -93,30 +96,9 @@ private:
     std::vector<uint8_t> bytes_;
 };
 
-// Creates a unique directory in the system's temp folder so concurrent test runs don't share files. Returns false on
-// failure.
-inline bool MakeTempFolder()
-{
-    std::random_device random;
-    for (int attempt = 0; attempt < 100; attempt++)
-    {
-        char name[48];
-        std::snprintf(name, sizeof name, "ntdlib_agb_tests_%08x%08x", unsigned(random()),
-                      unsigned(std::chrono::steady_clock::now().time_since_epoch().count()));
-        std::error_code ec;
-        g_temp = std::filesystem::temp_directory_path(ec) / name;
-        if (!ec && std::filesystem::create_directory(g_temp, ec))
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 inline std::filesystem::path TempPath(const std::string& name)
 {
-    return g_temp / PathFromUtf8(name);
+    return TempFolderPath() / PathFromUtf8(name);
 }
 
 inline std::FILE* OpenTempFile(const std::string& name)

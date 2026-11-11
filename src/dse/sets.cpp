@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "ntdlib/dse/formats.h"
 
@@ -48,11 +49,6 @@ std::string StemOf(const std::string& path)
         name.erase(dot);
     }
     return name;
-}
-
-uint16_t Get16(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return static_cast<uint16_t>(bytes[at] | bytes[at + 1] << 8);
 }
 
 // The songs and the wave banks of a game's files, with each song's bank.
@@ -126,12 +122,12 @@ public:
         {
             return std::nullopt;
         }
-        const uint16_t id = Get16(header, 0x40);
+        const uint16_t id = xsflib::LoadLe16(&header[0x40]);
         std::optional<std::size_t> found;
         for (const std::size_t i : banks_)
         {
             const std::span<const uint8_t> other = files_[i].bytes;
-            if (other[0x4B] != kMainBank || Get16(other, 0x0E) != id)
+            if (other[0x4B] != kMainBank || xsflib::LoadLe16(&other[0x0E]) != id)
             {
                 continue;
             }
@@ -153,7 +149,7 @@ public:
         std::optional<std::size_t> song_bank;
         for (const std::size_t i : banks_)
         {
-            if (Get16(files_[i].bytes, 0x0E) != id)
+            if (xsflib::LoadLe16(&(files_[i].bytes)[0x0E]) != id)
             {
                 continue;
             }

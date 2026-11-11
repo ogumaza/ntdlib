@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include "seqlib/sf2/units.h"
+#include "xsflib/bytes.h"
 
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
@@ -29,11 +31,11 @@
 
 namespace ntdlib::sequence_export::dse
 {
-
 namespace
 {
 
 using ntdlib::dse::EnvelopeValues;
+using ntdlib::dse::SplitView;
 
 // A tick of the driver in milliseconds.
 constexpr double kTickMs = 1000.0 * ntdlib::dse::Player::kTickClocks / ntdlib::ntr::kSystemClockHz;
@@ -55,27 +57,6 @@ constexpr std::size_t kFitSamples = 2000;
 constexpr uint8_t kPsgFormat = 3;
 constexpr uint8_t kNoiseFormat = 4;
 
-int16_t Get16(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return static_cast<int16_t>(bytes[at] | bytes[at + 1] << 8);
-}
-
-// A program's bytes as the driver keeps them: the header, the LFOs, the 16 bytes after them and the splits.
-std::vector<uint8_t> ProgramBytes(const ntdlib::dse::Program& program)
-{
-    std::vector<uint8_t> bytes(program.header.begin(), program.header.end());
-    for (const auto& lfo : program.lfos)
-    {
-        bytes.insert(bytes.end(), lfo.begin(), lfo.end());
-    }
-    bytes.insert(bytes.end(), program.filler.begin(), program.filler.end());
-    for (const auto& split : program.splits)
-    {
-        bytes.insert(bytes.end(), split.begin(), split.end());
-    }
-    return bytes;
-}
-
 // The minimum of `error` between `low` and `high`, by a scan and a search of golden sections.
 double Minimum(const std::function<double(double)>& error, double low, double high)
 {
@@ -93,6 +74,7 @@ double Minimum(const std::function<double(double)>& error, double low, double hi
             best_error = e;
         }
     }
+
     const double full_low = low;
     const double full_high = high;
     low = std::max(full_low, full_low + step * (best - 1));
@@ -122,6 +104,7 @@ double Minimum(const std::function<double(double)>& error, double low, double hi
             error_b = error(b);
         }
     }
+
     return (low + high) / 2.0;
 }
 
@@ -163,6 +146,7 @@ double FitRamp(std::span<const uint8_t> levels)
             const double d = Amplitude(levels[k]) - std::min(1.0, t / ramp_ms);
             sum += d * d;
         }
+
         return sum;
     };
     return Minimum(error, 0.001, full_ms);
@@ -185,6 +169,7 @@ double FitFall(std::span<const uint8_t> levels, double sustain_cb)
             const double d = Amplitude(levels[k]) - std::pow(10.0, db / 20.0);
             sum += d * d;
         }
+
         return sum;
     };
     return std::exp(Minimum(error, std::log(0.001), std::log(kSlowestSf2DecayMs)));
@@ -203,8 +188,10 @@ double FitRelease(int32_t ticks)
         {
             levels[k] = static_cast<uint8_t>(std::lround(127.0 * (1.0 - (static_cast<double>(k) + 1.0) / 1000.0)));
         }
+
         return FitFall(levels, 1440.0) / (1000.0 * kTickMs);
     }();
+
     return kRatio * ticks * kTickMs;
 }
 
@@ -241,6 +228,7 @@ EnvelopeFit FitEnvelope(const EnvelopeValues& e)
         fit.ramp_ms = FitRamp(std::span(levels).first(rise + 1));
     }
     fit.hold_ms = static_cast<double>(fall - levels.begin()) * kTickMs - fit.ramp_ms;
+
     if (fall == levels.end())
     {
         return fit;
@@ -251,6 +239,7 @@ EnvelopeFit FitEnvelope(const EnvelopeValues& e)
     const bool keeps =
         std::all_of(levels.end() - kEnvelopeTicks / 10, levels.end(), [last](uint8_t level) { return level == last; });
     fit.sustain_cb = keeps ? Centibels(Amplitude(last)) : 1440.0;
+
     // The fit reads the fall and as many ticks again after it settles, or the rest of the ticks.
     auto end = levels.end();
     if (keeps)
@@ -261,18 +250,24 @@ EnvelopeFit FitEnvelope(const EnvelopeValues& e)
     }
     const std::span<const uint8_t> falling(fall - 1, end);
     fit.decay_ms = falling.size() > 1 ? FitFall(falling, fit.sustain_cb) : 0.0;
+
     return fit;
 }
 
+// Returns the fit of `e`, from a cache of the envelopes fitted so far. Conversions on several threads share the
+// cache, under the lock. The entries never move or change.
 const EnvelopeFit& FitOf(const EnvelopeValues& e)
 {
+    static std::mutex mutex;
     static std::map<std::array<uint8_t, 8>, EnvelopeFit> fits;
     const std::array<uint8_t, 8> key = {e.multiplier,    e.attack_begin, e.attack_time,  e.decay_time,
                                         e.sustain_level, e.hold_time,    e.sustain_time, e.release_time};
+    const std::lock_guard lock(mutex);
     if (const auto found = fits.find(key); found != fits.end())
     {
         return found->second;
     }
+
     return fits.emplace(key, FitEnvelope(e)).first->second;
 }
 
@@ -297,13 +292,14 @@ std::vector<int16_t> Decode(std::span<const uint8_t> data, uint32_t words, uint8
     case 1:
         for (std::size_t i = 0; i < std::size_t{words} * 2; i++)
         {
-            samples.push_back(Get16(data, 2 * i));
+            samples.push_back(static_cast<int16_t>(xsflib::LoadLe16(&data[2 * i])));
         }
         break;
     default:
         samples = ntdlib::sdat::DecodeAdpcm(data.first(std::size_t{words} * 4), words > 0 ? (words - 1) * 8 : 0);
         break;
     }
+
     return samples;
 }
 
@@ -320,50 +316,56 @@ std::vector<PresetZone> PresetZones(const ntdlib::dse::WaveBank& bank, const Pre
 
     // The driver's search for a note's splits (0x0206D5C8): the splits from 0x60 on, up to the one whose index is the
     // last of the program's count.
-    const std::vector<uint8_t> program = ProgramBytes(*bank.instruments->programs[key.program]);
+    const std::vector<uint8_t> program = bank.instruments->programs[key.program]->Bytes();
     const auto wave_count = static_cast<int16_t>(bank.header[0x46] | bank.header[0x47] << 8);
     std::vector<PresetZone> zones;
-    for (std::size_t at = 0x60; program[2] != 0 && at + 0x30 <= program.size(); at += 0x30)
+    for (std::size_t at = 0x60; program[2] != 0 && at + SplitView::kSize <= program.size(); at += SplitView::kSize)
     {
-        const std::span<const uint8_t> split = std::span(program).subspan(at, 0x30);
-        const int16_t wave = Get16(split, 0x12);
+        const SplitView split(std::span(program).subspan(at).first<SplitView::kSize>());
+        const auto wave = static_cast<int16_t>(split.Wave());
         if (wave >= 0 && wave < wave_count && static_cast<std::size_t>(wave) < bank.waves.size() &&
-            bank.waves[static_cast<std::size_t>(wave)] && split[4] <= split[5] && split[8] <= split[9])
+            bank.waves[static_cast<std::size_t>(wave)] && split.LowKey() <= split.HighKey() &&
+            split.LowVelocity() <= split.HighVelocity())
         {
             PresetZone zone;
-            zone.low_key = std::min<uint8_t>(split[4], 127);
-            zone.high_key = std::min<uint8_t>(split[5], 127);
-            zone.low_velocity = std::min<uint8_t>(split[8], 127);
-            zone.high_velocity = std::min<uint8_t>(split[9], 127);
+            zone.low_key = std::min<uint8_t>(split.LowKey(), 127);
+            zone.high_key = std::min<uint8_t>(split.HighKey(), 127);
+            zone.low_velocity = std::min<uint8_t>(split.LowVelocity(), 127);
+            zone.high_velocity = std::min<uint8_t>(split.HighVelocity(), 127);
             zone.wave = static_cast<uint16_t>(wave);
             zone.format = bank.waves[static_cast<std::size_t>(wave)]->bytes[0x13];
-            zone.tuning = static_cast<int16_t>(Get16(split, 0x14) + (static_cast<int8_t>(split[0x17]) << 8));
-            zone.volume = static_cast<uint8_t>(program[4] * split[0x18] / 127);
-            zone.pan = split[0x19];
+            zone.tuning = static_cast<int16_t>(split.Tuning() + (split.CoarseTuning() << 8));
+            zone.volume = static_cast<uint8_t>(program[4] * split.Volume() / 127);
+            zone.pan = split.Pan();
+
             const EnvelopeValues& c = key.envelope;
-            zone.envelope = {.multiplier = Pick(c.multiplier, split[0x21]),
-                             .attack_begin = Pick(c.attack_begin, split[0x28]),
-                             .attack_time = Pick(c.attack_time, split[0x29]),
-                             .decay_time = Pick(c.decay_time, split[0x2A]),
-                             .sustain_level = Pick(c.sustain_level, split[0x2B]),
-                             .hold_time = Pick(c.hold_time, split[0x2C]),
-                             .sustain_time = Pick(c.sustain_time, split[0x2D]),
-                             .release_time = Pick(c.release_time, split[0x2E])};
+            zone.envelope = {.multiplier = Pick(c.multiplier, split.EnvelopeMultiplier()),
+                             .attack_begin = Pick(c.attack_begin, split.AttackBegin()),
+                             .attack_time = Pick(c.attack_time, split.AttackTime()),
+                             .decay_time = Pick(c.decay_time, split.DecayTime()),
+                             .sustain_level = Pick(c.sustain_level, split.SustainLevel()),
+                             .hold_time = Pick(c.hold_time, split.HoldTime()),
+                             .sustain_time = Pick(c.sustain_time, split.SustainTime()),
+                             .release_time = Pick(c.release_time, split.ReleaseTime())};
+
             // The driver takes the limits of key group 0 for a group past the bank's count (0x02073EDC). Group 0
             // allows any number of voices.
-            const std::size_t group = split[0x1A] < bank.header[0x4A] ? split[0x1A] : 0;
+            const std::size_t group = split.KeyGroup() < bank.header[0x4A] ? split.KeyGroup() : 0;
             if (group < bank.instruments->key_groups.size() && bank.instruments->key_groups[group][0] != 0 &&
                 bank.instruments->key_groups[group][2] == 1)
             {
-                zone.exclusive_class = split[0x1A];
+                zone.exclusive_class = split.KeyGroup();
             }
+
             zones.push_back(zone);
         }
-        if (split[1] >= program[2] - 1)
+
+        if (split.Index() >= program[2] - 1)
         {
             break;
         }
     }
+
     return zones;
 }
 
@@ -378,18 +380,21 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& e)
     out.decay = ToTimecents(fit.decay_ms, -12000, 8000);
     out.sustain = static_cast<int>(std::lround(std::clamp(fit.sustain_cb, 0.0, 1440.0)));
     out.release = ToTimecents(fit.release_ms, -12000, 8000);
+
     return out;
 }
 
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& e)
 {
     const EnvelopeFit& fit = FitOf(e);
+
     SfzEnvelope out;
     out.attack = fit.ramp_ms / 1000.0;
     out.hold = fit.hold_ms / 1000.0;
     out.decay = fit.decay_ms * kSfzFallDb / kSf2FallDb / 1000.0;
     out.sustain = 100.0 * std::pow(10.0, -fit.sustain_cb / 200.0);
     out.release = fit.release_ms * kSfzFallDb / kSf2FallDb / 1000.0;
+
     return out;
 }
 
@@ -409,6 +414,7 @@ std::vector<LfoShape> PresetLfos(const PresetKey& key)
         {
             continue;
         }
+
         const double level = lfo.type == 1 ? 1.0 : std::trunc(key.lfo_level * 256.0 / 127.0) / 256.0;
         const double swing = lfo.waveform == 1 ? 4.0 : lfo.waveform == 6 ? 1.0 : 2.0;
         double depth = swing * lfo.amplitude * level;
@@ -436,6 +442,7 @@ std::vector<LfoShape> PresetLfos(const PresetKey& key)
         shape.triangle = lfo.waveform == 3;
         shapes.push_back(shape);
     }
+
     return shapes;
 }
 
@@ -537,6 +544,7 @@ const Pcm* BankSet::Wave(uint16_t bank_id, uint16_t wave)
         Pcm& decoded = pcm.emplace();
         decoded.channels.push_back(Decode(data, words, format));
         decoded.sample_rate = info->SampleRate();
+
         const auto length = static_cast<uint32_t>(decoded.channels[0].size());
         const uint32_t loop_start =
             format == 2 ? (info->LoopStart() > 0 ? (info->LoopStart() - 1) * 8 : 0) : info->LoopStart() * (4 >> format);
@@ -546,6 +554,7 @@ const Pcm* BankSet::Wave(uint16_t bank_id, uint16_t wave)
             decoded.loop_start = loop_start;
             decoded.loop_end = length;
         }
+
         // A SoundFont's sample needs a rate. The zones' tunings give the pitch at any rate.
         if (decoded.sample_rate == 0)
         {

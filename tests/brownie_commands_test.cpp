@@ -15,17 +15,17 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
-#include "brownie_cart.h"
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/brownie/commands.h"
 #include "ntdlib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/testing/brownie_cart.h"
 
 namespace
 {
 
-using namespace brownie_testing;
+using namespace ntdlib::testing::brownie_cart;
 
 namespace brownie = ntdlib::brownie;
 using brownie::Decoded;

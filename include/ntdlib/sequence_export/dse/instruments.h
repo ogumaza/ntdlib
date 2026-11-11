@@ -52,6 +52,7 @@ struct PresetZone
     uint8_t volume = 0; // the product of the program's and the split's volumes, over 127
     uint8_t pan = 0x40; // the split's pan
     ntdlib::dse::EnvelopeValues envelope;
+
     // The split's key group where the group allows a channel one voice, or 0. A note of such a group takes the voice
     // of the group's last note on the channel. A SoundFont note of the exclusive class cuts the other notes of the
     // class on its MIDI channel, and so does an SFZ note of the group (group and off_by).

@@ -17,7 +17,6 @@
 
 namespace ntdlib::ntr
 {
-
 namespace
 {
 
@@ -86,6 +85,7 @@ std::vector<uint8_t> FirmwareImage()
         xsflib::StoreLe16(&flash[place + kUserSettingsSize + 2],
                           Crc16(std::span(flash).subspan(place, kUserSettingsSize)));
     }
+
     return flash;
 }
 
@@ -109,6 +109,7 @@ std::array<uint8_t, 0x70> FirmwareUserSettings()
     settings[0x62] = 0xE0;
     settings[0x63] = 0xA0;
     settings[0x64] = 0x31; // the language in bits 0 to 2, the backlight in bits 4 and 5
+
     return settings;
 }
 
@@ -124,6 +125,7 @@ uint8_t SpiMemory::Transfer(uint8_t value, bool first)
         command_ = value;
         position_ = 1;
         address_ = 0;
+
         if (command_ == kWriteEnable)
         {
             write_enabled_ = true;
@@ -132,6 +134,7 @@ uint8_t SpiMemory::Transfer(uint8_t value, bool first)
         {
             write_enabled_ = false;
         }
+
         return 0xFF;
     }
 
@@ -173,17 +176,20 @@ uint8_t SpiMemory::Transfer(uint8_t value, bool first)
         {
             return 0xFF;
         }
+
         if (address_bytes_ == 1 && (command_ & 8) != 0)
         {
             address_ |= 0x100;
         }
         address_ %= static_cast<uint32_t>(data_.size());
+
         if (erase && write_enabled_)
         {
             const std::size_t size = std::min(command_ == kPageErase ? kPageSize : kSectorSize, data_.size());
             const std::size_t start = address_ / size * size;
             std::fill_n(data_.begin() + static_cast<std::ptrdiff_t>(start), size, 0xFF);
         }
+
         return 0xFF;
     }
 
@@ -203,7 +209,9 @@ uint8_t SpiMemory::Transfer(uint8_t value, bool first)
         // A flash memory's page program can only clear bits.
         data_[address_] = flash && command_ == kWrite ? static_cast<uint8_t>(data_[address_] & value) : value;
     }
+
     address_ = static_cast<uint32_t>((address_ + 1) % data_.size());
+
     return answer;
 }
 
@@ -213,6 +221,7 @@ void SpiMemory::End()
     {
         write_enabled_ = false;
     }
+
     position_ = 0;
 }
 
@@ -268,11 +277,13 @@ uint8_t SpiDevices::Transfer(int device, uint8_t value, bool hold)
     default:
         break;
     }
+
     position_++;
     if (!hold)
     {
         Deselect();
     }
+
     return answer;
 }
 
@@ -299,7 +310,9 @@ uint8_t SpiDevices::PowerByte(uint8_t value)
     {
         return power_[index];
     }
+
     power_[index] = value;
+
     return 0xFF;
 }
 

@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <set>
 #include <span>
@@ -328,6 +329,162 @@ std::optional<uint32_t> RootTrack(Machine& machine, const GameWatch& watch, uint
 
 } // namespace detail
 
+// The length of a sound, worked out block by block as the sound plays (see AnalyzeGameSound for the rules). The class
+// counts the frames played and the first and last frames with sound, and notes when the game releases the sound. Once
+// Follow starts it, a LoopFinder follows the tracks of the sound. Each block goes through Hear, then Take for each
+// track event in the block, then EndBlock. The first length that Take or EndBlock returns is the length of the sound.
+// AtLimit returns the length of a sound that plays to the limit.
+class SoundLength
+{
+public:
+    explicit SoundLength(const GameLengthRules& rules);
+
+    // Whether the sound has played for less than the limit.
+    bool Running() const;
+
+    // The frames played: the first frame of the block that plays next.
+    uint64_t Frames() const;
+
+    // Whether Follow has started the LoopFinder.
+    bool Following() const;
+
+    // Starts the LoopFinder on the sound's root track, `root`, with the output's rate and the other arguments (see
+    // LoopFinder's constructor).
+    void Follow(uint32_t root, bool (*changes_sound)(uint8_t command), bool idle_in_calls = false,
+                bool restarts_as_passes = false);
+
+    // Counts the frame Frames() as a sound. Wave discovery calls it for each lookup of a wave.
+    void MarkSound();
+
+    // Counts each audible frame of `block`, the stereo frames that play from Frames(), as a sound.
+    void Hear(std::span<const int16_t> block);
+
+    // Passes `event` to the LoopFinder. Returns the sound's length if the sound loops or ends there. Loops before the
+    // first sound don't count. Returns nothing before Follow.
+    std::optional<xsflib::rip::Timing> Take(const TrackEvent& event);
+
+    // Ends a block: the frames played move past it, and the LoopFinder takes what each track waits for, through
+    // `read_wait`. `held` is whether the game still holds the sound. Returns the sound's length if the sound ends here:
+    // `tail_ms` after the release and the last sound, 10 s after the release, where it holds, or once it has stayed
+    // silent for `silence_ms`.
+    std::optional<xsflib::rip::Timing> EndBlock(bool held, const std::function<TrackWait(uint32_t track)>& read_wait);
+
+    // The length of a sound that plays to the limit: the limit and a fade, or a silent sound if it never sounded.
+    xsflib::rip::Timing AtLimit() const;
+
+private:
+    long long Ms(uint64_t frames) const;
+
+    // The length of a sound that ends: `tail_ms` after its last sound.
+    xsflib::rip::Timing Ended() const;
+
+    GameLengthRules rules_;
+    uint64_t frames_ = 0;
+    std::optional<uint64_t> first_sound_;
+    uint64_t last_sound_ = 0;
+    std::optional<uint64_t> released_; // the frame at which the game released the sound
+    std::optional<LoopFinder> finder_;
+};
+
+namespace detail
+{
+
+// The functions of the game's code that the analysis watches: the sequence parser's, and with `waves`, the ones that
+// look up a note's wave.
+inline std::vector<uint32_t> WatchedFunctions(const GameWatch& watch, bool waves)
+{
+    std::vector<uint32_t> watched = {watch.parse_command, watch.jump_handler};
+    if (watch.conditional_jump)
+    {
+        watched.push_back(watch.conditional_jump);
+    }
+
+    for (const uint32_t function : watch.wave_handle_functions)
+    {
+        if (waves && function)
+        {
+            watched.push_back(function);
+        }
+    }
+
+    return watched;
+}
+
+// Starts `length` following the sound's root track once the sound exists, and sets `root` to the track. `handle` is the
+// game's JAISound for the sound, or 0.
+template <typename Machine>
+void FollowRootTrack(Machine& machine, const GameWatch& watch, uint32_t handle, uint32_t sound, SoundLength& length,
+                     uint32_t& root)
+{
+    if (handle && !length.Following())
+    {
+        if (const std::optional<uint32_t> track = RootTrack(machine, watch, handle, sound))
+        {
+            root = *track;
+            length.Follow(root, watch.jaudio1 ? JAudio1ChangesSound : ChangesSound, watch.idle_in_calls,
+                          watch.restarts_as_passes);
+        }
+    }
+}
+
+// What the sequence parser does in a block, with the frame it happens in: the start of every command of every track,
+// and every jump. In JAudio1, each event also has its track's parents, nearest first. They reach a sound's root track
+// from tracks up to four levels below it.
+class BlockEvents
+{
+public:
+    void Clear()
+    {
+        events_.clear();
+        parents_.clear();
+    }
+
+    // Records the parser's event at `pc`, if it makes one, in frame `frame`.
+    template <typename Machine>
+    void Record(Machine& machine, const GameWatch& watch, uint32_t pc, uint64_t frame)
+    {
+        const std::optional<TrackEvent> event = ParserEvent(machine, watch, pc, frame);
+        if (!event)
+        {
+            return;
+        }
+
+        events_.push_back(*event);
+        if (watch.jaudio1)
+        {
+            parents_.push_back(Parents(machine, watch, event->track));
+        }
+    }
+
+    // Passes the events to `length`. In JAudio1, only the root track, `root`, and the tracks below it count. Returns
+    // the sound's length if the sound loops or ends at an event.
+    std::optional<xsflib::rip::Timing> PassTo(SoundLength& length, const GameWatch& watch, uint32_t root) const
+    {
+        for (std::size_t i = 0; i < events_.size(); i++)
+        {
+            const TrackEvent& event = events_[i];
+            if (watch.jaudio1 && event.track != root &&
+                std::find(parents_[i].begin(), parents_[i].end(), root) == parents_[i].end())
+            {
+                continue;
+            }
+
+            if (const std::optional<xsflib::rip::Timing> timing = length.Take(event))
+            {
+                return timing;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+private:
+    std::vector<TrackEvent> events_;
+    std::vector<std::array<uint32_t, 4>> parents_;
+};
+
+} // namespace detail
+
 // Plays the sound that the driver has started and works out its length. The machine's adapter, `machine`, provides:
 //
 // - `std::size_t Render(int16_t* out, std::size_t frames)`: renders stereo frames and returns how many it rendered;
@@ -350,21 +507,10 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
                                                     const GameLengthRules& rules, std::set<WaveUse>* found = nullptr,
                                                     bool lookups_sound = false, uint32_t sound = 0)
 {
-    using xsflib::rip::Timing;
-    const auto ms = [&rules](uint64_t frames)
-    {
-        return FramesToMs(frames, rules.sample_rate);
-    };
-
-    // What the sequence parser does, with the frame it happens in: the start of every command of every track, and every
-    // jump. A note's lookup of its wave goes in `found`, and counts as a sound for wave discovery. In JAudio1, each
-    // event also has its track's parents, nearest first. They reach a sound's root track from tracks up to four levels
-    // below it.
-    std::vector<TrackEvent> events;
-    std::vector<std::array<uint32_t, 4>> parents;
-    uint64_t frames = 0;
-    std::optional<uint64_t> first_sound;
-    uint64_t last_sound = 0;
+    // What the sequence parser does in each block (BlockEvents). A note's lookup of its wave goes in `found`, and
+    // counts as a sound for wave discovery.
+    SoundLength length(rules);
+    detail::BlockEvents parsed;
     const auto on_wave = [&](uint32_t bank, uint32_t id)
     {
         if (const std::optional<uint16_t> number = detail::WaveBankNumber(machine, watch, bank))
@@ -374,8 +520,7 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
 
         if (lookups_sound)
         {
-            last_sound = frames;
-            first_sound = first_sound.value_or(frames);
+            length.MarkSound();
         }
     };
 
@@ -388,146 +533,46 @@ std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t h
             return;
         }
 
-        const std::optional<TrackEvent> event = detail::ParserEvent(machine, watch, pc, frames);
-        if (!event)
-        {
-            return;
-        }
-
-        events.push_back(*event);
-        if (watch.jaudio1)
-        {
-            parents.push_back(detail::Parents(machine, watch, event->track));
-        }
+        parsed.Record(machine, watch, pc, length.Frames());
     };
 
-    std::vector<uint32_t> watched = {watch.parse_command, watch.jump_handler};
-    if (watch.conditional_jump)
-    {
-        watched.push_back(watch.conditional_jump);
-    }
-
-    for (const uint32_t function : watch.wave_handle_functions)
-    {
-        if (found && function)
-        {
-            watched.push_back(function);
-        }
-    }
-
-    machine.Cpu().Watch(std::move(watched), on_watch);
+    machine.Cpu().Watch(detail::WatchedFunctions(watch, found != nullptr), on_watch);
 
     // Play until the sound ends, loops twice, holds, falls silent for good or reaches the limit.
     std::vector<int16_t> block(rules.block_frames * 2);
-    std::optional<LoopFinder> finder;
-    uint32_t root = 0;                // the sound's root track, once the finder follows it
-    std::optional<uint64_t> released; // the frame at which the game released the sound
-    const auto ended = [&]() -> Timing
+    uint32_t root = 0; // the sound's root track, once the LoopFinder follows it
+    const auto read_wait = [&](uint32_t track)
     {
-        if (!first_sound)
-        {
-            return {rules.tail_ms, 0, true};
-        }
-
-        return {ms(last_sound + 1) + rules.tail_ms, 0, false};
+        return detail::ReadWait(machine, watch, track);
     };
 
-    while (ms(frames) < rules.limit_ms)
+    while (length.Running())
     {
-        events.clear();
-        parents.clear();
+        parsed.Clear();
         if (machine.Render(block.data(), rules.block_frames) != rules.block_frames)
         {
             return std::nullopt;
         }
 
-        for (std::size_t i = 0; i < rules.block_frames; i++)
-        {
-            if (xsflib::rip::Audible(std::span<const int16_t>(&block[2 * i], 2)))
-            {
-                last_sound = frames + i;
-                first_sound = first_sound.value_or(last_sound);
-            }
-        }
+        length.Hear(block);
 
-        // The sound's root track, once the sound exists.
+        // The sound's root track, once the sound exists, then the tracks' loops.
         const uint32_t handle = machine.Word(handle_address);
-        if (handle && !finder)
+        detail::FollowRootTrack(machine, watch, handle, sound, length, root);
+        if (const std::optional<xsflib::rip::Timing> timing = parsed.PassTo(length, watch, root))
         {
-            if (const std::optional<uint32_t> track = detail::RootTrack(machine, watch, handle, sound))
-            {
-                root = *track;
-                finder.emplace(root, rules.sample_rate, watch.jaudio1 ? JAudio1ChangesSound : ChangesSound,
-                               watch.idle_in_calls, watch.restarts_as_passes);
-            }
-        }
-
-        // The tracks' loops. Loops before the first sound don't count.
-        const Sounded sounded = {first_sound.has_value(), last_sound};
-        for (std::size_t i = 0; i < events.size(); i++)
-        {
-            const TrackEvent& event = events[i];
-            if (watch.jaudio1 && event.track != root &&
-                std::find(parents[i].begin(), parents[i].end(), root) == parents[i].end())
-            {
-                continue;
-            }
-
-            const LoopFinder::Verdict verdict = finder ? finder->Take(event, sounded) : LoopFinder::Verdict::kNone;
-            if (verdict == LoopFinder::Verdict::kLoops)
-            {
-                return Timing{ms(event.frame), rules.loop_fade_ms, false};
-            }
-
-            if (verdict == LoopFinder::Verdict::kEnded)
-            {
-                return ended();
-            }
-        }
-
-        frames += rules.block_frames;
-        if (finder)
-        {
-            finder->TakeWaits(frames, [&](uint32_t track) { return detail::ReadWait(machine, watch, track); });
+            return timing;
         }
 
         // The game releases the sound when its tracks have ended. Its notes can still sound after that: the output runs
-        // behind the game, and a release fades on. The sound ends once `tail_ms` has passed without a sound, or 10 s
-        // after the release.
-        if (!handle && finder && !released)
+        // behind the game, and a release fades on.
+        if (const std::optional<xsflib::rip::Timing> timing = length.EndBlock(handle != 0, read_wait))
         {
-            released = frames;
-        }
-
-        if (released &&
-            (ms(frames - std::max(*released, last_sound)) >= rules.tail_ms || ms(frames - *released) >= kStillMs))
-        {
-            return ended();
-        }
-
-        // A sound that holds loops where it holds, if it still sounds.
-        if (first_sound && finder && finder->Holds(frames))
-        {
-            if (ms(frames - last_sound) <= rules.holding_ms)
-            {
-                return Timing{ms(frames), rules.loop_fade_ms, false};
-            }
-
-            return ended();
-        }
-
-        if (first_sound && ms(frames - last_sound) >= rules.silence_ms)
-        {
-            return ended();
+            return timing;
         }
     }
 
-    if (!first_sound)
-    {
-        return ended();
-    }
-
-    return Timing{rules.limit_ms, rules.loop_fade_ms, false};
+    return length.AtLimit();
 }
 
 } // namespace ntdlib::jaudio

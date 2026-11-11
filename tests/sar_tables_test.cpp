@@ -39,6 +39,7 @@ namespace
 using ntdlib::sar::Flavor;
 using ntdlib::sar::InfoBlock;
 using ntdlib::sar::ItemId;
+using ntdlib::sar::LaysOutStreamSounds;
 using ntdlib::sar::NewBank;
 using ntdlib::sar::NewSequenceSound;
 using ntdlib::sar::NewStreamSound;
@@ -1260,6 +1261,28 @@ void TestNewStreamSoundRefusals()
     XSFLIB_CHECK(Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, other); }));
 }
 
+// LaysOutStreamSounds names the 3DS's versions whose stream sounds WithNewStreamSound lays out: 2.0.0.0, 2.2.0.0,
+// 2.3.0.0, and 2.3.2.0 and later. WithNewStreamSound refuses the stream sounds of the others.
+void TestLaysOutStreamSounds()
+{
+    std::vector<uint8_t> ctr = sar_tools::Archive(Flavor::kCtr, ItemsSpec(true));
+    const NewStreamSound sound{.model = 0, .name = "STRM_NEW", .file = 0, .stream = StreamDetails()};
+    const auto refuses = [&](uint32_t version)
+    {
+        Store(ctr, 8, Flavor::kCtr, version, 4);
+        return Throws<std::invalid_argument>([&] { WithNewStreamSound(ctr, Flavor::kCtr, sound); });
+    };
+
+    const bool refuses_2_1 = refuses(0x02010000);
+    const bool refuses_2_3_1 = refuses(0x02030100);
+
+    XSFLIB_CHECK(LaysOutStreamSounds(0x02000000) && LaysOutStreamSounds(0x02020000) && LaysOutStreamSounds(0x02030000));
+    XSFLIB_CHECK(LaysOutStreamSounds(0x02030200) && LaysOutStreamSounds(0x02040000));
+    XSFLIB_CHECK(!LaysOutStreamSounds(0x01000000) && !LaysOutStreamSounds(0x02010000) &&
+                 !LaysOutStreamSounds(0x02030100));
+    XSFLIB_CHECK(refuses_2_1 && refuses_2_3_1);
+}
+
 // In an archive without names, the entries keep their string indices. The new sounds take the ones after the sounds',
 // and the later ones move up.
 void TestNewWaveSoundsWithoutNames(Flavor flavor)
@@ -1872,6 +1895,7 @@ int main()
     TestNewCtrWaveSounds();
     TestNewStreamSoundModels();
     TestNewStreamSoundRefusals();
+    TestLaysOutStreamSounds();
     TestNewItemRefusals();
     TestNewCtrGroup();
     TestNewGroupRefusals();

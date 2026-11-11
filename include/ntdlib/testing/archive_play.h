@@ -101,6 +101,77 @@ std::vector<xsflib::testing::ChannelState> Channels(Engine& engine, const Player
     return channels;
 }
 
+// The options after the three arguments: the WAV file, the channel log and the model's options.
+template <typename Console>
+struct Command
+{
+    std::string wav;
+    std::string channels_path;
+    typename Console::Options options;
+};
+
+// Reads the command line's options. Gives nothing for a wrong command line.
+template <typename Console>
+std::optional<Command<Console>> ReadCommand(int argc, char** argv)
+{
+    Command<Console> command;
+    bool known = true;
+    for (int i = 4; i + 1 < argc; i += 2)
+    {
+        const std::string option = argv[i];
+        if (option == "--wav")
+        {
+            command.wav = argv[i + 1];
+        }
+        else if (option == "--channels")
+        {
+            command.channels_path = argv[i + 1];
+        }
+        else if (option == "--voices")
+        {
+            command.options.voice_count = std::atoi(argv[i + 1]);
+        }
+        else if (!Console::Option(option, argv[i + 1], command.options))
+        {
+            known = false;
+        }
+    }
+
+    if (argc < 4 || argc % 2 == 1 || !known || command.options.voice_count < 1)
+    {
+        return std::nullopt;
+    }
+
+    return command;
+}
+
+// Runs `frames` frames of `model`, which plays `player`. Writes each frame's channels to the log at `channels_path`
+// unless that's empty. Gives the stereo samples of every frame.
+template <typename Console, typename Player>
+std::vector<int16_t> RunFrames(typename Console::Model& model, const Player& player, int frames,
+                               const std::string& channels_path)
+{
+    std::vector<int16_t> samples;
+    std::optional<xsflib::testing::ChannelLog> log;
+    if (!channels_path.empty())
+    {
+        log.emplace(channels_path, Console::kSends);
+    }
+
+    for (int frame = 0; frame < frames; ++frame)
+    {
+        model.engine->RunFrame();
+        const auto output = Console::Output(model);
+        samples.insert(samples.end(), output.begin(), output.end());
+        if (log)
+        {
+            log->Frame(frame + 1, model.engine->Rng().State(), Channels<Console>(*model.engine, player));
+        }
+    }
+
+    return samples;
+}
+
 } // namespace archive_play_detail
 
 // The test's main for `Console` (see above). Returns 2 for a wrong command line, 1 when the sound can't be played or a
@@ -110,32 +181,8 @@ int ArchivePlay(int argc, char** argv)
 {
     using xsflib::testing::Check;
 
-    std::string wav;
-    std::string channels_path;
-    typename Console::Options options;
-    bool known = true;
-    for (int i = 4; i + 1 < argc; i += 2)
-    {
-        const std::string option = argv[i];
-        if (option == "--wav")
-        {
-            wav = argv[i + 1];
-        }
-        else if (option == "--channels")
-        {
-            channels_path = argv[i + 1];
-        }
-        else if (option == "--voices")
-        {
-            options.voice_count = std::atoi(argv[i + 1]);
-        }
-        else if (!Console::Option(option, argv[i + 1], options))
-        {
-            known = false;
-        }
-    }
-
-    if (argc < 4 || argc % 2 == 1 || !known || options.voice_count < 1)
+    const auto command = archive_play_detail::ReadCommand<Console>(argc, argv);
+    if (!command)
     {
         std::fprintf(stderr,
                      "usage: archive_play_test <archive> <sound label> <seconds> [--wav <file>] [--channels <file>] "
@@ -159,6 +206,7 @@ int ArchivePlay(int argc, char** argv)
             return 1;
         }
 
+        const typename Console::Options& options = command->options;
         typename Console::Model model(archive, options);
         auto* player = model.engine->StartSequence(*index);
         if (!Check(player != nullptr, std::string(argv[2]) + " starts"))
@@ -170,35 +218,15 @@ int ArchivePlay(int argc, char** argv)
             Console::Started(*player, *model.engine, options);
         }
 
-        const int frames = Console::Frames(std::atoi(argv[3]));
-        std::vector<int16_t> samples;
-        int peak = 0;
-        std::optional<xsflib::testing::ChannelLog> log;
-        if (!channels_path.empty())
-        {
-            log.emplace(channels_path, Console::kSends);
-        }
+        const std::vector<int16_t> samples = archive_play_detail::RunFrames<Console>(
+            model, *player, Console::Frames(std::atoi(argv[3])), command->channels_path);
+        const bool sounds = std::ranges::any_of(samples, [](int16_t sample) { return sample != 0; });
+        Check(sounds, std::string(argv[2]) + " sounds in its first " + argv[3] + " s");
 
-        for (int frame = 0; frame < frames; ++frame)
+        if (!command->wav.empty())
         {
-            model.engine->RunFrame();
-            for (const int16_t sample : Console::Output(model))
-            {
-                samples.push_back(sample);
-                peak = std::max(peak, std::abs(static_cast<int>(sample)));
-            }
-            if (log)
-            {
-                log->Frame(frame + 1, model.engine->Rng().State(),
-                           archive_play_detail::Channels<Console>(*model.engine, *player));
-            }
-        }
-
-        Check(peak > 0, std::string(argv[2]) + " sounds in its first " + argv[3] + " s");
-
-        if (!wav.empty())
-        {
-            xsflib::testing::WriteWav(wav, samples);
+            const std::optional<std::string> error = xsflib::testing::WriteWav(command->wav, samples);
+            Check(!error, error.value_or("the WAV file is written"));
         }
     }
     catch (const std::exception& error)

@@ -37,6 +37,13 @@ using ntdlib::jaudio::Instrument;
 
 constexpr uint32_t kNone = 0xffffffff;
 
+// The settings that InitGlobalChannel and Channel_Init give a channel without a manager: its mixers, how its levels
+// add up, its release time and its priority. A manager starts with the same, apart from the priority.
+inline constexpr std::array<uint16_t, 6> kDefaultMixConfigs = {0x150, 0x210, 0x352, 0x412, 0, 0};
+inline constexpr std::array<uint8_t, 3> kDefaultPanCalcs = {26, 1, 1};
+inline constexpr uint16_t kDefaultReleaseTime = 600;
+inline constexpr uint32_t kDefaultPriority = 0x10101;
+
 // A channel manager (InitJcs's fields): the channels that it holds in its lists, the levels that its track gives
 // them, and the settings of their DSP channels' mixers and filters.
 struct ChannelManager
@@ -63,15 +70,15 @@ struct ChannelManager
     std::array<int16_t, 8> fir{0x7fff, 0, 0, 0, 0, 0, 0, 0};
     std::array<int16_t, 4> iir{0x7fff, 0, 0, 0};
     int16_t distortion = 0;
-    std::array<uint16_t, 6> mix_configs{0x150, 0x210, 0x352, 0x412, 0, 0};
+    std::array<uint16_t, 6> mix_configs = kDefaultMixConfigs;
     std::array<uint8_t, 6> delays{}; // each mixer's delay in samples. InitJcs clears all six and the maximum.
     uint8_t delay_max = 0;
     uint8_t filter_mode = 0; // the FIR filter's taps in the low 5 bits, the IIR filter's switch in bit 5
-    std::array<uint8_t, 3> pan_calcs{26, 1, 1}; // how the pan, the effect send and the surround level add up
+    std::array<uint8_t, 3> pan_calcs = kDefaultPanCalcs; // how the pan, the effect send and the surround level add up
     uint32_t priority = 0x20103; // the channels' priority: while they play in the low byte, from the release in the
                                  // next, while they wait for a DSP channel in the third
-    uint16_t release_time = 600; // frames from a DSP channel's start to its first drop in priority
-    bool stealing = true;        // a note may take a channel that plays or releases when the manager has none free
+    uint16_t release_time = kDefaultReleaseTime; // frames from a DSP channel's start to its first drop in priority
+    bool stealing = true; // a note may take a channel that plays or releases when the manager has none free
 };
 
 // A channel (a logical channel), by the game's fields. A field that InitGlobalChannel leaves alone starts at 0. The
@@ -257,7 +264,7 @@ public:
 
     DspBlock Block(uint32_t block) const
     {
-        return DspBlock(memory_, blocks_ + block * 0x180);
+        return DspBlock(memory_, blocks_ + block * static_cast<uint32_t>(jaudio2::DspChannelBlock::kBytes));
     }
 
     // The managers (InitJcs, Init_1shot, FixAllocChannel, FixReleaseChannel, FixReleaseChannelAll and
@@ -319,6 +326,9 @@ public:
     void UpdateDspChannels();
 
 private:
+    // JAC_SYSTEM_OUTPUT_MODE: 0 mono, 1 stereo. The model plays in stereo.
+    static constexpr uint32_t kOutputMode = 1;
+
     // dspdriver.
     void InitDspChannels();
     uint32_t AllocDsp(uint32_t channel);
@@ -346,6 +356,19 @@ private:
     void EntryCheck();
     bool ForceStopLogical(uint32_t channel);
 
+    // Cuts a channel from its list and adds it to its manager's free list. A channel in no list stays out.
+    void MoveToFree(uint32_t channel);
+
+    // The statuses of a channel's callback (Jesus1Shot_Update's): the note's time is over, the wave has ended, the
+    // envelope has ended, and a stop while the channel waits for a DSP channel.
+    enum CallbackStatus : uint32_t
+    {
+        kTimeOver = 0,
+        kWaveEnd = 1,
+        kEnvelopeEnd = 2,
+        kStoppedWaiting = 6,
+    };
+
     // oneshot. RegionWave gives the handle of a velocity region's wave in the current scenes of the wave system that
     // the bank at place `place` plays, or null.
     const WaveHandle* RegionWave(uint32_t place, const ntdlib::jaudio::VelocityRegion& region) const;
@@ -356,16 +379,25 @@ private:
     uint32_t PlayOsc(uint32_t manager, uint32_t sound, int32_t time);
     void StopBody(uint32_t channel);
     void StopVoices(uint32_t channel);
-    void UpdateOneShot(uint32_t channel, uint32_t status);
-    void RunCallback(uint32_t channel, uint32_t status);
+    void UpdateOneShot(uint32_t channel, CallbackStatus status);
+    void RunCallback(uint32_t channel, CallbackStatus status);
     bool SweepUpdate(uint32_t channel);
     void DoEffect(uint32_t channel, uint8_t target, float value);
+
+    // The parts of PlayOneShot. The effects and the oscillators of instrument `inst` at the start of sound `sound`.
+    void SetUpEffects(uint32_t channel, const Instrument* inst, uint32_t place, uint32_t sound);
+
+    // The limit on the voices of the sound's group, then the start (PlayStart). Returns the channel, or kNone.
+    uint32_t LimitVoices(uint32_t manager, uint32_t channel, uint32_t group, uint8_t flags, int32_t time);
+
+    // Counts a new voice of `group` in each voice of the group in `m`. A voice that reaches the limit `polys` stops or
+    // pauses.
+    void CountNewVoice(const ChannelManager& m, uint32_t group, uint32_t polys);
 
     DspMemory& memory_;
     uint32_t blocks_;
     const Banks& banks_;
     Random& random_;
-    uint32_t output_mode_ = 1; // JAC_SYSTEM_OUTPUT_MODE: 0 mono, 1 stereo. The model plays in stereo.
     uint16_t mixer_level_ = 12000;
     std::array<Channel, kChannels> channels_{};
     std::array<ChannelManager, kTrackManagers + 1> managers_{};

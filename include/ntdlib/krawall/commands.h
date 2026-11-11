@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -95,13 +96,8 @@ uint32_t SequenceAddress(const Rom& rom, const DriverInfo& info, int sequence);
 // outside the ROM, and a last pattern that doesn't read without a header after it.
 Decoded DecodeRomSequence(const Rom& rom, const DriverInfo& info, int sequence);
 
-// The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
-// the end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a sequence, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence`, with its patterns at the items `entries`. Throws std::invalid_argument for an entry that isn't a
 // pattern's start, a value that the build's bytes can't hold, an item that a pattern can't hold, items before the

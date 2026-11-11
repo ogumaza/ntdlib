@@ -84,6 +84,19 @@ struct Track
 {
     static constexpr uint32_t kNone = 0xffffffff;
 
+    // The bits of pause_status. While the track pauses: the pause's level scales the volume, the parser stops, the
+    // notes end, the channels pause, and no note starts. While the track is muted: the notes end, and no note starts.
+    enum PauseFlags : uint8_t
+    {
+        kPauseVolume = 0x01,
+        kPauseParser = 0x02,
+        kPauseNotesOff = 0x04,
+        kPauseChannels = 0x08,
+        kPauseNoNotes = 0x10,
+        kMuteNotesOff = 0x20,
+        kMuteNoNotes = 0x40,
+    };
+
     // The states (trackState): closed, playing, set up but not started, or to stop at its next sub-frame.
     enum State : uint8_t
     {
@@ -384,6 +397,20 @@ private:
         uint32_t track = Track::kNone;
     };
 
+    // An operation of Jam_WriteRegParam, passed from part to part: the kind of source, the operation, the type of the
+    // entries of a table, a 32-bit value and whether it's set, the register, and the source value that becomes the
+    // result. The 32-bit value is the address of a table, a draw or a word from the table.
+    struct RegOperation
+    {
+        uint32_t source = 0;
+        uint32_t operation = 0;
+        uint32_t type = 0;
+        uint32_t wide = 0;
+        bool wide_set = false;
+        uint8_t reg = 0;
+        int16_t value = 0;
+    };
+
     // seqsetup: GetNewTrack, BackTrack, AllocNewRoot, DeAllocRoot, Init_Track, Jaq_OpenTrack, __AllNoteOff,
     // Jaq_CloseTrack, __StopSeq and Jaq_RootCallback.
     uint32_t GetNewTrack();
@@ -414,7 +441,7 @@ private:
     void WriteTimeParam(uint32_t track, uint8_t command);
     void WriteRegDirect(uint32_t track, uint8_t reg, uint16_t value);
     void WriteRegParam(uint32_t track, uint8_t command);
-    uint32_t LoadTable(uint32_t track, uint32_t offset, uint32_t index, uint32_t type);
+    uint32_t LoadTable(uint32_t track, uint32_t offset, uint32_t entry, uint32_t type);
     uint16_t ReadRegDirect(uint32_t track, uint8_t reg);
     uint32_t ReadReg32(uint32_t track, uint8_t reg);
     uint32_t ExchangeRegisterValue(uint32_t track, uint8_t reg);
@@ -426,6 +453,57 @@ private:
     void RegistTrack(uint32_t track, uint32_t id);
     void UnRegistTrack(uint32_t track);
     uint32_t SequenceOuter(const Sequence* sequence, uint32_t offset);
+
+    // The parts of SeqMain. The tempo sync of a child after Cmd_Tempo. Returns false when the track skips this tick.
+    bool SyncTempo(uint32_t track);
+
+    // The countdown of the timer from Cmd_IntTimer. Sets interrupt 6 at 0.
+    void TickTimer(uint32_t track);
+
+    // The countdown of the wait. Returns false while the track still waits.
+    bool CountDownWait(uint32_t track);
+
+    // The commands up to the one that ends the tick. Returns that command's result for the parser.
+    int32_t ParseCommands(uint32_t track);
+
+    // A note from its key byte. Returns true when the note ends the tick.
+    bool ParseNote(uint32_t track, uint8_t command);
+
+    // A note's end or a wait (0x80 to 0x8f, and 0xf9). Returns true when a wait ends the tick.
+    bool ParseNoteEnd(uint32_t track, uint8_t command);
+
+    // A tick of each child that plays. A child at the end of its sequence closes.
+    void TickChildren(uint32_t track);
+
+    // The groups of Command. Each returns the command's result for the parser. The tree of tracks and the flow: the
+    // opens and closes, the calls, jumps, loops and waits, and the end of the track.
+    int32_t FlowCommand(uint32_t track, uint8_t command);
+
+    // The ports, the connections by ID and the requests to the game's code (Cmd_SyncCPU).
+    int32_t PortCommand(uint32_t track, uint8_t command);
+
+    // The oscillators and the envelopes.
+    int32_t OscCommand(uint32_t track, uint8_t command);
+
+    // The levels, the pans, the filters and the outer parameters.
+    int32_t LevelCommand(uint32_t track, uint8_t command);
+
+    // The interrupts and their timer.
+    int32_t InterruptCommand(uint32_t track, uint8_t command);
+
+    // The rest of the track's state: the last note, the transpose, the timing and the pause, the flushes of the
+    // channels, the check of a wave and the print.
+    int32_t StateCommand(uint32_t track, uint8_t command);
+
+    // The parts of WriteRegParam. Reads the operation from the command and the bytes after it, then the register and
+    // the source value.
+    RegOperation ReadRegOperand(uint32_t track, uint8_t command);
+
+    // Applies the operation to the register value. Returns false when the operation has stored its result.
+    bool ApplyRegOperation(uint32_t track, RegOperation& op);
+
+    // Stores the result in the register and in register 3.
+    void StoreRegResult(uint32_t track, const RegOperation& op);
 
     // A register by number, or 0 for one past the array.
     uint16_t Register(const Track& track, uint32_t reg);
@@ -447,14 +525,10 @@ private:
     static void InitEnv(Track& track);
     static OscTable SequenceTable(const Track& track, uint32_t offset);
 
-    // The reads of the sequence at the cursor and at an offset, big-endian.
+    // The reads of the sequence at the cursor, big-endian.
     static uint8_t ReadByte(Track& track);
     static uint16_t Read16(Track& track);
     static uint32_t Read24(Track& track);
-    static uint8_t ByteAt(const Track& track, uint32_t offset);
-    static uint16_t WordAt(const Track& track, uint32_t offset);
-    static uint32_t Word24At(const Track& track, uint32_t offset);
-    static uint32_t LongAt(const Track& track, uint32_t offset);
 
     Channels& channels_;
     const Banks& banks_;

@@ -19,8 +19,6 @@ namespace
 
 // main's constants, by their bits.
 const float kPi = std::bit_cast<float>(0x40490fdbu);            // JGeometry's π in single precision
-const float kSurroundScale = std::bit_cast<float>(0x3eb20d99u); // 0.34776: a surround level's curve
-const float kSurroundBase = std::bit_cast<float>(0x3ea6f933u);  // 0.32612
 const float kMonoLevel = std::bit_cast<float>(0x3f34fdf4u);     // 0.707: the auto mixer's level in mono
 
 // The LFOs' and the oscillators' steps per sub-frame at a DSP rate of 32028.5 Hz and 48000 Hz.
@@ -312,31 +310,7 @@ uint32_t Voices::NewChannel(uint32_t owner)
 
 uint32_t Voices::LowestChannel(uint32_t priority) const
 {
-    uint32_t best = Channel::kNone;
-    int32_t best_priority = 0xff;
-    uint32_t best_updates = 0;
-    for (uint32_t i = 0; i < kDspChannels; i++)
-    {
-        const DspChannel& dsp = dsp_channels_[i];
-        const int32_t level = dsp.priority;
-        if (level < 0)
-        {
-            return i;
-        }
-        if (level > static_cast<int32_t>(priority) || level > best_priority)
-        {
-            continue;
-        }
-
-        if (level != best_priority || dsp.updates > best_updates)
-        {
-            best = i;
-            best_priority = level;
-            best_updates = dsp.updates;
-        }
-    }
-
-    return best;
+    return LowestDspChannel(dsp_channels_, priority);
 }
 
 void Voices::ReportDrop(ChannelOwner* owner, uint32_t dsp_channel)
@@ -350,33 +324,12 @@ void Voices::ReportDrop(ChannelOwner* owner, uint32_t dsp_channel)
 
 uint32_t Voices::Alloc(ChannelOwner* owner, uint32_t priority, uint32_t channel, bool force)
 {
-    const uint32_t index = LowestChannel(priority);
-    if (index == Channel::kNone)
+    const auto report_drop = [this, owner](uint32_t index)
     {
-        return Channel::kNone;
-    }
+        ReportDrop(owner, index);
+    };
 
-    // JASDSPChannel::drop: the channel on the DSP channel ends. A DSP channel that plays stops at the next update.
-    // allocForce marks it inactive first. The new channel then starts at the next update, with no stop before it.
-    DspChannel& dsp = dsp_channels_[index];
-    if (force)
-    {
-        dsp.status = DspChannel::kInactive;
-    }
-    ReportDrop(owner, index);
-    dsp.channel = Channel::kNone;
-    dsp.flags &= ~1u;
-    if (dsp.status == DspChannel::kActive)
-    {
-        dsp.flags |= 2;
-        dsp.status = DspChannel::kDrop;
-    }
-
-    dsp.priority = static_cast<int16_t>(priority);
-    dsp.updates = 0;
-    dsp.channel = channel;
-
-    return index;
+    return AllocDspChannel(dsp_channels_, priority, channel, force, report_drop);
 }
 
 bool Voices::Start(ChannelOwner* owner, uint32_t channel, bool force)
@@ -466,74 +419,12 @@ int32_t Voices::Callback(DspMemory& memory, ChannelOwner* owner, uint32_t dsp_ch
 
 void Voices::UpdateProc(DspMemory& memory, ChannelOwner* owner, uint32_t index)
 {
-    DspChannel& dsp = dsp_channels_[index];
     DspBlock block = Block(memory, index);
-
-    // Without a callback, a stop reports -1 and a start or an update 0.
-    const auto stop = [&]
+    const auto callback = [&](DspChannel::Event event)
     {
-        const int32_t result =
-            dsp.channel != Channel::kNone ? Callback(memory, owner, index, DspChannel::kEventStop) : -1;
-        if (result < 0)
-        {
-            dsp.priority = -1;
-        }
+        return Callback(memory, owner, index, event);
     };
-
-    if (block.IsFinish())
-    {
-        dsp.flags &= ~2u;
-        if (dsp.status == DspChannel::kActive)
-        {
-            stop();
-        }
-        dsp.status = DspChannel::kInactive;
-        block.ReplyFinishRequest();
-        return;
-    }
-    if ((dsp.flags & 2) != 0)
-    {
-        dsp.flags &= ~2u;
-        block.ForceStop();
-        return;
-    }
-    if (dsp.status == DspChannel::kDrop)
-    {
-        return;
-    }
-
-    if ((dsp.flags & 1) != 0 && dsp.status == DspChannel::kInactive)
-    {
-        dsp.flags &= ~1u;
-        dsp.status = DspChannel::kActive;
-        block.Init();
-        const int32_t result =
-            dsp.channel != Channel::kNone ? Callback(memory, owner, index, DspChannel::kEventStart) : 0;
-        if (result < 0)
-        {
-            dsp.status = DspChannel::kInactive;
-            stop();
-        }
-        else
-        {
-            block.PlayStart();
-        }
-
-        return;
-    }
-    if (dsp.status == DspChannel::kInactive)
-    {
-        return;
-    }
-
-    if (dsp.channel != Channel::kNone && Callback(memory, owner, index, DspChannel::kEventPlay) < 0)
-    {
-        dsp.status = DspChannel::kInactive;
-        stop();
-        block.PlayStop();
-        return;
-    }
-    dsp.updates++;
+    UpdateDspChannel<true>(dsp_channels_[index], block, callback);
 }
 
 void Voices::UpdateDspChannels(DspMemory& memory, ChannelOwner* owner)
@@ -551,15 +442,32 @@ void Voices::UpdateFreeRun()
 
 void Voices::Notify(ChannelOwner* owner, uint32_t channel, Channel::Event event, DspBlock* block)
 {
-    const uint32_t target = channels_[channel].owner;
-    if (owner != nullptr && target != Channel::kNone)
-    {
-        owner->OnChannel(target, event, channel, block);
-    }
+    NotifyOwner(owner, channels_[channel].owner, event, channel, block);
 }
 
 void Voices::UpdateEffectorParam(const Channel& channel, DspBlock& block, std::array<uint16_t, 6>& volumes,
                                  const EffectParams& effects) const
+{
+    const MixerLevels levels = EffectorLevels(channel, effects);
+    if (!channel.DolbyMode())
+    {
+        UpdateMixers(channel, levels, volumes);
+        return;
+    }
+
+    // The auto mixer of Dolby mode.
+    float level = levels.volume;
+    if (output_mode_ == 0)
+    {
+        level = level * kMonoLevel;
+    }
+    level = Clamp01(level);
+    block.SetAutoMixer(ToInt32(level * static_cast<float>(channel_level_)), ToInt32(levels.pan * 127.5f),
+                       ToInt32(levels.dolby * 127.5f), ToInt32(levels.fxmix * 127.5f));
+    volumes.fill(0);
+}
+
+Voices::MixerLevels Voices::EffectorLevels(const Channel& channel, const EffectParams& effects) const
 {
     const SoundParams& sound = channel.sound_params;
     const ChannelParams& params = channel.params;
@@ -589,52 +497,39 @@ void Voices::UpdateEffectorParam(const Channel& channel, DspBlock& block, std::a
         volume = 0.0f;
     }
 
-    const float clamped_pan = Clamp01(pan);
-    const float clamped_fxmix = Clamp01(fxmix);
-    const float clamped_dolby = Clamp01(dolby);
+    return {volume, Clamp01(pan), Clamp01(fxmix), Clamp01(dolby), dolby};
+}
 
-    if (channel.DolbyMode())
-    {
-        float level = volume;
-        if (output_mode_ == 0)
-        {
-            level = level * kMonoLevel;
-        }
-        level = Clamp01(level);
-        block.SetAutoMixer(ToInt32(level * static_cast<float>(channel_level_)), ToInt32(clamped_pan * 127.5f),
-                           ToInt32(clamped_dolby * 127.5f), ToInt32(clamped_fxmix * 127.5f));
-        volumes.fill(0);
-        return;
-    }
-
+void Voices::UpdateMixers(const Channel& channel, const MixerLevels& levels, std::array<uint16_t, 6>& volumes) const
+{
     // Each mixer scales the volume by up to two levels. The low two nibbles of the mixer's setting name them. A pan
     // or a surround level follows a quarter of a sine in stereo and surround. In the game, one variable holds the
     // level for all the mixers, and no mixer sets it first. A nibble that names no level (4 or above 7) takes the
     // value that the variable last held. For the first mixer, that value is the surround level before its clamp. For
     // a later mixer, it is the last level of an earlier mixer.
-    const float far_pan = 1.0f - clamped_pan;
-    float scale = dolby;
+    const float far_pan = 1.0f - levels.pan;
+    float scale = levels.unclamped_dolby;
     const auto pick = [&](uint32_t nibble)
     {
         switch (nibble)
         {
         case 1:
-            scale = clamped_pan;
+            scale = levels.pan;
             break;
         case 2:
-            scale = clamped_fxmix;
+            scale = levels.fxmix;
             break;
         case 3:
-            scale = clamped_dolby;
+            scale = levels.dolby;
             break;
         case 5:
             scale = far_pan;
             break;
         case 6:
-            scale = 1.0f - clamped_fxmix;
+            scale = 1.0f - levels.fxmix;
             break;
         case 7:
-            scale = 1.0f - clamped_dolby;
+            scale = 1.0f - levels.dolby;
             break;
         default:
             break;
@@ -654,12 +549,12 @@ void Voices::UpdateEffectorParam(const Channel& channel, DspBlock& block, std::a
             continue;
         }
 
-        float level = volume;
+        float level = levels.volume;
         const uint32_t first = config & 0xf;
         if (first != 0)
         {
             pick(first);
-            level = first == 2 || first == 6 ? volume * scale : volume * curve();
+            level = first == 2 || first == 6 ? levels.volume * scale : levels.volume * curve();
         }
 
         // The second nibble's surround levels follow another curve, in every output mode.

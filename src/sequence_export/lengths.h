@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include "ntdlib/held_notes.h"
 
 namespace ntdlib::sequence_export
 {
@@ -31,10 +31,6 @@ inline constexpr bool EndsAtLastSound(double sound_end, double last_change)
 {
     return last_change - sound_end > kHoldSeconds;
 }
-
-// Shortest note or wait that a track holds until the game stops the sound. That's 200 beats at the default timebase,
-// minutes at a typical tempo. Games use such notes and waits for sounds they stop themselves.
-inline constexpr int32_t kHeldTicks = 9600;
 
 // Longest release tail kept after the end.
 inline constexpr double kMaxTailSeconds = 10.0;

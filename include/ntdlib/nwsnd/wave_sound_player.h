@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <optional>
 
+#include "ntdlib/nwsnd/basic_sound.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/sar/formats.h"
 
@@ -95,19 +96,8 @@ private:
     bool channel_started_ = false; // +0x190 and +0xf0
     ChannelId channel_ = kNoChannel;
 
-    // What BasicSound gives the player from the sound's info and what the game sets (BasicSoundPlayer's parameters), as
-    // a sequence's player holds them.
-    float volume_ = 1.0f;
-    float pitch_ = 1.0f;
-    float lpf_ = 0.0f;
-    float biquad_value_ = 0.0f;
-    int8_t biquad_type_ = -1; // replaces the sound's type when 0 or more
+    BasicSoundParams<Policy> basic_;
     bool front_bypass_ = false;
-    uint32_t pan_mode_ = 0;
-    uint32_t pan_curve_ = 0;
-    uint32_t output_line_ = 1;
-    typename Policy::Outputs outputs_;
-    const Receiver* receiver_ = nullptr;
     float pan_range_ = 1.0f;
     uint8_t channel_priority_ = 64;
     bool release_priority_fix_ = false;

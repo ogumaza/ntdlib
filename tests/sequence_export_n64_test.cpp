@@ -21,6 +21,7 @@
 
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/zip_archive.h"
 
 #include "ntdlib/n64/audio_list.h"
 #include "ntdlib/n64/audio_memory.h"
@@ -51,6 +52,8 @@ using ntdlib::sequence_export::n64::PerformLibultra;
 using ntdlib::sequence_export::n64::PerformOptions;
 using ntdlib::sequence_export::n64::Zone;
 using xsflib::testing::Check;
+using xsflib::testing::StoredEntry;
+using xsflib::testing::ZipArchive;
 
 bool Near(double a, double b, double tolerance = 1e-6)
 {
@@ -159,91 +162,6 @@ void TestImageOrders()
     Check(threw, "bytes that start no image throw");
 }
 
-// The CRC-32 of a ZIP archive's entry.
-uint32_t Crc32(const std::vector<uint8_t>& bytes)
-{
-    uint32_t crc = 0xFFFFFFFF;
-    for (const uint8_t byte : bytes)
-    {
-        crc ^= byte;
-        for (int bit = 0; bit < 8; bit++)
-        {
-            crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
-        }
-    }
-
-    return ~crc;
-}
-
-void Put16(std::vector<uint8_t>& out, uint32_t value)
-{
-    out.push_back(static_cast<uint8_t>(value));
-    out.push_back(static_cast<uint8_t>(value >> 8));
-}
-
-void Put32(std::vector<uint8_t>& out, uint32_t value)
-{
-    Put16(out, value & 0xFFFF);
-    Put16(out, value >> 16);
-}
-
-// A ZIP archive that stores each file of `files`, by its name, without compression.
-std::vector<uint8_t> StoredZip(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files)
-{
-    // Each file's local header and bytes: the version 2.0, no flags, no compression, no time and no extra field.
-    std::vector<uint8_t> zip;
-    std::vector<uint32_t> offsets;
-    for (const auto& [name, data] : files)
-    {
-        offsets.push_back(static_cast<uint32_t>(zip.size()));
-        Put32(zip, 0x04034B50);
-        Put16(zip, 20);
-        Put16(zip, 0);
-        Put16(zip, 0);
-        Put32(zip, 0);
-        Put32(zip, Crc32(data));
-        Put32(zip, static_cast<uint32_t>(data.size()));
-        Put32(zip, static_cast<uint32_t>(data.size()));
-        Put16(zip, static_cast<uint32_t>(name.size()));
-        Put16(zip, 0);
-        zip.insert(zip.end(), name.begin(), name.end());
-        zip.insert(zip.end(), data.begin(), data.end());
-    }
-
-    // The central directory, then its end.
-    const auto directory = static_cast<uint32_t>(zip.size());
-    for (std::size_t i = 0; i < files.size(); i++)
-    {
-        const auto& [name, data] = files[i];
-        Put32(zip, 0x02014B50);
-        Put16(zip, 20);
-        Put16(zip, 20);
-        Put16(zip, 0);
-        Put16(zip, 0);
-        Put32(zip, 0);
-        Put32(zip, Crc32(data));
-        Put32(zip, static_cast<uint32_t>(data.size()));
-        Put32(zip, static_cast<uint32_t>(data.size()));
-        Put16(zip, static_cast<uint32_t>(name.size()));
-        Put32(zip, 0);
-        Put32(zip, 0);
-        Put32(zip, 0);
-        Put32(zip, offsets[i]);
-        zip.insert(zip.end(), name.begin(), name.end());
-    }
-
-    const auto directory_size = static_cast<uint32_t>(zip.size()) - directory;
-    Put32(zip, 0x06054B50);
-    Put32(zip, 0);
-    Put16(zip, static_cast<uint32_t>(files.size()));
-    Put16(zip, static_cast<uint32_t>(files.size()));
-    Put32(zip, directory_size);
-    Put32(zip, directory);
-    Put16(zip, 0);
-
-    return zip;
-}
-
 // The message that Input::Open throws for `zip`, written to a file.
 std::string OpenMessage(const std::vector<uint8_t>& zip)
 {
@@ -276,8 +194,9 @@ void TestZippedImage()
     image[2] = 0x12;
     image[3] = 0x40;
 
-    const std::string one = OpenMessage(StoredZip({{"Game.Z64", image}, {"readme.txt", {'h', 'i'}}}));
-    const std::string two = OpenMessage(StoredZip({{"a.z64", image}, {"b.n64", image}}));
+    const std::string one =
+        OpenMessage(ZipArchive({StoredEntry("Game.Z64", image), StoredEntry("readme.txt", {'h', 'i'})}));
+    const std::string two = OpenMessage(ZipArchive({StoredEntry("a.z64", image), StoredEntry("b.n64", image)}));
 
     Check(one == "the converter doesn't know this game's sound engine", "an archive's one image reads: " + one);
     Check(!two.empty() && two != one, "an archive with two images reads as a set: " + two);
@@ -1647,6 +1566,39 @@ void TestLibmusSongTables()
           "a table of starts and a table of ends");
 }
 
+// A profile whose table runs past the image throws FormatError. The other reads throw it too. The tables are those of
+// the starts and the ends, of the ends, of the songs' files, and the directory.
+void TestLibmusTablesOutsideImage()
+{
+    namespace n64_export = ntdlib::sequence_export::n64;
+    std::vector<uint8_t> image(0x100, 0);
+    image[0xFF] = 0x40; // the song's start in a table at 0xFC
+    const std::array kBanks = {n64_export::LibmusBankPlace{.pointers = 0x80, .samples = 0xC0}};
+    const auto error_of = [&image](const n64_export::LibmusProfile& profile)
+    {
+        try
+        {
+            n64_export::LibmusGame::Open(image, profile);
+        }
+        catch (const xsflib::FormatError& e)
+        {
+            return std::string(e.what());
+        }
+
+        return std::string();
+    };
+
+    const std::string outside = "a table of the game's profile isn't in the image";
+
+    Check(error_of({.songs = 0xFC, .song_count = 1, .banks = kBanks}) == outside, "a table of starts and ends");
+    Check(error_of({.songs = 0xF0, .song_count = 1, .song_ends = 0x100, .banks = kBanks}) == outside,
+          "a table of ends");
+    Check(
+        error_of({.song_count = 1, .cartridge_files = {.table = 0x10, .song_files = 0xFF}, .banks = kBanks}) == outside,
+        "a table of the songs' files");
+    Check(error_of({.directory = 0x100, .banks = kBanks}) == outside, "a directory");
+}
+
 void TestLibmusSend()
 {
     // A send of 60 goes to CC91. The mixer takes its share from the dry level, and CC11 acts squared.
@@ -1806,8 +1758,6 @@ void TestResamplerLowPassClips()
     Check(clipped == 1 && out.channels.at(0)[3] == 32767, "a sample past 16 bits is limited");
     Check(out.channels[0][2] == out.channels[0][4] && out.channels[0][2] < 32767, "its neighbours stay inside");
 }
-
-} // namespace
 
 // A bank of one instrument and one drum. The envelope rises in 4 updates and holds at `top`.
 n64::EadBank SmallEadBank(int16_t top = 32767)
@@ -2707,6 +2657,7 @@ void TestLaterStopOtherChannel()
                                                 { return event.kind == midi::EventKind::kNoteOff; });
         return found != performance.tracks.at(track).end() ? static_cast<int>(found->tick) : -1;
     };
+
     Check(off_of(1) == 16, "the other channel stops");
     Check(off_of(0) == 24, "the channel that stops it plays on");
 }
@@ -2787,6 +2738,7 @@ void TestLoudZoneThatNoNotePlays()
 
         return ntdlib::sequence_export::n64::BuildFiles(performance, "test", "test").performance.approximations;
     };
+
     const auto cut = [](const auto& approximations)
     {
         return std::ranges::any_of(approximations, [](const auto& entry)
@@ -2885,6 +2837,8 @@ void TestLaterZones()
           "the middle of Pokémon Stadium 2's vibrato");
 }
 
+} // namespace
+
 int main()
 {
     return xsflib::testing::RunTest("sequence_export_n64",
@@ -2945,6 +2899,7 @@ int main()
                                         TestLibmusTempoScale();
                                         TestLibmusRepeats();
                                         TestLibmusSongTables();
+                                        TestLibmusTablesOutsideImage();
                                         TestLibmusSend();
                                         TestSbnClock();
                                         TestSbnShortNote();

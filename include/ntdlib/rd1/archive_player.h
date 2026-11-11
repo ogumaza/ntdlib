@@ -165,18 +165,20 @@ public:
     // kMaxChannels.
     void MuteTrack(int track, bool mute);
 
+    // Whether track `track` is muted. False for a track outside 0 to kMaxChannels - 1.
     bool IsTrackMuted(int track) const
     {
-        return muted_ >> track & 1;
+        return track >= 0 && track < kMaxChannels && (muted_ >> track & 1) != 0;
     }
 
     // While any track is soloed, leaves every track that isn't out of the output, in the same way as a mute. A mute
     // still holds on a soloed track.
     void SoloTrack(int track, bool solo);
 
+    // Whether track `track` is soloed. False for a track outside 0 to kMaxChannels - 1.
     bool IsTrackSoloed(int track) const
     {
-        return soloed_ >> track & 1;
+        return track >= 0 && track < kMaxChannels && (soloed_ >> track & 1) != 0;
     }
 
     // From the next frame with samples on, keeps the tracks' and the output's peaks when `on`.
@@ -186,9 +188,14 @@ public:
     // samples, at the FIFO's volume. A sample voice's part is the largest sample that it adds to the mix at its gains.
     // In the console's mode, it leaves out the filter of CC72 and its gain. A voice's part leaves out the echo. A PSG
     // voice's part is its channel's (agb::Apu). 0 without meters, after a frame without samples and for a muted track.
-    // A sample voice's part reaches the meter in the frame that plays it.
+    // A sample voice's part reaches the meter in the frame that plays it. 0 for a track outside 0 to kMaxChannels - 1.
     std::array<int32_t, 2> TrackPeaks(int track) const
     {
+        if (track < 0 || track >= kMaxChannels)
+        {
+            return {};
+        }
+
         return peaks_[size_t(track)];
     }
 

@@ -217,6 +217,88 @@ void TestBank()
     }
 }
 
+// The count of velocity regions of `later`, BankFileOf's conversion of `bank` for `build`, or 0 where one of them holds
+// other values than ValuesOf gives for the region that `bank` plays at its first key and velocity.
+std::size_t ValuesAsBankFileOf(const Bank& bank, const SndBuild& build, const ntdlib::sar::BankFile& later)
+{
+    std::size_t count = 0;
+    for (uint32_t program = 0; program < later.instruments.size(); ++program)
+    {
+        if (!later.instruments[program])
+        {
+            continue;
+        }
+
+        for (const ntdlib::sar::BankFile::KeyRegion& keys : later.instruments[program]->key_regions)
+        {
+            for (const ntdlib::sar::BankFile::Region& region : keys.regions)
+            {
+                const ntdlib::rsar::Region* played = bank.Find(program, keys.first_key, region.first_velocity);
+                if (played == nullptr || !(ntdlib::rsar::ValuesOf(*played, build) == region.values))
+                {
+                    return 0;
+                }
+                ++count;
+            }
+        }
+    }
+
+    return count;
+}
+
+// A region's values follow the build. Without a build, they take every field of the region. Before March 2008, they
+// take no hold, note-off type or key group. Only a note-off type of 1 ignores the note-off. A region made from the
+// values gives the fields back, with the wave that the caller names and without the interpolation. The values agree
+// with every velocity region of BankFileOf's conversion of the test bank, for each build.
+void TestRegionValues()
+{
+    ntdlib::rsar::Region region;
+    region.wave_index = 3;
+    region.attack = 10;
+    region.decay = 20;
+    region.sustain = 30;
+    region.release = 40;
+    region.hold = 5;
+    region.note_off_type = 1;
+    region.key_group = 2;
+    region.original_key = 72;
+    region.volume = 90;
+    region.pan = 30;
+    region.tune = 1.5f;
+
+    const ntdlib::sar::VelocityRegion values = ntdlib::rsar::ValuesOf(region);
+    const ntdlib::sar::VelocityRegion old = ntdlib::rsar::ValuesOf(region, kBuild2007);
+
+    XSFLIB_CHECK(values.wave_id_index == 3 && values.original_key == 72 && values.volume == 90 && values.pan == 30);
+    XSFLIB_CHECK(values.pitch == 1.5f && values.interpolation == 0);
+    XSFLIB_CHECK(values.ignore_note_off && values.key_group == 2);
+    XSFLIB_CHECK(values.adshr.attack == 10 && values.adshr.decay == 20 && values.adshr.sustain == 30);
+    XSFLIB_CHECK(values.adshr.hold == 5 && values.adshr.release == 40);
+    XSFLIB_CHECK(ntdlib::rsar::ValuesOf(region, kBuild2008) == values);
+    XSFLIB_CHECK(!old.ignore_note_off && old.key_group == 0 && old.adshr.hold == 0);
+    XSFLIB_CHECK(old.adshr.attack == 10 && old.adshr.release == 40 && old.original_key == 72 && old.pitch == 1.5f);
+    ntdlib::rsar::Region other_type = region;
+    other_type.note_off_type = 2;
+    XSFLIB_CHECK(!ntdlib::rsar::ValuesOf(other_type).ignore_note_off);
+
+    ntdlib::sar::VelocityRegion linear = values;
+    linear.interpolation = 1;
+    XSFLIB_CHECK(ntdlib::rsar::RegionOf(values, 3) == region);
+    XSFLIB_CHECK(ntdlib::rsar::RegionOf(linear, 3) == region);
+    XSFLIB_CHECK(ntdlib::rsar::RegionOf(values, -1).wave_index == -1);
+    XSFLIB_CHECK(ntdlib::rsar::RegionOf(old, 3).note_off_type == 0 && ntdlib::rsar::RegionOf(old, 3).hold == 0);
+
+    const Bytes file = rsar_files::MakeNewBank();
+    const Bytes waves = rsar_files::MakeRwar();
+    const Bank bank = Bank::Parse(file, waves, kPlayback);
+    for (const SndBuild& build : {kBuild2007, kBuild2008})
+    {
+        const ntdlib::sar::BankFile later =
+            ntdlib::rsar::BankFileOf(bank, build, Flavor::kCafe, 0x00010000, kWaveArchive);
+        XSFLIB_CHECK(ValuesAsBankFileOf(bank, build, later) > 0);
+    }
+}
+
 // A bank of version 1.1 describes its waves in its WAVE block. Its waves convert too.
 void TestOldBank()
 {
@@ -496,6 +578,7 @@ int main()
     TestAdpcmWave();
     TestPcmWave();
     TestBank();
+    TestRegionValues();
     TestOldBank();
     TestWiiWaves();
     TestWiiBank();

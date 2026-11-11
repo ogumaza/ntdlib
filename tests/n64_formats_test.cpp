@@ -409,6 +409,31 @@ void TestCompressedBuild()
     XSFLIB_CHECK(decoded == track);
 }
 
+// Build looks for blocks in the tracks only. The header's track offsets change after the first track goes out, so a
+// block that copied them would come back wrong. The first track holds runs of zeros, as the header does.
+void TestCompressedBuildSkipsHeader()
+{
+    std::vector<n64::MidiEvent> track;
+    for (int i = 0; i < 20; i++)
+    {
+        n64::MidiEvent controller;
+        controller.status = 0xB0;
+        controller.running_status = i != 0;
+        track.push_back(controller);
+    }
+
+    n64::MidiEvent finish;
+    finish.status = n64::kMidiMeta;
+    finish.type = n64::kMidiMetaEndOfTrack;
+    track.push_back(finish);
+
+    // The other tracks hold only their ends, so that every offset in the header changes.
+    std::vector<std::vector<n64::MidiEvent>> tracks(n64::CompressedMidi::kTrackCount, {finish});
+    tracks[0] = track;
+    const n64::CompressedMidi built = n64::CompressedMidi::Build(tracks, 48);
+    XSFLIB_CHECK(n64::CompressedMidi::Parse(built.Bytes()).DecodeTrack(0) == track);
+}
+
 // A loop end's bytes go out as they stand, 0xFE included. Every low byte of the offset comes up as the loop grows.
 void TestCompressedLoopOffsets()
 {
@@ -489,6 +514,42 @@ void TestCompressedLoopEndBytes()
     XSFLIB_CHECK(events[63].IsMeta(n64::kMidiMetaEndOfTrack));
 }
 
+// A loop end whose FF 2D comes out of a block, with a byte of the block left. The player reads the loop end's six bytes
+// at the file's place after the block's code, and the byte left in the block after them.
+void TestCompressedLoopEndInBlock()
+{
+    Bytes file;
+    Put32(file, 68);
+    for (int i = 1; i < 16; i++)
+    {
+        Put32(file, 0);
+    }
+    Put32(file, 48);
+
+    const Bytes track = {
+        0x00, 0xFF, 0x2E, 0x00, 0xFF,                         // 68: a loop start
+        0x00, 0x90, 0x40, 0x7F, 0x18,                         // 73: note 0x40, velocity 0x7F, duration 24
+        0x00, 0xFF, 0x2D, 0x01, 0x01, 0x00, 0x00, 0x00, 0x0E, // 78: a loop end back to 73
+        0xFE, 0x00, 0x09, 0x04,                               // 87: a block of the 4 bytes at 78: 00 FF 2D 01
+        0x02, 0x03, 0x00, 0x00, 0x00, 0x05,                   // 91: the second loop end's six bytes
+        0xFF, 0x2F,                                           // 97: an end of track after the block's last byte
+    };
+    file.insert(file.end(), track.begin(), track.end());
+
+    const std::vector<n64::MidiEvent> events = n64::CompressedMidi::Parse(file).DecodeTrack(0);
+
+    XSFLIB_CHECK(events.size() == 5);
+    if (events.size() != 5)
+    {
+        return;
+    }
+
+    XSFLIB_CHECK(events[2].IsMeta(n64::kCompressedLoopEnd) && events[2].loop_start == 0);
+    XSFLIB_CHECK(events[3].IsMeta(n64::kCompressedLoopEnd) && events[3].file_offset == 78);
+    XSFLIB_CHECK(events[3].payload == (std::vector<uint8_t>{0x02, 0x03, 0x00, 0x00, 0x00, 0x05}));
+    XSFLIB_CHECK(events[4].IsMeta(n64::kMidiMetaEndOfTrack) && events[4].delta == 1);
+}
+
 void TestStandardMidi()
 {
     Bytes file = {'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 1, 0xE0, 'M', 'T', 'r', 'k', 0, 0, 0, 0};
@@ -532,6 +593,10 @@ void TestStandardMidi()
     Bytes bad = file;
     bad[0] = 'X';
     XSFLIB_CHECK(!n64::StandardMidi::Matches(bad));
+
+    // A header that runs past the data, in a file of no tracks.
+    const Bytes long_header = {'M', 'T', 'h', 'd', 0, 0, 0, 0x10, 0, 0, 0, 0, 1, 0xE0};
+    XSFLIB_CHECK(!n64::StandardMidi::Matches(long_header));
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { n64::StandardMidi::Parse(bad); }) == "not a standard MIDI file");
 }
 
@@ -659,8 +724,10 @@ int main()
                                         TestBankFile();
                                         TestCompressedMidi();
                                         TestCompressedBuild();
+                                        TestCompressedBuildSkipsHeader();
                                         TestCompressedLoopOffsets();
                                         TestCompressedLoopEndBytes();
+                                        TestCompressedLoopEndInBlock();
                                         TestStandardMidi();
                                         TestVadpcmFrame();
                                         TestVadpcmDecode();

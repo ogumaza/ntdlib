@@ -950,6 +950,17 @@ void TestToolsArchive(Flavor flavor)
     XSFLIB_CHECK(model.files[4].place == FilePlace::kPath && model.files[4].path == "stream/STRM.bfstm");
     XSFLIB_CHECK(model.files[5].place == FilePlace::kBytes && model.files[5].bytes == spec.files[5].bytes);
     XSFLIB_CHECK(model.files[0].groups == std::vector<uint32_t>({ItemId(sar::kGroupItem, 1)}));
+
+    // Each file's entry gives the place and the groups of the file's model. GROUP_B's copy of file 0 gives its place
+    // in the FILE block, as bytes of its own do.
+    const InfoBlock info = InfoOf(archive, flavor);
+    for (std::size_t i = 0; i < info.files.size() && i < model.files.size(); ++i)
+    {
+        const FilePlace place = model.files[i].place == FilePlace::kCopy ? FilePlace::kBytes : model.files[i].place;
+        XSFLIB_CHECK(sar::PlaceOfFile(info.files[i], flavor) == place);
+        XSFLIB_CHECK(sar::GroupsOfFile(info.files[i], flavor) ==
+                     (place == FilePlace::kPath ? std::nullopt : std::optional(model.files[i].groups)));
+    }
 }
 
 // The 3DS's versions of CSAR, with a sound of each kind and a file of each place where the model knows the version's
@@ -1047,6 +1058,16 @@ void TestCtrVersions()
 
         const std::vector<uint8_t> archive = sar::BuildArchive(model);
         XSFLIB_CHECK(sar::ReadArchiveModel(archive, kCtr) == model);
+        const InfoBlock places = InfoOf(archive, kCtr);
+        const auto lists = [](const std::vector<uint8_t>& entry)
+        {
+            return sar::GroupsOfFile(entry, kCtr).has_value();
+        };
+        XSFLIB_CHECK(places.files.size() == model.files.size() && std::ranges::none_of(places.files, lists));
+        for (std::size_t i = 0; i < places.files.size() && i < model.files.size(); ++i)
+        {
+            XSFLIB_CHECK(sar::PlaceOfFile(places.files[i], kCtr) == model.files[i].place);
+        }
         if (c.version == 0x02000000)
         {
             first = archive;

@@ -204,4 +204,26 @@ std::vector<Group> ReadProject(std::span<const uint8_t> file)
     return groups;
 }
 
+std::vector<ProjectEffect> ProjectEffects(const std::vector<Group>& groups)
+{
+    std::vector<ProjectEffect> effects;
+    for (const Group& group : groups)
+    {
+        if (group.type != GroupType::kEffects)
+        {
+            continue;
+        }
+
+        for (const Effect& row : group.effects)
+        {
+            if (row.max_voices != 0)
+            {
+                effects.push_back({.group = group.id, .row = row});
+            }
+        }
+    }
+
+    return effects;
+}
+
 } // namespace ntdlib::musyx

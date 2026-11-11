@@ -69,6 +69,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -120,19 +121,15 @@ int SequenceOfSong(const Rom& rom, const DriverInfo& info, int song);
 // Throws std::out_of_range past SequenceCount().
 Decoded DecodeRomSequence(const Rom& rom, const DriverInfo& info, int sequence);
 
-// The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
-// the end. An event's offset is that of its status byte, or of its first byte where it leaves the status byte out. A
-// wait whose delta time an earlier wait writes has the offset of the next item.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a sequence, and each item's offset in them (agb/encoded.h). An event's offset is that of its status
+// byte, or of its first byte where it leaves the status byte out. A wait whose delta time an earlier wait writes has
+// the offset of the next item.
+using Encoded = agb::Encoded;
 
 // Encodes `sequence`, in the driver's values nearest its units. Throws std::invalid_argument for a command that the
 // bytes can't hold, and for a file that the driver wouldn't read as its items say: one that doesn't start with its
-// header, more than kMaxTracks tracks, an event outside a track, a track without an end, a track that reaches data, or
-// an event after a track's end.
+// header, more than kMaxTracks tracks, an event outside a track, a track without an end, a track that reaches data, an
+// event after a track's end, or a kOther item that the driver reads as a track's end, a tempo, a loop marker or a note.
 Encoded EncodeSequence(const commands::Sequence& sequence);
 
 // The offset of each item of `sequence` in its bytes, then the end. The items don't have to read back as a file. Throws

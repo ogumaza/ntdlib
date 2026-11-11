@@ -43,6 +43,18 @@ inline int32_t PowerPcToInt32(float x)
     return x >= 2147483648.0f ? INT32_MAX : INT32_MIN;
 }
 
+// The same conversion of a double, as fctiwz converts a value in a floating-point register. It has a separate name:
+// an overload would take the calls that now convert a double to a float first.
+inline int32_t PowerPcDoubleToInt32(double x)
+{
+    if (x >= -2147483648.0 && x < 2147483648.0)
+    {
+        return static_cast<int32_t>(x);
+    }
+
+    return x >= 2147483648.0 ? INT32_MAX : INT32_MIN;
+}
+
 // The Wii U's conversion of a float to a 32-bit unsigned integer, as its compiler makes it from two fctiwz: below 2^31,
 // PowerPcToInt32's result taken as unsigned, and from 2^31, PowerPcToInt32 of the value less 2^31 with 2^31 added back.
 // From 2^32 up, that gives 0xffffffff. A NaN fails the comparison with 2^31 and goes the second way. PowerPcToInt32

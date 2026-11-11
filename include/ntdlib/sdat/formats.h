@@ -49,6 +49,30 @@ enum class WaveEncoding : uint8_t
     kImaAdpcm = 2,
 };
 
+// The 32-bit words before a wave's samples in `encoding`: the word of the decoder's state in IMA-ADPCM, and none in
+// PCM.
+constexpr uint32_t HeaderWords(WaveEncoding encoding)
+{
+    return encoding == WaveEncoding::kImaAdpcm ? 1 : 0;
+}
+
+// The samples in the first `words` 32-bit words of a wave in `encoding`: 4 a word in PCM8, 2 in PCM16 and 8 in
+// IMA-ADPCM, after its header word. 0 for an unknown encoding.
+constexpr uint32_t SamplesInWords(WaveEncoding encoding, uint32_t words)
+{
+    switch (encoding)
+    {
+    case WaveEncoding::kPcm8:
+        return words * 4;
+    case WaveEncoding::kPcm16:
+        return words * 2;
+    case WaveEncoding::kImaAdpcm:
+        return words > 0 ? (words - 1) * 8 : 0;
+    }
+
+    return 0;
+}
+
 // A wave: its parameters (SNDWaveParam) and its samples. The DS's channel plays the samples from the start, and from
 // the end goes back to the loop's start when the wave loops. The loop's start and length count 32-bit words. An
 // IMA-ADPCM wave's data starts with a word of the decoder's state: the first sample and the index into the table of
@@ -207,6 +231,9 @@ struct Stream
     std::span<const uint8_t> data; // from data_offset to the end of the DATA block
 };
 
+// The bits of a file's ID in the INFO record of a wave archive or a stream: bits 0 to 23. Bits 24 to 31 hold flags.
+constexpr uint32_t kFileIdBits = 0xFFFFFF;
+
 // The settings of a sequence, from the INFO block or a sequence archive.
 struct SequenceInfo
 {
@@ -227,10 +254,15 @@ struct SequenceArchiveInfo
     std::vector<std::string> sequence_names;
 };
 
+// The wave archive slots of a bank's record (BankInfo::wave_archives). A region names a slot. A slot of kNoWaveArchive
+// names no wave archive.
+constexpr int kWaveArchiveSlots = 4;
+constexpr uint16_t kNoWaveArchive = 0xFFFF;
+
 struct BankInfo
 {
     uint32_t file_id = 0;
-    std::array<uint16_t, 4> wave_archives{}; // 0xFFFF: none
+    std::array<uint16_t, kWaveArchiveSlots> wave_archives{}; // 0xFFFF: none
     std::string name;
 };
 

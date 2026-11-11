@@ -19,7 +19,7 @@
 #include "ntdlib/rd2/driver.h"
 #include "ntdlib/rd2/output.h"
 #include "ntdlib/rd2/sequencer.h"
-#include "rd2_cart.h"
+#include "ntdlib/testing/rd2_cart.h"
 
 using xsflib::testing::Check;
 

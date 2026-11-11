@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/nx/audio/dsp.h"
@@ -64,9 +65,7 @@ std::vector<uint8_t> Pcm16Noise(int count, uint32_t seed)
     for (int i = 0; i < count; ++i)
     {
         const int32_t value = static_cast<int32_t>(Next(seed) >> 16) - 32768;
-        const auto bits = static_cast<uint16_t>(static_cast<int16_t>(value / 4));
-        bytes.push_back(static_cast<uint8_t>(bits & 0xFF));
-        bytes.push_back(static_cast<uint8_t>(bits >> 8));
+        xsflib::AppendLe16(bytes, static_cast<uint16_t>(static_cast<int16_t>(value / 4)));
     }
 
     return bytes;

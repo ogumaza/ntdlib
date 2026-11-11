@@ -100,4 +100,15 @@ struct Group
 // Reads the groups of the project file `file`, in the file's order. Throws FormatError if the file is damaged.
 std::vector<Group> ReadProject(std::span<const uint8_t> file);
 
+// An effect that an effects group lists: the group's ID and the effect's row.
+struct ProjectEffect
+{
+    uint16_t group = 0;
+    Effect row;
+};
+
+// The effects that the effects groups of `groups`, a project's groups, list, in the project's order. MusyX never starts
+// an effect whose row allows no voices. The list leaves such an effect out.
+std::vector<ProjectEffect> ProjectEffects(const std::vector<Group>& groups);
+
 } // namespace ntdlib::musyx

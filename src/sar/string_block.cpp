@@ -19,6 +19,8 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/name_tree.h"
 
 namespace ntdlib::sar
 {
@@ -28,41 +30,30 @@ namespace
 constexpr uint16_t kStringTableReference = 0x2400;
 constexpr uint16_t kTreeReference = 0x2401;
 constexpr uint16_t kStringReference = 0x1F01; // from the string table to a string
-constexpr uint16_t kLeaf = 1;                 // a node's flags
-constexpr uint16_t kNoBit = 0xFFFF;           // a leaf's bit
-constexpr uint32_t kNone = 0xFFFFFFFF;        // a leaf's children, an inner node's string and item, no root
-constexpr std::size_t kBody = 8;              // after the block's magic and size
 constexpr std::size_t kStringEntrySize = 12;
-constexpr std::size_t kNodeSize = 20;
 constexpr std::size_t kTableAlignment = 4;
-constexpr std::size_t kBlockAlignment = 32;
 
+using detail::kBlockAlignment;
+using detail::kBlockHeaderSize;
+using detail::kTreeLeaf;
+using detail::kTreeNodeSize;
+using detail::kTreeNone;
 using detail::Out;
-
-struct Node
-{
-    uint16_t flags = 0;
-    uint16_t bit = kNoBit;
-    uint32_t left = kNone;
-    uint32_t right = kNone;
-    uint32_t string = kNone;
-    uint32_t item_id = kNone;
-};
 
 // Where the string table and the tree start in a block that `r` reads. Throws xsflib::FormatError for bytes that
 // aren't a STRG block, and for a block without either.
 std::pair<std::size_t, std::size_t> PartsOf(const xsflib::Reader& r)
 {
-    if (r.Size() < kBody + 16 || !r.Magic(0, "STRG"))
+    if (r.Size() < kBlockHeaderSize + 16 || !r.Magic(0, "STRG"))
     {
         throw xsflib::FormatError("not a STRG block");
     }
 
     std::optional<std::size_t> table;
     std::optional<std::size_t> tree;
-    for (std::size_t reference = kBody; reference < kBody + 16; reference += 8)
+    for (std::size_t reference = kBlockHeaderSize; reference < kBlockHeaderSize + 16; reference += 8)
     {
-        const int64_t at = int64_t{kBody} + r.S32(reference + 4);
+        const int64_t at = int64_t{kBlockHeaderSize} + r.S32(reference + 4);
         if (at < 0 || at > static_cast<int64_t>(r.Size()))
         {
             throw xsflib::FormatError("a STRG block whose references point outside it");
@@ -109,14 +100,6 @@ std::string StringOf(const xsflib::Reader& r, std::size_t table, uint32_t index)
     }
 
     return r.CString(start, size);
-}
-
-// Bit `index` of `name`, counted from the most significant bit of its first byte. The bits past its end are 0.
-bool Bit(std::string_view name, std::size_t index)
-{
-    const std::size_t byte = index / 8;
-
-    return byte < name.size() && (static_cast<uint8_t>(name[byte]) >> (7 - index % 8) & 1) != 0;
 }
 
 // Where the tree takes the names of items of type `type` among the others. Throws std::invalid_argument for a type
@@ -166,10 +149,10 @@ void CheckNames(std::span<const ItemName> names)
     }
 }
 
-// The tree of `names`: the root's index and the nodes. CheckNames has checked the names.
-std::pair<uint32_t, std::vector<Node>> BuildTree(std::span<const ItemName> names)
+// The tree of `names`: the root's index and the nodes. The names go in sorted by the rank of the item type (TreeRank),
+// then by item ID, then by position in `names`. CheckNames has checked the names.
+std::pair<uint32_t, std::vector<detail::TreeNode>> BuildTree(std::span<const ItemName> names)
 {
-    // The order in which the names go in.
     std::vector<uint32_t> order(names.size());
     std::iota(order.begin(), order.end(), 0U);
     auto key = [&](uint32_t string)
@@ -178,62 +161,13 @@ std::pair<uint32_t, std::vector<Node>> BuildTree(std::span<const ItemName> names
     };
     std::ranges::sort(order, {}, key);
 
-    std::vector<Node> nodes;
-    uint32_t root = kNone;
+    std::vector<detail::TreeName> sorted;
     for (const uint32_t string : order)
     {
-        const std::string_view name = names[string].name;
-        const auto leaf = static_cast<uint32_t>(nodes.size());
-        nodes.push_back({kLeaf, kNoBit, kNone, kNone, string, names[string].item_id});
-        if (root == kNone)
-        {
-            root = leaf;
-            continue;
-        }
-
-        // The first bit where the name differs from the name that its bits lead to. Two names without zero bytes
-        // that differ also differ in a bit of the longer one.
-        uint32_t closest = root;
-        while ((nodes[closest].flags & kLeaf) == 0)
-        {
-            closest = Bit(name, nodes[closest].bit) ? nodes[closest].right : nodes[closest].left;
-        }
-        const std::string_view other = names[nodes[closest].string].name;
-        std::size_t bit = 0;
-        while (Bit(name, bit) == Bit(other, bit))
-        {
-            ++bit;
-        }
-        if (bit >= kNoBit)
-        {
-            throw std::invalid_argument("two names that first differ past bit 65,534: " + std::string(name));
-        }
-
-        // The inner node goes on the name's path, above the first node that tests a later bit.
-        const auto inner = static_cast<uint32_t>(nodes.size());
-        nodes.push_back({0, static_cast<uint16_t>(bit), kNone, kNone, kNone, kNone});
-        uint32_t parent = kNone;
-        bool parent_right = false;
-        uint32_t child = root;
-        while ((nodes[child].flags & kLeaf) == 0 && nodes[child].bit < bit)
-        {
-            parent = child;
-            parent_right = Bit(name, nodes[child].bit);
-            child = parent_right ? nodes[child].right : nodes[child].left;
-        }
-        nodes[inner].left = Bit(name, bit) ? child : leaf;
-        nodes[inner].right = Bit(name, bit) ? leaf : child;
-        if (parent == kNone)
-        {
-            root = inner;
-        }
-        else
-        {
-            (parent_right ? nodes[parent].right : nodes[parent].left) = inner;
-        }
+        sorted.push_back({names[string].name, string, names[string].item_id});
     }
 
-    return {root, std::move(nodes)};
+    return detail::BuildTree(sorted, "two names alike: ");
 }
 
 } // namespace
@@ -243,7 +177,7 @@ StringBlock StringBlock::Read(std::span<const uint8_t> block, Flavor flavor)
     const xsflib::Reader r(block, flavor == Flavor::kCafe);
     const auto [table, tree] = PartsOf(r);
     const uint32_t strings = CountOf(r, table, table + 4, kStringEntrySize, "string table");
-    const uint32_t nodes = CountOf(r, tree + 4, tree + 8, kNodeSize, "tree");
+    const uint32_t nodes = CountOf(r, tree + 4, tree + 8, kTreeNodeSize, "tree");
 
     StringBlock result;
     result.flavor = flavor;
@@ -257,8 +191,8 @@ StringBlock StringBlock::Read(std::span<const uint8_t> block, Flavor flavor)
     std::vector<bool> found(strings);
     for (uint32_t i = 0; i < nodes; ++i)
     {
-        const std::size_t node = tree + 8 + std::size_t{i} * kNodeSize;
-        if ((r.U16(node) & kLeaf) == 0)
+        const std::size_t node = tree + 8 + std::size_t{i} * kTreeNodeSize;
+        if ((r.U16(node) & kTreeLeaf) == 0)
         {
             continue;
         }
@@ -310,22 +244,10 @@ std::vector<uint8_t> StringBlock::Write() const
     out.Align(kTableAlignment);
 
     // The tree: the root, the count, then the nodes.
-    const std::size_t tree = out.Zeros(8 + kNodeSize * nodes.size());
-    out.U32(tree, root);
-    out.U32(tree + 4, static_cast<uint32_t>(nodes.size()));
-    for (std::size_t i = 0; i < nodes.size(); ++i)
-    {
-        const std::size_t at = tree + 8 + i * kNodeSize;
-        out.U16(at, nodes[i].flags);
-        out.U16(at + 2, nodes[i].bit);
-        out.U32(at + 4, nodes[i].left);
-        out.U32(at + 8, nodes[i].right);
-        out.U32(at + 12, nodes[i].string);
-        out.U32(at + 16, nodes[i].item_id);
-    }
+    const std::size_t tree = detail::AppendTree(out, root, nodes);
 
-    out.Reference(kBody, kStringTableReference, static_cast<uint32_t>(table - kBody));
-    out.Reference(kBody + 8, kTreeReference, static_cast<uint32_t>(tree - kBody));
+    out.Reference(kBlockHeaderSize, kStringTableReference, static_cast<uint32_t>(table - kBlockHeaderSize));
+    out.Reference(kBlockHeaderSize + 8, kTreeReference, static_cast<uint32_t>(tree - kBlockHeaderSize));
     out.Align(kBlockAlignment);
     out.U32(4, static_cast<uint32_t>(out.Size()));
 
@@ -337,9 +259,9 @@ std::optional<uint32_t> FindItem(std::span<const uint8_t> block, Flavor flavor, 
     const xsflib::Reader r(block, flavor == Flavor::kCafe);
     const auto [table, tree] = PartsOf(r);
     const uint32_t strings = CountOf(r, table, table + 4, kStringEntrySize, "string table");
-    const uint32_t nodes = CountOf(r, tree + 4, tree + 8, kNodeSize, "tree");
+    const uint32_t nodes = CountOf(r, tree + 4, tree + 8, kTreeNodeSize, "tree");
     const uint32_t root = r.U32(tree);
-    if (root == kNone)
+    if (root == kTreeNone)
     {
         return std::nullopt;
     }
@@ -353,8 +275,8 @@ std::optional<uint32_t> FindItem(std::span<const uint8_t> block, Flavor flavor, 
             throw xsflib::FormatError("a STRG block whose tree can't be walked");
         }
 
-        const std::size_t node = tree + 8 + std::size_t{index} * kNodeSize;
-        if (r.U16(node) & kLeaf)
+        const std::size_t node = tree + 8 + std::size_t{index} * kTreeNodeSize;
+        if (r.U16(node) & kTreeLeaf)
         {
             const uint32_t string = r.U32(node + 12);
             if (string >= strings || StringOf(r, table, string) != name)
@@ -364,7 +286,7 @@ std::optional<uint32_t> FindItem(std::span<const uint8_t> block, Flavor flavor, 
 
             return r.U32(node + 16);
         }
-        index = Bit(name, r.U16(node + 2)) ? r.U32(node + 8) : r.U32(node + 4);
+        index = detail::NameBit(name, r.U16(node + 2)) ? r.U32(node + 8) : r.U32(node + 4);
     }
 }
 

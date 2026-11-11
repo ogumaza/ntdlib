@@ -59,9 +59,7 @@ const ResamplingRule kSwitchResampling = {48000.0, kSwitchFilters, 0.0, 1.0 / 16
 double ResamplingRate(int key, const ResamplingRegion& region, const Settings& settings)
 {
     const double output = settings.resampling ? settings.resampling->output_rate : 32000.0;
-    const double pitch = settings.engine == Engine::kRevolution
-                             ? 1.0
-                             : std::exp2((key - region.original_key) / 12.0) * static_cast<double>(region.tune);
+    const double pitch = settings.engine == Engine::kRevolution ? 1.0 : KeyPitch(key, region);
 
     return region.sample_rate * pitch / output;
 }

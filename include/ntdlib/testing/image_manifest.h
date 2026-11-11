@@ -10,10 +10,12 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <map>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "xsflib/sha1.h"
@@ -24,11 +26,22 @@
 namespace ntdlib::testing
 {
 
-// A game folder's MANIFEST.txt.
+// The MANIFEST.txt of a game folder. A line for a file gives its SHA-1, its size and its path in the folder. The path
+// runs to the end of the line, spaces included. Any other line "name: value" is a field, such as "source: NAME" or
+// "title id: 00050000-12345600". A line may end in CR LF.
 struct ImageManifest
 {
-    std::string source;                        // the image's file name
+    struct File
+    {
+        std::string sha1;
+        uint64_t size = 0;
+        std::string path;
+    };
+
+    std::string source;                        // the image's file name: the field "source"
     std::map<std::string, std::string> hashes; // path in the folder -> SHA-1
+    std::map<std::string, std::string> fields; // name -> value, "source" included
+    std::vector<File> files;                   // the lines for files, in order
 };
 
 inline ImageManifest ReadImageManifest(const std::filesystem::path& path)
@@ -38,23 +51,53 @@ inline ImageManifest ReadImageManifest(const std::filesystem::path& path)
     std::string line;
     while (std::getline(file, line))
     {
-        if (line.starts_with("source: "))
+        if (line.ends_with('\r'))
         {
-            manifest.source = line.substr(8);
+            line.pop_back();
+        }
+
+        std::istringstream words(line);
+        ImageManifest::File entry;
+        if (words >> entry.sha1 >> entry.size >> std::ws && std::getline(words, entry.path) && entry.sha1.size() == 40)
+        {
+            manifest.hashes[entry.path] = entry.sha1;
+            manifest.files.push_back(std::move(entry));
             continue;
         }
 
-        std::istringstream fields(line);
-        std::string hash;
-        uint64_t size = 0;
-        std::string name;
-        if (fields >> hash >> size >> name && hash.size() == 40)
+        if (const std::size_t colon = line.find(": "); colon != std::string::npos)
         {
-            manifest.hashes[name] = hash;
+            manifest.fields[line.substr(0, colon)] = line.substr(colon + 2);
         }
+    }
+    if (const auto source = manifest.fields.find("source"); source != manifest.fields.end())
+    {
+        manifest.source = source->second;
     }
 
     return manifest;
+}
+
+// The value on the line of the manifest at `path` that starts with `key` and ": ", or an empty string. A title's
+// manifest gives its game ID ("game id: ") and its title ("title: ") this way.
+inline std::string ManifestField(const std::filesystem::path& path, const std::string& key)
+{
+    std::ifstream file(path, std::ios::binary);
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+
+        if (line.starts_with(key + ": "))
+        {
+            return line.substr(key.size() + 2);
+        }
+    }
+
+    return {};
 }
 
 // Checks a game's files against the manifest: the system files, a Wii partition's TMD, and every file that the manifest
@@ -98,8 +141,7 @@ inline void CheckGameAgainstManifest(const std::string& name, const std::filesys
 {
     disc::GameFiles game;
     const auto error = disc::LoadGame(input, game, options);
-    xsflib::testing::Check(!error, name + ": " + error.value_or(""));
-    if (error)
+    if (!xsflib::testing::Check(!error, name + ": " + error.value_or("")))
     {
         return;
     }

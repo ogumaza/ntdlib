@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/snd/tables.h"
@@ -754,18 +755,16 @@ void ArchivePlayer::RunEffect()
     std::vector<int16_t> right(count);
     for (std::size_t i = 0; i < count; i++)
     {
-        left[i] = static_cast<int16_t>(memory_[left_at + 2 * i] | memory_[left_at + 2 * i + 1] << 8);
-        right[i] = static_cast<int16_t>(memory_[right_at + 2 * i] | memory_[right_at + 2 * i + 1] << 8);
+        left[i] = static_cast<int16_t>(xsflib::LoadLe16(&memory_[left_at + 2 * i]));
+        right[i] = static_cast<int16_t>(xsflib::LoadLe16(&memory_[right_at + 2 * i]));
     }
 
     ApplyOutputMode(output_mode_, left, right, history_);
 
     for (std::size_t i = 0; i < count; i++)
     {
-        memory_[left_at + 2 * i] = static_cast<uint8_t>(left[i]);
-        memory_[left_at + 2 * i + 1] = static_cast<uint8_t>(static_cast<uint16_t>(left[i]) >> 8);
-        memory_[right_at + 2 * i] = static_cast<uint8_t>(right[i]);
-        memory_[right_at + 2 * i + 1] = static_cast<uint8_t>(static_cast<uint16_t>(right[i]) >> 8);
+        xsflib::StoreLe16(&memory_[left_at + 2 * i], static_cast<uint16_t>(left[i]));
+        xsflib::StoreLe16(&memory_[right_at + 2 * i], static_cast<uint16_t>(right[i]));
     }
     effect.part = effect.part + 1 < effect.interval ? effect.part + 1 : 0;
     effect.next_alarm += effect.period;

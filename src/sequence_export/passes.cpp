@@ -22,7 +22,6 @@
 namespace ntdlib::sequence_export
 {
 
-// True for controller events that update a track's channel settings.
 bool IsTrackSetting(EventKind kind)
 {
     switch (kind)
@@ -145,7 +144,7 @@ TrackPasses PassesOfTrack(const seqlib::midi::Performance& perf, std::size_t tra
 
     // Each part starts at its key's pitch without an event (seqlib::midi::TrackOutput::pitch, as in SettingsAt). A
     // track's first part also starts with the settings of `rules.seeded` at 0, without events (the SFZ filters that
-    // MidiRecorder's constructor seeds in performer.cpp).
+    // MidiRecorder's constructor seeds in midi_recorder.cpp).
     for (std::map<EventKind, TrackEvent>& part : settings)
     {
         part[EventKind::kPitch] = TrackEvent{0, EventKind::kPitch};
@@ -196,20 +195,17 @@ TrackPasses PassesOfTrack(const seqlib::midi::Performance& perf, std::size_t tra
 
     if (!ended)
     {
-        passes.at_end = settings;
+        passes.at_end = std::move(settings);
     }
 
     return passes;
 }
 
-} // namespace
-
-bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<PartSwitch>& part_switches,
-                      uint32_t start, uint32_t end, const LoopRules& rules)
+// The tempo that a repeat of the loop from `start` to `end` starts with (RepeatsAsTheGame). `at_start` gives the pass
+// at the loop's start, and `next` the game's next pass.
+double RepeatBpm(const seqlib::midi::Performance& perf, uint32_t start, uint32_t end, const PassStart& at_start,
+                 const PassStart& next)
 {
-    const PassStart at_start = PassStartAt(perf, part_switches, start);
-    const PassStart next = PassStartAt(perf, part_switches, end);
-
     // The tempo: a repeat starts with the tempo at the loop's end. A tempo event on the loop's first tick replaces that
     // with the start's tempo. When the game's next pass starts with the start's tempo, RestoreAtLoopStart sends that
     // tempo again, and the repeat starts with it too.
@@ -223,88 +219,93 @@ bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<P
             end_bpm = tempo.bpm;
         }
     }
-    const double repeat_bpm = tempo_sent || next.bpm == at_start.bpm ? at_start.bpm : end_bpm;
 
-    auto bpm_at = [&](uint32_t tick, uint32_t since, double otherwise)
+    return tempo_sent || next.bpm == at_start.bpm ? at_start.bpm : end_bpm;
+}
+
+// The tempo at `tick`: that of the last tempo event at `since` or later, or else `otherwise`.
+double BpmAt(const seqlib::midi::Performance& perf, uint32_t tick, uint32_t since, double otherwise)
+{
+    double bpm = otherwise;
+    for (const seqlib::midi::Performance::Tempo& tempo : perf.tempo)
     {
-        double bpm = otherwise;
-        for (const seqlib::midi::Performance::Tempo& tempo : perf.tempo)
+        if (tempo.tick > tick)
         {
-            if (tempo.tick > tick)
-            {
-                break;
-            }
-
-            if (tempo.tick >= since)
-            {
-                bpm = tempo.bpm;
-            }
+            break;
         }
 
-        return bpm;
+        if (tempo.tick >= since)
+        {
+            bpm = tempo.bpm;
+        }
+    }
+
+    return bpm;
+}
+
+// Whether the notes of track `t` in the pass from `start` to `end` repeat as the game's next pass plays them, at
+// tempo `repeat_bpm` (RepeatsAsTheGame).
+bool TrackRepeats(const seqlib::midi::Performance& perf, int t, uint32_t start, uint32_t end, const LoopRules& rules,
+                  const PassStart& at_start, const PassStart& next, double repeat_bpm)
+{
+    const auto track = static_cast<std::size_t>(t);
+    const TrackPasses passes = PassesOfTrack(perf, track, start, end, rules);
+    if (passes.loop.size() != passes.game.size())
+    {
+        return false;
+    }
+
+    // What a repeat starts with on a part where the pass hasn't sent a setting: the loop end's value, or the loop
+    // start's value where RestoreAtLoopStart sends it again. On the part that takes the track's new notes,
+    // RestoreAtLoopStart sends it if the loop's first tick doesn't.
+    auto repeat_value = [&](uint8_t part, EventKind kind) -> const TrackEvent*
+    {
+        const auto first = at_start.settings.find({t, part, kind});
+        const auto again = next.settings.find({t, next.parts[track], kind});
+        if (part == at_start.parts[track] && !passes.in_first_tick[part].contains(kind) &&
+            first != at_start.settings.end() && again != next.settings.end() &&
+            SameSetting(first->second, again->second))
+        {
+            return &first->second;
+        }
+
+        const auto kept = passes.at_end[part].find(kind);
+        return kept != passes.at_end[part].end() ? &kept->second : nullptr;
     };
 
-    for (int t = 0; t < 16; t++)
+    for (std::size_t k = 0; k < passes.loop.size(); k++)
     {
-        const auto track = static_cast<std::size_t>(t);
-        const TrackPasses passes = PassesOfTrack(perf, track, start, end, rules);
-        if (passes.loop.size() != passes.game.size())
+        const Strike& a = passes.loop[k];
+        const Strike& b = passes.game[k];
+        if (a.offset != b.offset || a.key != b.key || a.velocity != b.velocity ||
+            BpmAt(perf, start + a.offset, start, repeat_bpm) != BpmAt(perf, end + b.offset, 0, at_start.bpm))
         {
             return false;
         }
 
-        // What a repeat starts with on a part where the pass hasn't sent a setting: the loop end's value, or the loop
-        // start's value where RestoreAtLoopStart sends it again. On the part that takes the track's new notes,
-        // RestoreAtLoopStart sends it if the loop's first tick doesn't.
-        auto repeat_value = [&](uint8_t part, EventKind kind) -> const TrackEvent*
+        std::set<EventKind> kinds;
+        const std::map<EventKind, TrackEvent>& kept = passes.at_end[a.part];
+        for (const auto* list : {&a.settings, &b.settings, &kept})
         {
-            const auto first = at_start.settings.find({t, part, kind});
-            const auto again = next.settings.find({t, next.parts[track], kind});
-            if (part == at_start.parts[track] && !passes.in_first_tick[part].contains(kind) &&
-                first != at_start.settings.end() && again != next.settings.end() &&
-                SameSetting(first->second, again->second))
+            for (const auto& [kind, e] : *list)
             {
-                return &first->second;
+                if (std::ranges::find(rules.ignored, kind) == rules.ignored.end())
+                {
+                    kinds.insert(kind);
+                }
             }
+        }
 
-            const auto kept = passes.at_end[part].find(kind);
-            return kept != passes.at_end[part].end() ? &kept->second : nullptr;
-        };
-
-        for (std::size_t k = 0; k < passes.loop.size(); k++)
+        for (EventKind kind : kinds)
         {
-            const Strike& a = passes.loop[k];
-            const Strike& b = passes.game[k];
-            if (a.offset != b.offset || a.key != b.key || a.velocity != b.velocity ||
-                bpm_at(start + a.offset, start, repeat_bpm) != bpm_at(end + b.offset, 0, at_start.bpm))
+            const auto sent_before = a.settings.find(kind);
+            const TrackEvent* repeat =
+                sent_before != a.settings.end() ? &sent_before->second : repeat_value(a.part, kind);
+            const auto played = b.settings.find(kind);
+            if ((repeat == nullptr) != (played == b.settings.end()) ||
+                (repeat && !SameSetting(*repeat, played->second)))
             {
                 return false;
-            }
-
-            std::set<EventKind> kinds;
-            const std::map<EventKind, TrackEvent>& kept = passes.at_end[a.part];
-            for (const auto* list : {&a.settings, &b.settings, &kept})
-            {
-                for (const auto& [kind, e] : *list)
-                {
-                    if (std::ranges::find(rules.ignored, kind) == rules.ignored.end())
-                    {
-                        kinds.insert(kind);
-                    }
-                }
-            }
-
-            for (EventKind kind : kinds)
-            {
-                const auto sent_before = a.settings.find(kind);
-                const TrackEvent* repeat =
-                    sent_before != a.settings.end() ? &sent_before->second : repeat_value(a.part, kind);
-                const auto played = b.settings.find(kind);
-                if ((repeat == nullptr) != (played == b.settings.end()) ||
-                    (repeat && !SameSetting(*repeat, played->second)))
-                {
-                    return false;
-                }
             }
         }
     }
@@ -312,14 +313,11 @@ bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<P
     return true;
 }
 
-void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartSwitch>& part_switches,
-                        const PassStart& next_pass, const LoopRules& rules)
+// Sends the tempo at the start of the loop from `start` to `end` again, where the game's next pass `next_pass` starts
+// with it and the loop ends with another (RestoreAtLoopStart). `at_loop_start` gives the pass at the loop's start.
+void RestoreTempo(seqlib::midi::Performance& perf, uint32_t start, uint32_t end, const PassStart& at_loop_start,
+                  const PassStart& next_pass)
 {
-    const uint32_t start = perf.loop->start;
-    const uint32_t end = perf.loop->end;
-
-    // The tempo is handled like the settings below. The tempo's changes are in one list, sorted by tick.
-    const PassStart at_loop_start = PassStartAt(perf, part_switches, start);
     auto tempo_at = [&](uint32_t tick, bool in_tick)
     {
         double bpm = at_loop_start.bpm;
@@ -344,6 +342,82 @@ void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartS
         };
         perf.tempo.insert(std::ranges::find_if(perf.tempo, later), {start, at_loop_start.bpm});
     }
+}
+
+// Whether the setting `at_start` of `kind` on `part`, which the loop from `start` to `end` starts with, goes unsent
+// at the loop's start in `events`, while the loop ends with another value (RestoreAtLoopStart).
+bool EndsOtherwise(const std::vector<TrackEvent>& events, uint8_t part, EventKind kind, uint32_t start, uint32_t end,
+                   const TrackEvent& at_start)
+{
+    bool sent = false;
+    const TrackEvent* before_end = &at_start;
+    const TrackEvent* at_end = &at_start;
+    for (const TrackEvent& e : events)
+    {
+        if (e.part != part || e.kind != kind || e.tick < start || e.tick > end || (e.tick == end && e.after > 0))
+        {
+            continue;
+        }
+
+        if (e.tick == start && e.after == 0)
+        {
+            sent = true;
+        }
+        if (e.tick < end)
+        {
+            before_end = &e;
+        }
+        at_end = &e;
+    }
+
+    return !sent && !(SameSetting(*before_end, at_start) && SameSetting(*at_end, at_start));
+}
+
+// Inserts the setting `at_start` into `events` at tick `start`, before the first event of that tick that isn't a
+// setting (RestoreAtLoopStart). With `rules.preset_with_settings`, the presets count as settings.
+void InsertAtLoopStart(std::vector<TrackEvent>& events, const TrackEvent& at_start, uint32_t start,
+                       const LoopRules& rules)
+{
+    auto past_settings = [start, &rules](const TrackEvent& e)
+    {
+        const bool setting = IsTrackSetting(e.kind) || (rules.preset_with_settings && e.kind == EventKind::kPreset);
+        return e.tick > start || (e.tick == start && !setting);
+    };
+    const auto at = std::find_if(events.begin(), events.end(), past_settings);
+    TrackEvent e = at_start;
+    e.tick = start;
+    e.after = 0;
+    events.insert(at, e);
+}
+
+} // namespace
+
+bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<PartSwitch>& part_switches,
+                      uint32_t start, uint32_t end, const LoopRules& rules)
+{
+    const PassStart at_start = PassStartAt(perf, part_switches, start);
+    const PassStart next = PassStartAt(perf, part_switches, end);
+    const double repeat_bpm = RepeatBpm(perf, start, end, at_start, next);
+    for (int t = 0; t < 16; t++)
+    {
+        if (!TrackRepeats(perf, t, start, end, rules, at_start, next, repeat_bpm))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartSwitch>& part_switches,
+                        const PassStart& next_pass, const LoopRules& rules)
+{
+    const uint32_t start = perf.loop->start;
+    const uint32_t end = perf.loop->end;
+
+    // The tempo is handled like the settings below. The tempo's changes are in one list, sorted by tick.
+    const PassStart at_loop_start = PassStartAt(perf, part_switches, start);
+    RestoreTempo(perf, start, end, at_loop_start, next_pass);
 
     for (const auto& [key, at_start] : at_loop_start.settings)
     {
@@ -365,43 +439,14 @@ void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartS
         // It isn't sent at the loop's start, and the loop ends with another value. A MIDI player may take the loop
         // end's tick or leave it out. Both count.
         std::vector<TrackEvent>& events = perf.tracks[track];
-        bool sent = false;
-        const TrackEvent* before_end = &at_start;
-        const TrackEvent* at_end = &at_start;
-        for (const TrackEvent& e : events)
-        {
-            if (e.part != part || e.kind != kind || e.tick < start || e.tick > end || (e.tick == end && e.after > 0))
-            {
-                continue;
-            }
-
-            if (e.tick == start && e.after == 0)
-            {
-                sent = true;
-            }
-            if (e.tick < end)
-            {
-                before_end = &e;
-            }
-            at_end = &e;
-        }
-        if (sent || (SameSetting(*before_end, at_start) && SameSetting(*at_end, at_start)))
+        if (!EndsOtherwise(events, part, kind, start, end, at_start))
         {
             continue;
         }
 
         // Send it with the loop start's other settings, ahead of its notes. With `rules.preset_with_settings`, it goes
         // after the presets there too.
-        auto past_settings = [start, &rules](const TrackEvent& e)
-        {
-            const bool setting = IsTrackSetting(e.kind) || (rules.preset_with_settings && e.kind == EventKind::kPreset);
-            return e.tick > start || (e.tick == start && !setting);
-        };
-        const auto at = std::find_if(events.begin(), events.end(), past_settings);
-        TrackEvent e = at_start;
-        e.tick = start;
-        e.after = 0;
-        events.insert(at, e);
+        InsertAtLoopStart(events, at_start, start, rules);
     }
 }
 
@@ -432,7 +477,6 @@ void MainLoopPasses::CountPass(PerformanceBase& out, const std::pair<int, uint32
     }
 }
 
-// Scale factor that keeps rounded CC11 values within 127 for a maximum unscaled value of `peak` (Perform).
 double LevelScale(double peak)
 {
     return peak >= 127.5 ? 127.0 / peak : 1.0;
@@ -492,9 +536,6 @@ int ExtraLayers(const std::vector<TrackEvent>& events)
 
 } // namespace
 
-// Fits the parts that each track of `perf` used (Performer::PartsUsed) into MIDI's 16 channels. Gives them out as the
-// MIDI writer does: a channel for the first part of each track that plays notes, then the other parts, track by track.
-// `spare` says whether the layers' channels come first. Returns the parts each track may have.
 std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const std::array<uint8_t, 16>& used,
                                  SpareChannels spare)
 {
@@ -535,6 +576,21 @@ std::array<uint8_t, 16> FitParts(const seqlib::midi::Performance& perf, const st
     }
 
     return limits;
+}
+
+std::optional<std::array<uint8_t, 16>> FittedParts(const seqlib::midi::Performance& perf,
+                                                   const std::array<uint8_t, 16>& used, SpareChannels spare)
+{
+    const std::array<uint8_t, 16> fitted = FitParts(perf, used, spare);
+    for (int t = 0; t < 16; t++)
+    {
+        if (fitted[t] < used[t])
+        {
+            return fitted;
+        }
+    }
+
+    return std::nullopt;
 }
 
 } // namespace ntdlib::sequence_export

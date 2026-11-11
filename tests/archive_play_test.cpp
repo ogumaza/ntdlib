@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of the archive play test's main (ntdlib/testing/archive_play.h) on a console made up here: the command lines
-// that it rejects, its checks that the archive has the sound, that the sound starts and that it sounds, the WAV file,
-// and the channel log, with each channel's track, its voice's volume and pitch, and its outputs. The files go in a
-// temporary folder.
+// that it rejects, its checks that the archive has the sound, that the sound starts and that it sounds, the console's
+// Started, the WAV file, and the channel log, with each channel's track, its voice's volume and pitch, and its outputs.
+// The files go in a temporary folder.
 
 #include "ntdlib/testing/archive_play.h"
 
@@ -15,7 +15,6 @@
 #include <list>
 #include <memory>
 #include <optional>
-#include <ostream>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -26,6 +25,7 @@
 #include "xsflib/files.h"
 #include "xsflib/testing/channel_log.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/command_line.h"
 #include "xsflib/wav.h"
 
 #include "ntdlib/nwsnd/channel.h"
@@ -175,6 +175,15 @@ struct TestOptions
 
 // The options of the last model made.
 TestOptions last_options;
+
+// The calls of TestConsole::Started in the last run, and the left sample and the gain that the last call saw.
+struct StartedCall
+{
+    int calls = 0;
+    int16_t left = -1;
+    int gain = 0;
+};
+StartedCall started;
 
 class TestEngine
 {
@@ -339,6 +348,14 @@ struct TestConsole
         options.gain = std::atoi(value);
         return options.gain > 0;
     }
+
+    // Notes the call, the output before the first frame and the options.
+    static void Started(TestPlayer&, TestEngine& engine, const Options& options)
+    {
+        ++started.calls;
+        started.left = engine.Output()[0];
+        started.gain = options.gain;
+    }
 };
 
 // What a run of ArchivePlay returned, and what its checks printed.
@@ -350,35 +367,18 @@ struct Run
 
 // Runs ArchivePlay on the made-up console with `arguments` after the program's name. The run's checks are counted apart
 // from the checks of this test.
-Run Play(std::vector<std::string> arguments)
+Run Play(const std::vector<std::string>& arguments)
 {
-    arguments.insert(arguments.begin(), "archive_play_test");
-    std::vector<char*> argv;
-    for (std::string& argument : arguments)
-    {
-        argv.push_back(argument.data());
-    }
-    argv.push_back(nullptr);
-
-    const int checks = seqlib::testing::checks;
-    const int failures = seqlib::testing::failures;
-    std::ostream* const failure_stream = seqlib::testing::failure_stream;
-    std::ostream* const success_stream = seqlib::testing::success_stream;
-    std::ostringstream printed;
-    seqlib::testing::checks = 0;
-    seqlib::testing::failures = 0;
-    seqlib::testing::failure_stream = &printed;
-    seqlib::testing::success_stream = &printed;
+    xsflib::testing::CommandLine line("archive_play_test", arguments);
     last_options = {0, 0};
+    started = {};
 
     Run run;
-    run.status = ntdlib::testing::ArchivePlay<TestConsole>(static_cast<int>(arguments.size()), argv.data());
-    run.printed = printed.str();
-
-    seqlib::testing::checks = checks;
-    seqlib::testing::failures = failures;
-    seqlib::testing::failure_stream = failure_stream;
-    seqlib::testing::success_stream = success_stream;
+    const auto play = [&]
+    {
+        run.status = ntdlib::testing::ArchivePlay<TestConsole>(line.Argc(), line.Argv());
+    };
+    run.printed = seqlib::testing::Capture(play).text;
 
     return run;
 }
@@ -438,6 +438,7 @@ void CheckFailures(const TempFolder& folder)
           "a sound that the archive lacks fails");
     run = Play({archive, "Broken", "1"});
     Check(run.status == 1 && FailedCheck(run.printed, "Broken starts\n"), "a sound that doesn't start fails");
+    Check(started.calls == 0, "Started doesn't run for a sound that doesn't start");
 
     const std::filesystem::path wav = folder.Path() / "silent.wav";
     run = Play({archive, "Silent", "1", "--wav", wav.string()});
@@ -458,6 +459,8 @@ void CheckPlay(const TempFolder& folder)
     Check(run.status == 0 && run.printed == "archive play tests passed\n", "a sound that sounds passes");
     Check(last_options.voice_count == 24 && last_options.gain == 2,
           "--voices and the console's options reach the model");
+    Check(started.calls == 1 && started.left == 0 && started.gain == 2,
+          "Started runs once, before the first frame, with the options");
     Check(FileBytes(wav) == xsflib::WavFile(std::vector<int16_t>{2, -2, 4, -4, 6, -6}, 2, 48000),
           "the WAV file holds every frame's output");
 

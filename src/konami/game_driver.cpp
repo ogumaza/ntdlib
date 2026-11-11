@@ -274,83 +274,7 @@ void GameDriver::Mix(std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b)
     fifo_b.clear();
     if (routines_.fifo_irqs[0])
     {
-        timer_changes_.clear();
-        // A reset of a FIFO empties it, and a store to a FIFO adds its bytes. The frame's stores take effect before its
-        // cycles.
-        for (const agb::RegisterWrite& w : fifo_writes_)
-        {
-            for (int i = 0; i < w.size; i++)
-            {
-                const uint32_t address = w.address + uint32_t(i);
-                const uint8_t value = uint8_t(w.value >> (8 * i));
-                if (address == kSoundCntHHigh)
-                {
-                    for (int f = 0; f < 2; f++)
-                    {
-                        if (value & (kFifoAReset << (4 * f)))
-                        {
-                            fifos_[size_t(f)].queue.clear();
-                        }
-                    }
-                }
-                else if (address >= agb::kRegFifoA && address < agb::kRegFifoA + 8)
-                {
-                    fifos_[(address - agb::kRegFifoA) / 4].queue.push_back(int8_t(value));
-                }
-            }
-        }
-
-        for (int f = 0; f < 2; f++)
-        {
-            Fifo& fifo = fifos_[size_t(f)];
-            std::vector<int8_t>& out = f == 0 ? fifo_a : fifo_b;
-            uint32_t period = FifoPeriod(f);
-            if (period && !fifo.ticking)
-            {
-                fifo.ticking = true;
-                fifo.next_tick = period;
-            }
-
-            // An overflow at the frame's first cycle has already reached the hardware.
-            const bool own_timer = ((system_.Load(agb::kRegSoundCntH, 2) >> (10 + 4 * f)) & 1) == uint32_t(f);
-            if (own_timer && applied_periods_[size_t(f)] != period)
-            {
-                applied_periods_[size_t(f)] = period;
-                timer_changes_.push_back({0, f, period,
-                                          !period               ? 0
-                                          : fifo.next_tick == 0 ? period
-                                                                : uint32_t(fifo.next_tick)});
-            }
-
-            while (period && fifo.next_tick < int64_t(agb::kFrameCycles))
-            {
-                TickFifo(f, out);
-                const uint32_t next_period = FifoPeriod(f);
-                if (own_timer && next_period != period)
-                {
-                    applied_periods_[size_t(f)] = next_period;
-                    timer_changes_.push_back({uint32_t(fifo.next_tick), f, next_period, next_period});
-                }
-
-                period = next_period;
-                if (period)
-                {
-                    fifo.next_tick += period;
-                }
-            }
-
-            if (period)
-            {
-                fifo.next_tick -= int64_t(agb::kFrameCycles);
-            }
-            else
-            {
-                fifo.ticking = false;
-            }
-        }
-
-        std::stable_sort(timer_changes_.begin(), timer_changes_.end(),
-                         [](const FifoTimerChange& a, const FifoTimerChange& b) { return a.cycle < b.cycle; });
+        MixFifos(fifo_a, fifo_b);
         return;
     }
 
@@ -360,24 +284,7 @@ void GameDriver::Mix(std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b)
     due_cycles_ %= block_cycles;
     if (routines_.mixer_tick)
     {
-        // The DMA 1 interrupt moves a ring mixer's position on for each block, and the mixer fills the ring up to it.
-        const uint32_t start = system_.Load(routines_.mixer_position, 2);
-        if (blocks)
-        {
-            for (uint32_t b = 0; b < blocks; b++)
-            {
-                Call(routines_.mixer_tick | 1);
-            }
-            Call(routines_.mixer);
-        }
-
-        for (uint32_t i = 0; i < 16 * blocks; i++)
-        {
-            const uint32_t at = (start + i) % uint32_t(routines_.mixer_ring);
-            fifo_a.push_back(int8_t(system_.Load(routines_.fifo_buffer + at, 1)));
-            fifo_b.push_back(int8_t(system_.Load(routines_.fifo_buffer + uint32_t(routines_.fifo_b) + at, 1)));
-        }
-
+        MixRing(blocks, fifo_a, fifo_b);
         return;
     }
 
@@ -389,6 +296,114 @@ void GameDriver::Mix(std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b)
             fifo_a.push_back(int8_t(system_.Load(routines_.fifo_buffer + i, 1)));
             fifo_b.push_back(int8_t(system_.Load(routines_.fifo_buffer + uint32_t(routines_.fifo_b) + i, 1)));
         }
+    }
+}
+
+void GameDriver::MixFifos(std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b)
+{
+    timer_changes_.clear();
+    ApplyFifoWrites();
+    RunFifo(0, fifo_a);
+    RunFifo(1, fifo_b);
+
+    std::stable_sort(timer_changes_.begin(), timer_changes_.end(),
+                     [](const FifoTimerChange& a, const FifoTimerChange& b) { return a.cycle < b.cycle; });
+}
+
+void GameDriver::ApplyFifoWrites()
+{
+    // A reset of a FIFO empties it, and a store to a FIFO adds its bytes. The frame's stores take effect before its
+    // cycles.
+    for (const agb::RegisterWrite& w : fifo_writes_)
+    {
+        for (int i = 0; i < w.size; i++)
+        {
+            const uint32_t address = w.address + uint32_t(i);
+            const uint8_t value = uint8_t(w.value >> (8 * i));
+            if (address == kSoundCntHHigh)
+            {
+                for (int f = 0; f < 2; f++)
+                {
+                    if (value & (kFifoAReset << (4 * f)))
+                    {
+                        fifos_[size_t(f)].queue.clear();
+                    }
+                }
+            }
+            else if (address >= agb::kRegFifoA && address < agb::kRegFifoA + 8)
+            {
+                fifos_[(address - agb::kRegFifoA) / 4].queue.push_back(int8_t(value));
+            }
+        }
+    }
+}
+
+void GameDriver::RunFifo(int f, std::vector<int8_t>& out)
+{
+    Fifo& fifo = fifos_[size_t(f)];
+    uint32_t period = FifoPeriod(f);
+    if (period && !fifo.ticking)
+    {
+        fifo.ticking = true;
+        fifo.next_tick = period;
+    }
+
+    // An overflow at the frame's first cycle has already reached the hardware.
+    const bool own_timer = ((system_.Load(agb::kRegSoundCntH, 2) >> (10 + 4 * f)) & 1) == uint32_t(f);
+    if (own_timer && applied_periods_[size_t(f)] != period)
+    {
+        applied_periods_[size_t(f)] = period;
+        timer_changes_.push_back({0, f, period,
+                                  !period               ? 0
+                                  : fifo.next_tick == 0 ? period
+                                                        : uint32_t(fifo.next_tick)});
+    }
+
+    while (period && fifo.next_tick < int64_t(agb::kFrameCycles))
+    {
+        TickFifo(f, out);
+        const uint32_t next_period = FifoPeriod(f);
+        if (own_timer && next_period != period)
+        {
+            applied_periods_[size_t(f)] = next_period;
+            timer_changes_.push_back({uint32_t(fifo.next_tick), f, next_period, next_period});
+        }
+
+        period = next_period;
+        if (period)
+        {
+            fifo.next_tick += period;
+        }
+    }
+
+    if (period)
+    {
+        fifo.next_tick -= int64_t(agb::kFrameCycles);
+    }
+    else
+    {
+        fifo.ticking = false;
+    }
+}
+
+void GameDriver::MixRing(uint32_t blocks, std::vector<int8_t>& fifo_a, std::vector<int8_t>& fifo_b)
+{
+    // The DMA 1 interrupt moves a ring mixer's position on for each block, and the mixer fills the ring up to it.
+    const uint32_t start = system_.Load(routines_.mixer_position, 2);
+    if (blocks)
+    {
+        for (uint32_t b = 0; b < blocks; b++)
+        {
+            Call(routines_.mixer_tick | 1);
+        }
+        Call(routines_.mixer);
+    }
+
+    for (uint32_t i = 0; i < 16 * blocks; i++)
+    {
+        const uint32_t at = (start + i) % uint32_t(routines_.mixer_ring);
+        fifo_a.push_back(int8_t(system_.Load(routines_.fifo_buffer + at, 1)));
+        fifo_b.push_back(int8_t(system_.Load(routines_.fifo_buffer + uint32_t(routines_.fifo_b) + at, 1)));
     }
 }
 

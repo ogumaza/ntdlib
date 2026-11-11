@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,10 +23,9 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/testing/byte_writer.h"
 
 namespace ntdlib::testing::sar_files
-{
-namespace detail
 {
 
 // The flavor of a builder given a bool: the Wii U's flavor for big-endian files, and the Switch's flavor for
@@ -35,6 +35,7 @@ inline sar::Flavor FlavorOf(bool big_endian)
     return big_endian ? sar::Flavor::kCafe : sar::Flavor::kNx;
 }
 
+// Whether the files of `flavor` are big-endian. Only the Wii U's files are.
 inline bool BigEndian(sar::Flavor flavor)
 {
     return flavor == sar::Flavor::kCafe;
@@ -51,8 +52,6 @@ inline uint32_t Version(sar::Flavor flavor, uint32_t ctr, uint32_t cafe)
 {
     return flavor == sar::Flavor::kCtr ? ctr : cafe;
 }
-
-} // namespace detail
 
 // Bytes in one byte order, with references between what's in them.
 class Bytes
@@ -87,7 +86,7 @@ public:
 
     void Align(size_t alignment)
     {
-        data.resize((data.size() + alignment - 1) / alignment * alignment);
+        data.resize(AlignUp(data.size(), alignment));
     }
 
     void U8(size_t at, uint8_t value)
@@ -155,6 +154,59 @@ struct Block
     std::vector<uint8_t> body;
 };
 
+// An entry of the block table in a file header: the type, the offset and the size of a block.
+struct BlockEntry
+{
+    uint16_t type;
+    uint32_t offset;
+    uint32_t size;
+};
+
+// Writes the header of `file` over its first bytes: the magic, the byte order mark, the header's size, the version,
+// the file's size, the number of blocks and the block table. The file has to contain every block already.
+inline void WriteFileHeader(Bytes& file, const std::string& magic, uint16_t header_size, uint32_t version,
+                            const std::vector<BlockEntry>& blocks)
+{
+    std::memcpy(file.data.data(), magic.data(), 4);
+    file.U16(4, 0xFEFF);
+    file.U16(6, header_size);
+    file.U32(8, version);
+    file.U32(0x0C, static_cast<uint32_t>(file.Size()));
+    file.U16(0x10, static_cast<uint16_t>(blocks.size()));
+    for (size_t i = 0; i < blocks.size(); ++i)
+    {
+        file.U16(0x14 + i * 12, blocks[i].type);
+        file.U32(0x18 + i * 12, blocks[i].offset);
+        file.U32(0x1C + i * 12, blocks[i].size);
+    }
+}
+
+// The header of a file: the file's size, the number of blocks, and the table of blocks. Each entry of the table gives
+// a block's type, its offset and its size.
+constexpr size_t kFileSizeField = 0x0C;
+constexpr size_t kBlockCountField = 0x10;
+constexpr size_t kBlockTable = 0x14;
+constexpr size_t kBlockEntrySize = 12;
+
+// Where the table of blocks of `file`, a file of `flavor`, lists the block of type `type`, or nothing.
+inline std::optional<size_t> FindBlockEntry(std::span<const uint8_t> file, sar::Flavor flavor, uint16_t type)
+{
+    const auto load16 = [&](size_t at)
+    {
+        return BigEndian(flavor) ? xsflib::LoadBe16(&file[at]) : xsflib::LoadLe16(&file[at]);
+    };
+    const size_t end = kBlockTable + kBlockEntrySize * load16(kBlockCountField);
+    for (size_t entry = kBlockTable; entry < end; entry += kBlockEntrySize)
+    {
+        if (load16(entry) == type)
+        {
+            return entry;
+        }
+    }
+
+    return std::nullopt;
+}
+
 // A whole file: the header and its block table, then each block's magic, size and body. Each part is aligned to 32
 // bytes.
 inline std::vector<uint8_t> File(bool big_endian, const char* magic, uint32_t version, const std::vector<Block>& blocks)
@@ -162,26 +214,21 @@ inline std::vector<uint8_t> File(bool big_endian, const char* magic, uint32_t ve
     Bytes file(big_endian);
     file.Add(0x14 + 12 * blocks.size());
     file.Align(0x20);
-    std::memcpy(file.data.data(), magic, 4);
-    file.U16(4, 0xFEFF);
-    file.U16(6, static_cast<uint16_t>(file.Size()));
-    file.U32(8, version);
-    file.U16(0x10, static_cast<uint16_t>(blocks.size()));
+    const auto header_size = static_cast<uint16_t>(file.Size());
 
-    for (size_t i = 0; i < blocks.size(); ++i)
+    std::vector<BlockEntry> entries;
+    for (const Block& block : blocks)
     {
         const size_t start = file.Add(8);
-        std::memcpy(file.data.data() + start, blocks[i].magic, 4);
-        file.Add(blocks[i].body);
+        std::memcpy(file.data.data() + start, block.magic, 4);
+        file.Add(block.body);
         file.Align(0x20);
-        file.U32(start + 4, static_cast<uint32_t>(file.Size() - start));
-
-        file.U16(0x14 + i * 12, blocks[i].type);
-        file.U32(0x18 + i * 12, static_cast<uint32_t>(start));
-        file.U32(0x1C + i * 12, static_cast<uint32_t>(file.Size() - start));
+        const auto size = static_cast<uint32_t>(file.Size() - start);
+        file.U32(start + 4, size);
+        entries.push_back({block.type, static_cast<uint32_t>(start), size});
     }
 
-    file.U32(0x0C, static_cast<uint32_t>(file.Size()));
+    WriteFileHeader(file, magic, header_size, version, entries);
 
     return file.data;
 }
@@ -201,7 +248,7 @@ struct WaveSpec
 
 inline std::vector<uint8_t> Wave(sar::Flavor flavor, const WaveSpec& spec)
 {
-    const bool big_endian = detail::BigEndian(flavor);
+    const bool big_endian = BigEndian(flavor);
     Bytes info(big_endian);
     Bytes data(big_endian);
     info.Add(0x14);
@@ -248,18 +295,18 @@ inline std::vector<uint8_t> Wave(sar::Flavor flavor, const WaveSpec& spec)
         }
     }
 
-    return File(big_endian, detail::Magic(flavor, "WAV").c_str(), detail::Version(flavor, 0x02010000, 0x00010100),
+    return File(big_endian, Magic(flavor, "WAV").c_str(), Version(flavor, 0x02010000, 0x00010100),
                 {{0x7000, "INFO", info.data}, {0x7001, "DATA", data.data}});
 }
 
 inline std::vector<uint8_t> Wave(bool big_endian, const WaveSpec& spec)
 {
-    return Wave(detail::FlavorOf(big_endian), spec);
+    return Wave(FlavorOf(big_endian), spec);
 }
 
 inline std::vector<uint8_t> WaveArchive(sar::Flavor flavor, const std::vector<std::vector<uint8_t>>& waves)
 {
-    const bool big_endian = detail::BigEndian(flavor);
+    const bool big_endian = BigEndian(flavor);
     Bytes info(big_endian);
     Bytes files(big_endian);
     info.Add(4 + 12 * waves.size());
@@ -270,13 +317,13 @@ inline std::vector<uint8_t> WaveArchive(sar::Flavor flavor, const std::vector<st
         info.SizedRef(4 + 12 * i, 0x1F00, files.Add(waves[i]), 0, waves[i].size());
     }
 
-    return File(big_endian, detail::Magic(flavor, "WAR").c_str(), detail::Version(flavor, 0x01000000, 0x00010000),
+    return File(big_endian, Magic(flavor, "WAR").c_str(), Version(flavor, 0x01000000, 0x00010000),
                 {{0x6800, "INFO", info.data}, {0x6801, "FILE", files.data}});
 }
 
 inline std::vector<uint8_t> WaveArchive(bool big_endian, const std::vector<std::vector<uint8_t>>& waves)
 {
-    return WaveArchive(detail::FlavorOf(big_endian), waves);
+    return WaveArchive(FlavorOf(big_endian), waves);
 }
 
 // A velocity region. The bytes are ints here. Tests can then give them as plain numbers. Otherwise compilers would warn
@@ -369,6 +416,8 @@ inline size_t PutRegion(Bytes& b, const Region& region)
     return at;
 }
 
+} // namespace detail
+
 // Writes the reference at `owner` to a region table of `table`, and the table, and what its entries name.
 template <typename Entry, typename PutEntry>
 void PutTable(Bytes& b, size_t owner, const Table<Entry>& table, PutEntry put_entry)
@@ -383,8 +432,8 @@ void PutTable(Bytes& b, size_t owner, const Table<Entry>& table, PutEntry put_en
     }
     else if (table.kind == Table<Entry>::kRange)
     {
-        q = b.Add(4 + ((n + 3) & ~size_t{3}) + 8 * n);
-        refs = q + 4 + ((n + 3) & ~size_t{3});
+        q = b.Add(4 + AlignUp(n, 4) + 8 * n);
+        refs = q + 4 + AlignUp(n, 4);
         b.U16(owner, 0x6001);
         b.U32(q, static_cast<uint32_t>(n));
         for (size_t i = 0; i < n; ++i)
@@ -415,19 +464,18 @@ void PutTable(Bytes& b, size_t owner, const Table<Entry>& table, PutEntry put_en
     }
 }
 
+// Appends a velocity table behind a reference of 8 bytes, with its regions. Returns the reference's offset.
 inline size_t PutVelocityTable(Bytes& b, const VelocityTable& table)
 {
     const size_t at = b.Add(8);
-    PutTable(b, at, table, PutRegion);
+    PutTable(b, at, table, detail::PutRegion);
 
     return at;
 }
 
-// Starts the INFO block of a bank or a wave sound file: references to two tables, then the first table, of the waves
-// by wave archive item ID and index. The caller writes the second table and its reference, at 8.
-inline void PutWaves(Bytes& info, const std::vector<std::pair<uint32_t, uint32_t>>& waves)
+// Appends the table of waves by wave archive item ID and index, and stores the reference to it at 0.
+inline void PutWaveTable(Bytes& info, const std::vector<std::pair<uint32_t, uint32_t>>& waves)
 {
-    info.Add(16);
     const size_t table = info.Add(4 + 8 * waves.size());
     info.Ref(0, 0x0100, table, 0);
     info.U32(table, static_cast<uint32_t>(waves.size()));
@@ -438,13 +486,33 @@ inline void PutWaves(Bytes& info, const std::vector<std::pair<uint32_t, uint32_t
     }
 }
 
+// Starts the INFO block of a bank or a wave sound file: references to two tables, then the first table, of the waves
+// by wave archive item ID and index. The caller writes the second table and its reference, at 8.
+inline void PutWaves(Bytes& info, const std::vector<std::pair<uint32_t, uint32_t>>& waves)
+{
+    info.Add(16);
+    PutWaveTable(info, waves);
+}
+
+// The helpers above under the names that they had in detail.
+namespace detail
+{
+
+using sar_files::BigEndian;
+using sar_files::FlavorOf;
+using sar_files::Magic;
+using sar_files::PutTable;
+using sar_files::PutVelocityTable;
+using sar_files::PutWaves;
+using sar_files::Version;
+
 } // namespace detail
 
 inline std::vector<uint8_t> Bank(sar::Flavor flavor, const BankSpec& spec)
 {
-    const bool big_endian = detail::BigEndian(flavor);
+    const bool big_endian = BigEndian(flavor);
     Bytes info(big_endian);
-    detail::PutWaves(info, spec.waves);
+    PutWaves(info, spec.waves);
 
     const size_t instruments = info.Add(4 + 8 * spec.instruments.size());
     info.Ref(8, 0x0101, instruments, 0);
@@ -459,16 +527,16 @@ inline std::vector<uint8_t> Bank(sar::Flavor flavor, const BankSpec& spec)
 
         const size_t instrument = info.Add(8);
         info.Ref(instruments + 4 + 8 * i, 0x5900, instrument, instruments);
-        detail::PutTable(info, instrument, *spec.instruments[i], detail::PutVelocityTable);
+        PutTable(info, instrument, *spec.instruments[i], PutVelocityTable);
     }
 
-    return File(big_endian, detail::Magic(flavor, "BNK").c_str(), detail::Version(flavor, 0x01000100, 0x00010000),
+    return File(big_endian, Magic(flavor, "BNK").c_str(), Version(flavor, 0x01000100, 0x00010000),
                 {{0x5800, "INFO", info.data}});
 }
 
 inline std::vector<uint8_t> Bank(bool big_endian, const BankSpec& spec)
 {
-    return Bank(detail::FlavorOf(big_endian), spec);
+    return Bank(FlavorOf(big_endian), spec);
 }
 
 // A wave of `length` PCM16 samples at 32,000 Hz, each 0x1000, in the byte order that `big_endian` gives. The default
@@ -547,9 +615,9 @@ struct WaveSoundFileSpec
 // of note events.
 inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFileSpec& spec)
 {
-    const bool big_endian = detail::BigEndian(flavor);
+    const bool big_endian = BigEndian(flavor);
     Bytes info(big_endian);
-    detail::PutWaves(info, spec.waves);
+    PutWaves(info, spec.waves);
 
     const size_t sounds = info.Add(4 + 8 * spec.sounds.size());
     info.Ref(8, 0x0101, sounds, 0);
@@ -630,20 +698,20 @@ inline std::vector<uint8_t> WaveSoundFile(sar::Flavor flavor, const WaveSoundFil
         }
     }
 
-    return File(big_endian, detail::Magic(flavor, "WSD").c_str(), detail::Version(flavor, 0x01000000, 0x00010100),
+    return File(big_endian, Magic(flavor, "WSD").c_str(), Version(flavor, 0x01000000, 0x00010100),
                 {{0x6800, "INFO", info.data}});
 }
 
 inline std::vector<uint8_t> WaveSoundFile(bool big_endian, const WaveSoundFileSpec& spec)
 {
-    return WaveSoundFile(detail::FlavorOf(big_endian), spec);
+    return WaveSoundFile(FlavorOf(big_endian), spec);
 }
 
 // A sequence file: its bytecode, and labels by name and offset.
 inline std::vector<uint8_t> Sequence(sar::Flavor flavor, const std::vector<uint8_t>& bytecode,
                                      const std::vector<std::pair<std::string, uint32_t>>& labels)
 {
-    const bool big_endian = detail::BigEndian(flavor);
+    const bool big_endian = BigEndian(flavor);
     Bytes data(big_endian);
     data.Add(bytecode);
 
@@ -660,21 +728,21 @@ inline std::vector<uint8_t> Sequence(sar::Flavor flavor, const std::vector<uint8
         std::memcpy(table.data.data() + label + 12, labels[i].first.data(), labels[i].first.size());
     }
 
-    return File(big_endian, detail::Magic(flavor, "SEQ").c_str(), detail::Version(flavor, 0x01000000, 0x00020000),
+    return File(big_endian, Magic(flavor, "SEQ").c_str(), Version(flavor, 0x01000000, 0x00020000),
                 {{0x5000, "DATA", data.data}, {0x5001, "LABL", table.data}});
 }
 
 inline std::vector<uint8_t> Sequence(bool big_endian, const std::vector<uint8_t>& bytecode,
                                      const std::vector<std::pair<std::string, uint32_t>>& labels)
 {
-    return Sequence(detail::FlavorOf(big_endian), bytecode, labels);
+    return Sequence(FlavorOf(big_endian), bytecode, labels);
 }
 
 // A group file holding copies of files, by their file IDs.
 inline std::vector<uint8_t> Group(sar::Flavor flavor,
                                   const std::vector<std::pair<uint32_t, std::vector<uint8_t>>>& items)
 {
-    const bool big_endian = detail::BigEndian(flavor);
+    const bool big_endian = BigEndian(flavor);
     Bytes info(big_endian);
     Bytes files(big_endian);
     info.Add(4 + 8 * items.size());
@@ -688,13 +756,13 @@ inline std::vector<uint8_t> Group(sar::Flavor flavor,
         info.SizedRef(item + 4, 0x1F00, files.Add(items[i].second), 0, items[i].second.size());
     }
 
-    return File(big_endian, detail::Magic(flavor, "GRP").c_str(), detail::Version(flavor, 0x01010000, 0x00010000),
+    return File(big_endian, Magic(flavor, "GRP").c_str(), Version(flavor, 0x01010000, 0x00010000),
                 {{0x7800, "INFO", info.data}, {0x7801, "FILE", files.data}});
 }
 
 inline std::vector<uint8_t> Group(bool big_endian, const std::vector<std::pair<uint32_t, std::vector<uint8_t>>>& items)
 {
-    return Group(detail::FlavorOf(big_endian), items);
+    return Group(FlavorOf(big_endian), items);
 }
 
 // A sound archive.
@@ -804,7 +872,8 @@ inline size_t StreamDetails(Bytes& info, const sar::StreamSoundInfo& stream)
         info.Align(4);
         info.Ref(t + 4, 0x0100, indices, t);
         info.U32(indices, static_cast<uint32_t>(track.channels.size()));
-        std::copy(track.channels.begin(), track.channels.end(), info.data.begin() + static_cast<long>(indices + 4));
+        std::copy(track.channels.begin(), track.channels.end(),
+                  info.data.begin() + static_cast<std::ptrdiff_t>(indices + 4));
         info.Ref(t + 12, 0x220F, info.Size(), t);
         AppendSends(info, track.main_send, track.aux_sends);
     }
@@ -814,12 +883,21 @@ inline size_t StreamDetails(Bytes& info, const sar::StreamSoundInfo& stream)
     return detail;
 }
 
-inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
+namespace detail
 {
-    const bool big_endian = detail::BigEndian(flavor);
 
-    // The names, by item ID.
+// The names of the items of an archive by item ID, and the string index of the name of each sound group.
+struct ArchiveNames
+{
     std::vector<std::pair<uint32_t, std::string>> names;
+    std::vector<std::optional<uint32_t>> group_strings;
+};
+
+// The names of the items of `spec`, by item ID.
+inline ArchiveNames NamesOf(const ArchiveSpec& spec)
+{
+    ArchiveNames result;
+    std::vector<std::pair<uint32_t, std::string>>& names = result.names;
     const auto name_all = [&](uint32_t kind, const auto& items)
     {
         for (size_t i = 0; i < items.size(); ++i)
@@ -831,7 +909,7 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
     {
         names.push_back({0x01000000 | static_cast<uint32_t>(i), spec.sounds[i].name});
     }
-    std::vector<std::optional<uint32_t>> group_strings;
+    std::vector<std::optional<uint32_t>>& group_strings = result.group_strings;
     for (size_t i = 0; i < spec.sound_groups.size(); ++i)
     {
         group_strings.push_back(spec.sound_groups[i].name.empty()
@@ -847,7 +925,12 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
     name_all(5, spec.wave_archives);
     name_all(6, spec.groups);
 
-    // STRG: the string table, then a tree whose leaves name the items.
+    return result;
+}
+
+// The body of the STRG block of `names`.
+inline std::vector<uint8_t> StringBlock(bool big_endian, const std::vector<std::pair<uint32_t, std::string>>& names)
+{
     Bytes strg(big_endian);
     strg.Add(16);
     const size_t strings = strg.Add(4 + 12 * names.size());
@@ -870,39 +953,38 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
         strg.U32(tree + 24 + 20 * i, names[i].first);
     }
 
-    // FILE: the files the archive holds.
-    Bytes files(big_endian);
-    std::vector<size_t> file_offsets;
-    for (const FileSpec& file : spec.files)
-    {
-        files.Align(0x20);
-        file_offsets.push_back(file.bytes.empty() ? 0 : files.Add(file.bytes));
-    }
+    return strg.data;
+}
 
-    // INFO: a reference to each table, then the tables.
-    Bytes info(big_endian);
-    info.Add(64);
-    const auto table = [&](int slot, uint16_t type, size_t count)
-    {
-        const size_t at = info.Add(4 + 8 * count);
-        info.Ref(slot * 8, type, at, 0);
-        info.U32(at, static_cast<uint32_t>(count));
+// Appends a table of `count` references to INFO, and stores the reference to it in slot `slot`. Returns where the
+// table starts.
+inline size_t InfoTable(Bytes& info, int slot, uint16_t type, size_t count)
+{
+    const size_t at = info.Add(4 + 8 * count);
+    info.Ref(slot * 8, type, at, 0);
+    info.U32(at, static_cast<uint32_t>(count));
 
-        return at;
-    };
-    const auto entry = [&](size_t at, size_t i, uint16_t type, size_t size)
-    {
-        const size_t e = info.Add(size);
-        info.Ref(at + 4 + 8 * i, type, e, at);
+    return at;
+}
 
-        return e;
-    };
+// Appends an entry of `size` bytes to INFO, and stores the reference to it in place `i` of the table at `at`. Returns
+// where the entry starts.
+inline size_t InfoEntry(Bytes& info, size_t at, size_t i, uint16_t type, size_t size)
+{
+    const size_t e = info.Add(size);
+    info.Ref(at + 4 + 8 * i, type, e, at);
 
-    const size_t sounds = table(0, 0x2100, spec.sounds.size());
+    return e;
+}
+
+// Appends the sound table of `spec` to INFO.
+inline void PutSoundTable(Bytes& info, const ArchiveSpec& spec)
+{
+    const size_t sounds = InfoTable(info, 0, 0x2100, spec.sounds.size());
     for (size_t i = 0; i < spec.sounds.size(); ++i)
     {
         const SoundSpec& sound = spec.sounds[i];
-        const size_t s = entry(sounds, i, 0x2200, 20);
+        const size_t s = InfoEntry(info, sounds, i, 0x2200, 20);
         info.U32(s, sound.file);
         info.U32(s + 4, 0x04000000 | sound.player);
         info.U8(s + 8, sound.volume);
@@ -961,15 +1043,20 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
             info.U32(banks + 4 + 4 * k, 0x03000000 | sound.banks[k]);
         }
     }
+}
 
+// Appends the sound group table of `spec` to INFO. `group_strings` gives the string index of each group's name.
+inline void PutSoundGroups(Bytes& info, const ArchiveSpec& spec,
+                           const std::vector<std::optional<uint32_t>>& group_strings)
+{
     // A sound group: the IDs of its first and last sounds, a reference to the table of its files, a reference to the
     // wave sound details, and the option of its name's string. The table follows, then the details: a reference to
     // the table of wave archives, no options, and the empty table.
-    const size_t sound_groups = table(1, 0x2104, spec.sound_groups.size());
+    const size_t sound_groups = InfoTable(info, 1, 0x2104, spec.sound_groups.size());
     for (size_t i = 0; i < spec.sound_groups.size(); ++i)
     {
         const SoundGroupSpec& group = spec.sound_groups[i];
-        const size_t g = entry(sound_groups, i, 0x2204, 24);
+        const size_t g = InfoEntry(info, sound_groups, i, 0x2204, 24);
         info.U32(g, 0x01000000 | group.first);
         info.U32(g + 4, 0x01000000 | group.last);
         std::vector<std::pair<int, uint32_t>> values;
@@ -990,32 +1077,16 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
         const size_t wave_archive_table = info.Add(4);
         info.Ref(details, 0x0100, wave_archive_table, details);
     }
-    const size_t banks = table(2, 0x2101, spec.banks.size());
-    for (size_t i = 0; i < spec.banks.size(); ++i)
-    {
-        info.U32(entry(banks, i, 0x2206, 12), spec.banks[i].second);
-    }
-    const size_t wave_archives = table(3, 0x2103, spec.wave_archives.size());
-    for (size_t i = 0; i < spec.wave_archives.size(); ++i)
-    {
-        info.U32(entry(wave_archives, i, 0x2207, 12), spec.wave_archives[i].second);
-    }
-    const size_t groups = table(4, 0x2105, spec.groups.size());
-    for (size_t i = 0; i < spec.groups.size(); ++i)
-    {
-        info.U32(entry(groups, i, 0x2208, 8), spec.groups[i].second);
-    }
-    const size_t players = table(5, 0x2102, spec.players.size());
-    for (size_t i = 0; i < spec.players.size(); ++i)
-    {
-        info.U32(entry(players, i, 0x2209, 8), spec.players[i].second);
-    }
+}
 
-    const size_t file_table = table(6, 0x2106, spec.files.size());
+// Appends the file table of `spec` to INFO. `file_offsets` gives where each file starts in FILE's body.
+inline void PutFileTable(Bytes& info, const ArchiveSpec& spec, const std::vector<size_t>& file_offsets)
+{
+    const size_t file_table = InfoTable(info, 6, 0x2106, spec.files.size());
     for (size_t i = 0; i < spec.files.size(); ++i)
     {
         const FileSpec& file = spec.files[i];
-        const size_t f = entry(file_table, i, 0x220A, 8);
+        const size_t f = InfoEntry(info, file_table, i, 0x220A, 8);
         if (!file.external.empty())
         {
             const size_t path = info.Add(file.external.size() + 1);
@@ -1037,6 +1108,55 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
             info.SizedRef(where, 0x1F00, file_offsets[i], 0, file.bytes.size());
         }
     }
+}
+
+} // namespace detail
+
+inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
+{
+    const bool big_endian = BigEndian(flavor);
+
+    // The names, by item ID.
+    const detail::ArchiveNames names = detail::NamesOf(spec);
+
+    // STRG: the string table, then a tree whose leaves name the items.
+    const std::vector<uint8_t> strg = detail::StringBlock(big_endian, names.names);
+
+    // FILE: the files the archive holds.
+    Bytes files(big_endian);
+    std::vector<size_t> file_offsets;
+    for (const FileSpec& file : spec.files)
+    {
+        files.Align(0x20);
+        file_offsets.push_back(file.bytes.empty() ? 0 : files.Add(file.bytes));
+    }
+
+    // INFO: a reference to each table, then the tables.
+    Bytes info(big_endian);
+    info.Add(64);
+    detail::PutSoundTable(info, spec);
+    detail::PutSoundGroups(info, spec, names.group_strings);
+    const size_t banks = detail::InfoTable(info, 2, 0x2101, spec.banks.size());
+    for (size_t i = 0; i < spec.banks.size(); ++i)
+    {
+        info.U32(detail::InfoEntry(info, banks, i, 0x2206, 12), spec.banks[i].second);
+    }
+    const size_t wave_archives = detail::InfoTable(info, 3, 0x2103, spec.wave_archives.size());
+    for (size_t i = 0; i < spec.wave_archives.size(); ++i)
+    {
+        info.U32(detail::InfoEntry(info, wave_archives, i, 0x2207, 12), spec.wave_archives[i].second);
+    }
+    const size_t groups = detail::InfoTable(info, 4, 0x2105, spec.groups.size());
+    for (size_t i = 0; i < spec.groups.size(); ++i)
+    {
+        info.U32(detail::InfoEntry(info, groups, i, 0x2208, 8), spec.groups[i].second);
+    }
+    const size_t players = detail::InfoTable(info, 5, 0x2102, spec.players.size());
+    for (size_t i = 0; i < spec.players.size(); ++i)
+    {
+        info.U32(detail::InfoEntry(info, players, i, 0x2209, 8), spec.players[i].second);
+    }
+    detail::PutFileTable(info, spec, file_offsets);
 
     const size_t player_info = info.Add(16);
     info.Ref(7 * 8, 0x220B, player_info, 0);
@@ -1044,18 +1164,17 @@ inline std::vector<uint8_t> Archive(sar::Flavor flavor, const ArchiveSpec& spec)
     std::vector<Block> blocks;
     if (spec.names)
     {
-        blocks.push_back({0x2000, "STRG", strg.data});
+        blocks.push_back({0x2000, "STRG", strg});
     }
     blocks.push_back({0x2001, "INFO", info.data});
     blocks.push_back({0x2002, "FILE", files.data});
 
-    return File(big_endian, detail::Magic(flavor, "SAR").c_str(), detail::Version(flavor, 0x02030000, 0x00020200),
-                blocks);
+    return File(big_endian, Magic(flavor, "SAR").c_str(), Version(flavor, 0x02030000, 0x00020200), blocks);
 }
 
 inline std::vector<uint8_t> Archive(bool big_endian, const ArchiveSpec& spec)
 {
-    return Archive(detail::FlavorOf(big_endian), spec);
+    return Archive(FlavorOf(big_endian), spec);
 }
 
 // A file in a SARC archive that Sarc builds: its name, or none when the name is empty, and its data.

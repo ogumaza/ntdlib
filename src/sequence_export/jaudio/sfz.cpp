@@ -48,11 +48,10 @@ std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, const 
     {
         s += " pitch_keytrack=0";
     }
-    s += seqlib::sfz::TuneOpcodes(static_cast<int>(std::lround(std::clamp(z.cents, -12000.0, 12000.0))));
+    s += seqlib::sfz::TuneOpcodes(ZoneCents(z));
 
     const SfzEnvelope e = ConvertEnvelopeForSfz(z.envelope);
-    const double volume =
-        (z.volume > 0.0 ? 20.0 * std::log10(z.volume) : -144.0) + e.peak_db + gain_db + 20.0 * std::log10(layer.gain);
+    const double volume = ZoneVolumeDb(z) + e.peak_db + gain_db + 20.0 * std::log10(layer.gain);
     if (std::abs(volume) >= 0.005)
     {
         s += " volume=" + Number(volume, 2);

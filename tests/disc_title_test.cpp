@@ -158,17 +158,17 @@ Bytes CompressLz(const Bytes& data, bool long_copies)
     return out;
 }
 
-// Compresses `data` with Huffman coding of bytes (type 0x28). The tree's nodes are laid out breadth first. With up to
-// 32 different bytes, each node's children are then close enough for the 6 bits that give where they are.
-Bytes CompressHuffman(const Bytes& data)
+// A node of a Huffman tree: a leaf for a byte, or a node with children.
+struct HuffmanNode
 {
-    // The tree: a leaf for each byte that occurs, and for at least two, joined lightest first.
-    struct Node
-    {
-        int symbol; // or -1 for a node with children
-        int children[2];
-    };
+    int symbol; // or -1 for a node with children
+    int children[2];
+};
 
+// The Huffman tree of the bytes of `data`: a leaf for each byte that occurs, and for at least two, joined lightest
+// first. Returns the nodes and the root's index.
+std::pair<std::vector<HuffmanNode>, int> HuffmanTree(const Bytes& data)
+{
     std::map<uint8_t, uint64_t> counts;
     for (const uint8_t byte : data)
     {
@@ -181,7 +181,7 @@ Bytes CompressHuffman(const Bytes& data)
 
     using Entry = std::pair<uint64_t, int>; // a weight and its node
     std::priority_queue<Entry, std::vector<Entry>, std::greater<>> lightest;
-    std::vector<Node> nodes;
+    std::vector<HuffmanNode> nodes;
     for (const auto& [symbol, count] : counts)
     {
         lightest.push({count, static_cast<int>(nodes.size())});
@@ -197,9 +197,14 @@ Bytes CompressHuffman(const Bytes& data)
         nodes.push_back({-1, {first.second, second.second}});
     }
 
-    // Each byte's code: the path to its leaf, 0 for a first child and 1 for a second.
+    return {nodes, lightest.top().second};
+}
+
+// Each byte's code: the path to its leaf from `root`, 0 for a first child and 1 for a second.
+std::map<uint8_t, std::vector<bool>> HuffmanCodes(const std::vector<HuffmanNode>& nodes, int root)
+{
     std::map<uint8_t, std::vector<bool>> codes;
-    std::vector<std::pair<int, std::vector<bool>>> walk = {{lightest.top().second, {}}};
+    std::vector<std::pair<int, std::vector<bool>>> walk = {{root, {}}};
     while (!walk.empty())
     {
         auto [node, path] = walk.back();
@@ -218,13 +223,16 @@ Bytes CompressHuffman(const Bytes& data)
         }
     }
 
-    // The tree: its size byte at 4, the root at 5, then pairs of children from 6.
-    Bytes out;
-    AppendSize(out, 0x28, data.size());
+    return codes;
+}
+
+// Appends the tree to the 4-byte header in `out`: its size byte at 4, the root at 5, then pairs of children from 6.
+void AppendHuffmanTree(Bytes& out, const std::vector<HuffmanNode>& nodes, int root)
+{
     out.push_back(0);
     out.push_back(0);
     std::queue<std::pair<int, size_t>> parents; // nodes with children, and where they are
-    parents.push({lightest.top().second, 5});
+    parents.push({root, 5});
     while (!parents.empty())
     {
         const auto [node, at] = parents.front();
@@ -256,8 +264,11 @@ Bytes CompressHuffman(const Bytes& data)
         out.push_back(0);
     }
     out[4] = static_cast<uint8_t>((out.size() - 4) / 2 - 1);
+}
 
-    // The codes, in 32-bit little-endian words from the top bit down.
+// Appends the codes of the bytes of `data` to `out`, in 32-bit little-endian words from the top bit down.
+void AppendHuffmanCodes(Bytes& out, const Bytes& data, const std::map<uint8_t, std::vector<bool>>& codes)
+{
     uint32_t word = 0;
     int used = 0;
     const auto flush = [&out, &word, &used]
@@ -272,7 +283,7 @@ Bytes CompressHuffman(const Bytes& data)
     };
     for (const uint8_t byte : data)
     {
-        for (const bool bit : codes[byte])
+        for (const bool bit : codes.at(byte))
         {
             word |= uint32_t{bit} << (31 - used);
             if (++used == 32)
@@ -285,6 +296,17 @@ Bytes CompressHuffman(const Bytes& data)
     {
         flush();
     }
+}
+
+// Compresses `data` with Huffman coding of bytes (type 0x28). The tree's nodes are laid out breadth first. With up to
+// 32 different bytes, each node's children are then close enough for the 6 bits that give where they are.
+Bytes CompressHuffman(const Bytes& data)
+{
+    const auto [nodes, root] = HuffmanTree(data);
+    Bytes out;
+    AppendSize(out, 0x28, data.size());
+    AppendHuffmanTree(out, nodes, root);
+    AppendHuffmanCodes(out, data, HuffmanCodes(nodes, root));
 
     return out;
 }

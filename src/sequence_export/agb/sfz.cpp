@@ -23,15 +23,14 @@
 #include "seqlib/sfz/track_file.h"
 #include "seqlib/wav.h"
 
+#include "sequence_export/sfz_bank_file.h"
+
 namespace ntdlib::sequence_export::agb
 {
 namespace
 {
 
 namespace sfz = seqlib::sfz;
-
-// The custom curve of CC10 to the pan. seqlib's track files give it this number, and sfizz reserves curves 0 to 6.
-constexpr int kPanCurve = 7;
 
 // The bend range of a preset's file by itself, in semitones: the range that a GBA conversion's MIDI tracks start with.
 constexpr int kStartingBendRange = 2;
@@ -215,16 +214,7 @@ std::string PresetRegions(const Sf2File& sf, std::size_t preset, SfzSamples& sam
 // curve, 40 log10(value / 127) dB. The SoundFont's default modulators give the same.
 std::string Frame(const std::string& comment, int bend_range)
 {
-    std::string s = "// " + comment + "\n\n";
-    s += "<control>\ndefault_path=../" + sfz::kSamplesFolder + "/\nhint_ram_based=1\n\n";
-    s += sfz::Curve(kPanCurve, "CC10 to pan", [](int v) { return (v - 64) / 64.0; });
-    const std::string bend = std::to_string(bend_range * 100);
-    s += "<global>\nbend_up=" + bend + " bend_down=-" + bend + "\n";
-    s += "pan_oncc10=100 pan_curvecc10=" + std::to_string(kPanCurve) + " pan_smoothcc10=0\n";
-    s += "amplitude_oncc7=100 amplitude_curvecc7=4 amplitude_smoothcc7=0 amplitude_oncc11=100 amplitude_curvecc11=4 "
-         "amplitude_smoothcc11=0\n";
-
-    return s;
+    return "// " + comment + "\n\n" + sfz::ControlHeader() + sfz::GlobalHeader(bend_range);
 }
 
 // Whether the presets of `sf` are in more than one bank, the drum bank's copies aside. A <master> then selects its
@@ -280,10 +270,16 @@ seqlib::sfz::Instruments TrackSfz(const Sf2File& sf, std::span<const SfzTrack> t
 
 seqlib::sfz::Instruments PresetSfz(const Sf2File& sf, const std::string& title, const std::string& program)
 {
-    std::size_t digits = 1;
+    // The number of a preset's file: bank * 128 + program.
+    const auto number = [](const sf2::Preset& preset)
+    {
+        return static_cast<uint32_t>(preset.bank * 128 + preset.program);
+    };
+
+    uint32_t last = 0;
     for (const sf2::Preset& preset : sf.presets)
     {
-        digits = std::max(digits, std::to_string(preset.bank * 128 + preset.program).size());
+        last = std::max(last, number(preset));
     }
 
     SfzSamples samples(sf);
@@ -291,14 +287,10 @@ seqlib::sfz::Instruments PresetSfz(const Sf2File& sf, const std::string& title, 
     for (std::size_t p = 0; p < sf.presets.size(); ++p)
     {
         const sf2::Preset& preset = sf.presets[p];
-        std::string s =
-            Frame(sfz::CommentText(preset.name) + " of " + sfz::CommentText(title) + ", converted by " + program + ".",
-                  kStartingBendRange);
+        std::string s = SfzBankFileStart(preset.name, title, program, kStartingBendRange);
         s += "\n" + PresetRegions(sf, p, samples);
 
-        std::string number = std::to_string(preset.bank * 128 + preset.program);
-        number.insert(0, digits - number.size(), '0');
-        out.files.push_back({seqlib::SafeFileName(title) + "_" + number + ".sfz", std::move(s)});
+        out.files.push_back({SfzBankFileName(title, number(preset), last), std::move(s)});
     }
     out.samples = samples.Take();
 

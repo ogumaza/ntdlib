@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 
-# Builds ntdlib on its own whenever main changes: on Windows x64 with clang-cl, and on macOS ARM64. The Windows job
-# also builds ntdlib::sequence_export (NTDLIB_SEQUENCE_EXPORT=ON) and runs ctest, the export's tests included. The
-# macOS job builds without the tests (NTDLIB_TESTS=OFF). Changes to documentation alone don't start a run.
+# Builds ntdlib on its own whenever main changes: on Windows x64 with clang-cl. The Windows job
+# also builds ntdlib::sequence_export (NTDLIB_SEQUENCE_EXPORT=ON) and runs ctest, the export's tests included.
+# Changes to documentation alone don't start a run.
 name: CI
 
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", "tools/**", ".clang-format", ".gitignore"]
   workflow_dispatch:
 
 permissions:
@@ -33,10 +33,6 @@ jobs:
             cmake: -A x64 -T ClangCL -DNTDLIB_SEQUENCE_EXPORT=ON
             tests: true
             timeout: 45
-          - name: macOS ARM64 (Apple Clang)
-            os: macos-15
-            cmake: -DNTDLIB_TESTS=OFF
-            timeout: 30
     defaults:
       run:
         shell: bash

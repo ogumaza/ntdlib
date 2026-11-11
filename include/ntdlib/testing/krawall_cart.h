@@ -2,7 +2,7 @@
 
 // Builds small cartridges with Krawall for tests: a synthetic copy of the code patterns that detection reads, the
 // player's tables, the game's samples and the modules. A Pattern holds a pattern's rows as Cells, and a Cart places
-// modules of patterns.
+// modules of patterns. LoopingCells returns the cells of a test module that loops every 5 rows.
 
 #pragma once
 
@@ -403,5 +403,15 @@ private:
     size_t size_ = 0x10000;
     int listed_ = 0;
 };
+
+// The test module: a note on each channel, a volume slide, a note from a point within its sample, a portamento, and a
+// jump back to the start, which loops it every 5 rows.
+inline std::vector<Cell> LoopingCells()
+{
+    return {
+        {0, 0, 49, 1, 0x50, -1, 0},       {0, 1, 53, 2, -1, kPan, 0x20},     {1, 0, -1, 0, -1, kVolumeSlide, 0x04},
+        {2, 1, 53, 2, -1, kOffset, 0x01}, {3, 0, -1, 0, -1, kPortaUp, 0x10}, {4, 0, -1, 0, -1, kJump, 0x00},
+    };
+}
 
 } // namespace ntdlib::testing::krawall_cart

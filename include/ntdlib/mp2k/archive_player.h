@@ -187,6 +187,12 @@ private:
     void Frame(std::vector<int16_t>* out, std::vector<float>* enhanced_out);
     void ApplySettings();
 
+    // Keeps the PSG's channels of muted tracks out of the output, those of the grown units too.
+    void MutePsg();
+
+    // Sets the tracks' peaks of the frame from the mixer's and the PSG's, or clears them without `metering`.
+    void UpdatePeaks(bool metering);
+
     const Rom& rom_;
     const DriverInfo info_;
     std::optional<Sequencer> sequencer_;

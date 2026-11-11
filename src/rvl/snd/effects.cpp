@@ -56,14 +56,43 @@ void FillExpParams(Params& p, const EffectParams& params, const Reverb2008Words&
 
 } // namespace
 
-axfx::Build AxfxBuild(const SndBuild& build)
+axfx::Build AxfxBuild(const SndBuild& build, ax::Build ax_build)
 {
-    if (build.October2006())
+    if (ax_build == ax::Build::kOctober2006)
     {
         return axfx::Build::kOctober2006;
     }
 
     return build.SinceMarch2008() ? axfx::Build::kSeptember2008 : axfx::Build::kDecember2006;
+}
+
+axfx::ChorusExp::Params Chorus2009Params(const EffectParams& params)
+{
+    axfx::ChorusExp::Params p;
+    p.delay_time = Clamp(Word(params, 0), 0.1f, 50.0f);
+    p.depth = Clamp(Word(params, 1), 0.0f, 1.0f);
+    p.rate = Clamp(Word(params, 2), 0.1f, 2.0f);
+    p.feedback = Clamp(Word(params, 3), 0.0f, 0.99f);
+    p.out_gain = Clamp(Word(params, 4), 0.0f, 1.0f);
+    p.send_gain = 0.0f;
+
+    return p;
+}
+
+axfx::DelayExp::Params Delay2009Params(const EffectParams& params)
+{
+    // A NaN passes each bound as the game's comparisons let it through.
+    const float delay = Word(params, 0);
+    const float max_delay = Word(params, 3);
+    axfx::DelayExp::Params p;
+    p.max_delay = max_delay < 0.04f ? 0.04f : max_delay;
+    p.delay = max_delay < delay ? max_delay : (delay < 0.04f ? 0.04f : delay);
+    p.feedback = Clamp(Word(params, 1), 0.0f, 0.99f);
+    p.lpf = Clamp(Word(params, 4), 0.0f, 1.0f);
+    p.out_gain = Clamp(Word(params, 2), 0.0f, 1.0f);
+    p.send_gain = 0.0f;
+
+    return p;
 }
 
 Effect::Effect(EffectType type, axfx::Build build) : slot_(MakeSlot(type, build))
@@ -84,6 +113,12 @@ Effect::Slots Effect::MakeSlot(EffectType type, axfx::Build build)
         return Slot<axfx::Delay>{};
     case EffectType::kReverbStd2008:
         return Slot<axfx::ReverbStdExp>{};
+    case EffectType::kPhotoMood:
+        return Slot<axfx::PhotoMood>{};
+    case EffectType::kChorus2009:
+        return Slot<axfx::ChorusExp>{axfx::ChorusExp(axfx::Build::kFebruary2009), {}};
+    case EffectType::kDelay2009:
+        return Slot<axfx::DelayExp>{};
     case EffectType::kReverbStd:
         break;
     }
@@ -163,6 +198,37 @@ bool Effect::SetParam(const EffectParams& params)
         p.output.fill(output);
 
         return !active_ || slot->fx.Settings(p);
+    }
+
+    if (auto* slot = std::get_if<Slot<axfx::ChorusExp>>(&slot_))
+    {
+        // FxChorus::SetParam of 2009 runs Settings while the chorus runs.
+        slot->params = Chorus2009Params(params);
+
+        return !active_ || slot->fx.Settings(slot->params);
+    }
+
+    if (auto* slot = std::get_if<Slot<axfx::DelayExp>>(&slot_))
+    {
+        // FxDelay::SetParam of 2009. While the delay runs, the class keeps the lines if their longest delay stays the
+        // same.
+        const float old_max = slot->params.max_delay;
+        slot->params = Delay2009Params(params);
+        if (!active_)
+        {
+            return true;
+        }
+
+        const axfx::DelayExp::Params& p = slot->params;
+        return p.max_delay == old_max ? slot->fx.SettingsUpdate(p) : slot->fx.Settings(p);
+    }
+
+    if (auto* slot = std::get_if<Slot<axfx::PhotoMood>>(&slot_))
+    {
+        // The Photo Channel 1.1's SetMode (0x80049820) holds the mode to 0 to 4.
+        slot->params = axfx::PhotoMood::SetMode(static_cast<int32_t>(params[0]));
+
+        return !active_ || slot->fx.Settings(slot->params);
     }
 
     // WarioWare: Smooth Moves' standard reverb (its SetParam, 0x800e33ac): preDelay, time, coloration, damping and mix.

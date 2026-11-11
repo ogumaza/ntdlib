@@ -4,6 +4,7 @@
 // the control register.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -258,11 +259,17 @@ void Dsp<Memory>::Dma()
         const uint32_t start = hardware_[kDspa] & 0x7fffu;
         if (uint8_t* host = MainMemoryRange(address, words * 2))
         {
+            // The transfer stops at the end of DRAM or IRAM. A store through `host` may change any object. A loop that
+            // tested the vector's size would read the size again after each word and copy a word at a time. The loops
+            // therefore read the count and the DSP words from locals.
+            const std::size_t first = std::min<std::size_t>(start, memory.size());
+            const std::size_t count = std::min<std::size_t>(words, memory.size() - first);
+            uint16_t* const dsp_words = memory.data() + first;
             if (!to_main)
             {
-                for (uint32_t i = 0; i < words && start + i < memory.size(); i++)
+                for (std::size_t i = 0; i < count; i++)
                 {
-                    memory[start + i] = xsflib::LoadBe16(host + i * 2);
+                    dsp_words[i] = xsflib::LoadBe16(host + i * 2);
                 }
 
                 if (iram)
@@ -272,9 +279,9 @@ void Dsp<Memory>::Dma()
             }
             else if (!iram)
             {
-                for (uint32_t i = 0; i < words && start + i < memory.size(); i++)
+                for (std::size_t i = 0; i < count; i++)
                 {
-                    xsflib::StoreBe16(host + i * 2, memory[start + i]);
+                    xsflib::StoreBe16(host + i * 2, dsp_words[i]);
                 }
             }
         }

@@ -6,6 +6,11 @@
 // ChorusExp with no feedback and no other buses. The builds of October 2006 (WarioWare: Smooth Moves) and December 2006
 // (Wii Sports and Wii Play) have the same code. Comments give Wii Sports' addresses, and Smooth Moves' after "October
 // 2006". Wii Play's are Wii Sports' less 0x618.
+//
+// NW4R's FxChorus of 2009 calls ChorusExp itself. Pokémon Rumble links it with the build of February 2009. That build's
+// ChorusExp runs the same steps with two exceptions. Its Init sets the `active` field to kStopped and so drops a
+// pending kSkipFrame. Its Settings clears the lines that the effect has instead of allocating new ones, and fails
+// without them. Comments give that build's addresses after "February 2009".
 
 #pragma once
 
@@ -34,21 +39,29 @@ public:
         float send_gain = 0.0f;  // the gain of the output to busOut: 0 to 1
     };
 
-    // AXFXChorusExpGetMemSize (0x80109f44; October 2006, 0x80034098): the bytes of the three lines.
+    // A ChorusExp of `build`. The builds before February 2009 have the same code.
+    explicit ChorusExp(Build build = Build::kDecember2006);
+
+    // AXFXChorusExpGetMemSize (0x80109f44; October 2006, 0x80034098; February 2009, 0x802dfec0): the bytes of the
+    // three lines.
     static uint32_t GetMemSize();
 
-    // AXFXChorusExpInit (0x80109f50; October 2006, 0x800340a4): allocates and clears three lines of 3,200 samples
-    // (100 ms), and starts the LFO. Returns false for a parameter outside its range. The effect then stays off.
+    // AXFXChorusExpInit (0x80109f50; October 2006, 0x800340a4; February 2009, 0x802dfed0): allocates and clears three
+    // lines of 3,200 samples (100 ms), and starts the LFO. Returns false for a parameter outside its range. The effect
+    // then stays off.
     bool Init(const Params& params);
 
-    // AXFXChorusExpSettings (0x8010a1ac; October 2006, 0x80034300): frees the lines and runs Init. After a successful
-    // Settings, the next frame passes through unchanged.
+    // AXFXChorusExpSettings (0x8010a1ac; October 2006, 0x80034300): frees the lines and runs Init. February 2009
+    // (0x802e0130): clears the lines and starts the LFO, or fails if the lines are freed. After a successful Settings,
+    // the next frame passes through unchanged.
     bool Settings(const Params& params);
 
-    // AXFXChorusExpShutdown (0x8010a2d4; October 2006, 0x80034428): frees the lines and turns the effect off.
+    // AXFXChorusExpShutdown (0x8010a2d4; October 2006, 0x80034428; February 2009, 0x802e02e0): frees the lines and
+    // turns the effect off.
     void Shutdown();
 
-    // AXFXChorusExpCallback (0x8010a364; October 2006, 0x800344b8), with busIn and busOut null.
+    // AXFXChorusExpCallback (0x8010a364; October 2006, 0x800344b8; February 2009, 0x802e0370), with busIn and busOut
+    // null.
     void Process(AuxFrame& frame);
 
     // The callback with the buffers of busIn and busOut. A null pointer stands for no bus. A sample of `bus_in` adds to
@@ -71,15 +84,25 @@ private:
         int32_t grad_factor = 0;
     };
 
-    // __InitParams (0x8010a6c4; October 2006, 0x80034818).
+    // Init's and Settings' common steps: the positions, then __InitParams (0x8010a6c4; October 2006, 0x80034818;
+    // February 2009, 0x802e06d0). Frees the lines if __InitParams fails.
+    bool Start();
+
+    // The steps of the Settings of February 2009 before the flags: clears the lines that the effect has and runs Start.
+    // Frees the lines and fails if one of them is freed.
+    bool Restart(const Params& params);
+
+    // __InitParams.
     bool InitParams();
 
     // The game's steps that free the lines: the effect goes off first.
     void FreeLines();
 
-    // __CalcLFO (0x8010a8bc; October 2006, 0x80034a10): the LFO's offsets of the read position for a frame's samples.
+    // __CalcLFO (0x8010a8bc; October 2006, 0x80034a10; February 2009, 0x802e08d0): the LFO's offsets of the read
+    // position for a frame's samples.
     std::array<int32_t, kSamplesPerFrame> CalcLfo();
 
+    Build build_;
     Params params_;
     std::array<std::vector<float>, kChannelCount> line_;
     uint32_t in_pos_ = 0;
@@ -91,8 +114,9 @@ private:
     std::array<std::array<float, 4>, kChannelCount> history_{};
     uint32_t hist_index_ = 0;
 
-    // AXFX_CHORUS_EXP's `active` field (see kStopped). Init, Settings and Shutdown set kStopped. A successful Init
-    // clears it. A successful Settings sets kSkipFrame.
+    // AXFX_CHORUS_EXP's `active` field (see kStopped). Init, Settings and Shutdown set kStopped. The Init of February
+    // 2009 clears kSkipFrame too. A successful Init clears kStopped. A successful Settings clears it and sets
+    // kSkipFrame.
     uint32_t active_ = kStopped;
 };
 

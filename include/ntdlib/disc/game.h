@@ -125,6 +125,10 @@ struct GameFiles
     std::string title_name;
 };
 
+// The file at `path` in `game`. Throws xsflib::FormatError: "can't read <path>" if `game` has no such file, or the text
+// of the disc::Error if the image is damaged.
+std::vector<uint8_t> ReadGameFile(const GameFiles& game, const std::string& path);
+
 // Returns the console whose disc header `header` starts, from the header's magic word: the GameCube's word at 0x1C or
 // the Wii's word at 0x18. Returns nothing for other data. That includes a header without the magic word, even one
 // that LoadGame accepts.

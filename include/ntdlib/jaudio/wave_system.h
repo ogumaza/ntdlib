@@ -127,4 +127,16 @@ std::size_t MissingWaves(const std::vector<WaveSystem>& systems, std::span<const
 // The AW files that hold `groups`, each (system << 16) | group, each file once, in the order of their names.
 std::vector<std::string> GroupArchives(const std::vector<WaveSystem>& systems, std::span<const uint32_t> groups);
 
+// Where a model's DSP memory holds a game's wave archives: each archive once, from `start`, on 32-byte boundaries, in
+// the order of their names.
+struct WaveArchiveLayout
+{
+    std::map<std::string, uint32_t> addresses; // by archive name
+    uint32_t end = 0;                          // the size of the memory that holds them
+};
+
+// Lays out the wave archives whose sizes `sizes` gives by name. An archive of size 0, empty or missing, gets no
+// address.
+WaveArchiveLayout LayOutWaveArchives(const std::map<std::string, std::size_t>& sizes, uint32_t start);
+
 } // namespace ntdlib::jaudio

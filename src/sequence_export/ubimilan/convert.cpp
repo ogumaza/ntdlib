@@ -44,7 +44,7 @@ using ntdlib::sequence_export::agb::BendRangeFor;
 using ntdlib::sequence_export::agb::ChannelWriter;
 using ntdlib::sequence_export::agb::FramePlan;
 using ntdlib::sequence_export::agb::kBeatQuarterTicks;
-using ntdlib::sequence_export::agb::kMiddleC;
+using ntdlib::sequence_export::agb::KeyHz;
 using ntdlib::sequence_export::agb::kPsgLevelPerVolume;
 using ntdlib::sequence_export::agb::kSmallBend;
 using ntdlib::sequence_export::agb::MidiFile;
@@ -355,15 +355,14 @@ struct PsgNote
 // pitch at the same frequency setting.
 double ZoneHz(const Rom& rom, const DriverInfo& info, int channel, int key, int program)
 {
-    const double equal = kMiddleC * std::pow(2.0, (key - 60) / 12.0);
+    const double equal = KeyHz(key);
     if (channel != kWaveChannel)
     {
         return equal * std::pow(2.0, SquareCents(rom, info, key) / 1200.0);
     }
 
     const int offset = WaveKeyOffset(ProgramWave(rom, info, program));
-    return 4 * kMiddleC * std::pow(2.0, (key - offset - 60) / 12.0) *
-           std::pow(2.0, WaveCents(rom, info, key, offset) / 1200.0);
+    return 4 * KeyHz(key - offset) * std::pow(2.0, WaveCents(rom, info, key, offset) / 1200.0);
 }
 
 // Returns track `t`'s notes, which play PSG channel kPsgOfTrack[t], if `track_mask` sets the bit of its sequence

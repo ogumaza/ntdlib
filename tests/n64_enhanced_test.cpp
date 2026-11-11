@@ -432,6 +432,13 @@ void TestMeters()
     XSFLIB_CHECK(std::abs(peaks[0] - expected) <= 2);
     XSFLIB_CHECK(std::abs(peaks[1] - expected) <= 2);
     XSFLIB_CHECK(metered.player.TrackPeaks(kTrack + 1)[0] == 0);
+
+    // A run without mixing leaves the rest of its last frame silent, and the meters give 0 there.
+    metered.player.Run(1000);
+    std::vector<float> tail;
+    metered.player.Run(1, tail);
+    XSFLIB_CHECK(tail.size() == 2 && tail[0] == 0.0F && tail[1] == 0.0F);
+    XSFLIB_CHECK((metered.player.TrackPeaks(kTrack) == std::array<int32_t, 2>{0, 0}));
 }
 
 // A snapshot takes back the frames ahead and every state of the mix.
@@ -504,6 +511,7 @@ void TestRampEndsWithTheLength()
         n64::AudioCommand{.w0 = kSetGains << 24, .w1 = (kLeftGain << 16) | kRightGain},
         n64::AudioCommand{.w0 = (kMix << 24) | (kLength << 8), .w1 = 0x10203040},
     };
+
     rsp.Run(commands, memory);
 
     XSFLIB_CHECK(ops.envs.size() == 1);

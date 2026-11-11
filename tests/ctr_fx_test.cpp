@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <random>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "xsflib/testing/check.h"
@@ -129,6 +130,7 @@ void CheckEchoes(FrameFormat format)
         {
             return 7;
         }
+
         return i == 3 ? (c == 0 ? kImpulse : -kImpulse) : 0;
     };
     const Output output = Run(delay, format.samples, 4 * length / format.samples + 2, input);

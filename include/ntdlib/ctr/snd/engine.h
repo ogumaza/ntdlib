@@ -59,6 +59,16 @@ public:
     // The players, each in its place (its Id()).
     using Players = ntdlib::nwsnd::SoundPlayers<SequenceSoundPlayer, WaveSoundPlayer, StreamSoundPlayer>;
 
+    // A variable that a sequence player takes at the start of a later frame, before the frame's work
+    // (ScheduleVariable).
+    struct ScheduledVariable
+    {
+        int player = 0; // the player's place: its Id()
+        int index = 0;
+        int16_t value = -1;
+        uint64_t frame = 0; // the engine's frame count at which the variable changes
+    };
+
     // The engine's state, for a snapshot of the model (see ArchiveModel::Snapshot): a copy of the voices' pool, the
     // channels, the players and the caches. It keeps alive everything it points at.
     struct Snapshot
@@ -71,6 +81,8 @@ public:
         std::map<uint32_t, std::shared_ptr<const LoadedWarc>> warcs;
         std::map<std::pair<uint32_t, uint32_t>, std::optional<WaveInfo>> waves;
         std::array<int16_t, 16> global_vars{};
+        uint64_t frames = 0;
+        std::vector<ScheduledVariable> scheduled;
     };
 
     // More channels than can ever be in use at once. Each channel holds one of the 23 voices. A new note takes a
@@ -119,8 +131,10 @@ public:
     }
 
     // Starts a sequence sound by its index in the archive's sound table. Returns the player, or nullptr if there's no
-    // such sequence or its file isn't in the archive. Throws if the sequence's data is malformed.
-    SequenceSoundPlayer* StartSequence(uint32_t index);
+    // such sequence or its file isn't in the archive. Throws if the sequence's data is malformed. `banks` gives the
+    // sequence's four bank slots in place of the archive's, as a game's StartInfo can (SequenceStart::banks).
+    SequenceSoundPlayer* StartSequence(uint32_t index,
+                                       const std::optional<std::array<uint32_t, 4>>& banks = std::nullopt);
 
     // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
     // sound_players.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks its wave
@@ -152,8 +166,15 @@ public:
     // A stream voice's callback, for its owner: channel `channel` of player `player`.
     void VoiceEvent(int player, int channel, VoiceCallbackStatus status);
 
-    // One sound frame: nn::snd receive, FrameProcess, nn::snd send. Returns false if the DSP stopped answering.
+    // One sound frame: nn::snd receive, the scheduled variables of the frame, FrameProcess, nn::snd send. Returns false
+    // if the DSP stopped answering.
     bool RunFrame();
+
+    // Sets variable `index` of `player` (SequenceSoundPlayer::SetVariable) to `value` at the start of frame `frame`
+    // of the player, before the frame's ticks. Frame 0 is the frame of the player's first tick: the next frame that
+    // RunFrame runs once the player has started. A game changes a variable so through the sound's handle, or through
+    // another sound that plays with it. Throws std::invalid_argument if `player` isn't one of the engine's players.
+    void ScheduleVariable(const SequenceSoundPlayer& player, int index, int16_t value, uint64_t frame);
 
     // True while any player hasn't finished or any channel is sounding.
     bool IsBusy() const;
@@ -245,6 +266,10 @@ private:
     std::set<std::pair<int, uint32_t>> endless_loops_;
     std::set<std::pair<int, int>> muted_tracks_; // each a player and a track (MuteTrack)
     int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
+
+    // The frames that RunFrame has run, and the variables that change in later frames.
+    uint64_t frames_ = 0;
+    std::vector<ScheduledVariable> scheduled_;
 };
 
 // The FCRAM that archive mode gives the DSP.

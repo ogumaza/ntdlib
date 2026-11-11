@@ -737,12 +737,10 @@ uint32_t FindMetroidPsgTable(const Rom& rom)
     return 0;
 }
 
-} // namespace
-
-bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error)
+// Finds the mixer's variants, the routine that starts a song with the tables and the driver's mode, and the settings
+// that the game's code gives songs.
+void FindDriverCode(const Rom& rom, DriverInfo& info)
 {
-    info = DriverInfo();
-
     // Find the mixer's test for reversed and compressed samples, the mono mixer's volume and Camelot's changes, which a
     // game given its song table can have too.
     info.special_samples = HasCode(rom, kSpecialTest);
@@ -787,45 +785,11 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
         FindSongChannels(rom, info);
     }
     FindSongSettings(rom, info);
+}
 
-    if (overrides.song_table)
-    {
-        info.song_table = overrides.song_table;
-    }
-    if (info.song_table == 0)
-    {
-        error.clear();
-        return false;
-    }
-
-    info.song_count = overrides.song_count ? overrides.song_count : CountSongs(rom, info, info.song_table);
-    if (info.song_count == 0)
-    {
-        error = "the song table at " + Hex(info.song_table) + " has no valid songs (try --song-count)";
-        return false;
-    }
-
-    if (info.max_channels > kMaxDirectChannels)
-    {
-        info.max_channels = kMaxDirectChannels;
-    }
-    if (info.camelot_mixer && HasCode(rom, kCamelotTwelveChannels))
-    {
-        info.max_channels = kMaxDirectChannels;
-    }
-
-    // The rate's setting gives the mixer's output for a frame, from which the driver works out its rate in Hz.
-    info.samples_per_frame = kSamplesPerFrame[info.rate_index - 1];
-    info.mix_rate = (597275 * info.samples_per_frame + 5000) / 10000;
-    info.step_scale = (16777216u / uint32_t(info.mix_rate) + 1) >> 1;
-    if (info.camelot_mixer)
-    {
-        info.camelot_output_points = HasCode(rom, kCamelotOnePoint) ? 1 : 2;
-        info.camelot_adpcm = HasCode(rom, kCamelotAdpcm);
-        ReadCamelotEcho(rom, info);
-    }
-
-    // Report what was found.
+// Logs what detection found.
+void LogDetection(DriverInfo& info)
+{
     if (info.song_start)
     {
         info.log.push_back("song start routine at " + Hex(info.song_start));
@@ -903,6 +867,54 @@ bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& 
                        (info.players.empty() ? ""
                                              : ", on " + std::to_string(info.players.size()) + " music player" +
                                                    (info.players.size() == 1 ? "" : "s")));
+}
+
+} // namespace
+
+bool DetectDriver(const Rom& rom, const DriverOverrides& overrides, DriverInfo& info, std::string& error)
+{
+    info = DriverInfo();
+
+    FindDriverCode(rom, info);
+
+    if (overrides.song_table)
+    {
+        info.song_table = overrides.song_table;
+    }
+    if (info.song_table == 0)
+    {
+        error.clear();
+        return false;
+    }
+
+    info.song_count = overrides.song_count ? overrides.song_count : CountSongs(rom, info, info.song_table);
+    if (info.song_count == 0)
+    {
+        error = "the song table at " + Hex(info.song_table) + " has no valid songs (try --song-count)";
+        return false;
+    }
+
+    if (info.max_channels > kMaxDirectChannels)
+    {
+        info.max_channels = kMaxDirectChannels;
+    }
+    if (info.camelot_mixer && HasCode(rom, kCamelotTwelveChannels))
+    {
+        info.max_channels = kMaxDirectChannels;
+    }
+
+    // The rate's setting gives the mixer's output for a frame, from which the driver works out its rate in Hz.
+    info.samples_per_frame = kSamplesPerFrame[info.rate_index - 1];
+    info.mix_rate = (597275 * info.samples_per_frame + 5000) / 10000;
+    info.step_scale = (16777216u / uint32_t(info.mix_rate) + 1) >> 1;
+    if (info.camelot_mixer)
+    {
+        info.camelot_output_points = HasCode(rom, kCamelotOnePoint) ? 1 : 2;
+        info.camelot_adpcm = HasCode(rom, kCamelotAdpcm);
+        ReadCamelotEcho(rom, info);
+    }
+
+    LogDetection(info);
 
     return true;
 }

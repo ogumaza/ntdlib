@@ -18,6 +18,7 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/agb/layout.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/sar/layout.h"
@@ -26,11 +27,8 @@
 namespace ntdlib::ubimilan
 {
 
-// The largest ROM that the GBA maps: 32 MiB.
-inline constexpr uint32_t kLargestRom = 0x02000000;
-
-// The bytes that the free space leaves clear of the data before it: data that happens to end with the run's byte.
-inline constexpr uint32_t kFreeSpaceMargin = 256;
+using agb::kFreeSpaceMargin;
+using agb::kLargestRom;
 
 // Where the sequences that move can go, besides the places of the sequences that move.
 struct FreeSpace

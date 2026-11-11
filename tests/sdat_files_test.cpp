@@ -4,11 +4,13 @@
 // The expected bytes follow the layouts in files.h and formats.h, worked out by hand. The expected samples of IMA-ADPCM
 // follow from the encoder's rule: the DS's decoder (sdat::DecodeWave) plays them close to the input.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -20,6 +22,7 @@
 #include "ntdlib/sdat/decode.h"
 #include "ntdlib/sdat/files.h"
 #include "ntdlib/sdat/formats.h"
+#include "ntdlib/wave/encode_ima.h"
 
 using xsflib::testing::ErrorOf;
 
@@ -352,6 +355,168 @@ void TestEncodeRefusals()
     XSFLIB_CHECK(sdat::EncodeWave(long_wave, 32768, {}, 262140)[6] == 0xFF);
 }
 
+// The timer's clock is half the ARM7's clock of 33,513,982 Hz. A word holds 4 samples of PCM8, 2 of PCM16 and 8 of
+// IMA-ADPCM. A file's ID takes the low 24 bits of its field.
+void TestHardwareConstants()
+{
+    const auto unknown = []
+    {
+        sdat::SamplesPerWord(static_cast<sdat::WaveEncoding>(3));
+    };
+
+    XSFLIB_CHECK(sdat::kTimerClockHz == 16756991);
+    XSFLIB_CHECK(sdat::SamplesPerWord(sdat::WaveEncoding::kPcm8) == 4);
+    XSFLIB_CHECK(sdat::SamplesPerWord(sdat::WaveEncoding::kPcm16) == 2);
+    XSFLIB_CHECK(sdat::SamplesPerWord(sdat::WaveEncoding::kImaAdpcm) == 8);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(unknown) == "unknown wave encoding");
+    XSFLIB_CHECK(sdat::kFileIdBits == 0xFFFFFF);
+}
+
+// A sine and a slower one, `samples` of each.
+std::vector<std::vector<int16_t>> Stereo(std::size_t samples)
+{
+    std::vector<std::vector<int16_t>> channels(2, std::vector<int16_t>(samples));
+    for (std::size_t i = 0; i < samples; i++)
+    {
+        channels[0][i] = static_cast<int16_t>(9000.0 * std::sin(static_cast<double>(i) * 0.05));
+        channels[1][i] = static_cast<int16_t>(9000.0 * std::sin(static_cast<double>(i) * 0.013));
+    }
+
+    return channels;
+}
+
+// The samples that a channel of IMA-ADPCM decodes to, when the whole channel is one block: its state's word, then its
+// nibbles.
+std::vector<int16_t> WholeImaChannel(std::span<const int16_t> samples)
+{
+    const ntdlib::wave::ImaAdpcmChannel channel = ntdlib::wave::EncodeImaAdpcm(samples, 0, ntdlib::ntr::AdpcmStep);
+    Bytes block;
+    xsflib::AppendLe16(block, static_cast<uint16_t>(channel.start.sample));
+    xsflib::AppendLe16(block, channel.start.index);
+    block.insert(block.end(), channel.data.begin(), channel.data.end());
+
+    return sdat::DecodeAdpcm(block, static_cast<uint32_t>(samples.size()));
+}
+
+// The STRM reader reads back each field that EncodeStream writes. A stream of 32,728 Hz takes a timer of
+// 16,756,991 / 32,728 / 32 = 16. A part of IMA-ADPCM starts with 4 bytes of state, so a block of 512 bytes holds
+// 1,016 samples. Two channels of 2 blocks of 512 bytes and one of 91 end on a multiple of 4 bytes after 2 bytes of
+// padding.
+void TestStreamLayout()
+{
+    const std::vector<std::vector<int16_t>> channels = Stereo(1016 * 2 + 173);
+
+    const Bytes ima = sdat::EncodeStream(channels, 32728, sdat::WaveEncoding::kImaAdpcm, std::nullopt);
+
+    const sdat::Stream stream = sdat::Stream::Parse(ima);
+    XSFLIB_CHECK(stream.header.version == 0x0100 && stream.header.size == ima.size());
+    XSFLIB_CHECK(stream.header.header_size == 0x10 && stream.header.blocks == 2);
+    XSFLIB_CHECK(stream.encoding == sdat::WaveEncoding::kImaAdpcm && stream.loop == 0 && stream.channels == 2);
+    XSFLIB_CHECK(stream.head_padding == 0 && stream.sample_rate == 32728 && stream.timer == 16);
+    XSFLIB_CHECK(stream.samples == 1016 * 2 + 173 && stream.loop_start == 0);
+    XSFLIB_CHECK(stream.blocks == 3 && stream.block_bytes == 0x200 && stream.block_samples == 1016);
+    XSFLIB_CHECK(stream.last_block_bytes == 91 && stream.last_block_samples == 173);
+    XSFLIB_CHECK(stream.data_offset == 0x68 && stream.data.size() == 2 * (2 * 512 + 91) + 2);
+    XSFLIB_CHECK(std::ranges::all_of(stream.reserved, [](uint8_t byte) { return byte == 0; }));
+    XSFLIB_CHECK(ima.size() == 0x68 + 2 * (2 * 512 + 91) + 2);
+    XSFLIB_CHECK(U32At(ima, 0x14) == 0x50 && U32At(ima, 0x64) == ima.size() - 0x60);
+    XSFLIB_CHECK(ima[0x1C] == 0xD8 && ima[0x1D] == 0x7F && ima[0x1E] == 16 && ima[0x1F] == 0);
+    XSFLIB_CHECK(sdat::StreamFile(stream) == ima);
+
+    // Each block starts with the state where the whole channel's nibbles reach it.
+    for (uint32_t channel = 0; channel < 2; channel++)
+    {
+        XSFLIB_CHECK(sdat::DecodeStream(stream, channel) == WholeImaChannel(channels[channel]));
+    }
+
+    // 16-bit PCM takes blocks of 256 samples and gives the samples back. PCM8 takes blocks of 512 samples.
+    const Bytes pcm16 = sdat::EncodeStream(channels, 32728, sdat::WaveEncoding::kPcm16, std::nullopt);
+    const sdat::Stream pcm16_stream = sdat::Stream::Parse(pcm16);
+    XSFLIB_CHECK(pcm16_stream.block_samples == 256 && pcm16_stream.block_bytes == 512 && pcm16_stream.blocks == 9);
+    XSFLIB_CHECK(pcm16_stream.last_block_samples == 2205 - 8 * 256 && pcm16_stream.last_block_bytes == 2 * 157);
+    XSFLIB_CHECK(sdat::DecodeStream(pcm16_stream, 0) == channels[0]);
+    XSFLIB_CHECK(sdat::DecodeStream(pcm16_stream, 1) == channels[1]);
+    XSFLIB_CHECK(sdat::StreamFile(pcm16_stream) == pcm16);
+    const Bytes pcm8 = sdat::EncodeStream(channels, 32728, sdat::WaveEncoding::kPcm8, std::nullopt);
+    const sdat::Stream pcm8_stream = sdat::Stream::Parse(pcm8);
+    XSFLIB_CHECK(pcm8_stream.block_samples == 512 && pcm8_stream.block_bytes == 512 && pcm8_stream.blocks == 5);
+    XSFLIB_CHECK(sdat::DecodeStream(pcm8_stream, 0).size() == channels[0].size());
+    XSFLIB_CHECK(sdat::StreamFile(pcm8_stream) == pcm8);
+}
+
+// PCM8 takes each sample's high byte, rounded to the nearest, as a wave does. One channel of 5 samples.
+void TestStreamPcm8()
+{
+    const std::vector<std::vector<int16_t>> channels = {{0x7FFF, -0x8000, 0x0080, 0x007F, -0x0081}};
+
+    const Bytes bytes = sdat::EncodeStream(channels, 22050, sdat::WaveEncoding::kPcm8, std::nullopt);
+
+    XSFLIB_CHECK(bytes.size() == 0x68 + 8 && bytes[0x1E] == 23);
+    XSFLIB_CHECK(Bytes(bytes.begin() + 0x68, bytes.end()) == (Bytes{0x7F, 0x80, 0x01, 0x00, 0xFF, 0, 0, 0}));
+    const sdat::Stream stream = sdat::Stream::Parse(bytes);
+    XSFLIB_CHECK(stream.blocks == 1 && stream.last_block_bytes == 5 && stream.last_block_samples == 5);
+}
+
+// A loop moves forward to a block's start, and the samples between repeat after the end. The loop keeps its length.
+void TestStreamLoop()
+{
+    const std::vector<std::vector<int16_t>> channels = Stereo(2000);
+
+    const Bytes bytes = sdat::EncodeStream(channels, 32728, sdat::WaveEncoding::kPcm16, 300);
+
+    const sdat::Stream stream = sdat::Stream::Parse(bytes);
+    XSFLIB_CHECK(stream.loop == 1 && stream.loop_start == 512 && stream.samples == 512 + 1700);
+    XSFLIB_CHECK(bytes[0x19] == 1 && U32At(bytes, 0x20) == 512 && U32At(bytes, 0x24) == 512 + 1700);
+    for (uint32_t channel = 0; channel < 2; channel++)
+    {
+        const std::vector<int16_t> decoded = sdat::DecodeStream(stream, channel);
+        XSFLIB_CHECK(decoded.size() == 512 + 1700);
+        for (std::size_t i = 0; i < decoded.size(); i++)
+        {
+            XSFLIB_CHECK(decoded[i] == channels[channel][i < 2000 ? i : 300 + (i - 2000)]);
+        }
+    }
+
+    // A loop at a block stays, and takes no more samples.
+    const sdat::Stream on_block =
+        sdat::Stream::Parse(sdat::EncodeStream(channels, 32728, sdat::WaveEncoding::kImaAdpcm, 1016));
+    XSFLIB_CHECK(on_block.loop == 1 && on_block.loop_start == 1016 && on_block.samples == 2000);
+}
+
+void TestStreamRefusals()
+{
+    const std::vector<std::vector<int16_t>> channels = Stereo(100);
+    const std::vector<std::vector<int16_t>> three(3, channels[0]);
+    const std::vector<std::vector<int16_t>> uneven = {channels[0], std::vector<int16_t>(99)};
+    const std::vector<std::vector<int16_t>> empty(1);
+    const auto encode = [](std::span<const std::vector<int16_t>> input, uint16_t rate, sdat::WaveEncoding encoding,
+                           std::optional<uint32_t> loop_start)
+    {
+        return [=]
+        {
+            sdat::EncodeStream(input, rate, encoding, loop_start);
+        };
+    };
+    const sdat::WaveEncoding pcm16 = sdat::WaveEncoding::kPcm16;
+
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode(channels, 255, pcm16, std::nullopt)) ==
+                 "a stream's sample rate is below 256 Hz");
+    XSFLIB_CHECK(sdat::Stream::Parse(sdat::EncodeStream(channels, 256, pcm16, std::nullopt)).timer == 2045);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode(three, 32728, pcm16, std::nullopt)) ==
+                 "a stream has one or two channels");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode({}, 32728, pcm16, std::nullopt)) ==
+                 "a stream has one or two channels");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode(uneven, 32728, pcm16, std::nullopt)) ==
+                 "a stream's channels have other lengths or no samples");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode(empty, 32728, pcm16, std::nullopt)) ==
+                 "a stream's channels have other lengths or no samples");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode(channels, 32728, static_cast<sdat::WaveEncoding>(3),
+                                                       std::nullopt)) == "unknown wave encoding");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(encode(channels, 32728, pcm16, 100)) ==
+                 "a stream's loop starts at or past its end");
+    XSFLIB_CHECK(sdat::StreamBlockSamples(sdat::WaveEncoding::kImaAdpcm, 0x40) == 120);
+}
+
 } // namespace
 
 int main()
@@ -367,6 +532,11 @@ int main()
     TestEncodeImaAdpcm();
     TestEncodeImaAdpcmWithTheDsStep();
     TestEncodeRefusals();
+    TestHardwareConstants();
+    TestStreamLayout();
+    TestStreamPcm8();
+    TestStreamLoop();
+    TestStreamRefusals();
 
     return xsflib::testing::Summary("DS sound file writers");
 }

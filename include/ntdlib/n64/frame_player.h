@@ -143,6 +143,10 @@ private:
 using MusEarlyFrames = MusFrames<MusPlayer, MusPlayerConfig>;
 using MusLateFrames = MusFrames<MusLatePlayer, MusLatePlayerConfig>;
 
+// frame_player.cpp instantiates the templates for these models.
+extern template class MusFrames<MusPlayer, MusPlayerConfig>;
+extern template class MusFrames<MusLatePlayer, MusLatePlayerConfig>;
+
 // An engine that builds its lists itself. `Model` is EadEarlyPlayer, EadMiddlePlayer, EadLaterPlayer or SbnPlayer.
 template <typename Model>
 class EngineFrames final : public FrameModel
@@ -172,6 +176,11 @@ using EadEarlyFrames = EngineFrames<EadEarlyPlayer>;
 using EadMiddleFrames = EngineFrames<EadMiddlePlayer>;
 using EadLaterFrames = EngineFrames<EadLaterPlayer>;
 using SbnFrames = EngineFrames<SbnPlayer>;
+
+extern template class EngineFrames<EadEarlyPlayer>;
+extern template class EngineFrames<EadMiddlePlayer>;
+extern template class EngineFrames<EadLaterPlayer>;
+extern template class EngineFrames<SbnPlayer>;
 
 // How a FramePlayer mixes.
 struct FramePlayerOptions

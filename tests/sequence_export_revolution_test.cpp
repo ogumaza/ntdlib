@@ -235,14 +235,12 @@ struct Writer
 
     void U16(std::size_t at, uint32_t v)
     {
-        bytes[at] = static_cast<uint8_t>(v >> 8);
-        bytes[at + 1] = static_cast<uint8_t>(v);
+        xsflib::StoreBe16(bytes.data() + at, static_cast<uint16_t>(v));
     }
 
     void U32(std::size_t at, uint32_t v)
     {
-        U16(at, v >> 16);
-        U16(at + 2, v & 0xffff);
+        xsflib::StoreBe32(bytes.data() + at, v);
     }
 
     // Writes an offset reference: an offset (type 1) with its data type.
@@ -528,52 +526,62 @@ struct ArchiveLists
     std::vector<std::vector<uint32_t>> groups = {};
 };
 
-// Builds a sound archive of `files`, with metadata from `lists`. Each group holds its files and then their wave data.
-std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLists& lists = {})
+// The groups of `lists`, or one group that holds each of the `files` files.
+std::vector<std::vector<uint32_t>> ArchiveGroups(std::size_t files, const ArchiveLists& lists)
 {
-    Writer w;
-    w.Add(0x40);
-    std::memcpy(w.bytes.data(), "RSAR", 4);
-    w.U16(0x04, 0xfeff);
-    w.U16(0x06, lists.version);
-    w.U16(0x0c, 0x40);
-    w.U16(0x0e, 3);
+    std::vector<std::vector<uint32_t>> groups = lists.groups;
+    if (groups.empty())
+    {
+        groups.emplace_back();
+        for (uint32_t id = 0; id < files; id++)
+        {
+            groups[0].push_back(id);
+        }
+    }
 
-    // SYMB: an offset, from the block's payload, to a table of offsets, from the payload too, to the names.
+    return groups;
+}
+
+// Adds the SYMB block: an offset, from the block's payload, to a table of offsets, from the payload too, to `names`.
+void AddSymbols(Writer& w, const std::vector<std::string>& names)
+{
     const std::size_t symb = StartBlock(w, "SYMB"), symb_base = symb + 8;
     w.Add(4);
-    const std::size_t strings = w.Add(4 + lists.names.size() * 4);
+    const std::size_t strings = w.Add(4 + names.size() * 4);
     w.U32(symb_base, static_cast<uint32_t>(strings - symb_base));
-    w.U32(strings, static_cast<uint32_t>(lists.names.size()));
-    for (std::size_t i = 0; i < lists.names.size(); i++)
+    w.U32(strings, static_cast<uint32_t>(names.size()));
+    for (std::size_t i = 0; i < names.size(); i++)
     {
-        const std::size_t at = w.Add(lists.names[i].size() + 1);
-        std::memcpy(w.bytes.data() + at, lists.names[i].data(), lists.names[i].size());
+        const std::size_t at = w.Add(names[i].size() + 1);
+        std::memcpy(w.bytes.data() + at, names[i].data(), names[i].size());
         w.U32(strings + 4 + i * 4, static_cast<uint32_t>(at - symb_base));
     }
     w.U32(symb + 4, static_cast<uint32_t>(w.bytes.size() - symb));
     w.U32(0x10, static_cast<uint32_t>(symb));
     w.U32(0x14, static_cast<uint32_t>(w.bytes.size() - symb));
+}
 
-    // INFO: references to the sound, bank, player, file and group tables.
-    const std::size_t info = StartBlock(w, "INFO"), base = info + 8;
-    w.Add(6 * 8);
-    auto table = [&](int i, std::size_t count)
+// Adds table `i` of the INFO block whose payload starts at `base`, with `count` references, and returns its offset.
+std::size_t InfoTable(Writer& w, std::size_t base, int i, std::size_t count)
+{
+    const std::size_t t = w.Add(4 + count * 8);
+    w.U32(t, static_cast<uint32_t>(count));
+    w.Ref(base + i * 8, 0, t - base);
+
+    return t;
+}
+
+// Adds the INFO block's sound table: a sequence sound for each of `sequences`. Sound i takes symbol i as its name, for
+// i below `names`.
+void AddSounds(Writer& w, std::size_t base, const std::vector<SequenceSound>& sequences, std::size_t names)
+{
+    const std::size_t sounds = InfoTable(w, base, 0, sequences.size());
+    for (std::size_t i = 0; i < sequences.size(); i++)
     {
-        const std::size_t t = w.Add(4 + count * 8);
-        w.U32(t, static_cast<uint32_t>(count));
-        w.Ref(base + i * 8, 0, t - base);
-
-        return t;
-    };
-
-    const std::size_t sounds = table(0, lists.sequences.size());
-    for (std::size_t i = 0; i < lists.sequences.size(); i++)
-    {
-        const SequenceSound& s = lists.sequences[i];
+        const SequenceSound& s = sequences[i];
         const std::size_t e = w.Add(0x2C), d = w.Add(0x10);
         w.Ref(sounds + 4 + i * 8, 0, e - base);
-        w.U32(e, i < lists.names.size() ? static_cast<uint32_t>(i) : 0xffffffff);
+        w.U32(e, i < names ? static_cast<uint32_t>(i) : 0xffffffff);
         w.U32(e + 4, s.file_id);
         w.U8(e + 0x14, s.volume);
         w.U8(e + 0x16, 1); // a sequence
@@ -585,31 +593,27 @@ std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLi
         w.U32(d + 8, s.allocate_track_flags);
         w.U8(d + 0xC, 64);
     }
+}
 
-    const std::size_t banks = table(1, lists.banks.size());
-    for (std::size_t i = 0; i < lists.banks.size(); i++)
+// Adds the INFO block's bank table: a bank in each file of `banks`.
+void AddBanks(Writer& w, std::size_t base, const std::vector<uint32_t>& banks)
+{
+    const std::size_t table = InfoTable(w, base, 1, banks.size());
+    for (std::size_t i = 0; i < banks.size(); i++)
     {
         const std::size_t e = w.Add(0xC);
-        w.Ref(banks + 4 + i * 8, 0, e - base);
+        w.Ref(table + 4 + i * 8, 0, e - base);
         w.U32(e, 0xffffffff);
-        w.U32(e + 4, lists.banks[i]);
+        w.U32(e + 4, banks[i]);
     }
+}
 
-    table(2, 0);
-
-    std::vector<std::vector<uint32_t>> groups = lists.groups;
-    if (groups.empty())
-    {
-        groups.emplace_back();
-        for (uint32_t id = 0; id < files.size(); id++)
-        {
-            groups[0].push_back(id);
-        }
-    }
-
-    // Each file's positions: the groups that hold it, and its item in each.
-    const std::size_t file_table = table(3, files.size());
-    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> positions(files.size());
+// Adds the INFO block's file table for `files` files: each file's positions, the groups that hold it, and its item in
+// each.
+void AddFilePositions(Writer& w, std::size_t base, std::size_t files, const std::vector<std::vector<uint32_t>>& groups)
+{
+    const std::size_t file_table = InfoTable(w, base, 3, files);
+    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> positions(files);
     for (uint32_t g = 0; g < groups.size(); g++)
     {
         for (uint32_t k = 0; k < groups[g].size(); k++)
@@ -617,7 +621,7 @@ std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLi
             positions[groups[g][k]].emplace_back(g, k);
         }
     }
-    for (std::size_t id = 0; id < files.size(); id++)
+    for (std::size_t id = 0; id < files; id++)
     {
         const std::size_t e = w.Add(0x1C);
         w.Ref(file_table + 4 + id * 8, 0, e - base);
@@ -632,14 +636,24 @@ std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLi
             w.Ref(places + 4 + p * 8, 0, position - base);
         }
     }
+}
 
-    const std::size_t group_table = table(4, groups.size());
-    std::vector<std::size_t> group_entries, item_entries;
+// The INFO block's entries of the groups and of their items, in order. The FILE block fills in where the files are.
+struct GroupEntries
+{
+    std::vector<std::size_t> groups, items;
+};
+
+// Adds the INFO block's group table for `groups`.
+GroupEntries AddGroups(Writer& w, std::size_t base, const std::vector<std::vector<uint32_t>>& groups)
+{
+    const std::size_t group_table = InfoTable(w, base, 4, groups.size());
+    GroupEntries entries;
     for (std::size_t g = 0; g < groups.size(); g++)
     {
         const std::size_t e = w.Add(0x28);
         w.Ref(group_table + 4 + g * 8, 0, e - base);
-        group_entries.push_back(e);
+        entries.groups.push_back(e);
         const std::size_t items = w.Add(4 + groups[g].size() * 8);
         w.U32(items, static_cast<uint32_t>(groups[g].size()));
         w.Ref(e + 0x20, 0, items - base);
@@ -648,20 +662,41 @@ std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLi
             const std::size_t item = w.Add(0x18);
             w.U32(item, groups[g][k]);
             w.Ref(items + 4 + k * 8, 0, item - base);
-            item_entries.push_back(item);
+            entries.items.push_back(item);
         }
     }
-    table(5, 0);
+
+    return entries;
+}
+
+// Adds the INFO block: references to the sound, bank, player, file and group tables, for `files` files.
+GroupEntries AddInfo(Writer& w, std::size_t files, const ArchiveLists& lists,
+                     const std::vector<std::vector<uint32_t>>& groups)
+{
+    const std::size_t info = StartBlock(w, "INFO"), base = info + 8;
+    w.Add(6 * 8);
+    AddSounds(w, base, lists.sequences, lists.names.size());
+    AddBanks(w, base, lists.banks);
+    InfoTable(w, base, 2, 0);
+    AddFilePositions(w, base, files, groups);
+    GroupEntries entries = AddGroups(w, base, groups);
+    InfoTable(w, base, 5, 0);
     w.U32(info + 4, static_cast<uint32_t>(w.bytes.size() - info));
     w.U32(0x18, static_cast<uint32_t>(info));
     w.U32(0x1c, static_cast<uint32_t>(w.bytes.size() - info));
 
-    // FILE: each group's files, then their wave data.
+    return entries;
+}
+
+// Adds the FILE block: each group's files, then their wave data. Fills in the groups' `entries`.
+void AddFiles(Writer& w, const std::vector<ArchiveFile>& files, const std::vector<std::vector<uint32_t>>& groups,
+              const GroupEntries& entries)
+{
     const std::size_t file_block = StartBlock(w, "FILE");
     std::size_t item_index = 0;
     for (std::size_t g = 0; g < groups.size(); g++)
     {
-        const std::size_t e = group_entries[g];
+        const std::size_t e = entries.groups[g];
         const std::size_t start = w.bytes.size();
         std::vector<std::size_t> offsets;
         for (const uint32_t id : groups[g])
@@ -682,7 +717,7 @@ std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLi
         w.U32(e + 0x1C, static_cast<uint32_t>(w.bytes.size() - wave_start));
         for (std::size_t k = 0; k < groups[g].size(); k++)
         {
-            const std::size_t item = item_entries[item_index++];
+            const std::size_t item = entries.items[item_index++];
             const ArchiveFile& f = files[groups[g][k]];
             w.U32(item + 4, static_cast<uint32_t>(offsets[k]));
             w.U32(item + 8, static_cast<uint32_t>(f.data.size()));
@@ -693,6 +728,23 @@ std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLi
     w.U32(file_block + 4, static_cast<uint32_t>(w.bytes.size() - file_block));
     w.U32(0x20, static_cast<uint32_t>(file_block));
     w.U32(0x24, static_cast<uint32_t>(w.bytes.size() - file_block));
+}
+
+// Builds a sound archive of `files`, with metadata from `lists`. Each group holds its files and then their wave data.
+std::vector<uint8_t> Rsar(const std::vector<ArchiveFile>& files, const ArchiveLists& lists = {})
+{
+    Writer w;
+    w.Add(0x40);
+    std::memcpy(w.bytes.data(), "RSAR", 4);
+    w.U16(0x04, 0xfeff);
+    w.U16(0x06, lists.version);
+    w.U16(0x0c, 0x40);
+    w.U16(0x0e, 3);
+
+    const std::vector<std::vector<uint32_t>> groups = ArchiveGroups(files.size(), lists);
+    AddSymbols(w, lists.names);
+    const GroupEntries entries = AddInfo(w, files.size(), lists, groups);
+    AddFiles(w, files, groups, entries);
     w.U32(0x08, static_cast<uint32_t>(w.bytes.size()));
 
     return w.bytes;
@@ -3537,7 +3589,7 @@ void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
 {
     const SoundArchive archive = BankTestArchive();
 
-    for (const uint8_t pan_mode : {1, 0})
+    for (const uint8_t pan_mode : {uint8_t{1}, uint8_t{0}})
     {
         const BankConversion bank = ConvertBank(archive, 0, pan_mode);
         const Conversion sequence = ConvertSequence(archive, pan_mode == 1 ? 0 : 1);
@@ -3613,6 +3665,19 @@ void TestBankSfzFilesPlayEachInstrumentByItself()
         XSFLIB_CHECK(bank.sfz.samples[i].name == sequence.sfz.samples[i].name);
         XSFLIB_CHECK(bank.sfz.samples[i].wav == sequence.sfz.samples[i].wav);
     }
+}
+
+// Without a main.dol, an archive's RSAR version gives a dated build: one from June 2008 for version 1.4 or later, and
+// otherwise one of 2007. A date of 0 would mean a build without a banner, which SndBuildWithAx plays as the build of
+// October 2006. With a later AX, the build of 2007 plays by the rules of 2007.
+void TestRsarVersionGivesADatedBuild()
+{
+    const SndBuild old_version = ntdlib::sequence_export::BuildOfRsarVersion(0x0102);
+    const SndBuild new_version = ntdlib::sequence_export::BuildOfRsarVersion(0x0104);
+    XSFLIB_CHECK(old_version.date == 20070101 && !old_version.October2006() && !old_version.SinceMarch2008());
+    XSFLIB_CHECK(new_version.date == 20080620 && !new_version.October2006() && new_version.SinceJune2008());
+    XSFLIB_CHECK(!ntdlib::SndBuildWithAx(old_version, ntdlib::AxBuild::kDecember2006).October2006());
+    XSFLIB_CHECK(!ntdlib::SndBuildWithAx(new_version, ntdlib::AxBuild::kDecember2006).October2006());
 }
 
 // A bank plays its regions by the rules of the build that the conversion takes. The builds from March 2008 give a
@@ -3836,6 +3901,7 @@ const Test kTests[] = {
     TestBankSoundFontHoldsEachInstrumentAtItsProgram,
     TestBankSfzFilesPlayEachInstrumentByItself,
     TestBankFollowsTheBuild,
+    TestRsarVersionGivesADatedBuild,
     TestBankStereoWavesFollowThePanMode,
     TestLoudBankIsAttenuatedAndAMissingBankThrows,
 };

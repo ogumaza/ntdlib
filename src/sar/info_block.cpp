@@ -15,19 +15,25 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/format_ids.h"
+#include "sar/info_entries.h"
 
 namespace ntdlib::sar
 {
 namespace
 {
 
-constexpr std::size_t kBody = 8;          // after the block's magic and size
-constexpr std::size_t kReferenceSize = 8; // a type, two bytes of padding and an offset
-constexpr std::size_t kTableCount = 7;    // the references to the tables come before the settings'
+using detail::InfoTables;
+using detail::kBlockAlignment;
+using detail::kBlockHeaderSize;
+using detail::kReferenceSize;
+using detail::Out;
+
+constexpr std::size_t kTableCount = 7; // the references to the tables come before the settings'
 constexpr uint16_t kSettingsReference = 0x220B;
-constexpr std::size_t kTablesStart = kBody + (kTableCount + 1) * kReferenceSize;
+constexpr std::size_t kTablesStart = kBlockHeaderSize + (kTableCount + 1) * kReferenceSize;
 constexpr std::size_t kEntryAlignment = 4;
-constexpr std::size_t kBlockAlignment = 32;
 
 // A table: the type of the block's reference to it, the type of its references to its entries, and its items' name.
 struct TableKind
@@ -39,24 +45,14 @@ struct TableKind
 
 // The tables in the order of the block's references.
 constexpr std::array<TableKind, kTableCount> kTables = {{
-    {0x2100, 0x2200, "sound"},
-    {0x2104, 0x2204, "sound group"},
-    {0x2101, 0x2206, "bank"},
-    {0x2103, 0x2207, "wave archive"},
-    {0x2105, 0x2208, "group"},
-    {0x2102, 0x2209, "player"},
-    {0x2106, 0x220A, "file"},
+    {detail::kSoundTable, 0x2200, "sound"},
+    {detail::kSoundGroupTable, 0x2204, "sound group"},
+    {detail::kBankTable, 0x2206, "bank"},
+    {detail::kWaveArchiveTable, 0x2207, "wave archive"},
+    {detail::kGroupTable, 0x2208, "group"},
+    {detail::kPlayerTable, 0x2209, "player"},
+    {detail::kFileTable, 0x220A, "file"},
 }};
-
-using detail::Out;
-
-// The entries of each table of `block`, in the order of kTables.
-template <typename Block>
-auto EntriesOf(Block& block)
-{
-    return std::array{&block.sounds, &block.sound_groups, &block.banks, &block.wave_archives,
-                      &block.groups, &block.players,      &block.files};
-}
 
 // The name of the table at `k` in kTables, or of the settings at kTableCount, in messages.
 std::string SectionName(std::size_t k)
@@ -81,6 +77,75 @@ uint32_t OffsetOf(const xsflib::Reader& r, std::size_t at, uint16_t type, const 
     return r.U32(at + 4);
 }
 
+// Where each table starts, then where the settings start.
+using Starts = std::array<std::size_t, kTableCount + 1>;
+
+// The starts of the tables and the settings of the INFO block that `r` reads. Throws xsflib::FormatError for a
+// reference of another type and for a sound table that doesn't follow the references.
+Starts SectionStarts(const xsflib::Reader& r)
+{
+    Starts starts{};
+    for (std::size_t k = 0; k <= kTableCount; ++k)
+    {
+        const uint16_t type = k < kTableCount ? kTables[k].table : kSettingsReference;
+        starts[k] =
+            kBlockHeaderSize + std::size_t{OffsetOf(r, kBlockHeaderSize + k * kReferenceSize, type, SectionName(k))};
+    }
+    if (starts[0] != kTablesStart)
+    {
+        throw OtherLayout("the sound table doesn't follow the references");
+    }
+
+    return starts;
+}
+
+// Reads the entries of table `k` of the INFO block that `r` reads into `entries`. Throws xsflib::FormatError for a
+// table that runs past the block's end, and for entries that don't follow each other or don't start on a multiple of
+// 4 bytes.
+void ReadTableEntries(const xsflib::Reader& r, std::size_t k, const Starts& starts,
+                      std::vector<std::vector<uint8_t>>& entries)
+{
+    const std::size_t table = starts[k];
+    const std::string item = kTables[k].item;
+    const uint32_t count = r.U32(table);
+    if (count > (r.Size() - table - 4) / kReferenceSize)
+    {
+        throw xsflib::FormatError("an INFO block whose " + item + " table runs past its end");
+    }
+
+    // Where each entry starts, then where the next table starts. The entries follow the table in order. Each runs up to
+    // the next. The last runs up to the next table.
+    std::vector<std::size_t> bounds;
+    bounds.reserve(std::size_t{count} + 1);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const std::string what = item + " " + std::to_string(i);
+        bounds.push_back(table + OffsetOf(r, table + 4 + i * kReferenceSize, kTables[k].entry, what));
+    }
+    bounds.push_back(starts[k + 1]);
+
+    std::size_t at = table + 4 + std::size_t{count} * kReferenceSize;
+    for (std::size_t i = 0; i < bounds.size(); ++i)
+    {
+        const std::string what = i < count ? item + " " + std::to_string(i) : SectionName(k + 1);
+        if (i == 0 ? bounds[i] != at : bounds[i] <= at)
+        {
+            const std::string before = i == 0 ? "the " + item + " table" : item + " " + std::to_string(i - 1);
+            throw OtherLayout(what + " doesn't follow " + before);
+        }
+        if (bounds[i] % kEntryAlignment != 0)
+        {
+            throw OtherLayout(what + " doesn't start on a multiple of 4 bytes");
+        }
+        if (i > 0)
+        {
+            const auto bytes = r.Sub(at, bounds[i] - at);
+            entries.emplace_back(bytes.begin(), bytes.end());
+        }
+        at = bounds[i];
+    }
+}
+
 } // namespace
 
 InfoBlock InfoBlock::Read(std::span<const uint8_t> block, Flavor flavor)
@@ -96,62 +161,13 @@ InfoBlock InfoBlock::Read(std::span<const uint8_t> block, Flavor flavor)
                                   std::to_string(r.U32(4)));
     }
 
-    // Where each table starts, and where the settings start.
-    std::array<std::size_t, kTableCount + 1> starts{};
-    for (std::size_t k = 0; k <= kTableCount; ++k)
-    {
-        const uint16_t type = k < kTableCount ? kTables[k].table : kSettingsReference;
-        starts[k] = kBody + std::size_t{OffsetOf(r, kBody + k * kReferenceSize, type, SectionName(k))};
-    }
-    if (starts[0] != kTablesStart)
-    {
-        throw OtherLayout("the sound table doesn't follow the references");
-    }
-
+    const Starts starts = SectionStarts(r);
     InfoBlock result;
     result.flavor = flavor;
-    const auto tables = EntriesOf(result);
+    const auto tables = InfoTables(result);
     for (std::size_t k = 0; k < kTableCount; ++k)
     {
-        const std::size_t table = starts[k];
-        const std::string item = kTables[k].item;
-        const uint32_t count = r.U32(table);
-        if (count > (r.Size() - table - 4) / kReferenceSize)
-        {
-            throw xsflib::FormatError("an INFO block whose " + item + " table runs past its end");
-        }
-
-        // Where each entry starts, then where the next table starts. The entries follow the table in order. Each
-        // runs up to the next. The last runs up to the next table.
-        std::vector<std::size_t> bounds;
-        bounds.reserve(std::size_t{count} + 1);
-        for (uint32_t i = 0; i < count; ++i)
-        {
-            const std::string what = item + " " + std::to_string(i);
-            bounds.push_back(table + OffsetOf(r, table + 4 + i * kReferenceSize, kTables[k].entry, what));
-        }
-        bounds.push_back(starts[k + 1]);
-
-        std::size_t at = table + 4 + std::size_t{count} * kReferenceSize;
-        for (std::size_t i = 0; i < bounds.size(); ++i)
-        {
-            const std::string what = i < count ? item + " " + std::to_string(i) : SectionName(k + 1);
-            if (i == 0 ? bounds[i] != at : bounds[i] <= at)
-            {
-                const std::string before = i == 0 ? "the " + item + " table" : item + " " + std::to_string(i - 1);
-                throw OtherLayout(what + " doesn't follow " + before);
-            }
-            if (bounds[i] % kEntryAlignment != 0)
-            {
-                throw OtherLayout(what + " doesn't start on a multiple of 4 bytes");
-            }
-            if (i > 0)
-            {
-                const auto bytes = r.Sub(at, bounds[i] - at);
-                tables[k]->emplace_back(bytes.begin(), bytes.end());
-            }
-            at = bounds[i];
-        }
+        ReadTableEntries(r, k, starts, *tables[k]);
     }
 
     // The settings, then zeros up to the block's end.
@@ -178,12 +194,13 @@ std::vector<uint8_t> InfoBlock::Write() const
     out.Append(std::span(reinterpret_cast<const uint8_t*>("INFO"), 4));
     out.Zeros(kTablesStart - 4);
 
-    const auto tables = EntriesOf(*this);
+    const auto tables = InfoTables(*this);
     for (std::size_t k = 0; k < kTableCount; ++k)
     {
         const std::vector<std::vector<uint8_t>>& entries = *tables[k];
         const std::size_t table = out.Zeros(4 + kReferenceSize * entries.size());
-        out.Reference(kBody + k * kReferenceSize, kTables[k].table, static_cast<uint32_t>(table - kBody));
+        out.Reference(kBlockHeaderSize + k * kReferenceSize, kTables[k].table,
+                      static_cast<uint32_t>(table - kBlockHeaderSize));
         out.U32(table, static_cast<uint32_t>(entries.size()));
         for (std::size_t i = 0; i < entries.size(); ++i)
         {
@@ -200,7 +217,8 @@ std::vector<uint8_t> InfoBlock::Write() const
     }
 
     const std::size_t settings = out.Append(player_settings);
-    out.Reference(kBody + kTableCount * kReferenceSize, kSettingsReference, static_cast<uint32_t>(settings - kBody));
+    out.Reference(kBlockHeaderSize + kTableCount * kReferenceSize, kSettingsReference,
+                  static_cast<uint32_t>(settings - kBlockHeaderSize));
     out.Align(kBlockAlignment);
     out.U32(4, static_cast<uint32_t>(out.Size()));
 

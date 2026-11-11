@@ -7,9 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/ax/envelope.h"
 #include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/coef_rom.h"
@@ -226,6 +228,26 @@ int64_t ScaledOnce(int64_t sample, uint16_t gain)
     return ((low * gain) >> 16) + high * gain;
 }
 
+// A frame's meter peaks from the meters' sums: the largest magnitude on each side. The voices' meters come first, then
+// the aux buses'.
+void StorePeaks(std::span<const std::array<std::array<int64_t, kSamplesPerFrame>, 2>> sums, Meters& meters)
+{
+    const std::size_t tracks = meters.peaks.size();
+    for (std::size_t meter = 0; meter < sums.size(); meter++)
+    {
+        std::array<int32_t, 2>& peaks = meter < tracks ? meters.peaks[meter] : meters.aux_peaks[meter - tracks];
+        for (std::size_t side = 0; side < 2; side++)
+        {
+            int32_t peak = 0;
+            for (const int64_t sum : sums[meter][side])
+            {
+                peak = std::max(peak, Magnitude(sum));
+            }
+            peaks[side] = peak;
+        }
+    }
+}
+
 } // namespace
 
 Renderer::Renderer(Build build) : build_(build)
@@ -389,20 +411,9 @@ bool Renderer::RunFrame(ntdlib::dsp::WiiMemory& memory, uint32_t command_list, u
                 break;
             }
         case kEnd:
-            for (std::size_t meter = 0; meters_ != nullptr && meter < meter_sums_.size(); meter++)
+            if (meters_ != nullptr)
             {
-                const std::size_t tracks = meters_->peaks.size();
-                std::array<int32_t, 2>& peaks =
-                    meter < tracks ? meters_->peaks[meter] : meters_->aux_peaks[meter - tracks];
-                for (std::size_t side = 0; side < 2; side++)
-                {
-                    int32_t peak = 0;
-                    for (const int64_t sum : meter_sums_[meter][side])
-                    {
-                        peak = std::max(peak, Magnitude(sum));
-                    }
-                    peaks[side] = peak;
-                }
+                StorePeaks(meter_sums_, *meters_);
             }
             meters_ = nullptr;
             return true;
@@ -532,27 +543,10 @@ bool Renderer::ProcessVoice()
 
     if (dram_[kPbState] == 1)
     {
-        const uint16_t src = dram_[kPbSrcSelect];
-        const uint16_t filter = dram_[kPbCoefSelect];
-        if (src > kSrcNone || (src == kSrcFourTap && filter > 2))
+        if (!Convert(dram_[kPbSrcSelect], dram_[kPbCoefSelect], kFrame, kSamples))
         {
             return false;
         }
-
-        LoadAccelerator();
-        if (src == kSrcFourTap)
-        {
-            FourTap(filter, kFrame, kSamples);
-        }
-        else if (src == kSrcLinear)
-        {
-            Linear(kFrame, kSamples);
-        }
-        else
-        {
-            Copy(kFrame, kSamples);
-        }
-        StoreAccelerator();
 
         Envelope(kFrame, kSamples);
         if (dram_[kPbLpf] != 0)
@@ -564,15 +558,7 @@ bool Renderer::ProcessVoice()
             Biquad(kPbBiquad + 1, kFrame, kFrame);
         }
 
-        // The mixes write the depop values afresh.
-        for (int i = 0; i < 12; i++)
-        {
-            dram_[kPbDpop + i] = 0;
-        }
-        for (int i = 0; i < 8; i++)
-        {
-            dram_[kPbRmtDpop + i] = 0;
-        }
+        ClearDepop();
         const uint16_t high = dram_[kPbMixerCtrlHi];
         MixBus(0, dram_[kPbMixerCtrlLo] & 0x1fu);
         MixBus(1, high & 0x1fu);
@@ -642,40 +628,16 @@ bool Renderer::ProcessVoiceOctober2006()
     uint16_t update = kUpdates;
     for (int part = 0; part < kParts; part++)
     {
-        // Each of the part's updates writes a value to a word of the PB. AX's CPU side fills at most the 32 pairs that
-        // the buffer holds.
-        for (uint16_t n = dram_[kPbUpdateCounts + part]; n > 0; n--)
-        {
-            const auto at = static_cast<uint16_t>(kPb + dram_[update & 0x0fffu]);
-            if (at < dram_.size())
-            {
-                dram_[at] = dram_[(update + 1u) & 0x0fffu];
-            }
-            update = static_cast<uint16_t>(update + 2);
-        }
+        ApplyUpdates(part, update);
         if (dram_[kPbState] != 1)
         {
             continue;
         }
 
-        if (src > kSrcNone || (src == kSrcFourTap && filter > 2))
+        if (!Convert(src, filter, write, kPartSamples))
         {
             return false;
         }
-        LoadAccelerator();
-        if (src == kSrcFourTap)
-        {
-            FourTap(filter, write, kPartSamples);
-        }
-        else if (src == kSrcLinear)
-        {
-            Linear(write, kPartSamples);
-        }
-        else
-        {
-            Copy(write, kPartSamples);
-        }
-        StoreAccelerator();
         write = static_cast<uint16_t>(write + kPartSamples);
 
         Envelope(source, kPartSamples);
@@ -688,15 +650,7 @@ bool Renderer::ProcessVoiceOctober2006()
             SecondFilter(source);
         }
 
-        // The mixes write the depop values afresh.
-        for (int i = 0; i < 12; i++)
-        {
-            dram_[Field(kPbDpop) + i] = 0;
-        }
-        for (int i = 0; i < 8; i++)
-        {
-            dram_[Field(kPbRmtDpop) + i] = 0;
-        }
+        ClearDepop();
         for (int bus = 0; bus < 4; bus++)
         {
             MixBusOctober2006(bus, bits[static_cast<std::size_t>(bus)], part, source, left, right);
@@ -706,29 +660,12 @@ bool Renderer::ProcessVoiceOctober2006()
             RemoteOctober2006(part, source);
         }
 
-        // Each ITD shift moves a sample towards its target after each part. The next part's left and right channels
-        // start that many samples into the 32 before the part. In 40-bit mode, the shifts and the starts saturate.
         source = write;
         left = write;
         right = write;
         if (dram_[kPbItdFlag] != 0)
         {
-            for (int side = 0; side < 2; side++)
-            {
-                uint16_t& shift = dram_[kPbItdShift + side];
-                const auto target = static_cast<int16_t>(dram_[kPbItdTarget + side]);
-                int64_t moved = static_cast<int16_t>(shift);
-                if (moved > target)
-                {
-                    moved--;
-                }
-                else if (moved < target)
-                {
-                    moved++;
-                }
-                shift = Saturated(moved);
-                (side == 0 ? left : right) = Saturated(int64_t{write} - kPartSamples + moved);
-            }
+            MoveItdOctober2006(write, left, right);
         }
     }
 
@@ -739,6 +676,81 @@ bool Renderer::ProcessVoiceOctober2006()
     }
 
     return true;
+}
+
+void Renderer::ApplyUpdates(int part, uint16_t& update)
+{
+    // Each of the part's updates writes a value to a word of the PB. AX's CPU side fills at most the 32 pairs that the
+    // buffer holds.
+    for (uint16_t n = dram_[kPbUpdateCounts + part]; n > 0; n--)
+    {
+        const auto at = static_cast<uint16_t>(kPb + dram_[update & 0x0fffu]);
+        if (at < dram_.size())
+        {
+            dram_[at] = dram_[(update + 1u) & 0x0fffu];
+        }
+        update = static_cast<uint16_t>(update + 2);
+    }
+}
+
+void Renderer::MoveItdOctober2006(uint16_t write, uint16_t& left, uint16_t& right)
+{
+    // Each ITD shift moves a sample towards its target after each part. The next part's left and right channels start
+    // that many samples into the 32 before the part. In 40-bit mode, the shifts and the starts saturate.
+    for (int side = 0; side < 2; side++)
+    {
+        uint16_t& shift = dram_[kPbItdShift + side];
+        const auto target = static_cast<int16_t>(dram_[kPbItdTarget + side]);
+        int64_t moved = static_cast<int16_t>(shift);
+        if (moved > target)
+        {
+            moved--;
+        }
+        else if (moved < target)
+        {
+            moved++;
+        }
+        shift = Saturated(moved);
+        (side == 0 ? left : right) = Saturated(int64_t{write} - kPartSamples + moved);
+    }
+}
+
+bool Renderer::Convert(uint16_t src, uint16_t filter, uint16_t to, int samples)
+{
+    if (src > kSrcNone || (src == kSrcFourTap && filter > 2))
+    {
+        return false;
+    }
+
+    LoadAccelerator();
+    if (src == kSrcFourTap)
+    {
+        FourTap(filter, to, samples);
+    }
+    else if (src == kSrcLinear)
+    {
+        Linear(to, samples);
+    }
+    else
+    {
+        Copy(to, samples);
+    }
+    StoreAccelerator();
+
+    return true;
+}
+
+void Renderer::ClearDepop()
+{
+    // The mixes write the depop values afresh.
+    for (int i = 0; i < 12; i++)
+    {
+        dram_[Field(kPbDpop) + i] = 0;
+    }
+    for (int i = 0; i < 8; i++)
+    {
+        dram_[Field(kPbRmtDpop) + i] = 0;
+    }
 }
 
 void Renderer::LoadAccelerator()
@@ -926,15 +938,13 @@ void Renderer::Envelope(uint16_t at, int samples)
     // unsigned, the product doubled and saturated to 16 bits.
     const uint16_t volume = dram_[Field(kPbVolume)];
     const uint16_t delta = dram_[Field(kPbDelta)];
-    const auto step = static_cast<int16_t>(static_cast<uint16_t>(2 * delta));
     for (int i = 0; i < samples; i++)
     {
-        const uint32_t start = i % 2 == 0 ? volume : volume + uint32_t{delta};
-        const auto gain = static_cast<uint16_t>(start + static_cast<uint32_t>((i / 2) * step));
+        const uint16_t gain = ntdlib::ax::EnvelopeGain(volume, delta, i);
         const auto x = static_cast<int16_t>(dram_[at + i]);
         dram_[at + i] = static_cast<uint16_t>(MiddleWord(2 * int64_t{x} * gain));
     }
-    dram_[Field(kPbVolume)] = static_cast<uint16_t>(volume + static_cast<uint32_t>((samples / 2) * step));
+    dram_[Field(kPbVolume)] = ntdlib::ax::EnvelopeVolumeAfter(volume, delta, samples);
 }
 
 void Renderer::LowPass(uint16_t state, uint16_t from, uint16_t to, int samples)

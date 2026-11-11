@@ -285,6 +285,30 @@ void SoundSystem::SetAuxReturnVolume(int bus, float volume)
     mixer.dirty |= 1u << (24 + bus);
 }
 
+void SoundSystem::SetFirmwareDelay(int bus, const FirmwareDelayParams& params)
+{
+    MixerParams& mixer = link_.Mixer();
+    FirmwareDelayParams& delay = mixer.delay[bus];
+    delay.buffer = params.buffer;
+    delay.channels = params.channels;
+    delay.frames = params.frames;
+    delay.feedback = params.feedback;
+    delay.damping_a = params.damping_a;
+    delay.damping_b = params.damping_b;
+    delay.enable = 1;
+    delay.dirty |= 7;
+    mixer.dirty |= 1u << (10 + bus);
+}
+
+void SoundSystem::SetFirmwareReverb(int bus, const FirmwareReverbParams& params)
+{
+    MixerParams& mixer = link_.Mixer();
+    const uint16_t dirty = mixer.reverb[bus].dirty;
+    mixer.reverb[bus] = params;
+    mixer.reverb[bus].dirty |= dirty;
+    mixer.dirty |= 1u << (12 + bus);
+}
+
 bool SoundSystem::WaitForDspSync()
 {
     if (!link_.WaitForFrame())

@@ -12,12 +12,14 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
 #include "xsflib/sha1.h"
 
 #include "ntdlib/ntr/rom.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::ntr
 {
@@ -49,17 +51,6 @@ uint32_t Load32(std::span<const uint8_t> bytes, std::size_t at)
 void Store32(std::vector<uint8_t>& bytes, std::size_t at, uint64_t value)
 {
     xsflib::StoreLe32(&bytes[at], static_cast<uint32_t>(value));
-}
-
-uint64_t Align(uint64_t value, uint64_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
-
-// `value` rounded up to a multiple of `alignment`, below 0 as well.
-int64_t RoundUp(int64_t value, int64_t alignment)
-{
-    return value >= 0 ? (value + alignment - 1) / alignment * alignment : -(-value / alignment * alignment);
 }
 
 bool Same(std::span<const uint8_t> a, std::span<const uint8_t> b)
@@ -135,25 +126,396 @@ Digest ReadDigest(std::span<const uint8_t> image, uint64_t data_end, uint32_t us
     d.blocks_bytes = Load32(image, 0x1FC);
     d.dsi_start = uint32_t{xsflib::LoadLe16(&image[0x92])} * kDsiAlignment;
     d.dsi_end = Load32(image, 0x210);
-    if (d.sector == 0 || d.count == 0 || d.ntr_end != Align(data_end, d.sector) || d.ntr_start > d.ntr_end ||
+    if (d.sector == 0 || d.count == 0 || d.ntr_end != AlignUp(data_end, d.sector) || d.ntr_start > d.ntr_end ||
         (d.ntr_end - d.ntr_start) % d.sector != 0 || d.twl_bytes % d.sector != 0)
     {
         RefuseDigest();
     }
     const uint64_t sectors = (d.ntr_end - d.ntr_start) / d.sector + d.twl_bytes / d.sector;
-    const uint64_t entries = Align(sectors, d.count);
+    const uint64_t entries = AlignUp(sectors, d.count);
     if (d.sectors_at != d.ntr_end || d.sectors_bytes != entries * kHashBytes ||
-        d.blocks_at != Align(uint64_t{d.sectors_at} + d.sectors_bytes, kTableAlignment) ||
+        d.blocks_at != AlignUp(uint64_t{d.sectors_at} + d.sectors_bytes, kTableAlignment) ||
         d.blocks_bytes != entries / d.count * kHashBytes ||
-        used != Align(uint64_t{d.blocks_at} + d.blocks_bytes, kTableAlignment) ||
-        d.dsi_start != Align(used, kDsiAlignment) || xsflib::LoadLe16(&image[0x90]) != xsflib::LoadLe16(&image[0x92]) ||
-        Load32(image, 0x1E8) < d.dsi_start || uint64_t{Load32(image, 0x1E8)} + d.twl_bytes != d.dsi_end ||
-        d.dsi_end > image.size())
+        used != AlignUp(uint64_t{d.blocks_at} + d.blocks_bytes, kTableAlignment) ||
+        d.dsi_start != AlignUp(uint64_t{used}, kDsiAlignment) ||
+        xsflib::LoadLe16(&image[0x90]) != xsflib::LoadLe16(&image[0x92]) || Load32(image, 0x1E8) < d.dsi_start ||
+        uint64_t{Load32(image, 0x1E8)} + d.twl_bytes != d.dsi_end || d.dsi_end > image.size())
     {
         RefuseDigest();
     }
 
     return d;
+}
+
+// A place in the old image: the header, a binary, a table, the banner or a file with bytes.
+struct Item
+{
+    uint32_t start = 0;
+    uint32_t end = 0;
+    std::optional<uint32_t> file;
+};
+
+// The places of the header, the binaries, the tables, the banner and the files with bytes.
+std::vector<Item> ItemsOf(std::span<const uint8_t> image, const Rom& rom)
+{
+    const RomHeader& h = rom.Header();
+    std::vector<Item> items = {{0, h.header_size, {}},
+                               {h.arm9.rom_offset, h.arm9.rom_offset + h.arm9.size, {}},
+                               {h.arm7.rom_offset, h.arm7.rom_offset + h.arm7.size, {}},
+                               {h.fnt_offset, h.fnt_offset + h.fnt_size, {}},
+                               {h.fat_offset, h.fat_offset + h.fat_size, {}}};
+    for (const auto [offset, size] :
+         {std::pair{h.arm9_overlay_offset, h.arm9_overlay_size}, std::pair{h.arm7_overlay_offset, h.arm7_overlay_size}})
+    {
+        if (size != 0)
+        {
+            items.push_back({offset, offset + size, {}});
+        }
+    }
+    if (h.banner_offset != 0)
+    {
+        items.push_back({h.banner_offset, h.banner_offset + BannerBytes(image, h.banner_offset), {}});
+    }
+    for (const RomFile& file : rom.Files())
+    {
+        if (file.end > file.start)
+        {
+            items.push_back({file.start, file.end, file.id});
+        }
+    }
+
+    return items;
+}
+
+// The end of the old image's data: the end of its last item, or of its used size where that's further in an image
+// without a DSi part.
+uint64_t DataEnd(std::span<const Item> items, const RomHeader& h, std::span<const uint8_t> image)
+{
+    uint64_t data_end = 0;
+    for (const Item& item : items)
+    {
+        data_end = std::max<uint64_t>(data_end, item.end);
+    }
+    if ((h.unit_code & 2) == 0)
+    {
+        data_end = std::max<uint64_t>(data_end, std::min<uint64_t>(h.used_size, image.size()));
+    }
+
+    return data_end;
+}
+
+// The files of `files` whose bytes change, in the order of their places. Throws std::invalid_argument for a file that
+// can't change.
+std::vector<Change> ChangesOf(const Rom& rom, const std::map<uint32_t, std::vector<uint8_t>>& files,
+                              std::span<const Item> items, uint64_t data_end)
+{
+    std::set<uint32_t> overlay_files;
+    for (const std::vector<Overlay>* overlays : {&rom.Arm9Overlays(), &rom.Arm7Overlays()})
+    {
+        for (const Overlay& overlay : *overlays)
+        {
+            overlay_files.insert(overlay.file_id);
+        }
+    }
+
+    std::vector<Change> changes;
+    for (const auto& [id, bytes] : files)
+    {
+        const std::string name = "file " + std::to_string(id);
+        if (id >= rom.Files().size())
+        {
+            throw std::invalid_argument(name + " lies past the file allocation table");
+        }
+        if (overlay_files.contains(id))
+        {
+            throw std::invalid_argument(name + " is an overlay's: its table describes it");
+        }
+        if (Same(rom.FileData(id), bytes))
+        {
+            continue;
+        }
+        const RomFile& file = rom.Files()[id];
+        Change change{id, file.start, file.end, static_cast<uint32_t>(data_end), &bytes, 0};
+        for (const Item& item : items)
+        {
+            if (item.file == id)
+            {
+                continue;
+            }
+            const bool shares =
+                file.end > file.start ? item.start < file.end && item.end > file.start : item.start == file.start;
+            if (shares)
+            {
+                throw std::invalid_argument(name + " shares its place with another item");
+            }
+            if (item.start >= file.end)
+            {
+                change.next = std::min(change.next, item.start);
+            }
+        }
+        changes.push_back(change);
+    }
+    std::ranges::sort(changes, {}, &Change::start);
+
+    return changes;
+}
+
+// The NTR part: each new file at its start, and the items after it moved. The last item moves by the change in its size
+// alone. Sets how far each change moves the items after it.
+std::vector<uint8_t> NtrPart(std::span<const uint8_t> image, std::span<Change> changes, uint64_t data_end)
+{
+    std::vector<uint8_t> out;
+    out.reserve(image.size());
+    std::size_t from = 0;
+    for (Change& c : changes)
+    {
+        out.insert(out.end(), image.begin() + from, image.begin() + c.start);
+        out.insert(out.end(), c.bytes->begin(), c.bytes->end());
+        const int64_t grown = int64_t{c.start} + static_cast<int64_t>(c.bytes->size()) - c.next;
+        c.delta = c.next == data_end ? static_cast<int64_t>(c.bytes->size()) - (c.end - c.start)
+                                     : AlignUp(grown, kFileAlignment);
+        out.resize(static_cast<std::size_t>(static_cast<int64_t>(out.size()) - grown + c.delta), 0xFF);
+        from = c.next;
+    }
+    out.insert(out.end(), image.begin() + from, image.begin() + static_cast<std::ptrdiff_t>(data_end));
+
+    return out;
+}
+
+// Where `offset` in the old image lies in the new one.
+uint64_t Moved(std::span<const Change> changes, uint64_t offset)
+{
+    int64_t to = static_cast<int64_t>(offset);
+    for (const Change& c : changes)
+    {
+        if (c.next <= offset)
+        {
+            to += c.delta;
+        }
+    }
+    return static_cast<uint64_t>(to);
+}
+
+// Stores the header's offsets and the FAT in `out`. Returns the new offset of the FAT.
+uint64_t StoreOffsets(std::vector<uint8_t>& out, std::span<const uint8_t> image, const Rom& rom,
+                      std::span<const Change> changes)
+{
+    const RomHeader& h = rom.Header();
+    for (const std::size_t field : {0x20, 0x30, 0x40, 0x48})
+    {
+        Store32(out, field, Moved(changes, Load32(image, field)));
+    }
+    for (const std::size_t field : {0x50, 0x58})
+    {
+        if (Load32(image, field + 4) != 0)
+        {
+            Store32(out, field, Moved(changes, Load32(image, field)));
+        }
+    }
+    if (h.banner_offset != 0)
+    {
+        Store32(out, 0x68, Moved(changes, h.banner_offset));
+    }
+    const uint64_t fat = Moved(changes, h.fat_offset);
+    for (const RomFile& file : rom.Files())
+    {
+        const auto change = std::ranges::find(changes, file.id, &Change::id);
+        const uint64_t start = Moved(changes, file.start);
+        const uint64_t size = change != changes.end() ? change->bytes->size() : file.end - file.start;
+        Store32(out, fat + 8 * std::size_t{file.id}, start);
+        Store32(out, fat + 8 * std::size_t{file.id} + 4, start + size);
+    }
+
+    return fat;
+}
+
+// Stores the used size of an image without a DSi part, and appends the signature for download play that follows the
+// data. Returns where the old image's data ends.
+std::size_t AppendSignature(std::vector<uint8_t>& out, std::span<const uint8_t> image, uint64_t data_end,
+                            RomWrite& result)
+{
+    // The signature for download play follows the data.
+    const auto used = static_cast<std::size_t>(data_end);
+    Store32(out, 0x80, out.size());
+    std::size_t old_tail = used;
+    if (used + kSignatureBytes <= image.size() && image[used] == 'a' && image[used + 1] == 'c')
+    {
+        old_tail += kSignatureBytes;
+        if (!Same(std::span(out).first(kWhitelistBytes), image.first(kWhitelistBytes)))
+        {
+            result.stale.push_back({"the signature for download play", static_cast<uint32_t>(out.size()), 1});
+        }
+        out.insert(out.end(), image.begin() + used, image.begin() + static_cast<std::ptrdiff_t>(old_tail));
+    }
+
+    return old_tail;
+}
+
+// Appends the digest's tables and the DSi's part, and stores their offsets and the used size. Writes the hashes again
+// with the keys, or records them as stale. Returns where the old image's data ends.
+std::size_t AppendDsiPart(std::vector<uint8_t>& out, std::span<const uint8_t> image, const RomHeader& h,
+                          uint64_t data_end, const std::optional<DsiKeys>& keys, RomWrite& result)
+{
+    const Digest old = ReadDigest(image, data_end, h.used_size);
+    const uint32_t ntr_end = static_cast<uint32_t>(AlignUp(out.size(), old.sector));
+    out.resize(ntr_end, 0xFF);
+    const uint32_t ntr_sectors = (ntr_end - old.ntr_start) / old.sector;
+    const uint32_t old_ntr_sectors = (old.ntr_end - old.ntr_start) / old.sector;
+    const uint32_t twl_sectors = old.twl_bytes / old.sector;
+    const auto entries = static_cast<uint32_t>(AlignUp(uint64_t{ntr_sectors} + twl_sectors, old.count));
+    const uint32_t blocks = entries / old.count;
+    const std::span<const uint8_t> old_sectors = image.subspan(old.sectors_at, old.sectors_bytes);
+    const std::span<const uint8_t> old_blocks = image.subspan(old.blocks_at, old.blocks_bytes);
+
+    // A hash stays where its bytes stay the same. Otherwise it's written again with the key, or left at zeros.
+    StaleHash stale_sectors{"the digest's sector hashes", 0, 0};
+    StaleHash stale_blocks{"the digest's block hashes", 0, 0};
+    const auto rehash =
+        [&keys](std::span<uint8_t> hash, std::span<const uint8_t> bytes, StaleHash& stale, uint32_t at)
+    {
+        if (keys)
+        {
+            std::ranges::copy(HmacSha1(keys->digest, bytes), hash.begin());
+            return;
+        }
+        if (stale.count++ == 0)
+        {
+            stale.offset = at;
+        }
+    };
+    std::vector<uint8_t> sectors(std::size_t{entries} * kHashBytes, 0);
+    for (uint32_t i = 0; i < ntr_sectors; i++)
+    {
+        const std::span<const uint8_t> bytes =
+            std::span(out).subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector);
+        const std::span<uint8_t> hash = std::span(sectors).subspan(std::size_t{i} * kHashBytes, kHashBytes);
+        if (i < old_ntr_sectors &&
+            Same(bytes, image.subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector)))
+        {
+            std::ranges::copy(old_sectors.subspan(std::size_t{i} * kHashBytes, kHashBytes), hash.begin());
+            continue;
+        }
+        rehash(hash, bytes, stale_sectors, static_cast<uint32_t>(ntr_end + std::size_t{i} * kHashBytes));
+    }
+    for (uint32_t j = 0; j < twl_sectors; j++)
+    {
+        std::ranges::copy(
+            old_sectors.subspan((std::size_t{old_ntr_sectors} + j) * kHashBytes, kHashBytes),
+            sectors.begin() + static_cast<std::ptrdiff_t>((std::size_t{ntr_sectors} + j) * kHashBytes));
+    }
+
+    const auto blocks_at = static_cast<uint32_t>(AlignUp(uint64_t{ntr_end} + sectors.size(), kTableAlignment));
+    const std::size_t block_input = std::size_t{old.count} * kHashBytes;
+    std::vector<uint8_t> block_hashes(std::size_t{blocks} * kHashBytes, 0);
+    for (uint32_t b = 0; b < blocks; b++)
+    {
+        const std::span<const uint8_t> input = std::span(sectors).subspan(b * block_input, block_input);
+        const std::span<uint8_t> hash = std::span(block_hashes).subspan(std::size_t{b} * kHashBytes, kHashBytes);
+        if ((b + 1) * block_input <= old_sectors.size() &&
+            Same(input, old_sectors.subspan(b * block_input, block_input)))
+        {
+            std::ranges::copy(old_blocks.subspan(std::size_t{b} * kHashBytes, kHashBytes), hash.begin());
+            continue;
+        }
+        rehash(hash, input, stale_blocks, static_cast<uint32_t>(blocks_at + std::size_t{b} * kHashBytes));
+    }
+    if (!Same(block_hashes, old_blocks))
+    {
+        if (keys)
+        {
+            const xsflib::Sha1::Digest master = HmacSha1(keys->digest, block_hashes);
+            std::ranges::copy(master, out.begin() + kMasterHash);
+        }
+        else
+        {
+            std::fill_n(out.begin() + kMasterHash, kHashBytes, 0);
+            result.stale.push_back({"the digest's master hash", kMasterHash, 1});
+        }
+    }
+    for (const StaleHash& stale : {stale_sectors, stale_blocks})
+    {
+        if (stale.count != 0)
+        {
+            result.stale.push_back(stale);
+        }
+    }
+
+    // The tables, the used size, then the DSi's part on the next multiple of 0x80000 bytes.
+    out.insert(out.end(), sectors.begin(), sectors.end());
+    out.resize(blocks_at, 0xFF);
+    out.insert(out.end(), block_hashes.begin(), block_hashes.end());
+    const uint64_t used = AlignUp(out.size(), kTableAlignment);
+    const uint64_t dsi_start = AlignUp(used, kDsiAlignment);
+    out.resize(dsi_start, 0xFF);
+    out.insert(out.end(), image.begin() + old.dsi_start, image.begin() + old.dsi_end);
+
+    const int64_t shift = static_cast<int64_t>(dsi_start) - old.dsi_start;
+    const auto in_dsi_part = [&old](uint32_t offset)
+    {
+        return offset >= old.dsi_start && offset < old.dsi_end;
+    };
+    for (const std::size_t field : {0x1C0, 0x1D0, 0x1E8, 0x210, 0x220, 0x228})
+    {
+        const uint32_t offset = Load32(image, field);
+        if (in_dsi_part(offset) || (field == 0x210 && offset == old.dsi_end))
+        {
+            Store32(out, field, static_cast<uint64_t>(offset + shift));
+        }
+    }
+    Store32(out, 0x80, used);
+    xsflib::StoreLe16(&out[0x90], static_cast<uint16_t>(dsi_start / kDsiAlignment));
+    xsflib::StoreLe16(&out[0x92], static_cast<uint16_t>(dsi_start / kDsiAlignment));
+    Store32(out, 0x1E4, ntr_end - old.ntr_start);
+    Store32(out, 0x1F0, ntr_end);
+    Store32(out, 0x1F4, sectors.size());
+    Store32(out, 0x1F8, blocks_at);
+    Store32(out, 0x1FC, block_hashes.size());
+
+    return old.dsi_end;
+}
+
+// Sets the chip's capacity, then appends the bytes after the old image's data. A full image fills its chip.
+void FillChip(std::vector<uint8_t>& out, std::span<const uint8_t> image, std::size_t old_tail)
+{
+    uint8_t capacity = image[kCapacityField];
+    const auto capacity_bytes = [](uint8_t shift)
+    {
+        return shift < 32 ? uint64_t{kMinCapacity} << shift : 0;
+    };
+    while (capacity < 32 && out.size() > capacity_bytes(capacity))
+    {
+        capacity++;
+    }
+    out[kCapacityField] = capacity;
+    const uint64_t size = image.size() == capacity_bytes(image[kCapacityField])
+                              ? capacity_bytes(capacity)
+                              : std::max<uint64_t>(out.size(), image.size() - old_tail + out.size());
+    const std::size_t trailing = std::min<std::size_t>(image.size() - old_tail, size - out.size());
+    out.insert(out.end(), image.begin() + static_cast<std::ptrdiff_t>(old_tail),
+               image.begin() + static_cast<std::ptrdiff_t>(old_tail + trailing));
+    out.resize(size, 0xFF);
+}
+
+// Records the hashes that no key here can redo.
+void AddStaleSignatures(std::span<const uint8_t> out, std::span<const uint8_t> image, const RomHeader& h, uint64_t fat,
+                        RomWrite& result)
+{
+    const std::span<const uint8_t> header = out.first(h.header_size);
+    if (!AllZero(image.subspan(kRsaSignature, kRsaBytes)) &&
+        !Same(header.first(kSignedBytes), image.first(kSignedBytes)))
+    {
+        result.stale.push_back({"the header's RSA signature", kRsaSignature, 1});
+    }
+    if (!AllZero(image.subspan(kWhitelistHeaderHash, kHashBytes)) &&
+        !Same(header.first(kWhitelistBytes), image.first(kWhitelistBytes)))
+    {
+        result.stale.push_back({"the whitelist's hash of the header and the binaries", kWhitelistHeaderHash, 1});
+    }
+    if (!AllZero(image.subspan(kWhitelistOverlaysHash, kHashBytes)) &&
+        !Same(out.subspan(fat, h.fat_size), image.subspan(h.fat_offset, h.fat_size)))
+    {
+        result.stale.push_back({"the whitelist's hash of the ARM9 overlays and the FAT", kWhitelistOverlaysHash, 1});
+    }
 }
 
 } // namespace
@@ -211,330 +573,23 @@ RomWrite WithFiles(std::span<const uint8_t> image, const std::map<uint32_t, std:
     }
     const RomHeader& h = rom.Header();
 
-    // The places of the header, the binaries, the tables, the banner and the files with bytes.
-    struct Item
-    {
-        uint32_t start = 0;
-        uint32_t end = 0;
-        std::optional<uint32_t> file;
-    };
-    std::vector<Item> items = {{0, h.header_size, {}},
-                               {h.arm9.rom_offset, h.arm9.rom_offset + h.arm9.size, {}},
-                               {h.arm7.rom_offset, h.arm7.rom_offset + h.arm7.size, {}},
-                               {h.fnt_offset, h.fnt_offset + h.fnt_size, {}},
-                               {h.fat_offset, h.fat_offset + h.fat_size, {}}};
-    for (const auto [offset, size] :
-         {std::pair{h.arm9_overlay_offset, h.arm9_overlay_size}, std::pair{h.arm7_overlay_offset, h.arm7_overlay_size}})
-    {
-        if (size != 0)
-        {
-            items.push_back({offset, offset + size, {}});
-        }
-    }
-    if (h.banner_offset != 0)
-    {
-        items.push_back({h.banner_offset, h.banner_offset + BannerBytes(image, h.banner_offset), {}});
-    }
-    for (const RomFile& file : rom.Files())
-    {
-        if (file.end > file.start)
-        {
-            items.push_back({file.start, file.end, file.id});
-        }
-    }
-    uint64_t data_end = 0;
-    for (const Item& item : items)
-    {
-        data_end = std::max<uint64_t>(data_end, item.end);
-    }
-    const bool dsi = (h.unit_code & 2) != 0;
-    if (!dsi)
-    {
-        data_end = std::max<uint64_t>(data_end, std::min<uint64_t>(h.used_size, image.size()));
-    }
-
-    std::set<uint32_t> overlay_files;
-    for (const std::vector<Overlay>* overlays : {&rom.Arm9Overlays(), &rom.Arm7Overlays()})
-    {
-        for (const Overlay& overlay : *overlays)
-        {
-            overlay_files.insert(overlay.file_id);
-        }
-    }
-
-    std::vector<Change> changes;
-    for (const auto& [id, bytes] : files)
-    {
-        const std::string name = "file " + std::to_string(id);
-        if (id >= rom.Files().size())
-        {
-            throw std::invalid_argument(name + " lies past the file allocation table");
-        }
-        if (overlay_files.contains(id))
-        {
-            throw std::invalid_argument(name + " is an overlay's: its table describes it");
-        }
-        if (Same(rom.FileData(id), bytes))
-        {
-            continue;
-        }
-        const RomFile& file = rom.Files()[id];
-        Change change{id, file.start, file.end, static_cast<uint32_t>(data_end), &bytes, 0};
-        for (const Item& item : items)
-        {
-            if (item.file == id)
-            {
-                continue;
-            }
-            const bool shares =
-                file.end > file.start ? item.start < file.end && item.end > file.start : item.start == file.start;
-            if (shares)
-            {
-                throw std::invalid_argument(name + " shares its place with another item");
-            }
-            if (item.start >= file.end)
-            {
-                change.next = std::min(change.next, item.start);
-            }
-        }
-        changes.push_back(change);
-    }
+    const std::vector<Item> items = ItemsOf(image, rom);
+    const uint64_t data_end = DataEnd(items, h, image);
+    std::vector<Change> changes = ChangesOf(rom, files, items, data_end);
     if (changes.empty())
     {
         return {std::vector<uint8_t>(image.begin(), image.end()), {}};
     }
-    std::ranges::sort(changes, {}, &Change::start);
 
-    // The NTR part: each new file at its start, and the items after it moved. The last item moves by the change in its
-    // size alone.
-    std::vector<uint8_t> out;
-    out.reserve(image.size());
-    std::size_t from = 0;
-    for (Change& c : changes)
-    {
-        out.insert(out.end(), image.begin() + from, image.begin() + c.start);
-        out.insert(out.end(), c.bytes->begin(), c.bytes->end());
-        const int64_t grown = int64_t{c.start} + static_cast<int64_t>(c.bytes->size()) - c.next;
-        c.delta = c.next == data_end ? static_cast<int64_t>(c.bytes->size()) - (c.end - c.start)
-                                     : RoundUp(grown, kFileAlignment);
-        out.resize(static_cast<std::size_t>(static_cast<int64_t>(out.size()) - grown + c.delta), 0xFF);
-        from = c.next;
-    }
-    out.insert(out.end(), image.begin() + from, image.begin() + static_cast<std::ptrdiff_t>(data_end));
-    const auto moved = [&changes](uint64_t offset)
-    {
-        int64_t to = static_cast<int64_t>(offset);
-        for (const Change& c : changes)
-        {
-            if (c.next <= offset)
-            {
-                to += c.delta;
-            }
-        }
-        return static_cast<uint64_t>(to);
-    };
-
-    // The header's offsets and the FAT.
-    for (const std::size_t field : {0x20, 0x30, 0x40, 0x48})
-    {
-        Store32(out, field, moved(Load32(image, field)));
-    }
-    for (const std::size_t field : {0x50, 0x58})
-    {
-        if (Load32(image, field + 4) != 0)
-        {
-            Store32(out, field, moved(Load32(image, field)));
-        }
-    }
-    if (h.banner_offset != 0)
-    {
-        Store32(out, 0x68, moved(h.banner_offset));
-    }
-    const uint64_t fat = moved(h.fat_offset);
-    for (const RomFile& file : rom.Files())
-    {
-        const auto change = std::ranges::find(changes, file.id, &Change::id);
-        const uint64_t start = moved(file.start);
-        const uint64_t size = change != changes.end() ? change->bytes->size() : file.end - file.start;
-        Store32(out, fat + 8 * std::size_t{file.id}, start);
-        Store32(out, fat + 8 * std::size_t{file.id} + 4, start + size);
-    }
+    std::vector<uint8_t> out = NtrPart(image, changes, data_end);
+    const uint64_t fat = StoreOffsets(out, image, rom, changes);
 
     RomWrite result;
-    std::size_t old_tail = 0; // where the old image's data ends
-    if (!dsi)
-    {
-        // The signature for download play follows the data.
-        const auto used = static_cast<std::size_t>(data_end);
-        Store32(out, 0x80, out.size());
-        old_tail = used;
-        if (used + kSignatureBytes <= image.size() && image[used] == 'a' && image[used + 1] == 'c')
-        {
-            old_tail += kSignatureBytes;
-            if (!Same(std::span(out).first(kWhitelistBytes), image.first(kWhitelistBytes)))
-            {
-                result.stale.push_back({"the signature for download play", static_cast<uint32_t>(out.size()), 1});
-            }
-            out.insert(out.end(), image.begin() + used, image.begin() + static_cast<std::ptrdiff_t>(old_tail));
-        }
-    }
-    else
-    {
-        const Digest old = ReadDigest(image, data_end, h.used_size);
-        const uint32_t ntr_end = static_cast<uint32_t>(Align(out.size(), old.sector));
-        out.resize(ntr_end, 0xFF);
-        const uint32_t ntr_sectors = (ntr_end - old.ntr_start) / old.sector;
-        const uint32_t old_ntr_sectors = (old.ntr_end - old.ntr_start) / old.sector;
-        const uint32_t twl_sectors = old.twl_bytes / old.sector;
-        const auto entries = static_cast<uint32_t>(Align(uint64_t{ntr_sectors} + twl_sectors, old.count));
-        const uint32_t blocks = entries / old.count;
-        const std::span<const uint8_t> old_sectors = image.subspan(old.sectors_at, old.sectors_bytes);
-        const std::span<const uint8_t> old_blocks = image.subspan(old.blocks_at, old.blocks_bytes);
-
-        // A hash stays where its bytes stay the same. Otherwise it's written again with the key, or left at zeros.
-        StaleHash stale_sectors{"the digest's sector hashes", 0, 0};
-        StaleHash stale_blocks{"the digest's block hashes", 0, 0};
-        const auto rehash =
-            [&keys](std::span<uint8_t> hash, std::span<const uint8_t> bytes, StaleHash& stale, uint32_t at)
-        {
-            if (keys)
-            {
-                std::ranges::copy(HmacSha1(keys->digest, bytes), hash.begin());
-                return;
-            }
-            if (stale.count++ == 0)
-            {
-                stale.offset = at;
-            }
-        };
-        std::vector<uint8_t> sectors(std::size_t{entries} * kHashBytes, 0);
-        for (uint32_t i = 0; i < ntr_sectors; i++)
-        {
-            const std::span<const uint8_t> bytes =
-                std::span(out).subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector);
-            const std::span<uint8_t> hash = std::span(sectors).subspan(std::size_t{i} * kHashBytes, kHashBytes);
-            if (i < old_ntr_sectors &&
-                Same(bytes, image.subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector)))
-            {
-                std::ranges::copy(old_sectors.subspan(std::size_t{i} * kHashBytes, kHashBytes), hash.begin());
-                continue;
-            }
-            rehash(hash, bytes, stale_sectors, static_cast<uint32_t>(ntr_end + std::size_t{i} * kHashBytes));
-        }
-        for (uint32_t j = 0; j < twl_sectors; j++)
-        {
-            std::ranges::copy(
-                old_sectors.subspan((std::size_t{old_ntr_sectors} + j) * kHashBytes, kHashBytes),
-                sectors.begin() + static_cast<std::ptrdiff_t>((std::size_t{ntr_sectors} + j) * kHashBytes));
-        }
-
-        const auto blocks_at = static_cast<uint32_t>(Align(uint64_t{ntr_end} + sectors.size(), kTableAlignment));
-        const std::size_t block_input = std::size_t{old.count} * kHashBytes;
-        std::vector<uint8_t> block_hashes(std::size_t{blocks} * kHashBytes, 0);
-        for (uint32_t b = 0; b < blocks; b++)
-        {
-            const std::span<const uint8_t> input = std::span(sectors).subspan(b * block_input, block_input);
-            const std::span<uint8_t> hash = std::span(block_hashes).subspan(std::size_t{b} * kHashBytes, kHashBytes);
-            if ((b + 1) * block_input <= old_sectors.size() &&
-                Same(input, old_sectors.subspan(b * block_input, block_input)))
-            {
-                std::ranges::copy(old_blocks.subspan(std::size_t{b} * kHashBytes, kHashBytes), hash.begin());
-                continue;
-            }
-            rehash(hash, input, stale_blocks, static_cast<uint32_t>(blocks_at + std::size_t{b} * kHashBytes));
-        }
-        if (!Same(block_hashes, old_blocks))
-        {
-            if (keys)
-            {
-                const xsflib::Sha1::Digest master = HmacSha1(keys->digest, block_hashes);
-                std::ranges::copy(master, out.begin() + kMasterHash);
-            }
-            else
-            {
-                std::fill_n(out.begin() + kMasterHash, kHashBytes, 0);
-                result.stale.push_back({"the digest's master hash", kMasterHash, 1});
-            }
-        }
-        for (const StaleHash& stale : {stale_sectors, stale_blocks})
-        {
-            if (stale.count != 0)
-            {
-                result.stale.push_back(stale);
-            }
-        }
-
-        // The tables, the used size, then the DSi's part on the next multiple of 0x80000 bytes.
-        out.insert(out.end(), sectors.begin(), sectors.end());
-        out.resize(blocks_at, 0xFF);
-        out.insert(out.end(), block_hashes.begin(), block_hashes.end());
-        const uint64_t used = Align(out.size(), kTableAlignment);
-        const uint64_t dsi_start = Align(used, kDsiAlignment);
-        out.resize(dsi_start, 0xFF);
-        out.insert(out.end(), image.begin() + old.dsi_start, image.begin() + old.dsi_end);
-        old_tail = old.dsi_end;
-
-        const int64_t shift = static_cast<int64_t>(dsi_start) - old.dsi_start;
-        const auto in_dsi_part = [&old](uint32_t offset)
-        {
-            return offset >= old.dsi_start && offset < old.dsi_end;
-        };
-        for (const std::size_t field : {0x1C0, 0x1D0, 0x1E8, 0x210, 0x220, 0x228})
-        {
-            const uint32_t offset = Load32(image, field);
-            if (in_dsi_part(offset) || (field == 0x210 && offset == old.dsi_end))
-            {
-                Store32(out, field, static_cast<uint64_t>(offset + shift));
-            }
-        }
-        Store32(out, 0x80, used);
-        xsflib::StoreLe16(&out[0x90], static_cast<uint16_t>(dsi_start / kDsiAlignment));
-        xsflib::StoreLe16(&out[0x92], static_cast<uint16_t>(dsi_start / kDsiAlignment));
-        Store32(out, 0x1E4, ntr_end - old.ntr_start);
-        Store32(out, 0x1F0, ntr_end);
-        Store32(out, 0x1F4, sectors.size());
-        Store32(out, 0x1F8, blocks_at);
-        Store32(out, 0x1FC, block_hashes.size());
-    }
-
-    // The chip's capacity, then the bytes after the data. A full image fills its chip.
-    uint8_t capacity = image[kCapacityField];
-    const auto capacity_bytes = [](uint8_t shift)
-    {
-        return shift < 32 ? uint64_t{kMinCapacity} << shift : 0;
-    };
-    while (capacity < 32 && out.size() > capacity_bytes(capacity))
-    {
-        capacity++;
-    }
-    out[kCapacityField] = capacity;
-    const uint64_t size = image.size() == capacity_bytes(image[kCapacityField])
-                              ? capacity_bytes(capacity)
-                              : std::max<uint64_t>(out.size(), image.size() - old_tail + out.size());
-    const std::size_t trailing = std::min<std::size_t>(image.size() - old_tail, size - out.size());
-    out.insert(out.end(), image.begin() + static_cast<std::ptrdiff_t>(old_tail),
-               image.begin() + static_cast<std::ptrdiff_t>(old_tail + trailing));
-    out.resize(size, 0xFF);
-
+    const std::size_t old_tail = (h.unit_code & 2) == 0 ? AppendSignature(out, image, data_end, result)
+                                                        : AppendDsiPart(out, image, h, data_end, keys, result);
+    FillChip(out, image, old_tail);
     xsflib::StoreLe16(&out[kCrcBytes], Crc16(std::span(out).first(kCrcBytes)));
-
-    // The hashes that no key here can redo.
-    const std::span<const uint8_t> header = std::span(out).first(h.header_size);
-    if (!AllZero(image.subspan(kRsaSignature, kRsaBytes)) &&
-        !Same(header.first(kSignedBytes), image.first(kSignedBytes)))
-    {
-        result.stale.push_back({"the header's RSA signature", kRsaSignature, 1});
-    }
-    if (!AllZero(image.subspan(kWhitelistHeaderHash, kHashBytes)) &&
-        !Same(header.first(kWhitelistBytes), image.first(kWhitelistBytes)))
-    {
-        result.stale.push_back({"the whitelist's hash of the header and the binaries", kWhitelistHeaderHash, 1});
-    }
-    if (!AllZero(image.subspan(kWhitelistOverlaysHash, kHashBytes)) &&
-        !Same(std::span(out).subspan(fat, h.fat_size), image.subspan(h.fat_offset, h.fat_size)))
-    {
-        result.stale.push_back({"the whitelist's hash of the ARM9 overlays and the FAT", kWhitelistOverlaysHash, 1});
-    }
+    AddStaleSignatures(out, image, h, fat, result);
     result.image = std::move(out);
 
     return result;

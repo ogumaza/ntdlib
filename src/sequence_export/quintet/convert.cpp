@@ -69,8 +69,8 @@ using ntdlib::sequence_export::agb::BankProgram;
 using ntdlib::sequence_export::agb::BeatTicks;
 using ntdlib::sequence_export::agb::BendRangeFor;
 using ntdlib::sequence_export::agb::ChannelWriter;
+using ntdlib::sequence_export::agb::KeyHz;
 using ntdlib::sequence_export::agb::kFifoLevel;
-using ntdlib::sequence_export::agb::kMiddleC;
 using ntdlib::sequence_export::agb::kPsgLevelPerVolume;
 using ntdlib::sequence_export::agb::LevelsToControllers;
 using ntdlib::sequence_export::agb::Looped;
@@ -1050,7 +1050,7 @@ KeyTuning PsgTuning(const Rom& rom, const DriverInfo& info, int shift = 0)
     {
         const int index = std::clamp(key - shift - kSquareBaseKey, 0, kFrequencyEntries - 1);
         const int setting = rom.U16(info.frequency_table + uint32_t(index) * 2) & 0x7FF;
-        const double equal = kMiddleC * std::pow(2.0, (kSquareBaseKey + index - 60) / 12.0);
+        const double equal = KeyHz(kSquareBaseKey + index);
         tuning[size_t(key)] = SettingCents(setting, equal);
     }
 

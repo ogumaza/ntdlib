@@ -16,9 +16,9 @@
 #include <cmath>
 #include <cstdint>
 
+#include "common/force_inline.h"
 #include "ntdlib/fused.h"
 #include "ntdlib/ppc/cpu.h"
-#include "ppc/inline.h"
 
 namespace ntdlib::ppc
 {
@@ -100,25 +100,11 @@ uint32_t DoubleToSingle(double value)
     return static_cast<uint32_t>(bits >> 32 & 0x80000000);
 }
 
-// fctiw and fctiwz: converts a double to a 32-bit integer with saturation. NaN becomes the most negative integer.
+// fctiw and fctiwz: converts a double to a 32-bit integer with saturation. NaN becomes the most negative integer. fctiw
+// rounds by the current rounding mode first.
 uint32_t ConvertToInt(double value, bool truncate)
 {
-    if (std::isnan(value))
-    {
-        return 0x80000000;
-    }
-
-    const double rounded = truncate ? std::trunc(value) : std::nearbyint(value);
-    if (rounded >= 2147483648.0)
-    {
-        return 0x7fffffff;
-    }
-    if (rounded < -2147483648.0)
-    {
-        return 0x80000000;
-    }
-
-    return static_cast<uint32_t>(static_cast<int32_t>(rounded));
+    return static_cast<uint32_t>(ntdlib::PowerPcDoubleToInt32(truncate ? value : std::nearbyint(value)));
 }
 
 double Negate(double value)
@@ -414,7 +400,7 @@ bool Cpu::PairedLoadStore(uint32_t op)
     {
         const Quantization q = LoadQuantization(gqr);
         const int size = Size(q.type);
-        const auto read = [&](uint32_t at) NTDLIB_PPC_INLINE_LAMBDA
+        const auto read = [&](uint32_t at) NTDLIB_INLINE_LAMBDA
         {
             return size == 1 ? uint32_t{Read8(at)} : size == 2 ? uint32_t{Read16(at)} : Read32(at);
         };
@@ -433,7 +419,7 @@ bool Cpu::PairedLoadStore(uint32_t op)
     {
         const Quantization q = StoreQuantization(gqr);
         const int size = Size(q.type);
-        const auto write = [&](uint32_t at, double value) NTDLIB_PPC_INLINE_LAMBDA
+        const auto write = [&](uint32_t at, double value) NTDLIB_INLINE_LAMBDA
         {
             const uint32_t raw = Quantize(value, q);
             if (size == 1)
@@ -538,7 +524,7 @@ bool Cpu::Op63(uint32_t op)
     const double b = s.fpr[Fb(op)].ps0;
     const double c = s.fpr[Fc(op)].ps0;
 
-    const auto arithmetic = [&](double result) NTDLIB_PPC_INLINE_LAMBDA
+    const auto arithmetic = [&](double result) NTDLIB_INLINE_LAMBDA
     {
         rd.ps0 = result;
         SetFprf(result);
@@ -547,7 +533,7 @@ bool Cpu::Op63(uint32_t op)
         return true;
     };
 
-    const auto move = [&](double result) NTDLIB_PPC_INLINE_LAMBDA
+    const auto move = [&](double result) NTDLIB_INLINE_LAMBDA
     {
         rd.ps0 = result;
         RecordFpscr(op);
@@ -704,7 +690,7 @@ bool Cpu::Op4(uint32_t op)
     const Fpr b = s.fpr[Fb(op)];
     const Fpr c = s.fpr[Fc(op)];
 
-    const auto set = [&](double ps0, double ps1) NTDLIB_PPC_INLINE_LAMBDA
+    const auto set = [&](double ps0, double ps1) NTDLIB_INLINE_LAMBDA
     {
         s.fpr[d].ps0 = RoundToSingle(ps0);
         s.fpr[d].ps1 = RoundToSingle(ps1);
@@ -714,7 +700,7 @@ bool Cpu::Op4(uint32_t op)
         return true;
     };
 
-    const auto move = [&](double ps0, double ps1) NTDLIB_PPC_INLINE_LAMBDA
+    const auto move = [&](double ps0, double ps1) NTDLIB_INLINE_LAMBDA
     {
         s.fpr[d].ps0 = ps0;
         s.fpr[d].ps1 = ps1;

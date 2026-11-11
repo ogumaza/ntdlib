@@ -2,17 +2,67 @@
 
 // Decoders for the ADPCM formats of Nintendo's consoles: DSP-ADPCM (GameCube, Wii, Wii U, 3DS and Switch), the 3DS's
 // IMA-ADPCM and the GameCube's AFC. Each decoder stops where its data ends. A caller that requires every sample checks
-// the length of the result.
+// the length of the result. Four helpers convert between a DSP-ADPCM wave's samples and the nibbles and bytes of its
+// frames.
 
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <concepts>
 #include <cstdint>
 #include <span>
 #include <vector>
 
 namespace ntdlib::wave
 {
+
+// The standard IMA-ADPCM tables: the change of the step index for each nibble, and the 89 steps.
+inline constexpr std::array<int, 16> kImaIndex = {-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8};
+inline constexpr std::array<int, 89> kImaStep = {
+    7,    8,     9,     10,    11,    12,    13,    14,    16,    17,    19,    21,    23,    25,   28,
+    31,   34,    37,    41,    45,    50,    55,    60,    66,    73,    80,    88,    97,    107,  118,
+    130,  143,   157,   173,   190,   209,   230,   253,   279,   307,   337,   371,   408,   449,  494,
+    544,  598,   658,   724,   796,   876,   963,   1060,  1166,  1282,  1411,  1552,  1707,  1878, 2066,
+    2272, 2499,  2749,  3024,  3327,  3660,  4026,  4428,  4871,  5358,  5894,  6484,  7132,  7845, 8630,
+    9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
+
+// A DSP-ADPCM frame takes 8 bytes: a header byte, then 14 samples of a nibble each. The DSP addresses the samples in
+// nibbles, 16 to a frame, with the header in the first two. The four functions below count in T. A 32-bit unsigned
+// count wraps as the consoles' 32-bit code does. A signed count divides towards zero.
+
+// The nibble of sample `sample`, from the start of the samples.
+template <std::integral T>
+constexpr T DspAdpcmNibbleAddress(T sample)
+{
+    return sample / 14 * 16 + sample % 14 + 2;
+}
+
+// The sample at nibble `address`, from the start of the samples. An address on a frame's header gives the frame's first
+// sample.
+template <std::integral T>
+constexpr T DspAdpcmSampleAt(T address)
+{
+    return address / 16 * 14 + std::max<T>(address % 16, 2) - 2;
+}
+
+// The nibbles that the first `samples` samples take, with the headers of their frames. Samples that end a frame take
+// none of the next frame's header.
+template <std::integral T>
+constexpr T DspAdpcmNibbleCount(T samples)
+{
+    const T rest = samples % 14;
+
+    return samples / 14 * 16 + (rest != 0 ? rest + 2 : 0);
+}
+
+// The bytes that the first `samples` samples take: DspAdpcmNibbleCount rounded up to whole bytes. A last odd nibble
+// takes its whole byte. DspAdpcmBytes in encode.h counts whole frames instead.
+template <std::integral T>
+constexpr T DspAdpcmByteCount(T samples)
+{
+    return (DspAdpcmNibbleCount(samples) + 1) / 2;
+}
 
 // How a DSP-ADPCM decoder adds up a sample. The forms give the same results unless the sum passes 32 bits or a frame's
 // scale is 2^15. No real wave does either.

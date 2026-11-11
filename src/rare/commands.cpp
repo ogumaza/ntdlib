@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/data_items.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/rare/song.h"
 
@@ -27,6 +28,7 @@ using commands::Kind;
 using commands::kOne;
 using commands::ToUnit;
 using Item = commands::Command;
+using agb::DataItem;
 
 bool HasChannel(uint8_t command)
 {
@@ -327,14 +329,6 @@ private:
     std::string problem_;
 };
 
-Item DataItem(std::span<const uint8_t> bytes)
-{
-    Item item;
-    item.kind = Kind::kData;
-    item.bytes.assign(bytes.begin(), bytes.end());
-    return item;
-}
-
 // Keeps a sequence whose commands can't be read safely as data, split at the tracks' starts.
 Decoded Opaque(std::span<const uint8_t> data, std::span<const uint32_t> starts, std::string reason)
 {
@@ -342,16 +336,8 @@ Decoded Opaque(std::span<const uint8_t> data, std::span<const uint32_t> starts, 
     decoded.opaque = true;
     decoded.reason = std::move(reason);
 
-    std::set<uint32_t> splits = {0};
-    splits.insert(starts.begin(), starts.end());
-    std::map<uint32_t, uint32_t> items;
-    for (auto it = splits.begin(); it != splits.end(); ++it)
-    {
-        const auto next = std::next(it);
-        const uint32_t end = next == splits.end() ? uint32_t(data.size()) : *next;
-        items[*it] = uint32_t(decoded.sequence.items.size());
-        decoded.sequence.items.push_back(DataItem(data.subspan(*it, end - *it)));
-    }
+    const std::map<uint32_t, uint32_t> items =
+        agb::AppendDataItems(data, {starts.begin(), starts.end()}, decoded.sequence.items);
     for (const uint32_t start : starts)
     {
         decoded.entries.push_back(items.at(start));

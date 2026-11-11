@@ -70,6 +70,7 @@ double FitEnvelope(Zone& zone, const EnvelopeShape& shape, double updates_per_se
     {
         return shape.squared_lines ? level * level : level;
     };
+
     const double rise_ms = shape.points[top].updates * ms_per_update;
     const double start = shape.points[0].level / peak;
     if (start > 0.0)

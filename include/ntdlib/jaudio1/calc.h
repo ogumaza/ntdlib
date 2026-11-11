@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "ntdlib/jaudio2/calc.h"
@@ -30,6 +31,10 @@ struct RandomFast
     float Next();
 };
 
+// The step of JASPlayer::getRandomS32's generator: the next value from the last two, `v0` the older. The C JAudio's
+// GetRandom_s32 takes the same step.
+int32_t NextRandomS32(int32_t v0, int32_t v1);
+
 // The pitch of `key` against C5 (60): 2 to the (key - 60) / 12, from main's table. The key is clamped to 0 to 127.
 float Key2Pitch(int32_t key);
 
@@ -41,5 +46,15 @@ float PitchToCent(float value, float range);
 // reads it with the angle times 2048 / 2π, truncated, in 11 bits. A negative angle reads the table with the angle's
 // magnitude and negates the entry.
 float SinRadian(float radians);
+
+// A track's level of the delay between its outputs (the field at +0x2e0): 128 times the level, truncated, then one of
+// the two delays. The Switch build tests the byte's sign by bit 7 of the 32-bit value. The C JAudio's OSf32tos8 and the
+// code around it give the same delays. The first is the left output's, the second the right output's.
+std::array<uint8_t, 2> DelaySamples(float level);
+
+// Whether a condition (its low 4 bits) holds for the 16-bit `value` of register 3 (JASSeqParser::conditionCheck, and
+// the C JAudio's __ConditionCheck): 0 always, 1 zero, 2 not zero, 3 one, 4 negative, 5 not negative. No other
+// condition holds.
+bool ConditionHolds(uint16_t value, uint32_t condition);
 
 } // namespace ntdlib::jaudio1

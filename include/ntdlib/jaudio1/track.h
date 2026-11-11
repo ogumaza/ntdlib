@@ -379,6 +379,21 @@ public:
 private:
     using Args = std::array<uint32_t, 8>;
 
+    // An operation of writeRegParam, passed from part to part: the operation, the kind of operand, the kind of the
+    // entries of a table, the target register, the address of a table, the operand, and the result with the 32-bit
+    // value that a 32-bit register takes (`last`).
+    struct RegOperation
+    {
+        uint32_t operation = 0;
+        uint32_t operand_kind = 0;
+        uint32_t table_kind = 0;
+        uint32_t target = 0;
+        uint32_t table = 0;
+        uint32_t operand = 0;
+        uint32_t result = 0;
+        uint32_t last = 0;
+    };
+
     // JASTrack's constructor, init and inherit, and the pool's allocation and return of a child.
     void Construct(Track& track);
     void Init(uint32_t index);
@@ -389,6 +404,7 @@ private:
     // rootCallback's steps: mainProc, updateSeq, updateTrack, updateTrackAll, updateTempo, updateTimedParam and close.
     int32_t RootCallback(uint32_t index);
     int32_t MainProc(uint32_t index);
+    bool ReadyToParse(Track& track);
     void UpdateSeq(uint32_t index, uint32_t flags, bool recursive);
     void UpdateTrack(uint32_t index, uint32_t flags);
     void UpdateTrackAll(uint32_t index);
@@ -407,6 +423,9 @@ private:
     // The parser: the commands until a wait, and the commands by their kinds.
     int32_t ParseSeq(uint32_t index);
     int32_t CmdNoteOn(uint32_t index, uint32_t key);
+    int32_t CmdWait(uint32_t index, uint32_t command);
+    void CmdNoteOff(uint32_t index, uint32_t command);
+    int32_t CmdRegisters(uint32_t index, uint32_t command);
     int32_t CmdProcess(uint32_t index, uint32_t command, uint32_t register_mask);
     int32_t Execute(uint32_t index, uint32_t command, const Args& args);
     void CmdSetParam(uint32_t index, uint32_t flags);
@@ -415,13 +434,30 @@ private:
     void CmdPrintf(Track& track);
     bool Condition(const Track& track, uint32_t flag) const;
 
-    // The reads of the sequence at the cursor and at an offset, big-endian.
+    // The groups of Execute. Each returns the command's result for the parser. The tree of tracks and the flow: the
+    // opens and closes, the calls, jumps, loops and waits, and the end of the track.
+    int32_t FlowCommand(uint32_t index, uint32_t command, const Args& args);
+
+    // The ports and the requests to the game's code (syncCPU).
+    int32_t PortCommand(uint32_t index, uint32_t command, const Args& args);
+
+    // The oscillators, the envelopes and the vibrato.
+    int32_t OscCommand(uint32_t index, uint32_t command, const Args& args);
+
+    // The levels, the pans, the filters and the outer parameters.
+    int32_t LevelCommand(uint32_t index, uint32_t command, const Args& args);
+
+    // The interrupts and their timer.
+    int32_t InterruptCommand(uint32_t index, uint32_t command, const Args& args);
+
+    // The rest of the track's state: the last note, the transpose, the timing and the pause, the check of a wave and
+    // the print.
+    int32_t StateCommand(uint32_t index, uint32_t command, const Args& args);
+
+    // The reads of the sequence at the cursor, big-endian.
     uint8_t ReadByte(Track& track);
     uint16_t Read16(Track& track);
     uint32_t Read24(Track& track);
-    uint16_t Get16(const Track& track, uint32_t offset) const;
-    uint32_t Get24(const Track& track, uint32_t offset) const;
-    uint32_t Get32(const Track& track, uint32_t offset) const;
 
     // The registers: exchangeRegisterValue, readReg32, readReg16, writeRegDirect and writeRegParam.
     uint32_t ExchangeRegisterValue(uint32_t index, uint32_t reg);
@@ -431,6 +467,19 @@ private:
     void WriteRegParam(uint32_t index, uint32_t command);
     uint16_t Register(const Track& track, uint32_t reg);
     void SetRegister(Track& track, uint32_t reg, uint32_t value);
+
+    // The parts of WriteRegParam. Reads the operation from the command and the bytes after it, then the target and the
+    // operand.
+    RegOperation ReadRegOperand(uint32_t index, uint32_t command);
+
+    // Applies the operation to the target value. Returns false when the operation has stored its result.
+    bool ApplyRegOperation(uint32_t index, RegOperation& op);
+
+    // Operation 0xa's read of the table at op.table: the entry at the operand, of the size and step of op.table_kind.
+    uint32_t RegTableEntry(const Track& track, const RegOperation& op) const;
+
+    // Stores the result in the target and in register 3.
+    void StoreRegResult(uint32_t index, const RegOperation& op);
 
     // The notes: noteOn, noteOff, gateOn and overwriteOsc, the oscillators' set-ups, and seqTimeToDspTime.
     int32_t NoteOn(uint32_t index, uint32_t note, uint32_t key, uint32_t velocity, int32_t time, uint32_t skip);

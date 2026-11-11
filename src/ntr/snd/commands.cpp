@@ -17,6 +17,9 @@
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 
+#include "commands/decoding.h"
+#include "commands/encoding.h"
+
 namespace ntdlib::ntr::snd
 {
 
@@ -27,6 +30,9 @@ using commands::Argument;
 using commands::Command;
 using commands::Kind;
 using commands::Source;
+using commands::detail::Cover;
+using commands::detail::Found;
+using commands::detail::Read;
 using detail::Width;
 
 constexpr uint8_t kAllocateTracks = 0xFE;
@@ -350,29 +356,6 @@ bool ReadsBack(std::span<const uint8_t> bytes, uint32_t start, const Command& co
     return played.next == bytes.size() && read == command;
 }
 
-// A command that the decoder read, at its offset.
-struct Read
-{
-    Command command;
-    uint32_t size = 0;
-    bool raw = false; // the encoder would write other bytes: the item keeps the bytes
-};
-
-// What covers each byte: nothing yet, a command's first byte, or one of its other bytes.
-enum class Cover : uint8_t
-{
-    kFree,
-    kStart,
-    kInside,
-};
-
-// The commands that the decoder has found, and the bytes they cover.
-struct Found
-{
-    std::map<uint32_t, Read> reads;
-    std::vector<Cover> cover;
-};
-
 // The command at `at`, or nothing where it runs past the end of `data`. At a sequence's entry, an allocation of tracks
 // comes first.
 std::optional<Read> ReadAt(std::span<const uint8_t> data, uint32_t at, bool entry)
@@ -403,64 +386,22 @@ std::optional<Read> ReadAt(std::span<const uint8_t> data, uint32_t at, bool entr
     return read;
 }
 
-bool Free(const Found& found, uint32_t at, uint32_t size)
-{
-    const auto start = found.cover.begin() + at;
-    return std::all_of(start, start + size, [](Cover c) { return c == Cover::kFree; });
-}
-
-void Mark(Found& found, uint32_t at, Read read)
-{
-    found.cover[at] = Cover::kStart;
-    std::fill(found.cover.begin() + at + 1, found.cover.begin() + at + read.size, Cover::kInside);
-    found.reads.emplace(at, std::move(read));
-}
-
 // Follows the commands from each of `starts`, the labels and the entries, through every jump, call and track start.
 // Returns false where a command overlaps another, or where the flow leads inside a command.
 bool Follow(std::span<const uint8_t> data, const std::set<uint32_t>& starts, Found& found)
 {
-    std::vector<uint32_t> pending(starts.begin(), starts.end());
-    while (!pending.empty())
+    // At a label or an entry, an allocation of tracks may come first. A target there reads it as one too.
+    const auto read_at = [&](uint32_t at, bool first)
     {
-        uint32_t at = pending.back();
-        pending.pop_back();
-        bool entry = starts.contains(at);
-        while (at < data.size() && found.cover[at] == Cover::kFree)
-        {
-            std::optional<Read> read = ReadAt(data, at, entry);
-            entry = false;
-            if (!read)
-            {
-                break; // the rest stays data
-            }
-            if (!Free(found, at, read->size))
-            {
-                return false;
-            }
+        return ReadAt(data, at, first && starts.contains(at));
+    };
+    const auto falls_through = [](const Command& command)
+    {
+        return FallsThrough(command);
+    };
 
-            if (commands::HasTarget(read->command.kind))
-            {
-                pending.push_back(read->command.target);
-            }
-
-            const bool next = FallsThrough(read->command);
-            const uint32_t size = read->size;
-            Mark(found, at, std::move(*read));
-            if (!next)
-            {
-                break;
-            }
-
-            at += size;
-        }
-        if (at < data.size() && found.cover[at] == Cover::kInside)
-        {
-            return false;
-        }
-    }
-
-    return true;
+    return commands::detail::Follow(data, std::vector<uint32_t>(starts.begin(), starts.end()), found, read_at,
+                                    falls_through);
 }
 
 // Follows the sequences that no entry names: runs of bytes that start with an allocation of tracks where no command
@@ -497,151 +438,6 @@ void FollowOrphans(std::span<const uint8_t> data, std::set<uint32_t>& starts, Fo
         found = std::move(tried);
         starts.insert(at);
     }
-}
-
-// Reads the commands in the bytes that the driver never reaches, such as the end after a track's last jump or a track
-// that no command starts. A run of them counts from the start of the bytes that no command covers, up to an end, a jump
-// or a return, or up to a command that the driver reaches. More runs may follow it, such as a subroutine that the
-// first one calls. The most runs whose targets all lead to items count. Bytes that no such run covers stay as data.
-void Guess(std::span<const uint8_t> data, const std::set<uint32_t>& cuts, Found& found)
-{
-    uint32_t at = 0;
-    while (at < data.size())
-    {
-        if (found.cover[at] == Cover::kStart)
-        {
-            at += found.reads.at(at).size;
-            continue;
-        }
-
-        // The bytes that no command covers, up to the next command or cut.
-        uint32_t end = at + 1;
-        while (end < data.size() && found.cover[end] == Cover::kFree && !cuts.contains(end))
-        {
-            end++;
-        }
-
-        // Runs of commands one after another, each up to a command that ends it.
-        std::vector<std::pair<uint32_t, Read>> run;
-        std::vector<std::size_t> run_ends; // the commands up to each run's end
-        uint32_t next = at;
-        while (next < end)
-        {
-            std::optional<Read> read = ReadAt(data, next, false);
-            if (!read || read->raw || next + read->size > end)
-            {
-                break;
-            }
-
-            const uint32_t size = read->size;
-            const bool counts = !FallsThrough(read->command) ||
-                                (next + size == end && end < data.size() && found.cover[end] == Cover::kStart);
-            run.emplace_back(next, std::move(*read));
-            next += size;
-            if (counts)
-            {
-                run_ends.push_back(run.size());
-            }
-        }
-
-        // A target leads to a command, a cut, the end, or a command of the runs taken.
-        std::size_t taken = 0;
-        for (auto count = run_ends.rbegin(); count != run_ends.rend() && taken == 0; ++count)
-        {
-            const auto first = run.begin();
-            const auto last = run.begin() + static_cast<std::ptrdiff_t>(*count);
-            const auto leads = [&](uint32_t target)
-            {
-                return target >= data.size() || found.cover[target] == Cover::kStart || cuts.contains(target) ||
-                       std::any_of(first, last, [&](const auto& read) { return read.first == target; });
-            };
-            const auto target_leads = [&](const auto& read)
-            {
-                const Command& command = read.second.command;
-                return !commands::HasTarget(command.kind) || leads(command.target);
-            };
-            if (std::all_of(first, last, target_leads))
-            {
-                taken = *count;
-            }
-        }
-        if (taken == 0)
-        {
-            at = end;
-            continue;
-        }
-
-        at = run[taken - 1].first + run[taken - 1].second.size;
-        for (std::size_t i = 0; i < taken; i++)
-        {
-            Mark(found, run[i].first, std::move(run[i].second));
-        }
-    }
-}
-
-// The items of `data` in the order of their bytes, from the commands in `found`. Data splits at `cuts`. Gives the item
-// at each offset where one starts, and at the end. Without commands, the items are the whole bytecode as data, split at
-// `cuts`.
-commands::Sequence Items(std::span<const uint8_t> data, const Found& found, const std::set<uint32_t>& cuts,
-                         std::map<uint32_t, uint32_t>& items)
-{
-    commands::Sequence sequence;
-    uint32_t at = 0;
-    while (at < data.size())
-    {
-        items[at] = static_cast<uint32_t>(sequence.items.size());
-        const auto read = found.reads.find(at);
-        if (read != found.reads.end() && !read->second.raw)
-        {
-            sequence.items.push_back(read->second.command);
-            at += read->second.size;
-            continue;
-        }
-
-        // A run of data up to the next command, cut or end. A raw command stands alone.
-        uint32_t end = read != found.reads.end() ? at + read->second.size : static_cast<uint32_t>(data.size());
-        if (read == found.reads.end())
-        {
-            const auto next_read = found.reads.upper_bound(at);
-            if (next_read != found.reads.end())
-            {
-                end = std::min(end, next_read->first);
-            }
-
-            const auto next_cut = cuts.upper_bound(at);
-            if (next_cut != cuts.end())
-            {
-                end = std::min(end, *next_cut);
-            }
-        }
-
-        Command item;
-        item.kind = Kind::kData;
-        item.bytes.assign(data.begin() + at, data.begin() + end);
-        sequence.items.push_back(std::move(item));
-        at = end;
-    }
-    items[static_cast<uint32_t>(data.size())] = static_cast<uint32_t>(sequence.items.size());
-
-    // The targets by item.
-    for (Command& command : sequence.items)
-    {
-        if (!commands::HasTarget(command.kind))
-        {
-            continue;
-        }
-
-        const auto item = items.find(command.target);
-        if (item == items.end())
-        {
-            command.target_outside = true; // past the end: the offset stays
-            continue;
-        }
-
-        command.target = item->second;
-    }
-
-    return sequence;
 }
 
 } // namespace
@@ -724,27 +520,8 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
                        std::span<const uint32_t> entries)
 {
     // Every label and entry starts an item, and so does every target.
-    std::set<uint32_t> cuts;
-    for (const LabelOffset& label : labels)
-    {
-        if (label.offset > data.size())
-        {
-            throw std::invalid_argument("a label past the end of the sequence: " + label.name);
-        }
-
-        cuts.insert(label.offset);
-    }
-    for (const uint32_t entry : entries)
-    {
-        if (entry > data.size())
-        {
-            throw std::invalid_argument("an entry past the end of the sequence: " + std::to_string(entry));
-        }
-
-        cuts.insert(entry);
-    }
-
-    const std::set<uint32_t> entries_and_labels = cuts;
+    const std::set<uint32_t> entries_and_labels = commands::detail::Starts(data.size(), labels, entries);
+    std::set<uint32_t> cuts = entries_and_labels;
     std::set<uint32_t> starts = cuts;
 
     Found found;
@@ -780,15 +557,28 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
 
     Decoded decoded;
     std::map<uint32_t, uint32_t> items; // byte offset to item
+    const auto offset_of = [](uint32_t target)
+    {
+        return std::optional<uint32_t>(target); // a target past the end keeps its offset
+    };
     if (opaque)
     {
-        decoded.sequence = Items(data, Found{}, entries_and_labels, items);
+        decoded.sequence = commands::detail::Items(data, Found{}, entries_and_labels, items, offset_of);
         decoded.opaque = true;
     }
     else
     {
-        Guess(data, cuts, found);
-        decoded.sequence = Items(data, found, cuts, items);
+        // The commands that the driver never reaches. The most runs of them whose targets all lead to items count.
+        const auto read_at = [&](uint32_t at, bool)
+        {
+            return ReadAt(data, at, false);
+        };
+        const auto falls_through = [](const Command& command)
+        {
+            return FallsThrough(command);
+        };
+        commands::detail::Guess(data, cuts, true, found, read_at, falls_through, offset_of);
+        decoded.sequence = commands::detail::Items(data, found, cuts, items, offset_of);
     }
 
     for (const LabelOffset& label : labels)
@@ -836,45 +626,17 @@ Encoded EncodeSequence(const commands::Sequence& sequence)
         Convert(item, commands::FromUnit);
     }
 
-    // Each item's size doesn't depend on its target's offset. The sizes give the offsets.
-    Encoded encoded;
-    encoded.offsets.reserve(items.size() + 1);
-    std::vector<uint8_t> scratch;
-    uint32_t at = 0;
-    for (const Command& item : items)
+    // The bytes from offset 0. The driver has to read each command's bytes back as the command.
+    const auto append = [](std::vector<uint8_t>& out, const Command& item, uint32_t target)
     {
-        encoded.offsets.push_back(at);
-        scratch.clear();
-        AppendCommand(scratch, item, 0);
-        at += static_cast<uint32_t>(scratch.size());
-    }
-    encoded.offsets.push_back(at);
-
-    // Then the bytes, with each target's offset. The driver has to read each command's bytes back as the command.
-    encoded.bytes.reserve(at);
-    for (const Command& item : items)
+        AppendCommand(out, item, target);
+    };
+    const auto reads_back = [](std::span<const uint8_t> bytes, std::size_t start, const Command& item, uint32_t target)
     {
-        uint32_t target = item.target;
-        if (commands::HasTarget(item.kind) && !item.target_outside)
-        {
-            if (item.target >= encoded.offsets.size())
-            {
-                throw std::invalid_argument("a target past the items");
-            }
+        return ReadsBack(bytes, static_cast<uint32_t>(start), item, target);
+    };
 
-            target = encoded.offsets[item.target];
-        }
-
-        const auto start = static_cast<uint32_t>(encoded.bytes.size());
-        AppendCommand(encoded.bytes, item, target);
-        if (item.kind != Kind::kData && !ReadsBack(encoded.bytes, start, item, target))
-        {
-            throw std::invalid_argument("the driver would read other commands from the bytes of " +
-                                        std::string(commands::Name(item.kind)));
-        }
-    }
-
-    return encoded;
+    return commands::detail::Encode<Encoded>(items, 0, "driver", append, reads_back);
 }
 
 } // namespace ntdlib::ntr::snd

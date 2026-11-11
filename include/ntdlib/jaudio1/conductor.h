@@ -82,6 +82,9 @@ public:
     // and 21, where the module's start puts its handle (PSSystem::setObject).
     std::optional<uint16_t> Sync(Tracks& tracks, uint32_t index, uint32_t value);
 
+    // Whether `value` is one of the requests that the conductor takes.
+    static bool TakesRequest(uint32_t value);
+
     // The count at every other beat of the root track (the conductor's beatUpdate): each track's module counts a beat.
     void CountBeat();
 

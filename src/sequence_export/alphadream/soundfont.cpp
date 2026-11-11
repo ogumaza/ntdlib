@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/sf2/presets.h"
+
 #include "ntdlib/agb/gba.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/alphadream/driver.h"
@@ -250,7 +252,7 @@ std::vector<std::string> InstrumentSet::Build(const Rom& rom, const DriverInfo& 
                 sf2::Zone z = SampleZone(sample, Looped(file.samples[size_t(sample)]), r.lo, r.hi);
                 if (r.sample & 0x8000)
                 {
-                    z.generators.insert(z.generators.end() - 1, sf2::Generator::Value(sf2::kScaleTuning, 0));
+                    sf2::AddGenerator(z, sf2::kScaleTuning, 0);
                 }
                 AddVolumeEnvelope(z, SampleEnvelope(r));
                 si.zones.push_back(z);

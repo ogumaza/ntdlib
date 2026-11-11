@@ -87,6 +87,9 @@ public:
     std::function<void(const SbnNoteStart&)> on_note;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     struct Wave
     {
         uint32_t data = 0;
@@ -388,15 +391,35 @@ private:
     void Initialize(int index);
     void ReadComposition(Player& player);
     void EndCompositionLoop(Player& player, uint32_t command);
+    static void RepeatCompositionLoop(Player& player, uint32_t& depth, uint32_t label);
     void LoadPhrase(Player& player, uint32_t command);
     void UpdateStop(int index);
     void UpdatePlaying(int index);
+    static bool StepPlayerRamps(Player& player);
+    static void StepTrackRamps(Track& track, bool changed_volume);
+    bool RunTrackCommands(int index, int t, Track& track);
+    void StartNote(int index, int t, Track& track, uint8_t opcode, uint32_t command_place, uint8_t& search_from);
+    bool AcquireVoice(Player& player, const Track& track, uint8_t& search_from, uint8_t& voice_index);
+    bool StealVoice(Player& player, const Track& track, uint8_t& voice_index);
+    void SetUpDrumNote(const Player& player, const Track& track, int32_t key, int32_t level, Voice& voice, Note& note);
+    void SetUpInstrumentNote(int index, const Track& track, int32_t key, int32_t level, Voice& voice, Note& note);
+    void UpdateTrackNotes(Player& player, const Track& track);
+    void UpdateNote(const Player& player, const Track& track, Voice& voice, Note& note);
+    void UpdateDrumNote(const Player& player, const Track& track, int32_t level, Voice& voice, Note& note);
+    void UpdateInstrumentNote(const Player& player, const Track& track, int32_t level, Voice& voice, Note& note);
+    void SetNotePitch(Voice& voice, Note& note, int32_t tuning);
     uint8_t ReadTrackByte(Player& player, Track& track);
     void RunCommand(int index, Track& track, uint8_t opcode);
     void Special(int index, Track& track);
     void ResetVoice(int voice);
     void ResetAllVoices(const Player& player);
     void UpdateVoices();
+    static int32_t EnvelopeLevel(const Voice& voice);
+    static int32_t ApplyVolumeChange(Voice& voice);
+    static void SetEnvelopeVolume(Voice& voice, int32_t current);
+    static void SetSegmentVolume(Voice& voice);
+    void ReleaseEnvelope(Voice& voice);
+    void StepVoiceEnvelope(Voice& voice);
     void AfterVolumeChange(Voice& voice);
     void StartEnvelope(Voice& voice);
     uint8_t StepEnvelope(Voice& voice);
@@ -410,9 +433,17 @@ private:
     void LoadEffect(Bus& bus, Effect& effect, uint8_t type);
     void InitFilter(LowPass& filter, AudioMemory& memory);
     void BuildChunk(AudioList& list, AudioMemory& memory, uint32_t place);
+    void DelayBusChannel(AudioList& list) const;
+    void AccumulateBus(AudioList& list, const Bus& bus, bool first_bus) const;
     void PullVoice(AudioList& list, int index, AudioMemory& memory);
+    void DecodeAdpcmLoop(AudioList& list, Voice& voice, const Wave& wave, int32_t count, int& out);
+    void DecodeAdpcm(AudioList& list, Voice& voice, const Wave& wave, int32_t count, int& out);
+    void LoadPcmLoop(AudioList& list, Voice& voice, const Wave& wave, int32_t count, int& out);
+    void LoadPcm(AudioList& list, Voice& voice, const Wave& wave, int32_t count, int& out);
+    void MixVoice(AudioList& list, Voice& voice);
     void DecodeChunk(AudioList& list, Voice& voice, const Wave& wave, int tsam, int bytes, int16_t out, uint32_t flags);
     void PullEffect(AudioList& list, Effect& effect, int16_t wet);
+    void ResampleDelay(AudioList& list, const Effect& effect, Delay& delay, int output_buffer);
     void LoadDelayLine(AudioList& list, const Effect& effect, int64_t position, int buffer, int count);
 
     SbnPlayerConfig config_;

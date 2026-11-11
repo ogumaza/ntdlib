@@ -70,28 +70,26 @@ struct Game
     std::vector<Junk> junk; // offsets in `data`
 };
 
-// The test game, laid out as `layout` gives.
-inline Game BuildGame(const GameLayout& layout)
+// Where the test game's main.dol and file system table are in its data.
+inline constexpr uint64_t kGameDol = 0x10000;
+inline constexpr uint64_t kGameFst = 0x14000;
+
+// An offset or a size as boot.bin and the table store it.
+inline uint32_t Shifted(const GameLayout& layout, uint64_t value)
 {
-    Game game;
-    game.data.assign(0x3A0000, 0);
-    Bytes& data = game.data;
+    return static_cast<uint32_t>(value >> layout.shift);
+}
 
-    // An offset or a size as boot.bin and the table store it.
-    const auto shifted = [&layout](uint64_t value)
-    {
-        return static_cast<uint32_t>(value >> layout.shift);
-    };
-
+// The test game's system files: boot.bin without the table's size, bi2.bin, the apploader and main.dol.
+inline void BuildSystemFiles(Game& game, const GameLayout& layout)
+{
     // boot.bin, with the ID, the magic word, the title, and the offsets of main.dol and the file system table.
-    const uint64_t kDol = 0x10000;
-    const uint64_t kFst = 0x14000;
     game.boot.assign(0x440, 0);
     std::copy_n(layout.id.begin(), 6, game.boot.begin());
     xsflib::StoreBe32(game.boot.data() + layout.magic_offset, layout.magic);
     std::copy_n("TEST DISC", 9, game.boot.begin() + 0x20);
-    xsflib::StoreBe32(game.boot.data() + 0x420, shifted(kDol));
-    xsflib::StoreBe32(game.boot.data() + 0x424, shifted(kFst));
+    xsflib::StoreBe32(game.boot.data() + 0x420, Shifted(layout, kGameDol));
+    xsflib::StoreBe32(game.boot.data() + 0x424, Shifted(layout, kGameFst));
 
     game.bi2.assign(0x2000, 0);
     disc_files::Fill(game.bi2, 0, game.bi2.size(), 1);
@@ -115,18 +113,23 @@ inline Game BuildGame(const GameLayout& layout)
     xsflib::StoreBe32(game.dol.data() + 0x64, 0x80006000);
     xsflib::StoreBe32(game.dol.data() + 0xAC, 0x500);
     xsflib::StoreBe32(game.dol.data() + 0xE0, 0x80004000);
+}
 
+// A file of the test game: its name on the disc in Shift-JIS, its path as the reader gives it, its offset and its size.
+struct GameFile
+{
+    std::string disc_name;
+    std::string path;
+    uint64_t offset;
+    uint32_t size;
+};
+
+// Fills the test game's files in its data, and adds them to its files. Returns the files.
+inline std::vector<GameFile> BuildFiles(Game& game, const GameLayout& layout)
+{
     // The files: one across many sectors and two chunks, a small one in a subfolder, an empty one, and two whose names
     // aren't ASCII (half-width katakana, and two double-byte katakana of JIS X 0208).
-    struct File
-    {
-        std::string disc_name;
-        std::string path;
-        uint64_t offset;
-        uint32_t size;
-    };
-
-    const std::vector<File> files = {
+    std::vector<GameFile> files = {
         {"\x83R\x83s.bin", "\xE3\x82\xB3\xE3\x83\x94.bin", 0x18004, 0x1000},
         {layout.sound_file, layout.sound_folder + "/" + layout.sound_file, 0x20000, 0x30000},
         {layout.sub_sound_file, layout.sound_folder + "/sub/" + layout.sub_sound_file, 0x50010, 0x10},
@@ -136,11 +139,18 @@ inline Game BuildGame(const GameLayout& layout)
     };
     for (size_t i = 0; i < files.size(); ++i)
     {
-        disc_files::Fill(data, files[i].offset, files[i].size, static_cast<uint32_t>(10 + i));
-        game.files[files[i].path] = Bytes(data.begin() + static_cast<std::ptrdiff_t>(files[i].offset),
-                                          data.begin() + static_cast<std::ptrdiff_t>(files[i].offset + files[i].size));
+        disc_files::Fill(game.data, files[i].offset, files[i].size, static_cast<uint32_t>(10 + i));
+        game.files[files[i].path] =
+            Bytes(game.data.begin() + static_cast<std::ptrdiff_t>(files[i].offset),
+                  game.data.begin() + static_cast<std::ptrdiff_t>(files[i].offset + files[i].size));
     }
 
+    return files;
+}
+
+// The test game's file system table for `files`, and the table's size in boot.bin.
+inline void BuildFileTable(Game& game, const GameLayout& layout, const std::vector<GameFile>& files)
+{
     // The table: root, then each entry in order, with a directory's last entry + 1 as its size.
     struct Entry
     {
@@ -152,14 +162,14 @@ inline Game BuildGame(const GameLayout& layout)
 
     const std::vector<Entry> entries = {
         {"", true, 0, 9},
-        {files[0].disc_name, false, shifted(0x18004), 0x1000},
+        {files[0].disc_name, false, Shifted(layout, 0x18004), 0x1000},
         {layout.sound_folder, true, 0, 6},
-        {files[1].disc_name, false, shifted(0x20000), 0x30000},
+        {files[1].disc_name, false, Shifted(layout, 0x20000), 0x30000},
         {"sub", true, 2, 6},
-        {files[2].disc_name, false, shifted(0x50010), 0x10},
-        {"big.bin", false, shifted(0x60000), 0x250000},
-        {"empty.bin", false, shifted(0x2B0000), 0},
-        {files[5].disc_name, false, shifted(0x2B0000), 0x7C04},
+        {files[2].disc_name, false, Shifted(layout, 0x50010), 0x10},
+        {"big.bin", false, Shifted(layout, 0x60000), 0x250000},
+        {"empty.bin", false, Shifted(layout, 0x2B0000), 0},
+        {files[5].disc_name, false, Shifted(layout, 0x2B0000), 0x7C04},
     };
     std::string names;
     game.fst.assign(entries.size() * 12, 0);
@@ -180,10 +190,13 @@ inline Game BuildGame(const GameLayout& layout)
         game.fst.push_back(0);
     }
 
-    xsflib::StoreBe32(game.boot.data() + 0x428, shifted(game.fst.size()));
-    xsflib::StoreBe32(game.boot.data() + 0x42C, shifted(game.fst.size()));
+    xsflib::StoreBe32(game.boot.data() + 0x428, Shifted(layout, game.fst.size()));
+    xsflib::StoreBe32(game.boot.data() + 0x42C, Shifted(layout, game.fst.size()));
+}
 
-    // Junk between the files, as on a disc: one run inside a sector, one across several.
+// Junk between the files, as on a disc: one run inside a sector, one across several.
+inline void AddJunk(Game& game)
+{
     const uint64_t kSector = 0x8000; // the period of the junk
     for (const auto& [offset, size, seed] : {std::tuple{0x51000u, 0x3000u, 7u}, std::tuple{0x2B8000u, 0x50000u, 8u}})
     {
@@ -195,15 +208,27 @@ inline Game BuildGame(const GameLayout& layout)
 
         ntdlib::disc::JunkGenerator generator(junk.seed.data());
         generator.Skip(offset % kSector);
-        generator.Generate(data.data() + offset, size);
+        generator.Generate(game.data.data() + offset, size);
         game.junk.push_back(junk);
     }
+}
 
+// The test game, laid out as `layout` gives.
+inline Game BuildGame(const GameLayout& layout)
+{
+    Game game;
+    game.data.assign(0x3A0000, 0);
+    BuildSystemFiles(game, layout);
+    const std::vector<GameFile> files = BuildFiles(game, layout);
+    BuildFileTable(game, layout, files);
+    AddJunk(game);
+
+    Bytes& data = game.data;
     std::copy(game.boot.begin(), game.boot.end(), data.begin());
     std::copy(game.bi2.begin(), game.bi2.end(), data.begin() + 0x440);
     std::copy(game.apploader.begin(), game.apploader.end(), data.begin() + 0x2440);
-    std::copy(game.dol.begin(), game.dol.end(), data.begin() + kDol);
-    std::copy(game.fst.begin(), game.fst.end(), data.begin() + kFst);
+    std::copy(game.dol.begin(), game.dol.end(), data.begin() + kGameDol);
+    std::copy(game.fst.begin(), game.fst.end(), data.begin() + kGameFst);
 
     return game;
 }
@@ -505,6 +530,84 @@ inline void AddRawData(WiaContents& wia, const Bytes& iso, uint64_t end, const s
     }
 }
 
+// A group as a WIA or RVZ file stores it: its bytes, whether they're compressed, and the size of its data once RVZ
+// packs it, or 0.
+struct StoredGroup
+{
+    Bytes bytes = {};
+    bool compressed = false;
+    uint32_t packed_size = 0;
+};
+
+// `group` of `wia` as the file stores it. A compressed group adds the compressor's properties to `props`.
+inline StoredGroup StoreGroup(const WiaContents& wia, const GroupData& group, Bytes& props)
+{
+    StoredGroup stored;
+    Bytes body = group.data;
+    if (wia.rvz && !group.junk.empty())
+    {
+        body = Pack(group.data, group.junk);
+        stored.packed_size = static_cast<uint32_t>(body.size());
+    }
+
+    if (wia.method == Method::kPurge)
+    {
+        stored.bytes = Purge(group);
+    }
+    else if (wia.method == Method::kNone)
+    {
+        stored.bytes = group.lists;
+        stored.bytes.resize((stored.bytes.size() + 3) & ~size_t{3}, 0);
+        stored.bytes.insert(stored.bytes.end(), body.begin(), body.end());
+    }
+    else
+    {
+        Bytes plain = group.lists;
+        plain.insert(plain.end(), body.begin(), body.end());
+        stored.bytes = Compress(wia.method, plain, props);
+        stored.compressed = true;
+    }
+
+    return stored;
+}
+
+// The groups' data as the file stores it from `data_offset`, each aligned to 4 bytes, and the group table that gives
+// their places. A group of zeros stores nothing.
+struct StoredGroups
+{
+    Bytes data = {};
+    Bytes table = {};
+};
+
+inline StoredGroups StoreGroups(const WiaContents& wia, uint64_t data_offset, Bytes& props)
+{
+    StoredGroups groups;
+    for (const GroupData& group : wia.groups)
+    {
+        StoredGroup stored;
+        const uint64_t offset = data_offset + groups.data.size();
+        if (!AllZero(group.data, 0, group.data.size()))
+        {
+            stored = StoreGroup(wia, group, props);
+            groups.data.insert(groups.data.end(), stored.bytes.begin(), stored.bytes.end());
+            groups.data.resize((groups.data.size() + 3) & ~size_t{3}, 0);
+        }
+
+        Bytes entry(wia.rvz ? 12 : 8, 0);
+        xsflib::StoreBe32(entry.data(), static_cast<uint32_t>(offset / 4));
+        xsflib::StoreBe32(entry.data() + 4,
+                          static_cast<uint32_t>(stored.bytes.size()) | (wia.rvz && stored.compressed ? 0x80000000 : 0));
+        if (wia.rvz)
+        {
+            xsflib::StoreBe32(entry.data() + 8, stored.packed_size);
+        }
+
+        groups.table.insert(groups.table.end(), entry.begin(), entry.end());
+    }
+
+    return groups;
+}
+
 // The WIA or RVZ file of `wia`.
 inline Bytes WiaFile(const WiaContents& wia)
 {
@@ -531,57 +634,9 @@ inline Bytes WiaFile(const WiaContents& wia)
     const uint64_t partition_offset = 0x48 + disc_header.size();
     const uint64_t raw_offset = partition_offset + wia.partition_table.size();
     const uint64_t data_offset = (raw_offset + raw_stored.size() + 3) & ~uint64_t{3};
-    Bytes data;
-    Bytes group_table;
-    for (const GroupData& group : wia.groups)
-    {
-        uint32_t stored_size = 0;
-        bool compressed = false;
-        uint32_t packed_size = 0;
-        const uint64_t offset = data_offset + data.size();
-        if (!AllZero(group.data, 0, group.data.size()))
-        {
-            Bytes body = group.data;
-            if (wia.rvz && !group.junk.empty())
-            {
-                body = Pack(group.data, group.junk);
-                packed_size = static_cast<uint32_t>(body.size());
-            }
-
-            Bytes stored;
-            if (wia.method == Method::kPurge)
-            {
-                stored = Purge(group);
-            }
-            else if (wia.method == Method::kNone)
-            {
-                stored = group.lists;
-                stored.resize((stored.size() + 3) & ~size_t{3}, 0);
-                stored.insert(stored.end(), body.begin(), body.end());
-            }
-            else
-            {
-                Bytes plain = group.lists;
-                plain.insert(plain.end(), body.begin(), body.end());
-                stored = Compress(wia.method, plain, props);
-                compressed = true;
-            }
-
-            data.insert(data.end(), stored.begin(), stored.end());
-            stored_size = static_cast<uint32_t>(stored.size());
-            data.resize((data.size() + 3) & ~size_t{3}, 0);
-        }
-
-        Bytes entry(wia.rvz ? 12 : 8, 0);
-        xsflib::StoreBe32(entry.data(), static_cast<uint32_t>(offset / 4));
-        xsflib::StoreBe32(entry.data() + 4, stored_size | (wia.rvz && compressed ? 0x80000000 : 0));
-        if (wia.rvz)
-        {
-            xsflib::StoreBe32(entry.data() + 8, packed_size);
-        }
-
-        group_table.insert(group_table.end(), entry.begin(), entry.end());
-    }
+    const StoredGroups stored_groups = StoreGroups(wia, data_offset, props);
+    const Bytes& data = stored_groups.data;
+    const Bytes& group_table = stored_groups.table;
 
     const uint64_t group_offset = data_offset + data.size();
     const Bytes groups_stored = table(group_table);

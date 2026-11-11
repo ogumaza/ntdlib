@@ -122,8 +122,10 @@ constexpr std::array<StartingTracks, 49> kStartingTracks = {{
 struct StartingSequence
 {
     std::string_view archive_sha1;
+
     // The sound's name. With `prefix`, the start of the names of the sounds that the entry covers.
     std::string_view sound;
+
     SequenceStart start;
     bool prefix = false;
 };
@@ -502,6 +504,7 @@ constexpr SequenceStart DjTuneStart()
     {
         start.variables[step + 1] = {.index = static_cast<uint8_t>(32 + step), .value = kFirstDefaultTune[step]};
     }
+
     return start;
 }
 

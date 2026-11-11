@@ -136,4 +136,11 @@ struct AsnSound
 // is too short for its sounds.
 std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn, bool big_endian = true);
 
+// The key under which a name file names a sound: an effect's ID without bits 10 and 11, which set how long the game
+// plays the effect. Any other ID is the key itself.
+constexpr uint32_t AsnNameKey(uint32_t id)
+{
+    return (id & kAafTypeMask) == kAafEffect ? id & ~(kAafToEnd | kAafToEnd >> 1) : id;
+}
+
 } // namespace ntdlib::jaudio

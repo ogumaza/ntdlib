@@ -210,6 +210,88 @@ int CompressedMetaBytes(uint8_t type)
     }
 }
 
+// Reads the type and bytes of a meta event of a compressed track, after its FF. `index` is the index the event gets in
+// the track. `after_loop_start` contains the raw place in the file after each loop start, by the index of the loop
+// start. Returns true for the end of the track.
+bool ReadCompressedMeta(CompressedSource& source, MidiEvent& event, std::size_t index,
+                        std::unordered_map<std::size_t, int32_t>& after_loop_start)
+{
+    event.status = kMidiMeta;
+    event.type = source.Next();
+
+    const int bytes = CompressedMetaBytes(event.type);
+    if (bytes < 0)
+    {
+        throw xsflib::FormatError("a compressed MIDI track holds the unknown meta event " + std::to_string(event.type));
+    }
+
+    // The player reads a loop end's bytes as they stand, at the file's place, also where its FF 2D comes out of a
+    // block.
+    const bool raw = event.type == kCompressedLoopEnd;
+    event.payload.resize(static_cast<std::size_t>(bytes));
+    for (uint8_t& byte : event.payload)
+    {
+        byte = raw ? source.NextRaw() : source.Next();
+    }
+
+    if (event.type == kCompressedLoopStart && !source.InBlock())
+    {
+        after_loop_start[source.RawPosition()] = static_cast<int32_t>(index);
+    }
+    else if (event.type == kCompressedLoopEnd && !source.InBlock())
+    {
+        const uint32_t offset = xsflib::LoadBe32(event.payload.data() + 2);
+        const auto found = after_loop_start.find(source.RawPosition() - offset);
+        if (found != after_loop_start.end())
+        {
+            event.loop_start = found->second;
+        }
+    }
+    else if (event.type == kMidiMetaEndOfTrack)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+// Reads a channel message of a compressed track, after its first byte. A first byte below 0x80 uses the running status.
+void ReadCompressedChannelMessage(ByteSource& source, uint8_t first, uint8_t& last_status, MidiEvent& event)
+{
+    if ((first & 0x80) != 0)
+    {
+        event.status = first;
+        event.data1 = source.Next();
+        last_status = first;
+    }
+    else
+    {
+        if (last_status == 0)
+        {
+            throw xsflib::FormatError("a compressed MIDI track uses a running status before any status");
+        }
+
+        event.status = last_status;
+        event.data1 = first;
+        event.running_status = true;
+    }
+
+    if ((event.status & 0xF0) == 0xF0)
+    {
+        throw xsflib::FormatError("a compressed MIDI track holds the status " + std::to_string(event.status));
+    }
+
+    if (DataBytes(event.status) == 2)
+    {
+        event.data2 = source.Next();
+    }
+
+    if ((event.status & 0xF0) == 0x90)
+    {
+        event.duration = ReadVariableLength(source);
+    }
+}
+
 std::vector<MidiEvent> DecodeCompressedTrack(std::span<const uint8_t> file, std::size_t start, bool& ended)
 {
     CompressedSource source(file, start);
@@ -228,76 +310,11 @@ std::vector<MidiEvent> DecodeCompressedTrack(std::span<const uint8_t> file, std:
         const uint8_t first = source.Next();
         if (first == kMidiMeta)
         {
-            event.status = kMidiMeta;
-            event.type = source.Next();
-
-            const int bytes = CompressedMetaBytes(event.type);
-            if (bytes < 0)
-            {
-                throw xsflib::FormatError("a compressed MIDI track holds the unknown meta event " +
-                                          std::to_string(event.type));
-            }
-
-            // The player reads a loop end's bytes as they stand.
-            const bool raw = event.type == kCompressedLoopEnd && !source.InBlock();
-            event.payload.resize(static_cast<std::size_t>(bytes));
-            for (uint8_t& byte : event.payload)
-            {
-                byte = raw ? source.NextRaw() : source.Next();
-            }
-
-            if (event.type == kCompressedLoopStart && !source.InBlock())
-            {
-                after_loop_start[source.RawPosition()] = static_cast<int32_t>(events.size());
-            }
-            else if (event.type == kCompressedLoopEnd && !source.InBlock())
-            {
-                const uint32_t offset = xsflib::LoadBe32(event.payload.data() + 2);
-                const auto found = after_loop_start.find(source.RawPosition() - offset);
-                if (found != after_loop_start.end())
-                {
-                    event.loop_start = found->second;
-                }
-            }
-            else if (event.type == kMidiMetaEndOfTrack)
-            {
-                ended = true;
-            }
+            ended = ReadCompressedMeta(source, event, events.size(), after_loop_start);
         }
         else
         {
-            if ((first & 0x80) != 0)
-            {
-                event.status = first;
-                event.data1 = source.Next();
-                last_status = first;
-            }
-            else
-            {
-                if (last_status == 0)
-                {
-                    throw xsflib::FormatError("a compressed MIDI track uses a running status before any status");
-                }
-
-                event.status = last_status;
-                event.data1 = first;
-                event.running_status = true;
-            }
-
-            if ((event.status & 0xF0) == 0xF0)
-            {
-                throw xsflib::FormatError("a compressed MIDI track holds the status " + std::to_string(event.status));
-            }
-
-            if (DataBytes(event.status) == 2)
-            {
-                event.data2 = source.Next();
-            }
-
-            if ((event.status & 0xF0) == 0x90)
-            {
-                event.duration = ReadVariableLength(source);
-            }
+            ReadCompressedChannelMessage(source, first, last_status, event);
         }
 
         events.push_back(std::move(event));
@@ -341,7 +358,8 @@ void AppendCompressedEvent(std::vector<uint8_t>& out, const MidiEvent& event)
 class CompressedWriter
 {
 public:
-    explicit CompressedWriter(std::vector<uint8_t>& out) : out_(out)
+    // The search for blocks starts after the bytes that `out` already holds: the header, whose track offsets change.
+    explicit CompressedWriter(std::vector<uint8_t>& out) : out_(out), remembered_(out.size())
     {
     }
 
@@ -353,7 +371,7 @@ public:
         std::vector<uint8_t> pending;
         for (std::size_t i = 0; i < events.size(); i++)
         {
-            MidiEvent event = events[i];
+            const MidiEvent& event = events[i];
             if (event.IsMeta(kCompressedLoopEnd))
             {
                 // The offset leads from the event's end. Everything before the event therefore goes out first.
@@ -568,6 +586,11 @@ public:
         return position_ >= end_;
     }
 
+    std::size_t Left() const
+    {
+        return position_ < end_ ? end_ - position_ : 0;
+    }
+
 private:
     std::span<const uint8_t> file_;
     std::size_t position_;
@@ -596,7 +619,13 @@ std::vector<MidiEvent> DecodeStandardTrack(std::span<const uint8_t> file, const 
                 ended = event.type == kMidiMetaEndOfTrack;
             }
 
-            event.payload.resize(ReadVariableLength(source));
+            const uint32_t length = ReadVariableLength(source);
+            if (length > source.Left())
+            {
+                throw xsflib::FormatError("a MIDI track runs past the end of its chunk");
+            }
+
+            event.payload.resize(length);
             for (uint8_t& byte : event.payload)
             {
                 byte = source.Next();
@@ -833,6 +862,8 @@ StandardMidi StandardMidi::Parse(std::span<const uint8_t> data)
     {
         throw xsflib::FormatError("a standard MIDI file with a short header");
     }
+
+    reader.Sub(kChunkHeaderSize, header_length);
 
     StandardMidi file;
     const std::size_t track_count = reader.U16(10);

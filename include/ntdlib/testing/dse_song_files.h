@@ -19,10 +19,12 @@
 namespace ntdlib::testing::dse_song_files
 {
 
+using dse_files::BankChunk;
 using dse_files::Builder;
 using dse_files::Bytes;
 using dse_files::HeaderStart;
 using dse_files::SequenceInfoBytes;
+using dse_files::TrackChunk;
 
 // The song bank's id, which the tracks select with events 0xA9 and 0xAA.
 inline constexpr uint16_t kBankId = 0x7F00;
@@ -34,6 +36,7 @@ inline Bytes Join(std::initializer_list<Bytes> parts)
     {
         bytes.insert(bytes.end(), part.begin(), part.end());
     }
+
     return bytes;
 }
 
@@ -46,6 +49,7 @@ inline Bytes Note(uint8_t velocity, int key, int octave, uint32_t length = 0, in
     {
         bytes.push_back(static_cast<uint8_t>(length >> (8 * i)));
     }
+
     return bytes;
 }
 
@@ -55,10 +59,13 @@ inline Bytes WaveEntry(uint16_t id, uint8_t format, bool loops, uint32_t rate, u
                        uint32_t loop_length, uint8_t duty = 0)
 {
     Builder b;
-    b.Raw({0x01, 0xAA}).U16(id).Raw({0x30, 0xF9, 0x3C, 0x00, 0x7F, 0x40, 0x00, 0x02, 0x00, 0x00, 0xAA, 0xAA});
-    b.U16(0x0415).U16(static_cast<uint16_t>(format << 8)).Raw({0x09, static_cast<uint8_t>(loops ? 1 : 0), 0x01, 0x08});
-    b.Raw({0x00, duty, 0x01, 0x01}).U32(0).U32(rate).U32(position).U32(loop_start).U32(loop_length);
-    b.Raw({0x01, 0x01, 0x01, 0x03, 0x03, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x7F, 0x28, 0xFF});
+    b.Append({0x01, 0xAA}).U16(id).Append({0x30, 0xF9, 0x3C, 0x00, 0x7F, 0x40, 0x00, 0x02, 0x00, 0x00, 0xAA, 0xAA});
+    b.U16(0x0415)
+        .U16(static_cast<uint16_t>(format << 8))
+        .Append({0x09, static_cast<uint8_t>(loops ? 1 : 0), 0x01, 0x08});
+    b.Append({0x00, duty, 0x01, 0x01}).U32(0).U32(rate).U32(position).U32(loop_start).U32(loop_length);
+    b.Append({0x01, 0x01, 0x01, 0x03, 0x03, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x7F, 0x28, 0xFF});
+
     return b.Take();
 }
 
@@ -109,37 +116,38 @@ struct Lfo
 inline Bytes Program(uint16_t id, uint8_t volume, std::initializer_list<Lfo> lfos, std::initializer_list<Split> splits)
 {
     Builder b;
-    b.U16(id).U16(static_cast<uint16_t>(splits.size())).Raw({volume, 0x40, 0x00, 0x0F, 0x00, 0x02, 0x00, 0x04});
+    b.U16(id).U16(static_cast<uint16_t>(splits.size())).Append({volume, 0x40, 0x00, 0x0F, 0x00, 0x02, 0x00, 0x04});
     b.Fill(4, 0);
     for (std::size_t i = 0; i < 4; i++)
     {
         const Lfo lfo = i < lfos.size() ? lfos.begin()[i] : Lfo{};
-        b.Raw({0x00, lfo.type, lfo.output, lfo.waveform}).U32(static_cast<uint32_t>(lfo.amplitude)).U16(lfo.phase);
+        b.Append({0x00, lfo.type, lfo.output, lfo.waveform}).U32(static_cast<uint32_t>(lfo.amplitude)).U16(lfo.phase);
         b.U16(lfo.delay).U16(lfo.envelope).Fill(2, 0);
     }
     b.Fill(16, 0);
     uint8_t index = 0;
     for (const Split& s : splits)
     {
-        b.Raw({0x00, index++, s.bend_range, 0x01, s.low_key, s.high_key, s.low_key, s.high_key, s.low_velocity,
-               s.high_velocity, s.low_velocity, s.high_velocity});
-        b.Fill(6, 0).U16(s.wave).U16(static_cast<uint16_t>(s.tuning)).Raw({0x3C, static_cast<uint8_t>(s.coarse)});
-        b.Raw({s.volume, s.pan, s.key_group, 0x02}).Fill(4, 0);
+        b.Append({0x00, index++, s.bend_range, 0x01, s.low_key, s.high_key, s.low_key, s.high_key, s.low_velocity,
+                  s.high_velocity, s.low_velocity, s.high_velocity});
+        b.Fill(6, 0).U16(s.wave).U16(static_cast<uint16_t>(s.tuning)).Append({0x3C, static_cast<uint8_t>(s.coarse)});
+        b.Append({s.volume, s.pan, s.key_group, 0x02}).Fill(4, 0);
         const Envelope& e = s.envelope;
-        b.Raw({0x01, e.multiplier, 0x01, 0x03, 0x03, 0xFF, 0xFF, 0xFF, e.attack_begin, e.attack, e.decay, e.sustain,
-               e.hold, e.sustain_time, e.release, 0xFF});
+        b.Append({0x01, e.multiplier, 0x01, 0x03, 0x03, 0xFF, 0xFF, 0xFF, e.attack_begin, e.attack, e.decay, e.sustain,
+                  e.hold, e.sustain_time, e.release, 0xFF});
     }
+
     return b.Take();
 }
 
-// A table of 16-bit offsets with `slots` slots, padded to 16 bytes with `pad`, then the entries that it names in their
-// order. The tools pad a table of waves with 0xAA, and a table of programs with zeros.
-inline Bytes Table(std::size_t slots, const std::vector<std::pair<std::size_t, Bytes>>& entries, uint8_t pad)
+// A table of 16-bit offsets with `slots` slots, padded to `size` bytes with `pad`, then the entries that it names in
+// their order. A slot without an entry is 0.
+inline Bytes OffsetTable(std::size_t slots, std::size_t size, const std::vector<std::pair<std::size_t, Bytes>>& entries,
+                         uint8_t pad)
 {
-    const std::size_t table = (slots * 2 + 15) / 16 * 16;
     Builder b;
     std::vector<uint16_t> offsets(slots, 0);
-    std::size_t at = table;
+    std::size_t at = size;
     for (const auto& [slot, entry] : entries)
     {
         offsets[slot] = static_cast<uint16_t>(at);
@@ -149,32 +157,41 @@ inline Bytes Table(std::size_t slots, const std::vector<std::pair<std::size_t, B
     {
         b.U16(offset);
     }
-    b.Fill(table - slots * 2, pad);
+    b.Fill(size - slots * 2, pad);
     for (const auto& entry : entries)
     {
-        b.Raw(entry.second);
+        b.Append(entry.second);
     }
+
     return b.Take();
+}
+
+// A table of 16-bit offsets with `slots` slots, padded to 16 bytes with `pad`, then the entries that it names in their
+// order. The tools pad a table of waves with 0xAA, and a table of programs with zeros.
+inline Bytes Table(std::size_t slots, const std::vector<std::pair<std::size_t, Bytes>>& entries, uint8_t pad)
+{
+    return OffsetTable(slots, AlignUp(slots * 2, 16), entries, pad);
 }
 
 // A bank's header from 0x30 on: the size of its samples, its slots of waves and programs, its key groups, its kind
 // (1 for a main bank, 2 for a bank whose waves lie in the main bank) and the size of its wavi chunk.
 inline void BankHeader(Builder& b, uint32_t samples, uint16_t waves, uint8_t key_groups, uint8_t kind, uint32_t wavi)
 {
-    b.Raw({0x00, 0xAA, 0xAA, 0xAA}).U32(0).U32(0).U32(0x10).U32(samples).U16(0).U16(waves).U16(0x80);
-    b.Raw({key_groups, kind}).U32(wavi);
+    b.Append({0x00, 0xAA, 0xAA, 0xAA}).U32(0).U32(0).U32(0x10).U32(samples).U16(0).U16(waves).U16(0x80);
+    b.Append({key_groups, kind}).U32(wavi);
 }
 
 // The main bank's waves: wave 0 is PCM16 and loops, wave 1 is PCM8 without a loop, and wave 2 is IMA-ADPCM and loops.
 // Each wave's samples follow the previous wave's.
 inline const std::vector<std::pair<std::size_t, Bytes>>& MainWaves()
 {
-    static const std::vector<std::pair<std::size_t, Bytes>> waves = {
+    static const std::vector<std::pair<std::size_t, Bytes>> kWaves = {
         {0, WaveEntry(0, 1, true, 32000, 0x000, 4, 60)},
         {1, WaveEntry(1, 0, false, 16000, 0x100, 0, 32)},
         {2, WaveEntry(2, 2, true, 22050, 0x180, 9, 23)},
     };
-    return waves;
+
+    return kWaves;
 }
 
 inline Bytes MainBankFile()
@@ -183,17 +200,18 @@ inline Bytes MainBankFile()
     Builder samples;
     for (int i = 0; i < 0x200; i++)
     {
-        samples.Raw({static_cast<uint8_t>(i * 7), static_cast<uint8_t>(i * 13 + 5)});
+        samples.Append({static_cast<uint8_t>(i * 7), static_cast<uint8_t>(i * 13 + 5)});
     }
     const Bytes pcmd = samples.Take();
 
     Builder b;
     HeaderStart(b, "swdl", 0x0000);
     BankHeader(b, static_cast<uint32_t>(pcmd.size()), 4, 5, 1, static_cast<uint32_t>(wavi.size()));
-    b.BankChunk("wavi", static_cast<uint32_t>(wavi.size())).Raw(wavi);
-    b.BankChunk("pcmd", static_cast<uint32_t>(pcmd.size())).Raw(pcmd);
-    b.BankChunk("eod ", 0);
+    BankChunk(b, "wavi", static_cast<uint32_t>(wavi.size())).Append(wavi);
+    BankChunk(b, "pcmd", static_cast<uint32_t>(pcmd.size())).Append(pcmd);
+    BankChunk(b, "eod ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
+
     return b.Take();
 }
 
@@ -204,16 +222,13 @@ inline Bytes MainBankFile()
 // release past the table of times.
 inline Bytes BankFile()
 {
-    const Bytes wavi = Table(6,
-                             {
-                                 {0, WaveEntry(0, 1, true, 32000, 0x000, 4, 60)},
-                                 {1, WaveEntry(1, 0, false, 16000, 0x100, 0, 32)},
-                                 {2, WaveEntry(2, 2, true, 22050, 0x180, 9, 23)},
-                                 {3, WaveEntry(3, 3, true, 8000, 0, 0, 0, 3)},
-                                 {4, WaveEntry(4, 4, true, 8000, 0, 0, 0)},
-                                 {5, WaveEntry(5, 2, false, 11025, 0x1A0, 0, 16)},
-                             },
-                             0xAA);
+    std::vector<std::pair<std::size_t, Bytes>> waves = MainWaves();
+    waves.insert(waves.end(), {
+                                  {3, WaveEntry(3, 3, true, 8000, 0, 0, 0, 3)},
+                                  {4, WaveEntry(4, 4, true, 8000, 0, 0, 0)},
+                                  {5, WaveEntry(5, 2, false, 11025, 0x1A0, 0, 16)},
+                              });
+    const Bytes wavi = Table(6, waves, 0xAA);
     const Envelope slow = {.attack_begin = 0x20, .attack = 0x10, .decay = 0x20, .sustain = 0x60, .release = 0x28};
     const Envelope unscaled = {.multiplier = 0,
                                .attack = 0x08,
@@ -246,11 +261,12 @@ inline Bytes BankFile()
     Builder b;
     HeaderStart(b, "swdl", kBankId);
     BankHeader(b, ntdlib::dse::WaveBank::kNoSamples, 6, 3, 2, static_cast<uint32_t>(wavi.size()));
-    b.BankChunk("wavi", static_cast<uint32_t>(wavi.size())).Raw(wavi);
-    b.BankChunk("prgi", static_cast<uint32_t>(prgi.size())).Raw(prgi);
-    b.BankChunk("kgrp", static_cast<uint32_t>(kgrp.size())).Raw(kgrp).Fill((16 - kgrp.size() % 16) % 16, 0);
-    b.BankChunk("eod ", 0);
+    BankChunk(b, "wavi", static_cast<uint32_t>(wavi.size())).Append(wavi);
+    BankChunk(b, "prgi", static_cast<uint32_t>(prgi.size())).Append(prgi);
+    BankChunk(b, "kgrp", static_cast<uint32_t>(kgrp.size())).Append(kgrp).Align(16);
+    BankChunk(b, "eod ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
+
     return b.Take();
 }
 
@@ -340,14 +356,15 @@ inline Bytes SongFile(const std::vector<Bytes>& tracks = Tracks())
     Builder b;
     HeaderStart(b, "smdl", kBankId);
     b.U32(1).U32(1).U32(0xFFFFFFFF).U32(0xFFFFFFFF);
-    b.Text("song").Raw({0x00, 0x00, 0x00, 0x01, 0x10, 0xFF, 0x00, 0x00, 0xB0, 0xFF, 0xFF, 0xFF});
-    b.Raw(SequenceInfoBytes(static_cast<uint8_t>(tracks.size()), 16));
+    b.Text("song").Append({0x00, 0x00, 0x00, 0x01, 0x10, 0xFF, 0x00, 0x00, 0xB0, 0xFF, 0xFF, 0xFF});
+    b.Append(SequenceInfoBytes(static_cast<uint8_t>(tracks.size()), 16));
     for (const Bytes& track : tracks)
     {
-        b.TrackChunk("trk ", static_cast<uint32_t>(track.size())).Raw(track).Fill((4 - track.size() % 4) % 4, 0x98);
+        TrackChunk(b, "trk ", static_cast<uint32_t>(track.size())).Append(track).Align(4, 0x98);
     }
-    b.TrackChunk("eoc ", 0);
+    TrackChunk(b, "eoc ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
+
     return b.Take();
 }
 
@@ -368,18 +385,13 @@ struct Effect
 // A table of records with a slot for each record.
 inline Bytes Records(const std::vector<Bytes>& records)
 {
-    Builder b;
-    std::size_t at = 2 * records.size();
-    for (const Bytes& record : records)
+    std::vector<std::pair<std::size_t, Bytes>> entries;
+    for (std::size_t slot = 0; slot < records.size(); slot++)
     {
-        b.U16(static_cast<uint16_t>(at));
-        at += record.size();
+        entries.emplace_back(slot, records[slot]);
     }
-    for (const Bytes& record : records)
-    {
-        b.Raw(record);
-    }
-    return b.Take();
+
+    return OffsetTable(records.size(), 2 * records.size(), entries, 0);
 }
 
 // A bank of sound effects of id `id`. Each effect has a record of zeros in mcrl, and its list of banks in bnkl. An
@@ -387,14 +399,12 @@ inline Bytes Records(const std::vector<Bytes>& records)
 inline Bytes EffectsFile(const std::vector<std::optional<Effect>>& effects, uint16_t id)
 {
     // The table's slots, padded to 16 bytes, then each effect's settings, tracks and eoc chunk.
-    const std::size_t table = (2 * effects.size() + 15) / 16 * 16;
-    Builder sequences;
-    sequences.Fill(table, 0);
-    std::vector<uint16_t> offsets;
+    std::vector<std::pair<std::size_t, Bytes>> sequences;
     std::vector<Bytes> macros;
     std::vector<Bytes> bank_lists;
-    for (const std::optional<Effect>& effect : effects)
+    for (std::size_t slot = 0; slot < effects.size(); slot++)
     {
+        const std::optional<Effect>& effect = effects[slot];
         macros.push_back({0, 0});
         Builder list;
         const std::vector<uint16_t> banks = effect ? effect->banks : std::vector<uint16_t>{kBankId};
@@ -404,12 +414,12 @@ inline Bytes EffectsFile(const std::vector<std::optional<Effect>>& effects, uint
             list.U16(bank);
         }
         bank_lists.push_back(list.Take());
+
         if (!effect)
         {
-            offsets.push_back(0);
             continue;
         }
-        offsets.push_back(static_cast<uint16_t>(sequences.Size()));
+
         const auto count = static_cast<uint8_t>(effect->slots != 0 ? effect->slots : effect->tracks.size());
         Bytes info = SequenceInfoBytes(count, count);
         info[0x18] = effect->refuse;
@@ -417,32 +427,30 @@ inline Bytes EffectsFile(const std::vector<std::optional<Effect>>& effects, uint
         info[0x1A] = effect->group;
         info[0x1B] = effect->priority;
         info[0x1C] = effect->most;
-        sequences.Raw(info);
+
+        Builder sequence;
+        sequence.Append(info);
         for (const Bytes& track : effect->tracks)
         {
-            sequences.TrackChunk("trk ", static_cast<uint32_t>(track.size()))
-                .Raw(track)
-                .Fill((4 - track.size() % 4) % 4, 0x98);
+            TrackChunk(sequence, "trk ", static_cast<uint32_t>(track.size())).Append(track).Align(4, 0x98);
         }
-        sequences.TrackChunk("eoc ", 0);
+        TrackChunk(sequence, "eoc ", 0);
+        sequences.emplace_back(slot, sequence.Take());
     }
-    Bytes seq = sequences.Take();
-    for (std::size_t i = 0; i < offsets.size(); i++)
-    {
-        seq[2 * i] = static_cast<uint8_t>(offsets[i]);
-        seq[2 * i + 1] = static_cast<uint8_t>(offsets[i] >> 8);
-    }
+
+    const Bytes seq = Table(effects.size(), sequences, 0);
     const Bytes mcrl = Records(macros);
     const Bytes bnkl = Records(bank_lists);
 
     Builder b;
     HeaderStart(b, "sedl", id);
-    b.U16(static_cast<uint16_t>(effects.size())).Raw({0x01, 0x00, 0x00, 0x01, 0x00, 0x00}).Fill(8, 0xFF);
-    b.BankChunk("seq ", static_cast<uint32_t>(seq.size())).Raw(seq).Fill((16 - seq.size() % 16) % 16, 0);
-    b.BankChunk("mcrl", static_cast<uint32_t>(mcrl.size())).Raw(mcrl).Fill((16 - mcrl.size() % 16) % 16, 0);
-    b.BankChunk("bnkl", static_cast<uint32_t>(bnkl.size())).Raw(bnkl).Fill((16 - bnkl.size() % 16) % 16, 0);
-    b.BankChunk("eod ", 0);
+    b.U16(static_cast<uint16_t>(effects.size())).Append({0x01, 0x00, 0x00, 0x01, 0x00, 0x00}).Fill(8, 0xFF);
+    BankChunk(b, "seq ", static_cast<uint32_t>(seq.size())).Append(seq).Align(16);
+    BankChunk(b, "mcrl", static_cast<uint32_t>(mcrl.size())).Append(mcrl).Align(16);
+    BankChunk(b, "bnkl", static_cast<uint32_t>(bnkl.size())).Append(bnkl).Align(16);
+    BankChunk(b, "eod ", 0);
     b.Put32(0x08, static_cast<uint32_t>(b.Size()));
+
     return b.Take();
 }
 

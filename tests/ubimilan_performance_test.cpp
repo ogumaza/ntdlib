@@ -25,25 +25,25 @@
 #include "ntdlib/sequence_export/ubimilan/performance.h"
 #include "ntdlib/testing/agb_cart.h"
 #include "ntdlib/testing/agb_files.h"
+#include "ntdlib/testing/ubimilan_image.h"
 #include "ntdlib/ubimilan/commands.h"
 #include "ntdlib/ubimilan/driver.h"
 #include "ntdlib/ubimilan/sequencer.h"
-#include "ubimilan_image.h"
 
 namespace
 {
 
 namespace ubimilan = ntdlib::ubimilan;
-namespace export_ = ntdlib::sequence_export;
-using export_::Entry;
-using export_::Stretch;
-using export_::ubimilan::Performance;
-using export_::ubimilan::PerformSong;
+namespace sequence_export = ntdlib::sequence_export;
 using ntdlib::agb::Rom;
 using ntdlib::commands::Kind;
 using ntdlib::testing::ubimilan_image::TestImage;
 using seqlib::midi::EventKind;
 using seqlib::midi::TrackEvent;
+using sequence_export::Entry;
+using sequence_export::Stretch;
+using sequence_export::ubimilan::Performance;
+using sequence_export::ubimilan::PerformSong;
 using ubimilan::DriverInfo;
 
 struct Cart
@@ -58,9 +58,9 @@ struct Cart
     DriverInfo info;
 };
 
-export_::agb::ConvertSettings Settings()
+sequence_export::agb::ConvertSettings Settings()
 {
-    export_::agb::ConvertSettings settings;
+    sequence_export::agb::ConvertSettings settings;
     settings.out_dir = ntdlib::testing::agb_files::TempPath("").string();
     settings.base_name = "performance";
     return settings;
@@ -199,7 +199,7 @@ void TestDecoder()
     XSFLIB_CHECK(items.contains(perf.stretches[0].first) && items.contains(perf.stretches[0].last));
     XSFLIB_CHECK(decoded.sequence.items[items[perf.stretches[0].first]].kind == Kind::kWait);
     XSFLIB_CHECK(decoded.sequence.items[items[perf.stretches[0].last]].kind == Kind::kEnd);
-    for (const export_::NoteCommand& command : perf.note_commands)
+    for (const sequence_export::NoteCommand& command : perf.note_commands)
     {
         SEQLIB_REQUIRE(items.contains(command.offset));
         XSFLIB_CHECK(decoded.sequence.items[items[command.offset]].kind == Kind::kNote);
@@ -210,9 +210,10 @@ void TestMidiFile()
 {
     // The notes of the conversion's MIDI file, at the places that the performance gives them.
     const Cart cart(OnePass(0));
-    const export_::agb::ConvertSettings settings = Settings();
+    const sequence_export::agb::ConvertSettings settings = Settings();
     const Performance perf = PerformSong(cart.rom, cart.info, 0, settings);
-    const export_::agb::SongReport report = export_::ubimilan::ConvertSong(cart.rom, cart.info, 0, settings, nullptr);
+    const sequence_export::agb::SongReport report =
+        sequence_export::ubimilan::ConvertSong(cart.rom, cart.info, 0, settings, nullptr);
     XSFLIB_CHECK(report.ok && !report.silent);
     const seqlib::midi::File file = ntdlib::testing::agb_files::ReadMidi(report.midi_path);
     std::vector<uint64_t> ons;
@@ -271,7 +272,7 @@ void TestPasses()
 
     // With one pass of the loop, the performance ends at the second time through the list. The pass that starts there
     // belongs to the next pass of the loop.
-    export_::agb::ConvertSettings once = Settings();
+    sequence_export::agb::ConvertSettings once = Settings();
     once.loops = 1;
     const Performance one_pass = PerformSong(cart.rom, cart.info, 0, once);
     XSFLIB_CHECK(one_pass.end_tick == 8);
@@ -290,7 +291,7 @@ void TestSecondPassLoops()
     image.SetKey(40, image.AddSample(std::vector<int8_t>(40000, 64)));
     image.AddPiece(1, {image.AddSequence({0x02, 0x00, 0x99, 40, 64, 0x03, 0x00, 0xFC})});
     const Cart cart(image);
-    export_::agb::ConvertSettings once = Settings();
+    sequence_export::agb::ConvertSettings once = Settings();
     once.loops = 1;
     const Performance perf = PerformSong(cart.rom, cart.info, 0, once);
     SEQLIB_REQUIRE(perf.loop.has_value());
@@ -353,11 +354,6 @@ void TestWithoutNotes()
 
 int main()
 {
-    if (!ntdlib::testing::agb_files::MakeTempFolder())
-    {
-        return 1;
-    }
-
     TestRecords();
     TestDecoder();
     TestMidiFile();
@@ -365,7 +361,5 @@ int main()
     TestSecondPassLoops();
     TestCutOff();
     TestWithoutNotes();
-    std::error_code ec;
-    std::filesystem::remove_all(ntdlib::testing::agb_files::g_temp, ec);
     return xsflib::testing::Summary("Ubisoft Milan's performance");
 }

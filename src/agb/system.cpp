@@ -303,9 +303,9 @@ void System::StartDma(int channel)
     }
 
     // The address controls: 0 counts up, 1 down and 2 stays. 3 counts the destination up and reloads it afterwards.
-    const auto step = [unit](int control)
+    const auto step = [unit](int address_control)
     {
-        return control == 1 ? -unit : control == 2 ? 0 : unit;
+        return address_control == 1 ? -unit : address_control == 2 ? 0 : unit;
     };
     const int destination_step = step((control >> 5) & 3);
     const int source_step = step((control >> 7) & 3);

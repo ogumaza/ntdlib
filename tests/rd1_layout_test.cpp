@@ -192,6 +192,32 @@ void TestGrowth()
     Check(joined[kSecondFile + 31] == 0 && joined[kSecondFile + 33] == 0, "zeros follow the smaller file");
 }
 
+void TestRejectedRecord()
+{
+    // The fourth record names the first file and a player that the driver doesn't have. ReadSongRecord rejects it.
+    std::vector<uint8_t> image = TestImage();
+    image[kSongTable + 8 * 3 + 4] = 5;
+    const Rom rom = RomOf(image);
+    rd1::Layout layout = rd1::Cut(rom, TestInfo());
+
+    Check(layout.fields.size() == 3, "a rejected record that names a file gets a field");
+
+    // The first file outgrows its place and moves.
+    Command text;
+    text.kind = Kind::kOther;
+    text.encoding.opcode = rd1::kMetaEvent | 0x01;
+    text.bytes.assign(300, 'x');
+    Command wait;
+    wait.kind = Kind::kWait;
+    std::vector<Command>& items = layout.sequences[0].items;
+    items.insert(items.begin() + 2, {wait, text});
+
+    const Rom grown = RomOf(rd1::Join(layout));
+
+    Check(grown.U32(kRomBase + kRecords) == kRomBase + 0xB00 && grown.U32(kRomBase + kRecords + 60) == kRomBase + 0xB00,
+          "the rejected record names the file's new place too");
+}
+
 void TestFilesThatStay()
 {
     // The second file starts off a multiple of 4, and the first overlaps the sample's points.
@@ -261,6 +287,7 @@ int main()
 {
     TestRoundTrip();
     TestGrowth();
+    TestRejectedRecord();
     TestFilesThatStay();
     TestFillerRuns();
     TestJoinErrors();

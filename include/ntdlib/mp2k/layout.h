@@ -29,6 +29,7 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/agb/layout.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/mp2k/driver.h"
@@ -37,25 +38,22 @@
 namespace ntdlib::mp2k
 {
 
-// The largest ROM that the GBA maps: 32 MiB.
-inline constexpr uint32_t kLargestRom = 0x02000000;
+using agb::kLargestRom;
+using agb::Span;
 
 // The free space where Join puts a song that outgrows its place: from a multiple of 256 bytes that lies 256 bytes or
 // more into the run of 0xFF bytes at the ROM's end, or else from the ROM's end. The 256 bytes keep the songs clear of
 // data at the run's start that happens to end with 0xFF.
-inline constexpr uint32_t kFreeSpaceMargin = 256;
+using agb::kFreeSpaceMargin;
+
+// Where Join's free space starts, from the ROM's start, in a ROM whose last bytes are `end`, from offset `offset`. Where
+// `end` ends with a run of 0xFF bytes, the free space starts on the first multiple of kFreeSpaceMargin that lies
+// kFreeSpaceMargin bytes or more into the run. The run counts only the bytes of `end`. Otherwise the free space starts
+// at the ROM's end, rounded up to a multiple of 4 bytes.
+uint64_t FreeSpaceStart(std::span<const uint8_t> end, uint64_t offset = 0);
 
 // The least run of 0xFF bytes that FillerRuns takes: 16 KiB.
 inline constexpr uint32_t kLeastFillerRun = 0x4000;
-
-// `size` bytes of a ROM from `start`, counted from the ROM's start.
-struct Span
-{
-    friend bool operator==(const Span&, const Span&) = default;
-
-    uint32_t start = 0;
-    uint32_t size = 0;
-};
 
 // How Join writes a ROM.
 struct JoinOptions

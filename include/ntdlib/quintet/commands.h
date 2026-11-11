@@ -42,6 +42,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -94,13 +95,8 @@ int SequenceOfSong(const DriverInfo& info, int song);
 // for a song whose header the driver can't read.
 Decoded DecodeRomSequence(const Rom& rom, const DriverInfo& info, int sequence);
 
-// The bytes of a song after its header, and each item's offset in them. `offsets` holds one more entry than the
-// sequence has items: the end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a song after its header, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence`, with its channels at the items `entries`. Throws std::invalid_argument for a command that the
 // driver's bytes can't hold, such as a length that no note value gives, and for a sequence that the driver wouldn't

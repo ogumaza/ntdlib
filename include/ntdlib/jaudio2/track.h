@@ -19,6 +19,7 @@
 #include <map>
 #include <mutex>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -51,6 +52,46 @@ public:
     uint8_t U8(uint32_t offset) const
     {
         return offset < bytes_.size() ? bytes_[offset] : 0xff;
+    }
+
+    // Big-endian values of 16, 24 and 32 bits, as the commands and their tables hold them. Each byte reads through
+    // U8.
+    uint16_t U16(uint32_t offset) const
+    {
+        return static_cast<uint16_t>(U8(offset) << 8 | U8(offset + 1));
+    }
+
+    uint32_t U24(uint32_t offset) const
+    {
+        return static_cast<uint32_t>(U8(offset)) << 16 | static_cast<uint32_t>(U8(offset + 1)) << 8 | U8(offset + 2);
+    }
+
+    uint32_t U32(uint32_t offset) const
+    {
+        return U24(offset) << 8 | U8(offset + 3);
+    }
+
+    // The same reads at a track's cursor. Each moves the cursor past the value.
+    uint8_t Read8(uint32_t& cursor) const
+    {
+        return U8(cursor++);
+    }
+
+    uint16_t Read16(uint32_t& cursor) const
+    {
+        const uint32_t high = Read8(cursor);
+        const uint32_t low = Read8(cursor);
+
+        return static_cast<uint16_t>(high << 8 | low);
+    }
+
+    uint32_t Read24(uint32_t& cursor) const
+    {
+        const uint32_t high = Read8(cursor);
+        const uint32_t middle = Read8(cursor);
+        const uint32_t low = Read8(cursor);
+
+        return high << 16 | middle << 8 | low;
     }
 
     // A 16-bit value in the host's order.
@@ -330,21 +371,37 @@ private:
     int32_t ParseCommand(uint32_t index, uint32_t command, uint32_t register_mask);
     int32_t Execute(uint32_t index, uint32_t command, const Args& args);
     void JumpBack(uint32_t index, uint32_t target);
+
+    // Execute's groups of commands, in the order of the parser's table.
+    void NoteCommand(uint32_t index, uint32_t command, const Args& args);
+    void FlowCommand(uint32_t index, uint32_t command, const Args& args);
+    static void LoopCommand(Track& track, uint32_t command, const Args& args);
+    void PortCommand(uint32_t index, uint32_t command, const Args& args);
+    void RegisterCommand(uint32_t index, uint32_t command, const Args& args);
+    void RegisterArithmetic(uint32_t index, uint32_t op, uint32_t reg, uint32_t value);
+    void LoadFromTable(uint32_t index, const Args& args);
+    void SettingCommand(Track& track, uint32_t command, const Args& args);
+    static void FilterCommand(Track& track, uint32_t command, const Args& args);
+    int32_t TimerCommand(Track& track, uint32_t command, const Args& args);
+
+    // A call to `offset` and a return, within the depth of the track's stack.
+    static void Call(Track& track, uint32_t offset);
+    static void Return(Track& track);
+
     uint32_t ReadMidiValue(Track& track);
     uint32_t ReadReg(const Track& track, uint32_t reg) const;
     void WriteReg(uint32_t index, uint32_t reg, uint32_t value);
     static uint32_t RegisterRead(const Track& track, uint32_t reg);
     static void RegisterWrite(Track& track, uint32_t reg, uint32_t value);
     static bool Condition(const Track& track, uint32_t condition);
-    uint32_t Be24(const Track& track, uint32_t offset) const;
 
     // The commands' actions.
     void NoteOn(uint32_t index, uint32_t note, uint32_t key, uint32_t velocity);
     void NoteOff(uint32_t index, uint32_t note, uint16_t direct_release);
     void NoteOnGate(uint32_t index, uint32_t key, uint32_t velocity, uint32_t time, uint32_t flags);
     void GateOn(uint32_t index, uint32_t key, uint32_t velocity, uint32_t flags, float time);
-    uint32_t OpenChild(uint32_t index, uint32_t child);
-    void CloseChild(uint32_t index, uint32_t child);
+    uint32_t OpenChild(uint32_t index, uint32_t slot);
+    void CloseChild(uint32_t index, uint32_t slot);
     void SetTempo(Track& track, uint32_t tempo);
     void SetLatestKey(uint32_t index, uint32_t key);
     void WritePort(uint32_t index, uint32_t port, uint32_t value);
@@ -375,5 +432,38 @@ private:
     uint32_t missing_bank_notes_ = 0;
     float rhythm_tempo_ = 120.0f;
 };
+
+// The tracks of the trees from `roots`, depth first: each track before its children, and the children in their slots'
+// order. The models of JAudio2, JAudio1 and the Jac walk their trees this way for a length analysis. `track_at(index)`
+// gives a track, whose `children` hold its type's kNone in a free slot. `skip(index, track, order)` leaves a track and
+// its tree out, with `order` the tracks walked so far.
+template <typename TrackAt, typename Skip>
+std::vector<uint32_t> WalkTrees(std::span<const uint32_t> roots, TrackAt track_at, Skip skip)
+{
+    std::vector<uint32_t> order;
+    std::vector<uint32_t> pending(roots.rbegin(), roots.rend());
+    while (!pending.empty())
+    {
+        const uint32_t index = pending.back();
+        pending.pop_back();
+        const auto& track = track_at(index);
+        using TrackType = std::remove_cvref_t<decltype(track)>;
+        if (skip(index, track, order))
+        {
+            continue;
+        }
+
+        order.push_back(index);
+        for (std::size_t slot = track.children.size(); slot-- > 0;)
+        {
+            if (track.children[slot] != TrackType::kNone)
+            {
+                pending.push_back(track.children[slot]);
+            }
+        }
+    }
+
+    return order;
+}
 
 } // namespace ntdlib::jaudio2

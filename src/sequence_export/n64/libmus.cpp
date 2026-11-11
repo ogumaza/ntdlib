@@ -16,10 +16,10 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/n64/bank_file.h"
-#include "ntdlib/n64/rom_data.h"
 #include "ntdlib/n64/vadpcm.h"
 #include "ntdlib/sequence_export/n64/envelope.h"
 #include "ntdlib/sequence_export/n64/libultra.h"
+#include "ntdlib/yay0.h"
 
 namespace ntdlib::sequence_export::n64
 {
@@ -315,18 +315,22 @@ public:
     {
         return actions_;
     }
+
     const std::vector<std::pair<uint32_t, int>>& Tempos() const
     {
         return tempos_;
     }
+
     std::optional<uint32_t> LoopStart() const
     {
         return loop_start_;
     }
+
     std::optional<uint32_t> LoopEnd() const
     {
         return loop_end_;
     }
+
     uint32_t EndTick() const
     {
         return note_end_;
@@ -1001,8 +1005,6 @@ void ChannelReader::RunToLoop()
     }
 }
 
-} // namespace
-
 // Scales a song's tempos, as the game's code does a few frames after it starts the song. The library multiplies in
 // whole numbers.
 void ScaleTempos(std::vector<std::pair<uint32_t, int>>& tempos, const LibmusSettings& settings)
@@ -1012,6 +1014,8 @@ void ScaleTempos(std::vector<std::pair<uint32_t, int>>& tempos, const LibmusSett
         tempo = tempo * settings.tempo_scale / kFullTempoScale;
     }
 }
+
+} // namespace
 
 LibmusPerformance PerformLibmus(std::span<const uint8_t> song, std::span<const double> detunes,
                                 const LibmusSettings& settings, const PerformOptions& options)
@@ -1037,6 +1041,7 @@ LibmusPerformance PerformLibmus(std::span<const uint8_t> song, std::span<const d
     {
         return channel == file.channels ? file.master_track != 0 : file.Entry(file.data_list, channel) != 0;
     };
+
     uint32_t loop_start = 0;
     uint64_t loop_length = 0;
     bool loops = true;
@@ -1411,6 +1416,17 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
     game->image_ = image;
     game->profile_ = &profile;
 
+    // A word or a halfword of a table that the profile places in the image.
+    const auto table_word = [&image](std::size_t at, std::size_t size)
+    {
+        if (at > image.size() || image.size() - at < size)
+        {
+            throw xsflib::FormatError("a table of the game's profile isn't in the image");
+        }
+
+        return size == 2 ? xsflib::LoadBe16(image.data() + at) : xsflib::LoadBe32(image.data() + at);
+    };
+
     // The game's bank and its songs, compressed, in a directory: the places of the wave table and the samples, the
     // count of songs and the place of each.
     std::optional<Bank> directory_bank;
@@ -1418,22 +1434,32 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
     {
         constexpr std::size_t kSongPlaces = 12;
 
-        const std::span<const uint8_t> directory = image.subspan(profile.directory);
         const auto word = [&](std::size_t at)
         {
-            return xsflib::LoadBe32(directory.data() + at);
+            return table_word(profile.directory + at, 4);
+        };
+
+        const auto from = [&](std::size_t at)
+        {
+            const std::size_t place = profile.directory + word(at);
+            if (place > image.size())
+            {
+                throw xsflib::FormatError("a part of the game's directory isn't in the image");
+            }
+
+            return image.subspan(place);
         };
 
         directory_bank.emplace();
-        directory_bank->unpacked_pointers = n64::DecodeYay0(directory.subspan(word(0)));
+        directory_bank->unpacked_pointers = ntdlib::DecodeYay0(from(0));
         directory_bank->pointers = directory_bank->unpacked_pointers;
-        directory_bank->samples = directory.subspan(word(4));
+        directory_bank->samples = from(4);
 
         const uint32_t count = word(8);
         game->unpacked_songs_.reserve(count);
         for (uint32_t i = 0; i < count; i++)
         {
-            game->unpacked_songs_.push_back(n64::DecodeYay0(directory.subspan(word(kSongPlaces + std::size_t{4} * i))));
+            game->unpacked_songs_.push_back(ntdlib::DecodeYay0(from(kSongPlaces + std::size_t{4} * i)));
             game->songs_.push_back(game->unpacked_songs_.back());
         }
     }
@@ -1447,8 +1473,8 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
         game->songs_.resize(files.first_song);
         for (std::size_t i = 0; i < profile.song_count; i++)
         {
-            const std::size_t at = files.table + kFileEntry * xsflib::LoadBe16(image.data() + files.song_files +
-                                                                               std::size_t{2} * (files.first_song + i));
+            const std::size_t at =
+                files.table + kFileEntry * table_word(files.song_files + std::size_t{2} * (files.first_song + i), 2);
             if (at + kFileEntry > image.size())
             {
                 throw xsflib::FormatError("a song's file isn't in the game's table of files");
@@ -1472,8 +1498,8 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
     {
         const std::size_t at = profile.songs + i * stride;
         const std::size_t end_at = profile.song_ends != 0 ? profile.song_ends + i * 4 : at + 4;
-        const uint32_t start = xsflib::LoadBe32(image.data() + at);
-        const uint32_t end = xsflib::LoadBe32(image.data() + end_at);
+        const uint32_t start = table_word(at, 4);
+        const uint32_t end = table_word(end_at, 4);
         if (end <= start || end > image.size())
         {
             throw xsflib::FormatError("a song isn't in the image");
@@ -1491,8 +1517,8 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
         const auto unpack = [&](std::size_t number)
         {
             const std::size_t at = profile.files.directory + number * kDirectoryEntry;
-            const uint32_t start = xsflib::LoadBe32(image.data() + at);
-            const uint32_t end = xsflib::LoadBe32(image.data() + at + 4);
+            const uint32_t start = table_word(at, 4);
+            const uint32_t end = table_word(at + 4, 4);
             if (end <= start || end > image.size())
             {
                 throw xsflib::FormatError("a file isn't in the image");
@@ -1538,6 +1564,7 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
         {
             return xsflib::LoadBe32(pointers.data() + at);
         };
+
         const uint32_t count = word(kCount);
         for (uint32_t i = 0; i < count; i++)
         {

@@ -26,19 +26,19 @@ namespace
 {
 
 namespace konami = ntdlib::konami;
-namespace export_ = ntdlib::sequence_export;
-namespace perf_ = export_::konami;
-using export_::Entry;
-using export_::Mix;
-using export_::MixChange;
-using export_::Stretch;
-using export_::TrackEvent;
+namespace sequence_export = ntdlib::sequence_export;
+namespace driver_export = sequence_export::konami;
+using driver_export::NoteCause;
+using driver_export::Performance;
 using konami::Revision;
 using konami::Rom;
 using ntdlib::testing::agb_files::CartImage;
 using ntdlib::testing::agb_files::kRomBase;
-using perf_::NoteCause;
-using perf_::Performance;
+using sequence_export::Entry;
+using sequence_export::Mix;
+using sequence_export::MixChange;
+using sequence_export::Stretch;
+using sequence_export::TrackEvent;
 
 constexpr uint32_t kTable = kRomBase + 0x100;
 constexpr uint32_t kBase = kRomBase + 0x200;
@@ -105,11 +105,11 @@ std::vector<Note> NotesOf(const std::vector<TrackEvent>& events)
     std::vector<Note> notes;
     for (const TrackEvent& e : events)
     {
-        if (e.kind == export_::EventKind::kNoteOn)
+        if (e.kind == sequence_export::EventKind::kNoteOn)
         {
             notes.push_back({e.tick, 0, e.key, e.note});
         }
-        else if (e.kind == export_::EventKind::kNoteOff)
+        else if (e.kind == sequence_export::EventKind::kNoteOff)
         {
             notes.back().off = e.tick;
         }
@@ -121,9 +121,9 @@ std::vector<Note> NotesOf(const std::vector<TrackEvent>& events)
 // Checks that the performance holds the notes of the MIDI file that the conversion writes with `settings`: their
 // number, their keys and their ticks.
 void CheckAgainstMidi(const Rom& rom, const konami::DriverInfo& info, const Performance& perf,
-                      const export_::agb::ConvertSettings& settings)
+                      const sequence_export::agb::ConvertSettings& settings)
 {
-    const perf_::SongFiles files = perf_::ConvertSongFiles(rom, info, 0, settings);
+    const driver_export::SongFiles files = driver_export::ConvertSongFiles(rom, info, 0, settings);
     if (!Check(files.report.ok, "the song converts"))
     {
         return;
@@ -169,8 +169,8 @@ void TestOneTrack()
     const CartImage cart = Cart(Revision::kUltimateMasters, tracks);
     const Rom rom = cart.ToRom();
     const konami::DriverInfo info = InfoOf(Revision::kUltimateMasters);
-    const export_::agb::ConvertSettings settings;
-    const Performance perf = perf_::PerformSong(rom, info, 0, settings);
+    const sequence_export::agb::ConvertSettings settings;
+    const Performance perf = driver_export::PerformSong(rom, info, 0, settings);
 
     Check(perf.base == kBase, "offsets count from the song's base");
     Check(!perf.loop, "the song doesn't loop");
@@ -184,7 +184,8 @@ void TestOneTrack()
     {
         Check(square[0].on == 0 && square[0].off == 4 && square[0].key == 60, "the square's note's frames and key");
         Check(perf.note_commands[square[0].id - 1].offset == 1, "the square's note's command");
-        Check(perf.note_starts[square[0].id - 1] == perf_::NoteStart{0, NoteCause::kNote}, "the square's note's cause");
+        Check(perf.note_starts[square[0].id - 1] == driver_export::NoteStart{0, NoteCause::kNote},
+              "the square's note's cause");
     }
 
     const std::vector<Note> voice = NotesOf(perf.tracks[4]);
@@ -221,9 +222,9 @@ void TestCalls()
     const Rom rom = cart.ToRom();
     const konami::DriverInfo info = InfoOf(Revision::kWct2004);
 
-    export_::agb::ConvertSettings settings;
+    sequence_export::agb::ConvertSettings settings;
     settings.loops = 2;
-    const Performance perf = perf_::PerformSong(rom, info, 0, settings);
+    const Performance perf = driver_export::PerformSong(rom, info, 0, settings);
     if (Check(perf.loop.has_value(), "the song loops"))
     {
         Check(perf.loop->start == 0 && perf.loop->end == 10, "the loop's frames");
@@ -243,7 +244,7 @@ void TestCalls()
         const uint32_t stretches[] = {0, 1, 3, 4};
         for (std::size_t n = 0; n < 4; n++)
         {
-            const export_::NoteCommand& command = perf.note_commands[notes[n].id - 1];
+            const sequence_export::NoteCommand& command = perf.note_commands[notes[n].id - 1];
             Check(notes[n].on == frames[n] && command.offset == offsets[n] && command.stretch == stretches[n],
                   "a note's frame, command and stretch");
         }
@@ -263,12 +264,12 @@ void TestOtherCauses()
         const CartImage cart = Cart(Revision::kUltimateMasters, tracks);
         const Rom rom = cart.ToRom();
         const konami::DriverInfo info = InfoOf(Revision::kUltimateMasters);
-        const Performance perf = perf_::PerformSong(rom, info, 0, {});
+        const Performance perf = driver_export::PerformSong(rom, info, 0, {});
         const std::vector<Note> notes = NotesOf(perf.tracks[0]);
         if (Check(notes.size() == 2, "a volume starts a second note"))
         {
             Check(notes[1].on == 4 && perf.note_commands[notes[1].id - 1].offset == 4 &&
-                      perf.note_starts[notes[1].id - 1] == perf_::NoteStart{0, NoteCause::kOther},
+                      perf.note_starts[notes[1].id - 1] == driver_export::NoteStart{0, NoteCause::kOther},
                   "the volume's note leads to the volume");
         }
         const std::vector<MixChange> mix = {{0, Mix::kVolume, 3}, {4, Mix::kVolume, 5}};
@@ -286,12 +287,12 @@ void TestOtherCauses()
         const CartImage cart = Cart(Revision::kWct2004, tracks);
         const Rom rom = cart.ToRom();
         const konami::DriverInfo info = InfoOf(Revision::kWct2004);
-        const Performance perf = perf_::PerformSong(rom, info, 0, {});
+        const Performance perf = driver_export::PerformSong(rom, info, 0, {});
         const std::vector<Note> notes = NotesOf(perf.tracks[1]);
         if (Check(!notes.empty(), "the pan plays a note on the next channel"))
         {
             Check(notes[0].on == 0 && perf.note_commands[notes[0].id - 1].offset == 4 &&
-                      perf.note_starts[notes[0].id - 1] == perf_::NoteStart{0, NoteCause::kNote},
+                      perf.note_starts[notes[0].id - 1] == driver_export::NoteStart{0, NoteCause::kNote},
                   "the next channel's note leads to the track before it");
         }
 
@@ -310,12 +311,12 @@ void TestOtherCauses()
         const CartImage cart = Cart(Revision::kWct2004, tracks);
         const Rom rom = cart.ToRom();
         const konami::DriverInfo info = InfoOf(Revision::kWct2004);
-        const Performance perf = perf_::PerformSong(rom, info, 0, {});
+        const Performance perf = driver_export::PerformSong(rom, info, 0, {});
         const std::vector<Note> notes = NotesOf(perf.tracks[0]);
         bool earlier = false;
         for (const Note& note : notes)
         {
-            const perf_::NoteStart& start = perf.note_starts[note.id - 1];
+            const driver_export::NoteStart& start = perf.note_starts[note.id - 1];
             earlier = earlier || start.cause == NoteCause::kEarlier;
             Check(start.cause == NoteCause::kNote || start.cause == NoteCause::kEarlier,
                   "a step of an attack belongs to its note");
@@ -342,9 +343,9 @@ void TestDungeonDice()
     const Rom rom = cart.ToRom();
     const konami::DriverInfo info = InfoOf(Revision::kDungeonDiceMonsters);
 
-    export_::agb::ConvertSettings settings;
+    sequence_export::agb::ConvertSettings settings;
     settings.loops = 2;
-    const Performance perf = perf_::PerformSong(rom, info, 0, settings);
+    const Performance perf = driver_export::PerformSong(rom, info, 0, settings);
 
     const std::vector<Note> here = NotesOf(perf.tracks[4]);
     if (Check(!here.empty(), "a note on the track"))
@@ -356,7 +357,7 @@ void TestDungeonDice()
     if (Check(!next.empty(), "a note on the next track"))
     {
         Check(next[0].on == 4 && perf.note_commands[next[0].id - 1].offset == 8 &&
-                  perf.note_starts[next[0].id - 1] == perf_::NoteStart{4, NoteCause::kNote},
+                  perf.note_starts[next[0].id - 1] == driver_export::NoteStart{4, NoteCause::kNote},
               "the next track's note leads to the track before it");
     }
     if (Check(!perf.mix[5].empty(), "the next track's mix"))
@@ -382,7 +383,7 @@ void TestUnreadable()
     CartImage cart(0x1000);
     cart.Put32(kTable, kRomBase + 0x2000);
     const konami::DriverInfo info = InfoOf(Revision::kUltimateMasters);
-    const Performance perf = perf_::PerformSong(cart.ToRom(), info, 0, {});
+    const Performance perf = driver_export::PerformSong(cart.ToRom(), info, 0, {});
     Check(perf.note_commands.empty() && !perf.warnings.empty(), "a song whose header names no bytes gives no notes");
 }
 

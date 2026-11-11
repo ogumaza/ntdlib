@@ -165,6 +165,9 @@ public:
     bool AnyVoicePlaying() const;
 
 private:
+    // The tools that check the model against a game run read and set the state below through ModelAccess.
+    friend struct ModelAccess;
+
     enum class ParamType : uint8_t
     {
         kFreeVoice,
@@ -296,11 +299,15 @@ private:
     void PullFx(AudioList& list, AudioMemory& memory, int count, int32_t offset);
     void PullAux(AudioList& list, AudioMemory& memory, int count, int32_t offset);
     void PullMixer(AudioList& list, AudioMemory& memory, int physical, int count, int32_t offset);
+    void StartMixer(AudioMemory& memory, PhysicalVoiceState& voice, const Param& update);
+    void ChangeMixer(PhysicalVoiceState& voice, const Param& update);
     void PullSubFrame(AudioList& list, PhysicalVoiceState& voice, int16_t& in, int16_t& out, int count, int32_t offset);
     void PullResampler(AudioList& list, PhysicalVoiceState& voice, int16_t& out, int count, int32_t offset);
     void PullDecoder(AudioList& list, PhysicalVoiceState& voice, int16_t& out, int count);
     void PullAdpcm(AudioList& list, PhysicalVoiceState& voice, int16_t& out, int count);
+    void PullAdpcmLoops(AudioList& list, PhysicalVoiceState& voice, int16_t out, int count, int samples, int frames);
     void PullRaw(AudioList& list, PhysicalVoiceState& voice, int16_t& out, int count);
+    void PullRawLoops(AudioList& list, PhysicalVoiceState& voice, int16_t out, int count, int samples);
     void DecodeChunk(AudioList& list, PhysicalVoiceState& voice, int tsam, int bytes, int16_t out, int16_t in,
                      uint8_t flags);
 
@@ -314,9 +321,15 @@ private:
     void PullCompactFx(AudioList& list, AudioMemory& memory, int32_t offset);
     void PullCompactAux(AudioList& list, AudioMemory& memory, int32_t offset);
     void PullCompactMixer(AudioList& list, AudioMemory& memory, int physical, int32_t offset);
+    int32_t CompactUpdateSamples(int32_t delta, int32_t last_offset, int32_t& this_offset) const;
+    static void SetCompactTargets(PhysicalVoiceState& voice);
+    void StartCompactMixer(AudioMemory& memory, PhysicalVoiceState& voice, const Param& update);
+    void ChangeCompactMixer(PhysicalVoiceState& voice, const Param& update, int32_t samples);
     void PullCompactSubFrame(AudioList& list, PhysicalVoiceState& voice, int16_t& in, int count);
     void PullCompactResampler(AudioList& list, PhysicalVoiceState& voice, int16_t in);
     void PullCompactAdpcm(AudioList& list, PhysicalVoiceState& voice, int16_t& out, int count);
+    void PullCompactAdpcmLoops(AudioList& list, PhysicalVoiceState& voice, int16_t out, int count, int samples,
+                               int frames);
     void CompactDecodeChunk(AudioList& list, PhysicalVoiceState& voice, int tsam, int bytes, int16_t out,
                             uint32_t flags);
     void CompactLoadFx(AudioList& list, int64_t position, int buffer, int count);

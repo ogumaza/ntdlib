@@ -15,7 +15,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <map>
 #include <optional>
 #include <span>
@@ -56,11 +55,6 @@ constexpr double kTimerHz = ntdlib::ntr::kSystemClockHz / 2.0;
 constexpr uint8_t kPitchOutput = 1;
 constexpr uint8_t kVolumeOutput = 2;
 
-int16_t Amount(double value)
-{
-    return static_cast<int16_t>(std::clamp(std::lround(value), -32768L, 32767L));
-}
-
 // The first of `shapes` with `output`, or null.
 const LfoShape* FirstOf(const std::vector<LfoShape>& shapes, uint8_t output)
 {
@@ -81,7 +75,7 @@ sf2::Zone GlobalZone(const std::vector<LfoShape>& shapes)
         global.generators.push_back(
             sf2::Generator::Value(sf2::kDelayVibLfo, sf2::ToTimecents(pitch->delay * 1000.0, -12000, 5000)));
         global.generators.push_back(
-            sf2::Generator::Value(sf2::kVibLfoToPitch, std::clamp<int>(Amount(pitch->depth), -12000, 12000)));
+            sf2::Generator::Value(sf2::kVibLfoToPitch, std::clamp<int>(sf2::ToAmount(pitch->depth), -12000, 12000)));
     }
     if (const LfoShape* volume = FirstOf(shapes, kVolumeOutput))
     {
@@ -119,11 +113,8 @@ sf2::Zone RegionZone(const PresetZone& z, uint16_t sample, uint32_t sample_rate,
     sf2::Zone zone = sf2::RegionZone(values);
     if (const LfoShape* volume = FirstOf(shapes, kVolumeOutput))
     {
-        // The generator goes before the sample's, the last.
-        const auto at = zone.generators.end() - 1;
-        zone.generators.insert(
-            at, sf2::Generator::Value(sf2::kModLfoToVolume,
-                                      std::clamp<int>(Amount(10.0 * VolumeLfoDb(volume->depth, z)), -960, 960)));
+        sf2::AddGenerator(zone, sf2::kModLfoToVolume,
+                          std::clamp<int>(sf2::ToAmount(10.0 * VolumeLfoDb(volume->depth, z)), -960, 960));
     }
     return zone;
 }
@@ -132,10 +123,6 @@ sf2::Zone RegionZone(const PresetZone& z, uint16_t sample, uint32_t sample_rate,
 class SoundFontSamples
 {
 public:
-    explicit SoundFontSamples(sf2::SoundFont& sf) : sf_(sf)
-    {
-    }
-
     // The sample of `bank`'s wave, its rate, and whether it loops, or nothing for a wave that can't be read.
     struct Sample
     {
@@ -143,6 +130,10 @@ public:
         uint32_t rate = 0;
         bool loop = false;
     };
+
+    explicit SoundFontSamples(sf2::SoundFont& sf) : sf_(sf)
+    {
+    }
 
     std::optional<Sample> Get(BankSet& banks, uint16_t bank, uint16_t wave)
     {
@@ -311,15 +302,12 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
     playing.erase(std::ranges::unique(playing).begin(), playing.end());
 
     // SoundFont zones can't amplify their samples. A zone above full level makes every zone quieter.
-    const double quieter = loudest > 1.0 ? 200.0 * std::log10(loudest) : 0.0;
-    if (quieter >= 0.5)
+    const ntdlib::sequence_export::LevelCut cut = ntdlib::sequence_export::LevelCutOf(loudest);
+    if (!cut.message.empty())
     {
-        char what[160];
-        std::snprintf(what, sizeof(what),
-                      "instrument volume above full level (SoundFont attenuated by %.1f dB; SFZ keeps the level)",
-                      quieter / 10.0);
-        c.warnings.push_back(what);
+        c.warnings.push_back(cut.message);
     }
+    const double quieter = cut.centibels;
 
     const auto part = [&](std::span<const uint32_t> run)
     {

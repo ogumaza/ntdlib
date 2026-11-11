@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-// Unit tests for what the GBA's conversions share: safe file names, the SoundFont writer, the SFZ files and the banks
-// of a song's programs.
+// Unit tests for what the GBA's conversions share: safe file names, the SoundFont writer, the SFZ files, the banks of a
+// song's programs and the beat grid.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include "seqlib/testing/check.h"
 #include "seqlib/wav.h"
 
+#include "ntdlib/sequence_export/agb/beat_grid.h"
 #include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/agb/sfz.h"
@@ -35,7 +37,6 @@ using ntdlib::agb::PathFromUtf8;
 using ntdlib::agb::Utf8;
 using ntdlib::testing::agb_files::Le16;
 using ntdlib::testing::agb_files::Le32;
-using ntdlib::testing::agb_files::MakeTempFolder;
 using ntdlib::testing::agb_files::ReadAll;
 using ntdlib::testing::agb_files::ReadSf2;
 using ntdlib::testing::agb_files::Sf2Records;
@@ -324,24 +325,268 @@ void TestSongBanks()
     SEQLIB_CHECK(fits.size() == 128 && fits[0].bank == 0 && fits[0].program == 127);
 }
 
+// Returns true if `a` and `b` are within `tolerance` of each other.
+bool Near(double a, double b, double tolerance = 1e-6)
+{
+    return std::fabs(a - b) <= tolerance;
+}
+
+// A steady beat of 16th notes that should last 6.5 frames, written as 6 and 7: the notes go onto the beat, a quarter
+// note lasts 26 frames, and channels playing quarter notes, an echo 11 frames behind and chords played as quick
+// arpeggios keep in step with them. The echo keeps its delay, and the arpeggios' quick notes keep theirs.
+void TestBeatGridSteady()
+{
+    std::vector<std::vector<uint32_t>> channels(4);
+    for (uint32_t k = 0; k < 64; k++)
+    {
+        channels[0].push_back(1 + k * 13 / 2);
+        channels[2].push_back(12 + k * 13 / 2);
+    }
+    channels[2].insert(channels[2].begin(), 1);
+
+    for (uint32_t k = 0; k <= 16; k++)
+    {
+        channels[1].push_back(1 + 26 * k);
+    }
+
+    for (uint32_t k = 0; k < 32; k++)
+    {
+        for (uint32_t i = 0; i < 3; i++)
+        {
+            channels[3].push_back(1 + 13 * k + i);
+        }
+    }
+
+    const BeatGrid grid(channels, {});
+
+    SEQLIB_CHECK_EQ(grid.Tempos().size(), size_t(1));
+    SEQLIB_CHECK(Near(grid.Tempos()[0].frames, 26, 0.02));
+    SEQLIB_CHECK(Near(grid.Quarters(0, 1), 0));
+    SEQLIB_CHECK(Near(grid.Quarters(0, 7), 0.25));
+    SEQLIB_CHECK(Near(grid.Quarters(0, 14), 0.5));
+    SEQLIB_CHECK(Near(grid.Quarters(0, 20), 0.75));
+    SEQLIB_CHECK(Near(grid.Quarters(1, 27), 1));
+    SEQLIB_CHECK(Near(grid.Quarters(2, 18) - grid.Quarters(0, 7), 11.0 / 26, 0.002));
+    SEQLIB_CHECK(Near(grid.Quarters(3, 14), 0.5));
+    SEQLIB_CHECK(Near(grid.Quarters(3, 15) - grid.Quarters(3, 14), 1.0 / 26, 0.002));
+}
+
+// A ritardando: quarter notes of 23 frames, then six that slow down, then 23 again. The slow notes set the tempo one by
+// one. The notes after them are on the beat again.
+void TestBeatGridRitardando()
+{
+    std::vector<uint32_t> notes;
+    uint32_t frame = 1;
+    for (int i = 0; i < 16; i++, frame += 23)
+    {
+        notes.push_back(frame);
+    }
+
+    for (const uint32_t length : {26u, 26u, 26u, 28u, 28u, 30u})
+    {
+        notes.push_back(frame);
+        frame += length;
+    }
+
+    const uint32_t again = frame;
+    for (int i = 0; i < 16; i++, frame += 23)
+    {
+        notes.push_back(frame);
+    }
+    notes.push_back(frame);
+
+    const BeatGrid grid({notes, notes}, {});
+
+    SEQLIB_CHECK(Near(grid.Quarters(0, 1 + 23 * 15), 15));
+    SEQLIB_CHECK(Near(grid.Quarters(0, again), 22));
+    SEQLIB_CHECK(Near(grid.Quarters(0, again + 23), 23));
+    SEQLIB_CHECK(Near(grid.Quarters(again + 46), 24));
+    SEQLIB_CHECK(grid.Tempos().size() >= 4);
+    SEQLIB_CHECK(Near(grid.Tempos().back().frames, 23, 0.01));
+}
+
+// A tempo that changes from note to note, in a rubato: every note is an 8th note with a tempo of its own. An echo 6
+// frames behind comes after its note and before the next 8th note.
+void TestBeatGridRubato()
+{
+    std::vector<uint32_t> notes = {1};
+    for (const uint32_t length :
+         {20u, 20u, 20u, 19u, 19u, 18u, 17u, 17u, 16u, 15u, 15u, 15u, 15u, 16u, 18u, 19u, 20u, 22u, 24u})
+    {
+        notes.push_back(notes.back() + length);
+    }
+
+    std::vector<uint32_t> echo = {1};
+    for (uint32_t f : notes)
+    {
+        echo.push_back(f + 6);
+    }
+
+    const BeatGrid grid({notes, notes, echo}, {});
+
+    SEQLIB_CHECK(Near(grid.Quarters(0, notes[1]), 0.5));
+    SEQLIB_CHECK(Near(grid.Quarters(1, notes[10]), 5));
+    SEQLIB_CHECK(Near(grid.Quarters(0, notes[19]), 9.5));
+    SEQLIB_CHECK(grid.Quarters(2, echo[11]) > 5 && grid.Quarters(2, echo[11]) < 5.5);
+    SEQLIB_CHECK(Near(grid.Tempos()[0].frames, 40, 0.01));
+}
+
+// A rubato that a loop repeats, each pass slowing at its end to an 8th note of 32 frames: each pass lasts as many
+// quarter notes as the first, rather than taking its quarter note from the slow end of the pass before.
+void TestBeatGridRubatoLoop()
+{
+    std::vector<uint32_t> notes = {1};
+    std::vector<uint32_t> hints;
+    for (int pass = 0; pass < 4; pass++)
+    {
+        if (pass > 0)
+        {
+            hints.insert(hints.end(), {notes.back(), notes.back()});
+        }
+        for (const uint32_t length : {20u, 20u, 20u, 19u, 19u, 18u, 17u, 17u, 16u, 15u, 15u,
+                                      15u, 15u, 16u, 18u, 19u, 20u, 22u, 22u, 24u, 26u, 32u})
+        {
+            notes.push_back(notes.back() + length);
+        }
+    }
+
+    const BeatGrid grid({notes, notes}, hints);
+
+    const double first = grid.Quarters(0, hints[0]);
+    for (size_t i = 2; i < hints.size(); i += 2)
+    {
+        SEQLIB_CHECK(Near(grid.Quarters(0, hints[i]) - grid.Quarters(0, hints[i - 2]), first));
+    }
+}
+
+// Quarter notes of 22.5 frames, a rubato of quarter notes of 15 to 32 frames, quarter notes of 30 frames, and a rubato
+// of 8th notes of about 15 frames. The second rubato takes its quarter note from the beat before it. The first rubato's
+// notes of 15 frames aren't a beat.
+void TestBeatGridRubatoAfterRubato()
+{
+    std::vector<uint32_t> notes = {1};
+    std::vector<uint32_t> hints;
+    const auto add = [&](std::initializer_list<uint32_t> lengths, int times)
+    {
+        for (int i = 0; i < times; i++)
+        {
+            for (const uint32_t length : lengths)
+            {
+                notes.push_back(notes.back() + length);
+            }
+        }
+        hints.insert(hints.end(), {notes.back(), notes.back()});
+    };
+
+    add({22, 23}, 6);
+    add({20, 20, 20, 19, 19, 18, 17, 17, 16, 15, 15, 15, 15, 16, 18, 19, 20, 22, 22, 24, 26, 32}, 1);
+    add({30}, 12);
+    const uint32_t rubato = notes.back();
+    add({16, 15, 15, 15, 14, 15, 15, 16, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26}, 1);
+    add({30}, 8);
+
+    const BeatGrid grid({notes, notes}, hints);
+
+    SEQLIB_CHECK(Near(grid.Quarters(0, rubato + 16) - grid.Quarters(0, rubato), 0.5));
+}
+
+// The tempo changes where a hint says it may: from 16th notes of 6.5 frames to 7.5, or from 26 frames a quarter note to
+// 30. A loop back that doesn't change the tempo doesn't split the beat.
+void TestBeatGridTempoChange()
+{
+    std::vector<uint32_t> notes;
+    for (uint32_t k = 0; k < 48; k++)
+    {
+        notes.push_back(1 + k * 13 / 2);
+    }
+
+    const uint32_t kChange = 1 + 48 * 13 / 2;
+    for (uint32_t k = 0; k <= 48; k++)
+    {
+        notes.push_back(kChange + k * 15 / 2);
+    }
+
+    const BeatGrid grid({notes, notes}, {kChange, kChange, 100, 100});
+
+    SEQLIB_CHECK_EQ(grid.Tempos().size(), size_t(2));
+    SEQLIB_CHECK(Near(grid.Tempos()[0].frames, 26, 0.01));
+    SEQLIB_CHECK(Near(grid.Tempos()[1].quarter, 12));
+    SEQLIB_CHECK(Near(grid.Tempos()[1].frames, 30, 0.01));
+    SEQLIB_CHECK(Near(grid.Quarters(0, kChange + 15), 12.5));
+}
+
+// A run of 32nd notes of 4, 4, 4, 3 and 4 frames before 32nd notes of 10/3 frames: the run sets the tempo note by note,
+// and lasts a whole number of 32nd notes. The notes after it stay on 32nd notes.
+void TestBeatGridWholeUnits()
+{
+    std::vector<uint32_t> run = {0, 4, 8, 12, 15};
+    for (uint32_t k = 0; k < 96; k++)
+    {
+        run.push_back(19 + (10 * k + 1) / 3);
+    }
+
+    std::vector<uint32_t> eighths = {0};
+    for (uint32_t k = 0; k < 48; k++)
+    {
+        eighths.push_back(19 + (40 * k + 1) / 3);
+    }
+
+    const BeatGrid grid({run, run, eighths}, {});
+
+    for (size_t i = 5; i < 69; i++)
+    {
+        const double thirty_seconds = grid.Quarters(0, run[i]) * 8;
+        SEQLIB_CHECK(Near(thirty_seconds, std::round(thirty_seconds)));
+    }
+}
+
+// A marker on a frame, such as a loop's start, goes where the channels put the events on it: an 8th-note triplet among
+// 16th notes of 20/3 frames goes onto the triplet, a little before the frame's place on the beat, and so does the
+// marker. A channel's events before the frame, or well after it, don't move the marker.
+void TestBeatGridMarker()
+{
+    std::vector<std::vector<uint32_t>> channels(2);
+    for (uint32_t k = 0; k < 96; k++)
+    {
+        channels[0].push_back(k * 20 / 3);
+    }
+
+    for (uint32_t q = 0; q <= 24; q++)
+    {
+        channels[1].push_back(q * 80 / 3);
+        if (q == 3)
+        {
+            channels[1].push_back(89);
+        }
+    }
+
+    const BeatGrid grid(channels, {});
+
+    SEQLIB_CHECK(Near(grid.Quarters(1, 89), 3 + 1.0 / 3));
+    SEQLIB_CHECK(grid.Snap(89) > grid.Quarters(1, 89) + 0.001);
+    SEQLIB_CHECK(Near(grid.Marker(89), grid.Quarters(1, 89)));
+    SEQLIB_CHECK(Near(grid.Marker(80), 3));
+    SEQLIB_CHECK(Near(grid.Marker(93), 3.5));
+}
+
 // Runs every test. Returns the exit code.
 int RunTests()
 {
-    if (!ntdlib::testing::agb_files::MakeTempFolder())
-    {
-        std::fprintf(stderr, "can't create a temporary folder for the test output\n");
-        return 1;
-    }
-
     TestFileNames();
     TestSf2Writer();
     TestTrackSfz();
     TestTrackSfzRefusals();
     TestPresetSfz();
     TestSongBanks();
+    TestBeatGridSteady();
+    TestBeatGridRitardando();
+    TestBeatGridRubato();
+    TestBeatGridRubatoLoop();
+    TestBeatGridRubatoAfterRubato();
+    TestBeatGridTempoChange();
+    TestBeatGridWholeUnits();
+    TestBeatGridMarker();
 
-    std::error_code ec;
-    std::filesystem::remove_all(ntdlib::testing::agb_files::g_temp, ec);
     return seqlib::testing::Summary("sequence_export_agb");
 }
 

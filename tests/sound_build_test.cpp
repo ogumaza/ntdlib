@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Checks that AX's microcode is found in a main.dol and identifies the build of AX, and that NW4R SND's banner dates
-// its build. Both rules for damaged files are checked as well.
+// its build. Both rules for damaged files are checked as well, and the rule for a build without a banner.
 
 #include "ntdlib/sound_build.h"
 
@@ -110,6 +110,15 @@ void TestBuildsFollowTheirDates()
     Check(kNovember2008.SinceNovember2008() && !kNovember2008.SinceSeptember2009(), "the build of November 2008");
     Check(kGap2009.SinceNovember2008() && !kGap2009.SinceSeptember2009(), "a build from before September 24 2009");
     Check(kSeptember2009.SinceNovember2008() && kSeptember2009.SinceSeptember2009(), "the build of September 2009");
+
+    // The day before a change counts as the older kind.
+    const ntdlib::SndBuild kMarch7{.date = 20080307};
+    const ntdlib::SndBuild kJune19{.date = 20080619};
+    const ntdlib::SndBuild kNovember19{.date = 20081119};
+
+    Check(!kMarch7.SinceMarch2008(), "a build from before March 8 2008");
+    Check(kJune19.SinceMarch2008() && !kJune19.SinceJune2008(), "a build from before June 20 2008");
+    Check(kNovember19.SinceJune2008() && !kNovember19.SinceNovember2008(), "a build from before November 20 2008");
 }
 
 void TestDamagedDayIsCheckedOnRequest()
@@ -129,6 +138,24 @@ void TestDamagedDayIsCheckedOnRequest()
     Check(real_checked == 20070608, "a day before the 10th with the check");
 }
 
+void TestBuildWithoutBannerPlaysAsOctober2006()
+{
+    // A build without a banner plays as the build of October 2006 on any AX. A build with a banner plays by its date on
+    // a later AX. With AX of October 2006, it plays as the build of October 2006 too.
+    const ntdlib::SndBuild kNoBanner{};
+    const ntdlib::SndBuild k2007{.date = 20070608};
+
+    const ntdlib::SndBuild old_ax = ntdlib::SndBuildWithAx(kNoBanner, ntdlib::AxBuild::kOctober2006);
+    const ntdlib::SndBuild later_ax = ntdlib::SndBuildWithAx(kNoBanner, ntdlib::AxBuild::kDecember2006);
+    const ntdlib::SndBuild dated = ntdlib::SndBuildWithAx(k2007, ntdlib::AxBuild::kDecember2006);
+    const ntdlib::SndBuild dated_old_ax = ntdlib::SndBuildWithAx(k2007, ntdlib::AxBuild::kOctober2006);
+
+    Check(old_ax.October2006() && old_ax.date == 0, "no banner, with AX of October 2006");
+    Check(later_ax.October2006() && later_ax.date == 0, "no banner, with a later AX");
+    Check(!dated.October2006() && dated.date == 20070608, "a 2007 build with a later AX");
+    Check(dated_old_ax.October2006() && dated_old_ax.date == 20070608, "a 2007 build with AX of October 2006");
+}
+
 } // namespace
 
 int main()
@@ -138,6 +165,7 @@ int main()
     TestBannerDatesTheBuild();
     TestBuildsFollowTheirDates();
     TestDamagedDayIsCheckedOnRequest();
+    TestBuildWithoutBannerPlaysAsOctober2006();
 
     return xsflib::testing::Summary("sound_build");
 }

@@ -45,6 +45,7 @@ std::string SfzProblem(const Instruments& sfz, const std::vector<std::string>& t
             return "broken WAV file " + s.name;
         }
 
+        // The converters write mono 16-bit samples with a 44-byte header. The data's size gives the frames.
         frames[s.name] = xsflib::LoadLe32(w.data() + 40) / 2;
     }
 
@@ -87,7 +88,10 @@ std::string SfzProblem(const Instruments& sfz, const std::vector<std::string>& t
             }
             if (opcodes.count("loop_end"))
             {
-                const uint64_t start = std::stoull(opcodes["loop_start"]), end = std::stoull(opcodes["loop_end"]);
+                // SFZ's loop_start is 0 where a region leaves it out.
+                const auto loop_start = opcodes.find("loop_start");
+                const uint64_t start = loop_start == opcodes.end() ? 0 : std::stoull(loop_start->second);
+                const uint64_t end = std::stoull(opcodes["loop_end"]);
                 if (start >= end || end >= it->second)
                 {
                     return f.name + " loops outside " + it->first;

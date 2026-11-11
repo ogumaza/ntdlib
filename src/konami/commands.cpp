@@ -335,6 +335,66 @@ uint8_t UsualDutyOrWave(const Item& item, Revision r)
     return uint8_t(0x80 | (RaveMasterCommands(r) || r == Revision::kKitaro ? value : value >> 6));
 }
 
+// The usual bytes of note `item`, whose values are the console's. Throws std::invalid_argument for a value that no
+// byte holds.
+std::vector<uint8_t> UsualNoteBytes(const Item& item, Revision r)
+{
+    const Kind kind = item.kind;
+    const bool ultimate = UltimateMasters(r);
+    const bool dungeon = r == Revision::kDungeonDiceMonsters;
+    const auto byte = [kind](int64_t v)
+    {
+        return ByteOf(v, 0, 0xFF, kind);
+    };
+
+    const int64_t volume = item.velocity;
+    if (item.sample)
+    {
+        const uint16_t sample = *item.sample;
+        if (dungeon)
+        {
+            return {uint8_t((item.index == 1 ? 0xA0 : 0xB0) | ByteOf(volume, 0, 15, kind)), byte(sample)};
+        }
+
+        std::vector<uint8_t> bytes;
+        const uint8_t first = item.key != 0 ? 0xB0 : 0xA0;
+        if (ultimate && volume > 7)
+        {
+            bytes = {uint8_t(first | 8), byte(volume)};
+        }
+        else
+        {
+            bytes = {uint8_t(first | ByteOf(volume, 0, ultimate ? 7 : 15, kind))};
+        }
+
+        if (sample > 0xEF && r == Revision::kLiveStart)
+        {
+            bytes.push_back(uint8_t(0xF0 | ByteOf(sample >> 8, 0, 15, kind)));
+            bytes.push_back(uint8_t(sample));
+        }
+        else
+        {
+            bytes.push_back(byte(sample));
+        }
+        if (item.key != 0)
+        {
+            bytes.push_back(item.key);
+        }
+
+        return bytes;
+    }
+
+    if (dungeon)
+    {
+        return {uint8_t((item.index == 1 ? 0x90 : 0xE0) | ByteOf(volume, 0, 15, kind)), item.key};
+    }
+    if (ultimate && volume > 7)
+    {
+        return {0xD8, byte(volume), item.key};
+    }
+    return {uint8_t(0xD0 | ByteOf(volume, 0, ultimate ? 7 : 15, kind)), item.key};
+}
+
 // The usual bytes of `item`, whose values are the console's. Throws std::invalid_argument for a value that no byte
 // holds. The caller reads the bytes back: a revision without the command reads them as something else.
 std::vector<uint8_t> UsualBytes(const Item& item, Revision r)
@@ -361,54 +421,7 @@ std::vector<uint8_t> UsualBytes(const Item& item, Revision r)
         return {UsualDutyOrWave(item, r)};
 
     case Kind::kNote:
-        {
-            const int64_t volume = item.velocity;
-            if (item.sample)
-            {
-                const uint16_t sample = *item.sample;
-                if (dungeon)
-                {
-                    return {uint8_t((item.index == 1 ? 0xA0 : 0xB0) | ByteOf(volume, 0, 15, kind)), byte(sample)};
-                }
-
-                std::vector<uint8_t> bytes;
-                const uint8_t first = item.key != 0 ? 0xB0 : 0xA0;
-                if (ultimate && volume > 7)
-                {
-                    bytes = {uint8_t(first | 8), byte(volume)};
-                }
-                else
-                {
-                    bytes = {uint8_t(first | ByteOf(volume, 0, ultimate ? 7 : 15, kind))};
-                }
-
-                if (sample > 0xEF && r == Revision::kLiveStart)
-                {
-                    bytes.push_back(uint8_t(0xF0 | ByteOf(sample >> 8, 0, 15, kind)));
-                    bytes.push_back(uint8_t(sample));
-                }
-                else
-                {
-                    bytes.push_back(byte(sample));
-                }
-                if (item.key != 0)
-                {
-                    bytes.push_back(item.key);
-                }
-
-                return bytes;
-            }
-
-            if (dungeon)
-            {
-                return {uint8_t((item.index == 1 ? 0x90 : 0xE0) | ByteOf(volume, 0, 15, kind)), item.key};
-            }
-            if (ultimate && volume > 7)
-            {
-                return {0xD8, byte(volume), item.key};
-            }
-            return {uint8_t(0xD0 | ByteOf(volume, 0, ultimate ? 7 : 15, kind)), item.key};
-        }
+        return UsualNoteBytes(item, r);
 
     case Kind::kVolume:
         if (item.index == 2)
@@ -1059,6 +1072,92 @@ Decoded Build(const Rom& rom, uint32_t base, uint32_t size, std::span<const uint
     return decoded;
 }
 
+// The offset of each track's start in the song's bytes, from the items in `entries`.
+std::vector<uint16_t> TrackStarts(std::span<const uint32_t> offsets, std::span<const uint32_t> entries)
+{
+    std::vector<uint16_t> starts;
+    for (const uint32_t entry : entries)
+    {
+        if (entry >= offsets.size() - 1)
+        {
+            throw std::invalid_argument("a track starts past the song's items");
+        }
+        if (offsets[entry] > 0xFFFF)
+        {
+            throw std::invalid_argument("a track starts past 0xFFFF bytes from the song's base");
+        }
+        starts.push_back(uint16_t(offsets[entry]));
+    }
+
+    return starts;
+}
+
+// The offset that call `item` writes: its target's offset from the start of its track, or the target it gives for one
+// outside the song.
+uint64_t CallOffset(const Item& item, std::span<const uint32_t> offsets, uint16_t start)
+{
+    if (item.target_outside)
+    {
+        if (item.target > 0xFFFF)
+        {
+            throw std::invalid_argument("a call's offset doesn't fit in the driver's bytes");
+        }
+        return item.target;
+    }
+
+    if (item.target >= offsets.size() - 1)
+    {
+        throw std::invalid_argument("a call's target lies past the song's items");
+    }
+    const uint32_t target = offsets[item.target];
+    if (target < start || target - start > 0xFFFF)
+    {
+        throw std::invalid_argument("a call's target lies before its track's start or too far after it");
+    }
+
+    return target - start;
+}
+
+// Throws std::invalid_argument unless the driver's tracks read `encoded` the way the items of `sequence` say.
+void CheckReadBack(const commands::Sequence& sequence, const Encoded& encoded, std::span<const uint16_t> starts,
+                   Revision revision)
+{
+    Rom rom;
+    rom.Assign(encoded.bytes);
+    const Flow flow(rom, kRomBase, encoded.offsets.back(), starts, revision);
+    if (!flow.Problem().empty())
+    {
+        throw std::invalid_argument("the song's items don't read back: " + flow.Problem());
+    }
+
+    std::map<uint32_t, std::size_t> item_at;
+    for (std::size_t i = 0; i < sequence.items.size(); i++)
+    {
+        if (encoded.offsets[i + 1] > encoded.offsets[i])
+        {
+            item_at[encoded.offsets[i]] = i;
+        }
+    }
+    for (const auto& [offset, read] : flow.Reads())
+    {
+        if (flow.Inner(offset))
+        {
+            continue;
+        }
+
+        const auto found = item_at.find(offset);
+        if (found == item_at.end() || sequence.items[found->second].kind == Kind::kData)
+        {
+            throw std::invalid_argument("a track reaches bytes that no item starts at");
+        }
+        if ((sequence.items[found->second].kind == Kind::kWait) != read.wait)
+        {
+            throw std::invalid_argument(read.wait ? "a track reads a delay where a command lies"
+                                                  : "a track reads a command where a wait lies");
+        }
+    }
+}
+
 } // namespace
 
 Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const uint16_t> offsets, Revision revision)
@@ -1139,19 +1238,7 @@ Encoded EncodeSequence(const commands::Sequence& sequence, std::span<const uint3
     }
     encoded.offsets.push_back(at);
 
-    std::vector<uint16_t> starts;
-    for (const uint32_t entry : entries)
-    {
-        if (entry >= sequence.items.size())
-        {
-            throw std::invalid_argument("a track starts past the song's items");
-        }
-        if (encoded.offsets[entry] > 0xFFFF)
-        {
-            throw std::invalid_argument("a track starts past 0xFFFF bytes from the song's base");
-        }
-        starts.push_back(uint16_t(encoded.offsets[entry]));
-    }
+    const std::vector<uint16_t> starts = TrackStarts(encoded.offsets, entries);
 
     encoded.bytes.reserve(at);
     bool any_command = false;
@@ -1166,24 +1253,7 @@ Encoded EncodeSequence(const commands::Sequence& sequence, std::span<const uint3
                 throw std::invalid_argument("a call counts from a track that the song lacks");
             }
 
-            uint64_t value = item.target;
-            if (!item.target_outside)
-            {
-                if (item.target >= sequence.items.size())
-                {
-                    throw std::invalid_argument("a call's target lies past the song's items");
-                }
-                const uint32_t target = encoded.offsets[item.target];
-                if (target < starts[item.index] || target - starts[item.index] > 0xFFFF)
-                {
-                    throw std::invalid_argument("a call's target lies before its track's start or too far after it");
-                }
-                value = target - starts[item.index];
-            }
-            else if (value > 0xFFFF)
-            {
-                throw std::invalid_argument("a call's offset doesn't fit in the driver's bytes");
-            }
+            const uint64_t value = CallOffset(item, encoded.offsets, starts[item.index]);
             pieces[i][1] = uint8_t(value);
             pieces[i][2] = uint8_t(value >> 8);
         }
@@ -1193,40 +1263,7 @@ Encoded EncodeSequence(const commands::Sequence& sequence, std::span<const uint3
     // The driver has to read the bytes as the items say. A song kept as data holds no commands.
     if (any_command)
     {
-        Rom rom;
-        rom.Assign(encoded.bytes);
-        const Flow flow(rom, kRomBase, at, starts, revision);
-        if (!flow.Problem().empty())
-        {
-            throw std::invalid_argument("the song's items don't read back: " + flow.Problem());
-        }
-
-        std::map<uint32_t, std::size_t> item_at;
-        for (std::size_t i = 0; i < sequence.items.size(); i++)
-        {
-            if (encoded.offsets[i + 1] > encoded.offsets[i])
-            {
-                item_at[encoded.offsets[i]] = i;
-            }
-        }
-        for (const auto& [offset, read] : flow.Reads())
-        {
-            if (flow.Inner(offset))
-            {
-                continue;
-            }
-
-            const auto found = item_at.find(offset);
-            if (found == item_at.end() || sequence.items[found->second].kind == Kind::kData)
-            {
-                throw std::invalid_argument("a track reaches bytes that no item starts at");
-            }
-            if ((sequence.items[found->second].kind == Kind::kWait) != read.wait)
-            {
-                throw std::invalid_argument(read.wait ? "a track reads a delay where a command lies"
-                                                      : "a track reads a command where a wait lies");
-            }
-        }
+        CheckReadBack(sequence, encoded, starts, revision);
     }
 
     return encoded;

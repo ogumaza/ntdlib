@@ -101,6 +101,11 @@ public:
     // Goes back to `snapshot`. The next calls give what they gave after the save.
     void Restore(const Snapshot& snapshot);
 
+    // arm::Bus.
+    uint8_t* Page(uint32_t page) override;
+    uint32_t Read(uint32_t address, int size) override;
+    void Write(uint32_t address, int size, uint32_t value) override;
+
     // Called after each write to an I/O register, with the register's address and the written bytes.
     std::function<void(uint32_t address, int size, uint32_t value)> on_io_write;
 
@@ -108,11 +113,6 @@ public:
     // call, and the CPU goes on after the SWI. A handler may call a routine with Cpu().Call(). That call uses the stack
     // where the SWI left it. Call() would start the stack again at kStack.
     std::function<bool(uint32_t number)> on_swi;
-
-    // arm::Bus.
-    uint8_t* Page(uint32_t page) override;
-    uint32_t Read(uint32_t address, int size) override;
-    void Write(uint32_t address, int size, uint32_t value) override;
 
 private:
     uint32_t ReadIo(uint32_t offset, int size);

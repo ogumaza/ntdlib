@@ -37,29 +37,6 @@ constexpr std::array<uint8_t, 12> kTrackLabel = {'t', 'r', 'k', ' ', 0x00, 0x00,
 
 constexpr std::size_t kSizeField = 12;
 
-enum Code : uint8_t
-{
-    kFirstPause = 0x80,
-    kLastPause = 0x8F,
-    kWaitAgain = 0x90,
-    kWaitChange = 0x91,
-    kWait1Byte = 0x92,
-    kWait2Bytes = 0x93,
-    kWait3Bytes = 0x94,
-    kLoopPoint = 0x99,
-    kRepeatStart = 0x9C,
-    kRepeatEnd = 0x9D,
-    kOctave = 0xA0,
-    kOctaveChange = 0xA1,
-    kTempo = 0xA4,
-    kTempoAgain = 0xA5,
-    kProgram = 0xAC,
-    kBendRange = 0xDB,
-    kVolume = 0xE0,
-    kExpression = 0xE3,
-    kPan = 0xE8,
-};
-
 constexpr uint8_t kLowBits = 0x3F;
 constexpr uint32_t kMaxLength = 0xFFFFFF;
 
@@ -507,6 +484,27 @@ Command TrackOpening(uint8_t number, uint8_t channel)
     start.bytes[kChunkHeader] = number;
     start.bytes[kChunkHeader + 1] = channel;
     return start;
+}
+
+std::optional<TrackStart> ReadTrackOpening(const Command& command)
+{
+    if (!StartsTrack(command))
+    {
+        return std::nullopt;
+    }
+
+    return TrackStart{.number = command.bytes[kChunkHeader], .channel = command.bytes[kChunkHeader + 1]};
+}
+
+void SetTrackOpening(Command& opening, const TrackStart& start)
+{
+    if (!StartsTrack(opening))
+    {
+        throw std::invalid_argument("The item doesn't start a DSE track.");
+    }
+
+    opening.bytes[kChunkHeader] = start.number;
+    opening.bytes[kChunkHeader + 1] = start.channel;
 }
 
 commands::Sequence DecodeTracks(std::span<const Track> tracks)

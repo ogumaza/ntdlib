@@ -222,6 +222,7 @@ struct SequenceSound
 
     // Whether the game's JASystem squares a JAudio1 track's volume in volume mode 0 (GameRules::squared_track_volume).
     bool squared_track_volume = true;
+
     // Whether a JAudio1 track's routes give its notes its oscillators (GameRules::track_oscillator_routes).
     bool track_oscillator_routes = true;
 

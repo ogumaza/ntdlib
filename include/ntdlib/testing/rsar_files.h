@@ -3,17 +3,22 @@
 // Builders of small NW4R sound files for the tests: banks of both generations with instruments that exercise every way
 // that a bank selects a region, wave data and an RWAR for them, a sequence, wave sound files of both generations, an
 // archive holding a sequence sound with its sequence and bank in a group, an archive holding wave sounds with their
-// file in a group, and an archive with only its tables of sounds and players.
+// file in a group, an archive with only its tables of sounds and players, and an archive whose files lie in several
+// groups.
 
 #pragma once
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
+
+#include "ntdlib/testing/byte_writer.h"
 
 namespace ntdlib::testing::rsar_files
 {
@@ -318,13 +323,6 @@ struct WaveSoundSpec
 // file has no WAVE block. Its wave data is then an RWAR.
 inline Bytes MakeWaveSoundFile(uint16_t version, const std::vector<WaveSoundSpec>& sounds, uint32_t waves = 2)
 {
-    const auto put_float = [](Bytes& file, size_t at, float value)
-    {
-        uint32_t bits = 0;
-        std::memcpy(&bits, &value, sizeof(bits));
-        xsflib::StoreBe32(&file[at], bits);
-    };
-
     const bool wave_block = version <= 0x0102;
     Bytes file = Header("RWSD", version, wave_block ? 2 : 1);
     const size_t data = Block(file, "DATA", 0);
@@ -338,7 +336,7 @@ inline Bytes MakeWaveSoundFile(uint16_t version, const std::vector<WaveSoundSpec
         PutRef(file, refs + i * 8, 0, static_cast<uint32_t>(wsd - base));
 
         const size_t info = Grow(file, 0x20);
-        put_float(file, info, sound.pitch);
+        xsflib::StoreBe32(&file[info], std::bit_cast<uint32_t>(sound.pitch));
         file[info + 4] = sound.pan;
         file[info + 5] = sound.surround_pan;
         std::memcpy(&file[info + 6], sound.fx_sends, 3);
@@ -365,7 +363,7 @@ inline Bytes MakeWaveSoundFile(uint16_t version, const std::vector<WaveSoundSpec
             file[at + 0xD] = note.volume;
             file[at + 0xE] = note.pan;
             file[at + 0xF] = note.surround_pan;
-            put_float(file, at + 0x10, note.pitch);
+            xsflib::StoreBe32(&file[at + 0x10], std::bit_cast<uint32_t>(note.pitch));
             PutRef(file, notes + 4 + j * 8, 0, static_cast<uint32_t>(at - base));
         }
     }
@@ -441,7 +439,7 @@ inline void PutSymbols(Bytes& file, const std::vector<const char*>& strings)
         std::memcpy(&file[at], strings[i], std::strlen(strings[i]));
     }
 
-    file.resize((file.size() + 3) & ~size_t{3}, 0);
+    file.resize(AlignUp(file.size(), 4), 0);
     EndBlock(file, symbols, 0);
 }
 
@@ -456,6 +454,58 @@ inline size_t InfoTable(Bytes& file, size_t ref, size_t base, size_t count)
     PutRef(file, ref, 0, static_cast<uint32_t>(at - base));
 
     return at + 4;
+}
+
+// An item of a group, for AppendFileBlock: the offset of the item's entry in INFO, its file and its wave data.
+struct GroupItem
+{
+    size_t entry = 0;
+    Bytes bytes;
+    Bytes wave_data;
+};
+
+// A group, for AppendFileBlock: the offset of the group's entry in INFO, and its items.
+struct FileGroup
+{
+    size_t entry = 0;
+    std::vector<GroupItem> items;
+};
+
+// Appends an archive's FILE block, block 2: a header of 0x20 bytes, then the files of each group one after another,
+// then their wave data. Stores the offset and the size of each file and each wave data in the entry of its item, and
+// those of the files and the wave data of each group in the entry of the group. An item without wave data keeps zeros
+// there.
+inline void AppendFileBlock(Bytes& file, const std::vector<FileGroup>& groups)
+{
+    const size_t data = Block(file, "FILE", 2);
+    Grow(file, 0x18);
+    for (const FileGroup& group : groups)
+    {
+        const size_t group_files = file.size();
+        for (const GroupItem& item : group.items)
+        {
+            xsflib::StoreBe32(&file[item.entry + 4], static_cast<uint32_t>(file.size() - group_files));
+            xsflib::StoreBe32(&file[item.entry + 8], static_cast<uint32_t>(item.bytes.size()));
+            file.insert(file.end(), item.bytes.begin(), item.bytes.end());
+        }
+
+        const size_t group_waves = file.size();
+        for (const GroupItem& item : group.items)
+        {
+            if (!item.wave_data.empty())
+            {
+                xsflib::StoreBe32(&file[item.entry + 0xC], static_cast<uint32_t>(file.size() - group_waves));
+                xsflib::StoreBe32(&file[item.entry + 0x10], static_cast<uint32_t>(item.wave_data.size()));
+                file.insert(file.end(), item.wave_data.begin(), item.wave_data.end());
+            }
+        }
+
+        xsflib::StoreBe32(&file[group.entry + 0x10], static_cast<uint32_t>(group_files));
+        xsflib::StoreBe32(&file[group.entry + 0x14], static_cast<uint32_t>(group_waves - group_files));
+        xsflib::StoreBe32(&file[group.entry + 0x18], static_cast<uint32_t>(group_waves));
+        xsflib::StoreBe32(&file[group.entry + 0x1C], static_cast<uint32_t>(file.size() - group_waves));
+    }
+    EndBlock(file, data, 2);
 }
 
 // An archive of version 1.4 with one sequence sound, named in SYMB. The sound's sequence and bank (with its RWAR as
@@ -526,22 +576,7 @@ inline Bytes MakeArchive(const Bytes& sequence, uint32_t offset, uint32_t alloca
 
     // FILE: the group's files (the sequence, then the bank), then its wave data (the bank's RWAR). The block's header
     // takes 0x20 bytes.
-    const size_t data = Block(file, "FILE", 2);
-    Grow(file, 0x18);
-    const size_t group_files = file.size();
-    file.insert(file.end(), sequence.begin(), sequence.end());
-    file.insert(file.end(), bank_file.begin(), bank_file.end());
-    const size_t group_waves = file.size();
-    file.insert(file.end(), rwar.begin(), rwar.end());
-    xsflib::StoreBe32(&file[group + 0x10], static_cast<uint32_t>(group_files));
-    xsflib::StoreBe32(&file[group + 0x14], static_cast<uint32_t>(group_waves - group_files));
-    xsflib::StoreBe32(&file[group + 0x18], static_cast<uint32_t>(group_waves));
-    xsflib::StoreBe32(&file[group + 0x1C], static_cast<uint32_t>(rwar.size()));
-    xsflib::StoreBe32(&file[item[0] + 8], static_cast<uint32_t>(sequence.size()));
-    xsflib::StoreBe32(&file[item[1] + 4], static_cast<uint32_t>(sequence.size()));
-    xsflib::StoreBe32(&file[item[1] + 8], static_cast<uint32_t>(bank_file.size()));
-    xsflib::StoreBe32(&file[item[1] + 0x10], static_cast<uint32_t>(rwar.size()));
-    EndBlock(file, data, 2);
+    AppendFileBlock(file, {{group, {{item[0], sequence, {}}, {item[1], bank_file, rwar}}}});
 
     return file;
 }
@@ -624,19 +659,7 @@ inline Bytes MakeWaveSoundArchive(const Bytes& wave_sounds, const Bytes& wave_da
     EndBlock(file, info, 1);
 
     // FILE: the group's file, then its wave data. The block's header takes 0x20 bytes.
-    const size_t data = Block(file, "FILE", 2);
-    Grow(file, 0x18);
-    const size_t group_files = file.size();
-    file.insert(file.end(), wave_sounds.begin(), wave_sounds.end());
-    const size_t group_waves = file.size();
-    file.insert(file.end(), wave_data.begin(), wave_data.end());
-    xsflib::StoreBe32(&file[group + 0x10], static_cast<uint32_t>(group_files));
-    xsflib::StoreBe32(&file[group + 0x14], static_cast<uint32_t>(wave_sounds.size()));
-    xsflib::StoreBe32(&file[group + 0x18], static_cast<uint32_t>(group_waves));
-    xsflib::StoreBe32(&file[group + 0x1C], static_cast<uint32_t>(wave_data.size()));
-    xsflib::StoreBe32(&file[item + 8], static_cast<uint32_t>(wave_sounds.size()));
-    xsflib::StoreBe32(&file[item + 0x10], static_cast<uint32_t>(wave_data.size()));
-    EndBlock(file, data, 2);
+    AppendFileBlock(file, {{group, {{item, wave_sounds, wave_data}}}});
 
     return file;
 }
@@ -698,6 +721,190 @@ inline Bytes MakeSoundTable(const std::vector<TableSound>& sounds, const std::ve
     EndBlock(file, info, 1);
 
     return file;
+}
+
+// The archive of MakeArchive with a sequence of `commands` and the tracks in the mask `tracks`. MakeArchive's waves are
+// silent: each frame of their DSP-ADPCM holds only its header. Here each frame gives the samples of its nibbles at a
+// scale of 2^11, and the waves sound.
+inline Bytes MakeAudibleArchive(const Bytes& commands, uint32_t tracks)
+{
+    Bytes bytes = MakeArchive(MakeSequence(commands), 0, tracks);
+    constexpr uint8_t kNibbles[] = {0x7F, 0x19, 0xE3, 0x5A, 0xC6, 0x2D, 0x91};
+    for (std::size_t at = 0; at + 4 <= bytes.size(); at++)
+    {
+        if (std::memcmp(&bytes[at], "RWAV", 4) != 0)
+        {
+            continue;
+        }
+
+        // The wave's DATA block holds 0x40 bytes of samples after its header of 8 bytes.
+        const uint32_t data = xsflib::LoadBe32(&bytes[at + 0x18]);
+        for (std::size_t frame = 0; frame < 0x40; frame += 8)
+        {
+            uint8_t* samples = &bytes[at + data + 8 + frame];
+            samples[0] = 0x0B;
+            std::memcpy(samples + 1, kNibbles, sizeof(kNibbles));
+        }
+    }
+
+    return bytes;
+}
+
+// An archive that MakeGroupedArchive builds, with where its FILE block starts and where its INFO block holds each
+// group's entry and each item's.
+struct GroupedArchive
+{
+    Bytes bytes;
+    std::size_t file_block = 0;
+    std::vector<std::size_t> groups;
+    std::vector<std::vector<std::size_t>> items;
+};
+
+// A group for MakeGroupedArchive: whether the archive holds it, and the IDs of the files that its items hold.
+struct GroupFiles
+{
+    bool internal;
+    std::vector<uint32_t> files;
+};
+
+// A file's places for MakeGroupedArchive: a group and an item of the group for each.
+using FilePlaces = std::vector<std::pair<uint32_t, uint32_t>>;
+
+// An archive of version 1.4 without names. It holds `files` (each file's data and wave data) in `groups`, and `places`
+// lists each file's places. Sound i plays sequence file `sequences[i]` with bank i, and bank i's file is `banks[i]`.
+// Each internal group holds its files, then their wave data, each at a multiple of 32 bytes. An external group's
+// offsets count from the start of its file.
+inline GroupedArchive MakeGroupedArchive(const std::vector<std::pair<Bytes, Bytes>>& files,
+                                         const std::vector<GroupFiles>& groups,
+                                         const std::vector<FilePlaces>& places, const std::vector<uint32_t>& sequences,
+                                         const std::vector<uint32_t>& banks)
+{
+    GroupedArchive archive;
+    Bytes& file = archive.bytes;
+    file = Header("RSAR", 0x0104, 2, 0x40);
+    const auto put = [&file](std::size_t at, std::size_t value)
+    {
+        xsflib::StoreBe32(&file[at], static_cast<uint32_t>(value));
+    };
+
+    const auto pad = [](Bytes& data)
+    {
+        data.resize((data.size() + 0x1F) & ~std::size_t{0x1F}, 0);
+    };
+
+    // INFO: the tables of sounds, banks, files and groups. A table holds a count, then a reference to each entry. The
+    // references count from the block's payload.
+    const std::size_t info = Grow(file, 8);
+    std::memcpy(&file[info], "INFO", 4);
+    const std::size_t base = file.size();
+    const std::size_t tables = Grow(file, 0x30);
+
+    const auto entry = [&](std::size_t refs, std::size_t i, std::size_t size)
+    {
+        const std::size_t at = Grow(file, size);
+        PutRef(file, refs + i * 8, 0, static_cast<uint32_t>(at - base));
+
+        return at;
+    };
+
+    const std::size_t sound_refs = InfoTable(file, tables, base, sequences.size());
+    for (std::size_t i = 0; i < sequences.size(); i++)
+    {
+        const std::size_t sound = entry(sound_refs, i, 0x2C);
+        put(sound + 4, sequences[i]);
+        file[sound + 0x16] = 1;
+        const std::size_t sequence = Grow(file, 0x14);
+        PutRef(file, sound + 0x18, 1, static_cast<uint32_t>(sequence - base));
+        put(sequence + 4, i);
+    }
+
+    const std::size_t bank_refs = InfoTable(file, tables + 8, base, banks.size());
+    for (std::size_t i = 0; i < banks.size(); i++)
+    {
+        put(entry(bank_refs, i, 8) + 4, banks[i]);
+    }
+
+    const std::size_t file_refs = InfoTable(file, tables + 0x18, base, files.size());
+    for (std::size_t f = 0; f < files.size(); f++)
+    {
+        const std::size_t at = entry(file_refs, f, 0x1C);
+        put(at, files[f].first.size());
+        put(at + 4, files[f].second.size());
+        const std::size_t place_refs = InfoTable(file, at + 0x14, base, places[f].size());
+        for (std::size_t p = 0; p < places[f].size(); p++)
+        {
+            const std::size_t place = entry(place_refs, p, 8);
+            put(place, places[f][p].first);
+            put(place + 4, places[f][p].second);
+        }
+    }
+
+    const std::size_t group_refs = InfoTable(file, tables + 0x20, base, groups.size());
+    for (std::size_t g = 0; g < groups.size(); g++)
+    {
+        archive.groups.push_back(entry(group_refs, g, 0x28));
+        if (!groups[g].internal)
+        {
+            const std::size_t path = Grow(file, 8);
+            std::memcpy(&file[path], "GROUP", 5);
+            PutRef(file, archive.groups[g] + 8, 0, static_cast<uint32_t>(path - base));
+        }
+
+        const std::size_t item_refs = InfoTable(file, archive.groups[g] + 0x20, base, groups[g].files.size());
+        std::vector<std::size_t>& items = archive.items.emplace_back();
+        for (std::size_t i = 0; i < groups[g].files.size(); i++)
+        {
+            items.push_back(entry(item_refs, i, 0x18));
+            put(items[i], groups[g].files[i]);
+        }
+    }
+
+    pad(file);
+    put(info + 4, file.size() - info);
+    put(0x18, info);
+    put(0x1C, file.size() - info);
+
+    // FILE: each internal group's files, then their wave data. An external group's file holds them in the same way.
+    archive.file_block = Grow(file, 0x20);
+    std::memcpy(&file[archive.file_block], "FILE", 4);
+    for (std::size_t g = 0; g < groups.size(); g++)
+    {
+        Bytes external;
+        Bytes& out = groups[g].internal ? file : external;
+        const std::size_t group = archive.groups[g];
+        const std::vector<std::size_t>& items = archive.items[g];
+        std::size_t at = out.size();
+        put(group + 0x10, at);
+        for (std::size_t i = 0; i < items.size(); i++)
+        {
+            const Bytes& data = files[groups[g].files[i]].first;
+            put(items[i] + 4, out.size() - at);
+            put(items[i] + 8, data.size());
+            out.insert(out.end(), data.begin(), data.end());
+            pad(out);
+        }
+
+        put(group + 0x14, out.size() - at);
+        at = out.size();
+        put(group + 0x18, at);
+        for (std::size_t i = 0; i < items.size(); i++)
+        {
+            const Bytes& data = files[groups[g].files[i]].second;
+            put(items[i] + 0xC, out.size() - at);
+            put(items[i] + 0x10, data.size());
+            out.insert(out.end(), data.begin(), data.end());
+            pad(out);
+        }
+
+        put(group + 0x1C, out.size() - at);
+    }
+
+    put(archive.file_block + 4, file.size() - archive.file_block);
+    put(0x20, archive.file_block);
+    put(0x24, file.size() - archive.file_block);
+    put(8, file.size());
+
+    return archive;
 }
 
 } // namespace ntdlib::testing::rsar_files

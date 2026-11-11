@@ -39,12 +39,29 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/agb/encoded.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/mp2k/song.h"
 
 namespace ntdlib::mp2k
 {
+
+// The number of length codes: TIE's 0, then N01 to N96. A note's code is kCmdTie plus its length code, and a wait's
+// kCmdWait plus its length code. Code i gives a length of ClockLength(i) ticks.
+inline constexpr int kLengthCodes = 49;
+
+// The length code of the longest length up to `length` ticks: 0 for a length below 1 tick.
+inline int UsualLengthCode(int64_t length)
+{
+    int code = 0;
+    for (int i = 0; i < kLengthCodes && ClockLength(i) <= length; i++)
+    {
+        code = i;
+    }
+
+    return code;
+}
 
 // What a track keeps for the commands that leave bytes out: the running status, and the last key and velocity.
 struct RunningState
@@ -173,9 +190,10 @@ PlayedCommand ReadPlayedCommand(const ByteAt& byte_at, uint32_t at, const Runnin
                 command.encoding.arguments = static_cast<uint8_t>(count);
             }
 
-            // The code of the longest length up to the note's length gives the usual code.
+            // The code of the longest length up to the note's length gives the usual code (UsualLengthCode). The loop
+            // stays here: a call in its place changes the machine code of the sequencers that read commands.
             int usual_code = 0;
-            for (int i = 0; i < 49 && ClockLength(i) <= command.value.value; i++)
+            for (int i = 0; i < kLengthCodes && ClockLength(i) <= command.value.value; i++)
             {
                 usual_code = i;
             }
@@ -339,13 +357,8 @@ Decoded DecodeSong(const Rom& rom, const SongHeader& header, int note_arguments 
 // goes on where the track runs it outside a pattern.
 bool FallsThrough(const commands::Command& command);
 
-// The bytes of a song, and each item's offset in them. `offsets` holds one more entry than the sequence has items: the
-// end.
-struct Encoded
-{
-    std::vector<uint8_t> bytes;
-    std::vector<uint32_t> offsets;
-};
+// The bytes of a song, and each item's offset in them (agb/encoded.h).
+using Encoded = agb::Encoded;
 
 // Encodes `sequence` at address `base`, with the console's values nearest its units, for a driver whose notes read up
 // to `note_arguments` bytes (NoteArguments). Throws std::invalid_argument for a command that the bytes can't hold,

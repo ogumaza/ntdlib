@@ -9,9 +9,8 @@
 // The driver runs a tick about every 10 ms. A sequence's tempo adds to a counter each tick, and a tick of the sequence
 // runs each time the counter passes the length of a quarter note. MIDI's tempo puts each of the sequence's ticks at its
 // nominal time, up to a driver's tick before the driver's tick that runs it. The events of a sequence's tick go at the
-// start of
-// that driver's tick (Performance::frame_ticks). The ends of voices that a driver's tick finds go at its start too
-// (TrackEvent::after).
+// start of that driver's tick (Performance::frame_ticks). The ends of voices that a driver's tick finds go at its start
+// too (TrackEvent::after).
 
 #include "ntdlib/sequence_export/dse/performance.h"
 
@@ -44,7 +43,6 @@
 
 namespace ntdlib::sequence_export::dse
 {
-
 namespace
 {
 
@@ -53,7 +51,7 @@ using ntdlib::dse::EventStart;
 using ntdlib::dse::NoteEvent;
 using ntdlib::dse::Player;
 using ntdlib::dse::VoiceView;
-using ntdlib::sequence_export::FitParts;
+using ntdlib::sequence_export::FittedParts;
 using ntdlib::sequence_export::LevelScale;
 using ntdlib::sequence_export::LoopChoice;
 using ntdlib::sequence_export::MainLoopPasses;
@@ -65,6 +63,7 @@ using seqlib::midi::TrackOutput;
 void DropEventsFrom(Performance& out, uint32_t end)
 {
     std::erase_if(out.unstarted, [end](const UnstartedNote& note) { return note.tick >= end; });
+
     for (NoteVoices& note : out.note_channels)
     {
         if (note.cut_tick >= end)
@@ -157,7 +156,6 @@ struct State
     std::optional<uint32_t> owner_length;     // the length of the owner's passes
     MainLoopPasses main_loop;
     std::optional<PendingLoop> pending;
-    std::optional<uint32_t> last_draw; // the last tick in which a note drew a random number
     bool reported_channels = false;
 
     // For the editor: each track's last event, and each channel's changes of its volume and pan, with the values that
@@ -314,6 +312,7 @@ Performer::Performer(const SequenceFiles& files, const PerformOptions& options, 
 
     s_.recorder.SetLevelScale(level_scale);
     s_.recorder.SetPartLimits(part_limits);
+
     for (std::size_t t = 0; t < s_.outputs.size(); t++)
     {
         s_.outputs[t].midi_track = static_cast<uint8_t>(t);
@@ -390,12 +389,14 @@ void Performer::OnEvent(const EventStart& e)
     {
         return;
     }
+
     const auto t = static_cast<std::size_t>(e.track);
     if (t >= s_.out.stretches.size())
     {
         s_.out.stretches.resize(t + 1);
         s_.last_events.resize(t + 1);
     }
+
     LastEvent& last = s_.last_events[t];
     std::vector<Stretch>& stretches = s_.out.stretches[t];
     if (last.ran && (e.offset == last.next || e.offset == last.offset) && !stretches.empty())
@@ -415,6 +416,7 @@ void Performer::OnEvent(const EventStart& e)
         }
         stretches.push_back(stretch);
     }
+
     last = {true, e.offset, e.next, e.code};
 }
 
@@ -431,6 +433,7 @@ void Performer::OnLoop(int track)
     {
         return;
     }
+
     const uint32_t start = found->second;
     found->second = s_.tick;
     s_.looped.insert(track);
@@ -486,6 +489,7 @@ void Performer::OnNote(const NoteEvent& e)
                 moved.insert(number);
             }
         }
+
         for (const uint32_t number : moved)
         {
             const MidiNote& note = s_.notes.at(number);
@@ -494,16 +498,12 @@ void Performer::OnNote(const NoteEvent& e)
                 Approximate("legato to another key on a part with newer notes (they keep its pitch)");
             }
         }
+
         SyncChannel(e.channel, 0.0);
         return;
     }
 
-    // A loop whose notes draw random numbers plays each pass otherwise (ChooseSteadyPass).
     const ChannelView channel = Driver().GetChannel(e.channel);
-    if (channel.jitter != 0 || channel.random_keys)
-    {
-        s_.last_draw = s_.tick;
-    }
 
     // A voice that another note takes stops at once on the console. A note of a key group that allows one voice takes
     // the voice of the group's last note on the channel. Its exclusive class cuts that note where both share a part
@@ -516,6 +516,7 @@ void Performer::OnNote(const NoteEvent& e)
         {
             continue;
         }
+
         const auto found = s_.notes.find(s_.voices[index]);
         const bool exclusive = s_.exclusive[index] != 0 && Driver().GetVoice(v).key_group == s_.exclusive[index] &&
                                found != s_.notes.end() && found->second.track == e.channel;
@@ -540,6 +541,7 @@ void Performer::OnNote(const NoteEvent& e)
                                     .offset = e.offset});
         return;
     }
+
     int first_voice = 0;
     while ((e.voices & (1u << first_voice)) == 0)
     {
@@ -572,6 +574,7 @@ void Performer::OnNote(const NoteEvent& e)
     key.envelope = channel.envelope;
     key.lfos = channel.lfos;
     key.lfo_level = channel.lfo_level;
+
     // SoundFont holds a pitch LFO and a volume LFO, each a triangle without a fade (convert.h).
     std::set<uint8_t> outputs;
     for (const LfoShape& lfo : PresetLfos(key))
@@ -600,6 +603,7 @@ void Performer::OnNote(const NoteEvent& e)
     const uint32_t preset = seqlib::midi::PresetIndex(s_.out.presets, key);
     s_.recorder.SendPreset(s_.out, output, s_.tick, preset);
     s_.recorder.SendPitch(s_.out, output, s_.tick, pitch);
+
     for (const MidiNote& cut : exclusive_cuts)
     {
         if (cut.part != output.part || cut.preset != preset)
@@ -618,6 +622,7 @@ void Performer::OnNote(const NoteEvent& e)
                         .preset = preset};
     s_.notes[e.number] = note;
     RecordNote(note.id, e);
+
     for (int v = 0; v < kVoices; v++)
     {
         if ((e.voices & (1u << v)) != 0)
@@ -630,6 +635,7 @@ void Performer::OnNote(const NoteEvent& e)
             s_.exclusive[static_cast<std::size_t>(v)] = view.key_group_voices == 1 ? view.key_group : 0;
         }
     }
+
     s_.last_change_ms = TickMs(s_.tick);
     s_.last_note_ms = s_.last_change_ms;
 }
@@ -730,6 +736,7 @@ void Performer::RecordNote(uint32_t id, const NoteEvent& e)
         s_.out.note_tracks.resize(id);
         s_.out.note_channels.resize(id);
     }
+
     const auto t = static_cast<std::size_t>(e.track);
     const std::size_t stretches = t < s_.out.stretches.size() ? s_.out.stretches[t].size() : 0;
     commands[id - 1] = {e.offset, static_cast<uint32_t>(stretches > 0 ? stretches - 1 : 0)};
@@ -752,8 +759,12 @@ void Performer::RecordMix(int number, const ChannelView& channel)
         }
 
         s_.mixed[c][i] = value;
-        const auto same = std::find_if(changes.rbegin(), changes.rend(), [&](const MixChange& change)
-                                       { return change.tick == s_.tick && change.setting == setting; });
+
+        const auto matches = [&](const MixChange& change)
+        {
+            return change.tick == s_.tick && change.setting == setting;
+        };
+        const auto same = std::find_if(changes.rbegin(), changes.rend(), matches);
         if (same != changes.rend())
         {
             same->value = value;
@@ -783,12 +794,14 @@ float Performer::NotePitch(uint32_t number) const
         {
             continue;
         }
+
         const VoiceView view = Driver().GetVoice(v);
         if (view.allocated && view.followed && view.note == number)
         {
             return VoicePitch(v, note.key);
         }
     }
+
     return static_cast<float>(static_cast<int16_t>(Driver().GetChannel(note.track).bend)) / 256.0f;
 }
 
@@ -809,6 +822,7 @@ bool Performer::PartAudible(int track, uint8_t part) const
             {
                 return false;
             }
+
             for (int v = 0; v < kVoices; v++)
             {
                 if ((note.voices & (1u << v)) != 0 && s_.levels[static_cast<std::size_t>(v)] > kInaudibleLevel)
@@ -816,6 +830,7 @@ bool Performer::PartAudible(int track, uint8_t part) const
                     return true;
                 }
             }
+
             return false;
         });
 }
@@ -830,6 +845,7 @@ uint32_t Performer::NewestOn(int track, uint8_t part, bool held) const
             newest = std::max(newest, number);
         }
     }
+
     return newest;
 }
 
@@ -843,6 +859,7 @@ float Performer::PartPitch(int track, uint8_t part) const
     {
         return NotePitch(newest);
     }
+
     return static_cast<float>(static_cast<int16_t>(Driver().GetChannel(track).bend)) / 256.0f;
 }
 
@@ -865,6 +882,7 @@ std::optional<MidiNote> Performer::LeaveVoice(int voice, bool cut, double after)
 
     const MidiNote ended = note;
     s_.notes.erase(found);
+
     if (ended.held)
     {
         s_.recorder.NoteOff(s_.out, static_cast<uint8_t>(ended.track), s_.tick, ended.part, ended.key, ended.id, after);
@@ -873,6 +891,7 @@ std::optional<MidiNote> Performer::LeaveVoice(int voice, bool cut, double after)
     {
         s_.out.note_channels[ended.id - 1].cut_tick = s_.tick;
     }
+
     if (cut)
     {
         // The cut note stops at once. CC120 stops it where no other note that can be heard sounds on its part, and
@@ -883,18 +902,21 @@ std::optional<MidiNote> Performer::LeaveVoice(int voice, bool cut, double after)
         {
             return std::nullopt;
         }
+
         if (!PartAudible(ended.track, ended.part))
         {
             s_.recorder.Emit(s_.out, s_.outputs[static_cast<std::size_t>(ended.track)], s_.tick,
                              {.kind = EventKind::kSoundOff}, ended.part);
             return std::nullopt;
         }
+
         const std::optional<int32_t> release = s_.release_ticks[static_cast<std::size_t>(voice)];
         if (!release || int64_t{*release} * (level - kInaudibleLevel) > level)
         {
             return ended;
         }
     }
+
     return std::nullopt;
 }
 
@@ -915,22 +937,26 @@ void Performer::EndFrame()
         {
             continue;
         }
+
         const VoiceView view = Driver().GetVoice(v);
         if (!view.allocated || !view.followed || view.note != s_.voices[index] || (s_.started[index] && !view.started))
         {
             LeaveVoice(v, false, after);
             continue;
         }
+
         s_.started[index] = s_.started[index] || view.started;
         s_.levels[index] = view.level;
         s_.release_ticks[index] = view.release_ticks;
     }
 
     SyncChannels(after);
+
     if (AnySounding())
     {
         s_.last_sound_frame = s_.frame;
     }
+
     s_.frame++;
 }
 
@@ -1022,6 +1048,7 @@ bool Performer::RestartAtTrackEnds()
             restarted = true;
         }
     }
+
     return restarted;
 }
 
@@ -1036,6 +1063,7 @@ bool Performer::EveryTrackLooped() const
             return false;
         }
     }
+
     return true;
 }
 
@@ -1059,6 +1087,7 @@ void Performer::DecideLoop()
     {
         return;
     }
+
     if (MarkSteadyPass())
     {
         stop_ = true;
@@ -1110,6 +1139,7 @@ void Performer::EndPerformance(bool finished)
         seqlib::midi::ClampNoteOffs(out, *end_tick);
         const std::set<uint32_t> late = seqlib::midi::CutAt(out, *end_tick);
         DropEventsFrom(out, *end_tick);
+
         for (auto& [number, note] : s_.notes)
         {
             if (late.contains(note.id))
@@ -1117,6 +1147,7 @@ void Performer::EndPerformance(bool finished)
                 note.held = false;
             }
         }
+
         for (auto& [number, note] : s_.notes)
         {
             if (note.held)
@@ -1125,6 +1156,7 @@ void Performer::EndPerformance(bool finished)
                 note.held = false;
             }
         }
+
         out.end_tick = *end_tick;
         out.seconds = TickMs(*end_tick) / 1000.0;
         seqlib::midi::ClampNoteOffs(out, out.end_tick);
@@ -1151,6 +1183,7 @@ void Performer::EndPerformance(bool finished)
             player_->RunTick();
             EndFrame();
         }
+
         end_ms = FrameMs(AnySounding() ? s_.frame : s_.last_sound_frame + 1);
     }
 
@@ -1173,6 +1206,7 @@ void Performer::EndPerformance(bool finished)
             last_event = std::max(last_event, e.tick + static_cast<uint32_t>(std::ceil(e.after)));
         }
     }
+
     out.end_tick = std::max({last_event, s_.tick + static_cast<uint32_t>(std::ceil(after))});
     out.seconds = std::max(end_ms, TickMs(s_.tick)) / 1000.0;
 
@@ -1186,6 +1220,7 @@ void Performer::EndPerformance(bool finished)
         out.end_tick = end;
         out.seconds = end_ms / 1000.0;
     }
+
     seqlib::midi::ClampNoteOffs(out, out.end_tick);
 }
 
@@ -1232,14 +1267,17 @@ Performance Performer::Run()
             ? ntdlib::sequence_export::PassStartAt(s_.out, s_.recorder.PartSwitches(), s_.out.loop->end)
             : PassStart{};
     EndPerformance(finished);
+
     if (finished)
     {
         s_.out.DropLoop();
     }
+
     if (s_.out.loop)
     {
         ntdlib::sequence_export::RestoreAtLoopStart(s_.out, s_.recorder.PartSwitches(), next_pass, kLoopRules);
     }
+
     for (const auto& [what, count] : s_.recorder.Approximations())
     {
         s_.out.approximations[what] += count;
@@ -1288,16 +1326,11 @@ Performance Perform(const SequenceFiles& files, const PerformOptions& options)
         bool parts_fit = true;
         if (!limited)
         {
-            const std::array<uint8_t, 16> fitted =
-                FitParts(performance, performer.PartsUsed(), SpareChannels::kForLayers);
-            for (std::size_t t = 0; t < 16; t++)
+            if (const auto fitted = FittedParts(performance, performer.PartsUsed(), SpareChannels::kForLayers))
             {
-                parts_fit = parts_fit && fitted[t] >= performer.PartsUsed()[t];
-            }
-            if (!parts_fit)
-            {
-                part_limits = fitted;
+                part_limits = *fitted;
                 limited = true;
+                parts_fit = false;
             }
         }
         if (parts_fit && LevelScale(performer.LevelPeak()) == LevelScale(peak))

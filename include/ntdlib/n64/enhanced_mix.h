@@ -165,6 +165,11 @@ private:
     void AddInputs(uint32_t id, const float* inputs, uint32_t count, uint64_t serial);
 
     void RunOp(World& world, const Frame& frame, const AudioOp& op, const AudioBus& bus) const;
+    static void RunMove(World& world, const AudioOp& op, std::size_t count);
+    static void RunLoad(World& world, const AudioOp& op, const AudioBus& bus, std::size_t count);
+    static void RunDuplicate(World& world, const AudioOp& op, std::size_t count);
+    static void RunInterleave(World& world, const AudioOp& op, std::size_t count);
+    static void RunNearest(World& world, const AudioOp& op, std::size_t count);
     void RunMain(const MainResample& main);
     static void RunResample(World& world, const AudioResampleOp& op);
     static void RunEnv(World& world, const AudioEnvOp& env);
@@ -176,6 +181,9 @@ private:
     void FlushSends(uint32_t samples);
     void EndChunk(uint32_t samples, Peaks& peaks);
     void Emit(int samples, std::vector<float>& out);
+    void DelayDryPart(std::vector<float>& mixed);
+    void AddWetPart(std::vector<float>& mixed, std::size_t game_samples);
+    void RunFinalInterpolator(const std::vector<float>& mixed, std::size_t count, std::vector<float>& out);
 
     int factor_;
     int rate_; // the rate that the lists run at

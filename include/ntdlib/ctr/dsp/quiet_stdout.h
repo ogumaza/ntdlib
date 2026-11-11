@@ -21,7 +21,8 @@ inline void SilenceStdout()
 #if defined(_WIN32)
     std::freopen("NUL", "w", stdout);
 #else
-    // A closed stdout makes open() return 1. /dev/null then stays there.
+    // A tool started with stdout closed gets descriptor 1 for the null device itself. That descriptor stays open. If it
+    // were closed, the next file that the tool opens would take descriptor 1 and receive Teakra's messages.
     const int fd = open("/dev/null", O_WRONLY);
     if (fd >= 0 && fd != 1)
     {

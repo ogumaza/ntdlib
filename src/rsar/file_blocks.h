@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 // The headers and blocks of the files of the Wii that NintendoWare for Revolution's tools write: RWAV, RWAR, RBNK,
-// RWSD and RSTM. A header takes 32 bytes, and 64 in RSTM. It holds the magic, the byte order mark, the version, the
-// file's size, the header's size and the number of blocks, then each block's offset and size. A block starts with its
-// magic and its size. Zeros pad each block to 32 bytes.
+// RWSD, RSEQ and RSTM. A header takes 32 bytes, and 64 in RSTM. It holds the magic, the byte order mark, the version,
+// the file's size, the header's size and the number of blocks, then each block's offset and size. A block starts with
+// its magic and its size. Zeros pad each block to 32 bytes.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -16,6 +17,7 @@
 
 #include "xsflib/binary.h"
 
+#include "ntdlib/rsar/formats.h"
 #include "sar/file_bytes.h"
 
 namespace ntdlib::rsar::detail
@@ -24,6 +26,24 @@ namespace ntdlib::rsar::detail
 inline constexpr std::size_t kHeaderSize = 0x20;
 inline constexpr std::size_t kBlockHeader = 8;
 inline constexpr std::size_t kBlockAlignment = 32;
+
+// The highest rate that the 24 bits of a wave's or a stream's rate hold, and the most channels and tracks that the
+// 8-bit counts of a stream hold.
+inline constexpr uint32_t kMostRate = 0xFFFFFF;
+inline constexpr std::size_t kMostStreamCount = 255;
+
+// The 24-bit rate of a wave or a stream at `at`: its high byte, then its low 16 bits.
+inline uint32_t ReadRate(const xsflib::Reader& r, std::size_t at)
+{
+    return uint32_t{r.U8(at)} << 16 | r.U16(at + 1);
+}
+
+// Writes `rate` at `at`, in the layout that ReadRate reads.
+inline void WriteRate(sar::detail::Out& out, std::size_t at, uint32_t rate)
+{
+    out.U8(at, static_cast<uint8_t>(rate >> 16));
+    out.U16(at + 1, static_cast<uint16_t>(rate));
+}
 
 // The header of a file of `magic` and `version` with `blocks` blocks. CloseBlock lists each block, and CloseFile gives
 // the file's size.
@@ -96,6 +116,59 @@ inline std::pair<std::size_t, std::size_t> BlockOf(const xsflib::Reader& r, std:
     }
 
     return {at, r.U32(at + 4)};
+}
+
+// The DSP-ADPCM info at `at`: the coefficients, the gain, then the predictor and scale and the history at the start
+// and at the loop.
+inline DspAdpcmInfo ReadDspAdpcm(const xsflib::Reader& r, std::size_t at)
+{
+    DspAdpcmInfo info;
+    for (std::size_t i = 0; i < info.coefs.size(); ++i)
+    {
+        info.coefs[i] = r.S16(at + i * 2);
+    }
+    info.gain = r.U16(at + 0x20);
+    info.pred_scale = r.U16(at + 0x22);
+    info.yn1 = r.S16(at + 0x24);
+    info.yn2 = r.S16(at + 0x26);
+    info.loop_pred_scale = r.U16(at + 0x28);
+    info.loop_yn1 = r.S16(at + 0x2A);
+    info.loop_yn2 = r.S16(at + 0x2C);
+
+    return info;
+}
+
+// Writes `info` at `at`, in the layout that ReadDspAdpcm reads.
+inline void WriteDspAdpcm(sar::detail::Out& out, std::size_t at, const DspAdpcmInfo& info)
+{
+    for (std::size_t i = 0; i < info.coefs.size(); ++i)
+    {
+        out.U16(at + i * 2, static_cast<uint16_t>(info.coefs[i]));
+    }
+    out.U16(at + 0x20, info.gain);
+    out.U16(at + 0x22, info.pred_scale);
+    out.U16(at + 0x24, static_cast<uint16_t>(info.yn1));
+    out.U16(at + 0x26, static_cast<uint16_t>(info.yn2));
+    out.U16(at + 0x28, info.loop_pred_scale);
+    out.U16(at + 0x2A, static_cast<uint16_t>(info.loop_yn1));
+    out.U16(at + 0x2C, static_cast<uint16_t>(info.loop_yn2));
+}
+
+// The labels of the LABL block at `block` of the RSEQ file that `r` holds. The block holds the number of labels and an
+// offset to each from the count. Each label holds its offset in the bytecode, its name's length and its name.
+inline std::vector<Sequence::Label> ReadLabels(const xsflib::Reader& r, std::size_t block)
+{
+    std::vector<Sequence::Label> labels;
+    const std::size_t table = block + kBlockHeader;
+    const uint32_t count = r.U32(table);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const std::size_t label = table + r.U32(table + 4 + std::size_t{i} * 4);
+        const std::span<const uint8_t> name = r.Sub(label + 8, r.U32(label + 4));
+        labels.push_back({std::string(name.begin(), name.end()), r.U32(label)});
+    }
+
+    return labels;
 }
 
 } // namespace ntdlib::rsar::detail

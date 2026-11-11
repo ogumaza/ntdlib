@@ -459,6 +459,12 @@ private:
     void TakeSourceParams(int source, int region);
     void TakeFirstBuffer(uint32_t source_state, uint32_t params);
 
+    // MixFrame's steps: the sources' mix into the buses, the buses' mix into the output in the output mode, and the
+    // meters' peaks.
+    void MixSources();
+    void MixOutput();
+    void UpdateMeterPeaks();
+
     void ProcessSource(int source);
     bool DecodeFrame(uint32_t source_state, std::array<uint16_t, 3>& counts,
                      const std::function<void(uint16_t)>& chunk);
@@ -466,17 +472,33 @@ private:
     uint16_t FillPhases(uint32_t source_state);
     uint16_t Chunk(uint16_t limit, std::array<uint16_t, 3>& counts) const;
     uint16_t Decode(uint32_t source_state, std::array<uint16_t, 3>& counts);
+
+    // The most samples that the firmware decodes of a chunk in the source format `format`.
+    static uint16_t ChunkLimit(uint16_t format);
+
+    // Decodes `count` samples of a source in the format `format` into the decode buffer. A format that the firmware
+    // can't decode gives zeros.
+    void DecodeChunk(uint32_t source_state, uint16_t format, uint16_t count);
+
     void DecodePcm(uint32_t source_state, uint16_t count, bool stereo, bool pcm8);
+
+    // Copies `n` samples of a PCM8 or a PCM16 buffer at `address`, from sample `position` on. The samples go through
+    // the DMA buffer into the decode buffer at `out0`. The second channel of a stereo buffer goes to `out1`. A PCM8
+    // sample goes into the high byte of its word.
+    void CopyPcm8(uint32_t address, uint32_t position, uint32_t n, bool stereo, uint32_t out0, uint32_t out1);
+    void CopyPcm16(uint32_t address, uint32_t position, uint32_t n, bool stereo, uint32_t out0, uint32_t out1);
+
     void DecodeAdpcm(uint32_t source_state, uint16_t count, bool stereo);
     void DecodeAdpcmFrames(uint32_t source_state, uint32_t input, uint32_t output, uint16_t count);
     bool NextBuffer(uint32_t source_state, bool adpcm);
     void Dma(uint32_t source, uint32_t words);
     void Resample(uint32_t source_state, uint32_t output, uint32_t phases, uint16_t count);
+    uint16_t Interpolate(uint16_t interpolation, uint32_t place, uint16_t fraction) const;
     uint32_t Filter(uint32_t source_state);
-    void Biquad(uint32_t voice, int channel, uint32_t buffer);
-    void OnePole(uint32_t voice, int channel, uint32_t samples);
+    void Biquad(uint32_t y, int channel, uint32_t buffer);
+    void OnePole(uint32_t y, int channel, uint32_t samples);
     void Mix(uint32_t source_state, uint32_t samples, int bus);
-    void AddStoppedOutputs(uint32_t voice);
+    void AddStoppedOutputs(uint32_t y);
     void MixAux(int bus);
     void Declick(uint32_t sums);
 
@@ -497,10 +519,15 @@ private:
     void TakeHostParams(int region);
     void FinishHostFrame(int region);
     void MixEnhanced();
-    void MixEnhancedSource(int source);
+    void MixEnhancedSource(int index);
+    void MixEnhancedBuses(const std::array<uint16_t, 12>& gains, const std::array<uint16_t, 12>& previous, bool ramp);
     void DecodeAhead(uint32_t source_state, uint32_t count, int channels);
+
+    // Adds the `count` samples of each of the source's `channels` channels in the decode buffer to the input.
+    void CaptureDecoded(uint32_t count, int channels);
+
     void RenderEnhanced(const wave::SincKernel& kernel, int64_t phase, uint32_t rate, int channels);
-    void FilterEnhanced(uint32_t voice, EnhancedSource& source, int channels);
+    void FilterEnhanced(uint32_t y, EnhancedSource& source, int channels);
     void OutputEnhanced();
     uint8_t* Block(int source);
 

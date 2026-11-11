@@ -25,16 +25,16 @@ template <typename Policy>
 WaveSoundPlayer<Policy>::WaveSoundPlayer(int id, const typename Policy::SoundInfo& info,
                                          const sar::WaveSoundFile::WaveSound& sound, std::optional<WaveInfo> wave,
                                          const Receiver* receiver)
-    : id_(id), wave_(std::move(wave)), settings_(sound), receiver_(receiver)
+    : id_(id), wave_(std::move(wave)), settings_(sound), basic_{.outputs = {}, .receiver = receiver}
 {
     settings_.tracks = {};
     settings_.notes = {};
 
     // What the archive player gives a sound from its info (SoundArchivePlayer::SetCommonSoundParam, 0x02295C98): the
     // volume, a division by 127, and the pan mode and curve. A wave sound's entry also gives the channel's priority.
-    volume_ = Policy::PlayerVolume(info.volume);
-    pan_mode_ = info.pan_mode;
-    pan_curve_ = info.pan_curve;
+    basic_.volume = Policy::PlayerVolume(info.volume);
+    basic_.pan_mode = info.pan_mode;
+    basic_.pan_curve = info.pan_curve;
     channel_priority_ = info.channel_priority;
     release_priority_fix_ = info.release_priority_fix;
 }
@@ -97,7 +97,7 @@ bool WaveSoundPlayer<Policy>::StartChannel(Engine& engine)
     {
         if (channel->voice != kNoVoice)
         {
-            channel->Voice(engine).SetOutputReceiver(receiver_);
+            channel->Voice(engine).SetOutputReceiver(basic_.receiver);
         }
     }
 
@@ -118,13 +118,13 @@ void WaveSoundPlayer<Policy>::UpdateChannel(Engine& engine)
 
     // The filters: the sound's low-pass in 64ths from 64, which filters nothing, and its biquad filter unless the
     // player's replaces it.
-    const float lpf = static_cast<float>(settings_.low_pass - 64) * (1.0f / 64.0f) + lpf_;
+    const float lpf = static_cast<float>(settings_.low_pass - 64) * (1.0f / 64.0f) + basic_.lpf;
     int biquad_type = settings_.biquad_type;
     float biquad_value = FractionOfSoundValue(settings_.biquad_value);
-    if (biquad_type_ != -1)
+    if (basic_.biquad_type != -1)
     {
-        biquad_type = biquad_type_;
-        biquad_value = biquad_value_;
+        biquad_type = basic_.biquad_type;
+        biquad_value = basic_.biquad_value;
     }
 
     // The output parameters: the player's, with the sound's pan, surround pan and sends added, as a track's are added
@@ -137,20 +137,21 @@ void WaveSoundPlayer<Policy>::UpdateChannel(Engine& engine)
     {
         fx_send[bus] = FractionOfSoundValue(settings_.aux_sends[bus]);
     }
-    const auto outputs = Policy::CombineOutputs(outputs_, typename Policy::Outputs{}, pan, span, main_send, fx_send);
+    const auto outputs =
+        Policy::CombineOutputs(basic_.outputs, typename Policy::Outputs{}, pan, span, main_send, fx_send);
 
     // The player also gives the channel's first LFO the player's LFO, which only the game's handle moves from the
     // values that the channel starts with. On the Wii U, the player's remote filter and remote outputs reach the
     // channel too. The model leaves out the remotes.
     Channel& channel = engine.Channels().At(channel_);
-    channel.pan_mode = pan_mode_;
-    channel.pan_curve = pan_curve_;
-    channel.track_volume = volume_;
-    channel.user_pitch = pitch_ * settings_.pitch;
+    channel.pan_mode = basic_.pan_mode;
+    channel.pan_curve = basic_.pan_curve;
+    channel.track_volume = basic_.volume;
+    channel.user_pitch = basic_.pitch * settings_.pitch;
     channel.lpf = lpf;
     channel.biquad_type = static_cast<uint8_t>(biquad_type);
     channel.biquad_value = biquad_value;
-    channel.output_line = output_line_;
+    channel.output_line = basic_.output_line;
     Policy::SetOutputs(channel, outputs);
 }
 

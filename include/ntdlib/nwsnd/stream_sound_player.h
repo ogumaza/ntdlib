@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "ntdlib/nwsnd/basic_sound.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
@@ -205,18 +206,7 @@ private:
     bool started_ = false;
     bool finished_ = false;
 
-    // What BasicSound gives the player from the sound's info and what the game sets (BasicSoundPlayer's parameters), as
-    // a sequence's player holds them.
-    float volume_ = 1.0f;
-    float pitch_ = 1.0f;
-    float lpf_ = 0.0f;
-    float biquad_value_ = 0.0f;
-    int8_t biquad_type_ = -1; // replaces the tracks' type when 0 or more
-    uint32_t pan_mode_ = 0;
-    uint32_t pan_curve_ = 0;
-    uint32_t output_line_ = 1;
-    typename Policy::Outputs outputs_;
-    const Receiver* receiver_ = nullptr;
+    BasicSoundParams<Policy> basic_;
 
     // The sound's pitch and sends in the archive (ItemData, 0x022B3F68): the main send less 1, and the aux sends.
     float item_pitch_ = 1.0f;

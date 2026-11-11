@@ -14,6 +14,7 @@
 
 #include "xsflib/binary.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sdat/formats.h"
 #include "sdat/writer.h"
 
@@ -29,7 +30,6 @@ constexpr std::size_t kBlockHeaderSize = 0x40; // SYMB's and INFO's: the magic w
 constexpr std::size_t kFileAlignment = 32;
 constexpr uint16_t kByteOrderMark = 0xFEFF;
 
-using detail::Align;
 using detail::Writer;
 
 // A list of the SYMB or INFO block: a count, then a reference to each item. Returns where the references start.
@@ -102,7 +102,7 @@ std::size_t WriteSymbols(Writer& w, const Symbols& symbols)
     }
 
     const std::size_t size = w.Size() - start;
-    w.PadTo(Align(w.Size(), 4));
+    w.PadTo(AlignUp(w.Size(), 4));
     w.Put32(start + 4, w.Size() - start);
     return size;
 }
@@ -273,12 +273,12 @@ std::vector<uint8_t> BuildArchive(const ArchiveModel& model)
     w.U32(static_cast<uint32_t>(model.files.size()));
     for (std::size_t id = 0; id < model.files.size(); id++)
     {
-        w.PadTo(Align(w.Size(), kFileAlignment));
+        w.PadTo(AlignUp(w.Size(), kFileAlignment));
         w.Put32(entries + 16 * id, w.Size());
         w.Put32(entries + 16 * id + 4, model.files[id].size());
         w.Bytes(model.files[id]);
     }
-    w.PadTo(Align(w.Size(), kFileAlignment));
+    w.PadTo(AlignUp(w.Size(), kFileAlignment));
     w.Put32(files + 4, w.Size() - files);
     block(3, files, w.Size() - files);
 

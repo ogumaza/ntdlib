@@ -60,9 +60,7 @@ constexpr int kResamplingSlope = 100;
 // The SoundFont cutoff of the low-pass `filter` for a note at key 0 on `region`, in absolute cents.
 int CutoffAtKey0(const ResamplingFilter& filter, const ResamplingRegion& region)
 {
-    const double cents = 1200.0 * std::log2(ResamplingCutoffHz(filter.cutoff, 0, region) / 8.176);
-
-    return static_cast<int>(std::lround(std::clamp(cents, -32768.0, 32767.0)));
+    return std::clamp(sf2::AbsoluteCents(ResamplingCutoffHz(filter.cutoff, 0, region)), -32768, 32767);
 }
 
 } // namespace
@@ -219,8 +217,7 @@ void AddTrackingCutoff(sf2::Zone& zone, int base, int slope)
 
     // The sample's generator stays last.
     const int cutoff = std::clamp(base + key * slope, -32768, 32767);
-    zone.generators.insert(zone.generators.empty() ? zone.generators.end() : zone.generators.end() - 1,
-                           sf2::Generator::Value(sf2::kInitialFilterFc, cutoff));
+    sf2::AddGenerator(zone, sf2::kInitialFilterFc, cutoff);
     if (slope != 0)
     {
         zone.modulators.push_back(
@@ -236,7 +233,7 @@ void AddResamplingFilter(sf2::Zone& zone, const ResamplingFilter& filter, const 
     // The sample's generator stays last.
     if (key.filter.resonance != 0)
     {
-        zone.generators.insert(zone.generators.end() - 1, sf2::Generator::Value(sf2::kInitialFilterQ, 0));
+        sf2::AddGenerator(zone, sf2::kInitialFilterQ, 0);
     }
 }
 
@@ -406,6 +403,15 @@ int LoudestRegion(const Performance& perf, const RegionVolumeFunction& volume_of
     return loudest;
 }
 
+int TuneCents(float tune)
+{
+    // Clamp tuning to SoundFont's +/-10 octaves. This also prevents invalid pitches, such as infinity, from rounding
+    // differently across platforms.
+    const double cents = tune > 0 ? std::clamp(1200.0 * std::log2(tune), -12000.0, 12000.0) : 0.0;
+
+    return static_cast<int>(std::lround(cents));
+}
+
 RegionGenerators ConvertRegion(const PresetKey& key, const EnvelopeValues& env, bool ignore_note_off, float tune,
                                uint8_t volume, uint8_t original_key, bool loop, double quieter,
                                const Settings& settings)
@@ -425,10 +431,7 @@ RegionGenerators ConvertRegion(const PresetKey& key, const EnvelopeValues& env, 
         g.envelope.release = std::min(g.envelope.release, g.envelope.decay);
     }
 
-    // Clamp tuning to SoundFont's +/-10 octaves. This also prevents invalid pitches, such as infinity, from rounding
-    // differently across platforms.
-    const double cents = tune > 0 ? std::clamp(1200.0 * std::log2(tune), -12000.0, 12000.0) : 0.0;
-    const int total = static_cast<int>(std::lround(cents));
+    const int total = TuneCents(tune);
     g.coarse_tune = total / 100;
     g.fine_tune = total - g.coarse_tune * 100;
 

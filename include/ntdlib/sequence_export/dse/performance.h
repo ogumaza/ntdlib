@@ -4,13 +4,13 @@
 // and SFZ files. The model of DSE's driver plays the sequence on dse::Player, with the model of the DS's sound driver
 // and the sound unit. A sound effect plays on the first sequence of the driver's pool. The performer records what the
 // driver plays: each note with its voices, the settings of each channel of the sequence, and a preset for each program
-// with the channel's envelope and LFOs. The model follows the game's driver tick by tick. The
-// notes whose voices the driver gives to other notes are therefore the ones that the console cuts, and a voice whose
-// wave ends without a loop ends as on the console.
+// with the channel's envelope and LFOs. The model follows the game's driver tick by tick. The notes whose voices the
+// driver gives to other notes are therefore the ones that the console cuts, and a voice whose wave ends without a loop
+// ends as on the console.
 //
-// Each channel of the sequence is a MIDI track: the channels hold the settings, and every track plays on one.
-// The performance plays the main loop the number of times that the options give, and marks the pass that a player
-// looping on the markers repeats as the game plays the next pass (ntdlib/sequence_export/passes.h).
+// Each channel of the sequence is a MIDI track: the channels hold the settings, and every track plays on one. The
+// performance plays the main loop the number of times that the options give, and marks the pass that a player looping
+// on the markers repeats as the game plays the next pass (ntdlib/sequence_export/passes.h).
 
 #pragma once
 
@@ -68,8 +68,8 @@ struct NoteVoices
 {
     bool operator==(const NoteVoices&) const = default;
 
-    std::optional<uint32_t>
-        cut_tick; // the tick where a later note took the note's last voice while its channel held it
+    // the tick where a later note took the note's last voice while its channel held it
+    std::optional<uint32_t> cut_tick;
 };
 
 // A recorded sequence: PerformanceBase, with its presets.

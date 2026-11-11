@@ -805,6 +805,50 @@ void TestPortsAndRegisters()
           "--port takes the place of the game's value for the same port");
 }
 
+// A read of a child's port after the child has finished writes nothing: the game deletes a finished child. The first
+// track's child 0 writes 1 to its port 0 and finishes. The first track then clears register 3, reads that port into
+// register 0, and opens child 1 at key 72's commands if register 3 isn't 0, or else at key 60's.
+void TestPortOfFinishedChild()
+{
+    constexpr uint32_t kWriter = kFirstSequence + 0x40;
+    constexpr uint32_t kLow = kFirstSequence + 0x50;
+    constexpr uint32_t kHigh = kFirstSequence + 0x60;
+    Sequence s;
+    s.OpenTrack(0, kWriter).Timebase(48).Tempo(120).Wait(5);
+    s.Byte(0xd8).Byte(0).Byte(0).Byte(0); // register 0, and so register 3, to 0
+    s.Byte(0xd7).Byte(0x00).Byte(0);      // read child 0's port 0 into register 0
+    const uint32_t jump = s.Here();
+    s.Byte(0xc8).Byte(2).Byte(0).Byte(0).Byte(0); // jump if register 3 isn't 0 (target set below)
+    s.OpenTrack(1, kLow).Wait(100).Finish();
+    const uint32_t other = s.Here();
+    s.OpenTrack(1, kHigh).Wait(100).Finish().PadTo(kWriter);
+    s.Byte(0xd8).Byte(0x40).Byte(0).Byte(1).Finish().PadTo(kLow); // port 0 to 1
+    s.Bank(0).Program(0).NoteOn(60, 1, 100).Wait(10).NoteOff(1).Finish().PadTo(kHigh);
+    s.Bank(0).Program(0).NoteOn(72, 1, 100).Wait(10).NoteOff(1).Finish();
+    std::vector<uint8_t> data = s.Data();
+    const uint32_t at = jump - kFirstSequence;
+    data[at + 2] = static_cast<uint8_t>(other >> 16);
+    data[at + 3] = static_cast<uint8_t>(other >> 8);
+    data[at + 4] = static_cast<uint8_t>(other);
+    TestGame game(files::BankV0File(0, 60), {data});
+
+    const Performance perf = Perform(game.Sound(0), game.banks, {}, kProgram);
+
+    std::vector<int> keys;
+    for (const std::vector<TrackEvent>& track : perf.tracks)
+    {
+        for (const TrackEvent& e : track)
+        {
+            if (e.kind == EventKind::kNoteOn)
+            {
+                keys.push_back(static_cast<int>(e.key));
+            }
+        }
+    }
+
+    Check(keys == std::vector<int>{60}, "a read of a finished child's port leaves the register as it was");
+}
+
 // The root track's ports that a sequence reads while they hold their first values (Performance::ports_read). A variant
 // of a sound's ports (GameRules::port_variants) converts only if its sequence reads one of them so
 // (GameInput::Converts).
@@ -985,19 +1029,35 @@ void TestDefaultKeepsEveryNote()
           "with --voices 64, six notes are cut as in the game");
 }
 
+// The events of kind `kind` on the MIDI tracks of `perf` named `name`, in their order.
+std::vector<TrackEvent> NamedTrackEvents(const Performance& perf, const std::string& name, EventKind kind)
+{
+    std::vector<TrackEvent> events;
+    for (std::size_t slot = 0; slot < perf.tracks.size(); slot++)
+    {
+        if (perf.track_names[slot] != name)
+        {
+            continue;
+        }
+        for (const TrackEvent& e : perf.tracks[slot])
+        {
+            if (e.kind == kind)
+            {
+                events.push_back(e);
+            }
+        }
+    }
+
+    return events;
+}
+
 // The ticks of the note-ons on `perf`'s MIDI track named `name`.
 std::vector<uint32_t> NoteTicks(const Performance& perf, const std::string& name)
 {
     std::vector<uint32_t> ticks;
-    for (std::size_t slot = 0; slot < perf.tracks.size() && slot < perf.track_names.size(); slot++)
+    for (const TrackEvent& e : NamedTrackEvents(perf, name, EventKind::kNoteOn))
     {
-        for (const TrackEvent& e : perf.tracks[slot])
-        {
-            if (perf.track_names[slot] == name && e.kind == EventKind::kNoteOn)
-            {
-                ticks.push_back(e.tick);
-            }
-        }
+        ticks.push_back(e.tick);
     }
 
     return ticks;
@@ -1403,6 +1463,7 @@ void TestGameRules()
         {
             found[id] = state.tracks;
         }
+
         return found;
     };
 
@@ -1422,6 +1483,22 @@ void TestGameRules()
     Check(other.category_volumes.empty() && other.default_release == 0 && !other.echo && other.start_states.empty() &&
               other.arrangements.empty() && other.effects_sequence.empty() && other.sequence_names,
           "another game gets the defaults");
+
+    // The games whose effects convert with GameOptions::known_effects: The Wind Waker and The Wind Waker HD (USA and
+    // Japan), Luigi's Mansion, Pac-Man Vs., Pikmin 2 on the GameCube and on the Wii, Super Mario Sunshine, and Pikmin's
+    // bank file on the GameCube and on the Wii.
+    const std::vector<std::string> kKnownEffects = {
+        "65ea70655099a196e0707bf4e4ce61e7818553d9", "0a0f93a5bb97313d895e0a5a16604ad77f567547",
+        "c66c0103a5c7c1292b5fc6c3371ed1458035cde7", "aa3077a9dafc178e46b80b4e5d975550cb28c517",
+        "4a60396b9c35333f3083848be1f49c82bf9ba4df", "7436b12c7470a2ed14f865e0a6aa96ccfa1af758",
+        "a8b63d2f333c34aaf9cb859f37f23011149af917", "6747c3c7bce964bc62f817e1c8c32711c905c4c3",
+        "00c63687e6963ad89e1d86f02070e1f552623632", "9ae6b40b8e9eacfda6ed0b5d59ff1e680373a018",
+        "9f42f65be7f7159faa14b003524476d624e1227f"};
+    Check(std::ranges::all_of(kKnownEffects, [](const std::string& sha1) { return RulesOf(sha1).known_effects; }),
+          "the 11 archives of the games whose effects convert");
+    Check(!usa.known_effects && !other.known_effects &&
+              !RulesOf("a90e5f2b804e154a043f8b89e0bd9d33f4798a99").known_effects,
+          "Four Swords Adventures, Double Dash!! and another game convert no effects");
     const GameRules wind_waker = RulesOf("65ea70655099a196e0707bf4e4ce61e7818553d9");
     Check(wind_waker.category_volumes.size() == 7 &&
               RulesOf("0a0f93a5bb97313d895e0a5a16604ad77f567547").category_volumes == wind_waker.category_volumes &&
@@ -1469,6 +1546,33 @@ void TestGameRules()
     const GameRules new_play_control = RulesOf("b8c1a0440d328b6d197827b7fd16b04fe170fd71");
     Check(start_tracks(new_play_control) == start_tracks(jungle_beat),
           "New Play Control! Donkey Kong Jungle Beat's pieces start with the GameCube release's children of track 0");
+    const auto layer_tracks = [](const GameRules& rules, uint32_t id, const std::string& suffix)
+    {
+        const auto found = std::ranges::find_if(
+            rules.arrangements, [&](const Arrangement& a) { return a.sound == id && a.suffix == suffix; });
+        return found == rules.arrangements.end() ? TrackMask{} : found->state.tracks;
+    };
+    TrackMask fall = kEveryTrack;
+    fall[0] = 0xc000;
+    Check(jungle_beat.arrangements.size() == 101 && layer_tracks(jungle_beat, 0x01000005, "combo1")[0] == 0x8ffe &&
+              layer_tracks(jungle_beat, 0x01000005, "combo2")[0] == 0xfefe &&
+              layer_tracks(jungle_beat, 0x0100000f, "change")[0] == 0x0004 &&
+              layer_tracks(jungle_beat, 0x0100004b, "below_30_hold")[0] == 0xfffe &&
+              layer_tracks(jungle_beat, 0x0100004a, "fall") == fall &&
+              layer_tracks(jungle_beat, 0x0100002c, "state1") == TrackMask{},
+          "Donkey Kong Jungle Beat's 43 pieces convert once more in each state that the game sets for them later");
+    TrackMask course_select = kEveryTrack;
+    course_select[0] = 0xfff2;
+    const auto same = [](const Arrangement& a, const Arrangement& b)
+    {
+        return a.sound == b.sound && a.suffix == b.suffix && a.state.tracks == b.state.tracks;
+    };
+    Check(new_play_control.arrangements.size() == 102 &&
+              std::equal(jungle_beat.arrangements.begin(), jungle_beat.arrangements.end(),
+                         new_play_control.arrangements.begin(), same) &&
+              layer_tracks(new_play_control, 0x0100002c, "state1") == course_select,
+          "New Play Control! Donkey Kong Jungle Beat's pieces use the later states of the GameCube release. "
+          "JA_BGM_COURSE_SELECT also uses state 1 of the menus");
     using Ports = std::map<uint32_t, std::map<uint8_t, uint16_t>>;
     Check(jungle_beat.ports == Ports{{0x37, {{0xb, 60}}}, {0x8e, {{0xb, 6}}}, {0x4000f, {{0xb, 8}}}},
           "Donkey Kong Jungle Beat's effects take the first values that the game's code gives them at port 0xb");
@@ -1502,6 +1606,7 @@ void TestGameRules()
                 playing &= ~(1u << child);
             }
         }
+
         return playing;
     };
     const auto children = [&mask](const GameRules& rules, uint32_t id)
@@ -2514,17 +2619,8 @@ void TestJacChildVolumes()
     // The first CC11 of the MIDI track named `name`.
     const auto expression = [](const Performance& perf, const std::string& name)
     {
-        for (std::size_t slot = 0; slot < perf.tracks.size() && slot < perf.track_names.size(); slot++)
-        {
-            for (const TrackEvent& e : perf.tracks[slot])
-            {
-                if (perf.track_names[slot] == name && e.kind == EventKind::kExpression)
-                {
-                    return static_cast<int>(e.value);
-                }
-            }
-        }
-        return -1;
+        const std::vector<TrackEvent> events = NamedTrackEvents(perf, name, EventKind::kExpression);
+        return events.empty() ? -1 : static_cast<int>(events.front().value);
     };
 
     const auto half = static_cast<int>(std::lround(expression(every, "Track 0") * std::sqrt(0.5)));
@@ -2563,6 +2659,7 @@ void TestSyncAnswers()
             sound.sync_answers = {{0x2e00, 60}};
             sound.muted_children = 1u << 1;
         }
+
         return Perform(sound, game.banks, {}, kProgram);
     };
 
@@ -2634,15 +2731,9 @@ void TestConductor()
     const Performance perf = Perform(sound, game.banks, {}, kProgram);
 
     std::vector<uint32_t> keys;
-    for (std::size_t slot = 0; slot < perf.tracks.size() && slot < perf.track_names.size(); slot++)
+    for (const TrackEvent& e : NamedTrackEvents(perf, "Track 0.0", EventKind::kNoteOn))
     {
-        for (const TrackEvent& e : perf.tracks[slot])
-        {
-            if (perf.track_names[slot] == "Track 0.0" && e.kind == EventKind::kNoteOn)
-            {
-                keys.push_back(e.key);
-            }
-        }
+        keys.push_back(e.key);
     }
     keys.resize(std::min<std::size_t>(keys.size(), 9));
     Check(keys == std::vector<uint32_t>{72, 76, 74, 74, 76, 74, 72, 76, 74},
@@ -3126,6 +3217,7 @@ void TestJAudio1GamePorts()
                 }
             }
         }
+
         return found;
     };
 
@@ -3172,6 +3264,7 @@ void TestJAudio1StatusBySection()
                 }
             }
         }
+
         return found;
     };
     const auto keys_with = [&](bool read_at_once, std::map<uint16_t, uint16_t> statuses)
@@ -3266,6 +3359,10 @@ void TestJAudio1Folder()
           "the music, by the names of its files");
     Check(plain.Sequences().size() == 4 && std::abs(plain.Sequences()[1].volume - 90.0f / 127.0f) < 1e-6f,
           "a sound plays at the volume of its entry");
+
+    // With GameOptions::known_effects, the effects of a game that RulesOf doesn't list stay out.
+    const Game unknown = Game::FromFolder(folder / "test.aaf", kProgram, {.known_effects = true});
+    Check(names(unknown) == names(plain), "known_effects lists no effects of a game that the rules don't list");
 
     // With GameOptions::jaudio1_effects, the effects follow in the table's order. Each plays the effects sequence in
     // the first slot of its category, with four slots to a category. By the effects' format, an effect's number is its
@@ -3812,6 +3909,7 @@ int main()
     TestLoop();
     TestJumpToTheNextCommand();
     TestPortsAndRegisters();
+    TestPortOfFinishedChild();
     TestPortsRead();
     TestDrumAndVolume();
     TestTailsKeepTheirSettings();

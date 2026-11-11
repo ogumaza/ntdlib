@@ -15,10 +15,13 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::dse
 {
@@ -43,16 +46,6 @@ const std::vector<snd::CommandList> kStartUp = {{
     {snd::CommandId::kSetUpAlarm, {0, Player::kTickClocks / 64, Player::kTickClocks / 64, 2}},
     {snd::CommandId::kStartTimer, {0, 0, 1, 0}},
 }};
-
-uint32_t AlignUp(uint32_t value)
-{
-    return (value + 31u) & ~31u;
-}
-
-uint16_t Get16(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return static_cast<uint16_t>(bytes[at] | bytes[at + 1] << 8);
-}
 
 } // namespace
 
@@ -97,7 +90,7 @@ Player::Player(const PlayerOptions& options)
 
 std::optional<uint16_t> Player::AddBank(const WaveBank& bank)
 {
-    const uint32_t address = AlignUp(free_);
+    const uint32_t address = AlignUp(free_, 32);
     const std::size_t size = bank.samples ? bank.samples->size() : 0;
     if (size > kMainMemory + kMainMemorySize - address)
     {
@@ -125,7 +118,7 @@ std::vector<uint16_t> Player::LoadBanks(const SequenceFiles& files)
         const std::optional<uint16_t> id = AddBank(*bank);
         if (!id)
         {
-            refused.push_back(Get16(bank->header, 0x0E));
+            refused.push_back(xsflib::LoadLe16(&(bank->header)[0x0E]));
         }
         else if (!bank->samples && files.main_bank != nullptr)
         {
@@ -166,7 +159,7 @@ void Player::PlaceWaves(uint16_t id, const WaveBank& main_bank)
         throw std::runtime_error("no bank of that id is loaded");
     }
     const WaveBank& bank = *found->second;
-    const uint32_t address = AlignUp(free_);
+    const uint32_t address = AlignUp(free_, 32);
     const std::span<uint8_t> memory = std::span(memory_).subspan(address - kMainMemory);
     const std::span<const uint8_t> samples =
         main_bank.samples ? std::span<const uint8_t>(*main_bank.samples) : std::span<const uint8_t>();
@@ -174,7 +167,7 @@ void Player::PlaceWaves(uint16_t id, const WaveBank& main_bank)
     // The waves in the order of the bank's slots, as Driver::PlaceWaves places them, with the bytes at each wave's
     // place in the main bank's samples.
     uint32_t place = 0;
-    const int count = Get16(bank.header, 0x46);
+    const int count = xsflib::LoadLe16(&bank.header[0x46]);
     for (std::size_t i = 0; i < static_cast<std::size_t>(std::max(count, 0)); i++)
     {
         if (i >= bank.waves.size() || !bank.waves[i] || i >= main_bank.waves.size() || !main_bank.waves[i])
@@ -336,7 +329,7 @@ void Player::Tick()
 {
     // DSE's thread sends the commands of a tick that has some.
     const std::size_t at = kSharedWork - kMainMemory + kChannelStatus;
-    status_ = Get16(memory_, at);
+    status_ = xsflib::LoadLe16(&memory_[at]);
     snd::CommandList list = dse_.Tick(status_);
     if (!list.empty())
     {

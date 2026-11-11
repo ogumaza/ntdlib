@@ -25,133 +25,15 @@
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 
+#include "ntdlib/testing/byte_writer.h"
+#include "ntdlib/testing/yaz0_files.h"
+
 namespace ntdlib::testing::jaudio_files
 {
 
 // The builder of the files below: values appended in turn, and stores over the bytes already added. A little-endian
 // file stores each value of more than a byte in reverse order, and each tag as a 32-bit word, its characters reversed.
-class Bytes
-{
-public:
-    explicit Bytes(bool big_endian = true) : big_endian_(big_endian)
-    {
-    }
-
-    std::size_t Size() const
-    {
-        return data_.size();
-    }
-
-    Bytes& U8(uint32_t v)
-    {
-        data_.push_back(static_cast<uint8_t>(v));
-
-        return *this;
-    }
-
-    Bytes& U16(uint32_t v)
-    {
-        return big_endian_ ? U8(v >> 8).U8(v) : U8(v).U8(v >> 8);
-    }
-
-    Bytes& U24(uint32_t v)
-    {
-        return big_endian_ ? U8(v >> 16).U8(v >> 8).U8(v) : U8(v).U8(v >> 8).U8(v >> 16);
-    }
-
-    Bytes& U32(uint32_t v)
-    {
-        return big_endian_ ? U16(v >> 16).U16(v) : U16(v).U16(v >> 16);
-    }
-
-    Bytes& F32(float v)
-    {
-        return U32(std::bit_cast<uint32_t>(v));
-    }
-
-    // An offset in `width` bytes: 4, or 8 in a file whose offsets are widened.
-    Bytes& Offset(std::size_t v, std::size_t width)
-    {
-        const auto low = static_cast<uint32_t>(v);
-        if (width == 8)
-        {
-            return big_endian_ ? U32(0).U32(low) : U32(low).U32(0);
-        }
-
-        return U32(low);
-    }
-
-    Bytes& Tag(const char* tag)
-    {
-        for (int i = 0; i < 4; i++)
-        {
-            U8(static_cast<uint8_t>(tag[big_endian_ ? i : 3 - i]));
-        }
-
-        return *this;
-    }
-
-    Bytes& Append(const std::vector<uint8_t>& more)
-    {
-        data_.insert(data_.end(), more.begin(), more.end());
-
-        return *this;
-    }
-
-    Bytes& PadTo(std::size_t size)
-    {
-        data_.resize(std::max(data_.size(), size));
-
-        return *this;
-    }
-
-    // Each stores `v` at `at`, over bytes already added.
-    void Put8(std::size_t at, uint32_t v)
-    {
-        data_[at] = static_cast<uint8_t>(v);
-    }
-
-    void Put16(std::size_t at, uint32_t v)
-    {
-        big_endian_ ? xsflib::StoreBe16(data_.data() + at, static_cast<uint16_t>(v))
-                    : xsflib::StoreLe16(data_.data() + at, static_cast<uint16_t>(v));
-    }
-
-    void Put24(std::size_t at, uint32_t v)
-    {
-        Put8(at + (big_endian_ ? 0 : 2), v >> 16);
-        Put8(at + 1, v >> 8);
-        Put8(at + (big_endian_ ? 2 : 0), v);
-    }
-
-    void Put32(std::size_t at, uint32_t v)
-    {
-        big_endian_ ? xsflib::StoreBe32(data_.data() + at, v) : xsflib::StoreLe32(data_.data() + at, v);
-    }
-
-    // Stores an offset over one that Offset added, `width` bytes wide.
-    void PutOffset(std::size_t at, std::size_t v, std::size_t width)
-    {
-        Put32(width == 8 && big_endian_ ? at + 4 : at, static_cast<uint32_t>(v));
-    }
-
-    // Stores `tag` and `size` at the start, in the big-endian order whatever the file's order. A file of the Switch's
-    // release of Pikmin keeps its first tag and its size that way.
-    void PutBigEndianHeader(const char* tag, uint32_t size)
-    {
-        std::copy_n(tag, 4, data_.begin());
-        xsflib::StoreBe32(data_.data() + 4, size);
-    }
-
-    const std::vector<uint8_t>& Data() const
-    {
-        return data_;
-    }
-
-private:
-    bool big_endian_;
-    std::vector<uint8_t> data_;
-};
+using Bytes = ByteWriter;
 
 // The scene of a wave system that WaveSystemFile builds: its external mode, its dependencies, and the words of its
 // lists C-EX and C-ST. Its C-DF gives wave i of the archive the word (system << 16) | i. With `null_cdf`, the offset of
@@ -335,7 +217,7 @@ inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t 
     b.U16(0).U16(static_cast<uint16_t>(attack)).U16(0x7fff);
     b.U16(0).U16(static_cast<uint16_t>(decay)).U16(0).U16(14).U16(0).U16(0);
     b.U16(0).U16(30).U16(0).U16(15).U16(0).U16(0); // the release, at 18
-    b.PadTo((b.Size() + 3) & ~std::size_t{3});
+    b.Align(4);
 
     b.Tag("OSCT").U32(4 + 0x1c).U32(1);
     b.Tag("Osci").U8(0).U8(0).U16(0).F32(1.0f).U32(0).U32(18).F32(1.0f).F32(0.0f);
@@ -351,7 +233,7 @@ inline std::vector<uint8_t> BankV1File(uint32_t number, int16_t attack, int16_t 
     b.F32(1.0f).F32(1.0f);
     b.Put32(inst - 4, static_cast<uint32_t>(b.Size() - inst));
 
-    b.PadTo((b.Size() + 3) & ~std::size_t{3});
+    b.Align(4);
     b.Tag("LIST").U32(8).U32(1).U32(static_cast<uint32_t>(inst));
     b.Put32(4, static_cast<uint32_t>(b.Size()));
 
@@ -375,7 +257,7 @@ inline std::vector<uint8_t> BxFile(const std::vector<std::vector<uint8_t>>& syst
 
     const auto add = [&b](std::size_t entry, const std::vector<uint8_t>& block)
     {
-        b.PadTo((b.Size() + 31) & ~std::size_t{31});
+        b.Align(32);
         if (!block.empty())
         {
             b.Put32(entry, static_cast<uint32_t>(b.Size()));
@@ -534,7 +416,7 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, boo
         n.U8(0);
     }
 
-    n.PadTo((n.Size() + 3) & ~std::size_t{3});
+    n.Align(4);
 
     return {t.Data(), n.Data()};
 }
@@ -610,22 +492,8 @@ inline std::vector<uint8_t> AwFile()
     return aw.Data();
 }
 
-// `data` compressed with Yaz0, every byte as a literal: groups of eight chunks after a flag byte of 0xff.
-inline std::vector<uint8_t> LiteralYaz0(const std::vector<uint8_t>& data)
-{
-    Bytes yaz0;
-    yaz0.Tag("Yaz0").U32(static_cast<uint32_t>(data.size())).U32(0).U32(0);
-    for (std::size_t i = 0; i < data.size(); i++)
-    {
-        if (i % 8 == 0)
-        {
-            yaz0.U8(0xff);
-        }
-        yaz0.U8(data[i]);
-    }
-
-    return yaz0.Data();
-}
+// LiteralYaz0 of yaz0_files.h, for the tests that compress the files above.
+using yaz0_files::LiteralYaz0;
 
 // A file of an RARC archive: its id, its name and its data.
 struct RarcFileSpec
@@ -655,7 +523,7 @@ inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, boo
     const std::size_t kEntryTable = 0x40;             // from 0x20
     const std::size_t entry_count = files.size() + 1; // the folder, then the files
     const std::size_t strings_at = kEntryTable + entry_size * entry_count;
-    const std::size_t data_at = (strings_at + strings.size() + 31) & ~std::size_t{31};
+    const std::size_t data_at = AlignUp(strings_at + strings.size(), 32);
 
     Bytes r(big_endian);
     r.Tag("RARC").U32(0).U32(0x20).U32(static_cast<uint32_t>(data_at)).PadTo(0x28);
@@ -736,6 +604,37 @@ inline std::vector<uint8_t> BarcFile(const std::vector<AafSequenceSpec>& sequenc
     return b.Data();
 }
 
+// The sound table of AafFile, `sounds` in the order of their categories.
+//
+// The table's header gives the formats of the effects, the sequences and the streams, then each category's count
+// and first entry. Entries are 16 bytes from +0x50. An entry has a sequence's file at +6 and the volume at +0xc.
+// A pitch other than 1 goes at +8. Without one, +8 holds 0, and the reader takes a pitch of 1.
+inline std::vector<uint8_t> AafSoundTable(const std::vector<AafSoundSpec>& sounds, uint8_t sequence_format,
+                                          bool big_endian)
+{
+    Bytes t(big_endian);
+    t.U8(6).U8(sequence_format).U8(6).PadTo(0x50);
+    uint32_t entry = 0;
+    for (const uint32_t category : {16u, 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u})
+    {
+        uint32_t count = 0;
+        t.Put16(8 + 4 * category, entry);
+        for (const AafSoundSpec& sound : sounds)
+        {
+            if (sound.category == category)
+            {
+                const uint32_t pitch = sound.pitch != 1.0f ? std::bit_cast<uint32_t>(sound.pitch) : 0;
+                t.Fill(6, 0).U16(sound.file).U32(pitch).U8(sound.volume).Fill(3, 0);
+                entry++;
+                count++;
+            }
+        }
+        t.Put16(6 + 4 * category, count);
+    }
+
+    return t.Take();
+}
+
 // JAudio1's start-up archive (AAF) with a sound table of `sounds`, one bank, and a wave system (WaveSystemFile) of one
 // wave for each name in `archives`. The bank is `bank`, after the other blocks. Without one, the bank is only its tag.
 // Wave system n has the id system_ids[n], or n without one. The bank's value in the list is `bank_system`, the wave
@@ -754,19 +653,6 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
                                     bool big_endian = true, const std::vector<uint8_t>& bank = {},
                                     const std::vector<uint32_t>& system_ids = {}, uint32_t bank_system = 0)
 {
-    std::vector<uint8_t> b;
-    const auto put32 = [&b, big_endian](std::size_t at, uint32_t value)
-    {
-        b.resize(std::max(b.size(), at + 4));
-        big_endian ? xsflib::StoreBe32(b.data() + at, value) : xsflib::StoreLe32(b.data() + at, value);
-    };
-    const auto put16 = [&b, big_endian](std::size_t at, uint32_t value)
-    {
-        b.resize(std::max(b.size(), at + 2));
-        big_endian ? xsflib::StoreBe16(b.data() + at, static_cast<uint16_t>(value))
-                   : xsflib::StoreLe16(b.data() + at, static_cast<uint16_t>(value));
-    };
-
     // The chunks: the sound table, the bank list, the wave system list, a chunk that the sound library skips up to its
     // 0 word, the sequence index if there is one, and the end. The index follows the wave systems.
     constexpr std::size_t kTable = 0x100;
@@ -777,7 +663,7 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     const std::size_t index_size = 0x20 + 0x20 * index.size();
     const std::vector<uint8_t> barc =
         index.empty() ? std::vector<uint8_t>() : BarcFile(index, "JaiArcS.arc", big_endian);
-    const std::size_t bank_at = (index_at + barc.size() + 0x1f) & ~std::size_t{0x1f};
+    const std::size_t bank_at = AlignUp(index_at + barc.size(), 0x20);
 
     // A list entry, or the block of type 5: the offset, the size and the value. A little-endian archive widens the
     // offset to 64 bits.
@@ -817,65 +703,29 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     }
     chunks.push_back(0);
 
-    for (std::size_t i = 0; i < chunks.size(); i++)
+    Bytes b(big_endian);
+    for (const uint32_t word : chunks)
     {
-        put32(i * 4, chunks[i]);
+        b.U32(word);
     }
 
-    // The table's header gives the formats of the effects, the sequences and the streams, then each category's count
-    // and first entry. Entries are 16 bytes from +0x50. An entry has a sequence's file at +6 and the volume at +0xc.
-    // A pitch other than 1 goes at +8. Without one, +8 holds 0, and the reader takes a pitch of 1.
-    b.resize(std::max(b.size(), kTable + 3));
-    b[kTable] = 6;
-    b[kTable + 1] = sequence_format;
-    b[kTable + 2] = 6;
-    std::size_t entry = 0;
-    for (const uint32_t category : {16u, 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u})
-    {
-        uint32_t count = 0;
-        put16(kTable + 8 + 4 * category, static_cast<uint32_t>(entry));
-        for (const AafSoundSpec& sound : sounds)
-        {
-            if (sound.category == category)
-            {
-                const std::size_t at = kTable + 0x50 + entry++ * 0x10;
-                put16(at + 6, sound.file);
-                if (sound.pitch != 1.0f)
-                {
-                    put32(at + 8, std::bit_cast<uint32_t>(sound.pitch));
-                }
-                b.resize(std::max(b.size(), at + 0x10));
-                b[at + 0xc] = sound.volume;
-                count++;
-            }
-        }
-        put16(kTable + 6 + 4 * category, count);
-    }
-
-    put32(kBank, 0x49424e4b); // "IBNK"
+    b.PadTo(kTable).Append(AafSoundTable(sounds, sequence_format, big_endian));
+    b.PadTo(kBank).U32(0x49424e4b); // "IBNK"
 
     for (std::size_t s = 0; s < archives.size(); s++)
     {
         const uint32_t id = s < system_ids.size() ? system_ids[s] : static_cast<uint32_t>(s);
         const std::vector<uint8_t> system = WaveSystemFile(id, 1, archives[s], big_endian, big_endian ? 0x70 : 0x8c);
-        const std::size_t at = kSystems + s * kSystemSize;
-        b.resize(std::max(b.size(), at + system.size()));
-        std::copy(system.begin(), system.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
+        b.PadTo(kSystems + s * kSystemSize).Append(system);
     }
 
-    b.resize(std::max(b.size(), index_at));
-    if (!index.empty())
-    {
-        b.resize(index_at);
-        b.insert(b.end(), barc.begin(), barc.end());
-    }
+    b.PadTo(index_at).Append(barc);
     if (!bank.empty())
     {
-        b.resize(bank_at);
-        b.insert(b.end(), bank.begin(), bank.end());
+        b.PadTo(bank_at).Append(bank);
     }
 
-    return b;
+    return b.Take();
 }
 
 // A sequence that opens track 0 at 0x20, and the track there, which plays key 60 for a beat on program 0 of bank 0.

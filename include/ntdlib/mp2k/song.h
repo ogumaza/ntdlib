@@ -4,8 +4,10 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -143,8 +145,20 @@ struct Voice
     uint32_t key_table = 0; // a key split's 128 bytes: each key's voice in the voice table
 };
 
+// The bytes of a voice in a voice group.
+inline constexpr uint32_t kVoiceSize = 12;
+
 // Reads the voice at `address`. Returns false if it isn't in the ROM.
 bool ReadVoice(const Rom& rom, uint32_t address, Voice& voice);
+
+// The voice that `bytes` hold, at `address`, as ReadVoice reads it. The bytes give the type, the key, the length and
+// the pan or the sweep, then the wave in 32 bits, then the envelope's 4 values. A key split holds its key table in
+// those last 4 bytes. The voice holds both readings of them.
+Voice VoiceOfBytes(std::span<const uint8_t, kVoiceSize> bytes, uint32_t address = 0);
+
+// The bytes of `voice`. A key split (kVoiceKeySplit) writes its key table into the last 4 bytes, and any other voice
+// its envelope. VoiceBytes(VoiceOfBytes(bytes)) gives `bytes` back.
+std::array<uint8_t, kVoiceSize> VoiceBytes(const Voice& voice);
 
 // Returns the address of the voice that `key` plays in a key split or drum kit, or 0 if it has none.
 uint32_t SplitVoice(const Rom& rom, const Voice& split, int key);

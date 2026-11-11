@@ -414,53 +414,63 @@ private:
     std::vector<TreeNode>& nodes_;
 };
 
+// Throws std::invalid_argument for a reference of an unknown data type, one to a node past `nodes`, and one whose data
+// type doesn't match its node's kind.
+void CheckReference(const std::vector<TreeNode>& nodes, const TreeReference& reference)
+{
+    if (reference.type > BankFile::kOtherNode || (reference.type != BankFile::kNone && reference.node >= nodes.size()))
+    {
+        throw std::invalid_argument("a reference of an unknown data type, or to a node that the bank lacks");
+    }
+    if (reference.type != BankFile::kNone && reference.type != BankFile::kOtherNode &&
+        reference.type != nodes[reference.node].kind)
+    {
+        throw std::invalid_argument("a reference's data type doesn't match its node's kind");
+    }
+}
+
+// Sets in `kinds` the kinds that references of their data types give to the nodes from `reference`, `depth` nodes
+// deep, as Read gathers them. Throws std::invalid_argument as CheckReference does, and for a tree deeper than
+// kMaxDepth.
+void GatherKinds(const std::vector<TreeNode>& nodes, const TreeReference& reference, std::size_t depth,
+                 std::vector<uint8_t>& kinds)
+{
+    CheckReference(nodes, reference);
+    if (reference.type == BankFile::kNone || reference.type == BankFile::kOtherNode ||
+        kinds[reference.node] != BankFile::kNone)
+    {
+        return;
+    }
+    if (depth > kMaxDepth)
+    {
+        throw std::invalid_argument("a tree deeper than " + std::to_string(kMaxDepth) + " nodes");
+    }
+
+    kinds[reference.node] = reference.type;
+    for (const TreeReference& entry : nodes[reference.node].entries)
+    {
+        GatherKinds(nodes, entry, depth + 1, kinds);
+    }
+}
+
 // Checks that Read gives the tree of `bank` back. A node of a table's kind or a region has to lie where a reference
 // first names it in pre-order, and a reference of its kind has to reach it through references of their kinds. Any
 // other node lies where references of data type 4 first name it, and has kind kNone.
 void CheckTree(const BankFile& bank)
 {
     const std::vector<TreeNode>& nodes = bank.nodes;
-    const auto check = [&](const TreeReference& reference)
-    {
-        if (reference.type > BankFile::kOtherNode ||
-            (reference.type != BankFile::kNone && reference.node >= nodes.size()))
-        {
-            throw std::invalid_argument("a reference of an unknown data type, or to a node that the bank lacks");
-        }
-        if (reference.type != BankFile::kNone && reference.type != BankFile::kOtherNode &&
-            reference.type != nodes[reference.node].kind)
-        {
-            throw std::invalid_argument("a reference's data type doesn't match its node's kind");
-        }
-    };
-
-    // The kinds that references of their data types give, as Read gathers them.
     std::vector<uint8_t> kinds(nodes.size(), BankFile::kNone);
-    const auto gather = [&](const auto& self, const TreeReference& reference, std::size_t depth) -> void
+    for (const TreeReference& instrument : bank.instruments)
     {
-        check(reference);
-        if (reference.type == BankFile::kNone || reference.type == BankFile::kOtherNode ||
-            kinds[reference.node] != BankFile::kNone)
-        {
-            return;
-        }
-        if (depth > kMaxDepth)
-        {
-            throw std::invalid_argument("a tree deeper than " + std::to_string(kMaxDepth) + " nodes");
-        }
-        kinds[reference.node] = reference.type;
-        for (const TreeReference& entry : nodes[reference.node].entries)
-        {
-            self(self, entry, depth + 1);
-        }
-    };
+        GatherKinds(nodes, instrument, 0, kinds);
+    }
 
     // The order in which references first name the nodes, as Read lays them out.
     std::vector<bool> placed(nodes.size());
     uint32_t next = 0;
     const auto visit = [&](const auto& self, const TreeReference& reference, std::size_t depth) -> void
     {
-        check(reference);
+        CheckReference(nodes, reference);
         if (reference.type == BankFile::kNone || placed[reference.node])
         {
             return;
@@ -490,11 +500,6 @@ void CheckTree(const BankFile& bank)
             self(self, entry, depth + 1);
         }
     };
-
-    for (const TreeReference& instrument : bank.instruments)
-    {
-        gather(gather, instrument, 0);
-    }
     for (const TreeReference& instrument : bank.instruments)
     {
         visit(visit, instrument, 0);
@@ -503,6 +508,81 @@ void CheckTree(const BankFile& bank)
     {
         throw std::invalid_argument("a node that no reference names");
     }
+}
+
+// Writes `reference` at `at`, with the offset of its node from `offsets`. A reference of type kNone stays zeros.
+void PutReference(Out& out, std::size_t at, const TreeReference& reference, const std::vector<uint32_t>& offsets)
+{
+    if (reference.type == BankFile::kNone)
+    {
+        return;
+    }
+    out.U8(at, 1);
+    out.U8(at + 1, reference.type);
+    out.U32(at + 4, offsets[reference.node]);
+}
+
+// Writes `node` at `at`, with the offsets of the nodes from `offsets`. A node of kind kNone stays zeros. Throws
+// std::invalid_argument for a table whose keys don't match its entries, and for a node of an unknown kind.
+void PutNode(Out& out, std::size_t at, const TreeNode& node, const std::vector<uint32_t>& offsets)
+{
+    if (node.kind == BankFile::kRegion)
+    {
+        PutRegion(out, at, node.region);
+    }
+    else if (node.kind == BankFile::kRangeTable)
+    {
+        if (node.keys.size() != node.entries.size() || node.keys.size() > 0xFF)
+        {
+            throw std::invalid_argument("a range table's keys don't match its entries");
+        }
+        out.U8(at, static_cast<uint8_t>(node.keys.size()));
+        for (std::size_t i = 0; i < node.keys.size(); ++i)
+        {
+            out.U8(at + 1 + i, node.keys[i]);
+        }
+        for (std::size_t i = 0; i < node.entries.size(); ++i)
+        {
+            PutReference(out, at + RangeReferences(node.keys.size()) + i * kReferenceSize, node.entries[i], offsets);
+        }
+    }
+    else if (node.kind == BankFile::kIndexTable)
+    {
+        if (node.keys.size() != 2 || node.keys[1] < node.keys[0] ||
+            node.entries.size() != std::size_t{node.keys[1]} - node.keys[0] + 1)
+        {
+            throw std::invalid_argument("an index table's keys run backwards or don't match its entries");
+        }
+        out.U8(at, node.keys[0]);
+        out.U8(at + 1, node.keys[1]);
+        for (std::size_t i = 0; i < node.entries.size(); ++i)
+        {
+            PutReference(out, at + kIndexTableHeader + i * kReferenceSize, node.entries[i], offsets);
+        }
+    }
+    else if (node.kind != BankFile::kNone)
+    {
+        throw std::invalid_argument("a node of an unknown kind");
+    }
+}
+
+// Appends the WAVE block of a bank of version 1.1, block 1 of the file: the count of `waves`, the references to their
+// infos and the infos. Returns the raw samples that the infos refer to.
+std::vector<uint8_t> PutWaveBlock(Out& out, const std::vector<WaveFile>& waves)
+{
+    const detail::RawWaves raw = detail::LayRawWaves(waves);
+    const std::size_t wave = OpenBlock(out, "WAVE");
+    const std::size_t payload = out.Zeros(4 + waves.size() * kReferenceSize);
+    out.U32(payload, static_cast<uint32_t>(waves.size()));
+    for (std::size_t i = 0; i < waves.size(); ++i)
+    {
+        const std::size_t info = out.Zeros(detail::WaveInfoSize(waves[i].encoding, waves[i].channels.size()));
+        out.Reference(payload + 4 + i * kReferenceSize, 0x0100, static_cast<uint32_t>(info - payload));
+        detail::PutWaveInfo(out, info, waves[i], raw.places[i], raw.channel_offsets[i]);
+    }
+    CloseBlock(out, wave, 1);
+
+    return raw.wave_data;
 }
 
 } // namespace
@@ -554,29 +634,9 @@ BankFile BankFile::Read(std::span<const uint8_t> file, std::span<const uint8_t> 
     }
     else
     {
-        for (const std::vector<uint8_t>& rwav : WaveArchiveFile::Read(wave_data).waves)
-        {
-            bank.waves.push_back(WaveFile::Read(rwav));
-        }
+        bank.waves = detail::ReadArchivedWaves(wave_data);
     }
-
-    Files written;
-    try
-    {
-        written = bank.Write();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        throw OtherLayout(error.what());
-    }
-    if (!std::ranges::equal(written.file, file))
-    {
-        throw OtherLayout("Write gives other bytes of the file");
-    }
-    if (!std::ranges::equal(written.wave_data, wave_data))
-    {
-        throw OtherLayout("Write gives other bytes of the wave data");
-    }
+    detail::CheckWrittenBack(bank, file, wave_data, OtherLayout);
 
     return bank;
 }
@@ -603,90 +663,18 @@ BankFile::Files BankFile::Write() const
     const std::size_t data = OpenBlock(out, "DATA");
     const std::size_t base = out.Zeros(end);
     out.U32(base, static_cast<uint32_t>(instruments.size()));
-    const auto put = [&](std::size_t at, const Reference& reference)
-    {
-        if (reference.type == kNone)
-        {
-            return;
-        }
-        out.U8(at, 1);
-        out.U8(at + 1, reference.type);
-        out.U32(at + 4, offsets[reference.node]);
-    };
     for (std::size_t p = 0; p < instruments.size(); ++p)
     {
-        put(base + 4 + p * kReferenceSize, instruments[p]);
+        PutReference(out, base + 4 + p * kReferenceSize, instruments[p], offsets);
     }
     for (std::size_t n = 0; n < nodes.size(); ++n)
     {
-        const Node& node = nodes[n];
-        const std::size_t at = base + offsets[n];
-        if (node.kind == kRegion)
-        {
-            PutRegion(out, at, node.region);
-        }
-        else if (node.kind == kRangeTable)
-        {
-            if (node.keys.size() != node.entries.size() || node.keys.size() > 0xFF)
-            {
-                throw std::invalid_argument("a range table's keys don't match its entries");
-            }
-            out.U8(at, static_cast<uint8_t>(node.keys.size()));
-            for (std::size_t i = 0; i < node.keys.size(); ++i)
-            {
-                out.U8(at + 1 + i, node.keys[i]);
-            }
-            for (std::size_t i = 0; i < node.entries.size(); ++i)
-            {
-                put(at + RangeReferences(node.keys.size()) + i * kReferenceSize, node.entries[i]);
-            }
-        }
-        else if (node.kind == kIndexTable)
-        {
-            if (node.keys.size() != 2 || node.keys[1] < node.keys[0] ||
-                node.entries.size() != std::size_t{node.keys[1]} - node.keys[0] + 1)
-            {
-                throw std::invalid_argument("an index table's keys run backwards or don't match its entries");
-            }
-            out.U8(at, node.keys[0]);
-            out.U8(at + 1, node.keys[1]);
-            for (std::size_t i = 0; i < node.entries.size(); ++i)
-            {
-                put(at + kIndexTableHeader + i * kReferenceSize, node.entries[i]);
-            }
-        }
-        else if (node.kind != kNone)
-        {
-            throw std::invalid_argument("a node of an unknown kind");
-        }
+        PutNode(out, base + offsets[n], nodes[n], offsets);
     }
     CloseBlock(out, data, 0);
 
     Files files;
-    if (version == kOldVersion)
-    {
-        const detail::RawWaves raw = detail::LayRawWaves(waves);
-        const std::size_t wave = OpenBlock(out, "WAVE");
-        const std::size_t payload = out.Zeros(4 + waves.size() * kReferenceSize);
-        out.U32(payload, static_cast<uint32_t>(waves.size()));
-        for (std::size_t i = 0; i < waves.size(); ++i)
-        {
-            const std::size_t info = out.Zeros(detail::WaveInfoSize(waves[i].encoding, waves[i].channels.size()));
-            out.Reference(payload + 4 + i * kReferenceSize, 0x0100, static_cast<uint32_t>(info - payload));
-            detail::PutWaveInfo(out, info, waves[i], raw.places[i], raw.channel_offsets[i]);
-        }
-        CloseBlock(out, wave, 1);
-        files.wave_data = raw.wave_data;
-    }
-    else
-    {
-        WaveArchiveFile archive;
-        for (const WaveFile& wave : waves)
-        {
-            archive.waves.push_back(wave.Write());
-        }
-        files.wave_data = archive.Write();
-    }
+    files.wave_data = version == kOldVersion ? PutWaveBlock(out, waves) : detail::ArchiveWaves(waves);
     files.file = CloseFile(out);
 
     return files;

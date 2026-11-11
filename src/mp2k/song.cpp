@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <map>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 
@@ -273,24 +274,50 @@ int PlayedTracks(const Rom& rom, const DriverInfo& info, int song, const SongHea
 bool ReadVoice(const Rom& rom, uint32_t address, Voice& voice)
 {
     voice = Voice();
-    if (!rom.Contains(address, 12))
+    if (!rom.Contains(address, kVoiceSize))
     {
         return false;
     }
 
-    voice.address = address;
-    voice.type = rom.U8(address);
-    voice.key = rom.U8(address + 1);
-    voice.length = rom.U8(address + 2);
-    voice.pan_sweep = rom.U8(address + 3);
-    voice.wave = rom.U32(address + 4);
-    voice.attack = rom.U8(address + 8);
-    voice.decay = rom.U8(address + 9);
-    voice.sustain = rom.U8(address + 10);
-    voice.release = rom.U8(address + 11);
-    voice.key_table = rom.U32(address + 8);
-
+    voice = VoiceOfBytes(std::span<const uint8_t, kVoiceSize>(rom.Ptr(address), kVoiceSize), address);
     return true;
+}
+
+Voice VoiceOfBytes(std::span<const uint8_t, kVoiceSize> bytes, uint32_t address)
+{
+    Voice voice;
+    voice.address = address;
+    voice.type = bytes[0];
+    voice.key = bytes[1];
+    voice.length = bytes[2];
+    voice.pan_sweep = bytes[3];
+    voice.wave = xsflib::LoadLe32(&bytes[4]);
+    voice.attack = bytes[8];
+    voice.decay = bytes[9];
+    voice.sustain = bytes[10];
+    voice.release = bytes[11];
+    voice.key_table = xsflib::LoadLe32(&bytes[8]);
+
+    return voice;
+}
+
+std::array<uint8_t, kVoiceSize> VoiceBytes(const Voice& voice)
+{
+    std::array<uint8_t, kVoiceSize> bytes = {voice.type, voice.key, voice.length, voice.pan_sweep};
+    xsflib::StoreLe32(&bytes[4], voice.wave);
+    if ((voice.type & kVoiceKeySplit) != 0)
+    {
+        xsflib::StoreLe32(&bytes[8], voice.key_table);
+    }
+    else
+    {
+        bytes[8] = voice.attack;
+        bytes[9] = voice.decay;
+        bytes[10] = voice.sustain;
+        bytes[11] = voice.release;
+    }
+
+    return bytes;
 }
 
 uint32_t SplitVoice(const Rom& rom, const Voice& split, int key)

@@ -264,6 +264,7 @@ protected:
             {
                 m.dsp_interface_.Write(reg, static_cast<uint16_t>(value));
             }
+
             return true;
         }
         if (offset < kSerialInterface)
@@ -420,6 +421,11 @@ protected:
     }
 
 private:
+    friend Machine;
+
+    // Only `Machine` derives from MachineBase<Machine>.
+    MachineBase() = default;
+
     // The size of the pages through which the CPU reaches main memory, and the hardware page's physical address.
     static constexpr uint32_t kRamPageSize = 0x1000;
     static constexpr PAddr kHardwarePage = 0x0c000000;

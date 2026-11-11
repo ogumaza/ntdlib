@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/sf2/presets.h"
+
 #include "ntdlib/agb/rom.h"
 #include "ntdlib/sequence_export/agb/psg.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
@@ -219,7 +221,7 @@ NamedZones InstrumentSet::BuildSamples(SoundfontBuilder& sf, const Instrument& i
             }
 
             sf2::Zone z = SampleZone(index, Looped(sf.File().samples[size_t(index)]), key, key, entry.cents);
-            z.generators.insert(z.generators.end() - 1, sf2::Generator::Value(sf2::kOverridingRootKey, entry.root));
+            sf2::AddGenerator(z, sf2::kOverridingRootKey, entry.root);
             made.zones.push_back(z);
         }
     }

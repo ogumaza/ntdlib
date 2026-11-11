@@ -214,6 +214,7 @@ void TestLoopPasses()
     {
         channels.push_back(note.channel);
     };
+
     XSFLIB_CHECK(rig.player.StartSong(song) == 0);
 
     while (channels.size() < 18)

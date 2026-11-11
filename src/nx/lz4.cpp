@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 namespace ntdlib::nx
 {
@@ -106,8 +107,7 @@ std::vector<uint8_t> DecompressLz4Block(std::span<const uint8_t> block, std::siz
             break;
         }
 
-        const uint32_t low = r.Byte();
-        const uint32_t offset = low | uint32_t{r.Byte()} << 8;
+        const uint32_t offset = xsflib::LoadLe16(r.Bytes(2).data());
         const std::size_t length = r.Length(token & kFieldMax) + kMinCopy;
         if (offset == 0 || offset > out.size())
         {

@@ -17,6 +17,9 @@
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 
+#include "commands/decoding.h"
+#include "commands/encoding.h"
+
 namespace ntdlib::mp2k
 {
 namespace
@@ -26,6 +29,11 @@ using commands::Argument;
 using commands::Command;
 using commands::Kind;
 using commands::Source;
+using commands::detail::Cover;
+using commands::detail::Found;
+using commands::detail::Free;
+using commands::detail::Mark;
+using commands::detail::Read;
 
 // The kinds of the commands from 0xBA (PRIO) to 0xC8 (TUNE). The codes between them that end the track are kOther.
 constexpr Kind kByteKinds[] = {
@@ -41,25 +49,10 @@ constexpr Kind kExtendedKinds[kXcmdCount] = {
     Kind::kPsgLength, Kind::kSweep,      Kind::kWait,      Kind::kSampleOffset,
 };
 
-// The number of length codes: TIE's 0, then N01 to N96.
-constexpr int kLengthCodes = 49;
-
 // The bytes that a note and an end of a tie hold at most after their code, where a note reads up to `note_arguments`.
 int MostArguments(Kind kind, int note_arguments)
 {
     return kind == Kind::kNoteOff ? 1 : note_arguments;
-}
-
-// The length code of the longest length up to `length`.
-int UsualLengthCode(int64_t length)
-{
-    int code = 0;
-    for (int i = 0; i < kLengthCodes && ClockLength(i) <= length; i++)
-    {
-        code = i;
-    }
-
-    return code;
 }
 
 // The code of the wait of `length` ticks, or nothing where no code's length is `length`.
@@ -424,28 +417,11 @@ bool ReadsBack(std::span<const uint8_t> bytes, const Command& command, uint32_t 
     return played.valid && played.next == bytes.size() && read == command;
 }
 
-// A command that the decoder read, at its offset.
-struct Read
+// A command that the decoder read, and the track's state after it.
+struct Step
 {
-    Command command; // in the units, with the target's address
-    uint32_t size = 0;
-    bool raw = false;        // the encoder would write other bytes: the item keeps the bytes
-    RunningState after = {}; // the track's state after the command
-};
-
-// What covers each byte: nothing yet, a command's first byte, or one of its other bytes.
-enum class Cover : uint8_t
-{
-    kFree,
-    kStart,
-    kInside,
-};
-
-// The commands that the decoder has found, and the bytes they cover.
-struct Found
-{
-    std::map<uint32_t, Read> reads;
-    std::vector<Cover> cover;
+    Read read; // in the units, with the target's address
+    RunningState after = {};
 };
 
 // The bytes of a song from address `base`, for a driver whose notes read up to `note_arguments` bytes.
@@ -465,11 +441,17 @@ struct Bytes
     {
         return Inside(address) ? data[address - base] : uint8_t{0};
     }
+
+    // The offset of `address` in the bytes, or nothing outside them.
+    std::optional<uint32_t> OffsetOf(uint32_t address) const
+    {
+        return Inside(address) ? std::optional<uint32_t>(address - base) : std::nullopt;
+    }
 };
 
 // The command at offset `at` with the track's state `state`, or nothing where it runs past the bytes or needs a running
 // status that the state lacks.
-std::optional<Read> ReadAt(const Bytes& bytes, uint32_t at, const RunningState& state)
+std::optional<Step> ReadAt(const Bytes& bytes, uint32_t at, const RunningState& state)
 {
     const PlayedCommand played = ReadPlayedCommand([&bytes](uint32_t address) { return bytes.At(address); },
                                                    bytes.base + at, state, bytes.note_arguments);
@@ -478,30 +460,18 @@ std::optional<Read> ReadAt(const Bytes& bytes, uint32_t at, const RunningState& 
         return std::nullopt;
     }
 
-    Read read;
+    Step step;
+    Read& read = step.read;
     read.command = played.command;
     read.size = played.next - bytes.base - at;
-    read.after = played.after;
+    step.after = played.after;
 
     std::vector<uint8_t> again;
     AppendCommand(again, read.command, read.command.target, bytes.note_arguments);
     read.raw = !std::equal(again.begin(), again.end(), bytes.data.begin() + at, bytes.data.begin() + at + read.size);
     Convert(read.command, commands::ToUnit);
 
-    return read;
-}
-
-bool Free(const Found& found, uint32_t at, uint32_t size)
-{
-    const auto start = found.cover.begin() + at;
-    return std::all_of(start, start + size, [](Cover c) { return c == Cover::kFree; });
-}
-
-void Mark(Found& found, uint32_t at, Read read)
-{
-    found.cover[at] = Cover::kStart;
-    std::fill(found.cover.begin() + at + 1, found.cover.begin() + at + read.size, Cover::kInside);
-    found.reads.emplace(at, std::move(read));
+    return step;
 }
 
 // A place that the flow reaches: an offset, the track's state there, and the addresses that the open pattern calls
@@ -540,30 +510,30 @@ bool Follow(const Bytes& bytes, std::span<const uint32_t> entries, Found& found,
                 return false;
             }
 
-            std::optional<Read> read = ReadAt(bytes, place.at, place.state);
-            if (!read)
+            std::optional<Step> step = ReadAt(bytes, place.at, place.state);
+            if (!step)
             {
                 break; // the rest stays data
             }
             const auto known = found.reads.find(place.at);
             if (known != found.reads.end())
             {
-                if (known->second.command != read->command || known->second.size != read->size)
+                if (known->second.command != step->read.command || known->second.size != step->read.size)
                 {
                     return false;
                 }
             }
-            else if (!Free(found, place.at, read->size))
+            else if (!Free(found, place.at, step->read.size))
             {
                 return false;
             }
 
-            const Command command = read->command;
-            const uint32_t next = place.at + read->size;
-            const RunningState after = read->after;
+            const Command command = step->read.command;
+            const uint32_t next = place.at + step->read.size;
+            const RunningState after = step->after;
             if (known == found.reads.end())
             {
-                Mark(found, place.at, std::move(*read));
+                Mark(found, place.at, std::move(step->read));
             }
 
             const bool inside = commands::HasTarget(command.kind) && bytes.Inside(command.target);
@@ -659,161 +629,43 @@ bool Knows(const Read& read, const Guessed& guessed)
 // such run covers stay as data.
 void Guess(const Bytes& bytes, const std::set<uint32_t>& cuts, Found& found)
 {
-    const auto size = static_cast<uint32_t>(bytes.data.size());
-    uint32_t at = 0;
-    while (at < size)
+    // What the run so far gives of the state. It starts again with the bytes that no command covers.
+    Guessed guessed;
+    const auto read_at = [&](uint32_t at, bool first) -> std::optional<Read>
     {
-        if (found.cover[at] == Cover::kStart)
+        if (first)
         {
-            at += found.reads.at(at).size;
-            continue;
+            guessed = {};
         }
 
-        // The bytes that no command covers, up to the next command or cut.
-        uint32_t end = at + 1;
-        while (end < size && found.cover[end] == Cover::kFree && !cuts.contains(end))
+        std::optional<Step> step = ReadAt(bytes, at, guessed.state);
+        if (!step || !Knows(step->read, guessed))
         {
-            end++;
+            return std::nullopt;
         }
 
-        // Runs of commands one after another, each up to a command that ends it.
-        std::vector<std::pair<uint32_t, Read>> run;
-        std::vector<std::size_t> run_ends; // the commands up to each run's end
-        uint32_t next = at;
-        Guessed guessed;
-        while (next < end)
+        const Kind kind = step->read.command.kind;
+        guessed.running = guessed.running || step->after.running != guessed.state.running;
+        if (kind == Kind::kNote || kind == Kind::kNoteOff)
         {
-            std::optional<Read> read = ReadAt(bytes, next, guessed.state);
-            if (!read || read->raw || next + read->size > end || !Knows(*read, guessed))
-            {
-                break;
-            }
-
-            // What the command gives of the state.
-            const Kind kind = read->command.kind;
-            guessed.running = guessed.running || read->after.running != guessed.state.running;
-            if (kind == Kind::kNote || kind == Kind::kNoteOff)
-            {
-                const int count = ArgumentsOf(*read);
-                guessed.key = guessed.key || count >= 1;
-                guessed.velocity = guessed.velocity || (kind == Kind::kNote && count >= 2);
-            }
-            guessed.state = read->after;
-
-            const uint32_t read_size = read->size;
-            const bool counts = !FallsThrough(read->command) ||
-                                (next + read_size == end && end < size && found.cover[end] == Cover::kStart);
-            run.emplace_back(next, std::move(*read));
-            next += read_size;
-            if (counts)
-            {
-                run_ends.push_back(run.size());
-            }
+            const int count = ArgumentsOf(step->read);
+            guessed.key = guessed.key || count >= 1;
+            guessed.velocity = guessed.velocity || (kind == Kind::kNote && count >= 2);
         }
+        guessed.state = step->after;
 
-        // A target leads to a command, a cut, a place outside the bytes, or a command of the runs taken.
-        std::size_t taken = 0;
-        for (auto count = run_ends.rbegin(); count != run_ends.rend() && taken == 0; ++count)
-        {
-            const auto first = run.begin();
-            const auto last = run.begin() + static_cast<std::ptrdiff_t>(*count);
-            const auto leads = [&](uint32_t target)
-            {
-                if (!bytes.Inside(target))
-                {
-                    return true;
-                }
-                const uint32_t offset = target - bytes.base;
-                return found.cover[offset] == Cover::kStart || cuts.contains(offset) ||
-                       std::any_of(first, last, [&](const auto& read) { return read.first == offset; });
-            };
-            const auto target_leads = [&](const auto& read)
-            {
-                const Command& command = read.second.command;
-                return !commands::HasTarget(command.kind) || leads(command.target);
-            };
-            if (std::all_of(first, last, target_leads))
-            {
-                taken = *count;
-            }
-        }
-        if (taken == 0)
-        {
-            at = end;
-            continue;
-        }
-
-        at = run[taken - 1].first + run[taken - 1].second.size;
-        for (std::size_t i = 0; i < taken; i++)
-        {
-            Mark(found, run[i].first, std::move(run[i].second));
-        }
-    }
-}
-
-// The items of the bytes in their order, from the commands in `found`. Data splits at `cuts`. Gives the item at each
-// offset where one starts, and at the end. Without commands, the items are the whole song as data, split at `cuts`.
-commands::Sequence Items(const Bytes& bytes, const Found& found, const std::set<uint32_t>& cuts,
-                         std::map<uint32_t, uint32_t>& items)
-{
-    commands::Sequence sequence;
-    const auto size = static_cast<uint32_t>(bytes.data.size());
-    uint32_t at = 0;
-    while (at < size)
+        return std::move(step->read);
+    };
+    const auto falls_through = [](const Command& command)
     {
-        items[at] = static_cast<uint32_t>(sequence.items.size());
-        const auto read = found.reads.find(at);
-        if (read != found.reads.end() && !read->second.raw)
-        {
-            sequence.items.push_back(read->second.command);
-            at += read->second.size;
-            continue;
-        }
-
-        // A run of data up to the next command, cut or end. A raw command stands alone.
-        uint32_t end = read != found.reads.end() ? at + read->second.size : size;
-        if (read == found.reads.end())
-        {
-            const auto next_read = found.reads.upper_bound(at);
-            if (next_read != found.reads.end())
-            {
-                end = std::min(end, next_read->first);
-            }
-
-            const auto next_cut = cuts.upper_bound(at);
-            if (next_cut != cuts.end())
-            {
-                end = std::min(end, *next_cut);
-            }
-        }
-
-        Command item;
-        item.kind = Kind::kData;
-        item.bytes.assign(bytes.data.begin() + at, bytes.data.begin() + end);
-        sequence.items.push_back(std::move(item));
-        at = end;
-    }
-    items[size] = static_cast<uint32_t>(sequence.items.size());
-
-    // The targets by item. A target outside the bytes keeps its address.
-    for (Command& command : sequence.items)
+        return FallsThrough(command);
+    };
+    const auto offset_of = [&bytes](uint32_t target)
     {
-        if (!commands::HasTarget(command.kind))
-        {
-            continue;
-        }
+        return bytes.OffsetOf(target);
+    };
 
-        const auto item = bytes.Inside(command.target) ? items.find(command.target - bytes.base) : items.end();
-        if (item == items.end())
-        {
-            command.target_outside = true;
-            continue;
-        }
-
-        command.target = item->second;
-    }
-
-    return sequence;
+    commands::detail::Guess(bytes.data, cuts, true, found, read_at, falls_through, offset_of);
 }
 
 } // namespace
@@ -884,16 +736,20 @@ Decoded DecodeSequence(std::span<const uint8_t> data, uint32_t base, std::span<c
 
     Decoded decoded;
     std::map<uint32_t, uint32_t> items; // byte offset to item
+    const auto offset_of = [&bytes](uint32_t target)
+    {
+        return bytes.OffsetOf(target); // a target outside the bytes keeps its address
+    };
     if (opaque)
     {
         std::set<uint32_t> entry_cuts(offsets.begin(), offsets.end());
-        decoded.sequence = Items(bytes, Found{}, entry_cuts, items);
+        decoded.sequence = commands::detail::Items(data, Found{}, entry_cuts, items, offset_of);
         decoded.opaque = true;
     }
     else
     {
         Guess(bytes, cuts, found);
-        decoded.sequence = Items(bytes, found, cuts, items);
+        decoded.sequence = commands::detail::Items(data, found, cuts, items, offset_of);
     }
 
     for (const uint32_t offset : offsets)
@@ -944,44 +800,17 @@ Encoded EncodeSequence(const commands::Sequence& sequence, uint32_t base, int no
         Convert(item, commands::FromUnit);
     }
 
-    // Each item's size doesn't depend on its target's address. The sizes give the offsets.
-    Encoded encoded;
-    encoded.offsets.reserve(items.size() + 1);
-    std::vector<uint8_t> scratch;
-    uint32_t at = 0;
-    for (const commands::Command& item : items)
+    // The bytes from address `base`. The driver has to read each command's bytes back as the command.
+    const auto append = [note_arguments](std::vector<uint8_t>& out, const commands::Command& item, uint32_t target)
     {
-        encoded.offsets.push_back(at);
-        scratch.clear();
-        AppendCommand(scratch, item, 0, note_arguments);
-        at += static_cast<uint32_t>(scratch.size());
-    }
-    encoded.offsets.push_back(at);
-
-    // Then the bytes, with each target's address. The driver has to read each command's bytes back as the command.
-    encoded.bytes.reserve(at);
-    for (const commands::Command& item : items)
+        AppendCommand(out, item, target, note_arguments);
+    };
+    const auto reads_back = [note_arguments](std::span<const uint8_t> bytes, std::size_t start,
+                                             const commands::Command& item, uint32_t target)
     {
-        uint32_t target = item.target;
-        if (commands::HasTarget(item.kind) && !item.target_outside)
-        {
-            if (item.target >= encoded.offsets.size())
-            {
-                throw std::invalid_argument("a target past the items");
-            }
-
-            target = base + encoded.offsets[item.target];
-        }
-
-        const auto start = encoded.bytes.size();
-        AppendCommand(encoded.bytes, item, target, note_arguments);
-        if (item.kind != Kind::kData &&
-            !ReadsBack(std::span(encoded.bytes).subspan(start), item, target, note_arguments))
-        {
-            throw std::invalid_argument("the driver would read other commands from the bytes of " +
-                                        std::string(commands::Name(item.kind)));
-        }
-    }
+        return ReadsBack(bytes.subspan(start), item, target, note_arguments);
+    };
+    Encoded encoded = commands::detail::Encode<Encoded>(items, base, "driver", append, reads_back);
 
     // A note or an end of a tie that leaves out its last arguments reads the next byte below 0x80 as one.
     for (std::size_t i = 0; i < items.size(); i++)

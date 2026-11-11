@@ -182,6 +182,56 @@ int32_t BatchOf(const DecodeFromWaveBuffersArgs& args, int32_t ratio)
     return limit < args.count ? limit : args.count;
 }
 
+// The place of a channel at the start of a frame. KeepPlace stores the place and the fraction of the converter at the
+// end of the frame.
+Place PlaceOf(const VoiceState& state)
+{
+    return {state.offset, state.index, state.played, state.consumed};
+}
+
+void KeepPlace(VoiceState& state, const Place& place, int32_t fraction)
+{
+    state.consumed = place.consumed;
+    state.offset = place.offset;
+    state.played = place.played;
+    state.index = place.index;
+    state.fraction = fraction;
+}
+
+// Each output at its position. Without a conversion, the medium quality's outputs all take the first one's phase, one
+// input sample apart, as the console's filter does. Without outputs, the fraction moves on by the steps' sum, as in
+// both loops. The window of the kernel for the first output starts at `input`. Returns the fraction after the batch.
+int32_t InterpolateBatch(const wave::SincKernel& kernel, const float* input, float* output, int32_t count,
+                         int32_t ratio, int32_t fraction, bool one_phase)
+{
+    if (output == nullptr)
+    {
+        return WrapAdd(fraction, WrapMul(count, ratio)) & 0x7FFF;
+    }
+
+    if (one_phase)
+    {
+        const auto phase = static_cast<uint32_t>(fraction) << 1;
+        for (int32_t i = 0; i < count; ++i)
+        {
+            output[i] = kernel.At(input + i, phase);
+        }
+
+        return WrapAdd(fraction, WrapMul(count, ratio)) & 0x7FFF;
+    }
+
+    int32_t at = 0;
+    for (int32_t i = 0; i < count; ++i)
+    {
+        output[i] = kernel.At(input + at, static_cast<uint32_t>(fraction) << 1);
+        fraction = WrapAdd(fraction, ratio);
+        at += fraction >> 15;
+        fraction &= 0x7FFF;
+    }
+
+    return fraction;
+}
+
 } // namespace
 
 void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
@@ -198,7 +248,7 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
     int32_t* out = args.out;
     int32_t remaining = args.count;
     int32_t fraction = state.fraction;
-    Place place{state.offset, state.index, state.played, state.consumed};
+    Place place = PlaceOf(state);
     std::array<int16_t, kScratchSamples> scratch;
     while (remaining >= 1)
     {
@@ -245,11 +295,7 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
         }
     }
 
-    state.consumed = place.consumed;
-    state.offset = place.offset;
-    state.played = place.played;
-    state.index = place.index;
-    state.fraction = fraction;
+    KeepPlace(state, place, fraction);
 }
 
 void DecodeFromWaveBuffersEnhanced(const DecodeFromWaveBuffersArgs& args, const EnhancedDecodeBuffers& buffers,
@@ -276,7 +322,7 @@ void DecodeFromWaveBuffersEnhanced(const DecodeFromWaveBuffersArgs& args, const 
     float* output = out;
     int32_t remaining = args.count;
     int32_t fraction = state.fraction;
-    Place place{state.offset, state.index, state.played, state.consumed};
+    Place place = PlaceOf(state);
     std::vector<int16_t>& decoded = *buffers.decoded;
     std::vector<float>& input = *buffers.input;
     while (remaining >= 1)
@@ -309,35 +355,11 @@ void DecodeFromWaveBuffersEnhanced(const DecodeFromWaveBuffersArgs& args, const 
             input[kWideHistory + i] = static_cast<float>(decoded[i]);
         }
 
-        // Each output at its position. Without a conversion, the medium quality's outputs all take the first one's
-        // phase, one input sample apart, as the console's filter does. Without outputs, the fraction moves on by the
-        // steps' sum, as in both loops.
+        // The outputs.
         const bool converting = need != count || args.pitch != 0x8000;
-        if (output == nullptr)
-        {
-            fraction = WrapAdd(fraction, WrapMul(count, ratio)) & 0x7FFF;
-        }
-        else if (args.quality == SrcQuality::kMedium && !converting)
-        {
-            const auto phase = static_cast<uint32_t>(fraction) << 1;
-            for (int32_t i = 0; i < count; ++i)
-            {
-                output[i] = kernel.At(&input[static_cast<std::size_t>(start + i)], phase);
-            }
-            fraction = WrapAdd(fraction, WrapMul(count, ratio)) & 0x7FFF;
-        }
-        else
-        {
-            int32_t at = 0;
-            for (int32_t i = 0; i < count; ++i)
-            {
-                output[i] =
-                    kernel.At(&input[static_cast<std::size_t>(start + at)], static_cast<uint32_t>(fraction) << 1);
-                fraction = WrapAdd(fraction, ratio);
-                at += fraction >> 15;
-                fraction &= 0x7FFF;
-            }
-        }
+        const bool one_phase = args.quality == SrcQuality::kMedium && !converting;
+        fraction = InterpolateBatch(kernel, &input[static_cast<std::size_t>(start)], output, count, ratio, fraction,
+                                    one_phase);
 
         // The past samples for the next batch, and the console's history, as DecodeFromWaveBuffers keeps it.
         std::array<int16_t, 8> console = state.history;
@@ -362,11 +384,7 @@ void DecodeFromWaveBuffersEnhanced(const DecodeFromWaveBuffersArgs& args, const 
         }
     }
 
-    state.consumed = place.consumed;
-    state.offset = place.offset;
-    state.played = place.played;
-    state.index = place.index;
-    state.fraction = fraction;
+    KeepPlace(state, place, fraction);
 }
 
 } // namespace ntdlib::nx::audio

@@ -10,6 +10,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -42,50 +43,14 @@ uint32_t HeaderSize(uint32_t tracks)
     return 8 + 4 * tracks;
 }
 
-uint64_t AlignUp(uint64_t value, uint64_t alignment)
-{
-    return (value + alignment - 1) / alignment * alignment;
-}
-
-// Where the free space of `image` starts (kFreeSpaceMargin).
-uint64_t FreeSpace(const std::vector<uint8_t>& image)
-{
-    std::size_t run = image.size();
-    while (run > 0 && image[run - 1] == 0xFF)
-    {
-        run--;
-    }
-
-    return run < image.size() ? AlignUp(run + kFreeSpaceMargin, kFreeSpaceMargin) : AlignUp(image.size(), 4);
-}
+using agb::AlignUp;
 
 // The bytes of a ROM that the driver reads, as FillerRuns finds them. A note reads up to `note_arguments` bytes.
-class Reached
+class Reached : public agb::Reached
 {
 public:
-    Reached(const agb::Rom& rom, int note_arguments)
-        : rom_(rom), note_arguments_(note_arguments), bytes_(rom.Size(), false)
+    Reached(const agb::Rom& rom, int note_arguments) : agb::Reached(rom), rom_(rom), note_arguments_(note_arguments)
     {
-    }
-
-    bool Holds(uint32_t offset) const
-    {
-        return bytes_[offset];
-    }
-
-    // Marks `size` bytes from `address`, where they lie in the ROM.
-    void Mark(uint32_t address, uint64_t size)
-    {
-        if (address < kRomBase)
-        {
-            return;
-        }
-        const uint64_t from = address - kRomBase;
-        const uint64_t to = std::min<uint64_t>(from + size, bytes_.size());
-        for (uint64_t i = from; i < to; i++)
-        {
-            bytes_[i] = true;
-        }
     }
 
     // Marks the commands that a track from `start` reaches, with the patterns that it plays and the places that its
@@ -180,7 +145,6 @@ private:
 
     const agb::Rom& rom_;
     int note_arguments_ = 3;
-    std::vector<bool> bytes_;
 };
 
 // Whether `field` names where a track of a song starts: it lies in the run after a sequence piece, at the place of a
@@ -229,12 +193,16 @@ std::vector<uint32_t> HeaderTracks(std::span<const sar::Piece> pieces, std::span
     return tracks;
 }
 
-Layout Cut(const agb::Rom& rom, const DriverInfo& info)
+namespace
 {
-    // Each song of the table once, by its header, in the order of the songs' first bytes.
+
+// Each song of the table once, by its header, by the address of the song's first bytes. `entries` takes the song
+// table's entries, by the headers that they name.
+std::map<uint32_t, CutSong> ReadCutSongs(const agb::Rom& rom, const DriverInfo& info,
+                                         std::multimap<uint32_t, int>& entries)
+{
     std::map<uint32_t, CutSong> songs;
     std::set<uint32_t> headers;
-    std::multimap<uint32_t, int> entries; // the song table's entries, by the headers that they name
     for (int s = 0; s < info.song_count; s++)
     {
         SongHeader header;
@@ -276,7 +244,12 @@ Layout Cut(const agb::Rom& rom, const DriverInfo& info)
         songs.emplace(song.base, std::move(song));
     }
 
-    // The songs that lie clear of one another and of the song table.
+    return songs;
+}
+
+// The songs that lie clear of one another and of the song table, in the order of their first bytes.
+std::vector<CutSong*> ClearSongs(std::map<uint32_t, CutSong>& songs, const DriverInfo& info)
+{
     const uint32_t table_end = info.song_table + 8 * uint32_t(info.song_count);
     std::vector<CutSong*> kept;
     uint32_t clear_from = kRomBase;
@@ -292,23 +265,56 @@ Layout Cut(const agb::Rom& rom, const DriverInfo& info)
         clear_from = end;
     }
 
+    return kept;
+}
+
+// Adds the fields of the song table's entries. An entry's field lies in the run that holds the table: the songs lie
+// clear of it. `header_runs` gives each header's run, by the header's address.
+void AddTableFields(const DriverInfo& info, const std::multimap<uint32_t, int>& entries,
+                    const std::map<uint32_t, uint32_t>& header_runs, Layout& layout)
+{
+    for (const auto& [header, run] : header_runs)
+    {
+        const auto [first, last] = entries.equal_range(header);
+        for (auto e = first; e != last; e++)
+        {
+            const uint32_t entry = info.song_table + 8 * uint32_t(e->second);
+            if (const std::optional<sar::Place> place = agb::RunPlaceOf(layout.pieces, entry))
+            {
+                layout.fields.push_back({*place, {0, 0}, {run, 0}});
+            }
+        }
+    }
+}
+
+} // namespace
+
+uint64_t FreeSpaceStart(std::span<const uint8_t> end, uint64_t offset)
+{
+    std::size_t run = end.size();
+    while (run > 0 && end[run - 1] == 0xFF)
+    {
+        run--;
+    }
+
+    return run < end.size() ? AlignUp(offset + run + kFreeSpaceMargin, kFreeSpaceMargin)
+                            : AlignUp(offset + end.size(), 4);
+}
+
+Layout Cut(const agb::Rom& rom, const DriverInfo& info)
+{
+    std::multimap<uint32_t, int> entries;
+    std::map<uint32_t, CutSong> songs = ReadCutSongs(rom, info, entries);
+    const std::vector<CutSong*> kept = ClearSongs(songs, info);
+
     // The runs between the songs, and the fields of the headers and of the song table.
     Layout layout;
     layout.note_arguments = NoteArguments(info);
     uint32_t at = kRomBase;                   // where the next run starts
     std::map<uint32_t, uint32_t> header_runs; // each header's run, by the header's address
-    const auto add_run = [&](uint32_t end)
-    {
-        if (end > at)
-        {
-            const uint8_t* first = rom.Ptr(at);
-            layout.pieces.emplace_back(std::vector<uint8_t>(first, first + (end - at)));
-            at = end;
-        }
-    };
     for (CutSong* song : kept)
     {
-        add_run(song->base);
+        agb::AddRomRun(rom, at, song->base, layout.pieces);
         const auto piece = uint32_t(layout.pieces.size());
         layout.pieces.emplace_back(
             sar::SequencePiece{uint32_t(layout.sequences.size()), 0, song->header.address - song->base});
@@ -323,30 +329,9 @@ Layout Cut(const agb::Rom& rom, const DriverInfo& info)
             layout.fields.push_back({{run, 8 + 4 * uint32_t(t)}, {0, 0}, {piece, song->decoded.entries[t], true}});
         }
     }
-    add_run(rom.End());
+    agb::AddRomRun(rom, at, rom.End(), layout.pieces);
 
-    // A song table entry's field lies in the run that holds the table: the songs lie clear of it.
-    for (const auto& [header, run] : header_runs)
-    {
-        const auto [first, last] = entries.equal_range(header);
-        for (auto e = first; e != last; e++)
-        {
-            const uint32_t entry = info.song_table + 8 * uint32_t(e->second);
-            uint32_t start = kRomBase;
-            for (uint32_t p = 0; p < layout.pieces.size(); p++)
-            {
-                const auto* bytes = std::get_if<std::vector<uint8_t>>(&layout.pieces[p]);
-                const uint32_t size =
-                    bytes ? uint32_t(bytes->size()) : std::get<sar::SequencePiece>(layout.pieces[p]).room;
-                if (bytes && entry >= start && entry < start + size)
-                {
-                    layout.fields.push_back({{p, entry - start}, {0, 0}, {run, 0}});
-                    break;
-                }
-                start += size;
-            }
-        }
-    }
+    AddTableFields(info, entries, header_runs, layout);
 
     return layout;
 }
@@ -382,140 +367,206 @@ std::vector<Span> FillerRuns(const agb::Rom& rom, const DriverInfo& info)
     }
 
     // The runs of 0xFF before the ROM's end, without their margins, where the driver reads no byte.
-    std::vector<Span> runs;
-    const auto size = uint32_t(rom.Size());
-    uint32_t at = 0;
-    while (at < size)
-    {
-        uint32_t end = at;
-        while (end < size && rom.U8(kRomBase + end) == 0xFF)
-        {
-            end++;
-        }
-        if (end == at)
-        {
-            at++;
-            continue;
-        }
-
-        const auto start = uint32_t(AlignUp(uint64_t(at) + kFreeSpaceMargin, kFreeSpaceMargin));
-        const bool taken = end - at >= kLeastFillerRun && end < size && start + kFreeSpaceMargin < end;
-        if (taken)
-        {
-            bool read = false;
-            for (uint32_t i = at; i < end && !read; i++)
-            {
-                read = reached.Holds(i);
-            }
-            if (!read)
-            {
-                runs.push_back({start, end - kFreeSpaceMargin - start});
-            }
-        }
-        at = end;
-    }
-
-    return runs;
+    return agb::FillerRunsOf(rom, reached, kLeastFillerRun, false);
 }
 
-std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::span<const sar::Piece> pieces,
-                          std::span<const sar::Field> fields, const JoinOptions& options)
+namespace
 {
-    // Each piece's place, from the ROM's start.
-    std::vector<uint64_t> starts;
-    uint64_t size = 0;
-    for (const sar::Piece& piece : pieces)
+
+// The join of a ROM's pieces, a step at a time: the runs in their places, the songs that keep their places, the songs
+// that move, then the fields.
+class Joiner
+{
+public:
+    Joiner(std::span<const commands::Sequence> sequences, std::span<const sar::Piece> pieces,
+           std::span<const sar::Field> fields, const JoinOptions& options)
+        : sequences_(sequences), pieces_(pieces), fields_(fields), options_(options), items_(pieces.size())
     {
-        starts.push_back(size);
-        if (const auto* bytes = std::get_if<std::vector<uint8_t>>(&piece))
+    }
+
+    // Each piece's place, from the ROM's start, and the runs' bytes in their places.
+    void PlaceRuns()
+    {
+        for (const sar::Piece& piece : pieces_)
         {
-            size += bytes->size();
-        }
-        else if (const auto* sequence = std::get_if<sar::SequencePiece>(&piece))
-        {
-            if (sequence->sequence >= sequences.size())
+            starts_.push_back(size_);
+            if (const auto* bytes = std::get_if<std::vector<uint8_t>>(&piece))
             {
-                throw std::invalid_argument("a song names a sequence that the layout lacks");
+                size_ += bytes->size();
             }
-            size += sequence->room;
+            else if (const auto* sequence = std::get_if<sar::SequencePiece>(&piece))
+            {
+                if (sequence->sequence >= sequences_.size())
+                {
+                    throw std::invalid_argument("a song names a sequence that the layout lacks");
+                }
+                size_ += sequence->room;
+            }
+            else
+            {
+                throw std::invalid_argument("a GBA ROM's layout holds padding");
+            }
         }
-        else
+        if (size_ > kLargestRom)
         {
-            throw std::invalid_argument("a GBA ROM's layout holds padding");
+            throw std::invalid_argument("a GBA ROM can't hold more than 32 MiB");
+        }
+
+        image_.resize(size_);
+        for (std::size_t p = 0; p < pieces_.size(); p++)
+        {
+            if (const auto* bytes = std::get_if<std::vector<uint8_t>>(&pieces_[p]))
+            {
+                std::copy(bytes->begin(), bytes->end(), image_.begin() + std::ptrdiff_t(starts_[p]));
+            }
         }
     }
-    if (size > kLargestRom)
+
+    // Each song in its place. Each song keeps the places of its items, and where its header lies. A header in its
+    // place takes the count of its tracks, up to the count that the run holds. A header that gains tracks past that
+    // count goes with its song into the free space. Returns the songs that move.
+    std::vector<std::size_t> PlaceSongs()
     {
-        throw std::invalid_argument("a GBA ROM can't hold more than 32 MiB");
+        tracks_ = HeaderTracks(pieces_, fields_);
+        std::vector<std::size_t> moving;
+        for (std::size_t p = 0; p < pieces_.size(); p++)
+        {
+            const auto* sequence = std::get_if<sar::SequencePiece>(&pieces_[p]);
+            if (!sequence)
+            {
+                continue;
+            }
+
+            const std::vector<uint8_t>* header = HeaderAfter(p);
+            const bool grows = header && !header->empty() && tracks_[p] > (*header)[0];
+            if (header && !header->empty() && tracks_[p] < (*header)[0])
+            {
+                image_[starts_[p + 1]] = uint8_t(tracks_[p]);
+            }
+
+            const Encoded encoded = EncodeSequence(sequences_[sequence->sequence], uint32_t(kRomBase + starts_[p]),
+                                                   options_.note_arguments);
+            if (encoded.bytes.size() > sequence->room || grows)
+            {
+                moving.push_back(p);
+                continue;
+            }
+
+            std::copy(encoded.bytes.begin(), encoded.bytes.end(), image_.begin() + std::ptrdiff_t(starts_[p]));
+            for (const uint32_t offset : encoded.offsets)
+            {
+                items_[p].push_back(starts_[p] + offset);
+            }
+        }
+
+        return moving;
     }
 
-    std::vector<uint8_t> image(size);
-    for (std::size_t p = 0; p < pieces.size(); p++)
+    // Moves each song of `moving` into the free space after the songs that the ROM keeps in their places, or else into
+    // the first filler run with room.
+    void MoveSongs(const std::vector<std::size_t>& moving)
     {
-        if (const auto* bytes = std::get_if<std::vector<uint8_t>>(&pieces[p]))
+        uint64_t free = moving.empty() ? 0 : FreeSpaceStart(image_);
+        for (const std::size_t p : moving)
         {
-            std::copy(bytes->begin(), bytes->end(), image.begin() + std::ptrdiff_t(starts[p]));
+            const std::vector<uint8_t>* header = HeaderAfter(p);
+            if (!header || header->empty() || header->size() < HeaderSize((*header)[0]))
+            {
+                throw std::invalid_argument("a song that has to move has no header after it");
+            }
+
+            if (tracks_[p] > kMaxTracks)
+            {
+                throw std::invalid_argument("a song's header can't hold more than 16 tracks");
+            }
+
+            // The free space at the ROM's end, or else the first filler run with room. A song's encoding takes the same
+            // size wherever it lies.
+            const auto& sequence = std::get<sar::SequencePiece>(pieces_[p]);
+            const uint64_t song_size =
+                EncodeSequence(sequences_[sequence.sequence], uint32_t(kRomBase + free), options_.note_arguments)
+                    .bytes.size();
+            const uint32_t header_size = HeaderSize(tracks_[p]);
+            const bool at_end = AlignUp(free + song_size, 4) + header_size <= kLargestRom;
+            const uint64_t at = at_end ? free : FillerPlace(song_size, header_size);
+            const uint64_t end = MoveSong(p, *header, at);
+            if (at_end)
+            {
+                free = end;
+            }
         }
     }
 
-    // Each song in its place, or in the free space after the songs that the ROM keeps in their places. Each song keeps
-    // the places of its items, and where its header lies. A header in its place takes the count of its tracks, up to
-    // the count that the run holds. A header that gains tracks past that count goes with its song into the free space.
-    const std::vector<uint32_t> tracks = HeaderTracks(pieces, fields);
-    std::vector<std::vector<uint64_t>> items(pieces.size());
-    std::map<std::size_t, uint64_t> copies; // the copy of each moved song's header, by the run that holds the header
-    std::vector<std::size_t> moving;
-    for (std::size_t p = 0; p < pieces.size(); p++)
+    // Writes each field's address, in its run and in the copy of a moved song's header.
+    std::vector<uint8_t> WriteFields()
     {
-        const auto* sequence = std::get_if<sar::SequencePiece>(&pieces[p]);
-        if (!sequence)
+        for (const sar::Field& field : fields_)
         {
-            continue;
+            const auto* run = field.at.piece < pieces_.size() && !field.at.item && !field.at.sequence
+                                  ? std::get_if<std::vector<uint8_t>>(&pieces_[field.at.piece])
+                                  : nullptr;
+
+            // A track past the run's header has its address only in the copy.
+            const bool track = IsTrackField(pieces_, field);
+            const bool past = run && track && !run->empty() && (field.at.offset - 8) / 4 >= (*run)[0];
+            if (!run || (!past && uint64_t(field.at.offset) + 4 > run->size()))
+            {
+                throw std::invalid_argument("a field doesn't lie in a run of a GBA ROM");
+            }
+
+            const uint64_t from = Position(field.from);
+            const uint64_t to = Position(field.to);
+            if (to < from || to - from + kRomBase > std::numeric_limits<uint32_t>::max())
+            {
+                throw std::invalid_argument("a field's address doesn't fit in 32 bits");
+            }
+
+            const auto address = uint32_t(to - from + kRomBase);
+            if (!past)
+            {
+                xsflib::StoreLe32(&image_[starts_[field.at.piece] + field.at.offset], address);
+            }
+
+            // The copy holds the tracks' addresses, and any other field that lies in the header that it keeps.
+            const auto copy = copies_.find(field.at.piece);
+            if (copy != copies_.end() && (track || field.at.offset + 4 <= HeaderSize(std::min<uint32_t>(
+                                                                              tracks_[field.at.piece - 1], (*run)[0]))))
+            {
+                xsflib::StoreLe32(&image_[copy->second + field.at.offset], address);
+            }
         }
 
-        const auto* header = p + 1 < pieces.size() ? std::get_if<std::vector<uint8_t>>(&pieces[p + 1]) : nullptr;
-        const bool grows = header && !header->empty() && tracks[p] > (*header)[0];
-        if (header && !header->empty() && tracks[p] < (*header)[0])
-        {
-            image[starts[p + 1]] = uint8_t(tracks[p]);
-        }
+        return std::move(image_);
+    }
 
-        const Encoded encoded =
-            EncodeSequence(sequences[sequence->sequence], uint32_t(kRomBase + starts[p]), options.note_arguments);
-        if (encoded.bytes.size() > sequence->room || grows)
-        {
-            moving.push_back(p);
-            continue;
-        }
-
-        std::copy(encoded.bytes.begin(), encoded.bytes.end(), image.begin() + std::ptrdiff_t(starts[p]));
-        for (const uint32_t offset : encoded.offsets)
-        {
-            items[p].push_back(starts[p] + offset);
-        }
+private:
+    // The run after song `p`, which holds its header, or nullptr.
+    const std::vector<uint8_t>* HeaderAfter(std::size_t p) const
+    {
+        return p + 1 < pieces_.size() ? std::get_if<std::vector<uint8_t>>(&pieces_[p + 1]) : nullptr;
     }
 
     // Each place's position from the ROM's start. A place at the end lies at the end of the pieces. A song that moves
     // has its items once it has moved.
-    const auto position = [&](const sar::Place& place) -> uint64_t
+    uint64_t Position(const sar::Place& place) const
     {
-        if (place.sequence || place.piece > pieces.size())
+        if (place.sequence || place.piece > pieces_.size())
         {
             throw std::invalid_argument("a field names a place that a GBA ROM's pieces lack");
         }
-        if (place.piece == pieces.size())
+        if (place.piece == pieces_.size())
         {
-            return size + place.offset;
+            return size_ + place.offset;
         }
 
-        const sar::Piece& piece = pieces[place.piece];
+        const sar::Piece& piece = pieces_[place.piece];
         if (place.item)
         {
-            if (!std::holds_alternative<sar::SequencePiece>(piece) || place.offset >= items[place.piece].size())
+            if (!std::holds_alternative<sar::SequencePiece>(piece) || place.offset >= items_[place.piece].size())
             {
                 throw std::invalid_argument("a field names an item that a song lacks");
             }
-            return items[place.piece][place.offset];
+            return items_[place.piece][place.offset];
         }
         if (const auto* bytes = std::get_if<std::vector<uint8_t>>(&piece))
         {
@@ -523,40 +574,38 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
             {
                 throw std::invalid_argument("a field names a byte past its run");
             }
-            const auto copy = copies.find(place.piece);
-            return place.offset == 0 && copy != copies.end() ? copy->second : starts[place.piece] + place.offset;
+            const auto copy = copies_.find(place.piece);
+            return place.offset == 0 && copy != copies_.end() ? copy->second : starts_[place.piece] + place.offset;
         }
         if (place.offset != 0)
         {
             throw std::invalid_argument("a field names a byte inside a song");
         }
-        return items[place.piece].front();
-    };
+        return items_[place.piece].front();
+    }
 
-    // The filler runs, found once a song needs them, and the next free byte of each.
-    std::optional<std::vector<Span>> filler;
-    std::vector<uint64_t> filled;
-    const auto find_filler = [&]
+    // Finds the filler runs, once a song needs them, and the next free byte of each.
+    void FindFiller()
     {
         // The ROM with the songs that keep their places, and with their tracks' addresses in their headers.
-        std::vector<uint8_t> base = image;
-        for (const sar::Field& field : fields)
+        std::vector<uint8_t> base = image_;
+        for (const sar::Field& field : fields_)
         {
-            const auto* run = field.at.piece < pieces.size() && !field.at.item && !field.at.sequence
-                                  ? std::get_if<std::vector<uint8_t>>(&pieces[field.at.piece])
+            const auto* run = field.at.piece < pieces_.size() && !field.at.item && !field.at.sequence
+                                  ? std::get_if<std::vector<uint8_t>>(&pieces_[field.at.piece])
                                   : nullptr;
-            const bool moves = field.to.item && field.to.piece < pieces.size() && items[field.to.piece].empty();
+            const bool moves = field.to.item && field.to.piece < pieces_.size() && items_[field.to.piece].empty();
             if (!run || uint64_t(field.at.offset) + 4 > run->size() || moves)
             {
                 continue;
             }
             try
             {
-                const uint64_t from = position(field.from);
-                const uint64_t to = position(field.to);
+                const uint64_t from = Position(field.from);
+                const uint64_t to = Position(field.to);
                 if (from <= to && to - from + kRomBase <= std::numeric_limits<uint32_t>::max())
                 {
-                    xsflib::StoreLe32(&base[starts[field.at.piece] + field.at.offset], uint32_t(to - from + kRomBase));
+                    xsflib::StoreLe32(&base[starts_[field.at.piece] + field.at.offset], uint32_t(to - from + kRomBase));
                 }
             }
             catch (const std::invalid_argument&)
@@ -574,128 +623,98 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
                                         (error.empty() ? std::string() : ": " + error));
         }
 
-        filler = FillerRuns(rom, info);
-        for (const Span& run : *filler)
+        filler_ = FillerRuns(rom, info);
+        for (const Span& run : *filler_)
         {
-            filled.push_back(run.start);
+            filled_.push_back(run.start);
         }
-    };
+    }
 
-    uint64_t free = moving.empty() ? 0 : FreeSpace(image);
-    for (const std::size_t p : moving)
+    // The place in the first filler run with room for a song of `song_size` bytes and a header of `header_size`.
+    uint64_t FillerPlace(uint64_t song_size, uint32_t header_size)
     {
-        const auto* header = p + 1 < pieces.size() ? std::get_if<std::vector<uint8_t>>(&pieces[p + 1]) : nullptr;
-        if (!header || header->empty() || header->size() < HeaderSize((*header)[0]))
+        if (!options_.filler)
         {
-            throw std::invalid_argument("a song that has to move has no header after it");
+            throw std::invalid_argument("the songs that outgrow their places don't fit in a GBA ROM's 32 MiB");
+        }
+        if (!filler_)
+        {
+            FindFiller();
         }
 
-        if (tracks[p] > kMaxTracks)
+        std::size_t run = 0;
+        while (run < filler_->size() && AlignUp(AlignUp(filled_[run], 4) + song_size, 4) + header_size >
+                                            uint64_t((*filler_)[run].start) + (*filler_)[run].size)
         {
-            throw std::invalid_argument("a song's header can't hold more than 16 tracks");
+            run++;
         }
-
-        // The free space at the ROM's end, or else the first filler run with room. A song's encoding takes the same
-        // size wherever it lies.
-        const auto& sequence = std::get<sar::SequencePiece>(pieces[p]);
-        const uint64_t song_size =
-            EncodeSequence(sequences[sequence.sequence], uint32_t(kRomBase + free), options.note_arguments)
-                .bytes.size();
-        const uint32_t header_size = HeaderSize(tracks[p]);
-        uint64_t at = free;
-        bool at_end = AlignUp(free + song_size, 4) + header_size <= kLargestRom;
-        if (!at_end)
+        if (run == filler_->size())
         {
-            if (!options.filler)
-            {
-                throw std::invalid_argument("the songs that outgrow their places don't fit in a GBA ROM's 32 MiB");
-            }
-            if (!filler)
-            {
-                find_filler();
-            }
-
-            std::size_t run = 0;
-            while (run < filler->size() && AlignUp(AlignUp(filled[run], 4) + song_size, 4) + header_size >
-                                               uint64_t((*filler)[run].start) + (*filler)[run].size)
-            {
-                run++;
-            }
-            if (run == filler->size())
-            {
-                throw std::invalid_argument(
-                    "the songs that outgrow their places don't fit in a GBA ROM's 32 MiB or in its filler runs");
-            }
-            at = AlignUp(filled[run], 4);
-            filled[run] = AlignUp(at + song_size, 4) + header_size;
+            throw std::invalid_argument(
+                "the songs that outgrow their places don't fit in a GBA ROM's 32 MiB or in its filler runs");
         }
+        const uint64_t at = AlignUp(filled_[run], 4);
+        filled_[run] = AlignUp(at + song_size, 4) + header_size;
 
+        return at;
+    }
+
+    // Writes song `p` at `at`, with a copy of its header after it. Returns the end of the copy.
+    uint64_t MoveSong(std::size_t p, const std::vector<uint8_t>& header, uint64_t at)
+    {
+        const auto& sequence = std::get<sar::SequencePiece>(pieces_[p]);
+        const uint32_t header_size = HeaderSize(tracks_[p]);
         const Encoded encoded =
-            EncodeSequence(sequences[sequence.sequence], uint32_t(kRomBase + at), options.note_arguments);
+            EncodeSequence(sequences_[sequence.sequence], uint32_t(kRomBase + at), options_.note_arguments);
         const uint64_t copy = AlignUp(at + encoded.bytes.size(), 4);
         const uint64_t end = copy + header_size;
-        if (end > image.size())
+        if (end > image_.size())
         {
-            image.resize(end, 0xFF);
+            image_.resize(end, 0xFF);
         }
 
         // Zeros fill the gap before the copy, as they fill the gap before a header in place.
-        std::copy(encoded.bytes.begin(), encoded.bytes.end(), image.begin() + std::ptrdiff_t(at));
-        std::fill(image.begin() + std::ptrdiff_t(at + encoded.bytes.size()), image.begin() + std::ptrdiff_t(copy), 0);
+        std::copy(encoded.bytes.begin(), encoded.bytes.end(), image_.begin() + std::ptrdiff_t(at));
+        std::fill(image_.begin() + std::ptrdiff_t(at + encoded.bytes.size()), image_.begin() + std::ptrdiff_t(copy), 0);
 
         // The copy takes the header's tracks. Its addresses of tracks past the run's header come from their fields.
-        const uint32_t kept = HeaderSize(std::min<uint32_t>(tracks[p], (*header)[0]));
-        std::copy_n(header->begin(), kept, image.begin() + std::ptrdiff_t(copy));
-        std::fill(image.begin() + std::ptrdiff_t(copy + kept), image.begin() + std::ptrdiff_t(end), 0);
-        image[copy] = uint8_t(tracks[p]);
+        const uint32_t kept = HeaderSize(std::min<uint32_t>(tracks_[p], header[0]));
+        std::copy_n(header.begin(), kept, image_.begin() + std::ptrdiff_t(copy));
+        std::fill(image_.begin() + std::ptrdiff_t(copy + kept), image_.begin() + std::ptrdiff_t(end), 0);
+        image_[copy] = uint8_t(tracks_[p]);
         for (const uint32_t offset : encoded.offsets)
         {
-            items[p].push_back(at + offset);
+            items_[p].push_back(at + offset);
         }
-        copies[p + 1] = copy;
-        if (at_end)
-        {
-            free = end;
-        }
+        copies_[p + 1] = copy;
+
+        return end;
     }
 
-    for (const sar::Field& field : fields)
-    {
-        const auto* run = field.at.piece < pieces.size() && !field.at.item && !field.at.sequence
-                              ? std::get_if<std::vector<uint8_t>>(&pieces[field.at.piece])
-                              : nullptr;
+    std::span<const commands::Sequence> sequences_;
+    std::span<const sar::Piece> pieces_;
+    std::span<const sar::Field> fields_;
+    const JoinOptions& options_;
+    std::vector<uint64_t> starts_;
+    uint64_t size_ = 0;
+    std::vector<uint8_t> image_;
+    std::vector<uint32_t> tracks_;
+    std::vector<std::vector<uint64_t>> items_;
+    std::map<std::size_t, uint64_t> copies_; // the copy of each moved song's header, by the run that holds the header
+    std::optional<std::vector<Span>> filler_;
+    std::vector<uint64_t> filled_;
+};
 
-        // A track past the run's header has its address only in the copy.
-        const bool track = IsTrackField(pieces, field);
-        const bool past = run && track && !run->empty() && (field.at.offset - 8) / 4 >= (*run)[0];
-        if (!run || (!past && uint64_t(field.at.offset) + 4 > run->size()))
-        {
-            throw std::invalid_argument("a field doesn't lie in a run of a GBA ROM");
-        }
+} // namespace
 
-        const uint64_t from = position(field.from);
-        const uint64_t to = position(field.to);
-        if (to < from || to - from + kRomBase > std::numeric_limits<uint32_t>::max())
-        {
-            throw std::invalid_argument("a field's address doesn't fit in 32 bits");
-        }
+std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::span<const sar::Piece> pieces,
+                          std::span<const sar::Field> fields, const JoinOptions& options)
+{
+    Joiner joiner(sequences, pieces, fields, options);
+    joiner.PlaceRuns();
+    joiner.MoveSongs(joiner.PlaceSongs());
 
-        const auto address = uint32_t(to - from + kRomBase);
-        if (!past)
-        {
-            xsflib::StoreLe32(&image[starts[field.at.piece] + field.at.offset], address);
-        }
-
-        // The copy holds the tracks' addresses, and any other field that lies in the header that it keeps.
-        const auto copy = copies.find(field.at.piece);
-        if (copy != copies.end() &&
-            (track || field.at.offset + 4 <= HeaderSize(std::min<uint32_t>(tracks[field.at.piece - 1], (*run)[0]))))
-        {
-            xsflib::StoreLe32(&image[copy->second + field.at.offset], address);
-        }
-    }
-
-    return image;
+    return joiner.WriteFields();
 }
 
 } // namespace ntdlib::mp2k

@@ -116,12 +116,7 @@ void Channel<Policy>::Start(Engine& engine, const WaveInfo& wave, int32_t note_l
 template <typename Policy>
 float Channel<Policy>::GetSweepValue() const
 {
-    if (sweep_pitch == 0.0f || sweep_counter >= sweep_length)
-    {
-        return 0.0f;
-    }
-
-    return (sweep_pitch * static_cast<float>(sweep_length - sweep_counter)) / static_cast<float>(sweep_length);
+    return SweepValue(sweep_pitch, sweep_length, sweep_counter);
 }
 
 template <typename Policy>

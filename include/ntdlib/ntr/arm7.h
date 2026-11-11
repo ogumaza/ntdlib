@@ -31,6 +31,7 @@
 #include "ntdlib/arm/cpu.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/sound.h"
+#include "ntdlib/ntr/timers.h"
 
 namespace ntdlib::ntr
 {
@@ -156,14 +157,6 @@ public:
     void Write(uint32_t address, int size, uint32_t value) override;
 
 private:
-    struct Timer
-    {
-        uint16_t reload = 0;
-        uint16_t control = 0;
-        uint16_t counter = 0; // the counter at `base`
-        uint64_t base = 0;    // the clock at which the counter held `counter`
-    };
-
     struct Dma
     {
         uint32_t source = 0;
@@ -178,8 +171,6 @@ private:
     void Unknown(uint32_t address, int size, bool write);
 
     // Memory through the bus, for the BIOS and the DMA.
-    uint32_t Load(uint32_t address, int size);
-    void Store(uint32_t address, int size, uint32_t value);
     bool Swi(arm::Cpu& cpu, uint32_t number);
     void Fail(std::string message);
 
@@ -190,13 +181,6 @@ private:
     void Request(uint32_t irq);
     void UpdateIrq();
     void Halt();
-    uint64_t Prescale(int timer) const;
-    bool Counting(int timer) const;
-    uint16_t TimerCounter(int timer) const;
-    uint64_t TimerOverflow(int timer) const;
-    void RebaseTimer(int timer);
-    void OverflowTimer(int timer, uint64_t at);
-    void WriteTimerControl(int timer, uint16_t control);
     uint64_t Line() const;
     void ScheduleDisplay();
     void DisplayEvent(uint64_t at);
@@ -243,7 +227,7 @@ private:
     uint32_t ie_ = 0;
     uint32_t if_ = 0;
     uint16_t dispstat_ = 0;
-    std::array<Timer, 4> timers_ = {};
+    Timers timers_;
     std::array<Dma, 4> dmas_ = {};
 
     uint16_t ipcsync_ = 0; // the ARM7's IPCSYNC: its output in bits 8 to 11 and the IRQ enable in bit 14

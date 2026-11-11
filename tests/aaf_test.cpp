@@ -333,6 +333,10 @@ void TestAsnSounds()
         XSFLIB_CHECK(from_le[i].id == sounds[i].id && from_le[i].name == sounds[i].name);
     }
     XSFLIB_CHECK(jaudio::ReadAsnSounds(le).at(1).id == 0x01000080);
+
+    // An effect's name doesn't depend on how long the game plays the effect. A sequence's ID stays whole.
+    XSFLIB_CHECK(jaudio::AsnNameKey(0x00001c05) == 0x00001005 && jaudio::AsnNameKey(0x00001405) == 0x00001005);
+    XSFLIB_CHECK(jaudio::AsnNameKey(0x80000c01) == 0x80000c01);
 }
 
 // The text of every field that the readers give for a sound or a wave system, to compare what two archives give.

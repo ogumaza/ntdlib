@@ -15,6 +15,7 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/dsp/memory.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/system.h"
@@ -141,6 +142,7 @@ SeqPlayer* Engine::StartSequence(uint32_t index, const Arrangement& arrangement)
     players_.push_back(
         std::make_unique<SeqPlayer>(static_cast<int>(players_.size()), SequenceInfo(sound), sequences_.back()->data));
     player_sends_.push_back(SendsOf(sends_, index));
+    player_main_sends_.push_back(MainSendOf(sends_, index));
     update_order_.push_back(players_.back()->Id());
     SeqPlayer* player = players_.back().get();
     player->SetBuild(build_);
@@ -313,10 +315,8 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
 
     // The note's volume is the velocity squared times the region's volume. The channel keeps it as its velocity volume.
     // A tie replaces it with the velocity's alone.
-    float velocity_volume = static_cast<float>(info.velocity) / 127.0f;
-    velocity_volume *= velocity_volume;
-    velocity_volume *= static_cast<float>(region->volume) / 127.0f;
-    channel->velocity_volume = velocity_volume;
+    channel->velocity_volume =
+        ntdlib::nwsnd::RevolutionPolicy::VelocityVolume(info.velocity) * (static_cast<float>(region->volume) / 127.0f);
 
     channel->tune = region->tune;
     channel->envelope.SetAttack(region->attack);
@@ -333,9 +333,7 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
     }
 
     // The note's pan is the region's pan plus the track's initial pan.
-    float init_pan = static_cast<float>(region->pan - 64) / 63.0f;
-    init_pan += static_cast<float>(info.init_pan) / 63.0f;
-    channel->init_pan = init_pan;
+    channel->init_pan = ntdlib::nwsnd::RevolutionPolicy::InitialPan(region->pan, info.init_pan);
     channel->init_span = 0.0f;
 
     channel->Start(*this, wave, info.length);
@@ -560,9 +558,7 @@ bool ArchiveModel::Start(const ntdlib::Microcode& microcode, const ntdlib::rsar:
         return false;
     }
 
-    SndBuild snd_build = build;
-    snd_build.october_2006 = ax_build == ax::Build::kOctober2006;
-    engine.emplace(memory, ax, archive, snd_build);
+    engine.emplace(memory, ax, archive, ntdlib::SndBuildWithAx(build, ax_build));
 
     return true;
 }

@@ -116,15 +116,12 @@ std::string UsageText(const ArchiveConverter& archive_converter)
     text += "options:\n";
     text += "  --output DIR   write to DIR (one input only)\n";
     text += "  --only REGEX   convert matching sequence names (for example --only BGM)\n";
-    text += "  --loops N      repeat the main loop N times (default 1)\n";
-    text += "                 MIDI loop markers are included for players that support them\n";
+    text += kLoopsHelp;
     text += "  --seed N       the driver's initial random state (default 0x12345678)\n";
     text += "  --var N=V      set variable N (0-15 player, 16-31 global) to V before each\n";
     text += "                 sequence starts; repeat for more variables\n";
     text += c.extra_options;
-    text += "  --list         list sequences without converting\n";
-    text += "  --quiet        print errors only\n";
-    text += "  --version      show the version\n";
+    text += kListQuietVersionHelp;
 
     return text;
 }

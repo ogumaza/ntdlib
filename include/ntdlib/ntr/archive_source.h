@@ -86,7 +86,9 @@ struct ArchiveTraits
 
     static std::unique_ptr<ArchivePlayer> MakeModel(const ArchiveSelection& selection, LoadedArchive& archive)
     {
-        return std::make_unique<ArchivePlayer>(archive.archive, ArchivePlayerOptions{.build = selection.build});
+        ArchivePlayerOptions options;
+        options.build = selection.build;
+        return std::make_unique<ArchivePlayer>(archive.archive, options);
     }
 
     // The player starts the driver as it's made.

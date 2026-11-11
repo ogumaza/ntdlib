@@ -55,6 +55,18 @@ inline constexpr ChannelId kNoChannel = -1;
 using VoiceId = int;
 inline constexpr VoiceId kNoVoice = -1;
 
+// The pitch of a sweep from `pitch` semitones away to the note's key over `length` steps, `counter` steps on, in
+// semitones (GetSweepValue, 0x022C4204). Returns 0 for a sweep of 0 semitones and for one that has run its length.
+inline float SweepValue(float pitch, int32_t length, int32_t counter)
+{
+    if (pitch == 0.0f || counter >= length)
+    {
+        return 0.0f;
+    }
+
+    return (pitch * static_cast<float>(length - counter)) / static_cast<float>(length);
+}
+
 // Why a voice calls its channel back (VoiceCallbackStatus): its wave has played to its end (0), it was cancelled (1),
 // the voices dropped it for a voice of higher priority (2), or the renderer took one of its voices away (3).
 enum class VoiceCallbackStatus : uint32_t

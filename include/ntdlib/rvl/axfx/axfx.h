@@ -42,12 +42,15 @@ constexpr uint32_t kStopped = 1;
 constexpr uint32_t kSkipFrame = 2;
 
 // The builds of the AXFX library that the models follow, by the games that link them: October 2006 (WarioWare: Smooth
-// Moves), December 2006 (Wii Sports and Wii Play) and September 2008 (Animal Crossing: City Folk).
+// Moves), December 2006 (Wii Sports and Wii Play), September 2008 (Animal Crossing: City Folk) and February 2009
+// (Pokémon Rumble). The build of February 2009 has the reverbs of September 2008. Its ChorusExp starts and changes in
+// other steps, and only ChorusExp takes that build. It also has DelayExp.
 enum class Build
 {
     kOctober2006,
     kDecember2006,
     kSeptember2008,
+    kFebruary2009,
 };
 
 } // namespace ntdlib::rvl::axfx

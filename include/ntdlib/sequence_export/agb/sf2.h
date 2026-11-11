@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/sf2/presets.h"
 #include "seqlib/sf2/soundfont.h"
 
 namespace ntdlib::sequence_export::agb
@@ -26,7 +27,7 @@ constexpr int kSilent = 1440;
 constexpr int kExclusiveRelease = -2000;
 
 // The bank in which General MIDI players look for the drum channel's programs.
-constexpr int kDrumBank = 128;
+constexpr int kDrumBank = sf2::kChannel10Bank;
 
 // Returns a time in timecents, the unit of SoundFont envelope times, from kInstant to 8000.
 int Timecents(double seconds);

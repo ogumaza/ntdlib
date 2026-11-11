@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // Archive mode's stack for Skyward Sword HD: main memory, AX's voices on the game's layer (Layer), the Switch's
-// renderer, NW4R SND's engine and the reverbs on the aux buses (Effects). The game's AX timer runs every 3 ms
-// (0x100e62c): AX's frame callback, then NW4R SND's sound frame. The render thread runs a frame of the renderer every
-// 5 ms. The model puts AX's tick k at 3k ms and the renderer's frame j at 5j ms. The ticks at or before a frame run
-// before it. That order is the model's choice.
+// renderer, NW4R SND's engine, the reverbs on the aux buses (Effects) and the system downmix of the renderer's 6
+// channels to stereo (downmix.h). The game's AX timer runs every 3 ms (0x100e62c): AX's frame callback, then NW4R SND's
+// sound frame. The render thread runs a frame of the renderer every 5 ms. The model puts AX's tick k at 3k ms and the
+// renderer's frame j at 5j ms. The ticks at or before a frame run before it. That order is the model's choice.
 
 #pragma once
 
@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ntdlib/dsp/memory.h"
+#include "ntdlib/nx/audio/downmix.h"
 #include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/system.h"
@@ -53,7 +54,7 @@ struct ArchiveModel
     void Start(const ntdlib::rsar::SoundArchive& archive);
 
     // One frame of the renderer, after the AX ticks due by then. Appends the frame's 240 stereo samples at 48 kHz to
-    // `output`, left then right: the device sink's front channels.
+    // `output`, left then right: the device sink's 6 channels through `downmix`.
     void RunFrame(std::vector<int16_t>& output);
 
     Snapshot Save(const Snapshot* previous = nullptr) const;
@@ -65,9 +66,10 @@ struct ArchiveModel
     Layer layer{ax, memory, renderer};
     Effects effects;
     std::optional<snd::Engine> engine;
-    SndBuild build{.date = 20090924}; // the build of NW4R SND that the engine follows, set before Start
-    uint64_t ticks = 0;               // the AX ticks run so far
-    uint64_t frames = 0;              // the renderer's frames run so far
+    SndBuild build{.date = 20090924};                 // the build of NW4R SND that the engine follows, set before Start
+    audio::Downmix downmix = audio::Downmix::kStereo; // the system's downmix for a stereo output
+    uint64_t ticks = 0;                               // the AX ticks run so far
+    uint64_t frames = 0;                              // the renderer's frames run so far
 };
 
 } // namespace ntdlib::rvl::nx

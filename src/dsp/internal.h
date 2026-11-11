@@ -9,23 +9,9 @@
 
 #include <cstdint>
 
+#include "common/force_inline.h"
 #include "ntdlib/dsp/accumulator.h"
 #include "ntdlib/dsp/dsp.h"
-
-// Forces the compiler to inline a function. The instruction handlers rely on this to fold their decoding away.
-#if defined(_MSC_VER) && !defined(__clang__)
-#define NTDLIB_DSP_FORCE_INLINE __forceinline
-#else
-#define NTDLIB_DSP_FORCE_INLINE inline __attribute__((always_inline))
-#endif
-
-// The same for a lambda. It goes after the lambda's parameter list. The generic decoder calls its helper lambdas from
-// many cases. The compiler would otherwise call them out of line there.
-#if defined(_MSC_VER) && !defined(__clang__)
-#define NTDLIB_DSP_INLINE_LAMBDA [[msvc::forceinline]]
-#else
-#define NTDLIB_DSP_INLINE_LAMBDA __attribute__((always_inline))
-#endif
 
 namespace ntdlib::dsp
 {
@@ -39,6 +25,10 @@ inline constexpr uint16_t kSrAboveS32 = 1u << 4;
 inline constexpr uint16_t kSrTopBits = 1u << 5;
 inline constexpr uint16_t kSrLogicZero = 1u << 6;
 inline constexpr uint16_t kSrOverflowSticky = 1u << 7;
+// Bits 8, 10 and 12 have no function. A write to $sr by its register number clears bit 8.
+inline constexpr uint16_t kSrBit8 = 1u << 8;
+inline constexpr uint16_t kSrBit10 = 1u << 10;
+inline constexpr uint16_t kSrBit12 = 1u << 12;
 inline constexpr uint16_t kSrInterruptEnable = 1u << 9;
 inline constexpr uint16_t kSrExternalEnable = 1u << 11;
 inline constexpr uint16_t kSrAm = 1u << 13;
@@ -79,7 +69,7 @@ inline uint64_t Unsigned40(int64_t value)
 // at the CPU's next write of DSPCR. Super Mario Sunshine's microcode clears EIE while it decrements a count that its
 // handler of the CPU's interrupt increments. A request lost in that window would leave the game waiting for the DSP.
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::RaiseCpuInterrupt()
+NTDLIB_FORCE_INLINE void Dsp<Memory>::RaiseCpuInterrupt()
 {
     if ((control_ & control::kInterrupt) && (regs_.sr & kSrExternalEnable))
     {
@@ -89,7 +79,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::RaiseCpuInterrupt()
 }
 
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE uint16_t Dsp<Memory>::ReadReg(int reg)
+NTDLIB_FORCE_INLINE uint16_t Dsp<Memory>::ReadReg(int reg)
 {
     // Reading by number: a stack pops, h is sign-extended, and m saturates in 40-bit mode.
     switch (reg)
@@ -113,7 +103,7 @@ NTDLIB_DSP_FORCE_INLINE uint16_t Dsp<Memory>::ReadReg(int reg)
 }
 
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::WriteReg(int reg, uint16_t value)
+NTDLIB_FORCE_INLINE void Dsp<Memory>::WriteReg(int reg, uint16_t value)
 {
     Registers& r = regs_;
     switch (reg)
@@ -124,59 +114,73 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::WriteReg(int reg, uint16_t value)
     case 0x03:
         r.ar[reg] = value;
         break;
+
     case 0x04:
     case 0x05:
     case 0x06:
     case 0x07:
         r.ix[reg - 4] = value;
         break;
+
     case 0x08:
     case 0x09:
     case 0x0a:
     case 0x0b:
         r.wr[reg - 8] = value;
         break;
+
     case 0x0c:
     case 0x0d:
     case 0x0e:
     case 0x0f:
         Push(reg - 0x0c, value);
         break;
+
     case 0x10:
     case 0x11:
         SetAcH(reg - 0x10, value);
         break;
+
     case 0x12:
         r.cr = static_cast<uint8_t>(value);
         break;
+
     case 0x13:
-        r.sr = value & ~0x0100;
+        r.sr = value & ~kSrBit8;
         RaiseCpuInterrupt();
         break;
+
     case 0x14:
         r.prod_l = value;
         break;
+
     case 0x15:
         r.prod_m1 = value;
         break;
+
     case 0x16:
         r.prod_h = value & 0xff;
         break;
+
     case 0x17:
         r.prod_m2 = value;
         break;
+
     case 0x18:
     case 0x19:
         r.ax_l[reg - 0x18] = value;
         break;
+
     case 0x1a:
     case 0x1b:
         r.ax_h[reg - 0x1a] = value;
         break;
+
     case 0x1c:
     case 0x1d:
         SetAcL(reg - 0x1c, value);
         break;
+
     default:
         SetAcM(reg - 0x1e, value);
         break;
@@ -184,7 +188,7 @@ NTDLIB_DSP_FORCE_INLINE void Dsp<Memory>::WriteReg(int reg, uint16_t value)
 }
 
 template <typename Memory>
-NTDLIB_DSP_FORCE_INLINE uint16_t Dsp<Memory>::RawReg(int reg) const
+NTDLIB_FORCE_INLINE uint16_t Dsp<Memory>::RawReg(int reg) const
 {
     const Registers& r = regs_;
     switch (reg)

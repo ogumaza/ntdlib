@@ -16,6 +16,7 @@
 
 #include "ctr/dsp/firmware_audio.h"
 #include "ntdlib/ctr/dsp/dsp.h"
+#include "ntdlib/rounding.h"
 #include "ntdlib/wave/sinc.h"
 
 namespace ntdlib::ctr::dsp::firmware
@@ -44,36 +45,12 @@ constexpr int64_t kConsoleSteps = 32;
 constexpr int64_t kOutputSteps = 47;
 static_assert(kFrameSamples * kOutputSteps == kEnhancedFrameSamples * kConsoleSteps);
 
-// The most samples that the firmware's decode of a chunk takes in each format (Audio::Decode).
-uint32_t ChunkLimit(uint16_t format)
-{
-    const bool stereo = (format & 3) == 2;
-    switch ((format >> 2) & 3)
-    {
-    case 0:
-        return stereo ? 0x400 : 0x800;
-    case 1:
-        return stereo ? 0x200 : 0x400;
-    default:
-        return 0xe00;
-    }
-}
-
 // The place of output `m` of a frame, in 8.24 samples after the place of the console's first output. That output
 // interpolates between the third and second samples before the frame's first new sample, at the phase `phase`. Each
 // console sample steps by `rate`.
 int64_t Place(int64_t phase, uint32_t rate, int m)
 {
     return (phase * kOutputSteps + int64_t{m} * kConsoleSteps * rate) / kOutputSteps;
-}
-
-// A sample of an aux bus as a 32-bit integer for the ARM11, on the scale of the firmware's sums: rounded to the nearest
-// integer, halves away from zero, and held within 32 bits.
-int32_t AuxSample(float sample)
-{
-    const double rounded = std::round(static_cast<double>(sample));
-    return static_cast<int32_t>(std::clamp(rounded, static_cast<double>(std::numeric_limits<int32_t>::min()),
-                                           static_cast<double>(std::numeric_limits<int32_t>::max())));
 }
 
 } // namespace
@@ -243,7 +220,7 @@ void Audio::FinishHostFrame(int region)
             const std::size_t at = (4 * bus + c) * kEnhancedFrameSamples;
             for (std::size_t n = 0; n < kEnhancedFrameSamples; n++)
             {
-                out[at + n] = AuxSample(host_.aux_mix[bus][c][n]);
+                out[at + n] = RoundToInt32(host_.aux_mix[bus][c][n]);
                 host_.aux_returns[bus][c][n] = static_cast<float>(back[at + n]);
             }
         }
@@ -334,18 +311,7 @@ void Audio::MixEnhancedSource(int index)
         input_[c].assign(source.history[c].begin(), source.history[c].end());
     }
 
-    const auto capture = [&](uint16_t decoded)
-    {
-        for (int c = 0; c < channels; c++)
-        {
-            const uint32_t samples = internal::kDecode + c * internal::kDecodeChannel + 4;
-            for (uint32_t i = 0; i < decoded; i++)
-            {
-                input_[c].push_back(Signed(samples + i));
-            }
-        }
-    };
-    if (!DecodeFrame(s, counts, capture))
+    if (!DecodeFrame(s, counts, [&](uint16_t decoded) { CaptureDecoded(decoded, channels); }))
     {
         SwapOut(index);
         return;
@@ -413,8 +379,14 @@ void Audio::MixEnhancedSource(int index)
         return;
     }
 
+    MixEnhancedBuses(gains, previous, played || (format & 0x20));
+}
+
+// Mixes the source's rendered frame into the buses at the gains `gains`. With `ramp`, a pair of gains that changed
+// ramps across the frame from `previous`.
+void Audio::MixEnhancedBuses(const std::array<uint16_t, 12>& gains, const std::array<uint16_t, 12>& previous, bool ramp)
+{
     // The main bus, then the aux buses. The meters take the main bus's mix.
-    const bool ramp = played || (format & 0x20);
     for (std::size_t bus = 0; bus < 3; bus++)
     {
         for (int pair = 0; pair < 2; pair++)
@@ -456,41 +428,25 @@ void Audio::MixEnhancedSource(int index)
 void Audio::DecodeAhead(uint32_t s, uint32_t count, int channels)
 {
     const uint16_t format = Word(s + state::kFormat);
-    const bool stereo = (format & 3) == 2;
     const uint32_t limit = ChunkLimit(format);
     while (count != 0)
     {
         const auto n = static_cast<uint16_t>(std::min(count, limit));
-        switch ((format >> 2) & 3)
-        {
-        case 0:
-            DecodePcm(s, n, stereo, true);
-            break;
-
-        case 1:
-            DecodePcm(s, n, stereo, false);
-            break;
-
-        case 2:
-            DecodeAdpcm(s, n, stereo);
-            break;
-
-        default:
-            Clear(internal::kDecode + 4, n);
-            Clear(internal::kDecode + internal::kDecodeChannel + 4, n);
-            break;
-        }
-
-        for (int c = 0; c < channels; c++)
-        {
-            const uint32_t samples = internal::kDecode + c * internal::kDecodeChannel + 4;
-            for (uint32_t i = 0; i < n; i++)
-            {
-                input_[c].push_back(Signed(samples + i));
-            }
-        }
-
+        DecodeChunk(s, format, n);
+        CaptureDecoded(n, channels);
         count -= n;
+    }
+}
+
+void Audio::CaptureDecoded(uint32_t count, int channels)
+{
+    for (int c = 0; c < channels; c++)
+    {
+        const uint32_t samples = internal::kDecode + c * internal::kDecodeChannel + 4;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            input_[c].push_back(Signed(samples + i));
+        }
     }
 }
 

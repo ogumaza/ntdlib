@@ -219,6 +219,19 @@ void TestPcm()
     XSFLIB_CHECK(limited.size() == 2);
 }
 
+// EncodePcm8 gives the samples and bytes that sdat_files_test checks in a wave of PCM8: the high byte, rounded to the
+// nearest, and 127 for a sample that rounds past it. DecodePcm8 scales a byte back by 256.
+void TestEncodePcm8()
+{
+    static_assert(EncodePcm8(0x7FFF) == 0x7F);
+
+    XSFLIB_CHECK(EncodePcm8(-0x8000) == 0x80);
+    XSFLIB_CHECK(EncodePcm8(0x0080) == 0x01);
+    XSFLIB_CHECK(EncodePcm8(0x007F) == 0x00);
+    XSFLIB_CHECK(EncodePcm8(-0x0081) == 0xFF);
+    XSFLIB_CHECK(DecodePcm8(std::vector<uint8_t>{EncodePcm8(-0x1234)}, 1) == std::vector<int16_t>{-0x1200});
+}
+
 // A wave of `encoding`, `samples` samples long, with a channel for each span of `data`.
 EncodedWave WaveOf(Encoding encoding, uint32_t samples, std::initializer_list<std::span<const uint8_t>> data)
 {
@@ -298,6 +311,29 @@ void TestDecodeWaveChannelsAndLoop()
                  pcm.channels[1] == DecodePcm8(kRight, 3));
     XSFLIB_CHECK(pcm.sample_rate == 22050 && pcm.loop && pcm.loop_start == 1 && pcm.loop_end == 3 && pcm.Length() == 3);
     XSFLIB_CHECK(!unlooped.loop && unlooped.loop_start == 3 && unlooped.Length() == 3);
+}
+
+// Two decodings are equal when their rates, loops and samples are.
+void TestPcmEquality()
+{
+    const std::vector<uint8_t> kLeft = {1, 2, 3};
+    const std::vector<uint8_t> kRight = {4, 5, 6};
+    const Pcm pcm = DecodeWave(WaveOf(Encoding::kPcm8, 3, {kLeft, kRight}));
+    Pcm rate = pcm;
+    rate.sample_rate = 22050;
+    Pcm loop = pcm;
+    loop.loop = true;
+    Pcm loop_start = pcm;
+    loop_start.loop_start = 1;
+    Pcm loop_end = pcm;
+    loop_end.loop_end = 2;
+    Pcm samples = pcm;
+    samples.channels[1][2] = 7;
+
+    const Pcm same = DecodeWave(WaveOf(Encoding::kPcm8, 3, {kLeft, kRight}));
+
+    XSFLIB_CHECK(pcm == same);
+    XSFLIB_CHECK(pcm != rate && pcm != loop && pcm != loop_start && pcm != loop_end && pcm != samples);
 }
 
 void TestDecodeWaveErrors()
@@ -387,9 +423,11 @@ int main()
     TestAfc();
     TestAfc2();
     TestPcm();
+    TestEncodePcm8();
     TestDecodeWaveEncodings();
     TestDecodeWaveDspAdpcm();
     TestDecodeWaveChannelsAndLoop();
+    TestPcmEquality();
     TestDecodeWaveErrors();
     TestGoldenBlocks();
     TestGoldenSteps();

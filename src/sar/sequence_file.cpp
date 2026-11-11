@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <span>
 #include <string>
 #include <vector>
@@ -13,6 +12,8 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/format_ids.h"
 
 namespace ntdlib::sar
 {
@@ -22,46 +23,26 @@ namespace
 constexpr uint16_t kDataBlock = 0x5000;
 constexpr uint16_t kLabelBlock = 0x5001;
 constexpr uint16_t kLabelReference = 0x5100; // from the table of labels to a label
-constexpr uint16_t kDataReference = 0x1F00;  // from a label to its offset in the bytecode
-constexpr std::size_t kAlignment = 32;
 
+using detail::kDataReference;
 using detail::Out;
 
-// Appends a block: its magic, its size and `body`, padded. Returns where it starts.
-std::size_t AppendBlock(Out& out, const char* magic, std::span<const uint8_t> body)
+// Appends block `index` of type `type`: its magic, its size and `body`, padded.
+void AppendBlock(Out& out, std::size_t index, uint16_t type, const char* magic, std::span<const uint8_t> body)
 {
-    const std::size_t start = out.Append(std::span(reinterpret_cast<const uint8_t*>(magic), 4));
-    out.Zeros(4);
+    const std::size_t start = detail::StartBlock(out, magic);
     out.Append(body);
-    out.Align(kAlignment);
-    out.U32(start + 4, static_cast<uint32_t>(out.Size() - start));
-
-    return start;
+    out.Align(detail::kBlockAlignment);
+    detail::SetBlock(out, index, type, start);
 }
 
 } // namespace
 
 SequenceFile SequenceFile::Read(std::span<const uint8_t> file)
 {
-    if (file.size() < 0x14 || (std::memcmp(file.data(), "CSEQ", 4) != 0 && std::memcmp(file.data(), "FSEQ", 4) != 0))
-    {
-        throw xsflib::FormatError("not a sequence file (CSEQ or FSEQ)");
-    }
-
-    const bool big_endian = file[4] == 0xFE && file[5] == 0xFF;
-    if (!big_endian && (file[4] != 0xFF || file[5] != 0xFE))
-    {
-        throw xsflib::FormatError("a sequence file without a byte order mark");
-    }
-
+    const auto [flavor, r] = detail::OpenFile(file, "SEQ", "sequence file");
     SequenceFile s;
-    s.flavor = file[0] == 'C' ? Flavor::kCtr : big_endian ? Flavor::kCafe : Flavor::kNx;
-    if (s.flavor == Flavor::kCtr && big_endian)
-    {
-        throw xsflib::FormatError("a big-endian CSEQ");
-    }
-
-    const xsflib::Reader r(file, big_endian);
+    s.flavor = flavor;
     s.version = r.U32(8);
     std::size_t data = 0;
     std::size_t data_size = 0;
@@ -104,19 +85,8 @@ SequenceFile SequenceFile::Read(std::span<const uint8_t> file)
 std::vector<uint8_t> SequenceFile::Write() const
 {
     Out out(flavor == Flavor::kCafe);
-
-    // The header, with a table of two blocks.
-    out.Append(std::span(reinterpret_cast<const uint8_t*>(flavor == Flavor::kCtr ? "CSEQ" : "FSEQ"), 4));
-    out.Zeros(0x14 + 2 * 12 - 4);
-    out.Align(kAlignment);
-    out.U16(4, 0xFEFF);
-    out.U16(6, static_cast<uint16_t>(out.Size()));
-    out.U32(8, version);
-    out.U16(0x10, 2);
-
-    const std::size_t data_block = AppendBlock(out, "DATA", data);
-    out.Reference(0x14, kDataBlock, static_cast<uint32_t>(data_block));
-    out.U32(0x1C, static_cast<uint32_t>(out.Size() - data_block));
+    detail::AppendHeader(out, flavor == Flavor::kCtr ? "CSEQ" : "FSEQ", version, 2);
+    AppendBlock(out, 0, kDataBlock, "DATA", data);
 
     // The table of labels: a count and a reference to each label, then the labels.
     Out table(flavor == Flavor::kCafe);
@@ -134,10 +104,7 @@ std::vector<uint8_t> SequenceFile::Write() const
         table.Align(4);
     }
 
-    const std::vector<uint8_t> table_bytes = table.Take();
-    const std::size_t label_block = AppendBlock(out, "LABL", table_bytes);
-    out.Reference(0x20, kLabelBlock, static_cast<uint32_t>(label_block));
-    out.U32(0x28, static_cast<uint32_t>(out.Size() - label_block));
+    AppendBlock(out, 1, kLabelBlock, "LABL", table.Take());
     out.U32(0x0C, static_cast<uint32_t>(out.Size()));
 
     return out.Take();

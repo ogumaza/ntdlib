@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/nx/bex/music_sync.h"
@@ -28,20 +29,6 @@ namespace
 {
 
 namespace bex = ntdlib::nx::bex;
-
-void Put16(std::vector<uint8_t>& b, std::size_t at, uint16_t v)
-{
-    b[at] = static_cast<uint8_t>(v);
-    b[at + 1] = static_cast<uint8_t>(v >> 8);
-}
-
-void Put32(std::vector<uint8_t>& b, std::size_t at, uint32_t v)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        b[at + i] = static_cast<uint8_t>(v >> (8 * i));
-    }
-}
 
 void PutName(std::vector<uint8_t>& b, std::size_t at, const std::string& name)
 {
@@ -67,48 +54,48 @@ std::vector<uint8_t> StreamFile(const std::vector<bex::StreamRegion>& regions, u
 {
     std::vector<uint8_t> info(0x40);
     PutName(info, 0, "INFO");
-    Put32(info, 4, 0x40);
-    Put16(info, 8, 0x4100);
-    Put32(info, 12, 0x18);
-    Put32(info, 0x20 + 4, sample_rate);
-    Put32(info, 0x20 + 12, 400000);
+    xsflib::StoreLe32(&info[4], 0x40);
+    xsflib::StoreLe16(&info[8], 0x4100);
+    xsflib::StoreLe32(&info[12], 0x18);
+    xsflib::StoreLe32(&info[0x20 + 4], sample_rate);
+    xsflib::StoreLe32(&info[0x20 + 12], 400000);
 
     std::vector<uint8_t> regn(0x20 + 0x100 * regions.size());
     PutName(regn, 0, "REGN");
-    Put32(regn, 4, static_cast<uint32_t>(regn.size()));
+    xsflib::StoreLe32(&regn[4], static_cast<uint32_t>(regn.size()));
     for (std::size_t i = 0; i < regions.size(); ++i)
     {
-        Put32(regn, 0x20 + 0x100 * i, regions[i].start);
-        Put32(regn, 0x24 + 0x100 * i, regions[i].end);
+        xsflib::StoreLe32(&regn[0x20 + 0x100 * i], regions[i].start);
+        xsflib::StoreLe32(&regn[0x24 + 0x100 * i], regions[i].end);
         PutName(regn, 0x20 + 0x100 * i + 0xC0, regions[i].name);
     }
 
     std::vector<uint8_t> mrkr(12 + 0x48 * kMarkers.size());
     PutName(mrkr, 0, "MRKR");
-    Put32(mrkr, 4, static_cast<uint32_t>(mrkr.size()));
-    Put32(mrkr, 8, static_cast<uint32_t>(kMarkers.size()));
+    xsflib::StoreLe32(&mrkr[4], static_cast<uint32_t>(mrkr.size()));
+    xsflib::StoreLe32(&mrkr[8], static_cast<uint32_t>(kMarkers.size()));
     for (std::size_t i = 0; i < kMarkers.size(); ++i)
     {
-        Put32(mrkr, 12 + 0x48 * i, kMarkers[i].position);
+        xsflib::StoreLe32(&mrkr[12 + 0x48 * i], kMarkers[i].position);
         PutName(mrkr, 12 + 0x48 * i + 8, kMarkers[i].name);
     }
 
     std::vector<uint8_t> file(0x40);
     PutName(file, 0, "FSTM");
-    Put16(file, 4, 0xFEFF);
-    Put16(file, 6, 0x40);
-    Put32(file, 8, 0x00060400);
-    Put16(file, 0x10, 3);
+    xsflib::StoreLe16(&file[4], 0xFEFF);
+    xsflib::StoreLe16(&file[6], 0x40);
+    xsflib::StoreLe32(&file[8], 0x00060400);
+    xsflib::StoreLe16(&file[0x10], 3);
     const std::vector<std::pair<uint16_t, const std::vector<uint8_t>*>> blocks = {
         {0x4000, &info}, {0x4003, &regn}, {0x4005, &mrkr}};
     for (std::size_t i = 0; i < blocks.size(); ++i)
     {
-        Put16(file, 0x14 + 12 * i, blocks[i].first);
-        Put32(file, 0x18 + 12 * i, static_cast<uint32_t>(file.size()));
-        Put32(file, 0x1C + 12 * i, static_cast<uint32_t>(blocks[i].second->size()));
+        xsflib::StoreLe16(&file[0x14 + 12 * i], blocks[i].first);
+        xsflib::StoreLe32(&file[0x18 + 12 * i], static_cast<uint32_t>(file.size()));
+        xsflib::StoreLe32(&file[0x1C + 12 * i], static_cast<uint32_t>(blocks[i].second->size()));
         file.insert(file.end(), blocks[i].second->begin(), blocks[i].second->end());
     }
-    Put32(file, 0xC, static_cast<uint32_t>(file.size()));
+    xsflib::StoreLe32(&file[0xC], static_cast<uint32_t>(file.size()));
 
     return file;
 }

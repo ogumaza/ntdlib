@@ -101,6 +101,12 @@ xsflib::cli::RipOptions NoLengths()
     return options;
 }
 
+// The description of an archive in a rip's list: none.
+std::string NoDescription(const std::vector<uint8_t>&)
+{
+    return std::string();
+}
+
 // A Switch archive with one sequence, SEQ. Its bank, file 1, is only in group GROUP_A. The group file lies outside the
 // archive.
 std::vector<uint8_t> ArchiveWithGroup()
@@ -185,29 +191,50 @@ std::string OutputOf(std::FILE* stream, const Run& run)
     return text;
 }
 
+// Writes a loose archive and its group file into `folder`, and gives the archive's path.
+fs::path WriteLooseArchive(const TempFolder& folder)
+{
+    const fs::path input = folder.Write("loose.bfsar", ArchiveWithGroup());
+    folder.Write("GROUP_A.bfgrp", GroupA());
+
+    return input;
+}
+
+// Rips `input`, a loose archive in `folder`, into the folder's out folder. Gives whether the rip succeeded and SEQ
+// ripped with its bank, which only the group file holds.
+bool RipsWithGroup(const TempFolder& folder, const fs::path& input)
+{
+    const fs::path out = folder.Path() / "out";
+    xsflib::rip::FileNames names(".tstlib", ".minitst");
+    const int result =
+        rip::RipLooseArchive(TestTool(), input.string(), out, NoLengths(), names, TestRip{}, NoDescription);
+
+    return result == 0 && fs::exists(out / "loose.tstlib") && fs::exists(out / "0000 SEQ.minitst");
+}
+
 // A loose archive's group file is found past an entry whose type can't be read: a broken symbolic link here. Without
-// the group file, SEQ would lack its bank and rip nothing. On a system that doesn't let the test make the link, such
-// as Windows without developer mode, the rip runs without the link.
+// the group file, SEQ would have no bank and would rip nothing. On a system that doesn't let the test make the link,
+// such as Windows without developer mode, the rip runs without the link.
 void TestLooseArchiveGroupPastBrokenLink()
 {
     const TempFolder folder("rip_archive_mode_test");
-    const fs::path input = folder.Write("loose.bfsar", ArchiveWithGroup());
-    folder.Write("GROUP_A.bfgrp", GroupA());
+    const fs::path input = WriteLooseArchive(folder);
     std::error_code ignored;
     fs::create_symlink(folder.Path() / "missing.bfgrp", folder.Path() / "old.bfgrp", ignored);
 
-    const fs::path out = folder.Path() / "out";
-    xsflib::rip::FileNames names(".tstlib", ".minitst");
-    const auto describe = [](std::vector<uint8_t>)
-    {
-        return std::string();
-    };
+    Check(RipsWithGroup(folder, input), "SEQ rips with its bank from the group file past the broken link");
+}
 
-    const int result = rip::RipLooseArchive(TestTool(), input.string(), out, NoLengths(), names, TestRip{}, describe);
+// A loose archive's group file is found past folders that can't be opened. The walk goes on past each one. Without the
+// group file, SEQ would have no bank and would rip nothing.
+void TestLooseArchiveGroupPastLockedFolders()
+{
+    const TempFolder folder("rip_archive_mode_test");
+    const fs::path input = WriteLooseArchive(folder);
+    const ntdlib::testing::LockedFolders locked(
+        {folder.Path() / "0_locked", folder.Path() / "m_locked", folder.Path() / "z_locked"});
 
-    Check(result == 0, "a loose archive rips");
-    Check(fs::exists(out / "loose.tstlib") && fs::exists(out / "0000 SEQ.minitst"),
-          "SEQ rips with its bank from the group file past the broken link");
+    Check(RipsWithGroup(folder, input), "SEQ rips with its bank from the group file past the locked folders");
 }
 
 // A loose archive without sequences rips nothing, and the rip says so in a line of its own. The exit code is 0. With
@@ -217,10 +244,6 @@ void TestLooseArchiveWithoutSequences()
     const TempFolder folder("rip_archive_mode_test");
     const fs::path input = folder.Write("streams.bfsar", ArchiveWithoutSequences());
     const fs::path out = folder.Path() / "out";
-    const auto describe = [](std::vector<uint8_t>)
-    {
-        return std::string();
-    };
     xsflib::cli::RipOptions bgm = NoLengths();
     bgm.bgm = true;
     int result = -1;
@@ -228,12 +251,12 @@ void TestLooseArchiveWithoutSequences()
     const auto rip_archive = [&]
     {
         xsflib::rip::FileNames names(".tstlib", ".minitst");
-        result = rip::RipLooseArchive(TestTool(), input.string(), out, NoLengths(), names, TestRip{}, describe);
+        result = rip::RipLooseArchive(TestTool(), input.string(), out, NoLengths(), names, TestRip{}, NoDescription);
     };
     const auto rip_music = [&]
     {
         xsflib::rip::FileNames names(".tstlib", ".minitst");
-        bgm_result = rip::RipLooseArchive(TestTool(), input.string(), out, bgm, names, TestRip{}, describe);
+        bgm_result = rip::RipLooseArchive(TestTool(), input.string(), out, bgm, names, TestRip{}, NoDescription);
     };
 
     const std::string messages = OutputOf(stderr, rip_archive);
@@ -360,15 +383,11 @@ std::map<std::string, std::vector<uint8_t>> RipLoose(const rip::ArchiveRipTool<T
         options.only = std::regex(only);
         options.only_text = only;
     }
-    const auto describe = [](std::vector<uint8_t>)
-    {
-        return std::string();
-    };
     const fs::path folder = input.parent_path() / out;
     const auto rip_loose = [&]
     {
         xsflib::rip::FileNames names(".tstlib", ".minitst");
-        rip::RipLooseArchive(tool, input.string(), folder, options, names, TestRip{}, describe);
+        rip::RipLooseArchive(tool, input.string(), folder, options, names, TestRip{}, NoDescription);
     };
 
     messages += OutputOf(stderr, rip_loose);
@@ -509,6 +528,29 @@ void TestLibraryKeepsSequenceData()
           "SEQ_B's files, and none of SEQ_A's");
 }
 
+// A library also keeps the files of the sounds that played_sounds names: here SEQ_A, which SEQ_B starts. With --only
+// SEQ_B, the library is then the same as that of both sequences.
+void TestLibraryKeepsPlayedSounds()
+{
+    const TempFolder folder("rip_archive_mode_test");
+    const fs::path input = folder.Write("loose.bfsar", ArchiveWithTwoGroups());
+    folder.Write("GROUP_A.bfgrp", GroupOf(2));
+    folder.Write("GROUP_B.bfgrp", GroupOf(3));
+    rip::ArchiveRipTool<TestFormat, TestRip> tool = CuttingTool();
+    tool.played_sounds = [](const TestRip&, const sar::SoundArchive&, const std::vector<rip::Job>& jobs)
+    {
+        const bool b_alone = jobs.size() == 1 && jobs[0].index == 1;
+        return b_alone ? std::vector<uint32_t>{0} : std::vector<uint32_t>{};
+    };
+    std::string messages;
+
+    const auto both = RipLoose(CuttingTool(), input, "both", "", messages);
+    const auto b = RipLoose(tool, input, "b", "^SEQ_B$", messages);
+
+    Check(NamesOf(b) == std::vector<std::string>{"GROUP_A.bfgrp", "loose.bfsar"} && b == both,
+          "SEQ_B's library keeps the files of SEQ_A, which SEQ_B plays");
+}
+
 // build_library gets the indices of the sequences that the rip writes minis for, in the archive's order. The default
 // library holds the whole archive and every group file found, whichever sequences the rip writes.
 void TestLibraryGetsRippedSounds()
@@ -635,7 +677,8 @@ void TestSoundVolume()
 // A sound with variants is ripped once for each of them, and not without them. The length analysis gets each
 // variant's variables, and a variant that plays nothing is skipped. A variant's mini has the sound's number and its
 // label with the variables after it, in a file name's safe characters (xsflib::rip::FileNames). Its tags hold the label
-// and the variables. The library gets each sound once.
+// and the variables. The library gets each sound once. With sound_tag_holds_sound_label, the tag tst_sound holds the
+// sound's label alone.
 void TestVariants()
 {
     const TempFolder folder("rip_archive_mode_test");
@@ -687,11 +730,20 @@ void TestVariants()
               !fs::exists(out / "0001 SEQ_B_1_5.minitst") && !fs::exists(out / "0001 SEQ_B.minitst"),
           "a mini for SEQ_A and for each variant of SEQ_B that plays");
     Check(MiniTag(both, "tst_var") == "1=4, 17=-2" && MiniTag(both, "title") == "SEQ_B 1=4, 17=-2" &&
+              MiniTag(both, "tst_sound") == "SEQ_B 1=4, 17=-2" &&
               MiniTag(out / "0000 SEQ_A.minitst", "tst_var").empty(),
           "a variant's mini holds its variables and its label");
     Check(messages.find("skipped SEQ_B 1=5: it makes no sound") != std::string::npos,
           "the variant that plays nothing is skipped: " + messages);
     Check(received == std::vector<std::vector<uint32_t>>{{0, 1}}, "build_library gets each sound once");
+
+    tool.sound_tag_holds_sound_label = true;
+    RipLoose(tool, input, "sound_labels", "", messages, true);
+    const fs::path sound_label = folder.Path() / "sound_labels" / "0001 SEQ_B_1_4__17_-2.minitst";
+    Check(MiniTag(sound_label, "tst_sound") == "SEQ_B" && MiniTag(sound_label, "title") == "SEQ_B 1=4, 17=-2" &&
+              MiniTag(folder.Path() / "sound_labels" / "0000 SEQ_A.minitst", "tst_sound") == "SEQ_A",
+          "with sound_tag_holds_sound_label, tst_sound holds the sound's label alone");
+    tool.sound_tag_holds_sound_label = false;
 
     // A format may write its variables in its form, in the label and in the tag.
     tool.format_variables = [](const xsflib::psf::Variables& variables)
@@ -747,18 +799,16 @@ void TestSecondRipKeepsFirstLibrary()
 std::vector<uint8_t> InfoPastFiles()
 {
     std::vector<uint8_t> bytes = ArchiveWithoutGroups();
-    for (std::size_t entry = 0x14; entry < 0x14 + 12 * std::size_t{xsflib::LoadLe16(&bytes[0x10])}; entry += 12)
+    if (const std::optional<std::size_t> entry = sar_files::FindBlockEntry(bytes, sar::Flavor::kNx, 0x2001))
     {
-        if (xsflib::LoadLe16(&bytes[entry]) == 0x2001)
-        {
-            const uint32_t offset = xsflib::LoadLe32(&bytes[entry + 4]);
-            const uint32_t size = xsflib::LoadLe32(&bytes[entry + 8]);
-            const std::vector<uint8_t> info(bytes.begin() + offset, bytes.begin() + offset + size);
-            xsflib::StoreLe32(&bytes[entry + 4], static_cast<uint32_t>(bytes.size()));
-            bytes.insert(bytes.end(), info.begin(), info.end());
-        }
+        const uint32_t offset = xsflib::LoadLe32(&bytes[*entry + 4]);
+        const uint32_t size = xsflib::LoadLe32(&bytes[*entry + 8]);
+        const std::vector<uint8_t> info(bytes.begin() + offset, bytes.begin() + offset + size);
+        xsflib::StoreLe32(&bytes[*entry + 4], static_cast<uint32_t>(bytes.size()));
+        bytes.insert(bytes.end(), info.begin(), info.end());
     }
-    xsflib::StoreLe32(&bytes[0x0C], static_cast<uint32_t>(bytes.size()));
+
+    xsflib::StoreLe32(&bytes[sar_files::kFileSizeField], static_cast<uint32_t>(bytes.size()));
 
     return bytes;
 }
@@ -853,12 +903,33 @@ void TestMissingGroupFileNames()
 
 } // namespace
 
+// The descriptor of a library: the settings, with the paths of the archive and of the group files in their order. The
+// settings' paths give way.
+void TestLibraryDescriptor()
+{
+    const TestFormat::FileChunk archive{"content/Sound/a.bfsar", {1, 2}};
+    const std::vector<TestFormat::FileChunk> groups = {{"content/Sound/g2.bfgrp", {3}}, {"content/Sound/g1.bfgrp", {}}};
+    TestFormat::ArchiveDescriptor settings;
+    settings.archive_path = "old.bfsar";
+    settings.group_paths = {"old.bfgrp"};
+
+    const TestFormat::ArchiveDescriptor d = ntdlib::rip::LibraryDescriptor<TestFormat>(archive, groups, settings);
+    XSFLIB_CHECK(d.archive_path == "content/Sound/a.bfsar");
+    XSFLIB_CHECK((d.group_paths == std::vector<std::string>{"content/Sound/g2.bfgrp", "content/Sound/g1.bfgrp"}));
+
+    const TestFormat::ArchiveDescriptor alone = ntdlib::rip::LibraryDescriptor<TestFormat>(archive, {}, settings);
+    XSFLIB_CHECK(alone.archive_path == "content/Sound/a.bfsar" && alone.group_paths.empty());
+}
+
 int main()
 {
+    TestLibraryDescriptor();
     TestLooseArchiveGroupPastBrokenLink();
+    TestLooseArchiveGroupPastLockedFolders();
     TestLooseArchiveWithoutSequences();
     TestGameRipGoesOnPastAnError();
     TestLibraryKeepsSequenceData();
+    TestLibraryKeepsPlayedSounds();
     TestLibraryGetsRippedSounds();
     TestCutAfterLengthAnalysis();
     TestSecondRipKeepsFirstLibrary();

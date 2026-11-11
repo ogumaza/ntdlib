@@ -306,6 +306,188 @@ void DepopFade(int32_t& sum, int32_t& value, int16_t& delta, int32_t samples)
     delta = static_cast<int16_t>(-step);
 }
 
+// __AXServiceVPB's step for the voice's converter and mixer settings, state, type and mix. A state that the CPU hasn't
+// changed comes back from the microcode.
+void ServiceSettings(Pb& dst, Pb& src, uint32_t sync)
+{
+    if (sync & sync::kSelect)
+    {
+        dst.src_select = src.src_select;
+        dst.coef_select = src.coef_select;
+    }
+
+    if (sync & sync::kMixerCtrl)
+    {
+        dst.mixer_ctrl_hi = src.mixer_ctrl_hi;
+        dst.mixer_ctrl_lo = src.mixer_ctrl_lo;
+    }
+
+    if (sync & sync::kState)
+    {
+        dst.state = src.state;
+    }
+    else
+    {
+        src.state = dst.state;
+    }
+
+    if (sync & sync::kType)
+    {
+        dst.type = src.type;
+    }
+
+    if (sync & sync::kMix)
+    {
+        dst.mix = src.mix;
+    }
+}
+
+// __AXServiceVPB's step for the decoder and the sample rate converter: the ADPCM block, the converter's ratio or the
+// whole converter, and the ADPCM loop block.
+void ServiceDecoder(Pb& dst, const Pb& src, uint32_t sync)
+{
+    if (sync & sync::kAdpcm)
+    {
+        dst.adpcm = src.adpcm;
+    }
+
+    if (sync & sync::kSrcRatio)
+    {
+        dst.src.ratio_hi = src.src.ratio_hi;
+        dst.src.ratio_lo = src.src.ratio_lo;
+    }
+    else if (sync & sync::kSrc)
+    {
+        dst.src = src.src;
+    }
+
+    if (sync & sync::kAdpcmLoop)
+    {
+        dst.adpcm_loop = src.adpcm_loop;
+    }
+}
+
+// __AXServiceVPB's step for the addresses: the CPU's loop flag and addresses, or the whole block. A current address
+// that the CPU hasn't changed comes back from the microcode.
+void ServiceAddresses(Pb& dst, Pb& src, uint32_t sync)
+{
+    if (sync & (sync::kLoopFlag | sync::kLoopAddr | sync::kEndAddr | sync::kCurrAddr))
+    {
+        if (sync & sync::kLoopFlag)
+        {
+            dst.addr.loop_flag = src.addr.loop_flag;
+        }
+
+        if (sync & sync::kLoopAddr)
+        {
+            dst.addr.loop_address_hi = src.addr.loop_address_hi;
+            dst.addr.loop_address_lo = src.addr.loop_address_lo;
+        }
+
+        if (sync & sync::kEndAddr)
+        {
+            dst.addr.end_address_hi = src.addr.end_address_hi;
+            dst.addr.end_address_lo = src.addr.end_address_lo;
+        }
+
+        if (sync & sync::kCurrAddr)
+        {
+            dst.addr.current_address_hi = src.addr.current_address_hi;
+            dst.addr.current_address_lo = src.addr.current_address_lo;
+        }
+        else
+        {
+            src.addr.current_address_hi = dst.addr.current_address_hi;
+            src.addr.current_address_lo = dst.addr.current_address_lo;
+        }
+    }
+    else if (sync & sync::kAddr)
+    {
+        dst.addr = src.addr;
+    }
+    else
+    {
+        src.addr.current_address_hi = dst.addr.current_address_hi;
+        src.addr.current_address_lo = dst.addr.current_address_lo;
+    }
+}
+
+// __AXServiceVPB's step for the low-pass and the biquad: the CPU's coefficients, or the whole filter.
+void ServiceFilters(Pb& dst, const Pb& src, uint32_t sync)
+{
+    if (sync & sync::kLpfCoefs)
+    {
+        dst.lpf.a0 = src.lpf.a0;
+        dst.lpf.b0 = src.lpf.b0;
+    }
+    else if (sync & sync::kLpf)
+    {
+        dst.lpf = src.lpf;
+    }
+
+    if (sync & sync::kBiquadCoefs)
+    {
+        dst.biquad.b0 = src.biquad.b0;
+        dst.biquad.b1 = src.biquad.b1;
+        dst.biquad.b2 = src.biquad.b2;
+        dst.biquad.a1 = src.biquad.a1;
+        dst.biquad.a2 = src.biquad.a2;
+    }
+    else if (sync & sync::kBiquad)
+    {
+        dst.biquad = src.biquad;
+    }
+}
+
+// __AXServiceVPB's step for the Wii Remotes' fields: their switch, mixer control, mixes, depop values, converter and
+// filter.
+void ServiceRemote(Pb& dst, const Pb& src, uint32_t sync)
+{
+    if (sync & sync::kRemote)
+    {
+        dst.remote = src.remote;
+    }
+
+    if (sync & sync::kRmtMixerCtrl)
+    {
+        dst.rmt_mixer_ctrl = src.rmt_mixer_ctrl;
+    }
+
+    if (sync & sync::kRmtMix)
+    {
+        dst.rmt_mix = src.rmt_mix;
+    }
+
+    if (sync & sync::kRmtDpop)
+    {
+        dst.rmt_dpop = src.rmt_dpop;
+    }
+
+    if (sync & sync::kRmtSrc)
+    {
+        dst.rmt_src = src.rmt_src;
+    }
+
+    // When the remote filter is a low-pass filter, its third and fourth words are a0 and b0.
+    if (sync & sync::kRmtIirLpfCoefs)
+    {
+        dst.rmt_iir.xn2 = src.rmt_iir.xn2;
+        dst.rmt_iir.yn1 = src.rmt_iir.yn1;
+    }
+    else if (sync & sync::kRmtIirBiquadCoefs)
+    {
+        dst.rmt_iir.b0 = src.rmt_iir.b0;
+        dst.rmt_iir.b1 = src.rmt_iir.b1;
+        dst.rmt_iir.b2 = src.rmt_iir.b2;
+        dst.rmt_iir.a1 = src.rmt_iir.a1;
+        dst.rmt_iir.a2 = src.rmt_iir.a2;
+    }
+    else if (sync & sync::kRmtIir)
+    {
+        dst.rmt_iir = src.rmt_iir;
+    }
+}
+
 } // namespace
 
 System::System(ntdlib::dsp::WiiMemory& memory) : memory_(&memory)
@@ -343,33 +525,7 @@ void System::Init(Build build)
 
     for (uint32_t i = 0; i < voice_count_; i++)
     {
-        Voice& voice = voices_[i];
-        Pb& dsp = dsp_pbs_[i];
-        voice = Voice{};
-        dsp = Pb{};
-        voice.index = i;
-        voice.itd_buffer = layout::kItdBuffers + i * layout::kItdBufferSize;
-        SetPbDefault(&voice);
-
-        const uint32_t next = i == voice_count_ - 1 ? 0 : ntdlib::dsp::ToCached(PbAddress(i + 1));
-        const uint32_t curr = ntdlib::dsp::ToCached(PbAddress(i));
-        const uint32_t itd = ntdlib::dsp::ToCached(voice.itd_buffer);
-        voice.pb.next_hi = dsp.next_hi = Hi(next);
-        voice.pb.next_lo = dsp.next_lo = Lo(next);
-        voice.pb.curr_hi = dsp.curr_hi = Hi(curr);
-        voice.pb.curr_lo = dsp.curr_lo = Lo(curr);
-        voice.pb.itd.buffer_hi = dsp.itd.buffer_hi = Hi(itd);
-        voice.pb.itd.buffer_lo = dsp.itd.buffer_lo = Lo(itd);
-        WritePb(i, dsp);
-
-        if (traits.update_buffers)
-        {
-            // The update block's three counters stay 0. Its last two words give the buffer's address.
-            const uint32_t updates = ntdlib::dsp::ToCached(layout::kUpdateBuffers + i * layout::kUpdateBufferSize);
-            uint8_t* block = memory_->At(PbAddress(i) + kUpdateBlockOctober2006, 10);
-            xsflib::StoreBe16(block + 6, Hi(updates));
-            xsflib::StoreBe16(block + 8, Lo(updates));
-        }
+        InitVoice(i, traits.update_buffers);
     }
 
     // __AXSPBInit (0x80106648), __AXAuxInit (0x8010495c) and __AXClInit (0x80105b6c). __AXAuxInit clears the first
@@ -396,6 +552,37 @@ void System::Init(Build build)
     // The first command list writes the rings from their start.
     remote_position_ = kRemoteSamplesPerFrame;
     NextFrame(layout::kSurroundBuffer, layout::kOutputBuffers + layout::kOutputBufferSize, RemoteBuffersAt(0));
+}
+
+void System::InitVoice(uint32_t index, bool update_buffers)
+{
+    Voice& voice = voices_[index];
+    Pb& dsp = dsp_pbs_[index];
+    voice = Voice{};
+    dsp = Pb{};
+    voice.index = index;
+    voice.itd_buffer = layout::kItdBuffers + index * layout::kItdBufferSize;
+    SetPbDefault(&voice);
+
+    const uint32_t next = index == voice_count_ - 1 ? 0 : ntdlib::dsp::ToCached(PbAddress(index + 1));
+    const uint32_t curr = ntdlib::dsp::ToCached(PbAddress(index));
+    const uint32_t itd = ntdlib::dsp::ToCached(voice.itd_buffer);
+    voice.pb.next_hi = dsp.next_hi = Hi(next);
+    voice.pb.next_lo = dsp.next_lo = Lo(next);
+    voice.pb.curr_hi = dsp.curr_hi = Hi(curr);
+    voice.pb.curr_lo = dsp.curr_lo = Lo(curr);
+    voice.pb.itd.buffer_hi = dsp.itd.buffer_hi = Hi(itd);
+    voice.pb.itd.buffer_lo = dsp.itd.buffer_lo = Lo(itd);
+    WritePb(index, dsp);
+
+    if (update_buffers)
+    {
+        // The update block's three counters stay 0. Its last two words give the buffer's address.
+        const uint32_t updates = ntdlib::dsp::ToCached(layout::kUpdateBuffers + index * layout::kUpdateBufferSize);
+        uint8_t* block = memory_->At(PbAddress(index) + kUpdateBlockOctober2006, 10);
+        xsflib::StoreBe16(block + 6, Hi(updates));
+        xsflib::StoreBe16(block + 8, Lo(updates));
+    }
 }
 
 Pb System::ReadPb(uint32_t index) const
@@ -736,36 +923,7 @@ void System::ServiceVpb(Voice* voice)
         return;
     }
 
-    if (sync & sync::kSelect)
-    {
-        dst.src_select = src.src_select;
-        dst.coef_select = src.coef_select;
-    }
-
-    if (sync & sync::kMixerCtrl)
-    {
-        dst.mixer_ctrl_hi = src.mixer_ctrl_hi;
-        dst.mixer_ctrl_lo = src.mixer_ctrl_lo;
-    }
-
-    if (sync & sync::kState)
-    {
-        dst.state = src.state;
-    }
-    else
-    {
-        src.state = dst.state;
-    }
-
-    if (sync & sync::kType)
-    {
-        dst.type = src.type;
-    }
-
-    if (sync & sync::kMix)
-    {
-        dst.mix = src.mix;
-    }
+    ServiceSettings(dst, src, sync);
 
     if (sync & sync::kItdShift)
     {
@@ -793,132 +951,10 @@ void System::ServiceVpb(Voice* voice)
         dst.ve = src.ve;
     }
 
-    if (sync & (sync::kLoopFlag | sync::kLoopAddr | sync::kEndAddr | sync::kCurrAddr))
-    {
-        if (sync & sync::kLoopFlag)
-        {
-            dst.addr.loop_flag = src.addr.loop_flag;
-        }
-
-        if (sync & sync::kLoopAddr)
-        {
-            dst.addr.loop_address_hi = src.addr.loop_address_hi;
-            dst.addr.loop_address_lo = src.addr.loop_address_lo;
-        }
-
-        if (sync & sync::kEndAddr)
-        {
-            dst.addr.end_address_hi = src.addr.end_address_hi;
-            dst.addr.end_address_lo = src.addr.end_address_lo;
-        }
-
-        if (sync & sync::kCurrAddr)
-        {
-            dst.addr.current_address_hi = src.addr.current_address_hi;
-            dst.addr.current_address_lo = src.addr.current_address_lo;
-        }
-        else
-        {
-            src.addr.current_address_hi = dst.addr.current_address_hi;
-            src.addr.current_address_lo = dst.addr.current_address_lo;
-        }
-    }
-    else if (sync & sync::kAddr)
-    {
-        dst.addr = src.addr;
-    }
-    else
-    {
-        src.addr.current_address_hi = dst.addr.current_address_hi;
-        src.addr.current_address_lo = dst.addr.current_address_lo;
-    }
-
-    if (sync & sync::kAdpcm)
-    {
-        dst.adpcm = src.adpcm;
-    }
-
-    if (sync & sync::kSrcRatio)
-    {
-        dst.src.ratio_hi = src.src.ratio_hi;
-        dst.src.ratio_lo = src.src.ratio_lo;
-    }
-    else if (sync & sync::kSrc)
-    {
-        dst.src = src.src;
-    }
-
-    if (sync & sync::kAdpcmLoop)
-    {
-        dst.adpcm_loop = src.adpcm_loop;
-    }
-
-    if (sync & sync::kLpfCoefs)
-    {
-        dst.lpf.a0 = src.lpf.a0;
-        dst.lpf.b0 = src.lpf.b0;
-    }
-    else if (sync & sync::kLpf)
-    {
-        dst.lpf = src.lpf;
-    }
-
-    if (sync & sync::kBiquadCoefs)
-    {
-        dst.biquad.b0 = src.biquad.b0;
-        dst.biquad.b1 = src.biquad.b1;
-        dst.biquad.b2 = src.biquad.b2;
-        dst.biquad.a1 = src.biquad.a1;
-        dst.biquad.a2 = src.biquad.a2;
-    }
-    else if (sync & sync::kBiquad)
-    {
-        dst.biquad = src.biquad;
-    }
-
-    if (sync & sync::kRemote)
-    {
-        dst.remote = src.remote;
-    }
-
-    if (sync & sync::kRmtMixerCtrl)
-    {
-        dst.rmt_mixer_ctrl = src.rmt_mixer_ctrl;
-    }
-
-    if (sync & sync::kRmtMix)
-    {
-        dst.rmt_mix = src.rmt_mix;
-    }
-
-    if (sync & sync::kRmtDpop)
-    {
-        dst.rmt_dpop = src.rmt_dpop;
-    }
-
-    if (sync & sync::kRmtSrc)
-    {
-        dst.rmt_src = src.rmt_src;
-    }
-
-    // When the remote filter is a low-pass filter, its third and fourth words are a0 and b0.
-    if (sync & sync::kRmtIirLpfCoefs)
-    {
-        dst.rmt_iir.xn2 = src.rmt_iir.xn2;
-        dst.rmt_iir.yn1 = src.rmt_iir.yn1;
-    }
-    else if (sync & sync::kRmtIirBiquadCoefs)
-    {
-        dst.rmt_iir.b0 = src.rmt_iir.b0;
-        dst.rmt_iir.b1 = src.rmt_iir.b1;
-        dst.rmt_iir.b2 = src.rmt_iir.b2;
-        dst.rmt_iir.a1 = src.rmt_iir.a1;
-        dst.rmt_iir.a2 = src.rmt_iir.a2;
-    }
-    else if (sync & sync::kRmtIir)
-    {
-        dst.rmt_iir = src.rmt_iir;
-    }
+    ServiceAddresses(dst, src, sync);
+    ServiceDecoder(dst, src, sync);
+    ServiceFilters(dst, src, sync);
+    ServiceRemote(dst, src, sync);
 }
 
 void System::DumpVpb(Voice* voice)

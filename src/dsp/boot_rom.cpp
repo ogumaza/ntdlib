@@ -290,7 +290,7 @@ void Dsp<Memory>::RomEntry()
     // Set $cr, clear $sr's bits 8 to 12 (IE and EIE among them) and set the modes. Then send the ready mail and enter
     // the command loop.
     regs_.cr = 0xff;
-    regs_.sr &= static_cast<uint16_t>(~((1u << 8) | kSrInterruptEnable | (1u << 10) | kSrExternalEnable | (1u << 12)));
+    regs_.sr &= static_cast<uint16_t>(~(kSrBit8 | kSrInterruptEnable | kSrBit10 | kSrExternalEnable | kSrBit12));
     regs_.sr &= ~kSrSxm;
     regs_.sr &= ~kSrSu;
     regs_.sr |= kSrAm;

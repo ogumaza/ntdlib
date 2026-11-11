@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Writers of the files of the DS's sound archive (SDAT): sequences (SSEQ), sequence archives (SSAR), banks (SBNK), wave
-// archives (SWAR) and waves (SWAV). Each writer lays its file out as the SDK's tools do. formats.h reads them, and
-// layout.h lays out the archive that holds them. EncodeWave encodes samples into a wave.
+// archives (SWAR), waves (SWAV) and streams (STRM). Each writer lays its file out as the SDK's tools do. formats.h
+// reads them, and layout.h lays out the archive that holds them. EncodeWave encodes samples into a wave.
 //
 // The tools write each file with version 1.0, a header of 16 bytes and one DATA block that runs to the file's end. The
 // file ends on a multiple of 4 bytes, with zeros after its data. A wave's bytes are its 12 bytes of parameters
@@ -15,10 +15,18 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/ntr/sound.h"
 #include "ntdlib/sdat/formats.h"
 
 namespace ntdlib::sdat
 {
+
+// The clock of a channel's timer, in Hz: half the system clock. A wave's timer is this clock / the wave's rate.
+constexpr uint32_t kTimerClockHz = ntr::kSystemClockHz / 2;
+
+// The samples in a 32-bit word of `encoding`: 4 of PCM8, 2 of PCM16 and 8 of IMA-ADPCM. Throws std::invalid_argument
+// for an unknown encoding.
+uint32_t SamplesPerWord(WaveEncoding encoding);
 
 // A sequence file of `bytecode`. The bytecode starts at 0x1C.
 std::vector<uint8_t> SequenceFile(std::span<const uint8_t> bytecode);
@@ -61,5 +69,36 @@ std::vector<uint8_t> WaveArchiveFile(std::span<const std::vector<uint8_t>> waves
 // loop start past the 65,535 words of its field. The timer of a rate below 256 Hz doesn't fit its 16 bits.
 std::vector<uint8_t> EncodeWave(std::span<const int16_t> samples, uint16_t sample_rate, WaveEncoding encoding,
                                 std::optional<uint32_t> loop_start);
+
+// The bytes of a channel's part of a block in a stream that EncodeStream makes: the size that the SDK's tools give a
+// stream of IMA-ADPCM.
+constexpr uint32_t kStreamBlockBytes = 0x200;
+
+// A stream's timer counts 32 times as long as a wave's: its timer is kTimerClockHz / the rate / 32.
+constexpr uint32_t kStreamTimerDivider = 32;
+
+// The samples in a channel's part of a block of `block_bytes` bytes of `encoding`. A part of IMA-ADPCM starts with
+// 4 bytes of the decoder's state. Throws std::invalid_argument for an unknown encoding.
+uint32_t StreamBlockSamples(WaveEncoding encoding, uint32_t block_bytes = kStreamBlockBytes);
+
+// A stream file (STRM) of `stream`, as the tools lay it out: the header, a HEAD block of 0x50 bytes, and the DATA
+// block with the bytes of `stream.data`, up to a multiple of 4 bytes. The file has two blocks, where the other files
+// have one. The file takes `stream.header.version`. The offset of the data and the sizes follow the layout, whatever
+// `stream` gives. For a file that the tools laid out, StreamFile of its parsed stream gives the file back byte for
+// byte.
+std::vector<uint8_t> StreamFile(const Stream& stream);
+
+// Encodes `channels`, one or two of the same length, into a stream file at `sample_rate`, in `encoding`, with blocks
+// of kStreamBlockBytes. A stream loops from sample `loop_start` to its end when `loop_start` is given.
+//
+// A loop's start moves forward to a block's start. The samples from the old start to the block's start then follow the
+// end, and the loop keeps its length. Each block of IMA-ADPCM starts with the decoder's state at that point of the
+// whole channel's encoding, and each pass of the loop plays as the first. PCM8 takes each sample's high byte, rounded
+// to the nearest. The timer is 16,756,991 / `sample_rate` / 32, rounded down.
+//
+// Throws std::invalid_argument for no channels or more than two, channels of other lengths or without samples, a rate
+// below 256 Hz, an unknown encoding, a loop start at or past the end, and more samples than the 32 bits of the field.
+std::vector<uint8_t> EncodeStream(std::span<const std::vector<int16_t>> channels, uint16_t sample_rate,
+                                  WaveEncoding encoding, std::optional<uint32_t> loop_start);
 
 } // namespace ntdlib::sdat

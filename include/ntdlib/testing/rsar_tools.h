@@ -16,6 +16,7 @@
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/testing/byte_writer.h"
 #include "ntdlib/testing/rsar_files.h"
 
 namespace ntdlib::testing::rsar_tools
@@ -37,6 +38,78 @@ struct SequenceSound
     uint32_t file = 0;
     uint32_t start = 0;
 };
+
+// Appends the table of file references to INFO, with the reference to it at `ref`, then the entry of each file. Each
+// entry lists the places where `all_groups` hold the file. The references in INFO count from `base`.
+inline void PutFileEntries(Bytes& archive, size_t ref, size_t base, const std::vector<File>& files,
+                           const std::vector<std::vector<uint32_t>>& all_groups)
+{
+    using rsar_files::Grow;
+    using rsar_files::InfoTable;
+    using rsar_files::PutRef;
+
+    const size_t file_refs = InfoTable(archive, ref, base, files.size());
+    for (uint32_t f = 0; f < files.size(); ++f)
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> places;
+        for (uint32_t g = 0; g < all_groups.size(); ++g)
+        {
+            for (uint32_t i = 0; i < all_groups[g].size(); ++i)
+            {
+                if (all_groups[g][i] == f)
+                {
+                    places.emplace_back(g, i);
+                }
+            }
+        }
+
+        const size_t entry = Grow(archive, 0x1C);
+        PutRef(archive, file_refs + f * 8, 0, static_cast<uint32_t>(entry - base));
+        xsflib::StoreBe32(&archive[entry], static_cast<uint32_t>(files[f].bytes.size()));
+        xsflib::StoreBe32(&archive[entry + 4], static_cast<uint32_t>(files[f].wave_data.size()));
+        const size_t place_refs = InfoTable(archive, entry + 0x14, base, places.size());
+        for (size_t p = 0; p < places.size(); ++p)
+        {
+            const size_t place = Grow(archive, 8);
+            PutRef(archive, place_refs + p * 8, 0, static_cast<uint32_t>(place - base));
+            xsflib::StoreBe32(&archive[place], places[p].first);
+            xsflib::StoreBe32(&archive[place + 4], places[p].second);
+        }
+    }
+}
+
+// Appends the table of group references to INFO, with the reference to it at `ref`, then the entry of each group and
+// the entries of its items. Returns the groups and their files for rsar_files::AppendFileBlock.
+inline std::vector<rsar_files::FileGroup> PutGroupEntries(Bytes& archive, size_t ref, size_t base,
+                                                          const std::vector<File>& files,
+                                                          const std::vector<std::vector<uint32_t>>& all_groups)
+{
+    using rsar_files::Grow;
+    using rsar_files::InfoTable;
+    using rsar_files::PutRef;
+
+    const size_t group_refs = InfoTable(archive, ref, base, all_groups.size());
+    std::vector<rsar_files::FileGroup> file_groups;
+    for (size_t g = 0; g < all_groups.size(); ++g)
+    {
+        const size_t entry = Grow(archive, 0x28);
+        rsar_files::FileGroup& file_group = file_groups.emplace_back();
+        file_group.entry = entry;
+        PutRef(archive, group_refs + g * 8, 0, static_cast<uint32_t>(entry - base));
+        xsflib::StoreBe32(&archive[entry + 4], 0xFFFFFFFF);
+        const size_t item_refs = InfoTable(archive, entry + 0x20, base, all_groups[g].size());
+        for (size_t i = 0; i < all_groups[g].size(); ++i)
+        {
+            const size_t item = Grow(archive, 0x18);
+            const File& file = files[all_groups[g][i]];
+            file_group.items.push_back({item, file.bytes, file.wave_data});
+            PutRef(archive, item_refs + i * 8, 0, static_cast<uint32_t>(item - base));
+            xsflib::StoreBe32(&archive[item], all_groups[g][i]);
+        }
+    }
+
+    return file_groups;
+}
 
 // An archive of version `version` (at least 1.1) with the sequence sounds `sounds`. `groups` lists the files that each
 // group holds, in order. The builder adds the empty group at the end.
@@ -81,99 +154,18 @@ inline Bytes MakeArchive(uint16_t version, const std::vector<File>& files, const
     InfoTable(archive, tables + 0x10, base, 0);
 
     // Each file's entry lists the places where groups hold it: a group and an item of the group.
-    const std::vector<std::vector<uint32_t>> all_groups = [&]
-    {
-        std::vector<std::vector<uint32_t>> all = groups;
-        all.emplace_back();
-        return all;
-    }();
-    const size_t file_refs = InfoTable(archive, tables + 0x18, base, files.size());
-    std::vector<size_t> file_entries;
-    for (uint32_t f = 0; f < files.size(); ++f)
-    {
-        std::vector<std::pair<uint32_t, uint32_t>> places;
-        for (uint32_t g = 0; g < all_groups.size(); ++g)
-        {
-            for (uint32_t i = 0; i < all_groups[g].size(); ++i)
-            {
-                if (all_groups[g][i] == f)
-                {
-                    places.emplace_back(g, i);
-                }
-            }
-        }
-
-        const size_t entry = Grow(archive, 0x1C);
-        file_entries.push_back(entry);
-        PutRef(archive, file_refs + f * 8, 0, static_cast<uint32_t>(entry - base));
-        xsflib::StoreBe32(&archive[entry], static_cast<uint32_t>(files[f].bytes.size()));
-        xsflib::StoreBe32(&archive[entry + 4], static_cast<uint32_t>(files[f].wave_data.size()));
-        const size_t place_refs = InfoTable(archive, entry + 0x14, base, places.size());
-        for (size_t p = 0; p < places.size(); ++p)
-        {
-            const size_t place = Grow(archive, 8);
-            PutRef(archive, place_refs + p * 8, 0, static_cast<uint32_t>(place - base));
-            xsflib::StoreBe32(&archive[place], places[p].first);
-            xsflib::StoreBe32(&archive[place + 4], places[p].second);
-        }
-    }
+    std::vector<std::vector<uint32_t>> all_groups = groups;
+    all_groups.emplace_back();
+    PutFileEntries(archive, tables + 0x18, base, files, all_groups);
 
     // Each group's entry, with its items' entries.
-    const size_t group_refs = InfoTable(archive, tables + 0x20, base, all_groups.size());
-    std::vector<size_t> group_entries;
-    std::vector<std::vector<size_t>> item_entries(all_groups.size());
-    for (size_t g = 0; g < all_groups.size(); ++g)
-    {
-        const size_t entry = Grow(archive, 0x28);
-        group_entries.push_back(entry);
-        PutRef(archive, group_refs + g * 8, 0, static_cast<uint32_t>(entry - base));
-        xsflib::StoreBe32(&archive[entry + 4], 0xFFFFFFFF);
-        const size_t item_refs = InfoTable(archive, entry + 0x20, base, all_groups[g].size());
-        for (size_t i = 0; i < all_groups[g].size(); ++i)
-        {
-            const size_t item = Grow(archive, 0x18);
-            item_entries[g].push_back(item);
-            PutRef(archive, item_refs + i * 8, 0, static_cast<uint32_t>(item - base));
-            xsflib::StoreBe32(&archive[item], all_groups[g][i]);
-        }
-    }
-    archive.resize((archive.size() + 31) & ~size_t{31}, 0);
+    const std::vector<rsar_files::FileGroup> file_groups =
+        PutGroupEntries(archive, tables + 0x20, base, files, all_groups);
+    archive.resize(AlignUp(archive.size(), 32), 0);
     EndBlock(archive, info, 1);
 
     // FILE: a header of 0x20 bytes, then each group's files and wave data.
-    const size_t data = Block(archive, "FILE", 2);
-    Grow(archive, 0x18);
-    for (size_t g = 0; g < all_groups.size(); ++g)
-    {
-        const size_t group_files = archive.size();
-        for (size_t i = 0; i < all_groups[g].size(); ++i)
-        {
-            const Bytes& bytes = files[all_groups[g][i]].bytes;
-            xsflib::StoreBe32(&archive[item_entries[g][i] + 4], static_cast<uint32_t>(archive.size() - group_files));
-            xsflib::StoreBe32(&archive[item_entries[g][i] + 8], static_cast<uint32_t>(bytes.size()));
-            archive.insert(archive.end(), bytes.begin(), bytes.end());
-        }
-
-        const size_t group_waves = archive.size();
-        for (size_t i = 0; i < all_groups[g].size(); ++i)
-        {
-            const Bytes& wave_data = files[all_groups[g][i]].wave_data;
-            if (!wave_data.empty())
-            {
-                xsflib::StoreBe32(&archive[item_entries[g][i] + 0xC],
-                                  static_cast<uint32_t>(archive.size() - group_waves));
-                xsflib::StoreBe32(&archive[item_entries[g][i] + 0x10], static_cast<uint32_t>(wave_data.size()));
-                archive.insert(archive.end(), wave_data.begin(), wave_data.end());
-            }
-        }
-
-        const size_t entry = group_entries[g];
-        xsflib::StoreBe32(&archive[entry + 0x10], static_cast<uint32_t>(group_files));
-        xsflib::StoreBe32(&archive[entry + 0x14], static_cast<uint32_t>(group_waves - group_files));
-        xsflib::StoreBe32(&archive[entry + 0x18], static_cast<uint32_t>(group_waves));
-        xsflib::StoreBe32(&archive[entry + 0x1C], static_cast<uint32_t>(archive.size() - group_waves));
-    }
-    EndBlock(archive, data, 2);
+    rsar_files::AppendFileBlock(archive, file_groups);
 
     return archive;
 }

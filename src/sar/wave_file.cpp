@@ -18,6 +18,8 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
+#include "sar/format_ids.h"
 
 namespace ntdlib::sar
 {
@@ -28,98 +30,36 @@ constexpr uint16_t kWaveInfoBlock = 0x7000;
 constexpr uint16_t kWaveDataBlock = 0x7001;
 constexpr uint16_t kArchiveInfoBlock = 0x6800;
 constexpr uint16_t kArchiveFileBlock = 0x6801;
-constexpr uint16_t kBankInfoBlock = 0x5800;
-constexpr uint16_t kWaveSoundInfoBlock = 0x6800;
-constexpr uint16_t kWaveTableReference = 0x0100;   // from a bank's or a wave sound file's INFO to its table of waves
 constexpr uint16_t kChannelInfoReference = 0x7100; // from the table of channels to a channel's info
-constexpr uint16_t kDataReference = 0x1F00;        // to a channel's samples in DATA, or to a wave in FILE
-constexpr uint16_t kDspAdpcmReference = 0x0300;    // from a channel's info to its DSP-ADPCM info
-constexpr uint32_t kNoOffset = 0xFFFFFFFF;         // a reference to nothing
-constexpr std::size_t kBlockAlignment = 32;
 
-// The parts of a wave file's INFO block: the settings, a channel's info and a DSP-ADPCM info. A channel's info holds a
-// reference to its samples, a reference to its DSP-ADPCM info and 4 reserved bytes. A DSP-ADPCM info holds the
-// coefficients, the context at the start and at the loop, and 2 bytes of padding.
+// The parts of a wave file's INFO block: the settings and a channel's info. A channel's info holds a reference to its
+// samples, a reference to its DSP-ADPCM info and 4 reserved bytes. file_parts.h gives the size of a DSP-ADPCM info.
 constexpr std::size_t kSettingsSize = 0x14;
 constexpr std::size_t kChannelInfoSize = 0x14;
-constexpr std::size_t kDspAdpcmInfoSize = 46;
 
+using detail::AppendHeader;
+using detail::kBankInfoBlock;
+using detail::kBlockAlignment;
+using detail::kDataReference;
+using detail::kDspAdpcmInfoSize;
+using detail::kDspAdpcmReference;
+using detail::kListReference;
+using detail::kNone;
+using detail::kWaveSoundInfoBlock;
+using detail::OpenFile;
 using detail::Out;
-
-// The boundary of a file that a wave's samples and an archive's waves start on.
-std::size_t SampleAlignment(Flavor flavor)
-{
-    return flavor == Flavor::kNx ? 64 : 32;
-}
-
-// The flavor of a file of `kind` (WAV or WAR), from its magic and its byte order mark, and a reader in its byte order.
-// Throws xsflib::FormatError for another file. `name` names the file in the message.
-std::pair<Flavor, xsflib::Reader> Open(std::span<const uint8_t> file, const char* kind, const std::string& name)
-{
-    if (file.size() < 0x14 || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, kind, 3) != 0)
-    {
-        throw xsflib::FormatError("not a " + name + " (C" + kind + " or F" + kind + ")");
-    }
-
-    const bool big_endian = file[4] == 0xFE && file[5] == 0xFF;
-    if (!big_endian && (file[4] != 0xFF || file[5] != 0xFE))
-    {
-        throw xsflib::FormatError("a " + name + " without a byte order mark");
-    }
-    const Flavor flavor = file[0] == 'C' ? Flavor::kCtr : big_endian ? Flavor::kCafe : Flavor::kNx;
-    if (flavor == Flavor::kCtr && big_endian)
-    {
-        throw xsflib::FormatError(std::string("a big-endian C") + kind);
-    }
-
-    return {flavor, xsflib::Reader(file, big_endian)};
-}
+using detail::SetBlock;
+using detail::StartBlock;
 
 // The offset and the size of block `type`, named `name`. Throws xsflib::FormatError for a file without it.
 std::pair<std::size_t, std::size_t> BlockOf(const xsflib::Reader& r, uint16_t type, const char* name)
 {
-    for (uint16_t i = 0; i < r.U16(0x10); ++i)
+    if (const std::optional<std::pair<std::size_t, std::size_t>> block = detail::FindBlock(r, type))
     {
-        const std::size_t entry = 0x14 + std::size_t{i} * 12;
-        if (r.U16(entry) == type)
-        {
-            return {r.U32(entry + 4), r.U32(entry + 8)};
-        }
+        return *block;
     }
 
     throw xsflib::FormatError(std::string("no ") + name + " block");
-}
-
-// The header of a file with two blocks: its magic, its byte order mark, its size, its version and the table of blocks,
-// padded. SetBlock fills the table, and the caller sets the file's size.
-void AppendHeader(Out& out, const char* magic, uint32_t version)
-{
-    out.Append(std::span(reinterpret_cast<const uint8_t*>(magic), 4));
-    out.Zeros(0x14 + 2 * 12 - 4);
-    out.Align(kBlockAlignment);
-    out.U16(4, 0xFEFF);
-    out.U16(6, static_cast<uint16_t>(out.Size()));
-    out.U32(8, version);
-    out.U16(0x10, 2);
-}
-
-// Appends a block's magic and room for its size. Returns where the block starts.
-std::size_t StartBlock(Out& out, const char* magic)
-{
-    const std::size_t start = out.Append(std::span(reinterpret_cast<const uint8_t*>(magic), 4));
-    out.Zeros(4);
-
-    return start;
-}
-
-// Ends the block that starts at `start` at the end of `out`: its size, and entry `index` of the table of blocks.
-void SetBlock(Out& out, std::size_t index, uint16_t type, std::size_t start)
-{
-    const auto size = static_cast<uint32_t>(out.Size() - start);
-    const std::size_t entry = 0x14 + index * 12;
-    out.U32(start + 4, size);
-    out.Reference(entry, type, static_cast<uint32_t>(start));
-    out.U32(entry + 8, size);
 }
 
 // The start of the table of waves of `file`, a bank file or a wave sound file of `flavor`, and a reader of the file in
@@ -134,7 +74,7 @@ std::pair<std::size_t, xsflib::Reader> WaveTableOf(std::span<const uint8_t> file
     {
         throw xsflib::FormatError("not a bank file or a wave sound file");
     }
-    const auto [read_flavor, r] = Open(file, bank ? "BNK" : "WSD", bank ? "bank file" : "wave sound file");
+    const auto [read_flavor, r] = OpenFile(file, bank ? "BNK" : "WSD", bank ? "bank file" : "wave sound file");
     if (read_flavor != flavor)
     {
         throw xsflib::FormatError("a file of another console");
@@ -144,7 +84,7 @@ std::pair<std::size_t, xsflib::Reader> WaveTableOf(std::span<const uint8_t> file
     for (std::size_t i = 0; i < 2; ++i)
     {
         const int32_t offset = r.S32(info + i * 8 + 4);
-        if (r.U16(info + i * 8) == kWaveTableReference && offset >= 0)
+        if (r.U16(info + i * 8) == kListReference && offset >= 0)
         {
             table = info + static_cast<std::size_t>(offset);
         }
@@ -162,7 +102,7 @@ std::pair<std::size_t, xsflib::Reader> WaveTableOf(std::span<const uint8_t> file
 
 WaveFile WaveFile::Read(std::span<const uint8_t> file)
 {
-    const auto [flavor, r] = Open(file, "WAV", "wave file");
+    const auto [flavor, r] = OpenFile(file, "WAV", "wave file");
     const auto [info, info_size] = BlockOf(r, kWaveInfoBlock, "INFO");
     const auto [data, data_size] = BlockOf(r, kWaveDataBlock, "DATA");
 
@@ -199,19 +139,7 @@ WaveFile WaveFile::Read(std::span<const uint8_t> file)
                 throw xsflib::FormatError("a DSP-ADPCM channel without its DSP-ADPCM info");
             }
 
-            const std::size_t a = channel + r.U32(channel + 12);
-            DspAdpcmInfo adpcm;
-            for (std::size_t k = 0; k < adpcm.coefs.size(); ++k)
-            {
-                adpcm.coefs[k] = r.S16(a + k * 2);
-            }
-            adpcm.pred_scale = r.U16(a + 32);
-            adpcm.yn1 = r.S16(a + 34);
-            adpcm.yn2 = r.S16(a + 36);
-            adpcm.loop_pred_scale = r.U16(a + 38);
-            adpcm.loop_yn1 = r.S16(a + 40);
-            adpcm.loop_yn2 = r.S16(a + 42);
-            c.adpcm = adpcm;
+            c.adpcm = detail::ReadDspAdpcm(r, channel + r.U32(channel + 12));
         }
         w.channels.push_back(c);
     }
@@ -249,7 +177,7 @@ std::vector<uint8_t> WaveFile::Write() const
     }
 
     Out out(flavor == Flavor::kCafe);
-    AppendHeader(out, flavor == Flavor::kCtr ? "CWAV" : "FWAV", version);
+    AppendHeader(out, flavor == Flavor::kCtr ? "CWAV" : "FWAV", version, 2);
 
     // INFO: the settings, the table of channels, the channels' infos, then the DSP-ADPCM infos.
     const std::size_t info = StartBlock(out, "INFO");
@@ -272,23 +200,13 @@ std::vector<uint8_t> WaveFile::Write() const
     {
         if (!channels[i].adpcm)
         {
-            out.Reference(infos[i] + 8, 0, kNoOffset);
+            out.Reference(infos[i] + 8, 0, kNone);
             continue;
         }
 
-        const DspAdpcmInfo& adpcm = *channels[i].adpcm;
         const std::size_t a = out.Zeros(kDspAdpcmInfoSize);
         out.Reference(infos[i] + 8, kDspAdpcmReference, static_cast<uint32_t>(a - infos[i]));
-        for (std::size_t k = 0; k < adpcm.coefs.size(); ++k)
-        {
-            out.U16(a + k * 2, static_cast<uint16_t>(adpcm.coefs[k]));
-        }
-        out.U16(a + 32, adpcm.pred_scale);
-        out.U16(a + 34, static_cast<uint16_t>(adpcm.yn1));
-        out.U16(a + 36, static_cast<uint16_t>(adpcm.yn2));
-        out.U16(a + 38, adpcm.loop_pred_scale);
-        out.U16(a + 40, static_cast<uint16_t>(adpcm.loop_yn1));
-        out.U16(a + 42, static_cast<uint16_t>(adpcm.loop_yn2));
+        detail::WriteDspAdpcm(out, a, *channels[i].adpcm);
     }
     out.Align(kBlockAlignment);
     SetBlock(out, 0, kWaveInfoBlock, info);
@@ -297,7 +215,7 @@ std::vector<uint8_t> WaveFile::Write() const
     const std::size_t data = StartBlock(out, "DATA");
     for (std::size_t i = 0; i < channels.size(); ++i)
     {
-        out.Align(SampleAlignment(flavor));
+        out.Align(detail::FileAlignment(flavor));
         const std::size_t samples = out.Append(channels[i].samples);
         out.Reference(infos[i], kDataReference, static_cast<uint32_t>(samples - (data + 8)));
     }
@@ -309,7 +227,7 @@ std::vector<uint8_t> WaveFile::Write() const
 
 WaveArchiveFile WaveArchiveFile::Read(std::span<const uint8_t> file)
 {
-    const auto [flavor, r] = Open(file, "WAR", "wave archive");
+    const auto [flavor, r] = OpenFile(file, "WAR", "wave archive");
     const auto [info, info_size] = BlockOf(r, kArchiveInfoBlock, "INFO");
     const auto [files, files_size] = BlockOf(r, kArchiveFileBlock, "FILE");
 
@@ -330,7 +248,7 @@ WaveArchiveFile WaveArchiveFile::Read(std::span<const uint8_t> file)
 std::vector<uint8_t> WaveArchiveFile::Write() const
 {
     Out out(flavor == Flavor::kCafe);
-    AppendHeader(out, flavor == Flavor::kCtr ? "CWAR" : "FWAR", version);
+    AppendHeader(out, flavor == Flavor::kCtr ? "CWAR" : "FWAR", version, 2);
 
     // INFO: each wave's offset and size, which FILE fills in.
     const std::size_t info = StartBlock(out, "INFO");
@@ -344,7 +262,7 @@ std::vector<uint8_t> WaveArchiveFile::Write() const
     out.Align(kBlockAlignment);
     for (std::size_t i = 0; i < waves.size(); ++i)
     {
-        out.Align(SampleAlignment(flavor));
+        out.Align(detail::FileAlignment(flavor));
         const std::size_t wave = out.Append(waves[i]);
         const std::size_t entry = table + 4 + i * 12;
         out.Reference(entry, kDataReference, static_cast<uint32_t>(wave - (files + 8)));

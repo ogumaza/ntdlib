@@ -22,9 +22,11 @@ namespace ntdlib::sequence_export::dse
 struct SequenceInput
 {
     std::string folder = {}; // the file's folder in the game's files, with its last '/', or empty
+
     // A song's file name without its extension. A sound effect's is that of its bank of sound effects, with the
     // effect's slot in three digits after an underscore: "se_sys_005".
     std::string name = {};
+
     ntdlib::dse::SequenceRef ref = {}; // the file, and the sound effect's slot
     std::shared_ptr<const ntdlib::dse::Song> song = {};
     std::shared_ptr<const ntdlib::dse::SoundEffects> effects = {}; // in place of a song

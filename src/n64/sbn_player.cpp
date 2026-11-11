@@ -6,13 +6,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <utility>
 
 #include "xsflib/bytes.h"
 
 #include "ntdlib/n64/audio_list.h"
 #include "ntdlib/n64/audio_memory.h"
 #include "ntdlib/n64/sbn.h"
+#include "sbn_player_constants.h"
 
 namespace ntdlib::n64
 {
@@ -20,27 +20,14 @@ namespace ntdlib::n64
 namespace
 {
 
-constexpr int kChunk = SbnPlayer::kChunkSamples;
-constexpr int kChunkBytes = kChunk * 2;
-constexpr int kDecoderOut = 0x170;
-constexpr int kDecoderIn = 0;
-constexpr int kTemp = 0;
-constexpr uint32_t kMainLeft = 0x4E0;
-constexpr uint32_t kMainRight = 0x650;
-constexpr uint32_t kAuxLeft = 0x7C0;
-constexpr uint32_t kAuxRight = 0x930;
-constexpr uint32_t kOpLoad = 0x04000000;
-constexpr uint32_t kOpSave = 0x06000000;
-constexpr uint32_t kOpMix = 0x0C000000;
-constexpr uint32_t kOpMove = 0x0A000000;
-constexpr uint32_t kAddressMask = 0xFFFFFF;
-constexpr uint32_t kDmemMask = 0xFFF;
+using sbn_player_constants::kChunk;
+using sbn_player_constants::kChunkBytes;
+using sbn_player_constants::kDelayLeft;
+using sbn_player_constants::kDelayNone;
+using sbn_player_constants::kDelayRight;
+using sbn_player_constants::kFxLength;
+
 constexpr int kFrameMicroseconds = 5750;
-constexpr int kFxLength = 14 * kChunk;
-constexpr float kUnityPitch = 32768.0F;
-constexpr float kMaxRatio = 1.99996F;
-constexpr int kFrameSamples = 16;
-constexpr int kFrameBytes = 9;
 constexpr int kUpdateScale = 1000;
 constexpr int kTempoScale = 100;
 constexpr int kDefaultBpm = 156;
@@ -65,122 +52,9 @@ constexpr uint8_t kStateFetch = 2;
 constexpr uint8_t kStateInit = 3;
 constexpr uint8_t kStateStop = 4;
 
-constexpr uint8_t kDelayNone = 0;
-constexpr uint8_t kDelayLeft = 1;
-constexpr uint8_t kDelayRight = 2;
-
 // The arguments of commands 0xE0 to 0xFF, from the same table of the game's code as the reader's.
 constexpr std::array<uint8_t, 32> kArgumentCounts = {2, 1, 1, 1, 4, 3, 2, 0, 2, 1, 1, 1, 1, 1, 1, 2,
                                                      3, 1, 1, 0, 2, 1, 3, 1, 0, 0, 0, 0, 3, 3, 3, 3};
-
-// The volume's gain for each pan, as in the compact driver: cosines from 0 to a quarter turn, at full scale 32767.
-constexpr std::array<int16_t, 128> kEqualPower = {
-    32767, 32764, 32757, 32744, 32727, 32704, 32677, 32644, 32607, 32564, 32517, 32464, 32407, 32344, 32277, 32205,
-    32127, 32045, 31958, 31866, 31770, 31668, 31561, 31450, 31334, 31213, 31087, 30957, 30822, 30682, 30537, 30388,
-    30234, 30075, 29912, 29744, 29572, 29395, 29214, 29028, 28838, 28643, 28444, 28241, 28033, 27821, 27605, 27385,
-    27160, 26931, 26698, 26461, 26220, 25975, 25726, 25473, 25216, 24956, 24691, 24423, 24151, 23875, 23596, 23313,
-    23026, 22736, 22442, 22145, 21845, 21541, 21234, 20924, 20610, 20294, 19974, 19651, 19325, 18997, 18665, 18331,
-    17993, 17653, 17310, 16965, 16617, 16266, 15913, 15558, 15200, 14840, 14477, 14113, 13746, 13377, 13006, 12633,
-    12258, 11881, 11503, 11122, 10740, 10357, 9971,  9584,  9196,  8806,  8415,  8023,  7630,  7235,  6839,  6442,
-    6044,  5646,  5246,  4845,  4444,  4042,  3640,  3237,  2833,  2429,  2025,  1620,  1216,  810,   405,   0};
-
-struct EffectSection
-{
-    int input;
-    int output;
-    int feed_back;
-    int feed_forward;
-    int gain;
-    int rate;
-    int depth;
-    int cutoff;
-};
-
-struct EffectPreset
-{
-    int length;
-    std::vector<EffectSection> sections;
-};
-
-// The presets of the game's code, in units of chunks.
-const EffectPreset& PresetOf(uint8_t type)
-{
-    static const EffectPreset kNone = {0, {}};
-    static const EffectPreset kSmallRoom = {
-        11, {{0, 9, 9830, -9830, 0, 0, 0, 0}, {3, 7, 3276, -3276, 0x3FFF, 0, 0, 0}, {0, 10, 5000, 0, 0, 0, 0, 0x5000}}};
-    static const EffectPreset kBigRoom = {14,
-                                          {{0, 9, 9830, -9830, 0, 0, 0, 0},
-                                           {2, 6, 3276, -3276, 0x3FFF, 0, 0, 0},
-                                           {9, 12, 3276, -3276, 0x3FFF, 0, 0, 0},
-                                           {0, 13, 6000, 0, 0, 0, 0, 0x5000}}};
-    static const EffectPreset kEcho = {14, {{0, 13, 20000, 0, 0x7FFF, 0, 0, 0x7FFF}}};
-    static const EffectPreset kChorus = {3, {{0, 1, 16384, 0, 0x7FFF, 7600, 700, 0}}};
-    static const EffectPreset kFlange = {3, {{0, 1, 0, 0x5FFF, 0x7FFF, 380, 500, 0}}};
-    switch (type)
-    {
-    case 1:
-        return kSmallRoom;
-    case 2:
-        return kBigRoom;
-    case 3:
-        return kChorus;
-    case 4:
-        return kFlange;
-    case 5:
-        return kEcho;
-    case 10:
-        return kBigRoom;
-    default:
-        return kNone;
-    }
-}
-
-int16_t Ramp(int16_t volume, int32_t samples, int16_t rate_high, uint16_t rate_low)
-{
-    const int32_t steps = samples >> 3;
-    if (steps == 0)
-    {
-        return volume;
-    }
-
-    int32_t low = static_cast<int32_t>(rate_low) * steps;
-    low >>= 16;
-    low += static_cast<int32_t>(rate_high) * steps;
-
-    return static_cast<int16_t>(volume + low);
-}
-
-int16_t Rate(double volume, double target, int32_t count, uint16_t& rate_low)
-{
-    if (count == 0)
-    {
-        if (target >= volume)
-        {
-            rate_low = 0xFFFF;
-
-            return 0x7FFF;
-        }
-
-        rate_low = 0;
-
-        return 0;
-    }
-
-    const double inverse = 1.0 / static_cast<double>(count);
-    target = std::max(target, 1.0);
-    if (volume <= 0.0)
-    {
-        volume = 1.0;
-    }
-
-    const double step = (target - volume) * inverse * 8.0;
-    const auto whole = static_cast<int16_t>(static_cast<int32_t>(step));
-    const double above = step - static_cast<double>(whole) + 1.0;
-    const auto carry = static_cast<int16_t>(static_cast<int32_t>(above));
-    rate_low = static_cast<uint16_t>(static_cast<uint32_t>((above - static_cast<double>(carry)) * 65535.0));
-
-    return static_cast<int16_t>(whole - 1 + carry);
-}
 
 int32_t Multiply4(int32_t a, int32_t b, int32_t c, int32_t d)
 {
@@ -863,47 +737,47 @@ void SbnPlayer::EndCompositionLoop(Player& player, uint32_t command)
     const uint32_t label = command & 0x1F;
     const auto count = static_cast<uint8_t>((command >> 5) & 0x7F);
     uint32_t depth = player.loop_depth;
-    if (player.loop_ends[depth] != 0)
+    if (player.loop_ends[depth] == 0)
     {
-        if (player.loop_ends[depth] == player.composition)
-        {
-            if (player.loop_counters[depth] != 0)
-            {
-                player.loop_counters[depth]--;
-                if (player.loop_counters[depth] == 0)
-                {
-                    player.loop_ends[depth] = 0;
-                    if (depth > 0)
-                    {
-                        depth--;
-                    }
-                }
-                else
-                {
-                    player.composition = player.loop_labels[label];
-                }
-            }
-            else
-            {
-                player.composition = player.loop_labels[label];
-            }
-        }
-        else if (depth < 3)
-        {
-            depth++;
-            player.loop_ends[depth] = player.composition;
-            player.loop_counters[depth] = count;
-            player.composition = player.loop_labels[label];
-        }
+        player.loop_ends[depth] = player.composition;
+        player.loop_counters[depth] = count;
+        player.composition = player.loop_labels[label];
     }
-    else
+    else if (player.loop_ends[depth] == player.composition)
     {
+        RepeatCompositionLoop(player, depth, label);
+    }
+    else if (depth < 3)
+    {
+        depth++;
         player.loop_ends[depth] = player.composition;
         player.loop_counters[depth] = count;
         player.composition = player.loop_labels[label];
     }
 
     player.loop_depth = depth;
+}
+
+// Ends a pass of the loop at `depth`. Jumps back to the label of the loop, or leaves the loop after the last pass. A
+// count of 0 repeats the loop without end.
+void SbnPlayer::RepeatCompositionLoop(Player& player, uint32_t& depth, uint32_t label)
+{
+    if (player.loop_counters[depth] != 0)
+    {
+        player.loop_counters[depth]--;
+        if (player.loop_counters[depth] == 0)
+        {
+            player.loop_ends[depth] = 0;
+            if (depth > 0)
+            {
+                depth--;
+            }
+
+            return;
+        }
+    }
+
+    player.composition = player.loop_labels[label];
 }
 
 void SbnPlayer::LoadPhrase(Player& player, uint32_t command)
@@ -1008,8 +882,36 @@ uint8_t SbnPlayer::ReadTrackByte(Player& player, Track& track)
 void SbnPlayer::UpdatePlaying(int index)
 {
     Player& player = players_[static_cast<std::size_t>(index)];
-    bool fading = false;
+    const bool fading = StepPlayerRamps(player);
     bool finished = false;
+    player.volume_changed = false;
+    for (int t = 0; t < kTracks; t++)
+    {
+        Track& track = player.tracks[static_cast<std::size_t>(t)];
+        if (track.position == 0)
+        {
+            continue;
+        }
+
+        StepTrackRamps(track, fading || player.volume_changed);
+        track.delay--;
+        if (track.delay <= 0 && RunTrackCommands(index, t, track))
+        {
+            finished = true;
+        }
+
+        UpdateTrackNotes(player, track);
+    }
+
+    if (finished)
+    {
+        player.state = kStateFetch;
+    }
+}
+
+// Steps the tempo ramp and the volume ramp of a player. Returns whether the volume ramps.
+bool SbnPlayer::StepPlayerRamps(Player& player)
+{
     if (player.tempo_ticks != 0)
     {
         player.tempo_ticks--;
@@ -1028,383 +930,406 @@ void SbnPlayer::UpdatePlaying(int index)
             static_cast<int32_t>(kUpdateScale * static_cast<uint32_t>(player.master_tempo) / kTempoScale);
     }
 
-    if (player.volume_ticks != 0)
+    if (player.volume_ticks == 0)
     {
-        player.volume_ticks--;
-        if (player.volume_ticks == 0)
+        return false;
+    }
+
+    player.volume_ticks--;
+    if (player.volume_ticks == 0)
+    {
+        player.master_volume = player.volume_target;
+        player.volume_target = 0;
+        player.volume_step = 0;
+    }
+    else
+    {
+        player.master_volume += player.volume_step;
+    }
+
+    return true;
+}
+
+// Clears the change flags of a track and steps the volume ramps of the track.
+void SbnPlayer::StepTrackRamps(Track& track, bool changed_volume)
+{
+    track.changed_pan = false;
+    track.changed_reverb = false;
+    track.changed_tune = false;
+    track.changed_volume = changed_volume;
+    if (track.volume_ticks != 0)
+    {
+        track.volume_ticks--;
+        track.instrument_volume =
+            track.volume_ticks == 0 ? track.volume_target : track.instrument_volume + track.volume_step;
+        track.changed_volume = true;
+    }
+
+    if (track.proximity_ticks != 0)
+    {
+        track.proximity_ticks--;
+        track.proximity_volume =
+            track.proximity_ticks == 0 ? track.proximity_target << 16 : track.proximity_volume + track.proximity_step;
+        track.changed_volume = true;
+    }
+}
+
+// Runs the commands of a track until one sets a delay. Returns true when the track data ends.
+bool SbnPlayer::RunTrackCommands(int index, int t, Track& track)
+{
+    Player& player = players_[static_cast<std::size_t>(index)];
+    uint8_t search_from = track.first_voice;
+    while (track.delay == 0)
+    {
+        const uint32_t command_place = track.position;
+        const uint8_t opcode = ReadTrackByte(player, track);
+        if (opcode == 0)
         {
-            player.master_volume = player.volume_target;
-            player.volume_target = 0;
-            player.volume_step = 0;
+            if (track.previous_position == 0)
+            {
+                return true;
+            }
+
+            track.position = track.previous_position;
+            track.previous_position = 0;
+        }
+        else if (opcode < 0x78)
+        {
+            track.delay = opcode;
+        }
+        else if (opcode < 0x80)
+        {
+            track.delay = ((opcode & 7) << 8) + ReadTrackByte(player, track) + 0x78;
+        }
+        else if (opcode < 0xD4)
+        {
+            StartNote(index, t, track, opcode, command_place, search_from);
         }
         else
         {
-            player.master_volume += player.volume_step;
+            RunCommand(index, track, opcode);
         }
-
-        fading = true;
     }
 
-    player.volume_changed = false;
-    for (int t = 0; t < kTracks; t++)
+    return false;
+}
+
+// Reads the velocity and the length of a note command, then starts the note on a voice of the track.
+void SbnPlayer::StartNote(int index, int t, Track& track, uint8_t opcode, uint32_t command_place, uint8_t& search_from)
+{
+    Player& player = players_[static_cast<std::size_t>(index)];
+    const int32_t key = opcode & 0x7F;
+    const uint8_t velocity = ReadTrackByte(player, track);
+    int32_t length = ReadTrackByte(player, track);
+    if (length >= 0xC0)
     {
-        Track& track = player.tracks[static_cast<std::size_t>(t)];
-        if (track.position == 0)
+        length = ((length & 0x3F) << 8) + ReadTrackByte(player, track) + 0xC0;
+    }
+
+    uint8_t voice_index = 0;
+    if (track.muted || !AcquireVoice(player, track, search_from, voice_index))
+    {
+        return;
+    }
+
+    Voice& voice = voices_[voice_index];
+    Note& note = player.notes[voice_index];
+    note.tremolo_depth = 0;
+    note.velocity = velocity > 0 ? velocity + 1 : 0;
+    note.length = length;
+    const int32_t level =
+        (((player.master_volume >> 21) * (track.instrument_volume >> 21) * (track.proximity_volume >> 21)) >> 20);
+    if (track.drums)
+    {
+        SetUpDrumNote(player, track, key, level, voice, note);
+    }
+    else
+    {
+        SetUpInstrumentNote(index, track, key, level, voice, note);
+    }
+
+    voice.wave = note.wave;
+    voice.pitch_ratio = note.pitch_ratio;
+    voice.bus = track.bus;
+    voice.track = t;
+    if (note.length > 1)
+    {
+        note.pending_tick = true;
+        note.tremolo_depth = track.tremolo_depth;
+        note.tremolo_phase = 0;
+        note.tremolo_delay = track.tremolo_delay;
+        voice.sync_flags = kSyncAll;
+        voice.priority = player.priority;
+        voice.client_priority = voice.priority;
+    }
+
+    voice.host_track = index * kTracks + t;
+    if (on_note)
+    {
+        on_note({index, t, static_cast<uint8_t>(key), velocity, length, track.drums, command_place, voice_index});
+    }
+}
+
+// Finds a voice for a new note of a track. Uses the next free voice of the track, or frees one by the rules of the
+// polyphony. Returns false when no voice is free.
+bool SbnPlayer::AcquireVoice(Player& player, const Track& track, uint8_t& search_from, uint8_t& voice_index)
+{
+    for (voice_index = search_from; voice_index < track.last_voice; voice_index++)
+    {
+        search_from++;
+        if (voices_[voice_index].priority == 0)
+        {
+            return true;
+        }
+    }
+
+    if (track.polyphony >= 5)
+    {
+        return StealVoice(player, track, voice_index);
+    }
+
+    voice_index = track.first_voice;
+    player.notes[voice_index].length = 0;
+    if (voices_[voice_index].priority <= player.priority)
+    {
+        ResetVoice(voice_index);
+
+        return true;
+    }
+
+    return false;
+}
+
+// Frees a voice of a track of polyphony 5 or more: one of a lower priority, then one whose note has ended, then the
+// one whose note has the shortest length left.
+bool SbnPlayer::StealVoice(Player& player, const Track& track, uint8_t& voice_index)
+{
+    for (voice_index = track.first_voice; voice_index < track.last_voice; voice_index++)
+    {
+        if (voices_[voice_index].priority < player.priority)
+        {
+            ResetVoice(voice_index);
+
+            return true;
+        }
+    }
+
+    for (voice_index = track.first_voice; voice_index < track.last_voice; voice_index++)
+    {
+        if (voices_[voice_index].priority == player.priority && player.notes[voice_index].length == 0)
+        {
+            ResetVoice(voice_index);
+
+            return true;
+        }
+    }
+
+    bool acquired = false;
+    int32_t shortest = 0xFFFF;
+    for (uint8_t other = track.first_voice; other < track.last_voice; other++)
+    {
+        const Note& held = player.notes[other];
+        if (voices_[other].priority == player.priority && !held.pending_tick && held.length < shortest)
+        {
+            shortest = held.length;
+            voice_index = other;
+            acquired = true;
+        }
+    }
+
+    if (acquired)
+    {
+        player.notes[voice_index].length = 0;
+        ResetVoice(voice_index);
+    }
+
+    return acquired;
+}
+
+// Sets the wave, the volume, the pitch, the pan and the reverb of a drum note from the drum of its key.
+void SbnPlayer::SetUpDrumNote(const Player& player, const Track& track, int32_t key, int32_t level, Voice& voice,
+                              Note& note)
+{
+    const BgmDrum* drum = nullptr;
+    if (key < 72)
+    {
+        drum = &global_drums_[static_cast<std::size_t>(key)];
+    }
+    else if (!player.parsed->drums.empty())
+    {
+        const auto number = static_cast<std::size_t>(key - 72);
+        drum = number < player.parsed->drums.size() ? &player.parsed->drums[number] : &player.parsed->drums[0];
+    }
+    else
+    {
+        drum = &global_drums_[0];
+    }
+
+    note.wave = WaveOf(drum->bank_patch >> 8, drum->bank_patch & 0xFF, voice.envelope);
+    const Wave& wave = waves_[static_cast<std::size_t>(note.wave)];
+    note.volume = drum->random_volume != 0
+                      ? note.velocity * RandomVolume(player.random_1, drum->volume, drum->random_volume)
+                      : note.velocity * drum->volume;
+    voice.client_volume = static_cast<int16_t>((level * (track.volume * note.volume)) >> 16);
+    note.detune = drum->key_base + track.coarse_detune + track.fine_detune - wave.key_base;
+    int32_t tune = note.detune + track.detune + player.detune;
+    if (drum->random_tune != 0)
+    {
+        note.rand_detune = RandomPitch(player.random_1, tune, drum->random_tune);
+        tune = note.rand_detune;
+    }
+
+    note.pitch_ratio = PitchRatio(tune) * wave.pitch_ratio;
+    voice.pan = drum->random_pan != 0 ? RandomPan(player.random_1, static_cast<uint8_t>(drum->pan), drum->random_pan)
+                                      : static_cast<uint8_t>(drum->pan);
+    voice.reverb =
+        drum->random_reverb != 0 ? RandomReverb(player.random_1, drum->reverb, drum->random_reverb) : drum->reverb;
+}
+
+// Sets the wave, the volume, the pitch, the pan, the reverb and the envelope of a note from the instrument of its
+// track.
+void SbnPlayer::SetUpInstrumentNote(int index, const Track& track, int32_t key, int32_t level, Voice& voice, Note& note)
+{
+    const Player& player = players_[static_cast<std::size_t>(index)];
+    note.volume = (level * (track.volume * note.velocity)) >> 9;
+    voice.client_volume = static_cast<int16_t>(note.volume);
+    note.wave = track.wave >= 0 ? track.wave : default_wave_;
+    const Wave& wave = waves_[static_cast<std::size_t>(note.wave)];
+    note.detune = key * 100 + track.coarse_detune + player.pitch_shift + track.fine_detune - wave.key_base;
+    note.pitch_ratio = PitchRatio(note.detune + track.detune + player.detune) * wave.pitch_ratio;
+    voice.pan = track.random_pan != 0 ? RandomPan(player.random_1, track.pan, track.random_pan) : track.pan;
+    voice.reverb = track.reverb;
+    if (track.press_override != 0)
+    {
+        voice.envelope.press = {{}, index, track.press_override - 1, 0};
+    }
+    else
+    {
+        voice.envelope.press = track.envelope.press;
+    }
+
+    voice.envelope.release = track.envelope.release;
+}
+
+// Steps the notes that a track plays on the voices of its range.
+void SbnPlayer::UpdateTrackNotes(Player& player, const Track& track)
+{
+    if (track.muted)
+    {
+        return;
+    }
+
+    for (uint8_t voice_index = track.first_voice; voice_index < track.last_voice; voice_index++)
+    {
+        Voice& voice = voices_[voice_index];
+        if (voice.priority != player.priority)
         {
             continue;
         }
 
-        track.changed_pan = false;
-        track.changed_reverb = false;
-        track.changed_tune = false;
-        track.changed_volume = fading || player.volume_changed;
-        if (track.volume_ticks != 0)
+        Note& note = player.notes[voice_index];
+        if (!note.pending_tick)
         {
-            track.volume_ticks--;
-            track.instrument_volume =
-                track.volume_ticks == 0 ? track.volume_target : track.instrument_volume + track.volume_step;
-            track.changed_volume = true;
+            UpdateNote(player, track, voice, note);
         }
 
-        if (track.proximity_ticks != 0)
+        note.pending_tick = false;
+    }
+}
+
+// Counts down the length of a note and applies the changes of the track to the voice of the note.
+void SbnPlayer::UpdateNote(const Player& player, const Track& track, Voice& voice, Note& note)
+{
+    if (note.length > 0)
+    {
+        note.length--;
+        if (note.length == 0)
         {
-            track.proximity_ticks--;
-            track.proximity_volume = track.proximity_ticks == 0 ? track.proximity_target << 16
-                                                                : track.proximity_volume + track.proximity_step;
-            track.changed_volume = true;
-        }
-
-        track.delay--;
-        if (track.delay <= 0)
-        {
-            uint8_t search_from = track.first_voice;
-            while (track.delay == 0)
-            {
-                const uint32_t command_place = track.position;
-                const uint8_t opcode = ReadTrackByte(player, track);
-                if (opcode < 0x80)
-                {
-                    if (opcode == 0)
-                    {
-                        if (track.previous_position != 0)
-                        {
-                            track.position = track.previous_position;
-                            track.previous_position = 0;
-                        }
-                        else
-                        {
-                            finished = true;
-                            break;
-                        }
-                    }
-                    else if (opcode >= 0x78)
-                    {
-                        track.delay = ((opcode & 7) << 8) + ReadTrackByte(player, track) + 0x78;
-                    }
-                    else
-                    {
-                        track.delay = opcode;
-                    }
-                }
-                else if (opcode >= 0xD4)
-                {
-                    RunCommand(index, track, opcode);
-                }
-                else
-                {
-                    const int32_t key = opcode & 0x7F;
-                    const uint8_t velocity = ReadTrackByte(player, track);
-                    int32_t length = ReadTrackByte(player, track);
-                    if (length >= 0xC0)
-                    {
-                        length = ((length & 0x3F) << 8) + ReadTrackByte(player, track) + 0xC0;
-                    }
-
-                    bool acquired = false;
-                    uint8_t voice_index = 0;
-                    if (!track.muted)
-                    {
-                        for (voice_index = search_from; voice_index < track.last_voice; voice_index++)
-                        {
-                            search_from++;
-                            if (voices_[voice_index].priority == 0)
-                            {
-                                acquired = true;
-                                break;
-                            }
-                        }
-
-                        if (!acquired)
-                        {
-                            if (track.polyphony >= 5)
-                            {
-                                for (voice_index = track.first_voice; voice_index < track.last_voice; voice_index++)
-                                {
-                                    if (voices_[voice_index].priority < player.priority)
-                                    {
-                                        ResetVoice(voice_index);
-                                        acquired = true;
-                                        break;
-                                    }
-                                }
-
-                                if (!acquired)
-                                {
-                                    for (voice_index = track.first_voice; voice_index < track.last_voice; voice_index++)
-                                    {
-                                        if (voices_[voice_index].priority == player.priority &&
-                                            player.notes[voice_index].length == 0)
-                                        {
-                                            ResetVoice(voice_index);
-                                            acquired = true;
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if (!acquired)
-                                {
-                                    int32_t shortest = 0xFFFF;
-                                    for (uint8_t other = track.first_voice; other < track.last_voice; other++)
-                                    {
-                                        const Note& held = player.notes[other];
-                                        if (voices_[other].priority == player.priority && !held.pending_tick &&
-                                            held.length < shortest)
-                                        {
-                                            shortest = held.length;
-                                            voice_index = other;
-                                            acquired = true;
-                                        }
-                                    }
-
-                                    if (acquired)
-                                    {
-                                        player.notes[voice_index].length = 0;
-                                        ResetVoice(voice_index);
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                voice_index = track.first_voice;
-                                player.notes[voice_index].length = 0;
-                                if (voices_[voice_index].priority <= player.priority)
-                                {
-                                    ResetVoice(voice_index);
-                                    acquired = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if (acquired)
-                    {
-                        Voice& voice = voices_[voice_index];
-                        Note& note = player.notes[voice_index];
-                        note.tremolo_depth = 0;
-                        note.velocity = velocity > 0 ? velocity + 1 : 0;
-                        note.length = length;
-                        const int32_t level = (((player.master_volume >> 21) * (track.instrument_volume >> 21) *
-                                                (track.proximity_volume >> 21)) >>
-                                               20);
-                        if (track.drums)
-                        {
-                            const BgmDrum* drum = nullptr;
-                            if (key < 72)
-                            {
-                                drum = &global_drums_[static_cast<std::size_t>(key)];
-                            }
-                            else if (!player.parsed->drums.empty())
-                            {
-                                const auto number = static_cast<std::size_t>(key - 72);
-                                drum = number < player.parsed->drums.size() ? &player.parsed->drums[number]
-                                                                            : &player.parsed->drums[0];
-                            }
-                            else
-                            {
-                                drum = &global_drums_[0];
-                            }
-
-                            note.wave = WaveOf(drum->bank_patch >> 8, drum->bank_patch & 0xFF, voice.envelope);
-                            const Wave& wave = waves_[static_cast<std::size_t>(note.wave)];
-                            note.volume =
-                                drum->random_volume != 0
-                                    ? note.velocity * RandomVolume(player.random_1, drum->volume, drum->random_volume)
-                                    : note.velocity * drum->volume;
-                            voice.client_volume = static_cast<int16_t>((level * (track.volume * note.volume)) >> 16);
-                            note.detune = drum->key_base + track.coarse_detune + track.fine_detune - wave.key_base;
-                            int32_t tune = note.detune + track.detune + player.detune;
-                            if (drum->random_tune != 0)
-                            {
-                                note.rand_detune = RandomPitch(player.random_1, tune, drum->random_tune);
-                                tune = note.rand_detune;
-                            }
-
-                            note.pitch_ratio = PitchRatio(tune) * wave.pitch_ratio;
-                            voice.pan =
-                                drum->random_pan != 0
-                                    ? RandomPan(player.random_1, static_cast<uint8_t>(drum->pan), drum->random_pan)
-                                    : static_cast<uint8_t>(drum->pan);
-                            voice.reverb = drum->random_reverb != 0
-                                               ? RandomReverb(player.random_1, drum->reverb, drum->random_reverb)
-                                               : drum->reverb;
-                        }
-                        else
-                        {
-                            note.volume = (level * (track.volume * note.velocity)) >> 9;
-                            voice.client_volume = static_cast<int16_t>(note.volume);
-                            note.wave = track.wave >= 0 ? track.wave : default_wave_;
-                            const Wave& wave = waves_[static_cast<std::size_t>(note.wave)];
-                            note.detune = key * 100 + track.coarse_detune + player.pitch_shift + track.fine_detune -
-                                          wave.key_base;
-                            note.pitch_ratio =
-                                PitchRatio(note.detune + track.detune + player.detune) * wave.pitch_ratio;
-                            voice.pan = track.random_pan != 0 ? RandomPan(player.random_1, track.pan, track.random_pan)
-                                                              : track.pan;
-                            voice.reverb = track.reverb;
-                            if (track.press_override != 0)
-                            {
-                                voice.envelope.press = {{}, index, track.press_override - 1, 0};
-                            }
-                            else
-                            {
-                                voice.envelope.press = track.envelope.press;
-                            }
-
-                            voice.envelope.release = track.envelope.release;
-                        }
-
-                        voice.wave = note.wave;
-                        voice.pitch_ratio = note.pitch_ratio;
-                        voice.bus = track.bus;
-                        voice.track = t;
-                        if (note.length > 1)
-                        {
-                            note.pending_tick = true;
-                            note.tremolo_depth = track.tremolo_depth;
-                            note.tremolo_phase = 0;
-                            note.tremolo_delay = track.tremolo_delay;
-                            voice.sync_flags = kSyncAll;
-                            voice.priority = player.priority;
-                            voice.client_priority = voice.priority;
-                        }
-
-                        voice.host_track = index * kTracks + t;
-                        if (on_note)
-                        {
-                            on_note({index, t, static_cast<uint8_t>(key), velocity, length, track.drums, command_place,
-                                     voice_index});
-                        }
-                    }
-                }
-            }
-        }
-
-        for (uint8_t voice_index = track.first_voice; voice_index < track.last_voice; voice_index++)
-        {
-            if (track.muted)
-            {
-                continue;
-            }
-
-            Voice& voice = voices_[voice_index];
-            if (voice.priority != player.priority)
-            {
-                continue;
-            }
-
-            Note& note = player.notes[voice_index];
-            if (!note.pending_tick)
-            {
-                if (note.length > 0)
-                {
-                    note.length--;
-                    if (note.length == 0)
-                    {
-                        voice.envelope_flags |= kEnvKeyReleased;
-                    }
-                }
-
-                const int32_t level = (((player.master_volume >> 21) * (track.instrument_volume >> 21) *
-                                        (track.proximity_volume >> 21)) >>
-                                       20);
-                const auto new_pitch = [&](int32_t tuning)
-                {
-                    const Wave& wave = waves_[static_cast<std::size_t>(note.wave)];
-                    note.pitch_ratio = PitchRatio(tuning) * wave.pitch_ratio;
-                    if (voice.pitch_ratio != note.pitch_ratio)
-                    {
-                        voice.pitch_ratio = note.pitch_ratio;
-                        voice.sync_flags |= kSyncPitch;
-                    }
-                };
-
-                if (track.drums)
-                {
-                    if (track.changed_tune || player.detune != 0)
-                    {
-                        new_pitch((note.detune + note.rand_detune) + track.detune + player.detune);
-                    }
-
-                    if (track.changed_volume)
-                    {
-                        voice.client_volume = static_cast<int16_t>((level * (track.volume * note.volume)) >> 16);
-                        voice.envelope_flags |= kEnvVolumeChanged;
-                    }
-                }
-                else
-                {
-                    if (note.tremolo_depth != 0)
-                    {
-                        if (note.tremolo_delay != 0)
-                        {
-                            note.tremolo_delay--;
-                        }
-                        else
-                        {
-                            note.tremolo_phase = static_cast<uint8_t>(note.tremolo_phase + track.tremolo_rate);
-                            const auto shape = static_cast<uint8_t>((note.tremolo_phase << 2) + 3);
-                            const uint8_t quadrant = note.tremolo_phase >> 6;
-                            int32_t detune =
-                                (quadrant == 1 || quadrant == 3) ? static_cast<uint8_t>(~shape) + 1 : shape;
-                            detune = (detune * track.tremolo_depth) >> 8;
-                            if (quadrant >= 2)
-                            {
-                                detune = -detune;
-                            }
-
-                            new_pitch(detune + note.detune + track.detune + player.detune);
-                        }
-                    }
-                    else if (track.changed_tune || player.detune != 0)
-                    {
-                        new_pitch(note.detune + track.detune + player.detune);
-                    }
-
-                    if (track.changed_volume)
-                    {
-                        note.volume = (level * (track.volume * note.velocity)) >> 9;
-                        voice.client_volume = static_cast<int16_t>(note.volume);
-                        voice.envelope_flags |= kEnvVolumeChanged;
-                        voice.pan = track.pan;
-                        voice.reverb = track.reverb;
-                    }
-                    else if (track.changed_pan || track.changed_reverb)
-                    {
-                        voice.pan = track.pan;
-                        voice.reverb = track.reverb;
-                        voice.sync_flags |= kSyncPanMix;
-                    }
-                }
-            }
-
-            note.pending_tick = false;
+            voice.envelope_flags |= kEnvKeyReleased;
         }
     }
 
-    if (finished)
+    const int32_t level =
+        (((player.master_volume >> 21) * (track.instrument_volume >> 21) * (track.proximity_volume >> 21)) >> 20);
+    if (track.drums)
     {
-        player.state = kStateFetch;
+        UpdateDrumNote(player, track, level, voice, note);
+    }
+    else
+    {
+        UpdateInstrumentNote(player, track, level, voice, note);
+    }
+}
+
+// Applies the changes of tune and volume of a track to a drum note.
+void SbnPlayer::UpdateDrumNote(const Player& player, const Track& track, int32_t level, Voice& voice, Note& note)
+{
+    if (track.changed_tune || player.detune != 0)
+    {
+        SetNotePitch(voice, note, (note.detune + note.rand_detune) + track.detune + player.detune);
+    }
+
+    if (track.changed_volume)
+    {
+        voice.client_volume = static_cast<int16_t>((level * (track.volume * note.volume)) >> 16);
+        voice.envelope_flags |= kEnvVolumeChanged;
+    }
+}
+
+// Steps the tremolo of an instrument note and applies the changes of tune, volume, pan and reverb of the track.
+void SbnPlayer::UpdateInstrumentNote(const Player& player, const Track& track, int32_t level, Voice& voice, Note& note)
+{
+    if (note.tremolo_depth != 0)
+    {
+        if (note.tremolo_delay != 0)
+        {
+            note.tremolo_delay--;
+        }
+        else
+        {
+            note.tremolo_phase = static_cast<uint8_t>(note.tremolo_phase + track.tremolo_rate);
+            const auto shape = static_cast<uint8_t>((note.tremolo_phase << 2) + 3);
+            const uint8_t quadrant = note.tremolo_phase >> 6;
+            int32_t detune = (quadrant == 1 || quadrant == 3) ? static_cast<uint8_t>(~shape) + 1 : shape;
+            detune = (detune * track.tremolo_depth) >> 8;
+            if (quadrant >= 2)
+            {
+                detune = -detune;
+            }
+
+            SetNotePitch(voice, note, detune + note.detune + track.detune + player.detune);
+        }
+    }
+    else if (track.changed_tune || player.detune != 0)
+    {
+        SetNotePitch(voice, note, note.detune + track.detune + player.detune);
+    }
+
+    if (track.changed_volume)
+    {
+        note.volume = (level * (track.volume * note.velocity)) >> 9;
+        voice.client_volume = static_cast<int16_t>(note.volume);
+        voice.envelope_flags |= kEnvVolumeChanged;
+        voice.pan = track.pan;
+        voice.reverb = track.reverb;
+    }
+    else if (track.changed_pan || track.changed_reverb)
+    {
+        voice.pan = track.pan;
+        voice.reverb = track.reverb;
+        voice.sync_flags |= kSyncPanMix;
+    }
+}
+
+// Sets the pitch of a note from a tuning in cents. Marks the voice for a pitch sync when the pitch changes.
+void SbnPlayer::SetNotePitch(Voice& voice, Note& note, int32_t tuning)
+{
+    const Wave& wave = waves_[static_cast<std::size_t>(note.wave)];
+    note.pitch_ratio = PitchRatio(tuning) * wave.pitch_ratio;
+    if (voice.pitch_ratio != note.pitch_ratio)
+    {
+        voice.pitch_ratio = note.pitch_ratio;
+        voice.sync_flags |= kSyncPitch;
     }
 }
 
@@ -1427,6 +1352,7 @@ void SbnPlayer::RunCommand(int index, Track& track, uint8_t opcode)
     {
         return static_cast<uint16_t>((args[at] << 8) | args[at + 1]);
     };
+
     const auto to_tempo = [&](uint32_t bpm)
     {
         auto value = static_cast<uint32_t>(static_cast<float>(bpm) * player.playback_rate);
@@ -1828,33 +1754,6 @@ void SbnPlayer::AfterVolumeChange(Voice& voice)
 
 void SbnPlayer::UpdateVoices()
 {
-    const auto interpolated = [](const Voice& voice)
-    {
-        return voice.initial +
-               static_cast<int32_t>(voice.envelope_delta * static_cast<float>(voice.duration - voice.time_left));
-    };
-    const auto apply_change = [&](Voice& voice, int32_t& current)
-    {
-        voice.envelope_flags = static_cast<uint8_t>(voice.envelope_flags & ~kEnvVolumeChanged);
-        if (voice.time_left > kFrameMicroseconds)
-        {
-            voice.time_left -= kFrameMicroseconds;
-            voice.envelope_flags |= kEnvHandledChange;
-            current = interpolated(voice);
-        }
-        else
-        {
-            current = voice.target;
-        }
-
-        voice.delta = kChunk;
-    };
-    const auto set_volume = [](Voice& voice, int32_t current)
-    {
-        voice.volume = static_cast<int16_t>(Multiply4(current, voice.client_volume, voice.relative_start, voice.scale));
-        voice.sync_flags |= kSyncParams;
-    };
-
     for (Voice& voice : voices_)
     {
         if (!voice.has_commands)
@@ -1865,854 +1764,144 @@ void SbnPlayer::UpdateVoices()
         if ((voice.envelope_flags & kEnvHandledChange) != 0)
         {
             AfterVolumeChange(voice);
-            continue;
         }
-
-        int32_t current = 0;
-        if ((voice.envelope_flags & kEnvKeyReleased) != 0)
+        else if ((voice.envelope_flags & kEnvKeyReleased) != 0)
         {
-            voice.envelope_flags = static_cast<uint8_t>((voice.envelope_flags & ~kEnvKeyReleased) | kEnvReleasing);
-            voice.commands = voice.envelope.release;
-            voice.initial = voice.time_left > kFrameMicroseconds ? interpolated(voice) : voice.target;
-            voice.interval = ReadEnvelope(voice.commands);
-            uint8_t value = ReadEnvelope(voice.commands);
-            if ((value & 0x80) != 0)
-            {
-                value &= 0x7F;
-                voice.relative_release = true;
-                voice.relative_start = voice.initial;
-            }
-
-            voice.target = value;
-            voice.time_left = IntervalTime(voice.interval);
-            voice.duration = voice.time_left;
-            if ((voice.envelope_flags & kEnvVolumeChanged) != 0)
-            {
-                apply_change(voice, current);
-            }
-            else
-            {
-                voice.delta = GetDelta(voice.duration);
-                current = voice.target;
-            }
-
-            set_volume(voice, current);
+            ReleaseEnvelope(voice);
         }
         else if (voice.time_left == -1)
         {
             if ((voice.envelope_flags & kEnvVolumeChanged) != 0)
             {
                 voice.envelope_flags = static_cast<uint8_t>(voice.envelope_flags & ~kEnvVolumeChanged);
-                set_volume(voice, voice.initial);
+                SetEnvelopeVolume(voice, voice.initial);
             }
         }
         else
         {
-            voice.time_left -= kFrameMicroseconds;
-            if (voice.time_left <= 0)
-            {
-                if (EnvelopeByte(voice.commands) == kEndCommand)
-                {
-                    if ((voice.envelope_flags & kEnvReleasing) != 0)
-                    {
-                        voice.envelope_flags = 0;
-                        voice.has_commands = false;
-                        voice.done_pending = true;
-                    }
-                    else
-                    {
-                        voice.time_left = -1;
-                        voice.duration = -1;
-                        voice.delta = kChunk;
-                        voice.envelope_delta = 0.0F;
-                        voice.initial = voice.target;
-                    }
-                }
-                else
-                {
-                    voice.interval = StepEnvelope(voice);
-                    voice.initial = voice.target;
-                    voice.target = ReadEnvelope(voice.commands) & 0x7F;
-                    voice.time_left = IntervalTime(voice.interval);
-                    voice.duration = voice.time_left;
-                    voice.envelope_delta =
-                        voice.duration != 0 ? (static_cast<float>(voice.target) - static_cast<float>(voice.initial)) /
-                                                  static_cast<float>(voice.duration)
-                                            : 0.0F;
-                    if ((voice.envelope_flags & kEnvVolumeChanged) != 0)
-                    {
-                        apply_change(voice, current);
-                    }
-                    else
-                    {
-                        voice.delta = GetDelta(voice.duration);
-                        current = voice.target;
-                    }
-
-                    set_volume(voice, current);
-                }
-            }
-            else if ((voice.envelope_flags & kEnvVolumeChanged) != 0)
-            {
-                apply_change(voice, current);
-                set_volume(voice, current);
-            }
+            StepVoiceEnvelope(voice);
         }
     }
 }
 
-void SbnPlayer::SynthStopVoice(int voice)
+// Returns the envelope level of a voice at the current time of the segment.
+int32_t SbnPlayer::EnvelopeLevel(const Voice& voice)
 {
-    Voice& held = voices_[static_cast<std::size_t>(voice)];
-    held.playing = false;
-    held.mixer_dirty = true;
-    held.mixer_volume = 1;
-    held.resampler_delta = 0.0F;
-    held.resampler_first = true;
-    held.last_sample = 0;
-    held.decoder_first = true;
-    held.sample = 0;
-    if (held.physical_wave >= 0)
-    {
-        const Wave& wave = waves_[static_cast<std::size_t>(held.physical_wave)];
-        held.memory_in = wave.data;
-        if (wave.loop_end != 0)
-        {
-            held.loop_count = static_cast<int32_t>(wave.loop_count);
-        }
-    }
+    return voice.initial +
+           static_cast<int32_t>(voice.envelope_delta * static_cast<float>(voice.duration - voice.time_left));
 }
 
-void SbnPlayer::SynthStartVoice(int voice)
+// Applies a change of the client volume of a voice during a segment. Returns the envelope level to use.
+int32_t SbnPlayer::ApplyVolumeChange(Voice& voice)
 {
-    Voice& held = voices_[static_cast<std::size_t>(voice)];
-    const Wave& wave = waves_[static_cast<std::size_t>(held.wave)];
-    held.physical_bus = held.bus;
-    held.physical_wave = held.wave;
-    held.memory_in = wave.data;
-    held.sample = 0;
-    held.book_size = wave.book_size;
-    if (wave.loop_end != 0)
+    int32_t current = 0;
+    voice.envelope_flags = static_cast<uint8_t>(voice.envelope_flags & ~kEnvVolumeChanged);
+    if (voice.time_left > kFrameMicroseconds)
     {
-        held.loop_start_sample = wave.loop_start;
-        held.loop_end_sample = wave.loop_end;
-        held.loop_count = static_cast<int32_t>(wave.loop_count);
-        if (wave.type == 0 && wave.loop_state != 0)
-        {
-            std::array<uint8_t, 32> state = {};
-            build_memory_->Read(wave.loop_state, state.data(), state.size());
-            build_memory_->Write(held.decoder_loop_state, state.data(), state.size());
-        }
+        voice.time_left -= kFrameMicroseconds;
+        voice.envelope_flags |= kEnvHandledChange;
+        current = EnvelopeLevel(voice);
     }
     else
     {
-        held.loop_start_sample = 0;
-        held.loop_end_sample = 0;
-        held.loop_count = 0;
+        current = voice.target;
     }
 
-    held.playing = true;
-    held.mixer_dirty = true;
-    held.mixer_delta = 0;
-    held.segment_end = held.delta;
-    held.mixer_pan = held.pan;
-    held.mixer_volume = static_cast<int16_t>((static_cast<int32_t>(held.volume) * held.volume) >> 15);
-    held.dry = kEqualPower[held.reverb & 0x7F];
-    held.wet = kEqualPower[127 - (held.reverb & 0x7F)];
-    if (held.segment_end != 0)
+    voice.delta = kChunk;
+
+    return current;
+}
+
+// Sets the volume of a voice from an envelope level and marks the voice for a mixer sync.
+void SbnPlayer::SetEnvelopeVolume(Voice& voice, int32_t current)
+{
+    voice.volume = static_cast<int16_t>(Multiply4(current, voice.client_volume, voice.relative_start, voice.scale));
+    voice.sync_flags |= kSyncParams;
+}
+
+// Sets the volume and the ramp length of a voice at the start of an envelope segment.
+void SbnPlayer::SetSegmentVolume(Voice& voice)
+{
+    int32_t current = 0;
+    if ((voice.envelope_flags & kEnvVolumeChanged) != 0)
     {
-        held.current_left = 1;
-        held.current_right = 1;
+        current = ApplyVolumeChange(voice);
     }
     else
     {
-        const std::size_t left = config_.stereo ? held.mixer_pan : 64;
-        const std::size_t right = config_.stereo ? 127U - held.mixer_pan : 64;
-        held.current_left = static_cast<int16_t>((held.mixer_volume * kEqualPower[left]) >> 15);
-        held.current_right = static_cast<int16_t>((held.mixer_volume * kEqualPower[right]) >> 15);
+        voice.delta = GetDelta(voice.duration);
+        current = voice.target;
     }
 
-    held.ratio = held.pitch_ratio;
+    SetEnvelopeVolume(voice, current);
 }
 
-void SbnPlayer::RefreshMixer(Voice& voice)
+// Starts the release envelope of a voice whose key has been released.
+void SbnPlayer::ReleaseEnvelope(Voice& voice)
 {
-    if (voice.mixer_delta >= voice.segment_end)
+    voice.envelope_flags = static_cast<uint8_t>((voice.envelope_flags & ~kEnvKeyReleased) | kEnvReleasing);
+    voice.commands = voice.envelope.release;
+    voice.initial = voice.time_left > kFrameMicroseconds ? EnvelopeLevel(voice) : voice.target;
+    voice.interval = ReadEnvelope(voice.commands);
+    uint8_t value = ReadEnvelope(voice.commands);
+    if ((value & 0x80) != 0)
     {
-        voice.mixer_delta = voice.segment_end;
-        const std::size_t left = config_.stereo ? voice.mixer_pan : 64;
-        const std::size_t right = config_.stereo ? 127U - voice.mixer_pan : 64;
-        voice.current_left = static_cast<int16_t>((voice.mixer_volume * kEqualPower[left]) >> 15);
-        voice.current_right = static_cast<int16_t>((voice.mixer_volume * kEqualPower[right]) >> 15);
-    }
-    else
-    {
-        voice.current_left = Ramp(voice.current_left, voice.mixer_delta, voice.rate_high_left, voice.rate_low_left);
-        voice.current_right = Ramp(voice.current_right, voice.mixer_delta, voice.rate_high_right, voice.rate_low_right);
+        value &= 0x7F;
+        voice.relative_release = true;
+        voice.relative_start = voice.initial;
     }
 
-    if (voice.current_left == 0)
-    {
-        voice.current_left = 1;
-    }
-
-    if (voice.current_right == 0)
-    {
-        voice.current_right = 1;
-    }
+    voice.target = value;
+    voice.time_left = IntervalTime(voice.interval);
+    voice.duration = voice.time_left;
+    SetSegmentVolume(voice);
 }
 
-void SbnPlayer::SynthSetMixer(int voice, int16_t volume, int32_t delta, uint8_t pan, uint8_t reverb)
+// Steps the envelope of a voice by a chunk. Starts the next segment when the current one ends. Holds or ends the
+// envelope at the end of the commands.
+void SbnPlayer::StepVoiceEnvelope(Voice& voice)
 {
-    Voice& held = voices_[static_cast<std::size_t>(voice)];
-    RefreshMixer(held);
-    held.mixer_delta = 0;
-    held.segment_end = delta;
-    held.mixer_pan = pan;
-    held.mixer_volume = static_cast<int16_t>((static_cast<int32_t>(volume) * volume) >> 15);
-    held.dry = kEqualPower[reverb & 0x7F];
-    held.wet = kEqualPower[127 - (reverb & 0x7F)];
-    held.mixer_dirty = true;
-}
-
-void SbnPlayer::SynthSetPanAndMix(int voice, uint8_t pan, uint8_t reverb)
-{
-    Voice& held = voices_[static_cast<std::size_t>(voice)];
-    RefreshMixer(held);
-    held.mixer_pan = pan;
-    held.dry = kEqualPower[reverb & 0x7F];
-    held.wet = kEqualPower[127 - (reverb & 0x7F)];
-    held.mixer_dirty = true;
-}
-
-void SbnPlayer::SynthSetVolumeDelta(int voice, int16_t volume, int32_t delta)
-{
-    Voice& held = voices_[static_cast<std::size_t>(voice)];
-    RefreshMixer(held);
-    held.mixer_volume = static_cast<int16_t>((static_cast<int32_t>(volume) * volume) >> 15);
-    held.mixer_delta = 0;
-    held.segment_end = delta;
-    held.mixer_dirty = true;
-}
-
-void SbnPlayer::InitFilter(LowPass& filter, AudioMemory& memory)
-{
-    constexpr int kScale = 16384;
-    filter.first = true;
-    const int16_t time_constant = static_cast<int16_t>(filter.cutoff >> 1);
-    filter.gain = static_cast<int16_t>(kScale - time_constant);
-    filter.coefficients.fill(0);
-    filter.coefficients[8] = time_constant;
-    double attenuation = static_cast<double>(time_constant) / kScale;
-    for (std::size_t i = 9; i < filter.coefficients.size(); i++)
+    voice.time_left -= kFrameMicroseconds;
+    if (voice.time_left > 0)
     {
-        attenuation *= static_cast<double>(time_constant) / kScale;
-        filter.coefficients[i] = static_cast<int16_t>(attenuation * kScale);
-    }
-
-    std::array<uint8_t, 32> bytes = {};
-    for (std::size_t i = 0; i < filter.coefficients.size(); i++)
-    {
-        xsflib::StoreBe16(bytes.data() + i * 2, static_cast<uint16_t>(filter.coefficients[i]));
-    }
-
-    memory.Write(filter.coefficients_address, bytes.data(), bytes.size());
-}
-
-void SbnPlayer::LoadEffect(Bus& bus, Effect& effect, uint8_t type)
-{
-    (void)bus;
-    constexpr double kConvert = 173123.404906676;
-    const EffectPreset& preset = PresetOf(type);
-    effect.delay_count = static_cast<int>(preset.sections.size());
-    effect.length = preset.length * kChunk;
-    effect.input = 0;
-    const std::vector<uint8_t> zeros(kFxLength * 2, 0);
-    build_memory_->Write(effect.base, zeros.data(), zeros.size());
-    for (std::size_t i = 0; i < preset.sections.size(); i++)
-    {
-        const EffectSection& section = preset.sections[i];
-        Delay& delay = effect.delays[i];
-        delay.input = static_cast<uint32_t>(section.input * kChunk);
-        delay.output = static_cast<uint32_t>(section.output * kChunk);
-        delay.feed_back = static_cast<int16_t>(section.feed_back);
-        delay.feed_forward = static_cast<int16_t>(section.feed_forward);
-        delay.gain = static_cast<int16_t>(section.gain);
-        delay.has_resampler = section.rate != 0;
-        if (delay.has_resampler)
+        if ((voice.envelope_flags & kEnvVolumeChanged) != 0)
         {
-            delay.mod_increment = static_cast<float>(
-                (2.0 * static_cast<double>(static_cast<float>(section.rate) / 1000.0F)) / config_.output_rate);
-            delay.mod_gain = static_cast<float>(static_cast<double>(section.depth) / kConvert) *
-                             static_cast<float>(delay.output - delay.input);
-            delay.mod_value = 1.0F;
-            delay.mod_delta = 0;
-            delay.resampler_delta = 0.0F;
-            delay.resampler_first = true;
+            const int32_t current = ApplyVolumeChange(voice);
+            SetEnvelopeVolume(voice, current);
         }
 
-        delay.has_filter = section.cutoff != 0;
-        if (delay.has_filter)
-        {
-            delay.filter.cutoff = static_cast<int16_t>(section.cutoff);
-            InitFilter(delay.filter, *build_memory_);
-        }
-    }
-}
-
-void SbnPlayer::RunFrame(AudioList& list, AudioMemory& memory, uint32_t output, int samples)
-{
-    build_memory_ = &memory;
-    for (Player& player : players_)
-    {
-        player.frames++;
-    }
-
-    uint32_t place = output;
-    for (int left = samples; left > 0; left -= kChunk)
-    {
-        RunChunkClients();
-        BuildChunk(list, memory, place);
-        place += kChunk * 4;
-    }
-}
-
-void SbnPlayer::BuildChunk(AudioList& list, AudioMemory& memory, uint32_t place)
-{
-    constexpr uint32_t kSize = kChunkBytes;
-    constexpr uint32_t kBoth = kChunkBytes * 2;
-    const auto load = [&](uint32_t bytes, uint32_t dmem, uint32_t address)
-    {
-        list.commands.push_back({kOpLoad | (bytes << 12) | dmem, address});
-    };
-    const auto save = [&](uint32_t bytes, uint32_t dmem, uint32_t address)
-    {
-        list.commands.push_back({kOpSave | (bytes << 12) | dmem, address});
-    };
-    const auto mix = [&](uint16_t gain, uint32_t in, uint32_t out)
-    {
-        list.commands.push_back({kOpMix | gain, (in << 16) | out});
-    };
-
-    std::array<std::vector<int>, kBuses> by_bus;
-    for (int i = 0; i < kVoices; i++)
-    {
-        const uint8_t bus = voices_[static_cast<std::size_t>(i)].physical_bus;
-        if (bus < kBuses)
-        {
-            by_bus[bus].push_back(i);
-        }
-    }
-
-    bool first_bus = true;
-    for (int b = 0; b < kBuses; b++)
-    {
-        if (by_bus[static_cast<std::size_t>(b)].empty())
-        {
-            continue;
-        }
-
-        Bus& bus = buses_[static_cast<std::size_t>(b)];
-        list.ClearBuffer(kMainLeft, 8 * kChunk);
-        for (const int voice : by_bus[static_cast<std::size_t>(b)])
-        {
-            list.MarkVoice(voices_[static_cast<std::size_t>(voice)].host_track);
-            PullVoice(list, voice, memory);
-        }
-
-        list.MarkVoicesEnd();
-
-        if (bus.effect_type != 0)
-        {
-            PullEffect(list, bus.effects[0], kAuxLeft);
-            PullEffect(list, bus.effects[1], kAuxRight);
-        }
-
-        if (b == delayed_bus_ && delayed_channel_ != kDelayNone)
-        {
-            const uint32_t main_out = delayed_channel_ == kDelayLeft ? kMainLeft : kMainRight;
-            const uint32_t aux_out = delayed_channel_ == kDelayLeft ? kAuxLeft : kAuxRight;
-            const auto now = static_cast<uint32_t>(delay_counter_ % delay_count_) * kSize;
-            const auto next = static_cast<uint32_t>((delay_counter_ + 1) % delay_count_) * kSize;
-            save(kSize, main_out, delay_main_ + now);
-            load(kSize, main_out, delay_main_ + next);
-            save(kSize, aux_out, delay_aux_ + now);
-            load(kSize, aux_out, delay_aux_ + next);
-        }
-
-        if (first_bus)
-        {
-            list.ClearBuffer(kTemp, kBoth);
-        }
-        else
-        {
-            load(kBoth, kTemp, wet_accumulator_);
-        }
-
-        mix(bus.gain, kAuxLeft, kTemp);
-        mix(bus.gain, kAuxRight, kTemp + kSize);
-        save(kBoth, kTemp, wet_accumulator_);
-        if (first_bus)
-        {
-            list.ClearBuffer(kTemp, kBoth);
-            first_bus = false;
-        }
-        else
-        {
-            load(kBoth, kTemp, dry_accumulator_);
-        }
-
-        mix(bus.gain, kMainLeft, kTemp);
-        mix(bus.gain, kMainRight, kTemp + kSize);
-        save(kBoth, kTemp, dry_accumulator_);
-    }
-
-    list.MarkChunkEnd();
-    list.commands.push_back({kOpMove, (kMainLeft << 16) | kBoth});
-    load(kBoth, kAuxLeft, wet_accumulator_);
-    mix(0x7FFF, kAuxLeft, kMainLeft);
-    mix(0x7FFF, kAuxRight, kMainRight);
-    list.commands.push_back({static_cast<uint32_t>(kAudioInterleave) << 24, 0});
-    save(kBoth, 0, place);
-    delay_counter_++;
-}
-
-void SbnPlayer::DecodeChunk(AudioList& list, Voice& voice, const Wave& wave, int tsam, int bytes, int16_t out,
-                            uint32_t flags)
-{
-    (void)wave;
-    uint32_t align = 0;
-    if (bytes > 0)
-    {
-        const auto location = static_cast<uint32_t>(voice.memory_in);
-        align = location & 7;
-        const uint32_t total = static_cast<uint32_t>(bytes) + align;
-        list.commands.push_back(
-            {kOpLoad | (((total + 8 - (total & 7)) & kDmemMask) << 12) | kDecoderIn, location - align});
-    }
-
-    if ((flags & kAudioFlagLoop) != 0)
-    {
-        list.SetLoop(voice.decoder_loop_state);
-    }
-
-    list.commands.push_back({static_cast<uint32_t>(kAudioAdpcm) << 24 | (voice.decoder_state & kAddressMask),
-                             (flags << 28) | ((static_cast<uint32_t>(tsam * 2) & kDmemMask) << 16) |
-                                 ((align & 0xF) << 12) | (static_cast<uint32_t>(out) & kDmemMask)});
-    voice.decoder_first = false;
-}
-
-void SbnPlayer::PullVoice(AudioList& list, int index, AudioMemory& memory)
-{
-    (void)memory;
-    Voice& voice = voices_[static_cast<std::size_t>(index)];
-    if (!voice.playing)
-    {
         return;
     }
 
-    const Wave& wave = waves_[static_cast<std::size_t>(voice.physical_wave)];
-    int out = kDecoderOut;
-    voice.ratio = std::min(voice.ratio, kMaxRatio);
-    voice.ratio = static_cast<float>(static_cast<int32_t>(voice.ratio * kUnityPitch));
-    voice.ratio = voice.ratio / kUnityPitch;
-    const float exact = voice.resampler_delta + voice.ratio * static_cast<float>(kChunk);
-    int32_t count = static_cast<int32_t>(exact);
-    voice.resampler_delta = exact - static_cast<float>(count);
-    if (count != 0)
+    if (EnvelopeByte(voice.commands) != kEndCommand)
     {
-        const auto loop_end = static_cast<int64_t>(voice.loop_end_sample);
-        const int32_t wave_length = static_cast<int32_t>(wave.length / kFrameBytes * kFrameBytes);
-        if (wave.type == 0)
-        {
-            list.LoadAdpcm(voice.book_size, wave.book);
-            const bool looped = loop_end < static_cast<int64_t>(count) + voice.sample && voice.loop_count != 0;
-            int32_t samples = looped ? static_cast<int32_t>(loop_end - voice.sample) : count;
-            const int32_t left = voice.last_sample != 0 ? kFrameSamples - voice.last_sample : 0;
-            int32_t tsam = std::max(samples - left, 0);
-            int32_t frames = (tsam + kFrameSamples - 1) >> 4;
-            int32_t bytes = frames * kFrameBytes;
-            if (looped)
-            {
-                DecodeChunk(list, voice, wave, tsam, bytes, static_cast<int16_t>(out),
-                            voice.decoder_first ? kAudioFlagInit : 0U);
-                out += voice.last_sample != 0 ? voice.last_sample << 1 : kFrameSamples << 1;
-                voice.last_sample = static_cast<int32_t>(voice.loop_start_sample & 0xF);
-                voice.memory_in = static_cast<int64_t>(wave.data) + kFrameBytes * (voice.loop_start_sample >> 4);
-                voice.sample = static_cast<int32_t>(voice.loop_start_sample);
-                int buffer_end = out;
-                while (count > samples)
-                {
-                    count -= samples;
-                    const int place = (buffer_end + ((frames + 1) << 5) + 16) & ~0x1F;
-                    buffer_end += samples << 1;
-                    if (voice.loop_count != -1 && voice.loop_count != 0)
-                    {
-                        voice.loop_count--;
-                    }
+        voice.interval = StepEnvelope(voice);
+        voice.initial = voice.target;
+        voice.target = ReadEnvelope(voice.commands) & 0x7F;
+        voice.time_left = IntervalTime(voice.interval);
+        voice.duration = voice.time_left;
+        voice.envelope_delta = voice.duration != 0
+                                   ? (static_cast<float>(voice.target) - static_cast<float>(voice.initial)) /
+                                         static_cast<float>(voice.duration)
+                                   : 0.0F;
+        SetSegmentVolume(voice);
 
-                    samples =
-                        std::min<int32_t>(count, static_cast<int32_t>(voice.loop_end_sample - voice.loop_start_sample));
-                    tsam = std::max(samples - kFrameSamples + voice.last_sample, 0);
-                    frames = (tsam + kFrameSamples - 1) >> 4;
-                    bytes = frames * kFrameBytes;
-                    DecodeChunk(list, voice, wave, tsam, bytes, static_cast<int16_t>(place),
-                                (voice.decoder_first ? kAudioFlagInit : 0U) | kAudioFlagLoop);
-                    list.commands.push_back(
-                        {kOpMove | (static_cast<uint32_t>(place + (voice.last_sample << 1)) & kAddressMask),
-                         (static_cast<uint32_t>(buffer_end) << 16) | static_cast<uint32_t>(samples << 1)});
-                }
-
-                voice.last_sample = (count + voice.last_sample) & 0xF;
-                voice.sample += count;
-                voice.memory_in += static_cast<int64_t>(kFrameBytes) * frames;
-            }
-            else
-            {
-                samples = frames << 4;
-                const int64_t over = voice.memory_in + bytes - (static_cast<int64_t>(wave.data) + wave_length);
-                int32_t overflow = 0;
-                if (over > 0)
-                {
-                    overflow = static_cast<int32_t>(over);
-                    voice.playing = false;
-                }
-
-                int32_t over_samples = (overflow / kFrameBytes) << 4;
-                over_samples = std::min(over_samples, samples + left);
-                bytes -= overflow;
-                bool decoded = false;
-                if (over_samples - (over_samples & 0xF) < count)
-                {
-                    decoded = true;
-                    DecodeChunk(list, voice, wave, samples - over_samples, bytes, static_cast<int16_t>(out),
-                                voice.decoder_first ? kAudioFlagInit : 0U);
-                    out += voice.last_sample != 0 ? voice.last_sample << 1 : kFrameSamples << 1;
-                    voice.last_sample = (count + voice.last_sample) & 0xF;
-                    voice.sample += count;
-                    voice.memory_in += static_cast<int64_t>(kFrameBytes) * frames;
-                }
-                else
-                {
-                    voice.last_sample = 0;
-                    voice.memory_in += static_cast<int64_t>(kFrameBytes) * frames;
-                }
-
-                if (over_samples != 0)
-                {
-                    voice.last_sample = 0;
-                    const int32_t start = decoded ? (left + samples - over_samples) << 1 : 0;
-                    list.ClearBuffer(static_cast<uint32_t>(start + out), static_cast<uint32_t>(over_samples << 1));
-                }
-            }
-        }
-        else
-        {
-            const auto byte_load = [&](int32_t bytes, int dmem)
-            {
-                const auto location = static_cast<uint32_t>(voice.memory_in);
-                const uint32_t align = location & 7;
-                const uint32_t total = static_cast<uint32_t>(bytes) + align;
-                list.commands.push_back(
-                    {kOpLoad | (((total + 8 - (total & 7)) & kDmemMask) << 12) | static_cast<uint32_t>(dmem),
-                     location - align});
-
-                return align;
-            };
-
-            if (loop_end < static_cast<int64_t>(count) + voice.sample && voice.loop_count != 0)
-            {
-                int32_t samples = static_cast<int32_t>(loop_end - voice.sample);
-                uint32_t align = 0;
-                if (samples > 0)
-                {
-                    align = byte_load(samples << 1, out);
-                }
-
-                out += static_cast<int>(align);
-                voice.memory_in = static_cast<int64_t>(wave.data) + (voice.loop_start_sample << 1);
-                voice.sample = static_cast<int32_t>(voice.loop_start_sample);
-                int place = out;
-                while (count > samples)
-                {
-                    place += samples << 1;
-                    count -= samples;
-                    if (voice.loop_count != -1 && voice.loop_count != 0)
-                    {
-                        voice.loop_count--;
-                    }
-
-                    samples =
-                        std::min<int32_t>(count, static_cast<int32_t>(voice.loop_end_sample - voice.loop_start_sample));
-                    const int dmem_align = (place & 7) != 0 ? 8 - (place & 7) : 0;
-                    const uint32_t ram_align = byte_load(samples << 1, place + dmem_align);
-                    if (ram_align != 0 || dmem_align != 0)
-                    {
-                        list.commands.push_back(
-                            {kOpMove | (static_cast<uint32_t>(place + static_cast<int>(ram_align) + dmem_align) &
-                                        kAddressMask),
-                             (static_cast<uint32_t>(place) << 16) | static_cast<uint32_t>(samples * 2)});
-                    }
-                }
-
-                voice.sample += count;
-                voice.memory_in += static_cast<int64_t>(count) << 1;
-            }
-            else
-            {
-                int32_t bytes = count << 1;
-                const int64_t over = voice.memory_in + bytes - (static_cast<int64_t>(wave.data) + wave.length);
-                int32_t overflow = 0;
-                if (over > 0)
-                {
-                    overflow = static_cast<int32_t>(over);
-                    voice.playing = false;
-                }
-
-                overflow = std::min(overflow, bytes);
-                if (overflow < bytes)
-                {
-                    if (count > 0)
-                    {
-                        bytes -= overflow;
-                        out += static_cast<int>(byte_load(bytes, out));
-                    }
-
-                    voice.sample += count;
-                    voice.memory_in += static_cast<int64_t>(count) << 1;
-                }
-                else
-                {
-                    voice.memory_in += static_cast<int64_t>(count) << 1;
-                }
-
-                if (overflow != 0)
-                {
-                    const int32_t start = std::max((count << 1) - overflow, 0);
-                    list.ClearBuffer(static_cast<uint32_t>(start + out), static_cast<uint32_t>(overflow));
-                }
-            }
-        }
+        return;
     }
 
-    const auto increment = static_cast<int32_t>(voice.ratio * kUnityPitch);
-    list.commands.push_back({static_cast<uint32_t>(kAudioResample) << 24 | (voice.resampler_state & kAddressMask),
-                             (voice.resampler_first ? 1U << 30 : 0U) |
-                                 ((static_cast<uint32_t>(increment) & 0xFFFF) << 14) |
-                                 ((static_cast<uint32_t>(out) & kDmemMask) << 2)});
-    voice.resampler_first = false;
-    if (voice.mixer_dirty)
+    if ((voice.envelope_flags & kEnvReleasing) != 0)
     {
-        constexpr uint32_t kSetTargetLeft = 0x09000000;
-        constexpr uint32_t kSetCurrentLeft = 0x09060000;
-        constexpr uint32_t kSetTargetRight = 0x09040000;
-        constexpr uint32_t kEnvMixerInit = 0x03010000;
-        const auto pair = [](int16_t high, uint16_t low)
-        {
-            return (static_cast<uint32_t>(static_cast<uint16_t>(high)) << 16) | low;
-        };
-        voice.mixer_dirty = false;
-        const std::size_t left = config_.stereo ? voice.mixer_pan : 64;
-        const std::size_t right = config_.stereo ? 127U - voice.mixer_pan : 64;
-        voice.target_left = static_cast<int16_t>((voice.mixer_volume * kEqualPower[left]) >> 15);
-        voice.target_right = static_cast<int16_t>((voice.mixer_volume * kEqualPower[right]) >> 15);
-        voice.rate_high_left = Rate(voice.current_left, voice.target_left, voice.segment_end, voice.rate_low_left);
-        voice.rate_high_right = Rate(voice.current_right, voice.target_right, voice.segment_end, voice.rate_low_right);
-        list.commands.push_back({kSetTargetLeft | static_cast<uint16_t>(voice.target_left),
-                                 pair(voice.rate_high_left, voice.rate_low_left)});
-        list.commands.push_back({kSetCurrentLeft | static_cast<uint16_t>(voice.current_left),
-                                 pair(voice.dry, static_cast<uint16_t>(voice.wet))});
-        list.commands.push_back({kSetTargetRight | static_cast<uint16_t>(voice.target_right),
-                                 pair(voice.rate_high_right, voice.rate_low_right)});
-        list.commands.push_back({kEnvMixerInit | static_cast<uint16_t>(voice.current_right), voice.mixer_state});
-    }
-    else
-    {
-        list.EnvMixer(0, voice.mixer_state);
-    }
-
-    voice.mixer_delta += kChunk;
-    if (voice.segment_end < voice.mixer_delta)
-    {
-        voice.mixer_delta = voice.segment_end;
-    }
-
-    if (!voice.playing)
-    {
-        voice.mixer_dirty = true;
-        voice.mixer_volume = 1;
-        voice.resampler_delta = 0.0F;
-        voice.resampler_first = true;
-        voice.last_sample = 0;
-        voice.decoder_first = true;
-        voice.sample = 0;
-        voice.memory_in = wave.data;
-        voice.loop_count = static_cast<int32_t>(wave.loop_count);
-        voice.priority = 0;
+        voice.envelope_flags = 0;
         voice.has_commands = false;
-    }
-}
-
-void SbnPlayer::LoadDelayLine(AudioList& list, const Effect& effect, int64_t position, int buffer, int count)
-{
-    const int64_t end = position + count;
-    const auto address = static_cast<uint32_t>(effect.base + position * 2);
-    if (end > effect.length)
-    {
-        const auto before = static_cast<uint32_t>(effect.length - position) << 1;
-        const auto after = static_cast<uint32_t>(end - effect.length) << 1;
-        list.commands.push_back({kOpLoad | ((before & kDmemMask) << 12) | static_cast<uint32_t>(buffer), address});
-        list.commands.push_back(
-            {kOpLoad | ((after & kDmemMask) << 12) | (static_cast<uint32_t>(buffer) + before), effect.base});
+        voice.done_pending = true;
     }
     else
     {
-        list.commands.push_back(
-            {kOpLoad | ((static_cast<uint32_t>(count << 1) & kDmemMask) << 12) | static_cast<uint32_t>(buffer),
-             address});
-    }
-}
-
-void SbnPlayer::PullEffect(AudioList& list, Effect& effect, int16_t wet)
-{
-    constexpr uint32_t kSize = kChunkBytes;
-    const auto load = [&](int buffer, uint32_t address)
-    {
-        list.commands.push_back({kOpLoad | (kSize << 12) | static_cast<uint32_t>(buffer), address});
-    };
-    const auto save = [&](int buffer, uint32_t address)
-    {
-        list.commands.push_back({kOpSave | (kSize << 12) | static_cast<uint32_t>(buffer), address});
-    };
-    const auto mix = [&](int16_t gain, int in, int out)
-    {
-        list.commands.push_back(
-            {kOpMix | static_cast<uint16_t>(gain), (static_cast<uint32_t>(in) << 16) | static_cast<uint32_t>(out)});
-    };
-
-    int input_buffer = kTemp;
-    int output_buffer = kTemp + kChunkBytes;
-    const int resample_buffer = kTemp + kChunkBytes * 2;
-    const auto place_of = [&](int64_t position)
-    {
-        return static_cast<uint32_t>(effect.base + position * 2);
-    };
-    save(wet, place_of(effect.input));
-    list.ClearBuffer(static_cast<uint32_t>(wet), kSize);
-    int64_t previous_output = -0x10000000;
-    for (int i = 0; i < effect.delay_count; i++)
-    {
-        Delay& delay = effect.delays[static_cast<std::size_t>(i)];
-        int64_t in_place = effect.input - static_cast<int64_t>(delay.input);
-        if (in_place < 0)
-        {
-            in_place += effect.length;
-        }
-
-        int64_t out_place = effect.input - static_cast<int64_t>(delay.output);
-        if (out_place < 0)
-        {
-            out_place += effect.length;
-        }
-
-        if (in_place == previous_output)
-        {
-            std::swap(input_buffer, output_buffer);
-        }
-        else
-        {
-            load(input_buffer, place_of(in_place));
-        }
-
-        if (delay.has_resampler)
-        {
-            const auto length = static_cast<int32_t>(delay.output - delay.input);
-            delay.mod_value += delay.mod_increment * static_cast<float>(kChunk);
-            if (static_cast<double>(delay.mod_value) > 2.0)
-            {
-                delay.mod_value = static_cast<float>(static_cast<double>(delay.mod_value) - 4.0);
-            }
-
-            float shape = delay.mod_value;
-            if (shape < 0.0F)
-            {
-                shape = -shape;
-            }
-
-            shape = static_cast<float>(static_cast<double>(shape) - 1.0);
-            float delta = delay.mod_gain * shape;
-            delta /= static_cast<float>(length);
-            delta = static_cast<float>(static_cast<int32_t>(delta * kUnityPitch));
-            delta = delta / kUnityPitch;
-            const auto ratio = static_cast<float>(1.0 - static_cast<double>(delta));
-            const float exact = delay.resampler_delta + ratio * static_cast<float>(kChunk);
-            const auto samples = static_cast<int32_t>(exact);
-            delay.resampler_delta = exact - static_cast<float>(samples);
-            int64_t resample_place = effect.input - (static_cast<int64_t>(delay.output) - delay.mod_delta);
-            const int align = static_cast<int>((effect.base + resample_place * 2) & 7) >> 1;
-            resample_place -= align;
-            if (resample_place < 0)
-            {
-                resample_place += effect.length;
-            }
-
-            LoadDelayLine(list, effect, resample_place, resample_buffer, samples + align);
-            const auto increment = static_cast<int32_t>(ratio * kUnityPitch);
-            list.commands.push_back(
-                {static_cast<uint32_t>(kAudioResample) << 24 | (delay.resampler_state & kAddressMask),
-                 (delay.resampler_first ? 1U << 30 : 0U) | ((static_cast<uint32_t>(increment) & 0xFFFF) << 14) |
-                     ((static_cast<uint32_t>((align << 1) + resample_buffer) & kDmemMask) << 2) |
-                     ((static_cast<uint32_t>(output_buffer) >> 8) & 3)});
-            delay.resampler_first = false;
-            delay.mod_delta += samples - kChunk;
-        }
-        else
-        {
-            load(output_buffer, place_of(out_place));
-        }
-
-        if (delay.feed_forward != 0)
-        {
-            mix(delay.feed_forward, input_buffer, output_buffer);
-            if (!delay.has_resampler && !delay.has_filter)
-            {
-                save(output_buffer, place_of(out_place));
-            }
-        }
-
-        if (delay.feed_back != 0)
-        {
-            mix(delay.feed_back, output_buffer, input_buffer);
-            save(input_buffer, place_of(in_place));
-        }
-
-        if (delay.has_filter)
-        {
-            list.LoadAdpcm(32, delay.filter.coefficients_address);
-            list.commands.push_back(
-                {static_cast<uint32_t>(kAudioPoleFilter) << 24 | (delay.filter.first ? 1U << 16 : 0U) |
-                     static_cast<uint16_t>(delay.filter.gain),
-                 ((static_cast<uint32_t>(output_buffer) >> 8) << 24) | (delay.filter.state & kAddressMask)});
-            delay.filter.first = false;
-        }
-
-        if (!delay.has_resampler)
-        {
-            save(output_buffer, place_of(out_place));
-        }
-
-        if (delay.gain != 0)
-        {
-            mix(delay.gain, output_buffer, wet);
-        }
-
-        previous_output = effect.input + static_cast<int64_t>(delay.output);
-    }
-
-    effect.input += kChunk;
-    if (effect.input >= effect.length)
-    {
-        effect.input = 0;
+        voice.time_left = -1;
+        voice.duration = -1;
+        voice.delta = kChunk;
+        voice.envelope_delta = 0.0F;
+        voice.initial = voice.target;
     }
 }
 

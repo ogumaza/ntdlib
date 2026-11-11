@@ -74,7 +74,7 @@ std::vector<uint32_t> FindThumb(const Rom& rom, const std::vector<Pattern>& pat)
         size_t k = 0;
         for (; k < n; k++)
         {
-            const uint16_t h = uint16_t(d[i + 2 * k] | (d[i + 2 * k + 1] << 8));
+            const uint16_t h = xsflib::LoadLe16(&d[i + 2 * k]);
             if ((h & pat[k].mask) != pat[k].value)
             {
                 break;

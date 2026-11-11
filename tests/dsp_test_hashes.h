@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <utility>
 
-namespace test
+namespace dolphin_hashes
 {
 
 constexpr uint64_t kLoopsHash = 0x0d253ea590eb9ec5;
@@ -255,4 +255,4 @@ constexpr std::array<std::pair<int, uint64_t>, 935> kRandomHashes = {{
     {997, 0xd783447dec1d2022}, {998, 0x3ca8b5539ba262cb}, {999, 0x75c4d18d243909de},
 }};
 
-} // namespace test
+} // namespace dolphin_hashes

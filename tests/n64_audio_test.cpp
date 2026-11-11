@@ -178,6 +178,7 @@ void TestLinearRamp()
     {
         return std::abs(value - expected) <= 2;
     };
+
     XSFLIB_CHECK(near(bench.Sample(bench.output, 0), (0x1000 + 0x20) / 2));
     XSFLIB_CHECK(near(bench.Sample(bench.output, 7), (0x1000 + 0x100) / 2));
     XSFLIB_CHECK(near(bench.Sample(bench.output, 15), (0x1000 + 0x200) / 2));

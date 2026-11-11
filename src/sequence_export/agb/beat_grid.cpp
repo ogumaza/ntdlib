@@ -313,12 +313,15 @@ std::vector<uint32_t> BeatGrid::Bounds(std::vector<uint32_t> hints, uint32_t sta
             }
             j += same;
         }
+
         if (frame > bounds.back() + kHintFrames && frame < end)
         {
             bounds.push_back(frame);
         }
+
         i = j;
     }
+
     bounds.push_back(end);
 
     return bounds;
@@ -358,6 +361,7 @@ std::vector<BeatGrid::Part> BeatGrid::Parts(const std::vector<std::vector<Group>
             parts.back().unit = std::min(parts.back().unit, part.steady ? part.unit : parts.back().unit);
             continue;
         }
+
         parts.push_back(part);
     }
 
@@ -576,6 +580,7 @@ void BeatGrid::AddPart(const std::vector<std::vector<Group>>& groups, const Part
     const double unit = FitBeat(groups, part, part.unit);
     const double per_quarter = PerQuarterFor(unit);
     beats_.emplace_back(unit, per_quarter);
+
     std::vector<uint32_t> frames;
     for (const Group& g : ReferenceNotes(groups, part.from, part.to))
     {

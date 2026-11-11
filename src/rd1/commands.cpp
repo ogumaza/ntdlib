@@ -14,11 +14,14 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/data_items.h"
+
 namespace ntdlib::rd1
 {
 namespace
 {
 
+using agb::DataItem;
 using commands::Command;
 using commands::Kind;
 using commands::kOne;
@@ -388,15 +391,6 @@ std::optional<Event> ReadEvent(std::span<const uint8_t> data, size_t at, size_t 
     return event;
 }
 
-Command DataItem(std::span<const uint8_t> bytes)
-{
-    Command item;
-    item.kind = Kind::kData;
-    item.bytes.assign(bytes.begin(), bytes.end());
-
-    return item;
-}
-
 // Reads the track whose events run from `start` to `end` the way the driver does. Returns the reason where the driver
 // reads them otherwise.
 std::string ReadTrack(std::span<const uint8_t> data, size_t start, size_t end, std::vector<Command>& items)
@@ -612,27 +606,46 @@ EventBytes BytesOf(const Command& item, uint8_t channel)
     return out;
 }
 
+// What the driver reads kOther item `item` as, where it reads more than an item without a kind: a track's end, a tempo,
+// a loop marker or a note. Nothing where the driver reads the item as it says.
+const char* StructureOf(const Command& item)
+{
+    const uint16_t opcode = item.encoding.opcode;
+    const std::vector<uint8_t>& bytes = item.bytes;
+    if ((opcode & 0xFF00) == kMetaEvent)
+    {
+        const auto type = uint8_t(opcode);
+        if (type == kEndOfTrack)
+        {
+            return "a kOther item that the driver reads as a track's end";
+        }
+        if (type == kSetTempo && bytes.size() == 3)
+        {
+            return "a kOther item that the driver reads as a tempo";
+        }
+        if (type == kMarker && bytes.size() == 1 && (bytes[0] == kLoopStartMarker || bytes[0] == kLoopEndMarker))
+        {
+            return "a kOther item that the driver reads as a loop marker";
+        }
+    }
+    else if ((opcode & 0xFFF0) == 0x90 && bytes.size() == 2 && (bytes[1] & 0x7F) != 0)
+    {
+        return "a kOther item that the driver reads as a note";
+    }
+
+    return nullptr;
+}
+
 bool IsTrackChunk(const Command& item)
 {
     return item.kind == Kind::kOpenTrack && item.encoding.opcode == kTrackChunk;
 }
 
-// Lays `sequence` out. With `check`, throws std::invalid_argument for items that the driver wouldn't read as they say.
-// Throws std::invalid_argument for a command that the bytes can't hold.
-Encoded Write(const commands::Sequence& sequence, bool check)
+// The ticks that each run of waits in `items` writes, at the run's first wait. Sets `writes` at each run's first wait.
+std::vector<uint64_t> WaitRuns(const std::vector<Command>& items, std::vector<bool>& writes)
 {
-    const std::vector<Command>& items = sequence.items;
-    const auto fail = [check](const char* what)
-    {
-        if (check)
-        {
-            throw std::invalid_argument(what);
-        }
-    };
-
-    // The ticks that each run of waits writes, at the run's first wait.
     std::vector<uint64_t> waits(items.size(), 0);
-    std::vector<bool> writes(items.size(), false);
+    writes.assign(items.size(), false);
     size_t run = 0;
     for (size_t i = 0; i < items.size(); i++)
     {
@@ -653,6 +666,43 @@ Encoded Write(const commands::Sequence& sequence, bool check)
             throw std::invalid_argument("a run of waits takes more ticks than a delta time holds");
         }
     }
+
+    return waits;
+}
+
+// Appends the header chunk of `item`, of kind kTimebase, to `bytes`: its bytes or the usual header, with its size and
+// division.
+void AddHeaderChunk(std::vector<uint8_t>& bytes, const Command& item)
+{
+    const size_t header = bytes.size();
+    if (item.bytes.empty())
+    {
+        bytes.insert(bytes.end(), {'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 1, 0, 0, 0, 0});
+    }
+    else
+    {
+        bytes.insert(bytes.end(), item.bytes.begin(), item.bytes.end());
+    }
+    StoreBigEndian32(bytes, header + 4, uint32_t(bytes.size() - header - kChunkHeaderBytes));
+    const int64_t division = FromUnit(item.value.value, ScaleOf(Kind::kTimebase));
+    StoreBigEndian16(bytes, header + 12, uint16_t(Checked(division, 1, 0x7FFF, item.kind)));
+}
+
+// Lays `sequence` out. With `check`, throws std::invalid_argument for items that the driver wouldn't read as they say.
+// Throws std::invalid_argument for a command that the bytes can't hold.
+Encoded Write(const commands::Sequence& sequence, bool check)
+{
+    const std::vector<Command>& items = sequence.items;
+    const auto fail = [check](const char* what)
+    {
+        if (check)
+        {
+            throw std::invalid_argument(what);
+        }
+    };
+
+    std::vector<bool> writes;
+    const std::vector<uint64_t> waits = WaitRuns(items, writes);
 
     enum class State
     {
@@ -700,17 +750,7 @@ Encoded Write(const commands::Sequence& sequence, bool check)
             }
 
             header = bytes.size();
-            if (item.bytes.empty())
-            {
-                bytes.insert(bytes.end(), {'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 1, 0, 0, 0, 0});
-            }
-            else
-            {
-                bytes.insert(bytes.end(), item.bytes.begin(), item.bytes.end());
-            }
-            StoreBigEndian32(bytes, *header + 4, uint32_t(bytes.size() - *header - kChunkHeaderBytes));
-            const int64_t division = FromUnit(item.value.value, ScaleOf(Kind::kTimebase));
-            StoreBigEndian16(bytes, *header + 12, uint16_t(Checked(division, 1, 0x7FFF, item.kind)));
+            AddHeaderChunk(bytes, item);
             continue;
         }
 
@@ -771,6 +811,14 @@ Encoded Write(const commands::Sequence& sequence, bool check)
         {
             bytes.push_back(0);
             out.offsets.back() = uint32_t(bytes.size());
+        }
+
+        if (item.kind == Kind::kOther)
+        {
+            if (const char* structure = StructureOf(item))
+            {
+                fail(structure);
+            }
         }
 
         const EventBytes event = BytesOf(item, channel);

@@ -19,6 +19,7 @@
 
 #include "xsflib/testing/check.h"
 
+#include "ctr_archive_waves.h"
 #include "ntdlib/ctr/dsp/dsp.h"
 #include "ntdlib/ctr/snd/engine.h"
 #include "ntdlib/ctr/snd/sar_options.h"
@@ -30,6 +31,7 @@ namespace
 {
 
 namespace dsp = ntdlib::ctr::dsp;
+namespace archive_test = ntdlib::ctr::archive_test;
 namespace files = ntdlib::testing::sar_files;
 namespace sar = ntdlib::sar;
 using ntdlib::ctr::snd::ArchiveModel;
@@ -66,46 +68,6 @@ files::WaveSpec SineWave()
     return wave;
 }
 
-// A looped DSP-ADPCM wave of 400 frames of 14 samples, from a fixed run of numbers. The loop runs from frame 100 to the
-// end.
-files::WaveSpec AdpcmWave()
-{
-    std::vector<uint8_t> bytes(400 * 8);
-    uint32_t state = 1;
-    for (std::size_t i = 0; i < bytes.size(); i++)
-    {
-        state = state * 1103515245u + 12345u;
-        const auto value = static_cast<uint8_t>(state >> 16);
-        bytes[i] = i % 8 == 0 ? static_cast<uint8_t>((value & 0x70) | (value % 12)) : value;
-    }
-
-    files::WaveSpec wave;
-    wave.encoding = 2;
-    wave.loop = true;
-    wave.loop_start = 100 * 14;
-    wave.loop_end = 400 * 14;
-    wave.channels = {bytes};
-
-    return wave;
-}
-
-// A PCM8 wave of a sawtooth, 0.5 s long. It plays once.
-files::WaveSpec Pcm8Wave()
-{
-    std::vector<uint8_t> bytes(16000);
-    for (std::size_t i = 0; i < bytes.size(); i++)
-    {
-        bytes[i] = static_cast<uint8_t>(3 * i);
-    }
-
-    files::WaveSpec wave;
-    wave.encoding = 0;
-    wave.loop_end = static_cast<uint32_t>(bytes.size());
-    wave.channels = {bytes};
-
-    return wave;
-}
-
 // The archive. Program 0 plays the constant wave, program 1 the DSP-ADPCM wave, program 2 the PCM8 wave and program 3
 // the sine, each from original key 60.
 std::vector<uint8_t> Archive()
@@ -134,14 +96,13 @@ std::vector<uint8_t> Archive()
     }
     chord.insert(chord.end(), {0x80, 0x60, 0xFF});
 
-    const std::vector<uint8_t> notes = {0xC0, 0x30, 0xC7, 0x00, 0x81, 0x01, 0x40, 0x7F, 0x60, 0x81, 0x02, 0x37, 0x50,
-                                        0x60, 0x81, 0x00, 0x48, 0x7F, 0x60, 0x80, 0x60, 0xC7, 0x01, 0x81, 0x01, 0x30,
-                                        0x7F, 0x30, 0x81, 0x02, 0x3C, 0x7F, 0x30, 0x81, 0x00, 0x43, 0x7F, 0x30, 0xFF};
+    const std::vector<uint8_t> notes = archive_test::Notes();
     spec.files = {
         {files::Sequence(kCtr, sine, {{"SEQ_SINE", 0}})},
         {files::Bank(kCtr, files::OneRegionBank(4))},
-        {files::WaveArchive(kCtr, {files::Wave(kCtr, files::ConstantWave(false, 64000)), files::Wave(kCtr, AdpcmWave()),
-                                   files::Wave(kCtr, Pcm8Wave()), files::Wave(kCtr, SineWave())})},
+        {files::WaveArchive(
+            kCtr, {files::Wave(kCtr, files::ConstantWave(false, 64000)), files::Wave(kCtr, archive_test::AdpcmWave()),
+                   files::Wave(kCtr, archive_test::Pcm8Wave()), files::Wave(kCtr, SineWave())})},
         {files::Sequence(kCtr, chord, {{"SEQ_CHORD", 0}})},
         {files::Sequence(kCtr, notes, {{"SEQ_NOTES", 0}})},
         {files::Sequence(kCtr, sends, {{"SEQ_SENDS", 0}})}};

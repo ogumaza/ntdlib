@@ -3,7 +3,8 @@
 // Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
 // (ntdlib/testing/length_cases.h), on the Switch's model and the Wii U's. The analysis waits for the loops of the
 // tracks other than the main track. Counted loops that run past the limit follow. The analysis then takes each track's
-// outermost counted loop as endless.
+// outermost counted loop as endless. Last, a step of the game's code still to come (a console's Pending) holds the
+// sequence back.
 
 #include <cstddef>
 #include <cstdint>
@@ -195,12 +196,58 @@ void TestWiiU()
     CheckLongLoops<LengthConsole>(true, "the Wii U");
 }
 
+// Whether PendingConsole has a step of the game's code to come.
+bool g_pending = false;
+
+// The Switch's console, with a step of the game's code to come while g_pending is true.
+struct PendingConsole : ntdlib::nx::atk::LengthConsole
+{
+    static bool Pending(const Model&)
+    {
+        return g_pending;
+    }
+};
+
+// SEQ_HELD_LOOP's held note settles the sequence at once. A step to come keeps it from being settled or stuck, and
+// keeps the model busy. Without one, the model follows the player and the engine.
+void TestPending()
+{
+    const ntdlib::sar::SoundArchive archive = LoadArchive(length_cases::Archive(false), false);
+    uint32_t index = 0;
+    while (index < length_cases::Cases().size() && std::string(length_cases::Cases()[index].name) != "SEQ_HELD_LOOP")
+    {
+        ++index;
+    }
+    ntdlib::nx::atk::ArchiveModel model(archive);
+    ntdlib::nx::atk::SequenceSoundPlayer* player = model.engine->StartSequence(index);
+    if (!Check(player != nullptr, "SEQ_HELD_LOOP starts"))
+    {
+        return;
+    }
+
+    ntdlib::nwsnd::LengthModel<PendingConsole> length_model(model, *player);
+    for (int frame = 0; frame < 20 && !player->IsSettled(*model.engine); ++frame)
+    {
+        length_model.RunFrame();
+    }
+
+    g_pending = false;
+    Check(length_model.Settled() && length_model.Stuck() == player->IsStuck(*model.engine) &&
+              length_model.Busy() == model.engine->IsBusy(),
+          "without a step to come, the model follows the player and the engine");
+    g_pending = true;
+    Check(!length_model.Settled() && !length_model.Stuck() && length_model.Busy(),
+          "a step to come keeps the sequence from being settled or stuck, and keeps the model busy");
+    g_pending = false;
+}
+
 } // namespace
 
 int main()
 {
     TestSwitch();
     TestWiiU();
+    TestPending();
 
     return xsflib::testing::Summary("nwsnd_length_model");
 }

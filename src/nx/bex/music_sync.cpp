@@ -13,6 +13,7 @@
 #include <variant>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/sha1.h"
 
 #include "nx/bex/message_pack.h"
@@ -26,23 +27,18 @@ namespace
 using detail::MessagePack;
 using detail::Value;
 
+// The size of the header, the place of its count of blocks, and the size of each entry of the block table after it.
+constexpr std::size_t kHeaderSize = 0x14;
+constexpr std::size_t kBlockCount = 0x10;
+constexpr std::size_t kBlockEntry = 12;
+
+constexpr uint16_t kInfoBlock = 0x4000;
 constexpr uint16_t kRegionBlock = 0x4003;
 constexpr uint16_t kMarkerBlock = 0x4005;
 constexpr std::size_t kRegionEntry = 0x100;
 constexpr std::size_t kRegionName = 0xC0;
 constexpr std::size_t kMarkerEntry = 0x48;
 constexpr std::size_t kNameBytes = 64;
-
-uint16_t U16(std::span<const uint8_t> b, std::size_t at)
-{
-    return static_cast<uint16_t>(b[at] | b[at + 1] << 8);
-}
-
-uint32_t U32(std::span<const uint8_t> b, std::size_t at)
-{
-    return static_cast<uint32_t>(b[at]) | static_cast<uint32_t>(b[at + 1]) << 8 |
-           static_cast<uint32_t>(b[at + 2]) << 16 | static_cast<uint32_t>(b[at + 3]) << 24;
-}
 
 // A name of up to 64 bytes that a zero ends.
 std::string Name(std::span<const uint8_t> b, std::size_t at)
@@ -144,6 +140,13 @@ public:
     }
 
 private:
+    // The markers that a search looks for.
+    enum class MarkerKind
+    {
+        kBeat,
+        kChord,
+    };
+
     // A marker's name split at each '#': MRK_BEAT#n/d#t and MRK_CHORD#c count, the others don't (fn_c9f40).
     void Parse(const StreamMarker& marker)
     {
@@ -196,10 +199,11 @@ private:
         origin_ = origin;
     }
 
-    // Whether the pair passes a beat at `pos`, as fn_c9b90 decides it, with the jump `from` to `to` that it read
-    // before its search. Without a jump, the pair passes what lies after `prev`, up to `cur`. After a jump back, it
-    // passes everything up to `cur`.
-    static bool PassesBeat(int64_t prev, int64_t cur, int64_t pos, int64_t from, int64_t to)
+    // Whether the pair passes a marker at `pos`, as the search for `kind` decides it, with the jump `from` to `to` that
+    // the search read before it started. Without a jump, the pair passes what lies after `prev`, up to `cur`. After a
+    // jump, it passes what lies from the jump's target up to `cur`. The search for beats (fn_c9b90) passes everything
+    // up to `cur` after a jump that doesn't go forward. The search for chords (fn_cb890) doesn't.
+    static bool Passes(MarkerKind kind, int64_t prev, int64_t cur, int64_t pos, int64_t from, int64_t to)
     {
         if ((prev | cur | pos) == 0)
         {
@@ -220,7 +224,7 @@ private:
             return forward;
         }
 
-        return (from >= to || to <= pos) && cur >= pos;
+        return ((kind == MarkerKind::kBeat && from >= to) || to <= pos) && cur >= pos;
     }
 
     // The beats that the pair passes (fn_c9b90). The search starts at the first beat past the last position, and goes
@@ -242,7 +246,7 @@ private:
         const int64_t to = jump_to_;
         for (std::size_t k = 0; k < n; ++k, index = (index + 1) % n)
         {
-            if (beat_ != index && PassesBeat(prev, cur, beats_[index].position, from, to))
+            if (beat_ != index && Passes(MarkerKind::kBeat, prev, cur, beats_[index].position, from, to))
             {
                 beat_ = index;
                 ResetCounters(beats_[index].position);
@@ -306,30 +310,7 @@ private:
         for (const Chord& chord : chords_)
         {
             const int64_t pos = chord.position;
-            const bool forward = prev < pos && cur >= pos;
-            bool passes = false;
-            if ((prev | cur | pos) == 0)
-            {
-                passes = true;
-            }
-            else if (jump_from_ == -1)
-            {
-                passes = forward;
-            }
-            else if (cur == prev)
-            {
-                passes = false;
-            }
-            else if (jump_to_ >= cur || (jump_from_ <= jump_to_ ? jump_from_ >= cur : prev <= cur))
-            {
-                passes = forward;
-            }
-            else
-            {
-                passes = jump_to_ <= pos && cur >= pos;
-            }
-
-            if (!passes)
+            if (!Passes(MarkerKind::kChord, prev, cur, pos, jump_from_, jump_to_))
             {
                 continue;
             }
@@ -365,44 +346,45 @@ private:
 
 StreamCues ReadStreamCues(std::span<const uint8_t> file)
 {
-    if (file.size() < 0x14 || file[0] != 'F' || file[1] != 'S' || file[2] != 'T' || file[3] != 'M' ||
-        U16(file, 4) != 0xFEFF)
+    if (file.size() < kHeaderSize || file[0] != 'F' || file[1] != 'S' || file[2] != 'T' || file[3] != 'M' ||
+        xsflib::LoadLe16(&file[4]) != 0xFEFF)
     {
         throw xsflib::FormatError("not a stream file of the Switch");
     }
 
     StreamCues cues;
-    const uint16_t blocks = U16(file, 0x10);
-    Need(file, 0x14 + std::size_t{blocks} * 12);
+    const uint16_t blocks = xsflib::LoadLe16(&file[kBlockCount]);
+    Need(file, kHeaderSize + std::size_t{blocks} * kBlockEntry);
     for (uint16_t i = 0; i < blocks; ++i)
     {
-        const std::size_t entry = 0x14 + std::size_t{i} * 12;
-        const uint16_t type = U16(file, entry);
-        const uint32_t offset = U32(file, entry + 4);
-        const uint32_t size = U32(file, entry + 8);
+        const std::size_t entry = kHeaderSize + std::size_t{i} * kBlockEntry;
+        const uint16_t type = xsflib::LoadLe16(&file[entry]);
+        const uint32_t offset = xsflib::LoadLe32(&file[entry + 4]);
+        const uint32_t size = xsflib::LoadLe32(&file[entry + 8]);
         Need(file, std::size_t{offset} + size);
-        if (type == 0x4000)
+        if (type == kInfoBlock)
         {
             Need(file, std::size_t{offset} + 16);
-            const std::size_t settings = offset + 8 + static_cast<int32_t>(U32(file, offset + 12));
+            const std::size_t settings = offset + 8 + static_cast<int32_t>(xsflib::LoadLe32(&file[offset + 12]));
             Need(file, settings + 8);
-            cues.sample_rate = U32(file, settings + 4);
+            cues.sample_rate = xsflib::LoadLe32(&file[settings + 4]);
         }
         else if (type == kRegionBlock && size >= 0x20)
         {
             for (std::size_t at = offset + 0x20; at + kRegionEntry <= std::size_t{offset} + size; at += kRegionEntry)
             {
-                cues.regions.push_back({U32(file, at), U32(file, at + 4), Name(file, at + kRegionName)});
+                cues.regions.push_back(
+                    {xsflib::LoadLe32(&file[at]), xsflib::LoadLe32(&file[at + 4]), Name(file, at + kRegionName)});
             }
         }
         else if (type == kMarkerBlock && size >= 12)
         {
-            const uint32_t count = U32(file, offset + 8);
+            const uint32_t count = xsflib::LoadLe32(&file[offset + 8]);
             Need(file, offset + 12 + std::size_t{count} * kMarkerEntry);
             for (uint32_t m = 0; m < count; ++m)
             {
                 const std::size_t at = offset + 12 + std::size_t{m} * kMarkerEntry;
-                cues.markers.push_back({U32(file, at), Name(file, at + 8)});
+                cues.markers.push_back({xsflib::LoadLe32(&file[at]), Name(file, at + 8)});
             }
         }
     }

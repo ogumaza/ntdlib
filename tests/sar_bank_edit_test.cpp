@@ -117,7 +117,7 @@ std::string Describe(std::span<const uint8_t> file, Flavor flavor, uint32_t prog
                 text += values;
             }
         }
-        text += "\n";
+        text += '\n';
     }
 
     return text;

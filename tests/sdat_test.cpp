@@ -119,6 +119,21 @@ void TestWaves()
     XSFLIB_CHECK(decoded[0] == 0x7FFF && decoded[1] == 0x7FFF && decoded[2] == 0x7F5A && decoded[3] == 0x7DF7);
 }
 
+// The words of TestWaves' waves: 2 words hold 8 samples of PCM8 and 4 of PCM16. A wave of IMA-ADPCM starts with a word
+// of the decoder's state, and its 2 words hold 8 samples. An unknown encoding holds none.
+void TestWaveWords()
+{
+    using sdat::HeaderWords;
+    using sdat::SamplesInWords;
+    using sdat::WaveEncoding;
+    static_assert(HeaderWords(WaveEncoding::kImaAdpcm) == 1 && SamplesInWords(WaveEncoding::kImaAdpcm, 2) == 8);
+
+    XSFLIB_CHECK(HeaderWords(WaveEncoding::kPcm8) == 0 && HeaderWords(WaveEncoding::kPcm16) == 0);
+    XSFLIB_CHECK(SamplesInWords(WaveEncoding::kPcm8, 2) == 8 && SamplesInWords(WaveEncoding::kPcm16, 2) == 4);
+    XSFLIB_CHECK(SamplesInWords(WaveEncoding::kImaAdpcm, 1) == 0 && SamplesInWords(WaveEncoding::kImaAdpcm, 0) == 0);
+    XSFLIB_CHECK(SamplesInWords(static_cast<WaveEncoding>(3), 2) == 0);
+}
+
 void TestStream()
 {
     // Two channels of PCM16, in blocks of 4 bytes: the last block holds one sample of each channel.
@@ -177,6 +192,23 @@ void TestArchive()
     XSFLIB_CHECK(archive.files.size() == 5 && archive.files[0].offset % 32 == 0);
     XSFLIB_CHECK(sdat::Sequence::Parse(archive.File(1)).bytecode[0] == 0xFE);
     XSFLIB_CHECK(sdat::Bank::Parse(archive.File(3)).instruments.empty());
+}
+
+// BANK_TITLE's record in ArchiveSpec names wave archive 0 in its first slot, and 0xFFFF in the other three: no wave
+// archive.
+void TestWaveArchiveSlots()
+{
+    const Bytes file = files::SoundArchive(ArchiveSpec());
+
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+
+    XSFLIB_CHECK(archive.banks.size() > 1 && archive.banks[1]);
+    if (archive.banks.size() > 1 && archive.banks[1])
+    {
+        const std::array<uint16_t, sdat::kWaveArchiveSlots> kSlots = {0, sdat::kNoWaveArchive, sdat::kNoWaveArchive,
+                                                                      sdat::kNoWaveArchive};
+        XSFLIB_CHECK(archive.banks[1]->wave_archives == kSlots);
+    }
 }
 
 void TestArchiveWithoutNames()
@@ -443,6 +475,8 @@ void TestHeap()
     sdat::SoundHeap tight(small, 0x02000000, 0x02000100, 0x02000200);
     XSFLIB_CHECK(ErrorOf<std::runtime_error>([&] { tight.LoadBank(archive, 0); }) ==
                  "the files don't fit in the sound heap");
+    XSFLIB_CHECK(ErrorOf<sdat::HeapFullError>([&] { tight.LoadBank(archive, 0); }) ==
+                 "the files don't fit in the sound heap");
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { heap.LoadBank(archive, 4); }) == "the archive has no bank 4");
 }
 
@@ -454,8 +488,10 @@ int main()
     TestSequenceArchive();
     TestBank();
     TestWaves();
+    TestWaveWords();
     TestStream();
     TestArchive();
+    TestWaveArchiveSlots();
     TestArchiveWithoutNames();
     TestFindArchives();
     TestRefusals();

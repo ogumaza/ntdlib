@@ -23,6 +23,7 @@
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/envelope.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/wave/decode.h"
@@ -57,6 +58,10 @@ struct RegionGenerators
     bool loop = false;
     uint8_t exclusive_class = 0; // the region's key group, or 0 (always 0 on the Wii)
 };
+
+// The tuning of the ratio `tune` in cents, rounded and held to SoundFont's 10 octaves either way. A ratio that isn't
+// positive gives 0. The SFZ files take the same tuning (SfzPitchOpcodes).
+int TuneCents(float tune);
 
 // A region's generators: its envelope `env` after the overrides in preset `key`, its tuning ratio `tune`, its volume
 // over 127 with `quieter` more centibels of attenuation (see SoundFontCut), its root key and whether its wave loops.
@@ -173,6 +178,49 @@ double SoundFontCut(Performance& perf, const RegionVolumeFunction& volume_of);
 std::vector<BankSoundFont> BankSoundFonts(seqlib::sf2::SoundFont& whole, std::span<const uint32_t> programs,
                                           const std::function<seqlib::sf2::SoundFont(std::span<const uint32_t>)>& part,
                                           const std::string& name, const std::string& program);
+
+// BankSoundFonts for a bank model's builder. `make` returns an empty builder: a SoundFontParts that adds a preset with
+// Add(index, key, name). Each program's instrument becomes a preset at the program, named "Program <p>", with a track's
+// starting settings (StartingPresetKey). Adds the warnings of the builder that holds every program to `warnings`.
+template <typename MakeBuilder>
+std::vector<BankSoundFont> ProgramSoundFonts(std::span<const uint32_t> programs, const MakeBuilder& make,
+                                             const Settings& settings, const std::string& name,
+                                             const std::string& program, std::vector<std::string>& warnings)
+{
+    const auto build = [&](std::span<const uint32_t> run)
+    {
+        auto builder = make();
+        for (const uint32_t p : run)
+        {
+            builder.Add(p, StartingPresetKey(p, settings), "Program " + std::to_string(p));
+        }
+
+        return builder;
+    };
+    const auto part = [&build](std::span<const uint32_t> run)
+    {
+        return std::move(build(run).Result());
+    };
+
+    auto whole = build(programs);
+    std::vector<BankSoundFont> sound_fonts = BankSoundFonts(whole.Result(), programs, part, name, program);
+    warnings.insert(warnings.end(), whole.Warnings().begin(), whole.Warnings().end());
+
+    return sound_fonts;
+}
+
+// SequencesText for the sounds of `archive` at `sound_indices`, by their names.
+template <typename Archive>
+std::string SequencesText(const Archive& archive, std::span<const uint32_t> sound_indices)
+{
+    std::vector<std::string> labels;
+    for (const uint32_t index : sound_indices)
+    {
+        labels.push_back(archive.Sounds()[index].name);
+    }
+
+    return SequencesText(labels);
+}
 
 // A sequence's SoundFont, the samples that its presets share, and the warnings. A bank model's builder adds each
 // preset's instrument from its bank (convert.cpp and convert_rsar.cpp).

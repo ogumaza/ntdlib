@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "ntdlib/jaudio2/dsp.h"
+#include "ntdlib/wave/afc.h"
 
 namespace ntdlib::jaudio2
 {
@@ -92,15 +93,19 @@ inline constexpr std::array<uint16_t, 4 * Dsp::kOscillatorTableSize> kOscillator
 };
 // clang-format on
 
-// The AFC decoder's 16 pairs of prediction coefficients, in 4.11 fixed point.
-// clang-format off
-inline constexpr std::array<uint16_t, 32> kAfcCoefficients = {
-    0x0000, 0x0000, 0x0800, 0x0000, 0x0000, 0x0800, 0x0400, 0x0400,
-    0x1000, 0xf800, 0x0e00, 0xfa00, 0x0c00, 0xfc00, 0x1200, 0xf600,
-    0x1068, 0xf738, 0x12c0, 0xf704, 0x1400, 0xf400, 0x0800, 0xf800,
-    0x0400, 0xfc00, 0xfc00, 0x0400, 0xfc00, 0x0000, 0xf800, 0x0000,
-};
-// clang-format on
+// The AFC decoder's 16 pairs of prediction coefficients (wave::kAfcCoefficients) as the DSP program's 32 words, in 4.11
+// fixed point.
+inline constexpr std::array<uint16_t, 32> kAfcCoefficients = []
+{
+    std::array<uint16_t, 32> words{};
+    for (std::size_t pair = 0; pair < ntdlib::wave::kAfcCoefficients.size(); pair++)
+    {
+        words[2 * pair] = static_cast<uint16_t>(ntdlib::wave::kAfcCoefficients[pair][0]);
+        words[2 * pair + 1] = static_cast<uint16_t>(ntdlib::wave::kAfcCoefficients[pair][1]);
+    }
+
+    return words;
+}();
 
 // The tables as the CPU side hands them over.
 inline Dsp::Tables DspTables()
