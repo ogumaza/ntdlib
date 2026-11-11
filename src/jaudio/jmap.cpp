@@ -61,7 +61,8 @@ std::vector<JMapNamedValue> ReadJMapNamedValues(std::span<const uint8_t> archive
     constexpr uint8_t kString = 6;
 
     std::vector<uint8_t> decoded;
-    const std::vector<ArchiveFile> files = ReadRarc(DecodeIfYaz0(archive, decoded));
+    const std::span<const uint8_t> rarc = DecodeIfYaz0(archive, decoded);
+    const std::vector<ArchiveFile> files = ReadRarc(rarc);
     const auto table =
         std::ranges::find_if(files, [&](const ArchiveFile& f)
                              { return xsflib::AsciiLower(f.name) == xsflib::AsciiLower(std::string(file)); });
@@ -70,7 +71,8 @@ std::vector<JMapNamedValue> ReadJMapNamedValues(std::span<const uint8_t> archive
         throw xsflib::FormatError("the archive holds no " + std::string(file));
     }
 
-    const xsflib::Reader r(table->data, true, detail::kReaderOptions);
+    // The table has the byte order of its archive. A Switch release stores the archive little-endian ("CRAR").
+    const xsflib::Reader r(table->data, detail::IsBigEndian(rarc, "RARC"), detail::kReaderOptions);
     const uint32_t rows = r.U32(0);
     const std::size_t first = r.U32(8);
     const std::size_t size = r.U32(12);

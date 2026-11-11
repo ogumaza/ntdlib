@@ -127,6 +127,8 @@ Its guest calls a Wii game's functions on the Broadway interpreter, for tests th
 from each console's reference game. For the Wii U and the Switch, it reads the game's tables in
 `include/ntdlib/nwsnd/tables.h`. For the 3DS and the Wii, the user supplies the game's executable. The script requires
 Python 3 and numpy.
+`tools/sequence_export/midi_file.py` reads the Standard MIDI Files that the converters write, for Python checks
+and research tools. It requires only Python 3.
 `tools/build_ppc_driver.py` builds a rip format's game-mode driver for the GameCube or the Wii, and writes it as a C++
 header. It requires a clang with the PowerPC target, such as LLVM's releases or Homebrew's llvm. Apple's clang lacks
 that target. A driver can include the shared sources in `drivers/`. `drivers/jaudio/z2.h` holds the start-up of Z2,

@@ -28,6 +28,7 @@ struct JMapNamedValue
 
 // The rows of the table named `file` in the RARC archive `archive`, compressed with Yaz0 or not: each row's string in
 // the field `name_field` and its integer in the field `value_field`, masked and shifted, in the table's order. The
+// table has the byte order of the archive: big-endian in an "RARC" archive and little-endian in a "CRAR" one. The
 // table's name matches whatever its case. Throws FormatError if the archive has no such table, if the fields aren't a
 // string and an integer, or if the table is damaged.
 std::vector<JMapNamedValue> ReadJMapNamedValues(std::span<const uint8_t> archive, std::string_view file,

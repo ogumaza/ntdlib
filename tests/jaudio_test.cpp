@@ -128,23 +128,31 @@ void TestWaveArchiveLayout()
 
 // A JMap table (BCSV) in a RARC archive, as Super Mario Galaxy 2's BgmParam.arc lays it out: the rows' names and
 // volumes in the table's order, with a row's name twice. The volume field's mask and shift apply. The table's name
-// matches whatever its case, and the archive may be compressed. A missing table, a missing field or a field of another
-// type can't be read.
+// matches whatever its case, and the archive may be compressed. The Switch's release stores the archive and the table
+// little-endian ("CRAR"). A missing table, a missing field or a field of another type can't be read.
 void TestJMapTable()
 {
     // The hashes of "Volume" and "SoundIdName" in Galaxy 2's table.
     Check(jaudio::JMapHash("Volume") == 0x990fd33a && jaudio::JMapHash("SoundIdName") == 0xc42d0c15,
           "the hashes of the fields' names");
 
-    const auto table = [](uint32_t volume_mask, uint32_t volume_type)
+    const auto table = [](uint32_t volume_mask, uint8_t volume_type, bool big_endian = true)
     {
         std::vector<uint8_t> bcsv;
         const auto u32 = [&](uint32_t v)
         {
-            for (int shift = 24; shift >= 0; shift -= 8)
+            for (int i = 0; i < 4; i++)
             {
-                bcsv.push_back(static_cast<uint8_t>(v >> shift));
+                bcsv.push_back(static_cast<uint8_t>(v >> (big_endian ? 24 - 8 * i : 8 * i)));
             }
+        };
+        // A field's offset in a row (16 bits), its shift and its type.
+        const auto place = [&](uint16_t offset, uint8_t shift, uint8_t type)
+        {
+            bcsv.push_back(static_cast<uint8_t>(big_endian ? offset >> 8 : offset));
+            bcsv.push_back(static_cast<uint8_t>(big_endian ? offset : offset >> 8));
+            bcsv.push_back(shift);
+            bcsv.push_back(type);
         };
         u32(3);
         u32(2);
@@ -152,10 +160,10 @@ void TestJMapTable()
         u32(8);
         u32(0x990fd33a);
         u32(volume_mask);
-        u32(0x00000400 | volume_type); // offset 0, shift 4
+        place(0, 4, volume_type);
         u32(0xc42d0c15);
         u32(0xffffffff);
-        u32(0x00040006); // offset 4, shift 0, type 6
+        place(4, 0, 6);
         u32(0x690);
         u32(0);
         u32(0x17f0);
@@ -166,7 +174,7 @@ void TestJMapTable()
         {
             bcsv.push_back(static_cast<uint8_t>(c));
         }
-        return files::RarcFile({{0, "BgmParam.bcsv", bcsv}});
+        return files::RarcFile({{0, "BgmParam.bcsv", bcsv}}, big_endian);
     };
 
     const auto read = [](const std::vector<uint8_t>& arc, std::string_view file)
@@ -183,6 +191,10 @@ void TestJMapTable()
     Check(read(table(0xffffffff, 0), "BgmParam.bcsv") == expected, "the rows in the table's order");
     Check(read(table(0xffffffff, 0), "bgmparam.BCSV") == expected, "the table's name in other capitals");
     Check(read(files::LiteralYaz0(table(0xffffffff, 0)), "BgmParam.bcsv") == expected, "a compressed archive");
+    Check(read(table(0xffffffff, 0, false), "BgmParam.bcsv") == expected, "a little-endian archive");
+    Check(read(files::LiteralYaz0(table(0x000000f0, 0, false)), "BgmParam.bcsv") ==
+              std::vector<std::pair<std::string, uint32_t>>{{"BGM_A", 9}, {"BGM_B", 15}, {"BGM_A", 5}},
+          "a compressed little-endian archive, with the mask before the shift");
     Check(read(table(0x000000f0, 0), "BgmParam.bcsv") ==
               std::vector<std::pair<std::string, uint32_t>>{{"BGM_A", 9}, {"BGM_B", 15}, {"BGM_A", 5}},
           "the mask before the shift");
