@@ -50,6 +50,8 @@
 #include <array>
 #include <cstdint>
 #include <iterator>
+#include <span>
+#include <vector>
 
 namespace ntdlib::jaudio
 {
@@ -196,6 +198,222 @@ inline constexpr auto kJungleBeatWiiStates = []
     std::ranges::copy(kJungleBeatStates, states.begin());
     states.back() = {0x0100002c, TableState(1), "state1", 0xfff2};
     return states;
+}();
+
+// A chord layer: the chord effects that an object of the game plays beside a stage's music while the object is near
+// DK, such as a sleeping hog's. The effects follow the chords of the music and repeat until the object stops them. Most
+// objects ask for their effect's record of the chord database once a frame (0x80256fcc in the GameCube release's
+// main.dol, through 0x802301b4 and the helpers at 0x80230264 to 0x802302f4). Objects that share an effect start it
+// once and stop it later, through the audio manager's list at +0x1040 (0x8025751c, from 0x802570f0): the coconut pigs'
+// battle and the attack chance of a stunned enemy, which plays two records. A ripper gives a piece with a layer the
+// piece's sound ID with kChordLayer and bits 0 to 6 of the layer's index in bits 16 to 22. Bit 15 holds bit 7 of the
+// index. A piece's ID holds 0 there, and the bits of the other variants' states stay as they were. The driver starts the
+// music of the stage's row and the effects.
+//
+// The layers come from the objects that each stage places (the objinfo of its world/*.arc) and the records that each
+// object's class plays. The Wii release's main.dol names the classes of its nerves (RTTI). The calls of the helpers
+// were attributed to the class whose nerves call them, or else to the class whose nerves' code comes just before them.
+// A piece that several stages play gets each layer once, at the first stage by number that places such an object. The
+// castle stages (0x43 and 0x44) play only DK_WAIT_ATTACK: startChordSe refuses the other loops there (0x8024c590).
+// The driver's table has room for 256 layers.
+struct JungleBeatChordLayer
+{
+    uint32_t piece = 0;  // the music of the stage's row
+    uint32_t stage = 0;  // the stage's number, its row of the stage table
+    uint32_t record = 0; // the record of the chord database
+    uint32_t second = 0; // a second record that starts with the first, or 0
+    bool started_once = false;
+    const char* suffix = "";
+};
+
+inline constexpr uint32_t kChordLayer = 1u << 23;
+inline constexpr uint32_t kChordLayerShift = 16;
+inline constexpr uint32_t kChordLayerHigh = 1u << 15;
+inline constexpr std::size_t kMaxChordLayers = 256;
+
+// The sound ID of layer `index` of the profile's list, on `piece`: bits 0 to 6 of the index in bits 16 to 22, and bit 7
+// in bit 15.
+constexpr uint32_t ChordLayerId(uint32_t piece, uint32_t index)
+{
+    return piece | kChordLayer | (index & 0x7f) << kChordLayerShift | ((index & 0x80) != 0 ? kChordLayerHigh : 0);
+}
+
+// The words of the driver's table of chord layers: kMaxChordLayers words, 0 past the list's end. A word holds the
+// record in bits 0 to 7, the second record in bits 8 to 15, the stage in bits 16 to 23, and bit 24 for effects that
+// the objects start once.
+inline void AppendChordLayers(std::span<const JungleBeatChordLayer> layers, std::vector<uint32_t>& words)
+{
+    for (std::size_t i = 0; i < kMaxChordLayers; i++)
+    {
+        const JungleBeatChordLayer* layer = i < layers.size() ? &layers[i] : nullptr;
+        words.push_back(layer ? (layer->started_once ? 1u << 24 : 0) | layer->stage << 16 | layer->second << 8 |
+                                    layer->record
+                              : 0);
+    }
+}
+
+// The GameCube release's chord layers, in the order of the pieces. The comment gives the stage and the objects there
+// that play the layer.
+inline constexpr JungleBeatChordLayer kJungleBeatChordLayers[] = {
+    {0x01000003, 0x2d, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_04 at BigGodTree: PigPoppoKiba
+    {0x01000003, 0x2d, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_04 at BigGodTree: PigPoppoKiba
+    {0x01000003, 0x2d, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_04 at BigGodTree: MiniIga
+    {0x01000003, 0x2d, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_04 at BigGodTree: MiniIga
+    {0x01000004, 0x4c, 135, 0, false, "enemy_angry"}, // JA_BGM_UG_01 at LavaValley: NoMouth, RollingFrog
+    {0x01000004, 0x4c, 136, 0, false, "dk_wait_attack"}, // JA_BGM_UG_01 at LavaValley: FireBakky, RollingFrog
+    {0x01000004, 0x4c, 138, 0, false, "dk_has_wait"}, // JA_BGM_UG_01 at LavaValley: FireMiniIga
+    {0x01000004, 0x4c, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_UG_01 at LavaValley: FireMiniIga
+    {0x01000004, 0x4c, 157, 158, true, "attack_chance"}, // JA_BGM_UG_01 at LavaValley: RollingFrog
+    {0x01000004, 0x4c, 46, 0, false, "only_head_move"}, // JA_BGM_UG_01 at LavaValley: OnlyHead
+    {0x01000005, 0x1e, 134, 0, false, "enemy_sleeping"}, // JA_BGM_MAIN_01 at MorningField: PigPoppoSleepWithHint
+    // JA_BGM_MAIN_01 at MorningField: MiniPigPoppo, PigPoppoSleepWithHint
+    {0x01000005, 0x1e, 136, 0, false, "dk_wait_attack"},
+    {0x01000005, 0x1e, 132, 0, false, "lect_kikki_run"}, // JA_BGM_MAIN_01 at MorningField: LectureKikki
+    {0x01000010, 0x30, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_02 at SteepValley: Garigari
+    {0x01000010, 0x30, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_02 at SteepValley: Bakky, PigPoppo
+    {0x01000010, 0x30, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_02 at SteepValley: PigPoppo
+    {0x01000010, 0x30, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_02 at SteepValley: PigPoppo
+    {0x01000010, 0x30, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_02 at SteepValley: Garigari, PigPoppo
+    {0x01000010, 0x30, 34, 0, false, "garigari_rush"}, // JA_BGM_MAIN_02 at SteepValley: Garigari
+    {0x01000010, 0x30, 37, 0, false, "garigari_spin"}, // JA_BGM_MAIN_02 at SteepValley: Garigari
+    {0x01000010, 0x30, 44, 0, false, "garigari_ball_roll"}, // JA_BGM_MAIN_02 at SteepValley: Garigari
+    {0x01000016, 0x2c, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_05 at TropicalCoast: NeedlePoppo
+    {0x01000016, 0x2c, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_05 at TropicalCoast: NeedlePoppo
+    {0x01000016, 0x2c, 159, 0, false, "enemy_battle"}, // JA_BGM_MAIN_05 at TropicalCoast: NeedlePoppo
+    {0x01000017, 0x1f, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_03 at DeepJungle: PigPoppo
+    {0x01000017, 0x1f, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_03 at DeepJungle: MiniIga
+    {0x01000017, 0x1f, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_03 at DeepJungle: PigPoppo
+    {0x01000017, 0x1f, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_03 at DeepJungle: PigPoppo
+    {0x01000017, 0x1f, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_03 at DeepJungle: MiniIga
+    {0x01000017, 0x1f, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_03 at DeepJungle: PigPoppo
+    {0x01000017, 0x1f, 132, 0, false, "lect_kikki_run"}, // JA_BGM_MAIN_03 at DeepJungle: LectureKikki
+    {0x01000018, 0x22, 134, 0, false, "enemy_sleeping"}, // JA_BGM_MAIN_06 at SkyGarden01: KobuPakkun
+    {0x01000018, 0x22, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_06 at SkyGarden01: KobuPakkun
+    {0x01000018, 0x22, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_06 at SkyGarden01: KobuPakkun, MiniPigPoppo
+    {0x01000018, 0x24, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_06 at TheNestOfHeliBird: BigBee
+    {0x01000018, 0x22, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_06 at SkyGarden01: KobuPakkun
+    {0x01000018, 0x24, 159, 0, false, "enemy_battle"}, // JA_BGM_MAIN_06 at TheNestOfHeliBird: BigBee
+    {0x01000018, 0x22, 132, 0, false, "lect_kikki_run"}, // JA_BGM_MAIN_06 at SkyGarden01: LectureKikki
+    {0x01000019, 0x27, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_07 at GoUpTheWaterFall: PigPoppo
+    {0x01000019, 0x27, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_07 at GoUpTheWaterFall: PigPoppo
+    {0x01000019, 0x27, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_07 at GoUpTheWaterFall: PigPoppo
+    {0x01000019, 0x27, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_07 at GoUpTheWaterFall: PigPoppo
+    {0x01000019, 0x27, 47, 0, false, "bubble_flower_rotate"}, // JA_BGM_MAIN_07 at GoUpTheWaterFall: BubbleFlower
+    {0x0100001e, 0x28, 135, 0, false, "enemy_angry"}, // JA_BGM_VOLCANO at VolcanoBottom: NoMouth
+    {0x0100001e, 0x28, 136, 0, false, "dk_wait_attack"}, // JA_BGM_VOLCANO at VolcanoBottom: FireBakky
+    {0x0100001e, 0x28, 138, 0, false, "dk_has_wait"}, // JA_BGM_VOLCANO at VolcanoBottom: FireMiniIga
+    {0x0100001e, 0x28, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_VOLCANO at VolcanoBottom: FireMiniIga
+    {0x0100001e, 0x28, 46, 0, false, "only_head_move"}, // JA_BGM_VOLCANO at VolcanoBottom: OnlyHead
+    {0x01000020, 0x33, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_08 at EscapeFromRelic: RollingFrog
+    {0x01000020, 0x33, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_08 at EscapeFromRelic: Bakky, RollingFrog
+    {0x01000020, 0x33, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_08 at EscapeFromRelic: RollingFrog
+    {0x01000020, 0x33, 46, 0, false, "only_head_move"}, // JA_BGM_MAIN_08 at EscapeFromRelic: OnlyHead
+    {0x01000020, 0x33, 132, 0, false, "lect_kikki_run"}, // JA_BGM_MAIN_08 at EscapeFromRelic: LectureKikki
+    {0x01000021, 0x32, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_09 at KikkiFestival: MiniIga
+    {0x01000021, 0x32, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_09 at KikkiFestival: MiniIga
+    {0x01000021, 0x32, 132, 0, false, "lect_kikki_run"}, // JA_BGM_MAIN_09 at KikkiFestival: LectureKikki
+    {0x01000022, 0x48, 134, 0, false, "enemy_sleeping"}, // JA_BGM_MAIN_10 at FactoryRelic: PigPoppoSleep
+    {0x01000022, 0x48, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_10 at FactoryRelic: BigBee, Garigari, NoMouth
+    // JA_BGM_MAIN_10 at FactoryRelic: BigBee, MiniPigPoppo, PigPoppoSleep
+    {0x01000022, 0x48, 136, 0, false, "dk_wait_attack"},
+    {0x01000022, 0x48, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_10 at FactoryRelic: FireMiniIga
+    {0x01000022, 0x52, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_10 at UnderGroundMaze: PigPoppo
+    {0x01000022, 0x48, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_10 at FactoryRelic: BigBee
+    {0x01000022, 0x48, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_10 at FactoryRelic: FireMiniIga
+    {0x01000022, 0x48, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_10 at FactoryRelic: BigBee, Garigari
+    {0x01000022, 0x48, 159, 0, false, "enemy_battle"}, // JA_BGM_MAIN_10 at FactoryRelic: BigBee
+    {0x01000022, 0x48, 34, 0, false, "garigari_rush"}, // JA_BGM_MAIN_10 at FactoryRelic: Garigari
+    {0x01000022, 0x48, 37, 0, false, "garigari_spin"}, // JA_BGM_MAIN_10 at FactoryRelic: Garigari
+    {0x01000022, 0x48, 44, 0, false, "garigari_ball_roll"}, // JA_BGM_MAIN_10 at FactoryRelic: Garigari
+    {0x01000022, 0x48, 46, 0, false, "only_head_move"}, // JA_BGM_MAIN_10 at FactoryRelic: OnlyHead
+    {0x01000023, 0x3b, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_11 at DesertRelic: KobuPakkunAngry
+    // JA_BGM_MAIN_11 at DesertRelic: Bakky, DanSpider, KobuPakkunAngry, MiniPigPoppo, PigPoppo
+    {0x01000023, 0x3b, 136, 0, false, "dk_wait_attack"},
+    {0x01000023, 0x3b, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_11 at DesertRelic: PigPoppo
+    {0x01000023, 0x3b, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_11 at DesertRelic: PigPoppo
+    {0x01000023, 0x3b, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_11 at DesertRelic: KobuPakkunAngry, PigPoppo
+    {0x01000023, 0x3b, 159, 0, true, "enemy_battle"}, // JA_BGM_MAIN_11 at DesertRelic: CocoPig
+    {0x01000024, 0x2f, 134, 0, false, "enemy_sleeping"}, // JA_BGM_MAIN_12 at IceCave: KobuPakkun
+    {0x01000024, 0x2f, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_12 at IceCave: KobuPakkun
+    {0x01000024, 0x2f, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_12 at IceCave: IceBakky, KobuPakkun
+    {0x01000024, 0x2f, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_12 at IceCave: IceMiniIga
+    {0x01000024, 0x36, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_12 at IceTunnel: PigPoppo
+    {0x01000024, 0x36, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_12 at IceTunnel: PigPoppo
+    {0x01000024, 0x2f, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_12 at IceCave: IceMiniIga
+    {0x01000024, 0x2f, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_12 at IceCave: KobuPakkun
+    {0x01000024, 0x36, 159, 0, true, "enemy_battle"}, // JA_BGM_MAIN_12 at IceTunnel: CocoPigSnow
+    {0x01000024, 0x2f, 46, 0, false, "only_head_move"}, // JA_BGM_MAIN_12 at IceCave: OnlyHead
+    {0x01000025, 0x4f, 134, 0, false, "enemy_sleeping"}, // JA_BGM_MAIN_13 at InfernalZoo: PigPoppoSleep
+    // JA_BGM_MAIN_13 at InfernalZoo: Garigari, KobuPakkunAngry, NoMouth, RollingFrog
+    {0x01000025, 0x4f, 135, 0, false, "enemy_angry"},
+    // JA_BGM_MAIN_13 at InfernalZoo: FireBakky, KobuPakkunAngry, MiniPigPoppo, PigPoppo, PigPoppoSleep, RollingFrog
+    {0x01000025, 0x4f, 136, 0, false, "dk_wait_attack"},
+    {0x01000025, 0x4f, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_13 at InfernalZoo: FireMiniIga
+    {0x01000025, 0x4f, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_13 at InfernalZoo: PigPoppo
+    {0x01000025, 0x4f, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_13 at InfernalZoo: PigPoppo
+    {0x01000025, 0x4f, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_13 at InfernalZoo: FireMiniIga
+    // JA_BGM_MAIN_13 at InfernalZoo: Garigari, KobuPakkunAngry, PigPoppo, RollingFrog
+    {0x01000025, 0x4f, 157, 158, true, "attack_chance"},
+    {0x01000025, 0x4f, 159, 0, true, "enemy_battle"}, // JA_BGM_MAIN_13 at InfernalZoo: CocoPig
+    {0x01000025, 0x4f, 34, 0, false, "garigari_rush"}, // JA_BGM_MAIN_13 at InfernalZoo: Garigari
+    {0x01000025, 0x4f, 37, 0, false, "garigari_spin"}, // JA_BGM_MAIN_13 at InfernalZoo: Garigari
+    {0x01000025, 0x4f, 44, 0, false, "garigari_ball_roll"}, // JA_BGM_MAIN_13 at InfernalZoo: Garigari
+    {0x01000026, 0x41, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_14 at Iceberg: NoFin, RollingFrog
+    {0x01000026, 0x41, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_14 at Iceberg: NeedlePoppo, RollingFrog
+    {0x01000026, 0x41, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_14 at Iceberg: NeedlePoppo, RollingFrog
+    {0x01000026, 0x41, 159, 0, false, "enemy_battle"}, // JA_BGM_MAIN_14 at Iceberg: NeedlePoppo
+    {0x01000027, 0x3e, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_15 at CloudHeaven: MiniPigPoppo
+    {0x01000027, 0x3e, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_15 at CloudHeaven: MiniIga
+    {0x01000027, 0x3e, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_15 at CloudHeaven: MiniIga
+    {0x01000028, 0x4e, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_16 at AboveTheClouds: MiniIga
+    {0x01000028, 0x4e, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_16 at AboveTheClouds: MiniIga
+    {0x01000028, 0x4e, 46, 0, false, "only_head_move"}, // JA_BGM_MAIN_16 at AboveTheClouds: OnlyHead
+    {0x01000028, 0x4e, 47, 0, false, "bubble_flower_rotate"}, // JA_BGM_MAIN_16 at AboveTheClouds: BubbleFlower
+    {0x01000029, 0x51, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_17 at ClockTower: BigBee
+    {0x01000029, 0x51, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_17 at ClockTower: BigBee
+    {0x01000029, 0x51, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_17 at ClockTower: BigBee
+    {0x01000029, 0x51, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_17 at ClockTower: BigBee
+    {0x01000029, 0x51, 159, 0, false, "enemy_battle"}, // JA_BGM_MAIN_17 at ClockTower: BigBee
+    {0x0100002a, 0x25, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_18 at FairyWood: MiniPigPoppo, PigPoppo
+    {0x0100002a, 0x25, 140, 0, false, "enemy_wait_pig"}, // JA_BGM_MAIN_18 at FairyWood: PigPoppo
+    {0x0100002a, 0x25, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_18 at FairyWood: PigPoppo
+    {0x0100002a, 0x25, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_18 at FairyWood: PigPoppo
+    {0x0100002a, 0x25, 159, 0, true, "enemy_battle"}, // JA_BGM_MAIN_18 at FairyWood: CocoPig
+    {0x0100002a, 0x25, 132, 0, false, "lect_kikki_run"}, // JA_BGM_MAIN_18 at FairyWood: LectureKikki
+    // JA_BGM_MAIN_19 at RoadToCastle: DanSpider, NinKnifeMonkey, PigPoppoFire, PigPoppoKiba, SlumpBirdMini
+    {0x0100002f, 0x43, 136, 0, false, "dk_wait_attack"},
+    // JA_BGM_MAIN_20 at InTheCastle: NeedlePoppo, NinKnifeMonkey, PigPoppoFire, SlumpBirdMini, SlumpBirdMiniOnRail
+    {0x01000030, 0x44, 136, 0, false, "dk_wait_attack"},
+    {0x0100003f, 0x49, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_21 at DemonFireMarsh: PigPoppoFire
+    // JA_BGM_MAIN_21 at DemonFireMarsh: PigPoppoFire, SlumpBirdMini
+    {0x0100003f, 0x49, 136, 0, false, "dk_wait_attack"},
+    {0x0100003f, 0x49, 138, 0, false, "dk_has_wait"}, // JA_BGM_MAIN_21 at DemonFireMarsh: IceMiniIga
+    {0x0100003f, 0x49, 141, 0, false, "enemy_blow_wind"}, // JA_BGM_MAIN_21 at DemonFireMarsh: PigPoppoFire
+    {0x0100003f, 0x49, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_21 at DemonFireMarsh: IceMiniIga
+    {0x0100004a, 0x58, 135, 0, false, "enemy_angry"}, // JA_BGM_MAIN_22 at VsFinalKong2: PigPoppoKiba
+    {0x0100004a, 0x56, 136, 0, false, "dk_wait_attack"}, // JA_BGM_MAIN_22 at VsFinalKong: NinKnifeMonkey
+    // The opening ceremony's layer comes last. The other layers keep the indices that they had in a table of 128.
+    {0x01000006, 0x57, 132, 0, false, "lect_kikki_run"}, // JA_BGM_OP_CEMEMONY at OpeningCeremony: LectureKikki
+};
+
+static_assert(std::size(kJungleBeatChordLayers) <= kMaxChordLayers);
+
+// The Wii release's chord layers. Its stage table gives the same stages the same rows and music, and its startChordSe
+// refuses the same records at the castle stages (0x80273940). Its stages place other objects, but the objects that play
+// these effects stay, with one exception: KikkiFestival (0x32) places no MiniIga. The Wii release's main.dol starts a
+// record through 0x8027c050 and keeps it playing through 0x8027c0b0.
+inline constexpr auto kJungleBeatWiiChordLayers = []
+{
+    std::array<JungleBeatChordLayer, std::size(kJungleBeatChordLayers) - 2> layers{};
+    std::size_t n = 0;
+    for (const JungleBeatChordLayer& layer : kJungleBeatChordLayers)
+    {
+        if (layer.stage != 0x32 || (layer.record != 138 && layer.record != 143))
+        {
+            layers[n++] = layer;
+        }
+    }
+    return layers;
 }();
 
 } // namespace ntdlib::jaudio

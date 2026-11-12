@@ -49,6 +49,20 @@
 #define TABLE_STATE_MASK 7u
 #define HELIBIRD 0x200000u
 
+/* A chord layer: a variant whose sound ID has CHORD_LAYER set plays the music of a stage with one or two chord effects
+   beside it. Bits 16 to 22 of the ID give bits 0 to 6 of the layer's index in the driver's table of CHORD_LAYERS
+   layers, and bit 15 gives bit 7 (CHORD_LAYER_HIGH). The ID of a piece holds 0 in bit 15. A layer's word holds
+   the first effect's record in bits 0 to 7, the second's in bits 8 to 15 (0 for none) and the stage in bits 16 to 23.
+   LAYER_STARTED_ONCE marks effects that the objects start once rather than once a frame. The ripper's side is in
+   ntdlib/jaudio/jungle_beat_states.h. */
+#define CHORD_LAYERS 256u
+#define CHORD_LAYER 0x800000u
+#define CHORD_LAYER_SHIFT 16u
+#define CHORD_LAYER_MASK 0x7fu
+#define CHORD_LAYER_HIGH 0x8000u
+#define LAYER_STAGE_SHIFT 16u
+#define LAYER_STARTED_ONCE 0x1000000u
+
 /* The player's flags that a Helibird sets while it carries DK: bit 2 on and bit 0 off (0x801ed0a4 in the GameCube
    release's main.dol). Bit 1 follows another flag of DK. The states of the pieces that a flight changes leave the
    tracks that bit 1 picks as they are. */

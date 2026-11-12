@@ -22,6 +22,7 @@
 #include "ntdlib/krawall/driver.h"
 #include "ntdlib/krawall/player.h"
 #include "ntdlib/sequence_export/agb/midi.h"
+#include "ntdlib/sequence_export/agb/module_bars.h"
 #include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/krawall/soundfont.h"
@@ -37,30 +38,28 @@ using ntdlib::krawall::kPlayerChannels;
 using ntdlib::krawall::MixChannel;
 using ntdlib::krawall::ModuleSong;
 using ntdlib::krawall::Player;
+using ntdlib::sequence_export::agb::BarStarts;
+using ntdlib::sequence_export::agb::BarTicks;
 using ntdlib::sequence_export::agb::BendRangeFor;
 using ntdlib::sequence_export::agb::ChannelWriter;
+using ntdlib::sequence_export::agb::ChooseMeter;
 using ntdlib::sequence_export::agb::kSmallBend;
 using ntdlib::sequence_export::agb::LevelsToControllers;
 using ntdlib::sequence_export::agb::MelodicChannel;
+using ntdlib::sequence_export::agb::Meter;
 using ntdlib::sequence_export::agb::MidiFile;
 using ntdlib::sequence_export::agb::MidiTrack;
+using ntdlib::sequence_export::agb::ModuleStep;
 using ntdlib::sequence_export::agb::NumberedPreset;
+using ntdlib::sequence_export::agb::OrderRun;
+using ntdlib::sequence_export::agb::OrderRuns;
 using ntdlib::sequence_export::agb::SongNumber;
 using ntdlib::sequence_export::agb::SongStem;
 namespace
 {
 
-// Target tempo range in BPM, with the upper bound excluded. Doubling the rows per beat halves the tempo, so exactly one
-// power-of-two choice falls within a twofold range.
-constexpr double kSlowestBeat = 105;
-constexpr double kFastestBeat = 210;
-
 // The most rows that a beat, or an eighth note in 12/8, can have.
 constexpr uint32_t kMaxBeatRows = 64;
-
-// The quarter notes in a bar of 4/4, and in one of 12/8.
-constexpr uint32_t kSimpleBarQuarters = 4;
-constexpr uint32_t kCompoundBarQuarters = 6;
 
 // The cents by which a note's pitch can miss its key before its bend makes up the difference: more than the table of
 // periods misses equal temperament by in the octaves that modules use.
@@ -346,60 +345,6 @@ bool FirstPassRepeats(const Rom& rom, const DriverInfo& info, const Simulation& 
     return passes.Alike();
 }
 
-// A run of rows within one order. A new run starts when the order changes or playback returns to the same or an earlier
-// row.
-struct OrderRun
-{
-    size_t start = 0; // the tick of its first row
-    size_t ticks = 0; // the ticks to the next run, or to the end
-    int order = 0;
-    int first_row = 0; // its first row's number in the pattern, which a break can make more than 0
-};
-
-// Returns the runs of rows that the module's orders play.
-std::vector<OrderRun> OrderRuns(const Simulation& sim)
-{
-    std::vector<OrderRun> runs;
-    int last_row = -1;
-    for (size_t i = 0; i < sim.ticks.size(); i++)
-    {
-        const TickData& t = sim.ticks[i];
-        if (!t.row)
-        {
-            continue;
-        }
-
-        if (runs.empty() || t.order != runs.back().order || t.pattern_row <= last_row)
-        {
-            if (!runs.empty())
-            {
-                runs.back().ticks = i - runs.back().start;
-            }
-            runs.push_back({i, 0, t.order, t.pattern_row});
-        }
-        last_row = t.pattern_row;
-    }
-    if (!runs.empty())
-    {
-        runs.back().ticks = sim.ticks.size() - runs.back().start;
-    }
-
-    return runs;
-}
-
-// MIDI ticks per quarter note and the choice of 4/4 or 12/8. In 12/8, the beat is a dotted quarter note.
-struct Meter
-{
-    uint32_t quarter_ticks = 1;
-    bool compound = false;
-};
-
-// Returns the ticks in a full bar of `meter`.
-size_t BarTicks(const Meter& meter)
-{
-    return size_t(meter.quarter_ticks) * (meter.compound ? kCompoundBarQuarters : kSimpleBarQuarters);
-}
-
 // Returns the key with the largest count, the first of those that tie.
 template <typename K>
 K Commonest(const std::map<K, size_t>& counts)
@@ -424,91 +369,6 @@ bool SameGrid(uint32_t speed, uint32_t main)
 {
     const uint32_t high = std::max(speed, main), low = std::min(speed, main);
     return low > 0 && high % low == 0 && ((high / low) & (high / low - 1)) == 0;
-}
-
-// Chooses a beat and meter using row lengths and pattern boundaries. In 4/4, a quarter note spans a power-of-two number
-// of rows; in 12/8, each eighth note does. The target beat tempo is at least kSlowestBeat and below kFastestBeat, with
-// `row_ticks` MIDI ticks per row and `tick_seconds` seconds per MIDI tick. 12/8 wins when more of the runs' MIDI ticks,
-// in `ticks`, fit whole bars of it than of 4/4, as 48-row patterns do at two rows per eighth note. The count leaves out
-// the first run, which may be a lead-in, and the last, which may end early.
-Meter ChooseMeter(const std::vector<uint32_t>& ticks, const std::vector<OrderRun>& runs, uint32_t row_ticks,
-                  double tick_seconds)
-{
-    const auto bpm = [&](uint32_t beat_ticks)
-    {
-        return 60 / (beat_ticks * tick_seconds);
-    };
-
-    // Double the rows per quarter note (4/4) or eighth note (12/8) until the beat tempo falls below kFastestBeat, or
-    // the row limit is reached.
-    uint32_t quarter_rows = 1, eighth_rows = 1;
-    while (bpm(quarter_rows * row_ticks) >= kFastestBeat && quarter_rows < kMaxBeatRows)
-    {
-        quarter_rows *= 2;
-    }
-    while (bpm(3 * eighth_rows * row_ticks) >= kFastestBeat && eighth_rows < kMaxBeatRows)
-    {
-        eighth_rows *= 2;
-    }
-    const Meter simple = {quarter_rows * row_ticks, false};
-    const Meter compound = {2 * eighth_rows * row_ticks, true};
-
-    // The MIDI ticks of the runs that make whole bars.
-    const auto whole = [&](const Meter& meter)
-    {
-        size_t sum = 0;
-        for (size_t r = 1; r + 1 < runs.size(); r++)
-        {
-            const size_t length = ticks[runs[r].start + runs[r].ticks] - ticks[runs[r].start];
-            if (length % BarTicks(meter) == 0)
-            {
-                sum += length;
-            }
-        }
-
-        return sum;
-    };
-
-    if (bpm(3 * eighth_rows * row_ticks) >= kSlowestBeat && whole(compound) > whole(simple))
-    {
-        return compound;
-    }
-
-    return simple;
-}
-
-// Returns bar start positions in MIDI ticks, with `bar` MIDI ticks in a full bar. Bars align to each pattern's first
-// row, and any rows that a run skips count as long as its first row. A pattern that ends early has a short final bar.
-// If a break or jump cuts the first order short, as with a game's lead-in, its partial bar comes at the start instead,
-// as a pickup, each time the first order plays.
-std::vector<uint32_t> BarStarts(const Simulation& sim, const std::vector<uint32_t>& ticks,
-                                const std::vector<OrderRun>& runs, size_t bar)
-{
-    std::vector<uint32_t> starts;
-    if (runs.empty())
-    {
-        return starts;
-    }
-
-    const OrderRun& first = runs[0];
-    const bool cut = runs.size() > 1 && runs[1].order != first.order;
-    const size_t pickup = cut ? (ticks[first.start + first.ticks] - ticks[first.start]) % bar : 0;
-    for (const OrderRun& run : runs)
-    {
-        const size_t row = size_t(ticks[run.start + 1] - ticks[run.start]) * size_t(sim.ticks[run.start].speed);
-        const size_t from = run.order == first.order ? pickup : 0;
-        size_t at = size_t(run.first_row) * row;
-        for (size_t i = run.start; i < run.start + run.ticks; i++)
-        {
-            if (sim.ticks[i].row && (i == 0 || at == 0 || (at >= from && (at - from) % bar == 0)))
-            {
-                starts.push_back(ticks[i]);
-            }
-            at += ticks[i + 1] - ticks[i];
-        }
-    }
-
-    return starts;
 }
 
 // MIDI timing based on the most common speed. At that speed, and at power-of-two multiples or fractions of it, each
@@ -565,10 +425,16 @@ Timing MakeTiming(const Simulation& sim)
     }
     t.ticks.push_back(at);
 
-    // The beat, from the commonest length of tick, and the bars.
-    const std::vector<OrderRun> runs = OrderRuns(sim);
+    // The beat, from the commonest length of tick, and the bars. A row lasts its speed's count of ticks.
+    std::vector<ModuleStep> steps;
+    for (size_t i = 0; i < sim.ticks.size(); i++)
+    {
+        const TickData& d = sim.ticks[i];
+        steps.push_back({d.row, d.order, d.pattern_row, (t.ticks[i + 1] - t.ticks[i]) * uint32_t(d.speed)});
+    }
+    const std::vector<OrderRun> runs = OrderRuns(steps);
     t.meter = ChooseMeter(t.ticks, runs, main * scale, double(Commonest(lengths)) / sim.mix_rate / scale);
-    t.bars = BarStarts(sim, t.ticks, runs, BarTicks(t.meter));
+    t.bars = BarStarts(steps, t.ticks, runs, BarTicks(t.meter));
 
     // A tempo that gives each tick its length.
     uint32_t tempo = 0;
@@ -785,20 +651,6 @@ std::vector<int> SeparateMidiChannels(const Simulation& sim, const std::vector<s
     return midi;
 }
 
-// Writes the time signature at `tick` for a bar of `ticks` MIDI ticks. Full bars use 4/4 or 12/8. A shorter bar counts
-// the largest note value that divides it evenly, from quarter notes in 4/4 or eighth notes in 12/8 down to 128th notes.
-void BarSignature(MidiTrack& conductor, uint32_t tick, size_t ticks, const Meter& meter)
-{
-    size_t note = meter.compound ? meter.quarter_ticks / 2 : meter.quarter_ticks;
-    int pow2 = meter.compound ? 3 : 2;
-    while (ticks % note != 0 && note % 2 == 0 && pow2 < 7)
-    {
-        note /= 2;
-        pow2++;
-    }
-    conductor.TimeSignature(tick, int(ticks / note), pow2);
-}
-
 // The MIDI file's bytes: a conductor track with the tempo map, then a track for each channel that plays notes, on the
 // MIDI channel that `channels` gives it.
 std::vector<uint8_t> MidiBytes(const std::string& title, const std::string& about, const Simulation& sim,
@@ -812,23 +664,7 @@ std::vector<uint8_t> MidiBytes(const std::string& title, const std::string& abou
     conductor.Name(title);
     conductor.Meta(0, 0x01, about);
 
-    // Write a time signature wherever the bar length changes. The last bar keeps the previous signature, even if the
-    // file ends partway through it.
-    size_t bar_ticks = 0;
-    for (size_t b = 0; b + 1 < timing.bars.size(); b++)
-    {
-        const size_t ticks = size_t(timing.bars[b + 1] - timing.bars[b]);
-        if (ticks != bar_ticks)
-        {
-            BarSignature(conductor, timing.bars[b], ticks, timing.meter);
-            bar_ticks = ticks;
-        }
-    }
-    if (bar_ticks == 0)
-    {
-        BarSignature(conductor, 0, BarTicks(timing.meter), timing.meter);
-    }
-
+    WriteBarSignatures(conductor, timing.bars, timing.meter);
     for (const auto& [tick, micros] : timing.tempos)
     {
         conductor.Tempo(tick, micros);

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 3.6.1 LANGUAGES C CXX)
+project(ntdlib VERSION 3.7.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -532,6 +532,13 @@ target_link_libraries(ntdlib_alphadream PUBLIC ntdlib::agb ntdlib::commands)
 xsflib_add_project_test(ntdlib alphadream_commands ntdlib::alphadream)
 xsflib_add_project_test(ntdlib alphadream_layout ntdlib::alphadream)
 
+# Logik State's GBA driver, GBAModPlay: detection, the readers of its modules and banks of samples, models of the
+# player of each format, and a module's listing.
+xsflib_add_project_library(ntdlib logikstate src/logikstate/driver.cpp src/logikstate/mod1_pieces.cpp
+                           src/logikstate/mod1_player.cpp src/logikstate/player.cpp src/logikstate/song.cpp
+                           src/logikstate/mod30.cpp src/logikstate/mod30_player.cpp src/logikstate/mod30_games.cpp)
+target_link_libraries(ntdlib_logikstate PUBLIC ntdlib::agb)
+
 # Enough of a GBA to run a game's sound driver on the ARM interpreter: the memories, the I/O registers, the DMA's
 # immediate transfers and the BIOS's calls that the drivers make. A game's MP2K driver runs on it (mp2k_game), as the
 # reference for ntdlib's model of the driver.
@@ -673,11 +680,12 @@ if (NTDLIB_SEQUENCE_EXPORT)
     target_link_libraries(ntdlib_sequence_export_ntr PUBLIC ntdlib::sequence_export ntdlib::ntr_archive_player
                                                             ntdlib::sequence_export_dse)
     # The GBA's conversions: what every driver's conversion shares (sequence_export_agb), MP2K's, Konami's, Rare's,
-    # Quintet's, Krawall's, Nintendo R&D2's, Brownie Brown's, Ubisoft Milan's and AlphaDream's.
+    # Quintet's, Krawall's, Nintendo R&D2's, Brownie Brown's, Ubisoft Milan's, AlphaDream's and Logik State's.
     xsflib_add_project_library(ntdlib sequence_export_agb
         src/sequence_export/agb/beat_grid.cpp
         src/sequence_export/agb/beat_midi.cpp
         src/sequence_export/agb/midi.cpp
+        src/sequence_export/agb/module_bars.cpp
         src/sequence_export/agb/psg.cpp
         src/sequence_export/agb/settings.cpp
         src/sequence_export/agb/sf2.cpp
@@ -721,6 +729,11 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/alphadream/sequencer.cpp
         src/sequence_export/alphadream/soundfont.cpp)
     target_link_libraries(ntdlib_sequence_export_alphadream PUBLIC ntdlib::sequence_export_agb ntdlib::alphadream)
+    # Logik State's conversion: the model's playback of a module to MIDI and SoundFont 2.
+    xsflib_add_project_library(ntdlib sequence_export_logikstate
+        src/sequence_export/logikstate/convert.cpp
+        src/sequence_export/logikstate/soundfont.cpp)
+    target_link_libraries(ntdlib_sequence_export_logikstate PUBLIC ntdlib::sequence_export_agb ntdlib::logikstate)
     xsflib_add_project_library(ntdlib sequence_export_brownie
         src/sequence_export/brownie/convert.cpp
         src/sequence_export/brownie/performance.cpp
@@ -765,6 +778,9 @@ if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_test(ntdlib ubimilan ntdlib::sequence_export_ubimilan)
     xsflib_add_project_test(ntdlib ubimilan_performance ntdlib::sequence_export_ubimilan)
     xsflib_add_project_test(ntdlib alphadream ntdlib::sequence_export_alphadream)
+    xsflib_add_project_test(ntdlib logikstate ntdlib::sequence_export_logikstate)
+    xsflib_add_project_test(ntdlib logikstate_mod1 ntdlib::sequence_export_logikstate)
+    xsflib_add_project_test(ntdlib logikstate_mod30 ntdlib::sequence_export_logikstate)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_frame ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_arrangements ntdlib::sequence_export)

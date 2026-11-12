@@ -1566,6 +1566,77 @@ void TestLibmusSongTables()
           "a table of starts and a table of ends");
 }
 
+// The reverb base that a game's code gives a song raises its channels' effect levels toward full.
+void TestLibmusReverbBase()
+{
+    // velon, an endit of 1, a reverb of 64, and a loop of a note of 96 ticks and a rest of 96.
+    const std::vector<uint8_t> song =
+        MusSong({{.data = {0x99, 0x87, 1, 0xA2, 64, 0x95, 0xFF, 48, 100, 96, 96, 0, 96, 0x96}}}, MusMaster(0, 192));
+    const auto send = [&song](int base)
+    {
+        ntdlib::sequence_export::n64::LibmusSettings settings;
+        settings.reverb_base = base;
+        const ntdlib::sequence_export::n64::LibmusPerformance played =
+            ntdlib::sequence_export::n64::PerformLibmus(song, kMusDetunes, settings, {});
+
+        return AllEventsOfKind(played.performance, midi::EventKind::kReverb).at(0).value;
+    };
+
+    Check(send(0) == 64, "no base keeps the song's level");
+
+    // 25 + (128 - 25) * 64 / 128 = 76, in whole numbers.
+    Check(send(25) == 76, "a base of 25");
+}
+
+// A profile that places each song reads it as it stands or from a raw DEFLATE stream, and names it.
+void TestLibmusSongList()
+{
+    // A song of 16 bytes at 0x100, the same bytes in a stored DEFLATE block at 0x120, and a bank of no waves at 0x200.
+    std::vector<uint8_t> image(0x300, 0);
+    for (std::size_t i = 0; i < 16; i++)
+    {
+        image[0x100 + i] = static_cast<uint8_t>(i + 1);
+        image[0x125 + i] = static_cast<uint8_t>(i + 1);
+    }
+
+    // The final block, stored, with its length and the length's complement.
+    const std::array<uint8_t, 5> stored = {0x01, 16, 0, 0xEF, 0xFF};
+    std::copy(stored.begin(), stored.end(), image.begin() + 0x120);
+
+    namespace n64_export = ntdlib::sequence_export::n64;
+    const std::array kBanks = {n64_export::LibmusBankPlace{.pointers = 0x200, .samples = 0x280}};
+    const std::array kSongs = {
+        n64_export::LibmusSong{.start = 0x100, .end = 0x110, .name = "plain"},
+        n64_export::LibmusSong{.start = 0x120, .end = 0x135, .deflated = true, .name = "packed"},
+        n64_export::LibmusSong{.start = 0x120, .end = 0x135, .deflated = true, .reverb_base = 25, .name = "base"},
+        n64_export::LibmusSong{.start = 0x100, .end = 0x110, .volume = 0x60, .name = "quieter"},
+    };
+
+    const n64_export::LibmusProfile profile = {.banks = kBanks, .song_list = kSongs};
+    std::vector<std::string> names;
+    for (const auto& sequence : n64_export::LibmusGame::Open(image, profile)->Sequences())
+    {
+        names.push_back(sequence.name);
+    }
+
+    Check(
+        names == std::vector<std::string>({"Sequence 0x00 (plain)", "Sequence 0x02 (base)", "Sequence 0x03 (quieter)"}),
+        "a packed song with the same bytes, volume and base repeats a plain one");
+
+    image[0x120] = 0x07; // a block of the reserved type
+    bool threw = false;
+    try
+    {
+        n64_export::LibmusGame::Open(image, profile);
+    }
+    catch (const xsflib::FormatError&)
+    {
+        threw = true;
+    }
+
+    Check(threw, "a corrupt DEFLATE stream throws FormatError");
+}
+
 // A profile whose table runs past the image throws FormatError. The other reads throw it too. The tables are those of
 // the starts and the ends, of the ends, of the songs' files, and the directory.
 void TestLibmusTablesOutsideImage()
@@ -2899,6 +2970,8 @@ int main()
                                         TestLibmusTempoScale();
                                         TestLibmusRepeats();
                                         TestLibmusSongTables();
+                                        TestLibmusReverbBase();
+                                        TestLibmusSongList();
                                         TestLibmusTablesOutsideImage();
                                         TestLibmusSend();
                                         TestSbnClock();

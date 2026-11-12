@@ -15,6 +15,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "ntdlib/inflate.h"
 #include "ntdlib/n64/bank_file.h"
 #include "ntdlib/n64/vadpcm.h"
 #include "ntdlib/sequence_export/n64/envelope.h"
@@ -817,7 +818,10 @@ void ChannelReader::StartNote(int note)
     // A silent note still cuts the last note. The lowest velocity keeps that.
     action.velocity = static_cast<uint8_t>(std::clamp(heard, 1, 127));
     action.pan = static_cast<uint8_t>(std::clamp(pan_, 0, 127));
-    action.reverb = static_cast<uint8_t>(std::clamp(reverb_, 0, 127));
+    // The game's reverb base raises every level the song sets toward full.
+    const int base = settings_.reverb_base;
+    const int effect = (base + (128 - base) * reverb_ / 128) & 0xFF;
+    action.reverb = static_cast<uint8_t>(std::clamp(effect, 0, 127));
     action.preset = {bank_wave, envelope_};
     actions_.push_back(action);
 
@@ -1508,6 +1512,36 @@ std::unique_ptr<LibmusGame> LibmusGame::Open(std::span<const uint8_t> image, con
         game->songs_.push_back(image.subspan(start, end - start));
     }
 
+    // The profile places each song, and gives its name.
+    for (const LibmusSong& song : profile.song_list)
+    {
+        if (song.end <= song.start || song.end > image.size())
+        {
+            throw xsflib::FormatError("a song isn't in the image");
+        }
+
+        const std::span<const uint8_t> file = image.subspan(song.start, song.end - song.start);
+        if (song.deflated)
+        {
+            std::vector<uint8_t> unpacked;
+            std::size_t used = 0;
+            std::string error;
+            if (!ntdlib::DecodeDeflate(file, unpacked, used, error))
+            {
+                throw xsflib::FormatError("a song's DEFLATE stream is corrupt: " + error);
+            }
+
+            game->unpacked_songs_.push_back(std::move(unpacked));
+            game->songs_.push_back(game->unpacked_songs_.back());
+        }
+        else
+        {
+            game->songs_.push_back(file);
+        }
+
+        game->names_.emplace_back(song.name != nullptr ? song.name : "");
+    }
+
     // The game's table of songs names a packed file and a name for each.
     if (profile.files.directory != 0)
     {
@@ -1662,6 +1696,13 @@ bool LibmusGame::Repeats(std::size_t later, std::size_t earlier)
         return false;
     }
 
+    if (!profile_->song_list.empty())
+    {
+        const LibmusSong& a = profile_->song_list[later];
+        const LibmusSong& b = profile_->song_list[earlier];
+        return a.volume == b.volume && a.reverb_base == b.reverb_base;
+    }
+
     if (!profile_->song_volume_list.empty())
     {
         return profile_->song_volume_list[later] == profile_->song_volume_list[earlier];
@@ -1775,7 +1816,12 @@ Conversion LibmusGame::Convert(std::size_t index, const PerformOptions& options)
         settings.tempo_scale = change->scale;
     }
 
-    if (profile_->song_volume != 0)
+    if (!profile_->song_list.empty())
+    {
+        settings.song_volume = profile_->song_list[index].volume;
+        settings.reverb_base = profile_->song_list[index].reverb_base;
+    }
+    else if (profile_->song_volume != 0)
     {
         settings.song_volume = profile_->song_volume;
     }

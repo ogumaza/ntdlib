@@ -47,6 +47,10 @@ struct LibmusSettings
 
     // The scale that the game's code gives every tempo, out of 128.
     int tempo_scale = 128;
+
+    // The reverb base that the game's code gives the song's channels. A channel's effect level is then
+    // base + (128 - base) * reverb / 128, where reverb is the level that the song sets.
+    int reverb_base = 0;
 };
 
 // A wave and an envelope, which a preset plays. The envelope holds a song's seven bytes: its time unit in ticks, the

@@ -165,7 +165,7 @@ struct EadTrack
 
     EadGameCall call; // what the game's code changes while the sequence plays
 
-    // The volume out of 127 that the game's code gives the sequence in place of the volume of the game's table. -1
+    // The volume out of 127 that the sequence plays at in the game, in place of the volume of the game's table. -1
     // keeps the table's.
     int song_volume = -1;
 };
@@ -291,6 +291,18 @@ struct LibmusTempoChange
     const char* beside = nullptr;
 };
 
+// A song of a game on the N64 Music Tools, at a place in the image that the profile gives. The game's code gives the
+// song's channels a volume and a reverb base.
+struct LibmusSong
+{
+    std::size_t start = 0;
+    std::size_t end = 0;
+    bool deflated = false; // the file is a raw DEFLATE stream
+    int volume = 0x80;
+    int reverb_base = 0;
+    const char* name = nullptr;
+};
+
 // A game on Software Creations' N64 Music Tools.
 struct LibmusProfile
 {
@@ -333,6 +345,10 @@ struct LibmusProfile
     LibmusFiles files;
 
     std::span<const LibmusTempoChange> tempo_changes;
+
+    // The game's songs, if the profile places each one. The songs of each bank follow one another, and `banks` gives
+    // the first song of each.
+    std::span<const LibmusSong> song_list;
 };
 
 // A game on Intelligent Systems' engine. The image holds the archive, and the game's code holds the engine's tables.

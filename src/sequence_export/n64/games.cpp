@@ -145,6 +145,8 @@ constexpr std::array kSuperMario64Names = {
 // and 0x46C2CC in the image. The game's call passes that bit to the sequences' variation commands. The table of each
 // level's music dynamics fades sets of channels to nothing, by where Mario is. Near the merry-go-round, the call at
 // 0x802C5C10 plays sequence 0x13 through the game's function at 0x80321E48, on the second player at a volume of 78.
+// The function at 0x80320F68 sets the table's volume for the first player's sequence. It returns at 0x80320F94 for
+// sequence 0x1A before it reads the table. The credits therefore keep the 85 that their script sets.
 constexpr std::array kSuperMario64Tracks = {
     EadTrack{.sequence = 0x02, .name = "title screen"},
     EadTrack{.sequence = 0x02, .name = "title screen, with the variation", .variation = -128},
@@ -167,11 +169,12 @@ constexpr std::array kSuperMario64Tracks = {
     EadTrack{.sequence = 0x0C, .name = "underground levels, without channel 8", .silent_channels = 0x0100},
     EadTrack{.sequence = 0x0C, .name = "underground levels, without channel 3", .silent_channels = 0x0008},
     EadTrack{.sequence = 0x13, .song_volume = 78},
+    EadTrack{.sequence = 0x1A, .song_volume = 85},
 };
 
-// Super Mario 64 (USA). The game's code plays a sequence at the volume that its table of 34 bytes at 0xEE188 gives. The
-// script's volume command doesn't change it. The game's call gives a sequence a variation of 0 unless it asks for
-// another.
+// Super Mario 64 (USA). The game's code plays a sequence at the volume that its table of 34 bytes at 0xEE188 gives.
+// Each script sets the same volume again, except the script of sequence 0x1A (see the tracks). The game's call gives a
+// sequence a variation of 0 unless it asks for another.
 constexpr EadProfile kSuperMario64 = {.engine = ntdlib::n64::EadEngine::kEarly,
                                       .output_rate = 32006.0,
                                       .wave_rate = 32006.0,
@@ -979,6 +982,74 @@ constexpr LibmusProfile kTowerAndShaft = {
     .banks = kTowerAndShaftBanks,
 };
 
+// A song of Gex 64 that the image holds as a raw DEFLATE stream.
+constexpr LibmusSong PackedSong(std::size_t start, std::size_t end, int volume, int reverb_base, const char* name)
+{
+    return {.start = start, .end = end, .deflated = true, .volume = volume, .reverb_base = reverb_base, .name = name};
+}
+
+// Gex 64: Enter the Gecko (USA). The game's code runs from 0x80000400, from 0x1000 in the image. An early form of the
+// library plays the songs. The table of levels at 0x8006F5A8 gives each level a bank, a volume, a reverb base and one
+// song or a list of songs. Each song is a raw DEFLATE stream. The function at 0x800327C0 unpacks a level's songs and
+// starts the first at the level's volume (0x80054164) and reverb base (0x80054330). The level's triggers start the
+// others in a list. A trigger fades its song in by the trigger's step (0x800329DC). The fade stops once the volume
+// reaches the volume of the list's first song, and it never goes past the level's volume. Each song below takes the
+// volume where the fade of its track's trigger ends, as runs of the game's code show. Song 2 of looney30 and looney69
+// ends at 0x70 in looney30 and at 0xA0 in looney69. The function at 0x8003335C starts a short song of EXTRAS.WBK from
+// the table at 0x8006FA0C, at the table's volume, with a reverb base of 0. Slot 2 of looney69 (0x459FF0) and the song
+// at 0x47B670 are never played. The songs take a master volume of 0x3FFF, from the game's settings. The game asks the
+// library for 22050 Hz.
+constexpr std::array kGexSongs = {
+    PackedSong(0x4918E0, 0x4931C0, 0x60, 0x19, "scifi10 and scifi14"),
+    PackedSong(0x4931C0, 0x4958F0, 0x60, 0x19, "spy2 and map5"),
+    PackedSong(0x3EB590, 0x3EC2A0, 0x40, 0x19, "aztec16"),
+    PackedSong(0x403DD0, 0x405C60, 0x60, 0x19, "pgillig1"),
+    PackedSong(0x4030B0, 0x403DD0, 0x60, 0x19, "gexzil9"),
+    PackedSong(0x45CBC0, 0x45D100, 0xA0, 0x19, "looney30 and looney69, song 1"),
+    PackedSong(0x458B70, 0x459FF0, 0x70, 0x19, "looney30 and looney69, song 2"),
+    PackedSong(0x45B420, 0x45CBC0, 0xA0, 0x19, "looney30 and looney69, song 3"),
+    PackedSong(0x45AE70, 0x45B420, 0xA0, 0x19, "looney30, song 4"),
+    PackedSong(0x45A5C0, 0x45AE70, 0xA0, 0x19, "looney30 and looney69, song 5"),
+    PackedSong(0x45D100, 0x45D6D0, 0xA0, 0x19, "looney69, song 6"),
+    PackedSong(0x45D6D0, 0x45DC50, 0xA0, 0x19, "looney69, song 7"),
+    PackedSong(0x459FF0, 0x45A5C0, 0xA0, 0x19, "looney69, song 8 (never played)"),
+    PackedSong(0x401F70, 0x402880, 0x80, 0x19, "circuit5, circuit9, circuit0 and mooshu1"),
+    PackedSong(0x402880, 0x4030B0, 0x80, 0x19, "circuit5, circuit9, circuit0 and mooshu1, second song"),
+    PackedSong(0x41B390, 0x41CA80, 0x60, 0x19, "horror4, horror2, horror6 and rta1"),
+    PackedSong(0x41CA80, 0x41CE00, 0x60, 0x19, "rta1, second song"),
+    PackedSong(0x439330, 0x43B180, 0x60, 0x19, "kungfu02, kungfu1 and kungfu4"),
+    PackedSong(0x457A80, 0x458B70, 0x60, 0x19, "nypd01"),
+    PackedSong(0x47A340, 0x47B670, 0x60, 0x14, "prehst1 and prehst2"),
+    PackedSong(0x47B670, 0x47CCB0, 0x60, 0x14, "prehismx.wbk, second song (never played)"),
+    PackedSong(0x490EC0, 0x4918E0, 0x60, 0x19, "rezop3 and rezop2"),
+    PackedSong(0x405C60, 0x4066F0, 0x60, 0x19, "final01"),
+    LibmusSong{.start = 0x497E00, .end = 0x498300, .volume = 0x78, .name = "EXTRAS.WBK, short song 1"},
+    LibmusSong{.start = 0x498300, .end = 0x498A50, .volume = 0x50, .name = "EXTRAS.WBK, short song 2"},
+    LibmusSong{.start = 0x498A50, .end = 0x499550, .volume = 0x50, .name = "EXTRAS.WBK, short song 3"},
+    LibmusSong{.start = 0x499550, .end = 0x49A200, .volume = 0x64, .name = "EXTRAS.WBK, short song 4"},
+};
+
+// The banks of the songs above: orchestr.wbk, CIRCUIT.WBK, horrormx.wbk, KungFu.wbk, NYPD.wbk, prehismx.wbk,
+// REZOP.WBK and EXTRAS.WBK. Each table of waves follows its samples.
+constexpr std::array kGexBanks = {
+    LibmusBankPlace{.first_song = 0, .pointers = 0x3E7060, .samples = 0x386450},
+    LibmusBankPlace{.first_song = 13, .pointers = 0x401250, .samples = 0x3EC2A0},
+    LibmusBankPlace{.first_song = 15, .pointers = 0x41AC70, .samples = 0x4066F0},
+    LibmusBankPlace{.first_song = 17, .pointers = 0x4382E0, .samples = 0x41CE00},
+    LibmusBankPlace{.first_song = 18, .pointers = 0x456C70, .samples = 0x43B180},
+    LibmusBankPlace{.first_song = 19, .pointers = 0x4795F0, .samples = 0x45DC50},
+    LibmusBankPlace{.first_song = 21, .pointers = 0x490000, .samples = 0x47CCB0},
+    LibmusBankPlace{.first_song = 23, .pointers = 0x4973A0, .samples = 0x4958F0},
+};
+
+constexpr LibmusProfile kGex = {
+    .output_rate = 22047,
+    .early_form = true,
+    .master_volume = 0x3FFF,
+    .banks = kGexBanks,
+    .song_list = kGexSongs,
+};
+
 // The stereo songs of Super Real Mahjong VS.
 constexpr std::array kSuperRealMahjongVsSets = {
     LibultraSongSet{.name = "stereo", .first_song = 0, .song_count = 13, .bank = 0x8E040},
@@ -1088,6 +1159,8 @@ const std::array kProfiles = {
                 .title = "The Legend of Zelda: Majora's Mask",
                 .ead = &kMajorasMask},
     GameProfile{.sha1 = "508dfc2d4caa42b6f6de5263d0aed5e44ac7966a", .title = "Wave Race 64", .ead = &kWaveRace64},
+    GameProfile{
+        .sha1 = "16042cd0dfa5439ca436f1bf05ebfb7e9f730cda", .title = "Gex 64: Enter the Gecko", .libmus = &kGex},
 
     // Eleven Beat (Aleck64). The songs play on libultra's compressed sequence player, under Hudson's sound code. The
     // game gives its synthesizer a rate of 32006 and the SDK's small room on the auxiliary bus, in the configuration
