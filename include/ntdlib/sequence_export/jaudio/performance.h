@@ -13,7 +13,9 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
@@ -158,6 +160,43 @@ struct EffectStart
     uint16_t number = 0; // the effect's offset number (JAIBasic::getSoundOffsetNumberFromID)
     EffectRequest request = EffectRequest::kSlot;
     uint8_t port = 0; // for kPort
+};
+
+struct SequenceSound;
+
+// What a companion does to one of its sounds in a game frame (Companion::Frame).
+struct CompanionSound
+{
+    enum class Action : uint8_t
+    {
+        kStart, // stops the voice's sound, then starts `sound` at `level` with `ports` on its first track
+        kStop,  // stops the voice's sound
+    };
+
+    Action action = Action::kStart;
+    std::size_t voice = 0;
+    const SequenceSound* sound = nullptr;
+    float level = 1.0f;
+    std::map<uint8_t, uint16_t> ports;
+};
+
+// The game's code that starts sounds beside a sequence as it plays, from what the sequence does: Donkey Kong Jungle
+// Beat's chord effects (ntdlib/jaudio/chord_layer.h). The performer passes it the notes with a voice above 0 of the
+// root's child 0 and of that track's child 0, muted or not. Once each game frame, after the sub-frames of the frame,
+// it asks for the frame's sounds. They start in the next sub-frame. Their tracks record after the sequence's, and their
+// loops and ends don't count for the sequence's.
+class Companion
+{
+public:
+    virtual ~Companion() = default;
+
+    // A copy in the same state, for a probe that plays on from a copy of the performance.
+    virtual std::unique_ptr<Companion> Clone() const = 0;
+
+    virtual void Note(uint8_t key, uint8_t velocity) = 0;
+
+    // `port(child, p)` reads port p of child `child` of the root's child 0, or nothing while that track isn't open.
+    virtual std::vector<CompanionSound> Frame(const std::function<std::optional<uint16_t>(int, int)>& port) = 0;
 };
 
 // A sequence to play: its data, the offset its first track starts at, the sound's volume from the sound table and its
@@ -317,6 +356,13 @@ struct SequenceSound
 
     // The rate at which the game runs those filters, in Hz (GameRules::filter_rate).
     double filter_rate = kOutputRate;
+
+    // Makes the companion of a performance, or nothing (see Companion). Each run of the performance makes another. The
+    // sounds that the companion starts have to outlive the performance.
+    std::function<std::unique_ptr<Companion>()> companion = {};
+
+    // The length of the game's frame, in seconds, for the companion: a video retrace of 59.94 Hz.
+    double frame_seconds = 1001.0 / 60000.0;
 };
 
 // Play `sound`. `program` is the name that the messages give the program, such as "xyz2midi". Throw FormatError if

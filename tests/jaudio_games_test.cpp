@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Checks what the rippers' game modes share of three JAudio games: Donkey Kong Jungle Beat's states
+// Checks what the rippers' game modes share of three JAudio games: Donkey Kong Jungle Beat's states and chord layers
 // (ntdlib/jaudio/jungle_beat_states.h), Pikmin 2's pieces and the drivers' table of them
 // (ntdlib/jaudio/pikmin2_pieces.h), and Jac's effect IDs and catalogue of effects (ntdlib/jaudio/jac_effects.h), on a
 // main.dol built here. The bits and the table's words follow the layouts of the drivers' sources.
@@ -26,6 +26,7 @@
 #include "ntdlib/jaudio/pikmin2_pieces.h"
 #include "ntdlib/jaudio/wind_waker_ports.h"
 #include "ntdlib/testing/dol_files.h"
+#include "ntdlib/testing/jungle_beat_checks.h"
 
 namespace
 {
@@ -68,6 +69,14 @@ void TestJungleBeatStates()
                          [](const jaudio::JungleBeatState& a, const jaudio::JungleBeatState& b)
                          { return a.piece < b.piece; }),
           "the GameCube's states come in the order of their pieces");
+}
+
+void TestJungleBeatChordLayers()
+{
+    ntdlib::testing::CheckChordLayers("the GameCube's chord layers", jaudio::kJungleBeatChordLayers,
+                                      jaudio::kJungleBeatStates);
+    ntdlib::testing::CheckChordLayers("the Wii's chord layers", jaudio::kJungleBeatWiiChordLayers,
+                                      jaudio::kJungleBeatWiiStates);
 }
 
 void TestPikmin2Pieces()
@@ -258,6 +267,7 @@ void TestWindWakerPorts()
 int main()
 {
     TestJungleBeatStates();
+    TestJungleBeatChordLayers();
     TestPikmin2Pieces();
     TestJacEffectIds();
     TestJacCatalogue();

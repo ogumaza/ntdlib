@@ -131,6 +131,12 @@ seqlib::midi::TrackOutput& Performer::Output(int t)
 
 void Performer::EmitTempo()
 {
+    // A companion's sound keeps its tempo to its ticks. The MIDI file follows the sequence's.
+    if (in_voice_ >= 0)
+    {
+        return;
+    }
+
     // The MIDI tempo is the tempo times the timebase over the file's timebase.
     if (!ticked_)
     {
@@ -318,8 +324,14 @@ void Performer::SweepBetweenTicks()
     }
 }
 
-float Performer::SoundVolume() const
+float Performer::SoundVolume(const Track& tr) const
 {
+    if (tr.voice >= 0)
+    {
+        const CompanionVoice& voice = voices_of_companion_[static_cast<std::size_t>(tr.voice)];
+        return voice.sound->volume * voice.level;
+    }
+
     return sound_.volume * fade_;
 }
 
@@ -360,7 +372,7 @@ double Performer::TrackLevel(int t) const
     // sound's handle, its external volume and the game's level of the mix, and of kAutoMixerLevel for notes on the
     // DSP's automatic mixer. CC11 acts squared.
     const Track& tr = TrackAt(t);
-    float above = (tr.parent < 0 ? SoundVolume() : TrackAt(tr.parent).params.volume) * tr.handle_volume *
+    float above = (tr.parent < 0 ? SoundVolume(tr) : TrackAt(tr.parent).params.volume) * tr.handle_volume *
                   tr.ext_volume * sound_.mix_level;
     if (TrackAt(ChannelsTrack(t)).auto_mixer)
     {

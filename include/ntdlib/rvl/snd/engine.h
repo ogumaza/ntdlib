@@ -63,6 +63,21 @@ struct LoadedWaveSoundFile
     ntdlib::PAddr wave_address = 0;     // where wave_data is in MEM2
 };
 
+// The sizes of NW4R SND's pools, which a game's start-up sets up, and how a voice takes its AxVoices. The defaults are
+// the Wii's. Each count is at least 1.
+struct EngineOptions
+{
+    int ax_voices = AxVoiceManager::kVoiceCount; // AxVoiceManager's AxVoices
+    int voices = VoiceManager::kVoiceCount;      // VoiceManager's voices
+    int channels = ChannelPolicy::kChannelCount; // ChannelManager's channels
+
+    // Whether a voice that finds no free AxVoice drops the voice of the lowest priority and asks for an AxVoice again.
+    // The voice drops it only when that priority is at or under the new voice's priority. The step comes before the
+    // check of whether dropping voices would free enough AX voices (see Voice::Acquire). The Wii's build that
+    // Voice::Acquire follows has no such step.
+    bool drop_voice_for_ax_voice = false;
+};
+
 // The engine for one sound archive (see the file's comment). The length analysis's hooks for the sequence's loops, for
 // every track's passes and for each open of a track by another track come from ntdlib's LengthHooks.
 class Engine : public ntdlib::nwsnd::LengthHooks
@@ -102,8 +117,9 @@ public:
     // Sets up NW4R SND's side of AX (AxManager::Init, 0x800313c4): the zero buffer, and the frame callback through
     // which AX's interrupt ends the voices' ramps (SoundThread::AxCallbackFunc, 0x80047c44) and runs the effects' part
     // (see SetEffects). `ax` must be initialised. `archive` must outlive the engine. The engine follows `build` of NW4R
-    // SND.
-    Engine(ntdlib::dsp::WiiMemory& memory, ax::System& ax, const ntdlib::rsar::SoundArchive& archive, SndBuild build);
+    // SND, with the pools of `options`.
+    Engine(ntdlib::dsp::WiiMemory& memory, ax::System& ax, const ntdlib::rsar::SoundArchive& archive, SndBuild build,
+           const EngineOptions& options = {});
 
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
@@ -142,6 +158,11 @@ public:
     SndBuild Build() const
     {
         return build_;
+    }
+
+    const EngineOptions& Options() const
+    {
+        return options_;
     }
 
     ntdlib::PAddr ZeroBuffer() const
@@ -358,6 +379,7 @@ private:
     ChannelManager channels_;
     Random random_;
     SndBuild build_;
+    EngineOptions options_;
     ntdlib::nwsnd::OutputMode output_mode_ = ntdlib::nwsnd::OutputMode::kStereo;
     std::array<int16_t, 16> global_variables_{};
     std::map<uint32_t, std::unique_ptr<LoadedBank>> banks_;

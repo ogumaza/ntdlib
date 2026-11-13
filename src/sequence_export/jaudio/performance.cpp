@@ -63,6 +63,11 @@ Performer::Performer(const SequenceSound& sound, BankSet& banks, const PerformOp
       tie_velocities_in_(tie_velocities),
       swept_filters_in_(swept_filters)
 {
+    data_ = sound.data;
+    if (sound.companion)
+    {
+        companion_ = CompanionHolder(sound.companion());
+    }
     recorder_.SetLevelScale(level_scale);
     recorder_.SetPartLimits(part_limits);
     for (uint32_t i = 0; i < sound.draws; i++)
@@ -82,6 +87,12 @@ Performer::Performer(const SequenceSound& sound, BankSet& banks, const PerformOp
 
 void Performer::OnJumpBack(int t, uint32_t target)
 {
+    // The companion's sounds don't loop the sequence.
+    if (TrackAt(t).voice >= 0)
+    {
+        return;
+    }
+
     // An effect's passes count only while its slot plays it. The other slots and the slot's own polling don't count.
     if (sound_.effect && (!InEffect(t) || !EffectTaken() || EffectFree()))
     {
@@ -273,6 +284,11 @@ int Performer::EffectSlotTrack() const
 
 bool Performer::InEffect(int t) const
 {
+    if (TrackAt(t).voice >= 0)
+    {
+        return false;
+    }
+
     if (!sound_.effect)
     {
         return true;
@@ -678,6 +694,7 @@ bool Performer::Advance()
     accumulator_ += TicksPerSubFrame();
     UpdateSeq(0, false, 1.0f);
     subframe_++;
+    AdvanceCompanion();
 
     return true;
 }

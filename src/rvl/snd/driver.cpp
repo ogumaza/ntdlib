@@ -35,7 +35,8 @@ bool Voice::Acquire(int channels, int priority, ChannelId owner)
     channels = std::clamp(channels, 1, 2);
 
     // Take an AX voice for each channel. When AX has none free, check whether dropping NW4R SND voices of no higher
-    // priority would free enough. Then request an AX voice at a priority high enough to steal one.
+    // priority would free enough. Then request an AX voice at a priority high enough to steal one. A game's build may
+    // drop a voice first (EngineOptions::drop_voice_for_ax_voice).
     const uint32_t ax_priority = priority == kPriorityMax ? kAxPriorityTop : kAxPriorityNormal;
     AxVoiceManager& manager = engine_->AxVoices();
     std::array<AxVoice*, 2> table{};
@@ -68,6 +69,20 @@ bool Voice::Acquire(int channels, int priority, ChannelId owner)
     for (int i = 0; i < channels; i++)
     {
         AxVoice* voice = manager.AcquireAxVoice(ax_priority, on_drop);
+
+        // When no AxVoice is free and EngineOptions::drop_voice_for_ax_voice is set, the voice manager drops the voice
+        // of the lowest priority if that priority is at or under this voice's. The number of AxVoices that frees
+        // doesn't matter. Then the voice asks for an AxVoice again.
+        if (voice == nullptr && engine_->Options().drop_voice_for_ax_voice)
+        {
+            if (!engine_->Voices().PrioVoices().empty())
+            {
+                engine_->Voices().DropLowestPriorityVoice(priority);
+            }
+
+            voice = manager.AcquireAxVoice(ax_priority, on_drop);
+        }
+
         if (voice == nullptr && can_drop(channels - i))
         {
             voice = manager.AcquireAxVoice(ax_priority == kAxPriorityTop ? kAxPriorityTop : kAxPriorityDrop, on_drop);
@@ -569,11 +584,12 @@ void Voice::OnAxVoiceDropped(AxVoice* dropped)
     }
 }
 
-VoiceManager::VoiceManager(Engine& engine)
+VoiceManager::VoiceManager(Engine& engine, int count)
 {
-    for (int place = 0; place < kVoiceCount; place++)
+    pool_.reserve(static_cast<std::size_t>(count));
+    for (int place = 0; place < count; place++)
     {
-        pool_[place] = std::make_unique<Voice>(engine, place);
+        pool_.push_back(std::make_unique<Voice>(engine, place));
         free_.push_back(place);
     }
 }

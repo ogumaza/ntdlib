@@ -17,7 +17,9 @@
 #include <vector>
 
 #include "seqlib/midi/reader.h"
+#include "seqlib/read_error.h"
 #include "seqlib/sf2/reader.h"
+#include "seqlib/wav.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 
@@ -38,15 +40,23 @@ std::string SfzProblem(const Instruments& sfz, const std::vector<std::string>& t
     std::map<std::string, uint32_t> frames;
     for (const auto& s : sfz.samples)
     {
-        const std::vector<uint8_t>& w = s.wav;
-        if (w.size() < 44 || std::string(w.begin(), w.begin() + 4) != "RIFF" ||
-            xsflib::LoadLe32(w.data() + 4) != w.size() - 8 || xsflib::LoadLe32(w.data() + 40) != w.size() - 44)
+        // sequence_export writes each sample as a mono 16-bit file with seqlib's WavFile. A file passes only when
+        // WavFile gives the same bytes for its samples and rate. Any other layout of the header and the chunks fails.
+        seqlib::WavContents wav;
+        try
+        {
+            wav = seqlib::ReadWav(s.wav);
+        }
+        catch (const seqlib::ReadError&)
+        {
+            return "broken WAV file " + s.name;
+        }
+        if (wav.pcm.channels.size() != 1 || seqlib::WavFile(wav.pcm.channels[0], wav.rate) != s.wav)
         {
             return "broken WAV file " + s.name;
         }
 
-        // The converters write mono 16-bit samples with a 44-byte header. The data's size gives the frames.
-        frames[s.name] = xsflib::LoadLe32(w.data() + 40) / 2;
+        frames[s.name] = static_cast<uint32_t>(wav.pcm.channels[0].size());
     }
 
     std::set<std::string> names, tracks;

@@ -15,7 +15,7 @@ licences. Teakra's code is stored in `externals/teakra`, under its MIT licence. 
 | seqlib | MIT | MIDI, SoundFont 2 and SFZ files in `ntdlib::sequence_export` (`NTDLIB_SEQUENCE_EXPORT`). The project that uses ntdlib supplies it. |
 | [Teakra](https://github.com/wwylele/teakra), Copyright (c) 2018 Weiyi Wang | MIT (`externals/teakra/LICENSE`) | The 3DS's DSP in `ntdlib::ctr` (`NTDLIB_CTR`). In `externals/teakra`: upstream commit 3d697a1 with changes, offered under Teakra's MIT licence. |
 | [Catch2](https://github.com/catchorg/Catch2) v2.13.8, Copyright (c) 2022 Two Blue Cubes Ltd | BSL-1.0 | Teakra's unit tests use it (`externals/teakra/externals/catch`). ntdlib doesn't build those tests, and no library of ntdlib contains Catch2. |
-| puff 2.3, Copyright (C) 2002-2013 Mark Adler | zlib | The DEFLATE and zlib decoder in `ntdlib::common` (`src/common/inflate.cpp`). It reads GSF files for `ntdlib::agb` and Rare's compressed blocks for `ntdlib::n64`. puff is the reference inflate in zlib's sources (`contrib/puff`). The copy is altered: the decoder is rewritten as a C++ class, with the zlib header's and Adler-32's checks. |
+| puff 2.3, Copyright (C) 2002-2013 Mark Adler | zlib | The DEFLATE and zlib decoder in `ntdlib::common` (`src/common/inflate.cpp`). puff is the reference inflate in zlib's sources (`contrib/puff`). The copy is altered: the decoder is rewritten as a C++ class, with the zlib header's and Adler-32's checks. |
 
 Binary distributions must include ntdlib's MIT notice and xsflib's MIT notice. They must also include the Unicode
 License v3's notice when `ntdlib::disc` is linked in, Teakra's MIT notice when `ntdlib::ctr` is linked in, and the

@@ -364,7 +364,7 @@ public:
     // For the enhanced mixing mode: when `on`, a note that would take a channel whose note plays and hasn't reached its
     // release, or would get no channel for its priority, takes another channel instead. That's a channel past the
     // console's 16 that plays no more, or a new one, up to kMostChannels. A note in its release gives way to a new
-    // note, as on the console (the maintainer, 2026-11-02). The new channel takes the part of the channel that the
+    // note, as on the console. The new channel takes the part of the channel that the
     // console's driver chose: a wave channel's, a PSG channel's or a noise channel's. It's the chosen channel's twin.
     // Its registers lie past the console's (ntr::kGrownChannelRegisters). Only sequences' notes take such channels. The
     // ARM9's commands reach the console's 16. When it's off, the driver shares out the console's 16 as the game's

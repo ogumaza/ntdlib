@@ -14,11 +14,10 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/commands/decoding.h"
+#include "ntdlib/commands/encoding.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-
-#include "commands/decoding.h"
-#include "commands/encoding.h"
 
 namespace ntdlib::ntr::snd
 {

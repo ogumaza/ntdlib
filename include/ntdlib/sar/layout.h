@@ -69,8 +69,8 @@ struct SequencePiece
     uint32_t sequence = 0; // the sequence, in Layout::sequences
     uint32_t version = 0;  // the file's version
 
-    // The bytes of the piece's place, where the pieces keep their places: a song of a GBA ROM (mp2k/layout.h). 0
-    // elsewhere. Join lays a sequence piece out at the size of its sequence.
+    // The bytes of the piece's place, where the pieces keep their places: a song of a GBA ROM. 0 elsewhere.
+    // Join lays a sequence piece out at the size of its sequence.
     uint32_t room = 0;
 };
 

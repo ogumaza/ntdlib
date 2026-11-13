@@ -3,7 +3,6 @@
 #include "ntdlib/ctr/snd/sequence.h"
 
 #include <array>
-#include <cstddef>
 #include <span>
 
 #include "ntdlib/ctr/snd/engine.h"
@@ -79,13 +78,7 @@ void ApplySequenceStart(Engine& engine, SequenceSoundPlayer& player, const Seque
 
     // The volumes that the game gives the tracks through the sound's handle (SequenceSoundHandle::SetTrackVolume). The
     // driver multiplies each into the volume of the track's channels (UpdateChannelParam, 0x31de18).
-    for (std::size_t track = 0; track < start.track_volumes.size(); ++track)
-    {
-        if (start.track_volumes[track] != 1.0f)
-        {
-            player.SetTrackVolume(1u << track, start.track_volumes[track]);
-        }
-    }
+    player.SetTrackVolumes(start.track_volumes);
 
     // The tempo ratio and the pitch that the game sets through the sound's handle (SequenceSoundHandle::SetTempoRatio
     // and SoundHandle::SetPitch). Both are 1 unless the game sets them.

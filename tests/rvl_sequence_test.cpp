@@ -2,9 +2,10 @@
 
 // Tests of the Wii's model of NW4R SND (rvl/snd), on the AX model with no DSP: the parameter blocks that a note's
 // channel sets up, the ramps from frame to frame, the release and the end of a channel, the voices that NW4R SND drops
-// by priority when all are in use, a short sequence played from an archive, a sequence in an arrangement, sequences
-// that start together, what the builds of October 2006, 2008 and 2009 do differently, the build of AXFX that a build
-// links, the loops that a length analysis counts, snapshots of the model, and the end of a wave without the DSP.
+// by priority when all are in use, in the Wii's pools and in smaller ones, the voices that a game's build drops when
+// the AxVoices run out, a short sequence played from an archive, a sequence in an arrangement, sequences that start
+// together, what the builds of October 2006, 2008 and 2009 do differently, the build of AXFX that a build links, the
+// loops that a length analysis counts, snapshots of the model, and the end of a wave without the DSP.
 
 #include <algorithm>
 #include <array>
@@ -74,12 +75,13 @@ ax::System& Initialised(ax::System& ax, snd::SndBuild build)
     return ax;
 }
 
-// The AX model and the engine on it. The engine follows `build` of NW4R SND. A frame runs as in the game: AX's
-// interrupt, then the sound frame.
+// The AX model and the engine on it. The engine follows `build` of NW4R SND, with the pools of `pools`. A frame runs as
+// in the game: AX's interrupt, then the sound frame.
 struct Model
 {
-    explicit Model(const Bytes& commands = {0xff}, snd::SndBuild build = {}, uint32_t tracks = 1)
-        : archive(MakeArchive(commands, tracks)), engine{memory, Initialised(ax, build), archive, build}
+    explicit Model(const Bytes& commands = {0xff}, snd::SndBuild build = {}, uint32_t tracks = 1,
+                   const snd::EngineOptions& pools = {})
+        : archive(MakeArchive(commands, tracks)), engine{memory, Initialised(ax, build), archive, build, pools}
     {
     }
 
@@ -292,6 +294,118 @@ void TestDrop()
 
     Check(lower == nullptr, "no voice for a lower priority");
     Check(channel != nullptr && dropped.size() == 1 && dropped[0] == 0, "the oldest lowest-priority note dropped");
+}
+
+// Pools smaller than the Wii's, as a game's start-up may set them up.
+constexpr snd::EngineOptions kSmallPools{.ax_voices = 64, .voices = 64, .channels = 65};
+
+// The notes that a 65th note of priority 100 drops, after 64 notes take voices on an engine with `pools`. The first 10
+// notes have priority 32, and the others 64. Each note is given by the order in which it started.
+std::vector<std::size_t> DroppedBy65thNote(const snd::EngineOptions& pools)
+{
+    Model model({0xff}, {}, 1, pools);
+    const snd::WaveData wave = MakeWave(model.memory);
+    std::vector<snd::ChannelId> places;
+    for (int i = 0; i < 64; i++)
+    {
+        snd::Channel* channel = model.engine.Channels().AllocChannel(model.engine, 1, i < 10 ? 32 : 64, -1, -1);
+        Check(channel != nullptr, "a channel while voices are free");
+        if (channel != nullptr)
+        {
+            channel->Start(model.engine, wave, -1);
+            places.push_back(channel->place);
+        }
+    }
+
+    model.RunFrame();
+    const snd::Channel* channel = model.engine.Channels().AllocChannel(model.engine, 1, 100, -1, -1);
+    Check(channel != nullptr, "the 65th note gets a channel");
+
+    const std::list<snd::ChannelId>& in_use = model.engine.Channels().InUse();
+    std::vector<std::size_t> dropped;
+    for (std::size_t i = 0; i < places.size(); i++)
+    {
+        if (std::find(in_use.begin(), in_use.end(), places[i]) == in_use.end())
+        {
+            dropped.push_back(i);
+        }
+    }
+
+    return dropped;
+}
+
+void TestPoolSizes()
+{
+    // With the Wii's pools, a 65th note takes a free voice. With pools of 64 AxVoices, 64 voices and 65 channels, it
+    // takes the voice of the oldest note of the lowest priority.
+    Check(DroppedBy65thNote({}).empty(), "the Wii's pools drop no note for a 65th");
+    Check(DroppedBy65thNote(kSmallPools) == std::vector<std::size_t>{0},
+          "pools of 64 voices drop the oldest lowest-priority note for a 65th");
+
+    // An empty pool is refused.
+    bool refused = false;
+    try
+    {
+        Model empty({0xff}, {}, 1, {.voices = 0});
+    }
+    catch (const std::invalid_argument&)
+    {
+        refused = true;
+    }
+
+    Check(refused, "an empty pool of voices is refused");
+}
+
+// What a note of `priority` does after 32 notes on a wave of two channels take the 64 AxVoices of the small pools, with
+// EngineOptions::drop_voice_for_ax_voice set to `drop`. The 32 notes have priority 64, and their voices leave 32 voices
+// free.
+struct AxVoiceDrop
+{
+    bool started = false;     // whether the note got a channel
+    bool first_stops = false; // whether the first of the 32 notes stopped
+};
+
+AxVoiceDrop NoteAfterAxVoicesRunOut(bool drop, uint32_t priority)
+{
+    snd::EngineOptions pools = kSmallPools;
+    pools.drop_voice_for_ax_voice = drop;
+    Model model({0xff}, {}, 1, pools);
+    snd::WaveData wave = MakeWave(model.memory);
+    wave.channel_count = 2;
+    wave.channels[1] = wave.channels[0];
+    std::vector<snd::ChannelId> places;
+    for (int i = 0; i < 32; i++)
+    {
+        snd::Channel* channel = model.engine.Channels().AllocChannel(model.engine, 2, 64, -1, -1);
+        Check(channel != nullptr, "a channel for a note on two channels while AxVoices are free");
+        if (channel != nullptr)
+        {
+            channel->Start(model.engine, wave, -1);
+            places.push_back(channel->place);
+        }
+    }
+
+    model.RunFrame();
+    const snd::Channel* channel = model.engine.Channels().AllocChannel(model.engine, 2, priority, -1, -1);
+    const std::list<snd::ChannelId>& in_use = model.engine.Channels().InUse();
+    const bool first_stops = !places.empty() && std::find(in_use.begin(), in_use.end(), places[0]) == in_use.end();
+
+    return {channel != nullptr, first_stops};
+}
+
+void TestDropForAxVoice()
+{
+    // With every AxVoice in use and voices free, the drop step lets a note of the same or a higher priority take the
+    // AxVoices of the oldest note of the lowest priority. A note of a lower priority doesn't start. Without the step,
+    // no note starts.
+    const AxVoiceDrop higher = NoteAfterAxVoicesRunOut(true, 100);
+    const AxVoiceDrop same = NoteAfterAxVoicesRunOut(true, 64);
+    const AxVoiceDrop lower = NoteAfterAxVoicesRunOut(true, 32);
+    const AxVoiceDrop without = NoteAfterAxVoicesRunOut(false, 100);
+    Check(higher.started && higher.first_stops, "the step drops the oldest note for a note of higher priority");
+    Check(same.started && same.first_stops, "the step drops the oldest note for a note of the same priority");
+    Check(!lower.started && !lower.first_stops, "the step drops nothing for a note of lower priority");
+    Check(!without.started && !without.first_stops, "without the step, no note starts when the AxVoices run out");
 }
 
 // The volume at which a note of `velocity` starts on instrument 0. The region's volume is 100 and the sound's volume is
@@ -906,6 +1020,44 @@ void TestSnapshot()
     Check(refused, "a snapshot from before another sequence started is refused");
 }
 
+void TestSnapshotOfSmallPools()
+{
+    // A snapshot of pools smaller than the Wii's, taken with every voice in use, comes back whole. The notes after the
+    // snapshot drop voices.
+    Model model({0xff}, {}, 1, kSmallPools);
+    const snd::WaveData wave = MakeWave(model.memory);
+    const auto start_notes = [&model, &wave](int count, uint32_t priority)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            snd::Channel* channel = model.engine.Channels().AllocChannel(model.engine, 1, priority, -1, -1);
+            if (channel != nullptr)
+            {
+                channel->Start(model.engine, wave, -1);
+            }
+        }
+    };
+
+    start_notes(64, 32);
+    PbsOfFrames(model, 2);
+    const ntdlib::dsp::WiiMemory::Snapshot memory = model.memory.Save();
+    const ax::System ax = model.ax;
+    const snd::Engine::Snapshot engine = model.engine.Save();
+    start_notes(8, 64);
+    const std::vector<uint8_t> first = PbsOfFrames(model, 20);
+    const std::list<snd::ChannelId> first_in_use = model.engine.Channels().InUse();
+
+    model.memory.Restore(memory);
+    model.ax = ax;
+    model.engine.Restore(engine);
+    start_notes(8, 64);
+    const std::vector<uint8_t> second = PbsOfFrames(model, 20);
+
+    Check(model.engine.Voices().PrioVoices().size() == 64, "the small pools stay full");
+    Check(first == second && model.engine.Channels().InUse() == first_in_use,
+          "the frames after a restored snapshot of small pools are the same");
+}
+
 void TestWaveEndWithoutDsp()
 {
     // A note of 48 ticks (167 frames) on a wave that doesn't loop, played on the model without the DSP. Its channel
@@ -1106,6 +1258,8 @@ int main()
         TestRelease();
         TestLastStep();
         TestDrop();
+        TestPoolSizes();
+        TestDropForAxVoice();
         TestSequence();
         TestArrangement();
         TestSoundsTogether();
@@ -1121,6 +1275,7 @@ int main()
         TestLoops();
         TestHeldNotes();
         TestSnapshot();
+        TestSnapshotOfSmallPools();
         TestWaveEndWithoutDsp();
         TestTicksOctober2006();
         TestPanOctober2006();

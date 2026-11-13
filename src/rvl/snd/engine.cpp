@@ -75,15 +75,21 @@ void AdvanceWithoutDsp(ax::Pb& pb)
 } // namespace
 
 Engine::Engine(ntdlib::dsp::WiiMemory& memory, ax::System& ax, const ntdlib::rsar::SoundArchive& archive,
-               SndBuild build)
+               SndBuild build, const EngineOptions& options)
     : memory_(memory),
       ax_(ax),
       archive_(archive),
-      ax_voices_(*this),
-      voices_(*this),
-      channels_(ChannelPolicy::kChannelCount),
-      build_(build)
+      ax_voices_(*this, options.ax_voices),
+      voices_(*this, options.voices),
+      channels_(options.channels),
+      build_(build),
+      options_(options)
 {
+    if (options.ax_voices < 1 || options.voices < 1 || options.channels < 1)
+    {
+        throw std::invalid_argument("NW4R SND's pools can't be empty");
+    }
+
     std::memset(memory_.At(kZeroBuffer, kZeroBufferSize), 0, kZeroBufferSize);
 
     ax_.RegisterCallback([this] { OnAxFrame(); });

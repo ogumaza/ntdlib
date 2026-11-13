@@ -8,12 +8,14 @@
 // 3DS's is ntdlib::ctr::snd::LengthConsole (ntdlib/ctr/snd/length_model.h), and the Wii's is
 // ntdlib::rvl::snd::LengthConsole (ntdlib/rvl/snd/length_model.h).
 //
-// A struct may give three more things. Where the console's engine doesn't run frames by itself, `static bool
+// A struct may give four more things. Where the console's engine doesn't run frames by itself, `static bool
 // RunFrame(Model&)` runs a frame of the model and returns false if the model fails. Where an open of a track keeps the
 // track's wait, `kOpenKeepsWait` is true (see TrackPasses::SetHooks). The Wii's struct gives both. Where the game's
 // code takes later steps that can change the sound, such as a script that starts the sound and sets its variables,
-// `static bool Pending(const Model&)` says whether a step is still to come. The console's engine gives SetEndlessLoops
-// (see MeasureSequence). The engines' hooks for the analysis are in length_hooks.h.
+// `static bool Pending(const Model&)` says whether a step is still to come. Where the frame's sound depends on more
+// than the output's samples, such as a volume that the caller applies, `static bool Sounded(const Model&)` replaces the
+// test of `Output`. The console's engine gives SetEndlessLoops (see MeasureSequence). The engines' hooks for the
+// analysis are in length_hooks.h.
 
 #pragma once
 
@@ -196,9 +198,17 @@ public:
         return frames_;
     }
 
+    // Whether the frame made a sound: the struct's Sounded, or whether the output is audible.
     bool Sounded() const
     {
-        return xsflib::rip::Audible(Console::Output(model_));
+        if constexpr (requires { Console::Sounded(model_); })
+        {
+            return Console::Sounded(model_);
+        }
+        else
+        {
+            return xsflib::rip::Audible(Console::Output(model_));
+        }
     }
 
     bool Ringing() const

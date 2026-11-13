@@ -1125,6 +1125,100 @@ void TestSequenceCallback()
           "without a callback, the flag register holds 0xffff");
 }
 
+// A companion (SequenceSound::companion) reads the notes with a voice of the root's child 0 and of its child 0, even
+// while the game's code mutes them, and starts sounds beside the sequence once a game frame. Track 0 opens its child 0,
+// which the mask mutes. The child writes 3 to its port 0xe, then plays key 0x27 at velocity 110 at ticks 0 and 48. The
+// companion starts the effect at the root kEffect in its frame 30, after 0.5 s: tick 48 at a tempo of 120 and a
+// timebase of 48. The effect's root sets a tempo of 60, which the MIDI file leaves out. Its child plays key 64 at once,
+// on a MIDI track of its own. A second start restarts the effect, and a stop ends it.
+struct CompanionLog
+{
+    std::vector<std::pair<uint8_t, uint8_t>> notes;
+    std::optional<uint16_t> position;
+};
+
+class TestCompanion : public Companion
+{
+public:
+    TestCompanion(std::shared_ptr<CompanionLog> log, const SequenceSound* effect)
+        : log_(std::move(log)), effect_(effect)
+    {
+    }
+
+    std::unique_ptr<Companion> Clone() const override
+    {
+        return std::make_unique<TestCompanion>(*this);
+    }
+
+    void Note(uint8_t key, uint8_t velocity) override
+    {
+        log_->notes.emplace_back(key, velocity);
+    }
+
+    std::vector<CompanionSound> Frame(const std::function<std::optional<uint16_t>(int, int)>& port) override
+    {
+        frames_++;
+        if (const std::optional<uint16_t> value = port(0, 0xe))
+        {
+            log_->position = value;
+        }
+
+        if (frames_ == 30 || frames_ == 90)
+        {
+            return {{.sound = effect_, .ports = {{0xb, 64}}}};
+        }
+
+        if (frames_ == 150)
+        {
+            return {{.action = CompanionSound::Action::kStop}};
+        }
+
+        return {};
+    }
+
+private:
+    std::shared_ptr<CompanionLog> log_;
+    const SequenceSound* effect_ = nullptr;
+    int frames_ = 0;
+};
+
+void TestCompanionSounds()
+{
+    constexpr uint32_t kBeat = kChild + 0x20;
+    constexpr uint32_t kEffect = kChild + 0x60;
+    constexpr uint32_t kEffectChild = kChild + 0x80;
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(250).Finish().PadTo(kChild);
+    s.OpenTrack(0, kBeat).Wait(240).Finish().PadTo(kBeat);
+    s.Byte(0xd8).Byte(0x01).Byte(0x00).Byte(0x03).Byte(0xd1).Byte(0x0e).Byte(0x01);
+    s.Bank(0).Program(0).NoteOn(0x27, 1, 110).Wait(24).NoteOff(1).Wait(24).NoteOn(0x27, 1, 110).Wait(24);
+    s.NoteOff(1).Finish().PadTo(kEffect);
+    s.OpenTrack(0, kEffectChild).Timebase(48).Tempo(60).Wait(200).Finish().PadTo(kEffectChild);
+    s.Bank(0).Program(0).NoteOn(64, 1, 100).Wait(24).NoteOff(1).Finish();
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+    SequenceSound effect = game.Sound(0);
+    effect.start = effect.start - kFirstSequence + kEffect;
+
+    SequenceSound music = game.Sound(0);
+    music.tracks[0] = 0xfffe;
+    const auto log = std::make_shared<CompanionLog>();
+    music.companion = [&]
+    {
+        return std::make_unique<TestCompanion>(log, &effect);
+    };
+    const Performance perf = Perform(music, game.banks, {}, kProgram);
+
+    Check(std::ranges::count(log->notes, std::pair<uint8_t, uint8_t>{0x27, 110}) >= 2,
+          "the companion reads the muted beat's notes");
+    Check(log->position == 3, "the companion reads port 0xe of child 0");
+    Check(NoteTicks(perf, "Track 0.0").empty(), "the muted beat plays nothing");
+    const std::vector<uint32_t> ticks = NoteTicks(perf, "Effect 0 track 0");
+    Check(ticks.size() == 2 && ticks[0] >= 47 && ticks[0] <= 50 && ticks[1] >= 143 && ticks[1] <= 146,
+          "the effect starts after frames 30 and 90, at ticks 48 and 144 of the sequence");
+    Check(std::ranges::all_of(perf.tempo, [](const auto& t) { return std::fabs(t.bpm - 120.0) < 1e-6; }),
+          "the effect's tempo stays out of the MIDI file");
+}
+
 // A game's code can play a sound at a factor of its tempo (SequenceSound::tempo_ratio). At half the ratio, the root's
 // tempo of 120 plays at 60. The notes keep their ticks. Two beats then last 2 s.
 void TestTempoRatio()
@@ -3916,6 +4010,7 @@ int main()
     TestHeldNoteKeepsItsPart();
     TestDefaultKeepsEveryNote();
     TestMutedTracks();
+    TestCompanionSounds();
     TestSequenceCallback();
     TestTempoRatio();
     TestChildVolumes();

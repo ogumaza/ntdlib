@@ -1339,7 +1339,7 @@ void Performer::UpdateTrack1(int t)
     p.bend = bend;
     if (tr.parent < 0)
     {
-        p.volume *= SoundVolume();
+        p.volume *= SoundVolume(tr);
         if (sound_.pitch != 1.0f)
         {
             p.bend += std::log2(sound_.pitch);

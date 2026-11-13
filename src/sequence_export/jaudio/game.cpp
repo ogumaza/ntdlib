@@ -35,6 +35,7 @@
 #include "ntdlib/dol.h"
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/barc.h"
+#include "ntdlib/jaudio/chord_files.h"
 #include "ntdlib/jaudio/jac_effects.h"
 #include "ntdlib/jaudio/jmap.h"
 #include "ntdlib/jaudio/jungle_beat_states.h"
@@ -46,6 +47,7 @@
 #include "ntdlib/sequence_export/jaudio/game_input.h"
 #include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
+#include "sequence_export/jaudio/chord_companion.h"
 
 namespace ntdlib::sequence_export::jaudio
 {
@@ -636,6 +638,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
             rules.arrangements.push_back(
                 {.sound = state.piece, .suffix = std::string(state.suffix), .state = {.tracks = tracks}});
         }
+
+        // The chord layers: the enemies' loops beside a stage's music.
+        rules.chord_layers = archive_sha1 == kJungleBeat[1] ? 2 : 1;
 
         // Some effects' sequences add a value at port 0xb to a key. The game's code writes the value as it starts the
         // effect. Most effects start by name with a count (0x8022f968 in the GameCube's main.dol, 0x80260f20 in the
@@ -1389,6 +1394,24 @@ Game Game::FromFolder(const fs::path& baa, const std::string& program, const Gam
             }
         }
     }
+    if (game.rules_.chord_layers != 0)
+    {
+        const fs::path info = Subfolder(folder, "Info").value_or(folder);
+        for (const fs::path& arc : files_in(info, ".arc"))
+        {
+            if (AsciiLower(Utf8(arc.filename())) == "jaichord.arc")
+            {
+                xsflib::ReadFile(arc, game.chord_archive_);
+            }
+        }
+        for (const fs::path& csd : files_in(info, ".csd"))
+        {
+            if (AsciiLower(Utf8(csd.filename())) == "chordsedatabase.csd")
+            {
+                xsflib::ReadFile(csd, game.chord_database_);
+            }
+        }
+    }
     if (game.jaudio1_)
     {
         const std::vector<fs::path> name_files = files_in(folder, ".asn");
@@ -1500,6 +1523,14 @@ std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles>
         else if (below == "conductor.arc" && !game.rules_.conductors.empty())
         {
             game.conductor_archive_ = game.ReadDiscFile(f->path);
+        }
+        else if (below == "info/jaichord.arc" && game.rules_.chord_layers != 0)
+        {
+            game.chord_archive_ = game.ReadDiscFile(f->path);
+        }
+        else if (below == "info/chordsedatabase.csd" && game.rules_.chord_layers != 0)
+        {
+            game.chord_database_ = game.ReadDiscFile(f->path);
         }
         else if (game.jaudio1_ && below.find('/') == std::string::npos && below.ends_with(".asn") &&
                  game.names_.empty())
@@ -1746,6 +1777,41 @@ void Game::FindSequences()
         }
     }
 
+    // The chord layers (GameRules::chord_layers). Data that can't be read leaves the layers out.
+    std::shared_ptr<ChordLayerData> chords;
+    std::span<const ntdlib::jaudio::JungleBeatChordLayer> layers;
+    std::set<uint32_t> chord_sounds;
+    if (rules_.chord_layers != 0)
+    {
+        layers = rules_.chord_layers == 2
+                     ? std::span<const ntdlib::jaudio::JungleBeatChordLayer>(ntdlib::jaudio::kJungleBeatWiiChordLayers)
+                     : std::span<const ntdlib::jaudio::JungleBeatChordLayer>(ntdlib::jaudio::kJungleBeatChordLayers);
+        try
+        {
+            if (chord_database_.empty() || chord_archive_.empty())
+            {
+                throw FormatError("the Info folder has no ChordSeDataBase.csd or JaiChord.arc");
+            }
+            chords = std::make_shared<ChordLayerData>();
+            chords->database = chord_database_;
+            chords->archive = chord_archive_;
+            chords->files = ReadRarc(chords->archive);
+            const ntdlib::jaudio::ChordDatabase database = ntdlib::jaudio::ReadChordDatabase(chords->database);
+            for (const ntdlib::jaudio::JungleBeatChordLayer& layer : layers)
+            {
+                for (const uint32_t sound : ChordCompanion::Sounds(database, layer))
+                {
+                    chord_sounds.insert(sound);
+                }
+            }
+        }
+        catch (const FormatError& e)
+        {
+            chords.reset();
+            warnings_.push_back(std::string("chord layers: ") + e.what() + ": they're left out");
+        }
+    }
+
     // The rules that the game gives a file of its sequence archive, by the file's name: the volume, the answers to its
     // tracks' calls, the children that start muted and the conductor.
     const auto file_rules = [&](SequenceSound& seq, const ArchiveFile& file)
@@ -1939,6 +2005,32 @@ void Game::FindSequences()
                 other.name += "_" + arrangement.suffix;
                 SetState(other, arrangement.state);
                 sequences_.push_back(std::move(other));
+            }
+        }
+
+        // Then its chord layers, and the chord effects that the layers play.
+        if (chords && chord_sounds.contains(s.Id()))
+        {
+            chords->sounds[s.Id()] = seq;
+        }
+        for (const ntdlib::jaudio::JungleBeatChordLayer& layer : chords ? layers : decltype(layers){})
+        {
+            if (layer.piece != s.Id())
+            {
+                continue;
+            }
+
+            try
+            {
+                const ChordCompanion check(chords, layer);
+                SequenceSound other = seq;
+                other.name += "_" + std::string(layer.suffix);
+                other.companion = [chords, layer] { return std::make_unique<ChordCompanion>(chords, layer); };
+                sequences_.push_back(std::move(other));
+            }
+            catch (const FormatError& e)
+            {
+                warnings_.push_back(seq.name + "_" + layer.suffix + ": " + e.what() + ": the layer is left out");
             }
         }
 

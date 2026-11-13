@@ -50,15 +50,16 @@ int Performer::NewTrack(int parent, int number)
     }
 
     Track tr = FreshTrack(parent);
-    tr.name = parent < 0
-                  ? "Root"
-                  : (TrackAt(parent).parent < 0 ? "Track " : TrackAt(parent).name + ".") + std::to_string(number);
+    tr.voice = parent < 0 ? in_voice_ : TrackAt(parent).voice;
+    const std::string prefix = tr.voice < 0 ? "Track " : "Effect " + std::to_string(tr.voice) + " track ";
+    tr.name = parent < 0 ? (tr.voice < 0 ? "Root" : "Effect " + std::to_string(tr.voice))
+                         : (TrackAt(parent).parent < 0 ? prefix : TrackAt(parent).name + ".") + std::to_string(number);
 
     // Child `number` of the root's child n opens muted if its bit of SequenceSound::tracks is clear. The game's code
     // muted it before the sound's first tick, and the first open keeps the mute.
     const int grandparent = parent < 0 ? -1 : TrackAt(parent).parent;
     std::optional<std::size_t> handle_index;
-    if (grandparent >= 0 && TrackAt(grandparent).parent < 0)
+    if (tr.voice < 0 && grandparent >= 0 && TrackAt(grandparent).parent < 0)
     {
         const std::array<int, kChildren>& top = TrackAt(grandparent).children;
         const auto n = static_cast<std::size_t>(std::find(top.begin(), top.end(), parent) - top.begin());
@@ -73,7 +74,7 @@ int Performer::NewTrack(int parent, int number)
     // JAudio2 (SequenceSound::child_volumes). A track at 0 is silent. A silent track starts no notes, and its
     // controllers stay as they are at full volume. In a sequence of Pikmin's library, the volumes go to the root's
     // children through their external buffers instead (OpenChild).
-    if (sound_.jaudio1 && !sound_.jac && parent >= 0 && TrackAt(parent).parent < 0)
+    if (tr.voice < 0 && sound_.jaudio1 && !sound_.jac && parent >= 0 && TrackAt(parent).parent < 0)
     {
         handle_index = static_cast<std::size_t>(number);
     }
@@ -144,6 +145,7 @@ int Performer::OpenChild(int t, uint32_t number, uint32_t start)
         fresh.handle_volume = c.handle_volume;
         fresh.output = c.output;
         fresh.visited = c.visited;
+        fresh.voice = c.voice;
         c = std::move(fresh);
     }
 
@@ -344,7 +346,7 @@ int Performer::ParseToWait(int t)
 
 uint32_t Performer::Data8(uint32_t offset) const
 {
-    return offset < sound_.data.size() ? sound_.data[offset] : 0xff;
+    return offset < data_.size() ? data_[offset] : 0xff;
 }
 
 uint32_t Performer::Data16(uint32_t offset) const
@@ -1025,7 +1027,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
     ChannelParams p;
     if (tr.parent < 0)
     {
-        p.volume = volume * SoundVolume();
+        p.volume = volume * SoundVolume(tr);
         p.pitch = 1.0f;
         p.pan = pan;
         p.fx_mix = tr.move[2].value;

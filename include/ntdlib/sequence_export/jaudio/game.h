@@ -176,6 +176,12 @@ struct GameRules
     // (SoundEntry::switches) set bit 0.
     bool rhythm_mutes_child_0 = false;
 
+    // Donkey Kong Jungle Beat's chord layers (ntdlib/jaudio/jungle_beat_states.h): 1 for the GameCube's, 2 for the
+    // Wii's, or 0. Each layer converts as an arrangement of its piece, named with the layer's suffix, with the chord
+    // effects beside the piece (SequenceSound::companion). The game's chord database (ChordSeDataBase.csd) and chord
+    // archive (JaiChord.arc) are in the Info folder beside the start-up archive.
+    uint8_t chord_layers = 0;
+
     // A table of volumes that the game's code reads at start-up and writes over the sound table's: a JMap table (BCSV)
     // in a RARC archive near the start-up archive. Each row gives a sound's name and its volume in 127ths. The volume
     // replaces that of a sound whose type has bit 0x40. Super Mario Galaxy 2's AudioRes/Info/BgmParam.arc is one.
@@ -403,6 +409,8 @@ private:
     std::vector<std::vector<uint8_t>> decoded_sequences_; // the files of the sequence archive that Yaz0 compresses
     std::map<std::string, uint8_t> table_volumes_;        // GameRules::volume_table's volumes, by the sounds' names
     std::vector<uint8_t> conductor_archive_; // Conductor.arc beside the start-up archive (GameRules::conductors)
+    std::vector<uint8_t> chord_database_;    // Info/ChordSeDataBase.csd (GameRules::chord_layers)
+    std::vector<uint8_t> chord_archive_;     // Info/JaiChord.arc
     std::vector<SequenceSound> sequences_;
     std::vector<std::string> warnings_;
 

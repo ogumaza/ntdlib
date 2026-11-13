@@ -28,7 +28,7 @@
 #include "ntdlib/sequence_export/dse/instruments.h"
 #include "ntdlib/sequence_export/dse/performance.h"
 #include "ntdlib/sequence_export/linear_pan.h"
-#include "sequence_export/sfz_bank_file.h"
+#include "ntdlib/sequence_export/sfz_bank_file.h"
 
 namespace ntdlib::sequence_export::dse
 {

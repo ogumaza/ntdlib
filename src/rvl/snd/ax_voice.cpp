@@ -786,12 +786,13 @@ void AxVoice::ResetDelta()
     SetVoiceMix(StillMix(mix_prev_), true);
 }
 
-AxVoiceManager::AxVoiceManager(Engine& engine) : engine_(engine)
+AxVoiceManager::AxVoiceManager(Engine& engine, int count) : engine_(engine)
 {
-    for (std::unique_ptr<AxVoice>& voice : pool_)
+    pool_.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; i++)
     {
-        voice = std::make_unique<AxVoice>(engine);
-        free_.push_back(voice.get());
+        pool_.push_back(std::make_unique<AxVoice>(engine));
+        free_.push_back(pool_.back().get());
     }
 }
 

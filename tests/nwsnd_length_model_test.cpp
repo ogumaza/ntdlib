@@ -3,8 +3,8 @@
 // Tests the length analysis of a sequence sound (ntdlib/nwsnd/length_model.h) on the length cases
 // (ntdlib/testing/length_cases.h), on the Switch's model and the Wii U's. The analysis waits for the loops of the
 // tracks other than the main track. Counted loops that run past the limit follow. The analysis then takes each track's
-// outermost counted loop as endless. Last, a step of the game's code still to come (a console's Pending) holds the
-// sequence back.
+// outermost counted loop as endless. Then a step of the game's code still to come (a console's Pending) holds the
+// sequence back. Last, a console's Sounded replaces the test of the output.
 
 #include <cstddef>
 #include <cstdint>
@@ -241,6 +241,50 @@ void TestPending()
     g_pending = false;
 }
 
+// What SoundedConsole says about each frame's sound.
+bool g_sounded = false;
+
+// The Switch's console, with a frame's sound from g_sounded in place of the output's samples.
+struct SoundedConsole : ntdlib::nx::atk::LengthConsole
+{
+    static bool Sounded(const Model&)
+    {
+        return g_sounded;
+    }
+};
+
+// SEQ_HELD_LOOP's held note sounds from its first frames. A struct's Sounded replaces the test of the output. Without
+// one, the model tests the output's samples.
+void TestSounded()
+{
+    const ntdlib::sar::SoundArchive archive = LoadArchive(length_cases::Archive(false), false);
+    uint32_t index = 0;
+    while (index < length_cases::Cases().size() && std::string(length_cases::Cases()[index].name) != "SEQ_HELD_LOOP")
+    {
+        ++index;
+    }
+    ntdlib::nx::atk::ArchiveModel model(archive);
+    ntdlib::nx::atk::SequenceSoundPlayer* player = model.engine->StartSequence(index);
+    if (!Check(player != nullptr, "SEQ_HELD_LOOP starts"))
+    {
+        return;
+    }
+
+    ntdlib::nwsnd::LengthModel<ntdlib::nx::atk::LengthConsole> plain_model(model, *player);
+    ntdlib::nwsnd::LengthModel<SoundedConsole> sounded_model(model, *player);
+    for (int frame = 0; frame < 20 && !plain_model.Sounded(); ++frame)
+    {
+        plain_model.RunFrame();
+    }
+
+    Check(plain_model.Sounded(), "without Sounded, the model hears the held note in the output");
+    g_sounded = false;
+    Check(!sounded_model.Sounded(), "a struct's Sounded replaces the test of the output");
+    g_sounded = true;
+    Check(sounded_model.Sounded(), "a struct's Sounded gives the frame's sound");
+    g_sounded = false;
+}
+
 } // namespace
 
 int main()
@@ -248,6 +292,7 @@ int main()
     TestSwitch();
     TestWiiU();
     TestPending();
+    TestSounded();
 
     return xsflib::testing::Summary("nwsnd_length_model");
 }

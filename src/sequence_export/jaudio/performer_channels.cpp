@@ -326,6 +326,12 @@ void Performer::StartOscillators(Track& tr, const NoteSound& found, Channel& ch)
 
 void Performer::NoteOn(int t, uint32_t note_id, int key, int velocity)
 {
+    // The companion reads the beat's notes, muted or not (Companion).
+    if (companion_ && note_id != 0 && BeatTrack(t))
+    {
+        companion_->Note(static_cast<uint8_t>(key), static_cast<uint8_t>(velocity));
+    }
+
     // JASTrack::noteOn: a muted track starts no note. Otherwise the note id's channel is released for the new one.
     if (note_id == 0 || note_id >= kNoteIds)
     {

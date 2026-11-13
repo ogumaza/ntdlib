@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -405,6 +406,28 @@ private:
     // Start the effect once its slot's track has opened: write the slot's ports as the game's sound library does.
     void StartEffect();
 
+    // --- The companion (SequenceSound::companion) ---
+    // A sound that the companion plays: its sequence, its first track, and the state of its ticks, which follow its
+    // tempo. While its tracks run, its tempo and timebase stand in for the sequence's (InVoice).
+    struct CompanionVoice
+    {
+        const SequenceSound* sound = nullptr;
+        int root = -1;
+        float level = 1.0f;
+        float accumulator = 1.0f;
+        uint16_t tempo = 120;
+        uint16_t timebase = 48;
+    };
+
+    // Whether `t` is a track whose notes the companion reads: the root's child 0, or child 0 of that track.
+    bool BeatTrack(int t) const;
+    // Runs the companion's sounds for a sub-frame, then the game's frame if one ends.
+    void AdvanceCompanion();
+    void StartVoice(const CompanionSound& start);
+    void StopVoice(std::size_t voice);
+    // Makes voice `voice` the one whose tracks run, or the sequence's with -1.
+    void InVoice(int voice);
+
     // --- Recording ---
     int SlotOf(int t);
     seqlib::midi::TrackOutput& Output(int t);
@@ -432,7 +455,7 @@ private:
     void Approximate(const std::string& what);
     void RecordTickTime();
     double TrackLevel(int t) const;
-    float SoundVolume() const;
+    float SoundVolume(const Track& tr) const;
     void MoveFade();
 
     // The entry of the IIR filter that the zones play for track `t`'s notes, or the open one. A track whose notes play
@@ -451,7 +474,52 @@ private:
     seqlib::midi::Recorder recorder_;
     std::vector<Track> tracks_;
     std::vector<Channel> channels_;
-    std::vector<int> voices_;  // channel index per voice, -1 free
+    std::vector<int> voices_; // channel index per voice, -1 free
+    // The companion. A copy of the performer copies it.
+    class CompanionHolder
+    {
+    public:
+        CompanionHolder() = default;
+        explicit CompanionHolder(std::unique_ptr<Companion> companion) : companion_(std::move(companion))
+        {
+        }
+        CompanionHolder(const CompanionHolder& other)
+            : companion_(other.companion_ ? other.companion_->Clone() : nullptr)
+        {
+        }
+        CompanionHolder& operator=(const CompanionHolder& other)
+        {
+            if (this != &other)
+            {
+                companion_ = other.companion_ ? other.companion_->Clone() : nullptr;
+            }
+            return *this;
+        }
+        CompanionHolder(CompanionHolder&&) = default;
+        CompanionHolder& operator=(CompanionHolder&&) = default;
+        ~CompanionHolder() = default;
+
+        Companion* operator->() const
+        {
+            return companion_.get();
+        }
+        explicit operator bool() const
+        {
+            return companion_ != nullptr;
+        }
+
+    private:
+        std::unique_ptr<Companion> companion_;
+    };
+
+    CompanionHolder companion_;
+    std::vector<CompanionVoice> voices_of_companion_;
+    int in_voice_ = -1;             // the companion's voice whose tracks run, or -1
+    std::span<const uint8_t> data_; // the data of the sequence whose tracks run
+    uint64_t frames_ = 0;           // the game's frames so far
+    uint16_t music_tempo_ = 120;    // the sequence's tempo, timebase and tempo ratio while a voice's tracks run
+    uint16_t music_timebase_ = 48;
+    float music_rate_ = 1.0f;
     float accumulator_ = 1.0f; // ticks due (JASTrack's field_0x1d8)
     uint16_t tempo_ = 120;
     uint16_t timebase_ = 48;

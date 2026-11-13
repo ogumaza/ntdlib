@@ -30,10 +30,10 @@
 #include "ntdlib/sequence_export/resampling.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
+#include "ntdlib/sequence_export/sfz_bank_file.h"
 #include "ntdlib/wave/decode.h"
 #include "sequence_export/pcm.h"
 #include "sequence_export/sf2_build.h"
-#include "sequence_export/sfz_bank_file.h"
 
 namespace ntdlib::sequence_export
 {

@@ -41,6 +41,37 @@ struct Piece
     char conductor[24];   /* an AutoBgm's conductor in the conductor archive */
 };
 
+/* The functions and variables of the game's sound layer that a driver uses, in the order of both releases' parameter
+   blocks. The ripper fills them in. */
+struct SoundLayer
+{
+    unsigned int factory_ctor;     /* PSGame::SysFactory::SysFactory() */
+    unsigned int factory_vtable;   /* PSM::Factory's vtable */
+    unsigned int make_se;          /* PSM::SeSound::makeSeSound, the factory's maker of effects */
+    unsigned int new_sound_system; /* void PSGame::SysFactory::newSoundSystem() */
+    unsigned int scene_manager;    /* the variable that holds the scene manager, a PSM::SceneMgr */
+    unsigned int system_interface; /* the variable that holds the sound system, a PSSystem::SysIF */
+    unsigned int main_loop;        /* void PSSystem::SysIF::mainLoop(): the sound layer's frame work */
+    unsigned int new_bgm_seq;      /* BgmSeq* PikSceneMgr::newBgmSeq(const char* bms, SoundInfo&) */
+    unsigned int new_main_bgm;     /* BgmSeq* PSM::SceneMgr::newMainBgm(const char* bms, SoundInfo&) */
+    unsigned int new_directed_bgm; /* BgmSeq* PSM::SceneMgr::newDirectedBgm(const char* bms, SoundInfo&) */
+    unsigned int new_auto_bgm; /* BgmSeq* PSM::SceneMgr::newAutoBgm(cnd, bms, SoundInfo&, AccessMode, SceneInfo&, ..) */
+    unsigned int new_game_scene;    /* Scene* PSM::SceneMgr::newGameScene(u8 wave_scene, SceneInfo*) */
+    unsigned int append_seq;        /* void PSSystem::Scene::appendSeq(SeqBase*) */
+    unsigned int adapt_child_scene; /* void PSSystem::Scene::adaptChildScene(Scene*) */
+    unsigned int scene_info_ctor;   /* PSGame::SceneInfo::SceneInfo() */
+    unsigned int directed_bgm_ctor; /* DirectedBgm::DirectedBgm(const char* bms, const SoundInfo&, DirectorMgrBase*) */
+    unsigned int
+        auto_bgm_ctor; /* AutoBgm::AutoBgm(const char* cnd, const char* bms, const SoundInfo&, AccessMode, ..) */
+    unsigned int battle_directors_ctor; /* PSM::DirectorMgr_2PBattle::DirectorMgr_2PBattle() */
+    unsigned int adapt_directors;       /* void PSSystem::DirectorMgrBase::initAndAdaptToBgm(DirectedBgm&) */
+    unsigned int start_jump_bgm;        /* void PSSystem::JumpBgmSeq::startSeq(u16 start_point) */
+    unsigned int conductor_heap;        /* the variable that holds the heap of the conductors' objects */
+    unsigned int play_system_se;        /* void PSSystem::SysIF::playSystemSe(u32 id, JAISound** handle, u32 flag) */
+    unsigned int play_data;             /* the variable that holds the game's play data, Game::PlayData */
+    unsigned int rappas;                /* PSGame::Rappa::sRappa: the two captains' marching horns */
+};
+
 /* The offsets of the game's objects that the driver reads and writes. */
 #define FACTORY_HEAP 0x00         /* SysFactory: the heap for the sound system */
 #define FACTORY_HEAP_SIZE 0x04    /* the sound library's ARAM */

@@ -54,4 +54,23 @@
 #define TRACK_FREE 0u
 #define TRACK_CHILDREN 16u
 
+/* The game's functions and variables that a driver uses to play effects and the formation's sound, in the order of both
+   releases' parameter blocks. The ripper fills them in. */
+struct EffectCalls
+{
+    unsigned int load_wave_scene;    /* void WaveScene_Load(u32 system, u32 group) */
+    unsigned int scene;              /* the sound library's variable: the game's scene */
+    unsigned int menu;               /* the sound library's flag: the menu is open */
+    unsigned int play_system_effect; /* void Jac_PlaySystemSe(u32 number) */
+    unsigned int play_player_effect; /* void Jac_PlayOrimaSe(u32 number) */
+    unsigned int create_event;       /* s32 Jac_CreateEvent(u8 type, Vector3D* position) */
+    unsigned int play_event_action;  /* u32 Jac_PlayEventAction(s32 event, u32 action) */
+    unsigned int update_camera;      /* void Jac_UpdateCamera(void) */
+    unsigned int system_track;       /* the name of the track that plays the system's effects */
+    unsigned int player_track;       /* the name of the track that plays the player's effects */
+    unsigned int events_track;       /* the name of the events' root track. Its children play the events */
+    unsigned int move_formation;     /* void Jac_Orima_Formation(s32 x, s32 y) */
+    unsigned int formation_track;    /* the name of the effects sequence's track for the formation */
+};
+
 #endif

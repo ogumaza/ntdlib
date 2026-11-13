@@ -48,9 +48,10 @@ struct ArchiveModel
     ArchiveModel(const ArchiveModel&) = delete;
     ArchiveModel& operator=(const ArchiveModel&) = delete;
 
-    // Starts the engine on `archive` in the output mode that the layer sets, Dolby Pro Logic II (0x1026ec0). Then puts
-    // the game's reverbs on the aux buses: bus B's, as the game's start-up does (0xf32878), and bus A's for a scene
-    // that gives no type of room (0xf761c0). The archive must outlive the model. Set `build` first.
+    // Starts the engine on `archive`, with the pools of voices and channels that the game sets up, in the output mode
+    // that the layer sets, Dolby Pro Logic II (0x1026ec0). Then puts the game's reverbs on the aux buses: bus B's, as
+    // the game's start-up does (0xf32878), and bus A's for a scene that gives no type of room (0xf761c0). The archive
+    // must outlive the model. Set `build` first.
     void Start(const ntdlib::rsar::SoundArchive& archive);
 
     // One frame of the renderer, after the AX ticks due by then. Appends the frame's 240 stereo samples at 48 kHz to

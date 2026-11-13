@@ -224,8 +224,9 @@ struct MixInput
 // `mode` (see Engine::GetOutputMode).
 AxVoice::MixParam CalcMix(const MixInput& input, int channel, const SndBuild& build, ntdlib::nwsnd::OutputMode mode);
 
-// The pool of AxVoices (AxVoiceManager): 96 for AX's voices and 16 more. The extra ones let a voice that AX has dropped
-// wait to be freed while its AX voice is reused.
+// The pool of AxVoices (AxVoiceManager). The Wii's pool holds kVoiceCount: 96 for AX's voices and 16 more. The extra
+// ones let a voice that AX has dropped wait to be freed while its AX voice is reused. A game's start-up may set up
+// another count.
 class AxVoiceManager
 {
 public:
@@ -240,7 +241,8 @@ public:
 
     static constexpr int kVoiceCount = ax::kVoiceCount + 16;
 
-    explicit AxVoiceManager(Engine& engine);
+    // A pool of `count` AxVoices.
+    AxVoiceManager(Engine& engine, int count);
 
     // The pool's state between sound frames, and its restoration. A snapshot can only be restored to the pool it came
     // from. Its lists point at that pool's AxVoices.
@@ -265,7 +267,7 @@ private:
     void Free(AxVoice* voice);
 
     Engine& engine_;
-    std::array<std::unique_ptr<AxVoice>, kVoiceCount> pool_;
+    std::vector<std::unique_ptr<AxVoice>> pool_;
     std::list<AxVoice*> free_;
     std::list<AxVoice*> active_;
     std::list<AxVoice*> reserved_;
@@ -477,7 +479,8 @@ private:
     float prev_ve_volume_ = 1.0f;                   // the build of October 2006: the volume that CalcAxVe last used
 };
 
-// The voices in use, by priority (VoiceManager): 96, one for each AX voice.
+// The voices in use, by priority (VoiceManager). The Wii's pool holds kVoiceCount, one for each AX voice. A game's
+// start-up may set up another count.
 class VoiceManager
 {
 public:
@@ -491,7 +494,8 @@ public:
 
     static constexpr int kVoiceCount = ax::kVoiceCount;
 
-    explicit VoiceManager(Engine& engine);
+    // A pool of `count` voices.
+    VoiceManager(Engine& engine, int count);
 
     // The pool's state between sound frames, and its restoration, as for AxVoiceManager.
     Snapshot Save() const;
@@ -545,7 +549,7 @@ private:
     void RemoveVoiceList(Voice* voice);
     void UpdateEachVoicePriority(std::list<VoiceId>::iterator begin);
 
-    std::array<std::unique_ptr<Voice>, kVoiceCount> pool_;
+    std::vector<std::unique_ptr<Voice>> pool_;
     std::list<VoiceId> free_;
     std::list<VoiceId> prio_list_;
 };
@@ -579,8 +583,8 @@ struct ChannelPolicy : ntdlib::nwsnd::RevolutionPolicy
 // A channel (Channel): one note of a wave, with its envelope, LFO and sweep, played on a voice.
 using Channel = ntdlib::nwsnd::Channel<ChannelPolicy>;
 
-// The pool of channels and the channels in use (ChannelManager): 97, one for each AX voice and one more
-// (RevolutionPolicy::kChannelCount). A channel that stops goes back to the pool at once.
+// The pool of channels and the channels in use (ChannelManager). The Wii's pool holds 97, one for each AX voice and one
+// more (RevolutionPolicy::kChannelCount). A channel that stops goes back to the pool at once.
 using ChannelManager = ntdlib::nwsnd::ChannelManager<ChannelPolicy>;
 
 } // namespace ntdlib::rvl::snd

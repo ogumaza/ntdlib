@@ -29,7 +29,7 @@
 #include "ntdlib/sequence_export/ntr/convert.h"
 #include "ntdlib/sequence_export/ntr/instruments.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
-#include "sequence_export/sfz_bank_file.h"
+#include "ntdlib/sequence_export/sfz_bank_file.h"
 
 namespace ntdlib::sequence_export::ntr
 {
