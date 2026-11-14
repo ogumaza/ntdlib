@@ -1337,6 +1337,77 @@ void TestRefusals()
                  "an archive laid out another way: an archive without names");
 }
 
+// The settings after the counts: bit 0 of byte 0x0F and byte 0x10, as a Switch archive of version 2.6.0 contains them.
+// Other bits of byte 0x0F and the bytes after 0x10 stay refused. Archives of the 3DS and the Wii U with either byte set
+// are refused, and their models with either setting don't build.
+void TestPlayerSettings()
+{
+    sar_files::ArchiveSpec spec;
+    spec.sounds = {sar_files::SoundSpec{.name = "SEQ_A"}};
+    const std::vector<uint8_t> plain = sar_tools::Archive(Flavor::kNx, spec);
+    const sar::Tables tables = sar::TablesOf(plain, Flavor::kNx);
+    const sar::StringBlock strings = sar::StringBlock::Read(*tables.strings, Flavor::kNx);
+    const InfoBlock info = InfoBlock::Read(tables.info, Flavor::kNx);
+    XSFLIB_CHECK(info.player_settings[15] == 0 && info.player_settings[16] == 0);
+    const ArchiveModel before = sar::ReadArchiveModel(plain, Flavor::kNx);
+    XSFLIB_CHECK(!before.player_settings.advanced_wave_sounds && before.player_settings.sequence_sound_countdown == 0);
+
+    const auto with_settings = [&](std::size_t at, uint8_t value)
+    {
+        InfoBlock changed = info;
+        changed.player_settings[at] = value;
+        return sar::WithTables(plain, Flavor::kNx, strings, changed);
+    };
+    InfoBlock both = info;
+    both.player_settings[15] = 1;
+    both.player_settings[16] = 1;
+    const std::vector<uint8_t> archive = sar::WithTables(plain, Flavor::kNx, strings, both);
+    const ArchiveModel model = sar::ReadArchiveModel(archive, Flavor::kNx);
+    XSFLIB_CHECK(model.player_settings.advanced_wave_sounds);
+    XSFLIB_CHECK(model.player_settings.sequence_sound_countdown == 1);
+    XSFLIB_CHECK(sar::BuildArchive(model) == archive);
+
+    ArchiveModel edited = before;
+    edited.player_settings.sequence_sound_countdown = 200;
+    const ArchiveModel again = sar::ReadArchiveModel(sar::BuildArchive(edited), Flavor::kNx);
+    XSFLIB_CHECK(again.player_settings.sequence_sound_countdown == 200);
+    XSFLIB_CHECK(!again.player_settings.advanced_wave_sounds);
+
+    const std::string refusal =
+        "an archive laid out another way: the archive player's settings holds fields that the model doesn't hold";
+    const auto unread = [](const std::vector<uint8_t>& bytes)
+    {
+        return ErrorOf<xsflib::FormatError>([&] { sar::ReadArchiveModel(bytes, Flavor::kNx); });
+    };
+    XSFLIB_CHECK(unread(with_settings(15, 2)) == refusal);
+    XSFLIB_CHECK(unread(with_settings(17, 1)) == refusal);
+    XSFLIB_CHECK(unread(with_settings(19, 1)) == refusal);
+
+    for (const Flavor other : {Flavor::kCtr, Flavor::kCafe})
+    {
+        const std::vector<uint8_t> base = sar_tools::Archive(other, spec);
+        const sar::Tables other_tables = sar::TablesOf(base, other);
+        const sar::StringBlock other_strings = sar::StringBlock::Read(*other_tables.strings, other);
+        const InfoBlock other_info = InfoBlock::Read(other_tables.info, other);
+        for (const std::size_t at : {std::size_t{15}, std::size_t{16}})
+        {
+            InfoBlock changed = other_info;
+            changed.player_settings[at] = 1;
+            const std::vector<uint8_t> bytes = sar::WithTables(base, other, other_strings, changed);
+            XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sar::ReadArchiveModel(bytes, other); }) == refusal);
+        }
+
+        const ArchiveModel plain_model = sar::ReadArchiveModel(base, other);
+        const std::string misplaced = "the Switch's player settings in an archive of another console";
+        ArchiveModel advanced = plain_model;
+        advanced.player_settings.advanced_wave_sounds = true;
+        XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::BuildArchive(advanced); }) == misplaced);
+        ArchiveModel counted = plain_model;
+        counted.player_settings.sequence_sound_countdown = 1;
+        XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { sar::BuildArchive(counted); }) == misplaced);
+    }
+}
+
 } // namespace
 
 int main()
@@ -1359,5 +1430,6 @@ int main()
                                         TestToolsArchive(Flavor::kCafe);
                                         TestCtrToolsArchive();
                                         TestRefusals();
+                                        TestPlayerSettings();
                                     });
 }

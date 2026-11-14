@@ -972,6 +972,63 @@ void TestStrictRulesAddGroupFilesAsThePlayerReadsThem(Flavor flavor)
     Check(Text(archive.FileData(1)) == "stored", "the archive's copy of file 1" + on);
 }
 
+// The names of the sounds in `archive`.
+std::vector<std::string> SoundNames(const SoundArchive& archive)
+{
+    std::vector<std::string> names;
+    for (const SoundInfo& sound : archive.Sounds())
+    {
+        names.push_back(sound.name);
+    }
+
+    return names;
+}
+
+void TestUnnamedSequencesAreNamedByTheirLabels(Flavor flavor, Rules rules)
+{
+    // An archive without a STRG block:
+    // - Sound 0 starts at BGM_A_Start, and 3 bytes after BGM_A_Begin, whose allocation of tracks contains track 0.
+    //   BGM_A_Start comes first in the table, but the label that ends in _Begin names the sound.
+    // - Sounds 1, 2 and 3 play one file. Sounds 1 and 2 start at its two labels. Sound 3 starts where it has none, and
+    //   the file's first label names another sound.
+    // - Sound 4 starts where its file has no label. No other sound plays the file, so its first label names the sound.
+    // - Sound 5's file has no labels.
+    // - Only a group file kept outside the archive contains sound 6's file.
+    // - Sound 7's only label is _Begin.
+    const Format f = FormatOf(flavor);
+    // The mask is big-endian on the 3DS and the Wii U, and little-endian on the Switch.
+    const std::vector<uint8_t> allocation = flavor != Flavor::kNx ? std::vector<uint8_t>{0xfe, 0x00, 0x01, 0xff}
+                                                                  : std::vector<uint8_t>{0xfe, 0x01, 0x00, 0xff};
+    const std::vector<uint8_t> outside =
+        LabelledSequenceFile(f, {0xff}, {{"BGM_B_Begin", 0}, {"BGM_B_End", 0}, {"BGM_B_Start", 0}});
+    std::vector<ArchiveFile> files(6);
+    files[0].data = LabelledSequenceFile(f, allocation, {{"BGM_A_Start", 3}, {"BGM_A_End", 4}, {"BGM_A_Begin", 0}});
+    files[1].data = LabelledSequenceFile(f, {0xff, 0xff, 0xff}, {{"SE_ONE", 0}, {"SE_TWO", 2}});
+    files[2].data = LabelledSequenceFile(f, {0xff, 0xff}, {{"SE_X_Begin", 0}});
+    files[3].data = SequenceFile(f, {0xff});
+    files[4].place = ArchiveFile::kNullLocation;
+    files[5].data = LabelledSequenceFile(f, {0xff}, {{"_Begin", 0}});
+    const ArchiveLists lists = {.sequences = {{0, 3}, {1, 0}, {1, 2}, {1, 1}, {2, 1}, {3, 0}, {4, 0}, {5, 0}},
+                                .groups = {0xffffffff}};
+    const Options options = rules == Rules::kReadPastDamage ? OptionsOf(flavor) : StrictOptionsOf(flavor);
+    SoundArchive archive = SoundArchive::Load(Archive(f, files, lists), options);
+    const std::vector<std::string> before = SoundNames(archive);
+    archive.AddGroupFile(Group(f, {{4, std::string(outside.begin(), outside.end())}}, {}));
+
+    // The archive's names come first.
+    ArchiveLists named = lists;
+    named.names = {{0x01000000, "SEQ_NAMED"}};
+    const SoundArchive with_names = SoundArchive::Load(Archive(f, files, named), options);
+
+    const std::string on = " (" + NameOf(flavor) + (rules == Rules::kReadPastDamage ? "" : ", strict") + ")";
+    Check(before ==
+              std::vector<std::string>{"BGM_A", "SE_ONE", "SE_TWO", "SEQ_3", "SE_X", "SEQ_5", "SEQ_6", "SEQ_7"},
+          "unnamed sequences named by their labels" + on);
+    Check(SoundNames(archive)[6] == "BGM_B", "a sequence named once its group file is added" + on);
+    Check(with_names.Sounds()[0].name == "SEQ_NAMED" && with_names.Sounds()[1].name == "SE_ONE",
+          "the archive's names before the labels" + on);
+}
+
 void TestSarcFilesAreRead()
 {
     // A SARC in either byte order gives its files. A file that runs past the data is left out. Other data has no files.
@@ -1771,6 +1828,8 @@ int main()
         TestBankOfSharedRegionsIsReported(flavor);
         TestGroupFilesBesideTheArchiveAreAdded(flavor);
         TestStrictRulesAddGroupFilesAsThePlayerReadsThem(flavor);
+        TestUnnamedSequencesAreNamedByTheirLabels(flavor, Rules::kReadPastDamage);
+        TestUnnamedSequencesAreNamedByTheirLabels(flavor, Rules::kStopAtFirstProblem);
         TestGroupsListTheFilesTheyLoad(flavor);
         TestGroupFilesMatchTheirArchive(flavor, Rules::kReadPastDamage);
         TestGroupFilesMatchTheirArchive(flavor, Rules::kStopAtFirstProblem);

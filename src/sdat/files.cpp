@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/ntr/sound.h"
 #include "ntdlib/rounding.h"
 #include "ntdlib/sdat/formats.h"
@@ -180,8 +182,7 @@ void AppendPcm(std::vector<uint8_t>& part, std::span<const int16_t> samples, Wav
     {
         if (encoding == WaveEncoding::kPcm16)
         {
-            part.push_back(static_cast<uint8_t>(static_cast<uint16_t>(sample) & 0xFF));
-            part.push_back(static_cast<uint8_t>(static_cast<uint16_t>(sample) >> 8));
+            xsflib::AppendLe16(part, static_cast<uint16_t>(sample));
         }
         else
         {

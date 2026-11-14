@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Checks what the rippers' game modes share of three JAudio games: Donkey Kong Jungle Beat's states and chord layers
-// (ntdlib/jaudio/jungle_beat_states.h), Pikmin 2's pieces and the drivers' table of them
+// Checks what the rippers' game modes share of three JAudio games: Donkey Kong Jungle Beat's states, chord layers and
+// pieces that start silent (ntdlib/jaudio/jungle_beat_states.h), Pikmin 2's pieces and the drivers' table of them
 // (ntdlib/jaudio/pikmin2_pieces.h), and Jac's effect IDs and catalogue of effects (ntdlib/jaudio/jac_effects.h), on a
 // main.dol built here. The bits and the table's words follow the layouts of the drivers' sources.
 
@@ -77,6 +77,43 @@ void TestJungleBeatChordLayers()
                                       jaudio::kJungleBeatStates);
     ntdlib::testing::CheckChordLayers("the Wii's chord layers", jaudio::kJungleBeatWiiChordLayers,
                                       jaudio::kJungleBeatWiiStates);
+}
+
+// A main.dol with the rows of three pieces and their states: piece 0 starts with every track off (code 2 for track 0,
+// 0 for the rest, and bit 3 set on track 2), piece 1 starts with track 5 on, and piece 2 has no row. The layers of the
+// pieces are 128, 3 and 4. Only a layer's ID gets the second state.
+void TestJungleBeatSilentStart()
+{
+    constexpr uint32_t kHeader = 0x100;
+    constexpr jaudio::JungleBeatStateTable kTable{0x80004000, 0x80004100};
+    std::vector<uint8_t> dol(kHeader + 0x200);
+    ntdlib::testing::SetDolSection(dol, 7, kHeader, kTable.rows, 0x200);
+    uint8_t* rows = &dol[kHeader];
+    xsflib::StoreBe32(rows + 4, 0);
+    xsflib::StoreBe32(rows + 12 + 4, 1);
+    xsflib::StoreBe32(rows + 24 + 4, 0xffffffff);
+    uint8_t* states = &dol[kHeader + 0x100];
+    const uint8_t silent[8] = {0x20, 0x08, 0, 0, 0, 0, 0, 0};
+    const uint8_t next[8] = {0x13, 0x33, 0x11, 0x77, 0x33, 0x33, 0x33, 0x31};
+    std::copy(std::begin(silent), std::end(silent), states);
+    std::copy(std::begin(next), std::end(next), states + 8);
+    states[0x40 + 2] = 0x01;
+    const std::optional<ntdlib::Dol> parsed = ntdlib::Dol::Parse(dol);
+    Check(parsed.has_value(), "the DOL of states parses");
+    if (!parsed)
+    {
+        return;
+    }
+
+    const auto start = jaudio::JungleBeatSilentStart(*parsed, kTable, jaudio::ChordLayerId(0x01000000, 128));
+    Check(start && start->address == kTable.states &&
+              start->data == std::vector<uint8_t>(std::begin(next), std::end(next)),
+          "a layer whose piece starts silent gets the piece's second state over its first");
+    Check(!jaudio::JungleBeatSilentStart(*parsed, kTable, 0x01000000), "the piece alone keeps its start");
+    Check(!jaudio::JungleBeatSilentStart(*parsed, kTable, jaudio::ChordLayerId(0x01000001, 3)),
+          "a layer whose piece starts with a track on keeps the start");
+    Check(!jaudio::JungleBeatSilentStart(*parsed, kTable, jaudio::ChordLayerId(0x01000002, 4)),
+          "a layer whose piece has no row keeps the start");
 }
 
 void TestPikmin2Pieces()
@@ -268,6 +305,7 @@ int main()
 {
     TestJungleBeatStates();
     TestJungleBeatChordLayers();
+    TestJungleBeatSilentStart();
     TestPikmin2Pieces();
     TestJacEffectIds();
     TestJacCatalogue();

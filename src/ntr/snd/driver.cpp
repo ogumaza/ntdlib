@@ -115,15 +115,13 @@ Driver::Driver(std::span<uint8_t> main_memory, Registers& registers, Build build
     for (int i = 0; i < 128; i++)
     {
         const int16_t level = i == 0 ? build.zero_level : tables::kDecibelSquare[i];
-        tables_.push_back(static_cast<uint8_t>(level));
-        tables_.push_back(static_cast<uint8_t>(static_cast<uint16_t>(level) >> 8));
+        xsflib::AppendLe16(tables_, static_cast<uint16_t>(level));
     }
     if (build.decibel_table)
     {
         for (const int16_t level : tables::kDecibel)
         {
-            tables_.push_back(static_cast<uint8_t>(level));
-            tables_.push_back(static_cast<uint8_t>(static_cast<uint16_t>(level) >> 8));
+            xsflib::AppendLe16(tables_, static_cast<uint16_t>(level));
         }
     }
     shifts_ = tables_.size();

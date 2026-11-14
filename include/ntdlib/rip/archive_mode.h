@@ -154,11 +154,7 @@ inline void SetVolumeTag(float volume, xsflib::psf::Tags& tags)
         return;
     }
 
-    std::string text = ShortestDecimal(volume);
-    if (!text.empty())
-    {
-        tags["volume"] = std::move(text);
-    }
+    tags["volume"] = ShortestDecimal(volume);
 }
 
 // The jobs that rip `selected` in the states that `tool` gives them (ArchiveRipTool::sound_states), in order. A job is

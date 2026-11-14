@@ -815,7 +815,7 @@ std::vector<uint16_t> SoundEffects::BankIds(std::size_t effect) const
         return ids;
     }
     const std::vector<uint8_t>& record = *bank_lists.slots[effect];
-    const std::size_t count = record[0] | record[1] << 8;
+    const std::size_t count = xsflib::LoadLe16(record.data());
     for (std::size_t i = 0; i < count && 4 + 2 * i + 1 < record.size(); i++)
     {
         ids.push_back(xsflib::LoadLe16(&record[4 + 2 * i]));

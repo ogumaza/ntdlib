@@ -315,11 +315,12 @@ void TestArchive(bool big_endian, const std::string& order)
         Check(false, order + ": a file only a group holds: " + e.what());
     }
 
-    // Without the string block, the sounds are named by their kinds and indices.
+    // Without the string block, the sequence takes its file's label, and the other sounds are named by their kinds and
+    // indices.
     sar_files::ArchiveSpec nameless = spec;
     nameless.names = false;
     const sar::SoundArchive unnamed = sar::SoundArchive::Load(sar_files::Archive(big_endian, nameless), kStrictRules);
-    Check(unnamed.Sounds().size() == 3 && unnamed.Sounds()[0].name == "SEQ_0" && unnamed.Sounds()[1].name == "WSD_1" &&
+    Check(unnamed.Sounds().size() == 3 && unnamed.Sounds()[0].name == "Test" && unnamed.Sounds()[1].name == "WSD_1" &&
               unnamed.Sounds()[2].name == "STRM_2" && unnamed.Banks()[0].name.empty(),
           order + ": an archive without names");
 

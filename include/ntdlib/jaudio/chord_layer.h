@@ -61,9 +61,10 @@ public:
         rhythm_.Note(key, velocity);
     }
 
-    // A game frame, after the audio frame: the objects' asks, then the rhythm's frame process. `position` is port 0xe
-    // of the child that gives the piece's position (0x8024b57c), or nothing before the child writes it. The records
-    // start in the first frame with a position.
+    // A game frame, before the frame's audio frame. The audio frame starts the frame's sounds. The model runs the
+    // objects' asks first, then the rhythm's frame process. The game runs the rhythm's frame process first, then the
+    // asks. `position` is port 0xe of the child that gives the piece's position (0x8024b57c), or nothing before the
+    // child writes it. The records start in the first frame with a position.
     std::vector<ChordLayerSound> Frame(std::optional<uint16_t> position);
 
     std::size_t Effects() const

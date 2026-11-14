@@ -364,8 +364,12 @@ struct Sequence
     static Sequence Parse(std::span<const uint8_t> file, const Options& options);
 
     std::span<const uint8_t> data; // DATA block payload
-    bool big_endian = false;       // the byte order of the commands' 16- and 24-bit arguments: the file's byte order
-    std::vector<Label> labels;     // from the LABL block, with kStopAtFirstProblem on the Wii U and the Switch
+
+    // The file's byte order. The commands' 16- and 24-bit arguments follow it on the Wii U and the Switch. On the 3DS,
+    // they're big-endian in a little-endian file.
+    bool big_endian = false;
+
+    std::vector<Label> labels; // from the LABL block, with kStopAtFirstProblem on the Wii U and the Switch
 };
 
 enum class SoundType
@@ -411,8 +415,9 @@ struct StreamSoundInfo
     std::vector<StreamTrackInfo> tracks;
 };
 
-// Sound metadata. Missing names are generated from type and index, e.g. SEQ_12. As in other item names, control
-// characters, line breaks and invalid UTF-8 bytes become '?'.
+// Sound metadata. A sequence sound without a name in the archive is named after a label in its sequence file (see
+// SoundArchive::Load). Other missing names are generated from type and index, e.g. SEQ_12. As in other item names,
+// control characters, line breaks and invalid UTF-8 bytes become '?'.
 struct SoundInfo
 {
     std::string name;
@@ -443,6 +448,12 @@ struct SoundInfo
     uint8_t channel_priority = 64;
     bool release_priority_fix = false; // a released channel keeps its priority
 };
+
+// Whether sequence sound `sound` starts at the label at offset `label` in `bytecode`, the bytecode of the sound's
+// sequence file. The sound starts there when its start offset is the label's offset, or 3 bytes more. In the second
+// case, the label starts with an allocation of tracks: 0xFE and a 16-bit mask, big-endian when `big_endian` is set.
+// SoundMaker moves the allocation into the sound's info and adds track 0 to the mask.
+bool StartsAtLabel(std::span<const uint8_t> bytecode, bool big_endian, uint32_t label, const SoundInfo& sound);
 
 // Bank name and file ID. With kReadPastDamage, unnamed banks use BANK_<index>.
 struct BankInfo
@@ -490,6 +501,17 @@ public:
     // Reads the archive's tables and locates files stored in groups. Throws FormatError if the tables cannot be read.
     // With kReadPastDamage, the readers go on past a damaged name table, group or file entry, and report it (see
     // GroupErrors). With kStopAtFirstProblem, they stop at the first problem.
+    //
+    // A sequence sound without a name in the archive is named after a label in its sequence file. That covers every
+    // sequence sound of an archive without a STRG block or with a damaged one. Of the labels where the sound starts
+    // (see StartsAtLabel), the first that ends in `_Begin` names it, or else the first one. With no label there, the
+    // file's first label names the sound if no other sequence sound plays the file. A `_Begin` at the end is left out.
+    // Labels such as `NAME_Begin`, `NAME_Start`, `NAME_End` and `NAME_Track_0` mark one sequence, and the sound is then
+    // named NAME. The sound keeps SEQ_<index> in every other case:
+    // - a file without labels, or one whose labels can't be read
+    // - a file that other sequence sounds play too, with no label where this one starts
+    // - a label that is only `_Begin`
+    // - a file outside the archive, until AddGroupFile adds it
     static SoundArchive Load(std::vector<uint8_t> bytes, const Options& options);
 
     // The version in the archive's header: 0x02030000 for CSAR 2.3, and 0x00020200 for FSAR 2.2.0.
@@ -571,6 +593,9 @@ public:
     // only when the archive lacks that file. The players of the Wii U and the Switch read the group file's whole table
     // first. `group` gives the group's label in ExternalGroups where the caller knows it, such as from the name of the
     // file beside the archive (GroupFileGroups).
+    //
+    // If the group file contains the sequence file of a sequence sound without a name, the sound is then named after
+    // a label in that file (see Load).
     void AddGroupFile(std::vector<uint8_t> bytes, std::string group = {});
 
     // Whether `bytes` is a group file of this archive, read by the archive's rules. With kStopAtFirstProblem, it reads
@@ -618,7 +643,8 @@ public:
         return truncated_;
     }
 
-    // True if the archive's name table is damaged. Its sounds and banks then go by number.
+    // True if the archive's name table is damaged. Its sounds and banks then go by number. A sequence sound is named
+    // after a label in its sequence file instead, where Load finds one (see Load).
     bool NamesDamaged() const
     {
         return names_damaged_;
@@ -674,11 +700,16 @@ private:
     void ReadGroupsStrictly(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
                             const std::map<uint32_t, std::string>& names);
 
+    // Names each sequence sound in unnamed_sequences_ after a label in its sequence file (see Load), if the archive or a
+    // group file contains that file. Removes each such sound from the list.
+    void NameSequencesFromLabels();
+
     Options options_;
     std::vector<uint8_t> bytes_;
     std::vector<std::vector<uint8_t>> group_files_;
     std::vector<std::string> group_file_groups_;
     std::vector<SoundInfo> sounds_;
+    std::vector<uint32_t> unnamed_sequences_; // sequence sounds without a name whose files haven't been read
     std::vector<BankInfo> banks_;
     std::vector<WaveArchiveInfo> wave_archives_;
     std::vector<PlayerInfo> players_;

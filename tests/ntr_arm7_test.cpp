@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/ntr/arm7.h"
@@ -137,7 +138,7 @@ uint32_t Word(Arm7System& system, uint32_t address)
     const auto memory = system.MainMemory();
     // Main memory repeats every 4 MiB.
     const uint32_t at = (address - 0x02000000) & 0x3FFFFF;
-    return static_cast<uint32_t>(memory[at] | memory[at + 1] << 8 | memory[at + 2] << 16 | memory[at + 3] << 24);
+    return xsflib::LoadLe32(&memory[at]);
 }
 
 void TestBoot()

@@ -307,7 +307,7 @@ std::vector<int16_t> Decode(std::span<const uint8_t> data, uint32_t words, uint8
 
 std::vector<PresetZone> PresetZones(const ntdlib::dse::WaveBank& bank, const PresetKey& key)
 {
-    const auto count = static_cast<int16_t>(bank.header[0x48] | bank.header[0x49] << 8);
+    const auto count = static_cast<int16_t>(xsflib::LoadLe16(&bank.header[0x48]));
     if (!bank.instruments || static_cast<int16_t>(key.program) >= count ||
         key.program >= bank.instruments->programs.size() || !bank.instruments->programs[key.program])
     {
@@ -317,7 +317,7 @@ std::vector<PresetZone> PresetZones(const ntdlib::dse::WaveBank& bank, const Pre
     // The driver's search for a note's splits (0x0206D5C8): the splits from 0x60 on, up to the one whose index is the
     // last of the program's count.
     const std::vector<uint8_t> program = bank.instruments->programs[key.program]->Bytes();
-    const auto wave_count = static_cast<int16_t>(bank.header[0x46] | bank.header[0x47] << 8);
+    const auto wave_count = static_cast<int16_t>(xsflib::LoadLe16(&bank.header[0x46]));
     std::vector<PresetZone> zones;
     for (std::size_t at = 0x60; program[2] != 0 && at + SplitView::kSize <= program.size(); at += SplitView::kSize)
     {
@@ -459,7 +459,7 @@ BankSet::BankSet(const SequenceFiles& files) : main_bank_(files.main_bank)
 {
     for (const ntdlib::dse::WaveBank* bank : files.banks)
     {
-        banks_.try_emplace(static_cast<uint16_t>(bank->header[0x0E] | bank->header[0x0F] << 8), bank);
+        banks_.try_emplace(xsflib::LoadLe16(&bank->header[0x0E]), bank);
     }
 }
 

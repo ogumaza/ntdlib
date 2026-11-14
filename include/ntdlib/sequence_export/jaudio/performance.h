@@ -183,8 +183,9 @@ struct CompanionSound
 // The game's code that starts sounds beside a sequence as it plays, from what the sequence does: Donkey Kong Jungle
 // Beat's chord effects (ntdlib/jaudio/chord_layer.h). The performer passes it the notes with a voice above 0 of the
 // root's child 0 and of that track's child 0, muted or not. Once each game frame, after the sub-frames of the frame,
-// it asks for the frame's sounds. They start in the next sub-frame. Their tracks record after the sequence's, and their
-// loops and ends don't count for the sequence's.
+// it asks for the frame's sounds. They start in the next sub-frame: the game's sound manager starts them in the same
+// frame's audio process. Their tracks record after the sequence's, and their loops and ends don't count for the
+// sequence's.
 class Companion
 {
 public:

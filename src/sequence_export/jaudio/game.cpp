@@ -642,6 +642,24 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // The chord layers: the enemies' loops beside a stage's music.
         rules.chord_layers = archive_sha1 == kJungleBeat[1] ? 2 : 1;
 
+        // As it starts, the audio manager sets the volumes of the effect categories in the sound manager. The function
+        // is at 0x8023f2b8 in the GameCube main.dol and at 0x80266bf0 in the Wii main.dol. It reads the volumes from
+        // 0x803f9a58 and 0x8050a160. Category 5 contains the chord effects. On the Wii, the call at 0x80266c90 also
+        // sets category 8 to 1.5. That category contains the 22 sounds of the Home Button menu. The function sets
+        // three more volumes. Those act on the music and the effects alike.
+        // The setter (0x8001a66c, 0x802ddfc0 on the Wii) has 23 other callers on the GameCube and 39 on the Wii. Only
+        // the calls for category 6 set a category. Once a frame, the game sets category 6 to 1.2 over 10 frames
+        // (0x8024068c, 0x80268828 on the Wii). While a check holds, it sets a lower volume at once instead: 1/3 on
+        // the GameCube (0x80240650), and 0, 1/3, 0.3 or 0.5 on the Wii (0x80268758 to 0x802687f8). Nobody has read
+        // when the check holds. The other callers set the volume of one sound, of a child track of the music, or one
+        // of the three volumes above.
+        rules.category_volumes = {{0, 1.2f}, {1, 1.35f}, {2, 1.1f}, {3, 1.1f},
+                                  {4, 1.1f}, {5, 1.1f},  {6, 1.2f}, {7, 1.2f}};
+        if (archive_sha1 == kJungleBeat[1])
+        {
+            rules.category_volumes[8] = 1.5f;
+        }
+
         // Some effects' sequences add a value at port 0xb to a key. The game's code writes the value as it starts the
         // effect. Most effects start by name with a count (0x8022f968 in the GameCube's main.dol, 0x80260f20 in the
         // Wii's). The audio manager's start of a sound with a count (0x8023f98c, 0x802678b0 on the Wii) writes the

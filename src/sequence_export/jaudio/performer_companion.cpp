@@ -180,7 +180,8 @@ void Performer::AdvanceCompanion()
         InVoice(-1);
     }
 
-    // The game's frames that end in the sub-frame: the companion's work after the audio frame.
+    // The game's frames that end in the sub-frame: the companion's work. The game does it before its audio frame, which
+    // starts the sounds. They start in the next sub-frame.
     const double now = static_cast<double>(subframe_) * kSubFrameSeconds;
     while (now >= static_cast<double>(frames_ + 1) * sound_.frame_seconds)
     {

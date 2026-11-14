@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/ntr/arm7.h"
@@ -267,15 +268,11 @@ std::vector<uint8_t> Bytes(const std::vector<uint32_t>& words, std::span<const u
     std::vector<uint8_t> bytes;
     for (const uint32_t word : words)
     {
-        for (int byte = 0; byte < 4; byte++)
-        {
-            bytes.push_back(static_cast<uint8_t>(word >> (8 * byte)));
-        }
+        xsflib::AppendLe32(bytes, word);
     }
     for (const uint16_t half : script)
     {
-        bytes.push_back(static_cast<uint8_t>(half));
-        bytes.push_back(static_cast<uint8_t>(half >> 8));
+        xsflib::AppendLe16(bytes, half);
     }
     return bytes;
 }
@@ -312,7 +309,7 @@ uint32_t Word(Machine& machine, uint32_t address)
 {
     const auto memory = machine.MainMemory();
     const uint32_t at = (address - 0x02000000) & static_cast<uint32_t>(memory.size() - 1);
-    return static_cast<uint32_t>(memory[at] | memory[at + 1] << 8 | memory[at + 2] << 16 | memory[at + 3] << 24);
+    return xsflib::LoadLe32(&memory[at]);
 }
 
 std::vector<uint8_t> MemoryBytes(Machine& machine, uint32_t address, std::size_t size)

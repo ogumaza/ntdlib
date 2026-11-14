@@ -1640,6 +1640,13 @@ void TestGameRules()
     const GameRules new_play_control = RulesOf("b8c1a0440d328b6d197827b7fd16b04fe170fd71");
     Check(start_tracks(new_play_control) == start_tracks(jungle_beat),
           "New Play Control! Donkey Kong Jungle Beat's pieces start with the GameCube release's children of track 0");
+    std::map<uint8_t, float> jungle_beat_volumes{{0, 1.2f}, {1, 1.35f}, {2, 1.1f}, {3, 1.1f},
+                                                 {4, 1.1f}, {5, 1.1f},  {6, 1.2f}, {7, 1.2f}};
+    Check(jungle_beat.category_volumes == jungle_beat_volumes,
+          "Donkey Kong Jungle Beat sets the volumes of its eight categories of effects at start-up");
+    jungle_beat_volumes[8] = 1.5f;
+    Check(new_play_control.category_volumes == jungle_beat_volumes,
+          "New Play Control! Donkey Kong Jungle Beat sets the same volumes, and 1.5 for category 8");
     const auto layer_tracks = [](const GameRules& rules, uint32_t id, const std::string& suffix)
     {
         const auto found = std::ranges::find_if(

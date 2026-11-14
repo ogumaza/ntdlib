@@ -28,6 +28,7 @@
 #include "seqlib/sf2/samples.h"
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
+#include "xsflib/bytes.h"
 
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
@@ -269,7 +270,7 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
                                                     std::span<const uint32_t> programs, const std::string& name,
                                                     const std::string& program)
 {
-    const auto id = static_cast<uint16_t>(bank.header[0x0E] | bank.header[0x0F] << 8);
+    const auto id = xsflib::LoadLe16(&bank.header[0x0E]);
     const auto key_of = [&bank, id](uint32_t p)
     {
         const auto number = static_cast<uint16_t>(p);

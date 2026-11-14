@@ -132,6 +132,18 @@ struct PieceState
     uint32_t music_status = 0;
     uint32_t section_statuses = 0;
 
+    // Bytes of the game's memory that a rip replaces before the boot: `data` at the cached address `address`. A rip
+    // writes them in its mini file after the state's words (jaudio::JungleBeatSilentStart gives one).
+    struct Memory
+    {
+        uint32_t address = 0;
+        std::vector<uint8_t> data;
+
+        bool operator==(const Memory&) const = default;
+    };
+
+    std::vector<Memory> memory;
+
     // The state's words, big-endian, from kMutedChildrenOffset up to the last word that isn't 0. A piece without a
     // state has none. A rip writes them in its mini file.
     std::vector<uint8_t> Bytes() const;

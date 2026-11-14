@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/ntr/sound.h"
@@ -114,7 +115,7 @@ struct Unit
     int16_t Captured(int index) const
     {
         const std::size_t at = kBufferAddress - 0x02000000 + 2 * static_cast<std::size_t>(index);
-        return static_cast<int16_t>(memory[at] | memory[at + 1] << 8);
+        return static_cast<int16_t>(xsflib::LoadLe16(&memory[at]));
     }
 
     std::vector<uint8_t> memory;
@@ -126,8 +127,7 @@ std::vector<uint8_t> Pcm16(const std::vector<int16_t>& samples)
     std::vector<uint8_t> bytes;
     for (const int16_t sample : samples)
     {
-        bytes.push_back(static_cast<uint8_t>(sample & 0xFF));
-        bytes.push_back(static_cast<uint8_t>((sample >> 8) & 0xFF));
+        xsflib::AppendLe16(bytes, static_cast<uint16_t>(sample));
     }
 
     return bytes;

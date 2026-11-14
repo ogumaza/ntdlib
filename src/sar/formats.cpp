@@ -621,6 +621,27 @@ WaveSoundFile WaveSoundFile::Parse(std::span<const uint8_t> file, const Options&
     return wsd;
 }
 
+bool StartsAtLabel(std::span<const uint8_t> bytecode, bool big_endian, uint32_t label, const SoundInfo& sound)
+{
+    if (label == sound.start_offset)
+    {
+        return true;
+    }
+
+    // The checks subtract rather than add, so that no sum wraps in a 32-bit build.
+    const std::size_t at = label;
+    if (sound.start_offset < 3 || label != sound.start_offset - 3 || bytecode.size() < 3 || at > bytecode.size() - 3 ||
+        bytecode[at] != 0xFE)
+    {
+        return false;
+    }
+
+    const uint32_t mask =
+        big_endian ? (bytecode[at + 1] << 8 | bytecode[at + 2]) : (bytecode[at + 1] | bytecode[at + 2] << 8);
+
+    return (mask | 1) == sound.allocate_track_flags;
+}
+
 Sequence Sequence::Parse(std::span<const uint8_t> file, const Options& options)
 {
     const xsflib::Reader r = OpenFile(file, "SEQ", options);

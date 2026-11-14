@@ -87,7 +87,12 @@ Archive LoadArchive(std::vector<uint8_t> bytes, const std::string& name, const S
     }
     if (archive.NamesDamaged())
     {
-        std::fprintf(stderr, "warning: %s has a damaged name table: its sounds are named by number\n", name.c_str());
+        // sar::SoundArchive::Load names sequences after the labels in their files.
+        const char* names = std::is_same_v<Archive, sar::SoundArchive> ? "its sequences are named after their labels "
+                                                                         "where they have them, and other sounds by "
+                                                                         "number"
+                                                                       : "its sounds are named by number";
+        std::fprintf(stderr, "warning: %s has a damaged name table: %s\n", name.c_str(), names);
     }
     if constexpr (std::is_same_v<Archive, sar::SoundArchive>)
     {

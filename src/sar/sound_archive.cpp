@@ -12,6 +12,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -253,6 +254,77 @@ void NameUnnamedSound(SoundInfo& s, uint32_t index)
                                                                : "SOUND_";
         s.name = prefix + std::to_string(index);
     }
+}
+
+// The name of `sound` from the labels of `file`, its sequence file (see SoundArchive::Load). `shared` is true when
+// other sequence sounds play the file too. Returns an empty string where the labels give no name. The loop keeps at
+// most two labels, each cut to the size of the LABL block. A crafted table could otherwise point every label at one
+// long string and use memory without limit. With kReadPastDamage, the name is made printable, as the names in a STRG
+// block are.
+std::string NameFromLabels(std::span<const uint8_t> file, const SoundInfo& sound, bool shared, const Options& options)
+{
+    constexpr uint16_t kDataBlock = 0x5000;
+    constexpr uint16_t kLabelBlock = 0x5001;
+    constexpr std::string_view kBegin = "_Begin";
+
+    std::string first;                   // the file's first label
+    std::optional<std::string> at_start; // the label where the sound starts
+    try
+    {
+        const xsflib::Reader r = OpenFile(file, "SEQ", options);
+        const Blocks blocks = BlockTable(r);
+        const auto data = blocks.find(kDataBlock);
+        const auto labels = blocks.find(kLabelBlock);
+        if (data == blocks.end() || labels == blocks.end() || data->second.second < 8)
+        {
+            return {};
+        }
+
+        // On the 3DS, the commands' 16-bit arguments are big-endian in a little-endian file (see nwsnd::CtrPolicy).
+        // On the Wii U and the Switch, they follow the file's byte order.
+        const bool big_endian_arguments = options.flavor == Flavor::kCtr || r.BigEndian();
+        const std::span<const uint8_t> bytecode = r.Sub(data->second.first + 8, data->second.second - 8);
+        const std::size_t block_size = labels->second.second;
+        const std::size_t table = std::size_t{labels->second.first} + 8;
+        const uint32_t count = r.U32(table);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const std::size_t label = table + ReadRef(r, table + 4 + std::size_t{i} * 8).offset;
+            const auto at = static_cast<uint32_t>(ReadRef(r, label).offset);
+            const bool starts = StartsAtLabel(bytecode, big_endian_arguments, at, sound);
+            if (!starts && i != 0)
+            {
+                continue;
+            }
+
+            std::string name = r.CString(label + 12, std::min<std::size_t>(r.U32(label + 8), block_size));
+            if (i == 0)
+            {
+                first = name;
+            }
+            if (starts && (!at_start || name.ends_with(kBegin)))
+            {
+                at_start = std::move(name);
+            }
+            if (at_start && at_start->ends_with(kBegin))
+            {
+                break;
+            }
+        }
+    }
+    catch (const xsflib::FormatError&)
+    {
+        return {};
+    }
+
+    // In a file that other sounds play too, the first label can be another sound's name.
+    std::string name = at_start ? std::move(*at_start) : shared ? std::string() : std::move(first);
+    if (name.ends_with(kBegin))
+    {
+        name.resize(name.size() - kBegin.size());
+    }
+
+    return options.rules == Rules::kReadPastDamage ? xsflib::PrintableName(name) : name;
 }
 
 // Reads sound `index` from the INFO entry at `p`, in an archive of version `version`.
@@ -514,6 +586,7 @@ SoundArchive SoundArchive::Load(std::vector<uint8_t> bytes, const Options& optio
     if (options.rules == Rules::kStopAtFirstProblem)
     {
         a.ReadTablesStrictly(r);
+        a.NameSequencesFromLabels();
         return a;
     }
 
@@ -546,6 +619,7 @@ SoundArchive SoundArchive::Load(std::vector<uint8_t> bytes, const Options& optio
                                   std::to_string(declared_size) + " bytes; cannot read tables (" + e.what() + ")");
     }
 
+    a.NameSequencesFromLabels();
     return a;
 }
 
@@ -577,8 +651,12 @@ void SoundArchive::ReadItems(const xsflib::Reader& r, const std::map<uint16_t, s
 {
     auto read_sound = [&](uint32_t i, std::size_t p)
     {
-        sounds_.push_back(
-            ReadSound(r, p, i, NameIn(names, ItemId(kSoundItem, i)), options_.flavor == Flavor::kCtr, version_));
+        const std::string name = NameIn(names, ItemId(kSoundItem, i));
+        sounds_.push_back(ReadSound(r, p, i, name, options_.flavor == Flavor::kCtr, version_));
+        if (name.empty() && sounds_.back().type == SoundType::kSequence)
+        {
+            unnamed_sequences_.push_back(static_cast<uint32_t>(sounds_.size() - 1));
+        }
     };
     ForEachTableEntry(r, tables, 0x2100, "sound", read_sound);
 
@@ -810,7 +888,12 @@ void SoundArchive::ReadItemsStrictly(const xsflib::Reader& r, const std::map<uin
     const bool ctr = options_.flavor == Flavor::kCtr;
     const auto read_sound = [&](uint32_t i, std::size_t p)
     {
-        sounds_.push_back(ReadSoundStrictly(r, p, i, NameIn(names, ItemId(kSoundItem, i)), ctr, version_));
+        const std::string name = NameIn(names, ItemId(kSoundItem, i));
+        sounds_.push_back(ReadSoundStrictly(r, p, i, name, ctr, version_));
+        if (name.empty() && sounds_.back().type == SoundType::kSequence)
+        {
+            unnamed_sequences_.push_back(static_cast<uint32_t>(sounds_.size() - 1));
+        }
     };
     ForEachTableEntryStrictly(r, tables, 0x2100, read_sound);
 
@@ -995,6 +1078,7 @@ void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes, std::string group)
                 files_[file_id].internal = true;
             }
         }
+        NameSequencesFromLabels();
         return;
     }
 
@@ -1012,6 +1096,39 @@ void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes, std::string group)
             files_[id] = {static_cast<std::size_t>(start), size, source, true, false, true, {}};
         }
     }
+    NameSequencesFromLabels();
+}
+
+void SoundArchive::NameSequencesFromLabels()
+{
+    if (unnamed_sequences_.empty())
+    {
+        return;
+    }
+
+    std::map<uint32_t, std::size_t> plays; // the number of sequence sounds that play each file
+    for (const SoundInfo& sound : sounds_)
+    {
+        plays[sound.file_id] += sound.type == SoundType::kSequence ? 1 : 0;
+    }
+
+    std::erase_if(unnamed_sequences_,
+                  [&](uint32_t index)
+                  {
+                      SoundInfo& sound = sounds_[index];
+                      const std::span<const uint8_t> file = FileData(sound.file_id);
+                      if (file.empty())
+                      {
+                          return false;
+                      }
+
+                      std::string name = NameFromLabels(file, sound, plays[sound.file_id] > 1, options_);
+                      if (!name.empty())
+                      {
+                          sound.name = std::move(name);
+                      }
+                      return true;
+                  });
 }
 
 bool SoundArchive::MatchesGroupFile(std::span<const uint8_t> bytes) const

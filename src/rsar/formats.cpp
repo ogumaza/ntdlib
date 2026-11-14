@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -30,6 +31,16 @@ using detail::SampleAt;
 
 // The longest name read from the string table.
 constexpr std::size_t kMaxName = 1024;
+
+// The place `offset` bytes after `base`, or the largest place when a 32-bit build can't hold the sum. A damaged offset
+// then points past the end of the archive in every build, as it does in a 64-bit build, in place of wrapping round to a
+// place inside it.
+std::size_t PlaceAfter(std::size_t base, uint32_t offset)
+{
+    constexpr std::size_t kLast = std::numeric_limits<std::size_t>::max();
+
+    return offset <= kLast - base ? base + offset : kLast;
+}
 
 // A place where the archive keeps a file: a group, and an item of the group.
 struct FilePosition
@@ -184,7 +195,7 @@ Wave ReadWaveInfo(const xsflib::Reader& info, std::size_t offset, std::span<cons
 std::vector<std::string> ReadStrings(const xsflib::Reader& r, std::size_t symb)
 {
     const std::size_t base = symb + 8;
-    const std::size_t table = base + r.U32(base);
+    const std::size_t table = PlaceAfter(base, r.U32(base));
     const uint32_t count = r.U32(table);
 
     // A name takes a byte at least. A table of more entries than the archive has bytes is damaged.
@@ -196,7 +207,7 @@ std::vector<std::string> ReadStrings(const xsflib::Reader& r, std::size_t symb)
     std::vector<std::string> strings;
     for (uint32_t i = 0; i < count; i++)
     {
-        strings.push_back(xsflib::PrintableName(r.CString(base + r.U32(table + 4 + i * 4), kMaxName)));
+        strings.push_back(xsflib::PrintableName(r.CString(PlaceAfter(base, r.U32(table + 4 + i * 4)), kMaxName)));
     }
 
     return strings;
@@ -231,7 +242,7 @@ public:
             return;
         }
 
-        const std::size_t table = base_ + r.U32(base_);
+        const std::size_t table = PlaceAfter(base_, r.U32(base_));
         const uint32_t count = r.U32(table);
         for (uint32_t i = 0; i < count; i++)
         {
@@ -249,7 +260,7 @@ public:
                                                                                : std::nullopt;
         }
 
-        return string_id < offsets_.size() ? std::optional(r_.CString(base_ + offsets_[string_id], kMaxName))
+        return string_id < offsets_.size() ? std::optional(r_.CString(PlaceAfter(base_, offsets_[string_id]), kMaxName))
                                            : std::nullopt;
     }
 

@@ -2,17 +2,22 @@
 
 // A DS sound archive (SDAT) cut into pieces for an editor, and joined again, in the shapes of sar/layout.h. Each
 // sequence file (SSEQ) whose bytecode the decoder reads (ntr/snd/commands.h) gives a sequence piece: the bytecode from
-// its start. The file's 0x1C bytes of headers stay in the run before the piece. Any other file becomes a run of its
-// own, a sequence archive (SSAR) included. The archive's other bytes become runs. The pieces of an archive join to give
-// the archive back byte for byte.
+// its start. The file's 0x1C bytes of headers stay in the run before the piece. Each sequence archive (SSAR) whose
+// bytecode the decoder reads gives a sequence piece too: the bytecode that its sequences share, read from each
+// sequence's start. The file's headers and its table of sequences stay in the run before the piece. Any other file
+// becomes a run of its own. The archive's other bytes become runs. The pieces of an archive join to give the archive
+// back byte for byte.
 //
 // The fields hold offsets and sizes: the archive's size in its header, the FILE block's size in the header and in the
-// block, each file's offset and size in the FAT, and each sequence file's size and DATA block's size in its header. An
-// offset counts from the archive's start. A sequence that grows or shrinks moves the files after it, and the fields
-// follow. ReplaceFile gives any other file new bytes, and the files after it move the same way.
+// block, each file's offset and size in the FAT, and the file's size and the DATA block's size in the header of each
+// sequence file and sequence archive. An offset counts from the archive's start. A sequence that grows or shrinks
+// moves the files after it, and the fields follow. In a sequence archive's table, each sequence's start is a field
+// too: the distance from the bytecode's first item to the item where the sequence starts. An edit that moves the item
+// moves the start. ReplaceFile gives any other file new bytes, and the files after it move the same way.
 //
-// The SDK's tools end a sequence file on a multiple of 4 bytes with zeros, and put each file on a multiple of 32 bytes
-// from the archive's start with zeros before it. The cut keeps those zeros as padding, where the archive holds them.
+// The SDK's tools end a sequence file and a sequence archive on a multiple of 4 bytes with zeros, and put each file on
+// a multiple of 32 bytes from the archive's start with zeros before it. The cut keeps those zeros as padding, where the
+// archive holds them.
 
 #pragma once
 
@@ -40,19 +45,24 @@ struct Layout
 // every other file's, after the header's blocks, becomes a piece of its own. A sequence file becomes a sequence piece
 // when it has the header that the tools write, and when the decoder reads its bytecode without keeping it as data and
 // the encoding gives the bytes back. The zeros up to 3 bytes at the bytecode's end are the file's padding when the
-// decoder ends there on a command. Any other such file becomes a run. Zeros up to the next file's multiple of 32 bytes
-// become padding. A file that ends on that multiple takes the padding too, without bytes. A field holds a distance:
-// from its first place to its second. Each field holds the archive's value.
-// An archive that the pieces and fields don't give back byte for byte, and one with no such file, becomes one run. A
-// place names a byte of a run, or the start of a piece or of the archive's end. Throws xsflib::FormatError for bytes
-// that aren't an archive.
+// decoder ends there on a command. A sequence archive becomes a sequence piece by the same rules, with the decoder
+// reading from the start of each sequence in its table. Its headers are the ones that the tools write: the table
+// follows them, and the bytecode follows the table. At least one record of the table has a sequence. A record without
+// one holds 0xFFFFFFFF in place of a start, and keeps it. Any other such file becomes a run. Zeros up to the next
+// file's multiple of 32 bytes become padding. A file that ends on that multiple takes the padding too, without bytes. A
+// field holds a distance: from its first place to its second. Each field holds the archive's value. An archive that
+// the pieces and fields don't give back byte for byte, and one with no such file, becomes one run. A place names a
+// byte of a run, the start of a piece or of the archive's end, or an item of a sequence piece. Throws
+// xsflib::FormatError for bytes that aren't an archive.
 Layout Cut(std::span<const uint8_t> sdat);
 
 // The archive's bytes from its pieces and its fields. Each sequence encodes at its piece. Padding brings the next piece
 // to a multiple of its alignment from the archive's start with zeros. Each field takes the distance between its places,
-// as a 32-bit little-endian number. Throws std::invalid_argument for a sequence piece without a sequence, a field that
-// doesn't lie in a run, a place that the pieces lack or that lies inside a sequence, a distance that doesn't fit in 32
-// bits, and an archive past 4 GiB. Throws the exceptions of ntr::snd::EncodeSequence.
+// as a 32-bit little-endian number. A place that names an item of a sequence piece lies at the item's start. Throws
+// std::invalid_argument for a sequence piece without a sequence, a field that doesn't lie in a run, a place that the
+// pieces lack or that lies inside a sequence or padding, an item outside a sequence piece or past its sequence, a field
+// whose places name an item and anything but another item of the same piece, a distance that doesn't fit in 32 bits,
+// and an archive past 4 GiB. Throws the exceptions of ntr::snd::EncodeSequence.
 std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::span<const sar::Piece> pieces,
                           std::span<const sar::Field> fields);
 

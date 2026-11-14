@@ -403,13 +403,11 @@ void AppendWait(std::vector<uint8_t>& out, const Command& command, TrackState& s
         out.push_back(static_cast<uint8_t>(ticks));
         break;
     case kWait3Bytes:
-        out.push_back(static_cast<uint8_t>(ticks));
-        out.push_back(static_cast<uint8_t>(ticks >> 8));
+        xsflib::AppendLe16(out, static_cast<uint16_t>(ticks));
         out.push_back(static_cast<uint8_t>(ticks >> 16));
         break;
     case kWait2Bytes:
-        out.push_back(static_cast<uint8_t>(ticks));
-        out.push_back(static_cast<uint8_t>(ticks >> 8));
+        xsflib::AppendLe16(out, static_cast<uint16_t>(ticks));
         break;
     default:
         break;

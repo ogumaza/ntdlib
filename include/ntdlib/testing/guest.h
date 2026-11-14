@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
@@ -31,6 +30,7 @@
 
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
+#include "xsflib/text.h"
 
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/dol.h"
@@ -150,8 +150,8 @@ public:
         last_cycles_ = cpu_.Cycles() - start;
         if (reason != ppc::StopReason::kBudget || s.pc != kReturn)
         {
-            throw std::runtime_error("the call of " + Hex(address) + " stopped at " + Hex(cpu_.stop_pc_) + ": " +
-                                     cpu_.Describe());
+            throw std::runtime_error("the call of " + xsflib::Hex(address, 8) + " stopped at " +
+                                     xsflib::Hex(cpu_.stop_pc_, 8) + ": " + cpu_.Describe());
         }
 
         return s.gpr[3];
@@ -199,7 +199,7 @@ public:
         uint8_t* bytes = memory_.At(dsp::ToPhysical(address), size);
         if (bytes == nullptr)
         {
-            throw std::runtime_error("no memory at " + Hex(address));
+            throw std::runtime_error("no memory at " + xsflib::Hex(address, 8));
         }
 
         return bytes;
@@ -252,14 +252,6 @@ private:
     static constexpr uint32_t kStackTop = 0x817fe000;
     static constexpr uint32_t kHeapStart = 0x90100000;
     static constexpr uint32_t kHeapEnd = 0x93000000;
-
-    static std::string Hex(uint32_t value)
-    {
-        char text[16];
-        std::snprintf(text, sizeof text, "0x%08x", static_cast<unsigned>(value));
-
-        return text;
-    }
 
     // __init_registers sets r2 and r13 with a lis and an ori (or addi) each. The first such pair in the text sections
     // is that function's.

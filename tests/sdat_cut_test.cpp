@@ -2,11 +2,13 @@
 
 // Tests of the cut and the join of a DS sound archive (ntdlib/sdat/cut.h), on small synthetic archives. The expected
 // places come from the rules in cut.h and from the layout of the SDK's tools: a file on a multiple of 32 bytes from the
-// archive's start, and a sequence file on a multiple of 4 bytes.
+// archive's start, and a sequence file or a sequence archive on a multiple of 4 bytes. A sequence archive's table
+// gives each sequence's start as an offset from the bytecode's start, and 0xFFFFFFFF for a record without a sequence.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -64,6 +66,41 @@ ntdlib::commands::Sequence Decode(const Bytes& bytecode)
 {
     const uint32_t entry = 0;
     return ntdlib::ntr::snd::DecodeSequence(bytecode, {}, std::span(&entry, 1)).sequence;
+}
+
+// Two sequences in one block of bytecode: 17 bytes. A sequence archive pads them with 3 zeros. The first sequence plays
+// a note and ends. The second starts at 0x07 and loops.
+const Bytes kShared = {
+    0xFE, 0x01, 0x00,       // 0x00, item 0: allocate track 0
+    0x3C, 0x7F, 0x30,       // 0x03, item 1: note
+    0xFF,                   // 0x06, item 2: end
+    0xFE, 0x01, 0x00,       // 0x07, item 3: allocate track 0
+    0x3C, 0x7F, 0x30,       // 0x0A, item 4: note
+    0x94, 0x0A, 0x00, 0x00, // 0x0D, item 5: jump to 0x0A
+};
+
+constexpr uint32_t kNoSequence = 0xFFFFFFFF;
+
+// The table of a sequence archive of kShared: the first sequence, a record without a sequence, and the second sequence
+// twice.
+const std::vector<files::ArchivedSequence> kSharedTable = {
+    {.offset = 0}, {.offset = kNoSequence}, {.offset = 7}, {.offset = 7, .volume = 100}};
+
+// An archive of a sequence archive and a sequence file.
+files::Archive ArchiveSpec(const std::vector<files::ArchivedSequence>& table, const Bytes& bytecode)
+{
+    files::Archive spec;
+    spec.items[0] = {files::SequenceItem(1, 0, "SEQ_A")};
+    spec.items[1] = {files::SequenceArchiveItem(0, "SEQARC_A", {"SE_A", "", "SE_B", "SE_C"})};
+    spec.files = {files::SequenceArchive(table, bytecode), files::Sequence(kNote)};
+
+    return spec;
+}
+
+// The sequences of `bytecode`, a sequence archive's bytecode, from the starts in `entries`.
+ntdlib::ntr::snd::Decoded DecodeShared(const Bytes& bytecode, const std::vector<uint32_t>& entries)
+{
+    return ntdlib::ntr::snd::DecodeSequence(bytecode, {}, entries);
 }
 
 void TestRoundTrip()
@@ -333,6 +370,121 @@ void TestFileBlockHeader()
     XSFLIB_CHECK(Join(layout.sequences, layout.pieces, layout.fields) == archive);
 }
 
+void TestSequenceArchive()
+{
+    const Bytes archive = files::SoundArchive(ArchiveSpec(kSharedTable, kShared));
+    const uint32_t ssar = ntdlib::sdat::Archive::Parse(archive).files[0].offset;
+
+    const Layout layout = Cut(archive);
+
+    // A run up to the sequence archive's bytecode, past its headers and its table of 4 records (0x50 bytes), the
+    // bytecode's sequence from the starts of its 3 sequences, and its padding to 4 bytes. The file ends 0x64 bytes in,
+    // and zeros bring the sequence file to 0x80: padding to 32 bytes. Then the sequence file's pieces.
+    XSFLIB_CHECK(layout.sequences.size() == 2 && layout.sequences[0] == DecodeShared(kShared, {0, 7, 7}).sequence);
+    XSFLIB_CHECK(layout.sequences[1] == Decode(kNote));
+    XSFLIB_CHECK(layout.pieces.size() == 7);
+    XSFLIB_CHECK(std::get<Bytes>(layout.pieces[0]).size() == ssar + 0x50);
+    XSFLIB_CHECK(std::get<SequencePiece>(layout.pieces[1]) == (SequencePiece{0, 0x0100, 0}));
+    XSFLIB_CHECK(std::get<Padding>(layout.pieces[2]).alignment == 4);
+    XSFLIB_CHECK(std::get<Padding>(layout.pieces[3]).alignment == 32);
+    XSFLIB_CHECK(std::get<Bytes>(layout.pieces[4]).size() == 0x1C);
+    XSFLIB_CHECK(std::get<SequencePiece>(layout.pieces[5]).sequence == 1);
+    XSFLIB_CHECK(std::get<Padding>(layout.pieces[6]).alignment == 4);
+
+    // The fields of TestRoundTrip's kinds for two files, and the start of each record with a sequence: the distance
+    // from the bytecode's first item to item 0, 3 or 3. The record without a sequence keeps its 0xFFFFFFFF in the run.
+    XSFLIB_CHECK(layout.fields.size() == 3 + 2 * 2 + 2 * 2 + 3);
+    std::vector<ntdlib::sar::Field> starts;
+    std::ranges::copy_if(layout.fields, std::back_inserter(starts),
+                         [](const ntdlib::sar::Field& field) { return field.from.item; });
+    const auto start = [&](uint32_t record, uint32_t item)
+    {
+        return ntdlib::sar::Field{{0, ssar + 0x20 + 12 * record}, {1, 0, true}, {1, item, true}};
+    };
+    XSFLIB_CHECK(starts == (std::vector{start(0, 0), start(2, 3), start(3, 3)}));
+    XSFLIB_CHECK(Join(layout.sequences, layout.pieces, layout.fields) == archive);
+}
+
+void TestSequenceArchiveGrowth()
+{
+    const Bytes archive = files::SoundArchive(ArchiveSpec(kSharedTable, kShared));
+    const ntdlib::sdat::Archive before = ntdlib::sdat::Archive::Parse(archive);
+    Layout layout = Cut(archive);
+
+    // An editor puts 16 volumes before the first sequence's end. They take 32 more bytes. The items from item 2 on move
+    // by 16. Each target, and each field that names such an item, moves with them.
+    const ntdlib::commands::Command volume = Decode({0xFE, 0x01, 0x00, 0xC1, 0x64, 0xFF}).items[1];
+    std::vector<ntdlib::commands::Command>& items = layout.sequences[0].items;
+    items.insert(items.begin() + 2, 16, volume);
+    for (ntdlib::commands::Command& command : items)
+    {
+        if (ntdlib::commands::HasTarget(command.kind) && command.target >= 2)
+        {
+            command.target += 16;
+        }
+    }
+    for (ntdlib::sar::Field& field : layout.fields)
+    {
+        if (field.to.item && field.to.offset >= 2)
+        {
+            field.to.offset += 16;
+        }
+    }
+
+    const Bytes joined = Join(layout.sequences, layout.pieces, layout.fields);
+
+    // The second sequence now starts at 0x27, and its jump goes to 0x2A. The sequence archive is the one that the
+    // tools write from that bytecode and table: 0x84 bytes. The sequence file after it moves from 0x80 to 0xA0.
+    Bytes grown(kShared.begin(), kShared.begin() + 6);
+    for (int i = 0; i < 16; i++)
+    {
+        grown.insert(grown.end(), {0xC1, 0x64});
+    }
+    grown.insert(grown.end(), {0xFF, 0xFE, 0x01, 0x00, 0x3C, 0x7F, 0x30, 0x94, 0x2A, 0x00, 0x00});
+    std::vector<files::ArchivedSequence> table = kSharedTable;
+    table[2].offset = 0x27;
+    table[3].offset = 0x27;
+    const ntdlib::sdat::Archive after = ntdlib::sdat::Archive::Parse(joined);
+    XSFLIB_CHECK(joined.size() == archive.size() + 32 && after.header.size == joined.size());
+    XSFLIB_CHECK(after.files[0].offset == before.files[0].offset && after.files[0].size == 0x84);
+    XSFLIB_CHECK(std::ranges::equal(after.File(0), files::SequenceArchive(table, grown)));
+    XSFLIB_CHECK(after.files[1].offset == before.files[1].offset + 32);
+    XSFLIB_CHECK(std::ranges::equal(after.File(1), files::Sequence(kNote)));
+
+    // The cut of the new archive gives the same sequence, and the old one gives the archive back.
+    XSFLIB_CHECK(Cut(joined).sequences[0] == layout.sequences[0]);
+    const Layout old = Cut(archive);
+    XSFLIB_CHECK(Join(old.sequences, old.pieces, old.fields) == archive);
+}
+
+void TestSequenceArchiveRuns()
+{
+    // A start past the bytecode, a table without a sequence, and a bytecode's offset that the tools don't write: the
+    // sequence archive stays a run of its own, and the sequence file after it still becomes a sequence.
+    std::vector<files::ArchivedSequence> past = kSharedTable;
+    past[2].offset = 0x40;
+    Bytes moved = files::SequenceArchive(kSharedTable, kShared);
+    xsflib::StoreLe32(&moved[0x18], 0x54);
+    files::Archive moved_spec = ArchiveSpec(kSharedTable, kShared);
+    moved_spec.files[0] = moved;
+    for (const Bytes& archive :
+         {files::SoundArchive(ArchiveSpec(past, kShared)),
+          files::SoundArchive(ArchiveSpec({{.offset = kNoSequence}}, kShared)), files::SoundArchive(moved_spec)})
+    {
+        const Layout layout = Cut(archive);
+        XSFLIB_CHECK(layout.sequences.size() == 1 && layout.sequences[0] == Decode(kNote));
+        XSFLIB_CHECK(std::get<Bytes>(layout.pieces[1]).size() == ntdlib::sdat::Archive::Parse(archive).files[0].size);
+        XSFLIB_CHECK(Join(layout.sequences, layout.pieces, layout.fields) == archive);
+    }
+
+    // A sequence archive that becomes a sequence piece isn't a run of its own.
+    const Layout layout = Cut(files::SoundArchive(ArchiveSpec(kSharedTable, kShared)));
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&]
+                     { ntdlib::sdat::ReplaceFile(layout.sequences, layout.pieces, layout.fields, 0, Bytes(4, 0)); }) ==
+                 "file 0 isn't a run of its own");
+}
+
 void TestRefusals()
 {
     const Bytes archive = files::SoundArchive(Spec(kNote, kLoop));
@@ -364,6 +516,27 @@ void TestRefusals()
                  "a field's distance doesn't fit in 32 bits");
 
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { Cut(Bytes(64, 0)); }).size() > 0);
+
+    // Places that name items: of a run, past the sequence's items and the end after them, beside a byte, and of a
+    // sequence without a piece.
+    const Layout shared = Cut(files::SoundArchive(ArchiveSpec(kSharedTable, kShared)));
+    const auto start =
+        std::ranges::find_if(shared.fields, [](const ntdlib::sar::Field& field) { return field.to.item; });
+    XSFLIB_CHECK(start != shared.fields.end());
+    const auto refusal = [&](const ntdlib::sar::Place& from, const ntdlib::sar::Place& to)
+    {
+        std::vector<ntdlib::sar::Field> item_fields = shared.fields;
+        item_fields[std::size_t(start - shared.fields.begin())].from = from;
+        item_fields[std::size_t(start - shared.fields.begin())].to = to;
+        return ErrorOf<std::invalid_argument>([&] { Join(shared.sequences, shared.pieces, item_fields); });
+    };
+    XSFLIB_CHECK(refusal({0, 0, true}, {0, 1, true}) == "a field names an item outside a sequence piece");
+    XSFLIB_CHECK(refusal({1, 0, true}, {1, 7, true}) == "a field names an item past its sequence");
+    XSFLIB_CHECK(refusal({1, 0, true}, {1, 6, true}).empty());
+    XSFLIB_CHECK(refusal({1, 0}, {1, 3, true}) == "a field names an item of a sequence and another place");
+    XSFLIB_CHECK(refusal({1, 0, true}, {5, 0, true}) == "a field names an item of a sequence and another place");
+    XSFLIB_CHECK(refusal({0, 0, false, true}, {0, 3, false, true}) ==
+                 "a field of a DS sound archive names a sequence without a piece");
 }
 
 } // namespace
@@ -376,6 +549,9 @@ int main()
     TestReplaceFile();
     TestReadSequenceFile();
     TestFileBlockHeader();
+    TestSequenceArchive();
+    TestSequenceArchiveGrowth();
+    TestSequenceArchiveRuns();
     TestRefusals();
 
     return xsflib::testing::Summary("DS sound archive's cut");

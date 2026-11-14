@@ -50,8 +50,12 @@
 #include <array>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <vector>
+
+#include "ntdlib/dol.h"
+#include "ntdlib/flipper/z2_params.h"
 
 namespace ntdlib::jaudio
 {
@@ -414,6 +418,55 @@ inline constexpr auto kJungleBeatWiiChordLayers = []
     }
     return layers;
 }();
+
+// The BGM player's second table of states: 12 bytes per piece at `rows`, by the low 16 bits of the piece's sound ID,
+// with the index of the piece's row at +4 (-1 for none), and 8 states of 8 bytes per row at `states`. A state holds a
+// code for each of 16 tracks in a nibble, high nibble first. The player ignores bit 3 of a code. Codes 0 and 2 turn a
+// track off. The player gives a piece the row's first state as it starts the piece.
+struct JungleBeatStateTable
+{
+    uint32_t rows = 0;
+    uint32_t states = 0;
+};
+
+inline constexpr JungleBeatStateTable kJungleBeatStateTable{0x80351e58, 0x803533bc};
+inline constexpr JungleBeatStateTable kJungleBeatWiiStateTable{0x803ab6b0, 0x803acc44};
+
+// A chord layer (`sound_id`, see ChordLayerId) whose piece's first state in `table` turns every track off. That piece
+// is JA_BGM_OP_CEMEMONY, whose tracks the game turns on later. A layer starts the stage's music through the stage's
+// start, which leaves the piece in its first state. Gives the piece's second state written over its first, for the
+// layer's mini file. The piece's tracks then play from the start, as they do in a rip of the piece alone, where the
+// driver applies the second state at once. Gives nothing for another sound, or for a layer whose piece has no row or
+// starts with a track on. The table is read from the game's main.dol. The driver's code stays the same: a change to
+// that code moves the starts of other layers' effects against the DSP's frames.
+inline std::optional<flipper::z2::PieceState::Memory> JungleBeatSilentStart(const Dol& dol, JungleBeatStateTable table,
+                                                                            uint32_t sound_id)
+{
+    if ((sound_id & kChordLayer) == 0)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t piece = sound_id & ~(kChordLayer | 0x7fu << kChordLayerShift | kChordLayerHigh);
+    const auto row = static_cast<int32_t>(dol.Word(table.rows + (piece & 0xffff) * 12 + 4, "the rows of states"));
+    if (row < 0)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t first = table.states + static_cast<uint32_t>(row) * 0x40;
+    const std::span<const uint8_t> states = dol.Bytes(first, 16, "the states");
+    for (uint32_t track = 0; track < 16; track++)
+    {
+        const uint32_t code = (states[track / 2] >> ((track & 1) != 0 ? 0 : 4)) & 7;
+        if (code != 0 && code != 2)
+        {
+            return std::nullopt;
+        }
+    }
+
+    return flipper::z2::PieceState::Memory{first, {states.begin() + 8, states.end()}};
+}
 
 // The chord file of a piece of music (chord_files.h): its name in JaiChord.arc. The game takes it from a table by the
 // low 16 bits of the piece's sound ID (0x80256008, table 0x80351db0, 83 entries; in the Wii release 0x8027bab0 and

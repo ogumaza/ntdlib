@@ -7,6 +7,7 @@
 #include <span>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/ntr/snd/driver.h"
@@ -225,7 +226,7 @@ void TestVariables()
     const auto variable = [&driver](uint32_t offset)
     {
         const uint32_t at = kSharedWork + offset - kMemory;
-        return static_cast<int16_t>(driver.memory[at] | driver.memory[at + 1] << 8);
+        return static_cast<int16_t>(xsflib::LoadLe16(&driver.memory[at]));
     };
     XSFLIB_CHECK(variable(0x20) == 8);
     XSFLIB_CHECK(variable(0x22) == 7);

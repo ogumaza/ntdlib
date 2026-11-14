@@ -5,6 +5,8 @@
 // sound archive player, and the expected addresses the loading in sdat/heap.h, worked out by hand. This file tests the
 // commands, the reverb and the output modes and effects. ntr_archive_player_play_test.cpp tests the notes and the play.
 
+#include "xsflib/bytes.h"
+
 #include "ntr_archive_player_test_util.h"
 
 namespace ntr_archive_player_tests
@@ -366,7 +368,7 @@ std::span<const uint8_t> EffectBuffer(const ntr::ArchivePlayer& player)
 
 int16_t Sample16(std::span<const uint8_t> buffer, std::size_t index)
 {
-    return static_cast<int16_t>(buffer[2 * index] | buffer[2 * index + 1] << 8);
+    return static_cast<int16_t>(xsflib::LoadLe16(&buffer[2 * index]));
 }
 
 ntr::GameSettings EffectSettings(ntr::OutputMode mode)

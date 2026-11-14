@@ -823,10 +823,15 @@ PlayerModel ReadPlayer(std::span<const uint8_t> entry, const StringBlock& string
     return player;
 }
 
-// The archive player's settings as INFO holds them.
-std::array<uint8_t, 20> SettingsBytes(const PlayerSettings& settings, bool big_endian)
+// The archive player's settings as INFO of an archive of `flavor` holds them. Throws std::invalid_argument for the
+// settings of nn::atk on the Switch in an archive of another console.
+std::array<uint8_t, 20> SettingsBytes(const PlayerSettings& settings, Flavor flavor)
 {
-    Out out(big_endian);
+    if (flavor != Flavor::kNx && (settings.advanced_wave_sounds || settings.sequence_sound_countdown != 0))
+    {
+        throw std::invalid_argument("the Switch's player settings in an archive of another console");
+    }
+    Out out(flavor == Flavor::kCafe);
     out.Zeros(20);
     const uint16_t counts[] = {settings.sequence_sounds, settings.sequence_tracks, settings.stream_sounds,
                                settings.stream_tracks,   settings.stream_channels, settings.wave_sounds,
@@ -836,6 +841,8 @@ std::array<uint8_t, 20> SettingsBytes(const PlayerSettings& settings, bool big_e
         out.U16(2 * i, counts[i]);
     }
     out.U8(14, settings.stream_buffer_times);
+    out.U8(15, settings.advanced_wave_sounds ? 1 : 0);
+    out.U8(16, settings.sequence_sound_countdown);
 
     const std::vector<uint8_t> bytes = out.Take();
     std::array<uint8_t, 20> result{};
@@ -844,11 +851,11 @@ std::array<uint8_t, 20> SettingsBytes(const PlayerSettings& settings, bool big_e
     return result;
 }
 
-// The model of `bytes`, the archive player's settings. Throws xsflib::FormatError for settings that the model doesn't
-// give back.
-PlayerSettings ReadSettings(const std::array<uint8_t, 20>& bytes, bool big_endian)
+// The model of `bytes`, the archive player's settings in an archive of `flavor`. Only the Switch's settings hold bytes
+// 0x0F and 0x10. Throws xsflib::FormatError for settings that the model doesn't give back.
+PlayerSettings ReadSettings(const std::array<uint8_t, 20>& bytes, Flavor flavor)
 {
-    const xsflib::Reader r(bytes, big_endian);
+    const xsflib::Reader r(bytes, flavor == Flavor::kCafe);
     PlayerSettings settings;
     settings.sequence_sounds = r.U16(0);
     settings.sequence_tracks = r.U16(2);
@@ -858,8 +865,13 @@ PlayerSettings ReadSettings(const std::array<uint8_t, 20>& bytes, bool big_endia
     settings.wave_sounds = r.U16(10);
     settings.wave_tracks = r.U16(12);
     settings.stream_buffer_times = r.U8(14);
+    if (flavor == Flavor::kNx)
+    {
+        settings.advanced_wave_sounds = r.U8(15) == 1;
+        settings.sequence_sound_countdown = r.U8(16);
+    }
 
-    CheckEntry(SettingsBytes(settings, big_endian), bytes, "the archive player's settings");
+    CheckEntry(SettingsBytes(settings, flavor), bytes, "the archive player's settings");
 
     return settings;
 }
@@ -1150,7 +1162,7 @@ InfoBlock ItemTables(const ArchiveModel& model, StringBlock& strings)
     {
         info.players.push_back(PlayerEntry(model.players[i], name(model.players[i].name, kPlayerItem, i), big_endian));
     }
-    info.player_settings = SettingsBytes(model.player_settings, big_endian);
+    info.player_settings = SettingsBytes(model.player_settings, model.flavor);
 
     return info;
 }
@@ -1251,7 +1263,7 @@ ArchiveModel ReadArchiveModel(std::span<const uint8_t> archive, Flavor flavor)
     ArchiveModel model;
     model.flavor = flavor;
     model.version = header.U32(8);
-    model.player_settings = ReadSettings(info.player_settings, big_endian);
+    model.player_settings = ReadSettings(info.player_settings, flavor);
     for (uint32_t i = 0; i < info.sounds.size(); ++i)
     {
         model.sounds.push_back(ReadSound(info.sounds[i], strings, i, flavor, model.version));

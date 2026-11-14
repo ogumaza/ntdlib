@@ -28,6 +28,13 @@ namespace
 // The bytes of a sequence file's headers: the file's header, the DATA block's header and the bytecode's offset.
 constexpr uint32_t kSequenceHeaders = 0x1C;
 
+// The bytes of a sequence archive's headers before its table: the file's header, the DATA block's header, the
+// bytecode's offset and the number of sequences. Each sequence's record in the table takes 12 bytes. Its first word
+// gives the sequence's start in the bytecode, or kNoSequence for a record without a sequence.
+constexpr uint32_t kSequenceArchiveHeaders = 0x20;
+constexpr uint32_t kRecordBytes = 12;
+constexpr uint32_t kNoSequence = 0xFFFFFFFF;
+
 // The bytes of the FILE block before its first file: its magic word, its size and the number of files. The tools put
 // the first file on the next multiple of 32 bytes. That can come right after these 12 bytes.
 constexpr uint32_t kFileBlockHeader = 12;
@@ -41,7 +48,8 @@ bool Zeros(std::span<const uint8_t> bytes)
     return std::all_of(bytes.begin(), bytes.end(), [](uint8_t byte) { return byte == 0; });
 }
 
-// A file that the cut takes, with its places in the archive. Only a sequence file holds a sequence.
+// A file that the cut takes, with its places in the archive. Only a sequence file or a sequence archive holds a
+// sequence.
 struct CutFile
 {
     uint32_t start = 0;
@@ -50,21 +58,33 @@ struct CutFile
     bool padded = false;
     bool has_sequence = false;
     uint16_t version = 0;
+    uint32_t bytecode = 0; // the bytecode's offset from the file's start
     commands::Sequence sequence;
+
+    // A sequence archive's records, in the table's order: the item where each record's sequence starts, or nothing
+    // for a record without a sequence. Empty for a sequence file.
+    std::vector<std::optional<uint32_t>> records;
 };
 
-// The bytecode's sequence, and the bytes of it that the sequence holds, when the decoder reads the bytecode without
-// keeping it as data and the encoding gives it back. The zeros at the bytecode's end come off when the decoder then
-// ends on a command: as many as 3 of them, the most first.
-std::optional<std::pair<commands::Sequence, uint32_t>> ReadBytecode(std::span<const uint8_t> bytecode)
+// A sequence of a file's bytecode: the bytes of the bytecode that the sequence holds, and the item at each entry.
+struct ReadCode
 {
-    const auto read = [&](uint32_t size, bool ends_on_command) -> std::optional<commands::Sequence>
+    commands::Sequence sequence;
+    uint32_t size = 0;
+    std::vector<uint32_t> entries;
+};
+
+// The bytecode's sequence from `entries`, when the decoder reads the bytecode without keeping it as data and the
+// encoding gives it back. The zeros at the bytecode's end come off when the decoder then ends on a command: as many as
+// 3 of them, the most first.
+std::optional<ReadCode> ReadBytecode(std::span<const uint8_t> bytecode, std::span<const uint32_t> entries)
+{
+    const auto read = [&](uint32_t size, bool ends_on_command) -> std::optional<ReadCode>
     {
         try
         {
             const std::span<const uint8_t> code = bytecode.first(size);
-            const uint32_t entry = 0;
-            ntr::snd::Decoded decoded = ntr::snd::DecodeSequence(code, {}, std::span(&entry, 1));
+            ntr::snd::Decoded decoded = ntr::snd::DecodeSequence(code, {}, entries);
             if (decoded.opaque || decoded.sequence.items.empty() ||
                 (ends_on_command && decoded.sequence.items.back().kind == commands::Kind::kData))
             {
@@ -76,7 +96,7 @@ std::optional<std::pair<commands::Sequence, uint32_t>> ReadBytecode(std::span<co
             {
                 return std::nullopt;
             }
-            return std::move(decoded.sequence);
+            return ReadCode{std::move(decoded.sequence), size, std::move(decoded.entries)};
         }
         catch (const std::exception&)
         {
@@ -92,28 +112,96 @@ std::optional<std::pair<commands::Sequence, uint32_t>> ReadBytecode(std::span<co
     }
     for (uint32_t cut = zeros; cut > 0; cut--)
     {
-        if (std::optional<commands::Sequence> sequence = read(size - cut, true))
+        if (std::optional<ReadCode> code = read(size - cut, true))
         {
-            return std::pair(std::move(*sequence), size - cut);
+            return code;
         }
     }
-    if (std::optional<commands::Sequence> sequence = read(size, false))
-    {
-        return std::pair(std::move(*sequence), size);
-    }
 
-    return std::nullopt;
+    return read(size, false);
 }
 
-// Whether `file` starts with the headers that the tools write for a sequence file of `size` bytes.
-bool HasSequenceHeaders(std::span<const uint8_t> file)
+// The sequence of `file`'s bytecode, from `offset` in the file to its end, by ReadBytecode's rules, when only zeros
+// follow the bytes that the sequence holds.
+std::optional<ReadCode> ReadFileBytecode(std::span<const uint8_t> file, uint32_t offset,
+                                         std::span<const uint32_t> entries)
+{
+    const std::span<const uint8_t> bytecode = file.subspan(offset);
+    std::optional<ReadCode> code = ReadBytecode(bytecode, entries);
+    if (!code || !Zeros(bytecode.subspan(code->size)))
+    {
+        return std::nullopt;
+    }
+
+    return code;
+}
+
+// Whether `file` starts with the header and the DATA block's header that the tools write for a file of `magic` and of
+// `file`'s size. The DATA block reaches the file's end, and the file ends on a multiple of 4 bytes.
+bool HasFileHeaders(std::span<const uint8_t> file, const char* magic)
 {
     const auto size = static_cast<uint32_t>(file.size());
-    return size > kSequenceHeaders && size % kSequenceAlignment == 0 &&
-           std::equal(file.begin(), file.begin() + 4, "SSEQ") && xsflib::LoadLe16(&file[4]) == 0xFEFF &&
+    return size >= kSequenceHeaders && size % kSequenceAlignment == 0 &&
+           std::equal(file.begin(), file.begin() + 4, magic) && xsflib::LoadLe16(&file[4]) == 0xFEFF &&
            xsflib::LoadLe32(&file[8]) == size && xsflib::LoadLe16(&file[0xC]) == 0x10 &&
            xsflib::LoadLe16(&file[0xE]) == 1 && std::equal(file.begin() + 0x10, file.begin() + 0x14, "DATA") &&
-           xsflib::LoadLe32(&file[0x14]) == size - 0x10 && xsflib::LoadLe32(&file[0x18]) == kSequenceHeaders;
+           xsflib::LoadLe32(&file[0x14]) == size - 0x10;
+}
+
+// Whether `file` starts with the headers that the tools write for a sequence file of `file`'s size.
+bool HasSequenceHeaders(std::span<const uint8_t> file)
+{
+    return file.size() > kSequenceHeaders && HasFileHeaders(file, "SSEQ") &&
+           xsflib::LoadLe32(&file[0x18]) == kSequenceHeaders;
+}
+
+// The sequence of `file`, a sequence archive (SSAR), with the item where each record's sequence starts. The file has
+// the headers that the tools write: its table follows its headers, and its bytecode follows its table. The bytecode
+// reads by ReadFileBytecode's rules from the starts that the records give. At least one record has a sequence. Nothing
+// for any other bytes.
+std::optional<ReadCode> ReadSequenceArchive(std::span<const uint8_t> file,
+                                            std::vector<std::optional<uint32_t>>& records)
+{
+    if (file.size() < kSequenceArchiveHeaders || !HasFileHeaders(file, "SSAR"))
+    {
+        return std::nullopt;
+    }
+    const uint32_t count = xsflib::LoadLe32(&file[0x1C]);
+    const uint64_t bytecode = kSequenceArchiveHeaders + uint64_t{count} * kRecordBytes;
+    if (xsflib::LoadLe32(&file[0x18]) != bytecode || bytecode >= file.size())
+    {
+        return std::nullopt;
+    }
+
+    // The starts of the records with sequences. A record without one stays as it is.
+    std::vector<uint32_t> entries;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const uint32_t offset = xsflib::LoadLe32(&file[kSequenceArchiveHeaders + i * kRecordBytes]);
+        if (offset != kNoSequence)
+        {
+            entries.push_back(offset);
+        }
+    }
+    if (entries.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::optional<ReadCode> code = ReadFileBytecode(file, static_cast<uint32_t>(bytecode), entries);
+    if (!code)
+    {
+        return std::nullopt;
+    }
+    records.clear();
+    std::size_t entry = 0;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const uint32_t offset = xsflib::LoadLe32(&file[kSequenceArchiveHeaders + i * kRecordBytes]);
+        records.push_back(offset == kNoSequence ? std::nullopt : std::optional(code->entries[entry++]));
+    }
+
+    return code;
 }
 
 // The pieces and fields of `archive`, whose files in `files` become sequence pieces or runs of their own, or nothing
@@ -133,7 +221,15 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
         uint32_t piece = 0;
     };
     std::vector<Run> runs;
-    std::vector<uint32_t> ends; // for each sequence file in `files`, its end: the piece after its padding to 4 bytes
+
+    // For each file in `files` with a sequence, its sequence piece, and its end: the piece after its padding to 4
+    // bytes.
+    struct SequencePlaces
+    {
+        uint32_t piece = 0;
+        uint32_t end = 0;
+    };
+    std::vector<SequencePlaces> sequence_places;
     uint32_t at = 0;
     const auto add_run = [&](uint32_t end)
     {
@@ -145,12 +241,13 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
     {
         if (file.has_sequence)
         {
-            add_run(file.start + kSequenceHeaders);
+            add_run(file.start + file.bytecode);
+            const auto piece = static_cast<uint32_t>(layout.pieces.size());
             layout.pieces.emplace_back(
                 sar::SequencePiece{static_cast<uint32_t>(layout.sequences.size()), file.version});
             layout.sequences.push_back(std::move(file.sequence));
             layout.pieces.emplace_back(sar::Padding{kSequenceAlignment});
-            ends.push_back(static_cast<uint32_t>(layout.pieces.size()));
+            sequence_places.push_back({piece, static_cast<uint32_t>(layout.pieces.size())});
         }
         else
         {
@@ -231,7 +328,9 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
         }
     }
 
-    // Each file's offset and size in the FAT. A sequence file's size and its DATA block's size in its header.
+    // Each file's offset and size in the FAT. The file's size and its DATA block's size in the header of a file with a
+    // sequence. Each sequence's start in a sequence archive's table: the distance from the bytecode's first item to
+    // the item where the sequence starts.
     std::vector<const CutFile*> sequence_files;
     for (const CutFile& file : files)
     {
@@ -247,17 +346,29 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
         const auto entry_at = static_cast<uint32_t>(fat + 12 + id * 16);
         const auto cut = std::find_if(sequence_files.begin(), sequence_files.end(), [&](const CutFile* file)
                                       { return file->start == entry.offset && file->end - file->start == entry.size; });
+        const SequencePlaces* places =
+            cut != sequence_files.end() ? &sequence_places[std::size_t(cut - sequence_files.begin())] : nullptr;
         const std::optional<sar::Place> file_start = start_place(entry.offset);
-        const std::optional<sar::Place> file_end =
-            cut != sequence_files.end() ? std::optional(sar::Place{ends[std::size_t(cut - sequence_files.begin())], 0})
-            : entry.size == 0           ? file_start
-                                        : place(entry.offset + entry.size);
+        const std::optional<sar::Place> file_end = places            ? std::optional(sar::Place{places->end, 0})
+                                                   : entry.size == 0 ? file_start
+                                                                     : place(entry.offset + entry.size);
         field(entry_at, start, file_start);
         field(entry_at + 4, file_start, file_end);
-        if (cut != sequence_files.end())
+        if (places == nullptr)
         {
-            field(entry.offset + 8, file_start, file_end);
-            field(entry.offset + 0x14, place(entry.offset + 0x10), file_end);
+            continue;
+        }
+
+        field(entry.offset + 8, file_start, file_end);
+        field(entry.offset + 0x14, place(entry.offset + 0x10), file_end);
+        const std::vector<std::optional<uint32_t>>& records = (*cut)->records;
+        for (std::size_t i = 0; i < records.size(); i++)
+        {
+            if (records[i])
+            {
+                field(static_cast<uint32_t>(entry.offset + kSequenceArchiveHeaders + i * kRecordBytes),
+                      sar::Place{places->piece, 0, true}, sar::Place{places->piece, *records[i], true});
+            }
         }
     }
 
@@ -268,11 +379,11 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
     return layout;
 }
 
-// Each piece's start, with the archive's end after the last, and each sequence's bytes.
+// Each piece's start, with the archive's end after the last, and each sequence piece's bytes and items.
 struct LaidPieces
 {
     std::vector<uint64_t> starts;
-    std::vector<std::vector<uint8_t>> encoded;
+    std::vector<ntr::snd::Encoded> encoded;
 };
 
 LaidPieces LayPieces(std::span<const commands::Sequence> sequences, std::span<const sar::Piece> pieces)
@@ -294,8 +405,8 @@ LaidPieces LayPieces(std::span<const commands::Sequence> sequences, std::span<co
             {
                 throw std::invalid_argument("a sequence piece names a sequence that the layout lacks");
             }
-            laid.encoded[p] = ntr::snd::EncodeSequence(sequences[sequence->sequence]).bytes;
-            size += laid.encoded[p].size();
+            laid.encoded[p] = ntr::snd::EncodeSequence(sequences[sequence->sequence]);
+            size += laid.encoded[p].bytes.size();
         }
         else
         {
@@ -354,7 +465,7 @@ Layout Cut(std::span<const uint8_t> sdat)
 
         // A file that ends on the multiple takes the padding too, without bytes. A new size then keeps what follows on
         // its multiple.
-        CutFile file{start, end, end, false, false, 0, {}};
+        CutFile file{.start = start, .end = end, .next = end};
         const uint32_t next = e + 1 < entries.size() ? entries[e + 1].first : size;
         if (next == AlignUp(uint64_t{end}, kFileAlignment) && Zeros(bytes.subspan(end, next - end)))
         {
@@ -362,17 +473,25 @@ Layout Cut(std::span<const uint8_t> sdat)
             file.padded = true;
         }
 
-        // A sequence file whose bytecode the decoder reads becomes a sequence piece, and any other file a run.
-        if (start % kSequenceAlignment == 0 && HasSequenceHeaders(bytes.subspan(start, end - start)))
+        // A sequence file or a sequence archive whose bytecode the decoder reads becomes a sequence piece, and any
+        // other file a run. Both kinds give the bytecode's offset at 0x18.
+        const std::span<const uint8_t> file_bytes = bytes.subspan(start, end - start);
+        std::optional<ReadCode> code;
+        if (start % kSequenceAlignment == 0 && HasSequenceHeaders(file_bytes))
         {
-            auto read = ReadBytecode(bytes.subspan(start + kSequenceHeaders, end - start - kSequenceHeaders));
-            if (read && Zeros(bytes.subspan(start + kSequenceHeaders + read->second,
-                                            end - start - kSequenceHeaders - read->second)))
-            {
-                file.has_sequence = true;
-                file.version = xsflib::LoadLe16(&bytes[start + 6]);
-                file.sequence = std::move(read->first);
-            }
+            const uint32_t entry = 0;
+            code = ReadFileBytecode(file_bytes, kSequenceHeaders, std::span(&entry, 1));
+        }
+        else if (start % kSequenceAlignment == 0)
+        {
+            code = ReadSequenceArchive(file_bytes, file.records);
+        }
+        if (code)
+        {
+            file.has_sequence = true;
+            file.version = xsflib::LoadLe16(&file_bytes[6]);
+            file.bytecode = xsflib::LoadLe32(&file_bytes[0x18]);
+            file.sequence = std::move(code->sequence);
         }
         files.push_back(std::move(file));
     }
@@ -406,26 +525,39 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
 {
     const LaidPieces laid = LayPieces(sequences, pieces);
     const std::vector<uint64_t>& starts = laid.starts;
-    const std::vector<std::vector<uint8_t>>& encoded = laid.encoded;
+    const std::vector<ntr::snd::Encoded>& encoded = laid.encoded;
     const uint64_t size = starts.back();
 
     std::vector<uint8_t> archive(size);
     for (std::size_t p = 0; p < pieces.size(); p++)
     {
         const auto* run = std::get_if<std::vector<uint8_t>>(&pieces[p]);
-        const std::vector<uint8_t>& bytes = run ? *run : encoded[p];
+        const std::vector<uint8_t>& bytes = run ? *run : encoded[p].bytes;
         std::copy(bytes.begin(), bytes.end(), archive.begin() + std::ptrdiff_t(starts[p]));
     }
 
     const auto position = [&](const sar::Place& place) -> uint64_t
     {
-        if (place.sequence || place.item)
+        if (place.sequence)
         {
-            throw std::invalid_argument("a field of a DS sound archive names an item of a sequence");
+            throw std::invalid_argument("a field of a DS sound archive names a sequence without a piece");
         }
         if (place.piece > pieces.size())
         {
             throw std::invalid_argument("a field names a place that the archive's pieces lack");
+        }
+        if (place.item)
+        {
+            if (place.piece == pieces.size() || !std::holds_alternative<sar::SequencePiece>(pieces[place.piece]))
+            {
+                throw std::invalid_argument("a field names an item outside a sequence piece");
+            }
+            const std::vector<uint32_t>& offsets = encoded[place.piece].offsets;
+            if (place.offset >= offsets.size())
+            {
+                throw std::invalid_argument("a field names an item past its sequence");
+            }
+            return starts[place.piece] + offsets[place.offset];
         }
         if (place.piece == pieces.size())
         {
@@ -451,6 +583,11 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
         {
             throw std::invalid_argument("a field doesn't lie in a run of a DS sound archive");
         }
+        if ((field.from.item || field.to.item) &&
+            (field.from.item != field.to.item || field.from.piece != field.to.piece))
+        {
+            throw std::invalid_argument("a field names an item of a sequence and another place");
+        }
 
         const uint64_t from = position(field.from);
         const uint64_t to = position(field.to);
@@ -471,14 +608,14 @@ std::optional<commands::Sequence> ReadSequenceFile(std::span<const uint8_t> file
         return std::nullopt;
     }
 
-    const std::span<const uint8_t> bytecode = file.subspan(kSequenceHeaders);
-    auto read = ReadBytecode(bytecode);
-    if (!read || !Zeros(bytecode.subspan(read->second)))
+    const uint32_t entry = 0;
+    std::optional<ReadCode> code = ReadFileBytecode(file, kSequenceHeaders, std::span(&entry, 1));
+    if (!code)
     {
         return std::nullopt;
     }
 
-    return std::move(read->first);
+    return std::move(code->sequence);
 }
 
 std::vector<sar::Piece> ReplaceFile(std::span<const commands::Sequence> sequences, std::span<const sar::Piece> pieces,

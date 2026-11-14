@@ -625,7 +625,7 @@ void TestConvert()
         const uint8_t* r = records.Record("imod", 10, i);
         const auto field = [r](int at)
         {
-            return static_cast<uint16_t>(r[at] | r[at + 1] << 8);
+            return xsflib::LoadLe16(r + at);
         };
         pitch = pitch || (field(0) == 0x0081 && field(2) == 6 && field(4) == 198);
         volume = volume || (field(0) == 0x0081 && field(2) == 13 && field(4) == 119);
@@ -669,7 +669,7 @@ std::vector<std::pair<uint16_t, uint16_t>> PresetsOf(const std::vector<uint8_t>&
     for (std::size_t i = 0; i + 1 < records.Count("phdr", 38); i++)
     {
         const uint8_t* r = records.Record("phdr", 38, i);
-        presets.emplace_back(static_cast<uint16_t>(r[22] | r[23] << 8), static_cast<uint16_t>(r[20] | r[21] << 8));
+        presets.emplace_back(xsflib::LoadLe16(r + 22), xsflib::LoadLe16(r + 20));
     }
 
     return presets;

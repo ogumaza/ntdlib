@@ -20,6 +20,7 @@
 #include "seqlib/sf2/reader.h"
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sfz/track_file.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/dse/driver.h"
@@ -663,7 +664,7 @@ void TestConvertBank()
     for (std::size_t p = 0; p + 1 < records.Count("phdr", 38); p++)
     {
         const uint8_t* r = records.Record("phdr", 38, p);
-        presets.emplace_back(static_cast<uint16_t>(r[22] | r[23] << 8), static_cast<uint16_t>(r[20] | r[21] << 8));
+        presets.emplace_back(xsflib::LoadLe16(r + 22), xsflib::LoadLe16(r + 20));
     }
     Check(presets == std::vector<std::pair<uint16_t, uint16_t>>{{0, 0}, {0, 1}, {0, 2}, {0, 3}},
           "a bank: a preset at each program that plays");

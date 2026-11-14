@@ -11,7 +11,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <span>
 #include <string>
 #include <utility>
 
@@ -22,32 +21,17 @@
 namespace ntdlib::testing::sar_checks
 {
 
-// Whether `sound` starts at one of the labels of `sequence`, its sequence, or 3 bytes after one. A label can start with
-// an allocation of tracks: 0xFE and a 16-bit mask in the file's byte order. SoundMaker moves the allocation into the
-// sound's info and adds track 0 to the mask. A placeholder's sequence has no labels and starts at 0.
+// Whether `sound` starts at one of the labels of `sequence`, its sequence, or 3 bytes after one (see
+// sar::StartsAtLabel). A placeholder's sequence has no labels and starts at 0. Sequence::Parse reads labels on the Wii U
+// and the Switch only, where the commands' arguments follow the file's byte order.
 inline bool StartsAtLabel(const sar::Sequence& sequence, const sar::SoundInfo& sound)
 {
-    const std::span<const uint8_t> data = sequence.data;
     const auto here = [&](const sar::Sequence::Label& label)
     {
-        const std::size_t at = label.offset;
-        if (at == sound.start_offset)
-        {
-            return true;
-        }
-        if (at + 3 != sound.start_offset || at + 3 > data.size() || data[at] != 0xFE)
-        {
-            return false;
-        }
-
-        const uint32_t mask =
-            sequence.big_endian ? (data[at + 1] << 8 | data[at + 2]) : (data[at + 1] | data[at + 2] << 8);
-
-        return (mask | 1) == sound.allocate_track_flags;
+        return sar::StartsAtLabel(sequence.data, sequence.big_endian, label.offset, sound);
     };
 
-    return (sequence.labels.empty() && sound.start_offset == 0) ||
-           std::find_if(sequence.labels.begin(), sequence.labels.end(), here) != sequence.labels.end();
+    return (sequence.labels.empty() && sound.start_offset == 0) || std::ranges::any_of(sequence.labels, here);
 }
 
 // The wave archives that the banks name, each read once, and the waves that the banks name in them.

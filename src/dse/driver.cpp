@@ -397,18 +397,18 @@ Driver& Driver::operator=(const Driver& other)
 std::optional<uint16_t> Driver::AddBank(const WaveBank& bank, uint32_t samples)
 {
     Bank kept;
-    kept.id = static_cast<uint16_t>(bank.header[0x0E] | bank.header[0x0F] << 8);
+    kept.id = xsflib::LoadLe16(&bank.header[0x0E]);
     if (state_->BankById(kept.id) != nullptr)
     {
         return std::nullopt;
     }
     kept.file = &bank;
-    kept.wave_count = static_cast<int16_t>(bank.header[0x46] | bank.header[0x47] << 8);
-    kept.program_count = static_cast<int16_t>(bank.header[0x48] | bank.header[0x49] << 8);
+    kept.wave_count = static_cast<int16_t>(xsflib::LoadLe16(&bank.header[0x46]));
+    kept.program_count = static_cast<int16_t>(xsflib::LoadLe16(&bank.header[0x48]));
     kept.key_group_count = bank.header[0x4A];
     if (bank.header[0x4B] == 2)
     {
-        kept.main_bank = static_cast<uint16_t>(bank.header[0x40] | bank.header[0x41] << 8);
+        kept.main_bank = xsflib::LoadLe16(&bank.header[0x40]);
     }
     kept.samples = bank.samples ? samples : 0;
     for (const std::optional<WaveInfo>& wave : bank.waves)
@@ -497,7 +497,7 @@ std::optional<uint16_t> Driver::AddEffects(const SoundEffects& effects)
 {
     State& s = *state_;
     EffectBank bank;
-    bank.id = static_cast<uint16_t>(effects.header[0x0E] | effects.header[0x0F] << 8);
+    bank.id = xsflib::LoadLe16(&effects.header[0x0E]);
     if (s.EffectBankById(bank.id) != nullptr)
     {
         return std::nullopt;
@@ -903,7 +903,7 @@ VoiceView Driver::GetVoice(int voice) const
 std::array<LfoValues, 4> ProgramLfos(const WaveBank& bank, uint16_t program)
 {
     std::array<LfoValues, 4> lfos;
-    const auto count = static_cast<int16_t>(bank.header[0x48] | bank.header[0x49] << 8);
+    const auto count = static_cast<int16_t>(xsflib::LoadLe16(&bank.header[0x48]));
     if (!bank.instruments || static_cast<int16_t>(program) < 0 || static_cast<int16_t>(program) >= count ||
         program >= bank.instruments->programs.size() || !bank.instruments->programs[program])
     {

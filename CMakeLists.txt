@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 4.0.0 LANGUAGES C CXX)
+project(ntdlib VERSION 4.1.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -354,7 +354,8 @@ xsflib_add_project_test(ntdlib musyx_msm ntdlib::musyx)
 # archives (sequence_export_ntr, in src/sequence_export/ntr), DSE's songs and sound effects (sequence_export_dse, in
 # src/sequence_export/dse). A program that converts only NintendoWare's archives links none of JAudio's readers, the disc
 # images and the DS's driver. A program that converts the DS's archives also converts the songs and sound effects
-# of DSE in cartridge images.
+# of DSE in cartridge images. sequence_export_ntr_profiles turns the profiles of known DS games (ntr_profiles) into
+# the options and arrangements of such a program.
 if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_library(ntdlib sequence_export
         src/sequence_export/archive_converter.cpp
@@ -419,6 +420,8 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/ntr/sfz.cpp)
     target_link_libraries(ntdlib_sequence_export_ntr PUBLIC ntdlib::sequence_export ntdlib::ntr_archive_player
                                                             ntdlib::sequence_export_dse)
+    xsflib_add_project_library(ntdlib sequence_export_ntr_profiles src/sequence_export/ntr/game_profiles.cpp)
+    target_link_libraries(ntdlib_sequence_export_ntr_profiles PUBLIC ntdlib::sequence_export_ntr ntdlib::ntr_profiles)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_frame ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_arrangements ntdlib::sequence_export)
@@ -427,6 +430,7 @@ if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_test(ntdlib sequence_export_jaudio ntdlib::sequence_export_jaudio)
     xsflib_add_project_test(ntdlib sequence_export_ntr ntdlib::sequence_export_ntr)
     xsflib_add_project_test(ntdlib sequence_export_ntr_editor ntdlib::sequence_export_ntr)
+    xsflib_add_project_test(ntdlib sequence_export_ntr_profiles ntdlib::sequence_export_ntr_profiles)
     xsflib_add_project_test(ntdlib sequence_export_dse ntdlib::sequence_export_dse)
     xsflib_add_project_test(ntdlib sequence_export_dse_editor ntdlib::sequence_export_dse)
     xsflib_add_project_test(ntdlib sequence_export_switch ntdlib::sequence_export)

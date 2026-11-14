@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "ntdlib/jaudio/archive.h"
+#include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio2/channel.h"
 #include "ntdlib/jaudio2/dsp.h"
 #include "ntdlib/jaudio2/instruments.h"
@@ -144,6 +145,19 @@ private:
     std::vector<std::unique_ptr<InstrumentBank>> banks_;
     std::vector<std::string> missing_waves_;
 };
+
+// The wave archives of a game's wave systems in the DSP's memory, and a wave bank for each wave system.
+struct LoadedWaves
+{
+    std::unique_ptr<DspMemory> memory;  // the archives from SoundFiles::kWaves on, zeros below
+    std::map<uint32_t, WaveBank> banks; // by wave system
+    std::vector<std::string> missing;   // the names of the archives that `waves` didn't give
+};
+
+// Loads the wave archives that `systems` name, each once, and the waves of each system's bank. JAudio1's sound files
+// load theirs the same way.
+LoadedWaves LoadWaveSystems(const std::vector<ntdlib::jaudio::WaveSystem>& systems,
+                            const SoundFiles::WaveArchives& waves);
 
 // A sound played on the model, sub-frame by sub-frame. A frame of the DSP is 7 sub-frames.
 class Engine

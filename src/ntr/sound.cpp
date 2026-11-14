@@ -614,8 +614,7 @@ bool SoundUnit::Muted(int channel) const
 
 uint32_t SoundUnit::Word(uint32_t offset) const
 {
-    return static_cast<uint32_t>(registers_[offset]) | static_cast<uint32_t>(registers_[offset + 1]) << 8 |
-           static_cast<uint32_t>(registers_[offset + 2]) << 16 | static_cast<uint32_t>(registers_[offset + 3]) << 24;
+    return xsflib::LoadLe32(&registers_[offset]);
 }
 
 uint8_t SoundUnit::Byte(uint32_t address) const

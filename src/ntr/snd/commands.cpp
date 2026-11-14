@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/commands/decoding.h"
 #include "ntdlib/commands/encoding.h"
 #include "ntdlib/commands/sequence.h"
@@ -138,14 +140,8 @@ Command AllocationAt(std::span<const uint8_t> data, uint32_t at)
 {
     Command command;
     command.kind = Kind::kAllocateTracks;
-    command.value.value = data[at + 1] | data[at + 2] << 8;
+    command.value.value = xsflib::LoadLe16(&data[at + 1]);
     return command;
-}
-
-void Append16(std::vector<uint8_t>& out, uint32_t value)
-{
-    out.push_back(static_cast<uint8_t>(value));
-    out.push_back(static_cast<uint8_t>(value >> 8));
 }
 
 // Appends `value` as a variable-length number in `bytes` bytes, or in the bytes that it requires where those are more.
@@ -208,7 +204,7 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
         }
 
         out.push_back(kAllocateTracks);
-        Append16(out, static_cast<uint32_t>(command.value.value));
+        xsflib::AppendLe16(out, static_cast<uint16_t>(command.value.value));
         return;
     }
 
@@ -254,7 +250,7 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
         }
 
         out.push_back(static_cast<uint8_t>(target));
-        Append16(out, target >> 8);
+        xsflib::AppendLe16(out, static_cast<uint16_t>(target >> 8));
         return;
     }
 
@@ -265,8 +261,8 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
         out.push_back(static_cast<uint8_t>(argument.value));
         return;
     case Source::kRandom:
-        Append16(out, static_cast<uint32_t>(argument.value));
-        Append16(out, static_cast<uint32_t>(argument.high));
+        xsflib::AppendLe16(out, static_cast<uint16_t>(argument.value));
+        xsflib::AppendLe16(out, static_cast<uint16_t>(argument.high));
         return;
     case Source::kValue:
         break;
@@ -278,7 +274,7 @@ void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t t
         out.push_back(static_cast<uint8_t>(argument.value));
         break;
     case Width::kSigned16:
-        Append16(out, static_cast<uint32_t>(argument.value));
+        xsflib::AppendLe16(out, static_cast<uint16_t>(argument.value));
         break;
     case Width::kVariableLength:
         AppendVariableLength(out, static_cast<uint32_t>(argument.value), command.encoding.value_bytes);

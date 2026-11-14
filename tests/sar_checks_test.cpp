@@ -59,6 +59,26 @@ void TestStartsAtLabel()
     cut.labels = {{"A", 0}};
     Check(!StartsAtLabel(cut, Sound(3, 1)), "an allocation past the end of the data");
 
+    // Offsets near the ends of the 32-bit range, and a label past the end of the data. None of them may wrap around.
+    sar::Sequence far;
+    far.data = short_data;
+    far.labels = {{"A", 0xFFFFFFFE}};
+    Check(!StartsAtLabel(far, Sound(1, 1)), "a label near 2^32 and a start under 3");
+    far.labels = {{"A", 0xFFFFFFFC}};
+    Check(!StartsAtLabel(far, Sound(0xFFFFFFFF, 1)), "a start near 2^32 past a label beyond the data");
+    const std::vector<uint8_t> eight = {0xFE, 0x00, 0x01, 0xFF, 0xFE, 0x00, 0x01, 0xFF};
+    sar::Sequence past;
+    past.data = eight;
+    past.big_endian = true;
+    past.labels = {{"A", 100}};
+    Check(!StartsAtLabel(past, Sound(103, 1)), "a label past the end of the data");
+    past.labels = {{"A", 4}};
+    Check(StartsAtLabel(past, Sound(7, 1)), "an allocation that ends at the end of the data");
+    const std::vector<uint8_t> four = {0xFF, 0xFF, 0xFE, 0x00};
+    past.data = four;
+    past.labels = {{"A", 2}};
+    Check(!StartsAtLabel(past, Sound(5, 1)), "an allocation that runs past the end of the data");
+
     // A placeholder: no labels, and a start at 0.
     const sar::Sequence placeholder;
     Check(StartsAtLabel(placeholder, Sound(0, 1)), "a placeholder starts at 0");

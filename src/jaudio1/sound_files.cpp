@@ -25,6 +25,7 @@
 #include "ntdlib/jaudio1/engine.h"
 #include "ntdlib/jaudio1/instruments.h"
 #include "ntdlib/jaudio2/channel.h"
+#include "ntdlib/jaudio2/engine.h"
 
 namespace ntdlib::jaudio1
 {
@@ -231,57 +232,13 @@ const SoundFiles::SequenceFile* SoundFiles::FindSequence(uint16_t id) const
 
 void SoundFiles::LoadWaves(const WaveArchives& waves)
 {
-    // Each wave system's wave archives go into the DSP's memory, each once, on 32-byte boundaries. A wave that several
-    // groups list has a copy in each of their archives, at another offset in each. The copies hold the same bytes. The
-    // game plays the copy of the group that it loaded last (JASBasicWaveBank::incWaveTable). The model plays the copy
-    // of the last group that lists the wave: ntdlib keeps that group's record of it.
-    const std::vector<nj::WaveSystem> systems = nj::ReadAafWaveSystems(aaf_);
-    std::map<std::string, const std::vector<uint8_t>*> archives;
-    for (const nj::WaveSystem& system : systems)
-    {
-        for (const nj::WaveGroup& group : system.groups)
-        {
-            if (archives.contains(group.archive))
-            {
-                continue;
-            }
-
-            const std::vector<uint8_t>* bytes = waves(group.archive);
-            archives[group.archive] = bytes;
-            if (bytes == nullptr)
-            {
-                missing_waves_.push_back(group.archive);
-            }
-        }
-    }
-
-    std::map<std::string, std::size_t> sizes;
-    for (const auto& [name, bytes] : archives)
-    {
-        sizes[name] = bytes != nullptr ? bytes->size() : 0;
-    }
-    const nj::WaveArchiveLayout layout = nj::LayOutWaveArchives(sizes, kWaves);
-    memory_ = std::make_unique<DspMemory>(layout.end);
-    for (const auto& [name, address] : layout.addresses)
-    {
-        const std::vector<uint8_t>& bytes = *archives[name];
-        std::copy(bytes.begin(), bytes.end(), memory_->Bytes().begin() + address);
-    }
-
-    for (const nj::WaveSystem& system : systems)
-    {
-        WaveBank& bank = wave_banks_[system.number];
-        for (const auto& [id, info] : system.waves)
-        {
-            const auto address = layout.addresses.find(info.archive);
-            if (address == layout.addresses.end())
-            {
-                continue;
-            }
-
-            bank.Add(id, BankWave{jaudio2::ChannelWaveOf(info), address->second + info.offset});
-        }
-    }
+    // The game plays the copy of a wave in the group that it loaded last (JASBasicWaveBank::incWaveTable). The model
+    // plays the copy in the last group that lists the wave. JAudio2 puts the waves at the same place.
+    static_assert(kWaves == jaudio2::SoundFiles::kWaves);
+    jaudio2::LoadedWaves loaded = jaudio2::LoadWaveSystems(nj::ReadAafWaveSystems(aaf_), waves);
+    memory_ = std::move(loaded.memory);
+    wave_banks_ = std::move(loaded.banks);
+    missing_waves_ = std::move(loaded.missing);
 }
 
 void SoundFiles::LoadBanks()

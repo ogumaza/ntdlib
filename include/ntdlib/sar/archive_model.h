@@ -197,7 +197,12 @@ struct PlayerModel
 };
 
 // What the archive's player reserves room for: the sounds and tracks of each kind that play at once, the channels of
-// the streams, and the size of each stream's buffer in blocks.
+// the streams, and the size of each stream's buffer in blocks. Two settings of nn::atk on the Switch follow them in
+// INFO. Bit 0 of byte 0x0F makes the player build its wave sounds as AdvancedWaveSound in place of WaveSound. Byte
+// 0x10 is a count that the player gives each sound of its sequence sounds' manager, and that a sound's update counts
+// down. nn::atk reads it in version 2.6.0 and later, and uses 1 in older versions. A model of version 2.6.0 or later
+// made from nothing should set it to 1, as nn::atk does for older versions and as WarioWare: Move It!'s archive holds.
+// What 0 does there is unknown. The model keeps both settings for the Switch only.
 struct PlayerSettings
 {
     friend bool operator==(const PlayerSettings&, const PlayerSettings&) = default;
@@ -210,6 +215,8 @@ struct PlayerSettings
     uint16_t wave_sounds = 64;
     uint16_t wave_tracks = 64;
     uint8_t stream_buffer_times = 1;
+    bool advanced_wave_sounds = false;
+    uint8_t sequence_sound_countdown = 0;
 };
 
 // Where a file's bytes lie: in the FILE block, in a copy that a group's file in the FILE block holds, in the group
@@ -273,8 +280,9 @@ ArchiveModel ReadArchiveModel(std::span<const uint8_t> archive, Flavor flavor);
 // of an unknown kind, fields after a stream sound's sends in a version before 2.1.0, a stream sound's extension without
 // a reference to it, a 3DS stream sound's options, tracks or extension in a version without them, a 3DS stream sound,
 // wave sound or file without a place in a version whose layout the model doesn't know, a file of kCopy whose group's
-// file the FILE block doesn't hold or doesn't hold a copy of the file in, an archive past 4 GB, and the names that
-// StringBlock::Write refuses, such as two names alike.
+// file the FILE block doesn't hold or doesn't hold a copy of the file in, player settings of the Switch
+// (`advanced_wave_sounds` or `sequence_sound_countdown`) in an archive of another console, an archive past 4 GB, and
+// the names that StringBlock::Write refuses, such as two names alike.
 std::vector<uint8_t> BuildArchive(const ArchiveModel& model);
 
 } // namespace ntdlib::sar
