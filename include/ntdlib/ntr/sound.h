@@ -295,6 +295,12 @@ private:
     // The enhanced mode's state.
     struct EnhancedState
     {
+        // Declared here and defaulted in sound.cpp. An implicit constructor would depend on the member initializers
+        // below. Those can't be used before SoundUnit is complete. Some standard libraries test
+        // std::is_constructible_v<EnhancedState> inside SoundUnit, and the compiler keeps the false result. emplace()
+        // in StartEnhanced then fails to compile. A user-provided constructor makes the test true at any point.
+        EnhancedState();
+
         uint64_t ticks = 0;   // the ticks since StartEnhanced
         uint64_t samples = 0; // the samples whose times have passed
         bool stale = true;    // whether the last run had no output

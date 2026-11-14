@@ -36,12 +36,14 @@
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "ntdlib/testing/sequence_export_check.h"
+#include "ntdlib/testing/universomo_files.h"
 #include "temp_folder.h"
 
 namespace
 {
 
 namespace dse_song_files = ntdlib::testing::dse_song_files;
+namespace universomo_files = ntdlib::testing::universomo_files;
 namespace files = ntdlib::testing::sdat_files;
 namespace fs = std::filesystem;
 namespace nds_files = ntdlib::testing::nds_files;
@@ -804,7 +806,8 @@ void TestConvertBank()
 }
 
 // The command line on a cartridge image with two sound archives in one file and a third in another, on a loose sound
-// archive, on a file that is neither, and on a cartridge image with DSE's songs and sound effects.
+// archive, on a file that is neither, and on cartridge images with DSE's songs and sound effects and with
+// Universomo's songs.
 void TestFrame()
 {
     const ntdlib::testing::TempFolder folder("sequence_export_ntr_test");
@@ -869,6 +872,24 @@ void TestFrame()
     Check(run(dse_image) == 0 && passes(dse_out / "BGM" / "bgm0001") && passes(dse_out / "SE" / "fx_001") &&
               fs::exists(dse_out / "SE" / "sfz" / "fx_001" / "Track 0.sfz"),
           "DSE's songs and sound effects convert");
+
+    // Universomo's songs: the songs beside the bank go to the folder universomo, each named after its file. --only
+    // picks songs by name.
+    nds_files::Image ums;
+    ums.files = {{"data/samplebank.usb", universomo_files::BankFile()},
+                 {"data/au81.ums", universomo_files::SongFile()},
+                 {"data/au82.ums", universomo_files::SongFile()}};
+    const Bytes ums_bytes = nds_files::BuildImage(ums).first;
+    const fs::path ums_out = folder.Path() / "ums_xyz2midi" / "universomo";
+    Check(run(folder.Write("ums.nds", ums_bytes)) == 0 && passes(ums_out / "au81") && passes(ums_out / "au82") &&
+              fs::exists(ums_out / "sfz" / "au81"),
+          "Universomo's songs convert");
+    const fs::path only_out = folder.Path() / "ums_only_xyz2midi" / "universomo";
+    Check(RunArchiveConverter({kProgram, "--quiet", "--only", "^au82$",
+                               ntdlib::sequence_export::Utf8(folder.Write("ums_only.nds", ums_bytes))},
+                              converter) == 0 &&
+              passes(only_out / "au82") && !fs::exists(only_out / "au81.mid"),
+          "--only picks Universomo's songs by name");
     Check(run(neither) == 1 && !fs::exists(folder.Path() / "neither_xyz2midi"), "a file that is neither fails");
 
     // A game's profile: its settings give a sequence's program through variable 0, and an arrangement gives another

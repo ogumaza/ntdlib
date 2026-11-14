@@ -2,9 +2,11 @@
 
 // The command line of a converter of the DS's sound archives (SDAT), on the command-line frame (frame.h). Its inputs
 // are sound archives and cartridge images of the DS and the DSi. An image gives each sound archive that a file of its
-// file system holds, whatever the file's name, each into a folder of its own in the image's output folder. The
-// image's ARM7 binary gives the driver's build (ntdlib::ntr::snd::BuildOf). A loose archive plays on the default
-// build. A converter gives its name, its version line, its description and its options.
+// file system holds, whatever the file's name, each into a folder of its own in the image's output folder. So do the
+// folders of DSE's songs and sound effects (ntdlib/sequence_export/dse) and of Universomo's songs
+// (ntdlib/sequence_export/universomo). The image's ARM7 binary gives the driver's build (ntdlib::ntr::snd::BuildOf). A
+// loose archive plays on the default build. A converter gives its name, its version line, its description and its
+// options.
 
 #pragma once
 

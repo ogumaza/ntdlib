@@ -47,6 +47,10 @@ constexpr int kCallDepth = 3;
 // The driver's alarm: 2,728 ticks of the OS timer, 64 system clocks each.
 constexpr uint32_t kFrameClocks = 2728 * 64;
 
+// SOUNDxTMR's period for a wave's period `timer` moved by `pitch`, in 1/64 of a semitone (SND_CalcTimer). A period
+// outside 0x10 to 0xFFFF stops at the nearer end.
+uint16_t Timer(int timer, int pitch);
+
 // The commands, by their numbers in a command's id.
 enum class CommandId : uint32_t
 {

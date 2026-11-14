@@ -7,12 +7,14 @@
 // the pan, from -1 for full left to 1 for full right, at which that law gives the two sides the mixer's balance.
 // PanGain gives the mixer's level of both sides together, against that law's level. Off the sides, the mixer plays
 // quieter: at the centre, 0.707 times as loud. A note's level takes the gain of its track's pan in CC11, and the gain
-// of its zone's pan against the centre's in the zone. A note at the centre then plays at 0.707.
+// of its zone's pan against the centre's in the zone. A note at the centre then plays at 0.707. PanController gives
+// CC10's value for the pan's position.
 
 #pragma once
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 
 namespace ntdlib::sequence_export
@@ -22,6 +24,11 @@ inline double PanPosition(int pan)
 {
     const int right = pan >= 127 ? 128 : std::clamp(pan, 0, 127);
     return 4.0 / std::numbers::pi * std::atan2(right, 128 - right) - 1.0;
+}
+
+inline uint8_t PanController(int pan)
+{
+    return static_cast<uint8_t>(std::clamp<long>(std::lround(64.0 + 64.0 * PanPosition(pan)), 0, 127));
 }
 
 inline double PanGain(int pan)

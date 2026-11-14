@@ -534,25 +534,11 @@ int RipLooseArchive(const ArchiveRipTool<Format, Rip>& tool, const std::string& 
     }
 
     // A group file is found by its name in the archive's folder or a folder below it. The group file is kept at its
-    // path from there. The search passes over an entry whose type can't be read, such as a broken symbolic link. It
-    // also passes over a folder that can't be opened.
+    // path from there (FindGroupFileIn).
     const fs::path folder = path.parent_path();
-    const auto find_group = [&folder](const std::string& name) -> std::optional<FileChunk>
+    const auto find_group = [&folder, flavor = tool.sar_options.flavor](const std::string& name)
     {
-        std::error_code ec;
-        for (fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec), end;
-             !ec && it != end; it.increment(ec))
-        {
-            FileChunk group{it->path().lexically_relative(folder).generic_string(), {}};
-            std::error_code type_error;
-            if (it->is_regular_file(type_error) && IsGroupFileName(it->path().filename().string(), name) &&
-                xsflib::psf::ReadWholeFile(it->path().string(), group.data))
-            {
-                return group;
-            }
-        }
-
-        return std::nullopt;
+        return FindGroupFileIn<FileChunk>(folder, name, flavor);
     };
 
     // The SARC archives in the archive's folder, by their names' UTF-8 bytes. A group file in one is kept at the SARC's

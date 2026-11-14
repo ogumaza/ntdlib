@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <regex>
@@ -21,7 +22,9 @@
 #include <vector>
 
 #include "xsflib/bytes.h"
+#include "xsflib/files.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/temp_folder.h"
 
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/player_names.h"
@@ -1169,6 +1172,82 @@ void TestFindGroupFile()
     XSFLIB_CHECK(!rip::FindGroupFile<Chunk>(paths, read, "group_c"));
 }
 
+// The extension of a group file follows the flavor of the archive: ".bcgrp" on the 3DS, ".bfgrp" on the Wii U and
+// the Switch.
+void TestFindGroupFileByFlavor()
+{
+    const std::vector<std::string> paths = {"romfs/GROUP_A.bfgrp", "romfs/sound/group_a.BCGRP"};
+    const auto read = [](const std::string& path, std::vector<uint8_t>& data)
+    {
+        data = {static_cast<uint8_t>(path.size())};
+        return true;
+    };
+
+    const std::optional<Chunk> ctr = rip::FindGroupFile<Chunk>(paths, read, "GROUP_A", sar::Flavor::kCtr);
+    XSFLIB_CHECK(ctr && ctr->path == "romfs/sound/group_a.BCGRP");
+    for (const sar::Flavor flavor : {sar::Flavor::kCafe, sar::Flavor::kNx})
+    {
+        const std::optional<Chunk> other = rip::FindGroupFile<Chunk>(paths, read, "GROUP_A", flavor);
+        XSFLIB_CHECK(other && other->path == "romfs/GROUP_A.bfgrp");
+    }
+
+    const std::optional<Chunk> plain = rip::FindGroupFile<Chunk>(paths, read, "GROUP_A");
+    XSFLIB_CHECK(plain && plain->path == "romfs/GROUP_A.bfgrp");
+    XSFLIB_CHECK(!rip::FindGroupFile<Chunk>(std::vector<std::string>{"GROUP_A.bcgrp"}, read, "GROUP_A"));
+}
+
+// A group file in a folder: found by the flavor's extension in a folder below, with its path from the folder in UTF-8
+// and a '/' between folders. A folder with the file's name doesn't count. The check of the UTF-8 path has effect on
+// Windows only. The test has no UTF-8 manifest, and a narrow conversion there fails for the kanji.
+void TestFindGroupFileIn()
+{
+    const xsflib::testing::TempFolder temp("ntdlib_rip_archive_test");
+    // "Sound", a space and two kanji, in UTF-8. Kanji have no decomposed form, so any volume keeps their bytes.
+    const std::string folder_name = "Sound \xE6\x97\xA5\xE6\x9C\xAC";
+    const std::filesystem::path below = temp.Path() / "Sound" / xsflib::PathFromUtf8(folder_name);
+    std::filesystem::create_directories(below / "GROUP_B.bcgrp");
+    const std::vector<uint8_t> ctr_data = {1, 2, 3};
+    const std::vector<uint8_t> cafe_data = {4, 5};
+    XSFLIB_CHECK(!xsflib::WriteFile(below / "group_a.BCGRP", ctr_data));
+    XSFLIB_CHECK(!xsflib::WriteFile(below / "GROUP_A.bfgrp", cafe_data));
+
+    const std::optional<Chunk> ctr = rip::FindGroupFileIn<Chunk>(temp.Path(), "GROUP_A", sar::Flavor::kCtr);
+    XSFLIB_CHECK(ctr && ctr->path == "Sound/" + folder_name + "/group_a.BCGRP" && ctr->data == ctr_data);
+    const std::optional<Chunk> nx = rip::FindGroupFileIn<Chunk>(temp.Path(), "group_a", sar::Flavor::kNx);
+    XSFLIB_CHECK(nx && nx->path == "Sound/" + folder_name + "/GROUP_A.bfgrp" && nx->data == cafe_data);
+    XSFLIB_CHECK(!rip::FindGroupFileIn<Chunk>(temp.Path(), "GROUP_B", sar::Flavor::kCtr));
+    XSFLIB_CHECK(!rip::FindGroupFileIn<Chunk>(temp.Path() / "missing", "GROUP_A", sar::Flavor::kCtr));
+}
+
+// The search in a folder passes over a folder that it can't open, and goes on to the next one. Windows still lists a
+// folder whose permissions are none. The search reads both folders there.
+void TestFindGroupFileInPastLockedFolder()
+{
+    const xsflib::testing::TempFolder temp("ntdlib_rip_archive_test");
+    std::filesystem::create_directories(temp.Path() / "a");
+    std::filesystem::create_directories(temp.Path() / "b");
+    std::vector<std::filesystem::path> order;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(temp.Path()))
+    {
+        order.push_back(entry.path().filename());
+    }
+
+    XSFLIB_CHECK(order.size() == 2);
+    if (order.size() != 2)
+    {
+        return;
+    }
+
+    const std::vector<uint8_t> data = {1, 2, 3};
+    XSFLIB_CHECK(!xsflib::WriteFile(temp.Path() / order[1] / "GROUP_A.bcgrp", data));
+    std::filesystem::permissions(temp.Path() / order[0], std::filesystem::perms::none);
+    const std::optional<Chunk> group = rip::FindGroupFileIn<Chunk>(temp.Path(), "GROUP_A", sar::Flavor::kCtr);
+    // Removing the folder requires the permissions back.
+    std::filesystem::permissions(temp.Path() / order[0], std::filesystem::perms::owner_all);
+
+    XSFLIB_CHECK(group && group->path == xsflib::Utf8(order[1]) + "/GROUP_A.bcgrp" && group->data == data);
+}
+
 // The SARC archives in the folder of a sound archive, sorted, and none from a folder below it or with another
 // extension.
 void TestSarcsBeside()
@@ -1204,6 +1283,9 @@ int main()
 {
     TestSoundArchiveKinds();
     TestFindGroupFile();
+    TestFindGroupFileByFlavor();
+    TestFindGroupFileIn();
+    TestFindGroupFileInPastLockedFolder();
     TestSarcsBeside();
     TestItems();
     TestArchive();

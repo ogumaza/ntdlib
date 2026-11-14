@@ -99,8 +99,8 @@ void TestSums()
         float b = RandomFloat(random);
         int ea = 0;
         int eb = 0;
-        std::frexp(a, &ea);
-        std::frexp(b, &eb);
+        static_cast<void>(std::frexp(a, &ea));
+        static_cast<void>(std::frexp(b, &eb));
         if (std::abs(ea - eb) > 20)
         {
             b = std::ldexp(b, ea - eb);

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 4.1.0 LANGUAGES C CXX)
+project(ntdlib VERSION 4.2.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -147,6 +147,7 @@ xsflib_add_project_library(ntdlib jaudio2 src/jaudio2/calc.cpp src/jaudio2/chann
                            src/jaudio2/engine.cpp src/jaudio2/instruments.cpp src/jaudio2/oscillator.cpp
                            src/jaudio2/output.cpp src/jaudio2/track.cpp src/jaudio2/track_commands.cpp)
 target_link_libraries(ntdlib_jaudio2 PUBLIC ntdlib::jaudio)
+xsflib_add_project_test(ntdlib jaudio2 ntdlib::jaudio2)
 
 # The model of the older sound library (JAudio1) that Pikmin 2's Switch port builds on the same DSP program: its
 # arithmetic, oscillators, banks, channels and sequences, the conductor of the cave music, and the engine that plays
@@ -279,6 +280,17 @@ xsflib_add_project_library(ntdlib dse_lengths src/dse/length_model.cpp)
 target_link_libraries(ntdlib_dse_lengths PUBLIC ntdlib::dse_player xsflib::rip)
 xsflib_add_project_test(ntdlib dse_length_model ntdlib::dse_lengths)
 
+# The readers of the files of Universomo's sound driver for the DS: songs (.ums), the sample bank (.usb) and the table
+# of sounds. The walk of a song through the driver's update gives its rows, its orders and its length.
+xsflib_add_project_library(ntdlib universomo src/universomo/formats.cpp src/universomo/walk.cpp)
+target_link_libraries(ntdlib_universomo PUBLIC xsflib::common ntdlib::ntr)
+xsflib_add_project_test(ntdlib universomo ntdlib::universomo)
+
+# A model of Universomo's sequencer on the DS: the sound commands that it sends for a song, a tick at a time.
+xsflib_add_project_library(ntdlib universomo_player src/universomo/player.cpp)
+target_link_libraries(ntdlib_universomo_player PUBLIC ntdlib::universomo ntdlib::ntr_snd)
+xsflib_add_project_test(ntdlib universomo_player ntdlib::universomo_player)
+
 # An interpreter of the DS's ARM7TDMI and ARM946E-S: the ARM and Thumb instruction sets, the exceptions, and the
 # ARM946E-S's system control coprocessor with its tightly coupled memories.
 xsflib_add_project_library(ntdlib arm src/arm/arm.cpp src/arm/cp15.cpp src/arm/cpu.cpp src/arm/thumb.cpp)
@@ -286,6 +298,12 @@ target_link_libraries(ntdlib_arm PUBLIC xsflib::common)
 xsflib_add_project_test(ntdlib arm ntdlib::arm)
 xsflib_add_project_test(ntdlib arm_system ntdlib::arm)
 xsflib_add_project_test(ntdlib arm_thumb ntdlib::arm)
+
+# An assembler of the few ARM instructions that a stub uses: a short program, written into a game's memory, that calls
+# the game's routines.
+xsflib_add_project_library(ntdlib arm_assembler src/arm/assembler.cpp)
+target_link_libraries(ntdlib_arm_assembler PUBLIC xsflib::common)
+xsflib_add_project_test(ntdlib arm_assembler ntdlib::arm_assembler)
 
 # The ARM7's side of a DS: the CPU, the memories, the timers, the interrupts, the IPC and the sound unit, with a BIOS of
 # high-level calls. It runs a cartridge's ARM7 binary with its sound driver.
@@ -352,9 +370,10 @@ xsflib_add_project_test(ntdlib musyx_msm ntdlib::musyx)
 # The conversion of Nintendo's sound data to seqlib's MIDI, SoundFont 2 and SFZ files: NintendoWare's sound archives
 # (sequence_export), JAudio's sound data (sequence_export_jaudio, in src/sequence_export/jaudio), the DS's sound
 # archives (sequence_export_ntr, in src/sequence_export/ntr), DSE's songs and sound effects (sequence_export_dse, in
-# src/sequence_export/dse). A program that converts only NintendoWare's archives links none of JAudio's readers, the disc
-# images and the DS's driver. A program that converts the DS's archives also converts the songs and sound effects
-# of DSE in cartridge images. sequence_export_ntr_profiles turns the profiles of known DS games (ntr_profiles) into
+# src/sequence_export/dse), Universomo's songs (sequence_export_universomo, in src/sequence_export/universomo). A
+# program that converts only NintendoWare's archives links none of JAudio's readers, the disc images and the DS's
+# driver. A program that converts the DS's archives also converts the songs and sound effects of DSE and Universomo's
+# songs in cartridge images. sequence_export_ntr_profiles turns the profiles of known DS games (ntr_profiles) into
 # the options and arrangements of such a program.
 if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_library(ntdlib sequence_export
@@ -412,6 +431,11 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/dse/sfz.cpp
         src/sequence_export/dse/sequence_input.cpp)
     target_link_libraries(ntdlib_sequence_export_dse PUBLIC ntdlib::sequence_export ntdlib::dse_player ntdlib::sdat)
+    xsflib_add_project_library(ntdlib sequence_export_universomo
+        src/sequence_export/universomo/convert.cpp
+        src/sequence_export/universomo/performer.cpp)
+    target_link_libraries(ntdlib_sequence_export_universomo PUBLIC ntdlib::sequence_export ntdlib::universomo_player
+                                                                   ntdlib::ntr)
     xsflib_add_project_library(ntdlib sequence_export_ntr
         src/sequence_export/ntr/archive_input.cpp
         src/sequence_export/ntr/convert.cpp
@@ -419,7 +443,8 @@ if (NTDLIB_SEQUENCE_EXPORT)
         src/sequence_export/ntr/performance.cpp
         src/sequence_export/ntr/sfz.cpp)
     target_link_libraries(ntdlib_sequence_export_ntr PUBLIC ntdlib::sequence_export ntdlib::ntr_archive_player
-                                                            ntdlib::sequence_export_dse)
+                                                            ntdlib::sequence_export_dse
+                                                            ntdlib::sequence_export_universomo)
     xsflib_add_project_library(ntdlib sequence_export_ntr_profiles src/sequence_export/ntr/game_profiles.cpp)
     target_link_libraries(ntdlib_sequence_export_ntr_profiles PUBLIC ntdlib::sequence_export_ntr ntdlib::ntr_profiles)
     xsflib_add_project_test(ntdlib sequence_export_performance ntdlib::sequence_export)
@@ -433,6 +458,7 @@ if (NTDLIB_SEQUENCE_EXPORT)
     xsflib_add_project_test(ntdlib sequence_export_ntr_profiles ntdlib::sequence_export_ntr_profiles)
     xsflib_add_project_test(ntdlib sequence_export_dse ntdlib::sequence_export_dse)
     xsflib_add_project_test(ntdlib sequence_export_dse_editor ntdlib::sequence_export_dse)
+    xsflib_add_project_test(ntdlib sequence_export_universomo ntdlib::sequence_export_universomo)
     xsflib_add_project_test(ntdlib sequence_export_switch ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_ctr ntdlib::sequence_export)
     xsflib_add_project_test(ntdlib sequence_export_resampling ntdlib::sequence_export)
@@ -451,6 +477,9 @@ endif()
 xsflib_add_project_library(ntdlib ppc src/ppc/cpu.cpp src/ppc/fpu.cpp)
 target_link_libraries(ntdlib_ppc PUBLIC ntdlib::common)
 ntdlib_follow_rounding_mode(src/ppc/fpu.cpp)
+
+# The CPU's skip of a polling loop, against an interrupt that arrives inside the loop.
+xsflib_add_project_test(ntdlib ppc_idle ntdlib::ppc)
 
 # The DSP of the GameCube, the Wii and the Wii U, with each console's memory. Its sources build as one translation unit.
 # The compiler can then inline the small register and flag helpers into the instructions. instantiations.cpp comes last.

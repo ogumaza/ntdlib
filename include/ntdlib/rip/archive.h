@@ -15,14 +15,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <regex>
 #include <span>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#include "xsflib/files.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/rip/length.h"
 
@@ -219,23 +222,60 @@ std::vector<FileChunk> FindGroups(
     return groups;
 }
 
-// The group file `name` among the files at `paths` in a game, such as the paths of the files of a title or a disc. A
-// file matches by its file name, the part of its path after the last '/', in any case (IsGroupFileName). `read`, a
-// call (const std::string& path, std::vector<uint8_t>& data) -> bool, reads a file. The first file that matches and
-// that `read` reads is the group file. Nothing if none.
+// The file of group `name` of an archive of `flavor` among the files at `paths` in a game, such as the paths of the
+// files of a title or a disc. A file matches by its file name, the part of its path after the last '/', in any case
+// (IsGroupFileName). `read`, a call (const std::string& path, std::vector<uint8_t>& data) -> bool, reads a file. The
+// first file that matches and that `read` reads is the group file. Nothing if none. The default flavor selects
+// ".bfgrp", the extension on the Wii U and the Switch.
 template <typename FileChunk, typename Paths, typename Read>
-std::optional<FileChunk> FindGroupFile(const Paths& paths, const Read& read, const std::string& name)
+std::optional<FileChunk> FindGroupFile(const Paths& paths, const Read& read, const std::string& name,
+                                       sar::Flavor flavor = sar::Flavor::kCafe)
 {
     for (const std::string& path : paths)
     {
         const std::size_t slash = path.rfind('/');
-        if (!IsGroupFileName(slash == std::string::npos ? path : path.substr(slash + 1), name))
+        if (!IsGroupFileName(slash == std::string::npos ? path : path.substr(slash + 1), name, flavor))
         {
             continue;
         }
 
         FileChunk group{path, {}};
         if (read(path, group.data))
+        {
+            return group;
+        }
+    }
+
+    return std::nullopt;
+}
+
+// The file of group `name` of an archive of `flavor` in `folder` or a folder below it, by its file name in any case
+// (IsGroupFileName). The path of the chunk is the path from `folder` to the file in UTF-8, with a '/' between folders
+// on every platform. The search passes over an entry whose type can't be read, such as a broken symbolic link. It also
+// passes over a folder that refuses permission, such as System Volume Information at the root of an NTFS drive. Any
+// other error ends the search. Nothing if no file matches and reads, or if `folder` can't be opened.
+template <typename FileChunk>
+std::optional<FileChunk> FindGroupFileIn(const std::filesystem::path& folder, const std::string& name,
+                                         sar::Flavor flavor)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec))
+    {
+        std::error_code type_error;
+        if (!it->is_regular_file(type_error) || !IsGroupFileName(xsflib::Utf8(it->path().filename()), name, flavor))
+        {
+            continue;
+        }
+
+        FileChunk group{{}, {}};
+        for (const fs::path& part : it->path().lexically_relative(folder))
+        {
+            group.path += (group.path.empty() ? "" : "/") + xsflib::Utf8(part);
+        }
+
+        if (xsflib::ReadFile(it->path(), group.data))
         {
             return group;
         }

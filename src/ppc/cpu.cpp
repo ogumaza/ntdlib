@@ -258,6 +258,11 @@ void Cpu::SkipIdleLoop(int cr_field)
     // become ready. Such a loop only spins until an interrupt changes the word. Nothing else runs while the CPU runs.
     // The loop's whole iterations up to the next interrupt check can therefore run at once. The CPU ends up where those
     // iterations would have left it.
+    //
+    // An interrupt can arrive between the load and the branch. The branch then goes back on the value from before the
+    // interrupt, and the next load reads the word that the handler changed. That pass may leave the loop. Nothing is
+    // skipped while the register and the word differ. A skip there would keep the CPU in the loop until the next
+    // device event. The skip reads the word only where it lies whole in a page of RAM.
     uint32_t load = 0;
     uint32_t compare = 0;
     if (!Fetch(stop_pc_ - 8, load) || !Fetch(stop_pc_ - 4, compare))
@@ -270,7 +275,9 @@ void Cpu::SkipIdleLoop(int cr_field)
     const bool is_compare = (compare >> 26 == 10 || compare >> 26 == 11) && Ra(compare) == loaded &&
                             static_cast<int>(compare >> 23 & 7) == cr_field;
     const uint32_t address = (Ra(load) ? state_.gpr[Ra(load)] : 0) + static_cast<uint32_t>(Simm(load));
-    if (!is_load || !is_compare || DataPage(address) == nullptr)
+    const uint8_t* page = DataPage(address);
+    if (!is_load || !is_compare || page == nullptr || (address & kPageMask) > 0xffc ||
+        xsflib::LoadBe32(page + (address & kPageMask)) != state_.gpr[loaded])
     {
         return;
     }

@@ -149,15 +149,15 @@ private:
 // The wave archives of a game's wave systems in the DSP's memory, and a wave bank for each wave system.
 struct LoadedWaves
 {
-    std::unique_ptr<DspMemory> memory;  // the archives from SoundFiles::kWaves on, zeros below
+    std::unique_ptr<DspMemory> memory;  // the archives from the base on, zeros below
     std::map<uint32_t, WaveBank> banks; // by wave system
     std::vector<std::string> missing;   // the names of the archives that `waves` didn't give
 };
 
-// Loads the wave archives that `systems` name, each once, and the waves of each system's bank. JAudio1's sound files
-// load theirs the same way.
+// Loads the wave archives that `systems` name, each once, from `base` in the DSP's memory, and the waves of each
+// system's bank. JAudio1's sound files load theirs the same way. A test may use another base.
 LoadedWaves LoadWaveSystems(const std::vector<ntdlib::jaudio::WaveSystem>& systems,
-                            const SoundFiles::WaveArchives& waves);
+                            const SoundFiles::WaveArchives& waves, uint32_t base = SoundFiles::kWaves);
 
 // A sound played on the model, sub-frame by sub-frame. A frame of the DSP is 7 sub-frames.
 class Engine

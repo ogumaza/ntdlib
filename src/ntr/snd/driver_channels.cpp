@@ -135,7 +135,17 @@ uint16_t DecayRate(int value)
     return static_cast<uint16_t>(0x1E00 / (126 - value));
 }
 
-// SOUNDxTMR's period for a wave's period `timer` moved by `pitch`, in 1/64 of a semitone.
+// SOUNDxCNT's volume and divider for a level in 0.1 dB.
+uint16_t ChannelVolume(int level)
+{
+    level = std::clamp(level, kSilent, 0);
+    const int volume = tables::kVolume[level - kSilent];
+    const int divider = level < -240 ? 3 : level < -120 ? 2 : level < -60 ? 1 : 0;
+    return static_cast<uint16_t>(volume | divider << 8);
+}
+
+} // namespace
+
 uint16_t Timer(int timer, int pitch)
 {
     int octave = 0;
@@ -182,17 +192,6 @@ uint16_t Timer(int timer, int pitch)
 
     return static_cast<uint16_t>(result);
 }
-
-// SOUNDxCNT's volume and divider for a level in 0.1 dB.
-uint16_t ChannelVolume(int level)
-{
-    level = std::clamp(level, kSilent, 0);
-    const int volume = tables::kVolume[level - kSilent];
-    const int divider = level < -240 ? 3 : level < -120 ? 2 : level < -60 ? 1 : 0;
-    return static_cast<uint16_t>(volume | divider << 8);
-}
-
-} // namespace
 
 int16_t Driver::DecibelSquare(int index) const
 {

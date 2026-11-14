@@ -77,6 +77,123 @@ void TestJungleBeatChordLayers()
                                       jaudio::kJungleBeatStates);
     ntdlib::testing::CheckChordLayers("the Wii's chord layers", jaudio::kJungleBeatWiiChordLayers,
                                       jaudio::kJungleBeatWiiStates);
+
+    Check(std::size(jaudio::kJungleBeatChordLayers) == 135 && std::size(jaudio::kJungleBeatWiiChordLayers) == 135,
+          "the GameCube and the Wii have 135 layers each");
+
+    // Only the Wii's layers 127, 128 and 133 play in Survival Mode. Their mini files make the game's test for it answer
+    // yes. The fixed indices also guard the indices of the layers after them.
+    const std::size_t count = std::size(jaudio::kJungleBeatWiiChordLayers);
+    bool survival = true;
+    for (std::size_t i = 0; i < count && survival; i++)
+    {
+        const bool in_survival = i == 127 || i == 128 || i == 133;
+        const uint32_t id = jaudio::ChordLayerId(jaudio::kJungleBeatWiiChordLayers[i].piece, static_cast<uint32_t>(i));
+        const auto patch =
+            jaudio::JungleBeatSurvivalTest(jaudio::kJungleBeatWiiChordLayers, jaudio::kJungleBeatWiiSurvivalTest, id);
+        survival = jaudio::kJungleBeatWiiChordLayers[i].survival == in_survival && patch.has_value() == in_survival &&
+                   (!patch || (patch->address == 0x80265190 &&
+                               patch->data == std::vector<uint8_t>{0x38, 0x60, 0x00, 0x01, 0x4e, 0x80, 0x00, 0x20}));
+    }
+    Check(survival && jaudio::kJungleBeatWiiChordLayers[127].piece == 0x0100004b &&
+              jaudio::kJungleBeatWiiChordLayers[128].piece == 0x0100004b &&
+              jaudio::kJungleBeatWiiChordLayers[133].piece == 0x0100004b &&
+              jaudio::kJungleBeatWiiChordLayers[133].record == 157,
+          "the Wii's layers of Survival Mode");
+
+    // The attack chances of the fainting pigs: the GameCube's layers 130 to 133 are the Wii's 129 to 132.
+    bool pigs = true;
+    for (std::size_t i = 130; i < 134; i++)
+    {
+        const jaudio::JungleBeatChordLayer& gc = jaudio::kJungleBeatChordLayers[i];
+        const jaudio::JungleBeatChordLayer& wii = jaudio::kJungleBeatWiiChordLayers[i - 1];
+        pigs = pigs && gc.record == 157 && gc.second == 158 && gc.started_once && wii.piece == gc.piece &&
+               wii.stage == gc.stage && wii.record == 157 && !wii.survival;
+    }
+    Check(pigs && jaudio::kJungleBeatChordLayers[130].piece == 0x01000005 &&
+              jaudio::kJungleBeatChordLayers[131].piece == 0x01000003 &&
+              jaudio::kJungleBeatChordLayers[132].piece == 0x0100003f &&
+              jaudio::kJungleBeatChordLayers[133].piece == 0x0100004a,
+          "the attack chances of the fainting pigs");
+    Check(!jaudio::JungleBeatSurvivalTest(jaudio::kJungleBeatWiiChordLayers, jaudio::kJungleBeatWiiSurvivalTest,
+                                          0x0100004b) &&
+              !jaudio::JungleBeatSurvivalTest(jaudio::kJungleBeatWiiChordLayers, jaudio::kJungleBeatWiiSurvivalTest,
+                                              jaudio::ChordLayerId(0x0100004b, 200)),
+          "a piece and a layer past the list get no patch");
+    Check(std::ranges::none_of(jaudio::kJungleBeatChordLayers, &jaudio::JungleBeatChordLayer::survival),
+          "the GameCube has no Survival Mode");
+
+    // The GameCube's layers 129 and 134 play in a boss fight. Their mini files write the piece over the music of the
+    // row of their stage in the stage table: VsFinalKong (0x56) and VsGoroPig1 (0x2e). On the Wii, only layer 134 does,
+    // through the Wii's table. The fixed indices also guard the indices of the layers before them.
+    struct Fight
+    {
+        std::span<const jaudio::JungleBeatChordLayer> layers;
+        uint32_t stage_table = 0;
+        std::vector<std::size_t> indices;
+        std::vector<uint32_t> addresses;
+    };
+    const Fight kFights[] = {
+        {jaudio::kJungleBeatChordLayers, jaudio::kJungleBeatStageTable, {129, 134}, {0x803b3ed8, 0x803b3c58}},
+        {jaudio::kJungleBeatWiiChordLayers, jaudio::kJungleBeatWiiStageTable, {134}, {0x803ab290}},
+    };
+    bool fight = true;
+    for (const Fight& console : kFights)
+    {
+        for (std::size_t i = 0; i < console.layers.size() && fight; i++)
+        {
+            const jaudio::JungleBeatChordLayer& layer = console.layers[i];
+            const auto patch = jaudio::JungleBeatFightMusic(
+                console.layers, console.stage_table, jaudio::ChordLayerId(layer.piece, static_cast<uint32_t>(i)));
+            const auto at = std::ranges::find(console.indices, i);
+            const bool in_fight = at != console.indices.end();
+            const uint32_t piece = layer.piece;
+            const std::vector<uint8_t> data = {static_cast<uint8_t>(piece >> 24), static_cast<uint8_t>(piece >> 16),
+                                               static_cast<uint8_t>(piece >> 8), static_cast<uint8_t>(piece)};
+            fight =
+                layer.fight == in_fight && patch.has_value() == in_fight &&
+                (!patch || (patch->address == console.addresses[at - console.indices.begin()] && patch->data == data));
+        }
+    }
+    const jaudio::JungleBeatChordLayer& final_fight = jaudio::kJungleBeatChordLayers[129];
+    Check(fight && final_fight.piece == 0x0100004b && final_fight.stage == 0x56 && final_fight.record == 136,
+          "the GameCube's layer of the final fight");
+    const auto goro = jaudio::JungleBeatFightMusic(jaudio::kJungleBeatChordLayers, jaudio::kJungleBeatStageTable,
+                                                   jaudio::ChordLayerId(0x01000044, 134));
+    const auto wii_goro = jaudio::JungleBeatFightMusic(
+        jaudio::kJungleBeatWiiChordLayers, jaudio::kJungleBeatWiiStageTable, jaudio::ChordLayerId(0x01000044, 134));
+    const std::vector<uint8_t> kGoroPigB = {0x01, 0x00, 0x00, 0x44};
+    const auto is_goro_layer = [](const jaudio::JungleBeatChordLayer& layer)
+    {
+        return layer.piece == 0x01000044 && layer.stage == 0x2e && layer.record == 157 && layer.second == 158 &&
+               layer.started_once && !layer.survival && std::string_view(layer.suffix) == "attack_chance";
+    };
+    Check(is_goro_layer(jaudio::kJungleBeatChordLayers[134]) && is_goro_layer(jaudio::kJungleBeatWiiChordLayers[134]) &&
+              goro && goro->address == 0x803b3c58 && goro->data == kGoroPigB && wii_goro &&
+              wii_goro->address == 0x803ab290 && wii_goro->data == kGoroPigB,
+          "the GoroPig fights' layer 134 starts JA_BGM_BOSS_GOROPY_B on both consoles");
+    Check(!jaudio::JungleBeatFightMusic(jaudio::kJungleBeatChordLayers, jaudio::kJungleBeatStageTable, 0x0100004b) &&
+              !jaudio::JungleBeatFightMusic(jaudio::kJungleBeatChordLayers, jaudio::kJungleBeatStageTable,
+                                            jaudio::ChordLayerId(0x0100004b, 200)) &&
+              !jaudio::JungleBeatFightMusic(jaudio::kJungleBeatWiiChordLayers, jaudio::kJungleBeatWiiStageTable,
+                                            0x01000044),
+          "a piece and a layer past the list get no row");
+
+    // The driver's tables: word 129 gives the fight's stage and record on the GameCube, and MorningField's attack
+    // chance on the Wii. The words of the attack chances give their stages and records, and the flag of a layer started
+    // once. Word 134 gives the GoroPig fights' attack chance on both consoles.
+    std::vector<uint32_t> words;
+    jaudio::AppendChordLayers(jaudio::kJungleBeatChordLayers, words);
+    std::vector<uint32_t> wii_words;
+    jaudio::AppendChordLayers(jaudio::kJungleBeatWiiChordLayers, wii_words);
+    const std::vector<uint32_t> kPigs = {0x011e9e9d, 0x012d9e9d, 0x01499e9d, 0x01589e9d};
+    Check(words.size() == 256 && words[129] == 0x00560088 &&
+              std::equal(kPigs.begin(), kPigs.end(), words.begin() + 130) && words[134] == 0x012e9e9d &&
+              words[135] == 0,
+          "the GameCube's words from 129");
+    Check(wii_words.size() == 256 && std::equal(kPigs.begin(), kPigs.end(), wii_words.begin() + 129) &&
+              wii_words[133] == 0x01589e9d && wii_words[134] == 0x012e9e9d && wii_words[135] == 0,
+          "the Wii's words from 129");
 }
 
 // A main.dol with the rows of three pieces and their states: piece 0 starts with every track off (code 2 for track 0,

@@ -393,6 +393,8 @@ void SoundUnit::Run(uint64_t ticks)
     Advance(ticks, nullptr, nullptr);
 }
 
+SoundUnit::EnhancedState::EnhancedState() = default;
+
 void SoundUnit::StartEnhanced()
 {
     // The channels that play now join the mix at their next start.

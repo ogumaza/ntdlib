@@ -720,7 +720,7 @@ void Performer::SyncTrack(int number, const snd::Track& track)
     const std::array<std::pair<EventKind, uint8_t>, 5> all_settings = {{
         {EventKind::kVolume, static_cast<uint8_t>(std::min<int>(track.volume, 127))},
         {EventKind::kExpression, s_.recorder.Expression(level)},
-        {EventKind::kPan, static_cast<uint8_t>(std::clamp<long>(std::lround(64.0 + 64.0 * PanPosition(pan)), 0, 127))},
+        {EventKind::kPan, PanController(pan)},
         {EventKind::kModulation, static_cast<uint8_t>(std::min<int>(track.modulation.depth, 127))},
         {EventKind::kReverb, static_cast<uint8_t>(options_.reverb ? std::clamp(options_.reverb->volume, 0, 127) : 0)},
     }};

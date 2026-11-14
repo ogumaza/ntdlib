@@ -35,11 +35,13 @@
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/ntr/convert.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
+#include "ntdlib/sequence_export/universomo/convert.h"
 
 namespace ntdlib::sequence_export::ntr
 {
 
 namespace dse = ntdlib::sequence_export::dse;
+namespace ums = ntdlib::sequence_export::universomo;
 namespace fs = std::filesystem;
 
 namespace
@@ -110,6 +112,8 @@ std::string UsageText(const ArchiveConverter& archive_converter)
     text += "beside the input. A cartridge image gives each sound archive in its files a\n";
     text += "folder of its own there, and so does each folder of DSE's songs (.smd) and sound\n";
     text += "effects (.sed). A sound effect is named after its file and its slot: se_sys_005.\n";
+    text += "The songs of Universomo's driver (.ums, as in Beat City) go in the folder\n";
+    text += "universomo, each named after its file: au81.\n";
     text += "You can also drop inputs onto " + c.program + ".exe on Windows or " + app + ".app on\n";
     text += "macOS.\n";
     text += "\n";
@@ -342,6 +346,43 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
         }
     }
 
+    // Universomo's songs, each folder of them with an output folder.
+    std::vector<std::string> ums_warnings;
+    const std::vector<ums::SongSet> ums_sets = ums::FindSongs(*rom, ums_warnings);
+    struct FoundUms
+    {
+        std::string label;
+        std::string folder;
+        std::vector<Sequence> selected;
+    };
+    std::vector<FoundUms> found_ums;
+    for (const ums::SongSet& set : ums_sets)
+    {
+        std::string folder = "universomo";
+        for (int n = 2; !folders.insert(xsflib::AsciiLower(folder)).second; n++)
+        {
+            folder = "universomo_" + std::to_string(n);
+        }
+
+        FoundUms group{
+            name + "/" + (set.folder.empty() ? "universomo" : set.folder.substr(0, set.folder.size() - 1)), folder, {}};
+        for (std::size_t i = 0; i < set.songs.size(); i++)
+        {
+            if (std::regex_search(set.songs[i].name, only))
+            {
+                group.selected.push_back({i, set.songs[i].name});
+            }
+        }
+        found_ums.push_back(std::move(group));
+    }
+    if (!options.quiet)
+    {
+        for (const std::string& warning : ums_warnings)
+        {
+            std::fprintf(stderr, "warning: %s: %s\n", name.c_str(), warning.c_str());
+        }
+    }
+
     if (options.list)
     {
         if (several)
@@ -364,11 +405,20 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
                 std::printf("%s  %s\n", several ? "  " : "", sequence.name.c_str());
             }
         }
+        for (const FoundUms& group : found_ums)
+        {
+            std::printf("%s%s:\n", several ? "  " : "", group.label.c_str());
+            for (const Sequence& sequence : group.selected)
+            {
+                std::printf("%s  %s\n", several ? "  " : "", sequence.name.c_str());
+            }
+        }
         return 0;
     }
 
     if (std::ranges::none_of(found, [](const Found& item) { return !item.selected.empty(); }) &&
-        std::ranges::none_of(found_dse, [](const FoundDse& group) { return !group.selected.empty(); }))
+        std::ranges::none_of(found_dse, [](const FoundDse& group) { return !group.selected.empty(); }) &&
+        std::ranges::none_of(found_ums, [](const FoundUms& group) { return !group.selected.empty(); }))
     {
         std::fprintf(stderr, "%s: no sequences%s\n", name.c_str(), options.only.empty() ? "" : " match");
         return 1;
@@ -435,6 +485,31 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
             return dse::ConvertSequence(sequence.Files(), sequence.name, perform, converter.program);
         };
         failed += ConvertAll<dse::Conversion>(group.selected, folder, options.quiet, converter.samples_folder, convert);
+    }
+
+    for (std::size_t g = 0; g < found_ums.size(); g++)
+    {
+        const FoundUms& group = found_ums[g];
+        if (group.selected.empty())
+        {
+            continue;
+        }
+
+        const fs::path folder = out_dir / PathFromUtf8(group.folder);
+        fs::create_directories(folder);
+        if (!options.quiet)
+        {
+            std::printf("%s: %zu sequences -> %s\n", group.label.c_str(), group.selected.size(), Utf8(folder).c_str());
+        }
+
+        const ums::SongSet& set = ums_sets[g];
+        const auto convert = [&](std::size_t index)
+        {
+            const ums::SongInput& song = set.songs.at(index);
+            const ums::PerformOptions perform{.loops = options.perform.loops, .loop = song.loop};
+            return ums::ConvertSequence(song.song, set.bank, song.name, perform, converter.program);
+        };
+        failed += ConvertAll<ums::Conversion>(group.selected, folder, options.quiet, converter.samples_folder, convert);
     }
 
     return failed > 0 ? 1 : 0;

@@ -697,7 +697,7 @@ void Performer::SyncChannel(int number, double after)
     const std::array<std::pair<EventKind, uint8_t>, 3> settings = {{
         {EventKind::kVolume, static_cast<uint8_t>(std::min<int>(channel.volume, 127))},
         {EventKind::kExpression, s_.recorder.Expression(level)},
-        {EventKind::kPan, static_cast<uint8_t>(std::clamp<long>(std::lround(64.0 + 64.0 * PanPosition(pan)), 0, 127))},
+        {EventKind::kPan, PanController(pan)},
     }};
 
     // The part that new notes go to, and every part on which a note of the channel sounds. The voices that release

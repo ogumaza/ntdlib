@@ -212,7 +212,9 @@ inline constexpr auto kJungleBeatWiiStates = []
 // battle and the attack chance of a stunned enemy, which plays two records. A ripper gives a piece with a layer the
 // piece's sound ID with kChordLayer and bits 0 to 6 of the layer's index in bits 16 to 22. Bit 15 holds bit 7 of the
 // index. A piece's ID holds 0 there, and the bits of the other variants' states stay as they were. The driver starts
-// the music of the stage's row and the effects.
+// the music of the stage's row and the effects. A layer of Survival Mode starts the stage's music as Survival Mode
+// does (JungleBeatSurvivalTest). A layer of a boss fight whose demo starts other music than the row gives starts the
+// fight's music through the row of its stage (JungleBeatFightMusic).
 //
 // The layers come from the objects that each stage places (the objinfo of its world/*.arc) and the records that each
 // object's class plays. The Wii release's main.dol names the classes of its nerves (RTTI). The calls of the helpers
@@ -222,12 +224,14 @@ inline constexpr auto kJungleBeatWiiStates = []
 // The driver's table has room for 256 layers.
 struct JungleBeatChordLayer
 {
-    uint32_t piece = 0;  // the music of the stage's row
+    uint32_t piece = 0;  // the music of the row, JA_BGM_BOSS_FINAL in Survival Mode, or the music of a boss fight
     uint32_t stage = 0;  // the stage's number, its row of the stage table
     uint32_t record = 0; // the record of the chord database
     uint32_t second = 0; // a second record that starts with the first, or 0
     bool started_once = false;
     const char* suffix = "";
+    bool survival = false; // the stage plays in Survival Mode, the Wii release's course of world 5 and kingdom 3
+    bool fight = false;    // the stage's boss fight starts the piece in place of the music of the row
 };
 
 inline constexpr uint32_t kChordLayer = 1u << 23;
@@ -395,29 +399,163 @@ inline constexpr JungleBeatChordLayer kJungleBeatChordLayers[] = {
     {0x0100003f, 0x49, 143, 0, false, "dk_has_weight_damage"}, // JA_BGM_MAIN_21 at DemonFireMarsh: IceMiniIga
     {0x0100004a, 0x58, 135, 0, false, "enemy_angry"},          // JA_BGM_MAIN_22 at VsFinalKong2: PigPoppoKiba
     {0x0100004a, 0x56, 136, 0, false, "dk_wait_attack"},       // JA_BGM_MAIN_22 at VsFinalKong: NinKnifeMonkey
-    // The opening ceremony's layer comes last. The other layers keep the indices that they had in a table of 128.
+    // A new layer goes at the end of the list, and every layer keeps its index. The opening ceremony's layer was the
+    // first that went after a table of 128.
     {0x01000006, 0x57, 132, 0, false, "lect_kikki_run"}, // JA_BGM_OP_CEMEMONY at OpeningCeremony: LectureKikki
+    // In round 1 of the final fight, at VsFinalKong (0x56) and VsFinalKong2 (0x58), the boss's pig asks for the record
+    // while DK holds it. The fight's demo has started JA_BGM_BOSS_FINAL by then (0x800cf840), in place of the row's
+    // JA_BGM_MAIN_22. The piece stays in its first state: no code calls the state setters (0x802565b8, 0x802569e8)
+    // between the piece's start and the end of the bind. FinalKong's `hold` is for DK on the boss himself.
+    {0x0100004b, 0x56, 136, 0, false, "dk_wait_attack", false, true}, // JA_BGM_BOSS_FINAL at VsFinalKong: PigPoppoBoss
+    // A pig that faints starts the attack chance (FaintStart, 0x800e0af8) while slot +0xa4 of the pig's vtable returns
+    // 0. Only PigPoppoBoss returns 1 there. Dolphin runs that called the faint function show that startChordSe accepts
+    // both records over these four pieces. That DK's clap reaches the faint function is a reading. At VsFinalKong2,
+    // the pig stands outside the arena while JA_BGM_MAIN_22 plays.
+    {0x01000005, 0x1e, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_01 at MorningField: PigPoppoSleepWithHint
+    {0x01000003, 0x2d, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_04 at BigGodTree: PigPoppoKiba
+    {0x0100003f, 0x49, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_21 at DemonFireMarsh: PigPoppoFire
+    {0x0100004a, 0x58, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_22 at VsFinalKong2: PigPoppoKiba
+    // GoroPig throws CocoNuts in its fight: an attack (ThrowCoco), and a toss as it staggers (0x8005558c calls
+    // 0x80058938). A CocoNut that gets the message that ends DK's attack event (72) starts the attack chance. In the
+    // Wii release it stops the pair 20 steps later. The rows of the four GoroPig stages (0x2e, 0x31, 0x34 and 0x37)
+    // give JA_BGM_BOSS_GOROPY_A. The fight's demo starts JA_BGM_BOSS_GOROPY_B before any throw (DemoGoroPigBattleStart,
+    // 0x800cb688). In Dolphin runs whose hook sent the message, the state setter 0x802565b8 didn't run between that
+    // start and the attack chance. The layer rips over B's first state, the state the runs measured. In play, GoroPig's
+    // damage nerves may set `hit` or `round2_hit` first.
+    {0x01000044, 0x2e, 157, 158, true, "attack_chance", false, true}, // JA_BGM_BOSS_GOROPY_B at VsGoroPig1: CocoNut
 };
 
 static_assert(std::size(kJungleBeatChordLayers) <= kMaxChordLayers);
 
-// The Wii release's chord layers. Its stage table gives the same stages the same rows and music, and its startChordSe
-// refuses the same records at the castle stages (0x80273940). Its stages place other objects, but the objects that play
-// these effects stay, with one exception: KikkiFestival (0x32) places no MiniIga. The Wii release's main.dol starts a
-// record through 0x8027c050 and keeps it playing through 0x8027c0b0.
+// The GameCube's layers that come before Survival Mode's in the Wii's list: the layers that the table had before the
+// final fight's.
+inline constexpr std::size_t kJungleBeatFirstChordLayers = 129;
+static_assert(kJungleBeatChordLayers[kJungleBeatFirstChordLayers - 1].piece == 0x01000006);
+
+// The number of GameCube layers that precede kLaterSurvival in the Wii's list.
+inline constexpr std::size_t kJungleBeatSecondChordLayers = 134;
+static_assert(kJungleBeatChordLayers[kJungleBeatSecondChordLayers - 1].piece == 0x0100004a &&
+              kJungleBeatChordLayers[kJungleBeatSecondChordLayers - 1].record == 157);
+
+// The Wii release's chord layers. Its stage table (kJungleBeatWiiStageTable) gives the same stages the same rows and
+// music, and its startChordSe refuses the same records at the castle stages (0x80273940). Its stages place other
+// objects, but the objects that play these effects stay, with one exception: KikkiFestival (0x32) places no MiniIga.
+// The Wii release's main.dol starts a record through 0x8027c050 and keeps it playing through 0x8027c0b0.
+//
+// Survival Mode's first two layers follow the GameCube's first kJungleBeatFirstChordLayers layers. The GameCube's
+// layers up to kJungleBeatSecondChordLayers follow them, then Survival Mode's later layer, then the GameCube's later
+// layers. Every layer then keeps its index. Survival Mode plays DreadKong01, VsKonfu, VsMiyamoto, VsAkebono
+// and VsFinalKong2 in that order (0x801dc270 starts it, 0x8025fac0 picks the next stage). Of these, only VsFinalKong2
+// (0x58) places objects that play chord effects, and its row gives JA_BGM_MAIN_22. In Survival Mode, start_stage_music
+// (0x80277590) starts JA_BGM_BOSS_FINAL (0x0100004b) in its place, and the objects play their records over that piece.
+// The main game's layers of VsFinalKong2 belong to JA_BGM_MAIN_22: enemy_angry at 0x58, and dk_wait_attack at
+// VsFinalKong (0x56), which places the same object.
+//
+// Survival Mode's dk_wait_attack layer also plays in the main game's final fight. In round 1 at 0x56 and 0x58, the
+// boss's pig asks for the record while DK holds it. The fight's demo has started JA_BGM_BOSS_FINAL by then (0x800e7f0c,
+// through 0x8027bb90). The list therefore leaves out the GameCube's layer of the final fight: the same piece and record
+// are already in the list.
+//
+// In Survival Mode, VsFinalKong2's PigPoppoKiba faints as in the main game, and startChordSe accepts the attack
+// chance over JA_BGM_BOSS_FINAL. kLaterSurvival contains that layer. It follows the four attack chances of the
+// fainting pigs, at index 133.
+//
+// The GoroPig fights play as on the GameCube. Their demo starts JA_BGM_BOSS_GOROPY_B at 0x800e3c98, and a CocoNut
+// that gets the message that ends DK's attack event (77) starts the attack chance (AttackedInEvent, 0x8010dd50). The
+// layer keeps its flag `fight`, at index 134 on both consoles. The Wii's start_stage_music (0x80277590) reads the
+// music of the row at 0x802775c4 to 0x802775d4.
 inline constexpr auto kJungleBeatWiiChordLayers = []
 {
-    std::array<JungleBeatChordLayer, std::size(kJungleBeatChordLayers) - 2> layers{};
-    std::size_t n = 0;
-    for (const JungleBeatChordLayer& layer : kJungleBeatChordLayers)
+    // KikkiFestival's MiniIga and the GameCube's layer of the final fight stay out. The other fight layers stay in.
+    constexpr auto kOnWii = [](const JungleBeatChordLayer& layer)
     {
-        if (layer.stage != 0x32 || (layer.record != 138 && layer.record != 143))
-        {
-            layers[n++] = layer;
-        }
-    }
+        const bool final_fight = layer.fight && layer.piece == 0x0100004b;
+        return !final_fight && (layer.stage != 0x32 || (layer.record != 138 && layer.record != 143));
+    };
+
+    constexpr JungleBeatChordLayer kSurvival[] = {
+        {0x0100004b, 0x58, 135, 0, false, "enemy_angry", true},    // JA_BGM_BOSS_FINAL: PigPoppoKiba
+        {0x0100004b, 0x58, 136, 0, false, "dk_wait_attack", true}, // JA_BGM_BOSS_FINAL: NinKnifeMonkey, PigPoppoBoss
+    };
+    // A later layer of the Wii alone goes into a new array, copied after the GameCube's layers of that time. These two
+    // arrays take no more rows.
+    constexpr JungleBeatChordLayer kLaterSurvival[] = {
+        {0x0100004b, 0x58, 157, 158, true, "attack_chance", true}, // JA_BGM_BOSS_FINAL: PigPoppoKiba
+    };
+    constexpr std::span<const JungleBeatChordLayer> kGameCube = kJungleBeatChordLayers;
+    constexpr std::size_t kFirst = kJungleBeatFirstChordLayers;
+    constexpr std::size_t kSecond = kJungleBeatSecondChordLayers;
+
+    std::array<JungleBeatChordLayer,
+               std::ranges::count_if(kJungleBeatChordLayers, kOnWii) + std::size(kSurvival) + std::size(kLaterSurvival)>
+        layers{};
+    auto out = std::ranges::copy_if(kGameCube.first(kFirst), layers.begin(), kOnWii).out;
+    out = std::ranges::copy(kSurvival, out).out;
+    out = std::ranges::copy_if(kGameCube.subspan(kFirst, kSecond - kFirst), out, kOnWii).out;
+    out = std::ranges::copy(kLaterSurvival, out).out;
+    std::ranges::copy_if(kGameCube.subspan(kSecond), out, kOnWii);
+
     return layers;
 }();
+
+// The Wii release's test for Survival Mode (0x80265190). It compares the course record of the game's system object
+// with the index of world 5 and kingdom 3 in the game's pairs of a world and a kingdom (0x801d87b0, 0x8043c738).
+inline constexpr uint32_t kJungleBeatWiiSurvivalTest = 0x80265190;
+
+// The layer of `layers` that `sound_id` names (see ChordLayerId), or null for a piece and for an index past the list.
+constexpr const JungleBeatChordLayer* ChordLayerOf(std::span<const JungleBeatChordLayer> layers, uint32_t sound_id)
+{
+    if ((sound_id & kChordLayer) == 0)
+    {
+        return nullptr;
+    }
+
+    const uint32_t index = (sound_id >> kChordLayerShift & 0x7f) | ((sound_id & kChordLayerHigh) != 0 ? 0x80 : 0);
+    return index < layers.size() ? &layers[index] : nullptr;
+}
+
+// For a layer of Survival Mode in `layers` (`sound_id`, see ChordLayerId), the test for Survival Mode at `test`
+// answering yes: li r3, 1 and blr, for the layer's mini file. The stage then starts its music as Survival Mode does.
+// Gives nothing for another sound. The driver's code stays the same: any code that it runs before a layer's music
+// starts moves the other layers' effects against the DSP's frames.
+inline std::optional<flipper::z2::PieceState::Memory> JungleBeatSurvivalTest(
+    std::span<const JungleBeatChordLayer> layers, uint32_t test, uint32_t sound_id)
+{
+    const JungleBeatChordLayer* layer = ChordLayerOf(layers, sound_id);
+    if (layer == nullptr || !layer->survival)
+    {
+        return std::nullopt;
+    }
+
+    return flipper::z2::PieceState::Memory{test, {0x38, 0x60, 0x00, 0x01, 0x4e, 0x80, 0x00, 0x20}};
+}
+
+// The GameCube release's stage table (0x803b3978): 16 bytes a row, by the stage's number, with the music of the row
+// first.
+inline constexpr uint32_t kJungleBeatStageTable = 0x803b3978;
+
+// The Wii release's stage table, with the GameCube's rows.
+inline constexpr uint32_t kJungleBeatWiiStageTable = 0x803aafb0;
+
+// For a layer of a boss fight in `layers` (`sound_id`, see ChordLayerId), the layer's piece written over the music of
+// the row of its stage in the stage table at `stage_table` (kJungleBeatStageTable or kJungleBeatWiiStageTable), for the
+// layer's mini file. The stage's start (0x8025049c, 0x80277590 on the Wii) then starts the fight's music, as the
+// fight's demo does later. Gives nothing for another sound. The driver's code stays the same: any code that it runs
+// before a layer's music starts moves the other layers' effects against the DSP's frames.
+inline std::optional<flipper::z2::PieceState::Memory> JungleBeatFightMusic(std::span<const JungleBeatChordLayer> layers,
+                                                                           uint32_t stage_table, uint32_t sound_id)
+{
+    const JungleBeatChordLayer* layer = ChordLayerOf(layers, sound_id);
+    if (layer == nullptr || !layer->fight)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t piece = layer->piece;
+    return flipper::z2::PieceState::Memory{stage_table + layer->stage * 16,
+                                           {static_cast<uint8_t>(piece >> 24), static_cast<uint8_t>(piece >> 16),
+                                            static_cast<uint8_t>(piece >> 8), static_cast<uint8_t>(piece)}};
+}
 
 // The BGM player's second table of states: 12 bytes per piece at `rows`, by the low 16 bits of the piece's sound ID,
 // with the index of the piece's row at +4 (-1 for none), and 8 states of 8 bytes per row at `states`. A state holds a
