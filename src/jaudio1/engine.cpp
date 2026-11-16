@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -135,9 +136,41 @@ Engine::Engine(const SoundFiles& files, const Settings& settings)
 
 Engine::~Engine() = default;
 
+Engine::Snapshot Engine::Save() const
+{
+    Snapshot snapshot;
+    if (model_ != nullptr)
+    {
+        // The copy's pointers name the parts of this model: the voices, the DSP's memory and the outer parameters that
+        // the tracks read. Restore copies it back into this model.
+        snapshot.model = std::make_shared<const Model>(*model_);
+        snapshot.engine = this;
+        snapshot.start = starts_;
+        snapshot.memory.assign(memory_->Bytes().begin(), memory_->Bytes().begin() + SoundFiles::kWaves);
+        snapshot.output = output_;
+    }
+
+    return snapshot;
+}
+
+void Engine::Restore(const Snapshot& snapshot)
+{
+    if (snapshot.model == nullptr || snapshot.engine != this || snapshot.start != starts_ || model_ == nullptr)
+    {
+        throw std::logic_error("the snapshot wasn't taken after the engine's current start");
+    }
+
+    // The assignment keeps the model and the tracks' outer parameters where they are. The tracks' pointers to the
+    // outer parameters therefore stay valid.
+    *model_ = *snapshot.model;
+    std::copy(snapshot.memory.begin(), snapshot.memory.end(), memory_->Bytes().begin());
+    output_ = snapshot.output;
+}
+
 std::optional<std::string> Engine::Start(uint16_t id, const PieceSettings& piece)
 {
     model_.reset();
+    ++starts_;
     const SoundFiles::SequenceFile* file = files_.FindSequence(id);
     if (file == nullptr)
     {
@@ -725,6 +758,11 @@ bool Engine::PlayedNotes(uint32_t track) const
 bool Engine::QuietPass(uint32_t track) const
 {
     return model_ && model_->tracks.QuietPass(track);
+}
+
+uint32_t Engine::Cursor(uint32_t track) const
+{
+    return model_ ? model_->tracks.TrackAt(track).cursor : 0;
 }
 
 bool Engine::Held() const

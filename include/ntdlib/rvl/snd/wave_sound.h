@@ -40,6 +40,13 @@ public:
         return id_;
     }
 
+    // Sets the sound's low-pass (BasicSound::SetLpfFreq, through the sound's handle and its sound player). The channel
+    // takes it. It starts at 0, the filter off.
+    void SetLpfFreq(float lpf)
+    {
+        lpf_ = lpf;
+    }
+
     // The sound thread's start (WsdPlayer::Start, 0x8004f868). The channel starts in the player's next update.
     void Start()
     {
@@ -95,6 +102,7 @@ private:
     // What the archive player gives the sound from its entry (SoundArchivePlayer::PrepareWaveSoundImpl, 0x80045400),
     // as the player holds it. Archive mode leaves the game's parameters at their starting values.
     float volume_ = 1.0f;
+    float lpf_ = 0.0f; // the sound's low-pass (SetLpfFreq)
     uint32_t pan_mode_ = 0;
     uint32_t pan_curve_ = 0;
     uint8_t channel_priority_ = 64;

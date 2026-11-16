@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/jaudio1/calc.h"
@@ -176,6 +177,61 @@ struct Effect
 
 } // namespace
 
+// An object that a model owns, or none. A copy owns a copy of the object, for a snapshot. An assignment between two
+// that each own one assigns the object in place.
+template <typename T>
+class Owned
+{
+public:
+    Owned() = default;
+
+    Owned(const Owned& other) : object_(other.object_ ? std::make_unique<T>(*other.object_) : nullptr)
+    {
+    }
+
+    Owned& operator=(const Owned& other)
+    {
+        if (!other.object_)
+        {
+            object_.reset();
+        }
+        else if (object_)
+        {
+            *object_ = *other.object_;
+        }
+        else
+        {
+            object_ = std::make_unique<T>(*other.object_);
+        }
+
+        return *this;
+    }
+
+    Owned& operator=(std::unique_ptr<T> object)
+    {
+        object_ = std::move(object);
+        return *this;
+    }
+
+    explicit operator bool() const
+    {
+        return object_ != nullptr;
+    }
+
+    T& operator*() const
+    {
+        return *object_;
+    }
+
+    T* operator->() const
+    {
+        return object_.get();
+    }
+
+private:
+    std::unique_ptr<T> object_;
+};
+
 // The model of one piece: the channels, the tracks and the DSP, and JAI's state for the piece's sequence.
 struct Engine::Model
 {
@@ -224,10 +280,10 @@ struct Engine::Model
     bool odd_beat = false;
 
     // An AutoBgm piece's conductor.
-    std::unique_ptr<Conductor> conductor;
+    Owned<Conductor> conductor;
 
     // The effect on the effect sequence, or null for a piece of music.
-    std::unique_ptr<Effect> effect;
+    Owned<Effect> effect;
 
     // Each horn's place in its tune (Rappa's table index).
     std::array<uint16_t, 2> horn_places{};

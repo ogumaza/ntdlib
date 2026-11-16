@@ -201,7 +201,8 @@ void StrmPlayer::Update(Engine& engine)
     // The voices' parameters. The builds before March 2008 give the one voice the player's values. The later builds
     // give each track's voice the track's volume and pan on top, then the volume that the game's code sets on the
     // track (UpdateVoiceParams, 0x800a6ff0). Archive mode leaves the player's pitch at 1, its pan and surround pan at
-    // 0, its low-pass filter at 0 and its main send at 0. The sends are those that the game sets on the sound.
+    // 0 and its main send at 0. The low-pass filter's scale is 1 plus the sound's low-pass (SetLpfFreq). The sends are
+    // those that the game and the sound player set on the sound.
     const std::array<float, ax::kAuxBusCount> sends = engine.SoundSends(id_);
     for (std::size_t index = 0; index < tracks_.size(); index++)
     {
@@ -226,7 +227,9 @@ void StrmPlayer::Update(Engine& engine)
         voice.SetPitch(1.0f);
         voice.SetPan(pan);
         voice.SetSurroundPan(0.0f);
-        voice.SetLpfFreq(1.0f);
+        float lpf_freq = 1.0f;
+        lpf_freq += lpf_;
+        voice.SetLpfFreq(lpf_freq);
         voice.SetMainOutVolume(1.0f);
         voice.SetMainSend(0.0f);
         for (std::size_t bus = 0; bus < sends.size(); bus++)

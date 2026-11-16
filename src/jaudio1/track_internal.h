@@ -2,8 +2,9 @@
 
 // Definitions that the parts of jaudio1's tracks share (track.cpp, track_registers.cpp, track_notes.cpp and
 // track_parser.cpp): the game's tables of points and settings of oscillators, the registers' numbers, the flags of the
-// levels' updates and the timed levels. The four files build as one translation unit. The definitions therefore keep
-// internal linkage. Only those files include this header.
+// levels' updates, the timed levels and the parser's table of arguments. The four files build as one translation unit.
+// The walk of a sequence (sequence_walk.cpp) reads the parser's table too. The definitions therefore keep internal
+// linkage. Only those files include this header.
 
 #pragma once
 
@@ -83,6 +84,27 @@ constexpr std::size_t kTimedDelay = 17;
 // 32767 and 1/32768 in single precision.
 constexpr float kShortMax = 32767.0f;
 constexpr float kShortScale = 1.0f / 32768.0f;
+
+// JASSeqParser's Arglist (0x94b542): for each command from 0xc0, the count of arguments, and their widths in 2 bits
+// each from the low bits: 0 a byte, 1 16 bits, 2 24 bits, 3 a register's value by a byte.
+struct ArgSpec
+{
+    uint16_t count;
+    uint16_t types;
+};
+
+// clang-format off
+constexpr std::array<ArgSpec, 64> kArgs = {{
+    {0, 0}, {2, 8}, {2, 8}, {1, 2}, {0, 0}, {0, 0}, {1, 0}, {1, 2}, {0, 0}, {1, 1}, {0, 0}, {2, 0}, {2, 0xc}, {1, 0},
+    {1, 0}, {1, 3}, {0, 0}, {2, 0xc}, {2, 0xc}, {0, 0}, {1, 0}, {1, 0}, {1, 0}, {2, 8}, {5, 0x155}, {1, 0}, {1, 0},
+    {1, 0}, {1, 1}, {2, 4}, {1, 0}, {2, 8}, {1, 0}, {0, 0}, {0, 0}, {0, 0}, {2, 4}, {1, 0}, {1, 1}, {1, 1}, {0, 0},
+    {0, 0}, {1, 2}, {5, 0}, {4, 0x55}, {1, 2}, {1, 2}, {3, 0}, {1, 0}, {1, 0}, {3, 0x28}, {1, 0}, {1, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1, 1}, {0, 0}, {0, 0}, {1, 1}, {1, 1}, {0, 0},
+}};
+// clang-format on
+
+// The commands from 0xc0 without a handler (sCmdPList's null entries).
+constexpr uint64_t kNullCommands = 0x03e00000000900a9ull;
 
 } // namespace
 } // namespace ntdlib::jaudio1

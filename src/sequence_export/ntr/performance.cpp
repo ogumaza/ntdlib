@@ -147,7 +147,7 @@ struct Voice
     uint8_t velocity = 0; // the MIDI note's velocity
     uint32_t note = 0;    // the MIDI note's id
     uint32_t ends = 0;    // the tick where the channel's length runs out, or UINT32_MAX for a channel without one
-    int32_t sweep_counter = 0; // the channel's sweep counter at the last frame's end
+    int32_t sweep_counter = 0; // the channel's sweep counter at the last frame's end, or at a later note or tie
     PresetKey preset;
     bool lfo_reported = false; // the change of the track's LFO during the note is counted
 };
@@ -507,6 +507,9 @@ void Performer::OnNote(const snd::NoteEvent& e)
         {
             Approximate("tie at another velocity (keeping the first note's)");
         }
+
+        // The tie starts the channel's sweep again, with its counter at 0.
+        v.sweep_counter = channel.sweep_counter;
         return;
     }
 
@@ -817,7 +820,10 @@ int32_t Performer::SweepApplied(int channel) const
         }
         counter--;
     }
-    if (counter >= ch.sweep_length)
+
+    // The driver applies a sweep only while its counter is below its length (Driver::StepSweep). The division below
+    // then never has a length of 0.
+    if (counter < 0 || counter >= ch.sweep_length)
     {
         return 0;
     }
@@ -976,11 +982,12 @@ bool Performer::Advance()
     return Driver().GetPlayer(0).active;
 }
 
+// A note that its track struck silent doesn't sound (snd::Driver::IsChannelSilent).
 bool Performer::AnySounding() const
 {
     for (int c = 0; c < snd::kChannelCount; c++)
     {
-        if (Driver().GetChannel(c).active)
+        if (Driver().GetChannel(c).active && !Driver().IsChannelSilent(c))
         {
             return true;
         }

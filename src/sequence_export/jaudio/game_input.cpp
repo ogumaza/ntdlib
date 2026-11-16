@@ -28,6 +28,7 @@
 #include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/sfz.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/yaz0.h"
 
 namespace ntdlib::sequence_export::jaudio
 {
@@ -63,11 +64,11 @@ bool IsStartUpArchiveFile(const std::filesystem::path& path)
 
     // Donkey Kong Jungle Beat compresses its start-up archive with Yaz0.
     std::vector<uint8_t> data;
-    if (ntdlib::jaudio::IsYaz0(header) && xsflib::ReadFile(path, data))
+    if (ntdlib::IsYaz0(header) && xsflib::ReadFile(path, data))
     {
         try
         {
-            return IsStartUpArchive(ntdlib::jaudio::DecodeYaz0(data));
+            return IsStartUpArchive(ntdlib::DecodeYaz0(data));
         }
         catch (const FormatError&)
         {

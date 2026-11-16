@@ -165,6 +165,10 @@ public:
 private:
     void ResetWaveBuffers(); // 0x18d9f4
 
+    // The part of ProcessStatus that walks the wave buffers when the DSP reports a change of buffer (0x18f46c). The
+    // buffers before `current`, the buffer playing, have finished. `last` is the queue's last finished buffer.
+    void FinishBuffers(uint16_t current, uint16_t last);
+
     // The DSP cycles a frame for the voice's format, rate, interpolation, filters and buses (0x1862ac).
     uint32_t ComputeDspCost() const;
 

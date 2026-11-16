@@ -166,8 +166,18 @@ int Driver::FollowCommand(int index, int number, Player& player, bool play_notes
     }
 
     const SoundState before = StateOf(track, player);
+    follow.struck_silent = false;
     const int result = RunCommand(index, number, player, play_notes);
-    if (StateOf(track, player) != before)
+
+    // A note that the track strikes silent changes nothing that sounds. The note's channel doesn't count as a change.
+    // Neither does the key that the next note's portamento starts from. A note that sounds marks both.
+    SoundState after = StateOf(track, player);
+    if (follow.struck_silent)
+    {
+        after.channels = before.channels;
+        after.portamento_key = before.portamento_key;
+    }
+    if (after != before)
     {
         MarkChange(index, player);
     }
@@ -359,6 +369,36 @@ bool Driver::HoldsSustainedNote(int index) const
     }
 
     return false;
+}
+
+// Whether a note of `velocity` that `track` strikes now gets a volume of 0 in SOUNDxCNT: the levels of the velocity,
+// the track volume, the expression and the player volume add up to kSilent or less. The note then stays silent until
+// one of those settings changes. The faders that a game sets aren't a part of the sequence, and don't count.
+bool Driver::StrikesSilent(const Track& track, const Player& player, int velocity) const
+{
+    const int32_t level = DecibelSquare(track.volume) + DecibelSquare(track.expression) + DecibelSquare(player.volume);
+    return IsSilentLevel(velocity, level, track.modulation);
+}
+
+// UpdateTrackChannels copies the sum of the track's levels to the channel's user_decay in the frame that strikes the
+// note. A release keeps the last sum.
+bool Driver::IsChannelSilent(int index) const
+{
+    const Channel& channel = channels_[static_cast<std::size_t>(index)];
+    return channel.active && channel.struck_silent &&
+           IsSilentLevel(channel.velocity, channel.user_decay, channel.lfo.parameters);
+}
+
+// Whether a note of `velocity` at `level`, the levels of the track volume, the expression and the player volume, gets
+// a volume of 0 in SOUNDxCNT. An LFO on the volume can raise the level. A note with such an LFO counts as sounding.
+bool Driver::IsSilentLevel(int velocity, int32_t level, const LfoParameters& lfo) const
+{
+    if (lfo.target == kLfoVolume && lfo.depth != 0 && lfo.range != 0)
+    {
+        return false;
+    }
+
+    return DecibelSquare(velocity) + level <= kSilent;
 }
 
 // A PCM wave loops when its settings say so. A rectangular wave and noise play on for ever.

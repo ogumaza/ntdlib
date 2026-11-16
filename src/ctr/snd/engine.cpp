@@ -511,9 +511,9 @@ void Engine::SetHostMixes()
         const bool metered = metered_player_ >= 0 && channel.source_player == metered_player_ &&
                              channel.source_track >= 0 && channel.source_track < ntdlib::nwsnd::kTrackCount;
         const Voice& voice = voices_.At(channel.voice);
-        for (int i = 0; i < voice.channel_count_; i++)
+        for (int i = 0; i < voice.ChannelCount(); i++)
         {
-            if (const nnsnd::Voice* nn = voice.nn_[static_cast<std::size_t>(i)]; nn != nullptr)
+            if (const nnsnd::Voice* nn = voice.DspVoice(i); nn != nullptr)
             {
                 const auto id = static_cast<std::size_t>(nn->Id());
                 muted[id] = muted[id] || mute;

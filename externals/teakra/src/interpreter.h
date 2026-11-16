@@ -117,13 +117,13 @@ public:
             // Upstream Teakra idles anyway.
             if (idle && (upstream_late_idle_interrupts ||
                          !any_interrupt_pending.load(std::memory_order_relaxed))) {
-                u64 skipped = core_timing.Skip(cycles - i - 1);
+                u64 skipped = timing.Skip(cycles - i - 1);
                 i += skipped;
 
                 // Skip additional tick so to let components fire interrupts
                 if (i < cycles - 1) {
                     ++i;
-                    core_timing.Tick();
+                    timing.Tick();
                 }
             }
 
@@ -133,12 +133,12 @@ public:
                 any_interrupt_pending.store(false);
                 for (std::size_t i = 0; i < 3; ++i) {
                     if (interrupt_pending[i].exchange(false)) {
-                        regs.ip[i] = 1;
+                        r.ip[i] = 1;
                     }
                 }
 
                 if (vinterrupt_pending.exchange(false)) {
-                    regs.ipv = 1;
+                    r.ipv = 1;
                 }
             }
 
@@ -178,25 +178,25 @@ public:
             // so just disable interrupt for it for now.
             if ((r.ip[0] | r.ip[1] | r.ip[2] | r.ipv) != 0 && r.ie && !r.rep) {
                 bool interrupt_handled = false;
-                for (u32 i = 0; i < regs.im.size(); ++i) {
-                    if (regs.im[i] && regs.ip[i]) {
-                        regs.ip[i] = 0;
-                        regs.ie = 0;
+                for (u32 i = 0; i < r.im.size(); ++i) {
+                    if (r.im[i] && r.ip[i]) {
+                        r.ip[i] = 0;
+                        r.ie = 0;
                         PushPC();
-                        regs.pc = 0x0006 + i * 8;
+                        r.pc = 0x0006 + i * 8;
                         idle = false;
                         interrupt_handled = true;
-                        if (regs.ic[i]) {
+                        if (r.ic[i]) {
                             ContextStore();
                         }
                         break;
                     }
                 }
-                if (!interrupt_handled && regs.imv && regs.ipv) {
-                    regs.ipv = 0;
-                    regs.ie = 0;
+                if (!interrupt_handled && r.imv && r.ipv) {
+                    r.ipv = 0;
+                    r.ie = 0;
                     PushPC();
-                    regs.pc = vinterrupt_address;
+                    r.pc = vinterrupt_address;
                     idle = false;
                     if (vinterrupt_context_switch) {
                         ContextStore();

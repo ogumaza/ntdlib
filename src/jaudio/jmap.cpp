@@ -10,6 +10,7 @@
 
 #include "jaudio/reader.h"
 #include "ntdlib/jaudio/rarc.h"
+#include "ntdlib/yaz0.h"
 
 namespace ntdlib::jaudio
 {

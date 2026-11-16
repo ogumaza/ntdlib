@@ -534,13 +534,19 @@ ArchiveRules WarioWare()
     return a;
 }
 
-// WarioWare: Move It!'s Sound.bfsar. As it starts, the game puts the delay Delay_Waltz on aux bus A and the reverb
-// I3DL2_Waltz on aux bus B (0xc7c1ac in its main), and leaves them there. The values are those of the game's
-// SoundEffectList sheet. The reverb passes on none of its input unchanged.
+// WarioWare: Move It!'s Sound.bfsar. As it starts, the game puts the delay Delay_Waltz on aux bus A, the reverb
+// I3DL2_Waltz on aux bus B and the light limiter Limiter_Waltz on aux bus C (0xc7c1ac in its main), and leaves them
+// there. The values are those of the game's SoundEffectList sheet. The sheet holds the times in milliseconds. The game
+// keeps whole milliseconds of the delay's longest time and of the limiter's four times, and whole microseconds of the
+// delay's time. The limiter's attack (0.02 ms) and look-ahead (0.5 ms) therefore come to 0. The delay and the limiter
+// run on 2 channels. The reverb and the delay pass on none of their input unchanged.
 ArchiveRules MoveIt()
 {
     ArchiveRules a;
     a.bus_a_delay = true;
+    a.bus_a_delay_preset =
+        AuxEffectPreset{"Delay_Waltz", {2'000'000.0f, 250'000.0f, 0.5f, 0.2f, 0.0f, 0.4f, 0.3f, 1.0f}};
+    a.bus_c_limiter = AuxEffectPreset{"Limiter_Waltz", {1000.0f, 0.0f, 50'000.0f, 0.0f, 0.3f, 1.0f, 1.0f, 1.0f}};
     a.bus_b_presets.push_back(
         {"I3DL2_Waltz", {-1000.0f, -1000.0f, 2.0f, 0.8f, -700.0f, 0.005f, -500.0f, 0.04f, 50.0f, 3.0f, 6000.0f, 0.0f}});
     a.bus_b_always = "I3DL2_Waltz";

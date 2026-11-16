@@ -350,6 +350,8 @@ struct Track
     std::array<uint32_t, 4> addresses{};
     uint8_t volume_mode = 0;                  // 0 squares the volume (JAudio2 always does)
     std::array<uint8_t, 3> parent_calc{};     // how the pan, the effect send and the surround take the parent's
+    uint8_t handle_send_calc = 0;             // how the effect send takes the send of the sound's handle (PanCalc)
+    bool handle_send_on = true;               // whether that send applies (cmdOutSwitch's bit 2)
     uint8_t open_mode = 0;                    // the opentrack command's mode (TTrack +0x37b)
     bool auto_mixer = false;                  // its mix line 0 connects to 0xffff: the DSP's automatic mixer
     std::array<uint32_t, 8> intr_addresses{}; // each interrupt's routine

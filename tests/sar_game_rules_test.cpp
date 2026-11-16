@@ -9,6 +9,7 @@
 // Mario Party Jamboree write as they start some sounds.
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -68,6 +69,13 @@ int main()
     Check(m.layered.empty() && m.bus_b.empty() && waltz && waltz->name == "I3DL2_Waltz" && waltz->DryGain() == 0.0f,
           "a game that keeps one reverb on bus B for every sound");
     Check(m.bus_a_delay && !r.bus_a_delay, "Move It! keeps a delay on bus A, and Get It Together! a reverb");
+    const std::array<float, 8> delay{2'000'000.0f, 250'000.0f, 0.5f, 0.2f, 0.0f, 0.4f, 0.3f, 1.0f};
+    const std::array<float, 8> limiter{1000.0f, 0.0f, 50'000.0f, 0.0f, 0.3f, 1.0f, 1.0f, 1.0f};
+    Check(m.bus_a_delay_preset && m.bus_a_delay_preset->name == "Delay_Waltz" &&
+              m.bus_a_delay_preset->parameters == delay && m.bus_c_limiter &&
+              m.bus_c_limiter->name == "Limiter_Waltz" && m.bus_c_limiter->parameters == limiter,
+          "Move It!'s delay on bus A and its limiter on bus C, with the values of the game's sheet");
+    Check(!r.bus_a_delay_preset && !r.bus_c_limiter, "Get It Together! has neither");
     Check(ntdlib::sar::StatesOf(m, "BGM_Any").size() == 1 &&
               ntdlib::sar::StatesOf(m, "BGM_Any")[0].bus_b == "I3DL2_Waltz",
           "such a game's sounds have one state, with that reverb");

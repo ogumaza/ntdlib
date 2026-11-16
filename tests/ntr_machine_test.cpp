@@ -340,6 +340,11 @@ void TestProgram()
             received.push_back(word);
         }
     };
+    std::vector<std::pair<uint32_t, uint32_t>> card_reads;
+    machine.on_card_read = [&card_reads](uint32_t address, uint32_t bytes)
+    {
+        card_reads.emplace_back(address, bytes);
+    };
     int unknown = 0;
     machine.on_unknown_io = [&unknown](uint32_t, int, bool)
     {
@@ -371,6 +376,7 @@ void TestProgram()
     XSFLIB_CHECK(Word(machine, kData) == kArm7Program[0]);
     XSFLIB_CHECK(machine.Counts().card_reads == 1);
     XSFLIB_CHECK(machine.Counts().card_bytes == 0x200);
+    XSFLIB_CHECK(card_reads == (std::vector<std::pair<uint32_t, uint32_t>>{{offset, 0x200}}));
 
     // A note at every second vertical blank, from the second. The ARM7 replies at once, in no time.
     const std::vector<std::pair<uint64_t, uint32_t>> notes = {
@@ -412,6 +418,32 @@ void TestProgram()
         sounds = sounds || !(out[i] == out[0]);
     }
     XSFLIB_CHECK(sounds);
+}
+
+// A partial image, such as the image of a 2SF set, reads as zeros past its end. This image ends with the ARM7 binary.
+// The ARM9 reads 0x200 bytes at the offset of that binary, and the read runs past the end. The program runs as on the
+// whole image.
+void TestPartialImage()
+{
+    std::vector<uint8_t> arm9 = Bytes(kArm9Program);
+    arm9.resize(0x8000, 0);
+    const std::vector<uint8_t> arm7 = Bytes(kArm7Program);
+    std::vector<uint8_t> image = Image(arm9, arm7);
+    const uint32_t offset = Rom::Parse(image).Header().arm7.rom_offset;
+    XSFLIB_CHECK(arm7.size() < 0x200);
+    image.resize(offset + arm7.size());
+    const Rom rom = Rom::ParsePartial(image);
+    Machine machine(rom);
+    std::vector<SoundOutput> out;
+    XSFLIB_CHECK(!machine.Run(192 * 2130 + 11 * 263 * 2130 + 1, out));
+
+    std::vector<uint8_t> expected = arm7;
+    expected.resize(0x200, 0);
+    XSFLIB_CHECK(MemoryBytes(machine, kData, 0x200) == expected);
+    XSFLIB_CHECK(machine.Counts().card_reads == 1);
+    XSFLIB_CHECK(Word(machine, kReplies) == 0xF001);
+    XSFLIB_CHECK(Word(machine, kReplies + 4) == 0xF401);
+    XSFLIB_CHECK(Word(machine, kReplies + 8) == 0xF801);
 }
 
 // Runs `script` on the ARM9's runner with `backup` in the card, and returns the answers that it stores.
@@ -577,6 +609,7 @@ void TestArm7Devices()
 int main()
 {
     TestProgram();
+    TestPartialImage();
     TestBackupMemories();
     TestArm7Devices();
     return xsflib::testing::Summary("DS machine");

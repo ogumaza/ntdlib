@@ -80,7 +80,7 @@ void Tracks::OverwriteOsc(Track& track, uint32_t channel)
     // JASTrack::overwriteOsc (0x3dd4c4): a route other than 0xf gives the channel's oscillator `route & 3` the
     // track's settings. With bit 3, the track first takes the oscillator's settings. With bit 2, it takes them but
     // keeps its release.
-    Channel& ch = voices_.ChannelAt(channel);
+    Channel& ch = voices_->ChannelAt(channel);
     for (std::size_t i = 0; i < 2; i++)
     {
         const uint32_t route = track.osc_routes[i];
@@ -107,7 +107,7 @@ void Tracks::OverwriteOsc(Track& track, uint32_t channel)
             }
             data.release = release;
         }
-        oscillator.InitStart(&data, voices_.DacRate());
+        oscillator.InitStart(&data, voices_->DacRate());
     }
 }
 
@@ -118,26 +118,26 @@ uint32_t Tracks::BankNoteOn(uint32_t bank, uint32_t program, uint32_t key, uint3
     if (program >= 0xf0)
     {
         // noteOnOsc: a note on the DSP's oscillator, waveform `program - 0xf0`.
-        const uint32_t channel = voices_.NewChannel(owner);
+        const uint32_t channel = voices_->NewChannel(owner);
         if (channel == Channel::kNone)
         {
             return Channel::kNone;
         }
 
-        voices_.SetPanPower(channel, 1.0f, 1.0f, 1.0f);
-        Channel& ch = voices_.ChannelAt(channel);
+        voices_->SetPanPower(channel, 1.0f, 1.0f, 1.0f);
+        Channel& ch = voices_->ChannelAt(channel);
         ch.priority = priority;
         ch.wave_address = program - 0xf0;
         ch.wave_format = Channel::kOsc;
-        ch.active_pitch = 16736.0156f / voices_.DacRate();
+        ch.active_pitch = 16736.0156f / voices_->DacRate();
         ch.modified_pitch = ch.active_pitch;
         ch.modified_pitch = Key2Pitch(static_cast<int32_t>(key & 0xff)) * ch.modified_pitch;
         ch.volume = 1.0f;
         const float v = static_cast<float>(velocity & 0xff) / 127.0f;
         ch.velocity_volume = v * v;
-        ch.oscillators[0].InitStart(&kOscEnv, voices_.DacRate());
+        ch.oscillators[0].InitStart(&kOscEnv, voices_->DacRate());
 
-        return voices_.Play(this, channel) ? channel : Channel::kNone;
+        return voices_->Play(this, channel) ? channel : Channel::kNone;
     }
 
     const InstrumentBank* const instruments = banks_[bank & 0xff];
@@ -169,20 +169,20 @@ uint32_t Tracks::BankNoteOn(uint32_t bank, uint32_t program, uint32_t key, uint3
         return Channel::kNone;
     }
 
-    const uint32_t channel = voices_.NewChannel(owner);
+    const uint32_t channel = voices_->NewChannel(owner);
     if (channel == Channel::kNone)
     {
         return Channel::kNone;
     }
 
-    voices_.SetPanPower(channel, 1.0f, 1.0f, 1.0f);
-    Channel& ch = voices_.ChannelAt(channel);
+    voices_->SetPanPower(channel, 1.0f, 1.0f, 1.0f);
+    Channel& ch = voices_->ChannelAt(channel);
     ch.priority = priority;
     ch.has_wave = true;
     ch.wave = wave->info;
     ch.wave_address = wave->address;
     ch.wave_format = param.wave_format;
-    ch.active_pitch = (wave->info.sample_rate / voices_.DacRate()) * param.pitch;
+    ch.active_pitch = (wave->info.sample_rate / voices_->DacRate()) * param.pitch;
     ch.modified_pitch = ch.active_pitch;
     if (!param.percussion)
     {
@@ -197,11 +197,11 @@ uint32_t Tracks::BankNoteOn(uint32_t bank, uint32_t program, uint32_t key, uint3
     ch.dolby_sound = param.dolby;
     for (uint32_t i = 0; i < param.oscillator_count; i++)
     {
-        ch.oscillators[i].InitStart(param.oscillators[i], voices_.DacRate());
+        ch.oscillators[i].InitStart(param.oscillators[i], voices_->DacRate());
     }
     ch.oscillators[0].SetDirectRelease(param.release);
 
-    return voices_.Play(this, channel) ? channel : Channel::kNone;
+    return voices_->Play(this, channel) ? channel : Channel::kNone;
 }
 
 int32_t Tracks::NoteOn(uint32_t index, uint32_t note, uint32_t key, uint32_t velocity, int32_t time, uint32_t skip)
@@ -220,7 +220,7 @@ int32_t Tracks::NoteOn(uint32_t index, uint32_t note, uint32_t key, uint32_t vel
     }
     if (track.channels[note] != Track::kNone)
     {
-        voices_.Release(track.channels[note], 0);
+        voices_->Release(track.channels[note], 0);
         track.channels[note] = Track::kNone;
     }
 
@@ -234,14 +234,14 @@ int32_t Tracks::NoteOn(uint32_t index, uint32_t note, uint32_t key, uint32_t vel
     }
 
     notes_[index]++;
-    Channel& ch = voices_.ChannelAt(channel);
+    Channel& ch = voices_->ChannelAt(channel);
     ch.update_timer = static_cast<uint32_t>(time);
     track.channel_list.push_back(channel);
     track.channels[note] = channel;
     ch.skip_samples = skip;
-    voices_.SetPanPower(channel, static_cast<float>(track.registers[kRegPanPower]),
-                        static_cast<float>(track.registers[kRegPanPower + 1]),
-                        static_cast<float>(track.registers[kRegPanPower + 2]));
+    voices_->SetPanPower(channel, static_cast<float>(track.registers[kRegPanPower]),
+                         static_cast<float>(track.registers[kRegPanPower + 1]),
+                         static_cast<float>(track.registers[kRegPanPower + 2]));
     OverwriteOsc(track, channel);
     if (track.direct_release != 0)
     {
@@ -260,7 +260,7 @@ bool Tracks::NoteOff(uint32_t index, uint32_t note, uint16_t release)
         return false;
     }
 
-    voices_.Release(track.channels[note & 7], release);
+    voices_->Release(track.channels[note & 7], release);
     track.channels[note & 7] = Track::kNone;
 
     return true;
@@ -283,7 +283,7 @@ void Tracks::GateOn(uint32_t index, uint32_t note, uint32_t key, uint32_t veloci
         return;
     }
 
-    Channel& ch = voices_.ChannelAt(channel);
+    Channel& ch = voices_->ChannelAt(channel);
     int32_t semitones = static_cast<int32_t>(key & 0xff);
     if (ch.wave_format != Channel::kOsc)
     {
@@ -414,7 +414,7 @@ int32_t Tracks::CmdNoteOn(uint32_t index, uint32_t key)
         }
         if (track.channels[0] != Track::kNone)
         {
-            voices_.SetKeySweepTarget(track.channels[0], original & 0xff, static_cast<uint32_t>(dsp_time));
+            voices_->SetKeySweepTarget(track.channels[0], original & 0xff, static_cast<uint32_t>(dsp_time));
         }
         latest = original;
     }

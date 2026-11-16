@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <variant>
@@ -836,6 +837,36 @@ uint32_t Banks::RecordStatus(const WaveRecord& record) const
     const uint32_t index = record.status & 0xffff;
 
     return system.scenes[scene].cex[index].load_status;
+}
+
+std::vector<std::string> SceneArchives(const std::vector<ntdlib::jaudio::WaveSystem>& systems, uint32_t system,
+                                       uint32_t scene)
+{
+    // Banks: the first system of a number below kPlaces holds the place.
+    const auto at = std::find_if(systems.begin(), systems.end(),
+                                 [system](const ntdlib::jaudio::WaveSystem& s) { return s.number == system; });
+    if (system >= kPlaces || at == systems.end() || scene >= at->groups.size())
+    {
+        return {};
+    }
+
+    // SceneSet loads the scene's archive. With an external mode, UpdateWaveExtern loads a wave of the archive of the
+    // scene that each word of C-EX names, where that scene exists.
+    const std::vector<ntdlib::jaudio::WaveGroup>& groups = at->groups;
+    std::set<std::string> names = {groups[scene].archive};
+    const ntdlib::jaudio::WaveScene& s = groups[scene].scene;
+    if (s.external_mode != 0 && s.cex)
+    {
+        for (const uint32_t word : *s.cex)
+        {
+            if ((word >> 16) < groups.size())
+            {
+                names.insert(groups[word >> 16].archive);
+            }
+        }
+    }
+
+    return {names.begin(), names.end()};
 }
 
 } // namespace ntdlib::jac

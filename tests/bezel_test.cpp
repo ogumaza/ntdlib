@@ -326,6 +326,11 @@ void TestFolders()
     Check(levels.Count() == 2, "the two sound sheets give their records");
     Check(levels.LevelOf("BGM_A") == 0.5f, "a voice sheet changes nothing");
     Check(levels.LevelOf("SE_A") == 0.25f, "every sound sheet in the folder counts");
+
+    write("SoundVoice_SE_Z.elf", SoundSheet(kGetItTogether, {{"s_VoiceDataTable", {{"SE_B", "", 0.75f}}}}));
+    write("SoundVoice_SE_B.elf", SoundSheet(kGetItTogether, {{"s_VoiceDataTable", {{"SE_B", "", 0.375f}}}}));
+    Check(bezel::ReadSoundLevels(sheets).LevelOf("SE_B") == 0.75f,
+          "a record named after a sound takes the level of the sheet whose name sorts last");
 }
 
 } // namespace

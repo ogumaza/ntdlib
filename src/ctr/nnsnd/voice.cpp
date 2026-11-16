@@ -519,50 +519,54 @@ void Voice::ProcessStatus(DspLink& link)
     {
         if (st.buffer_changed != 0 && wave_head_)
         {
-            const uint16_t cur = st.current_buffer;
-            const uint16_t last = st.last_buffer;
-            WaveBuffer* p = wave_head_;
-            std::array<WaveBuffer*, 5> finished{};
-            int nfinished = 0;
-            if (queued_ != 0)
-            {
-                // Buffers before the current one have finished. The search can stop early, before it gets there.
-                bool stopped = false;
-                while (p->buffer_id != cur)
-                {
-                    queued_--;
-                    const int16_t remaining = queued_;
-                    finished[nfinished++] = p;
-                    const bool all_done = cur == 0 && (p->buffer_id == last || last == 0);
-                    p = p->next;
-                    if (all_done || remaining == 0 || !p)
-                    {
-                        stopped = true;
-                        break;
-                    }
-                }
-
-                if (!stopped)
-                {
-                    p->status = WaveBuffer::Status::kPlay;
-                }
-            }
-
-            if (cur == 0)
-            {
-                queued_ = 0;
-            }
-
-            for (int i = 0; i < nfinished; i++)
-            {
-                finished[i]->status = WaveBuffer::Status::kDone;
-            }
-
-            wave_head_ = p;
+            FinishBuffers(st.current_buffer, st.last_buffer);
         }
     }
 
     enabled_on_dsp_ = st.enabled == 1;
+}
+
+void Voice::FinishBuffers(uint16_t current, uint16_t last)
+{
+    // 0x18f46c
+    WaveBuffer* p = wave_head_;
+    std::array<WaveBuffer*, 5> finished{};
+    int nfinished = 0;
+    if (queued_ != 0)
+    {
+        // Buffers before the current one have finished. The search can stop early, before it gets there.
+        bool stopped = false;
+        while (p->buffer_id != current)
+        {
+            queued_--;
+            const int16_t remaining = queued_;
+            finished[nfinished++] = p;
+            const bool all_done = current == 0 && (p->buffer_id == last || last == 0);
+            p = p->next;
+            if (all_done || remaining == 0 || !p)
+            {
+                stopped = true;
+                break;
+            }
+        }
+
+        if (!stopped)
+        {
+            p->status = WaveBuffer::Status::kPlay;
+        }
+    }
+
+    if (current == 0)
+    {
+        queued_ = 0;
+    }
+
+    for (int i = 0; i < nfinished; i++)
+    {
+        finished[i]->status = WaveBuffer::Status::kDone;
+    }
+
+    wave_head_ = p;
 }
 
 void Voice::ApplySyncCount(DspLink& link)

@@ -859,6 +859,13 @@ public:
         basic_.pitch = pitch;
     }
 
+    // Sets the sound's low-pass. It adds to the low-pass of each track, and starts at 0, the filter off. A game sets it
+    // through the sound's handle and its sound player (BasicSound::SetLpfFreq).
+    void SetLpfFreq(float lpf)
+    {
+        basic_.lpf = lpf;
+    }
+
     // The output parameters that BasicSound gives the player, such as the sends on the aux buses that the sound's
     // handle and its sound player set. Policy::CombineOutputs combines them with each track's. They start at the
     // policy's defaults.

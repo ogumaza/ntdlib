@@ -643,7 +643,7 @@ void TestWaveSounds(const sar::SoundArchive& archive)
     XSFLIB_CHECK(player->IsActive() && player->ChannelPlace() == ntdlib::nwsnd::kNoChannel);
     XSFLIB_CHECK(model->engine->RunFrame() && player->ChannelPlace() != ntdlib::nwsnd::kNoChannel);
     const ntdlib::ctr::snd::Channel& channel = model->engine->Channels().At(player->ChannelPlace());
-    XSFLIB_CHECK(channel.voice != kNoVoice && model->engine->Voices().At(channel.voice).priority_ == 70 + 64);
+    XSFLIB_CHECK(channel.voice != kNoVoice && model->engine->Voices().At(channel.voice).Priority() == 70 + 64);
     XSFLIB_CHECK(channel.owner_player == player->Id() && channel.owner_track == 0);
 
     std::vector<int16_t> constant;
@@ -678,7 +678,7 @@ void TestStreams(const sar::SoundArchive& archive)
     XSFLIB_CHECK(player->IsActive() && player->ChannelVoice(0) != kNoVoice && player->ChannelVoice(1) != kNoVoice);
     const ntdlib::ctr::snd::Voice& first = model->engine->Voices().At(player->ChannelVoice(0));
     const ntdlib::ctr::snd::Voice& second = model->engine->Voices().At(player->ChannelVoice(1));
-    XSFLIB_CHECK(first.started_ && first.priority_ == 255 && !second.started_ && Sounds(out));
+    XSFLIB_CHECK(first.IsStarted() && first.Priority() == 255 && !second.IsStarted() && Sounds(out));
 
     std::vector<int16_t> looped;
     XSFLIB_CHECK(PlayToEnd(archive, 6, looped) == 4 * kSecond && Sounds(looped));
@@ -696,7 +696,7 @@ void TestStreams(const sar::SoundArchive& archive)
     }
 
     XSFLIB_CHECK(on_bus != nullptr && on_bus->IsActive() && !Sounds(bus_out));
-    XSFLIB_CHECK(on_bus != nullptr && bus->engine->Voices().At(on_bus->ChannelVoice(0)).started_);
+    XSFLIB_CHECK(on_bus != nullptr && bus->engine->Voices().At(on_bus->ChannelVoice(0)).IsStarted());
 }
 
 // The model's output for 3 s of frames of a stream sound of `info` with the tracks `tracks`, on the looped stream.

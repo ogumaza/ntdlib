@@ -69,7 +69,8 @@ public:
             }
         }
 
-        // The songs' names in each folder, and the banks by folder and name.
+        // The songs' names in each folder, the folders that hold banks, and the banks by folder and name, by name alone
+        // and by id. A main bank is no song's bank.
         std::set<std::string> song_names;
         for (const std::size_t i : songs_)
         {
@@ -77,21 +78,33 @@ public:
         }
         std::map<std::string, std::size_t> by_name;
         std::map<std::string, std::vector<std::size_t>> lone;
+        std::map<std::string, std::vector<std::size_t>> by_stem;
+        std::map<std::optional<uint16_t>, std::vector<std::size_t>> by_id;
+        std::set<std::string> bank_folders;
         for (const std::size_t i : banks_)
         {
             const std::string folder = FolderOf(files[i].path);
             const std::string name = folder + StemOf(files[i].path);
             by_name.try_emplace(name, i);
-            if (!song_names.contains(name) && files[i].bytes[0x4B] != kMainBank)
+            bank_folders.insert(folder);
+            if (files[i].bytes[0x4B] == kMainBank)
+            {
+                continue;
+            }
+
+            if (!song_names.contains(name))
             {
                 lone[folder].push_back(i);
             }
+            by_stem[StemOf(files[i].path)].push_back(i);
+            by_id[*IdOf(i)].push_back(i);
         }
 
         for (const std::size_t i : songs_)
         {
             SongSet set{.song = i};
             const std::string folder = FolderOf(files[i].path);
+            const bool apart = !bank_folders.contains(folder);
             if (const auto found = by_name.find(folder + StemOf(files[i].path)); found != by_name.end())
             {
                 set.bank = found->second;
@@ -99,6 +112,20 @@ public:
             else if (const auto others = lone.find(folder); others != lone.end() && others->second.size() == 1)
             {
                 set.bank = others->second[0];
+            }
+            else if (const auto named = by_stem.find(StemOf(files[i].path));
+                     apart && named != by_stem.end() && named->second.size() == 1)
+            {
+                set.bank = named->second[0];
+            }
+            else if (const std::optional<std::size_t> next = NextBank(i))
+            {
+                set.bank = next;
+            }
+            else if (const auto same_id = by_id.find(IdOf(i));
+                     apart && same_id != by_id.end() && same_id->second.size() == 1)
+            {
+                set.bank = same_id->second[0];
             }
             if (set.bank)
             {
@@ -112,6 +139,33 @@ public:
     const std::vector<SongSet>& SongSets() const
     {
         return song_sets_;
+    }
+
+    // The id at 0x0E of file `index`: a bank's id, or a song's. A song's id is often its bank's. Nothing for a file
+    // too short to hold one.
+    std::optional<uint16_t> IdOf(std::size_t index) const
+    {
+        const std::span<const uint8_t> bytes = files_[index].bytes;
+        if (bytes.size() < 0x10)
+        {
+            return std::nullopt;
+        }
+
+        return xsflib::LoadLe16(&bytes[0x0E]);
+    }
+
+    // The file after song `song`, when it is a wave bank in the song's folder, of the song's id, and no main bank.
+    std::optional<std::size_t> NextBank(std::size_t song) const
+    {
+        const std::size_t next = song + 1;
+        if (next >= files_.size() || !StartsWith(files_[next].bytes, "swdl") ||
+            files_[next].bytes.size() < kBankHeaderSize || files_[next].bytes[0x4B] == kMainBank ||
+            FolderOf(files_[next].path) != FolderOf(files_[song].path) || IdOf(next) != IdOf(song))
+        {
+            return std::nullopt;
+        }
+
+        return next;
     }
 
     // The main bank of `bank`: a main bank of the id that `bank` gives, the one in its folder, or else the first.

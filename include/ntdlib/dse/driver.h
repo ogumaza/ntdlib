@@ -194,17 +194,12 @@ struct SequenceHooks
 // sequences have no delay, and step their fades on every tick. A sequence that has faded out stops before its fades
 // step. A change of a synth's volume, pan or bend only marks the synth. Its channels take the change when the voices
 // update. The later build stops a freed voice once, with the list's stop. It sends the start and the stop only when
-// they name a channel.
+// they name a channel. BuildOf (ntdlib/dse/build.h) tells a game's build.
 enum class Build
 {
     kLater,
     kEarlier,
 };
-
-// The build of DSE in an ARM9 binary, as the image holds it. The earlier build's voices count down the ticks of their
-// notes in a word at offset 0x14C (0x02062A00 in Explorers of Time's ARM9 binary, North America). A binary without
-// that code, or with the code compressed, gives the later build.
-Build BuildOf(std::span<const uint8_t> arm9);
 
 class Driver
 {

@@ -5,8 +5,10 @@
 // file system holds, whatever the file's name, each into a folder of its own in the image's output folder. So do the
 // folders of DSE's songs and sound effects (ntdlib/sequence_export/dse) and of Universomo's songs
 // (ntdlib/sequence_export/universomo). The image's ARM7 binary gives the driver's build (ntdlib::ntr::snd::BuildOf). A
-// loose archive plays on the default build. A converter gives its name, its version line, its description and its
-// options.
+// loose archive plays on the default build. DSE's files are found loose or inside the image's packs
+// (ntdlib::dse::FindFiles). They play on the image's build of DSE's driver (ntdlib::dse::BuildOf). Where no model covers
+// that build, they convert only on the model that --dse-model names. A converter gives its name, its version line, its
+// description and its options.
 
 #pragma once
 

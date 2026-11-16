@@ -2,6 +2,7 @@
 
 #include "ntdlib/ntr/rom.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -57,9 +58,22 @@ void CheckSpan(const xsflib::Reader& r, uint32_t offset, uint32_t size, const ch
     }
 }
 
-std::vector<Overlay> ReadOverlays(const xsflib::Reader& r, uint32_t offset, uint32_t size)
+// The size of the table at `offset`. In a whole image, the table must fit. In a partial image, the table stops at the
+// end of the image.
+uint32_t TableSize(const xsflib::Reader& r, uint32_t offset, uint32_t size, bool partial, const char* what)
 {
-    CheckSpan(r, offset, size, "an overlay table");
+    if (!partial)
+    {
+        CheckSpan(r, offset, size, what);
+        return size;
+    }
+
+    return offset >= r.Size() ? 0 : static_cast<uint32_t>(std::min<std::size_t>(size, r.Size() - offset));
+}
+
+std::vector<Overlay> ReadOverlays(const xsflib::Reader& r, uint32_t offset, uint32_t size, bool partial)
+{
+    size = TableSize(r, offset, size, partial, "an overlay table");
 
     std::vector<Overlay> overlays;
     for (std::size_t at = offset; at + kOverlayEntryBytes <= std::size_t{offset} + size; at += kOverlayEntryBytes)
@@ -123,6 +137,16 @@ void NameFiles(const xsflib::Reader& r, uint32_t fnt, uint32_t fnt_size, std::ve
 
 Rom Rom::Parse(std::span<const uint8_t> image)
 {
+    return Read(image, false);
+}
+
+Rom Rom::ParsePartial(std::span<const uint8_t> image)
+{
+    return Read(image, true);
+}
+
+Rom Rom::Read(std::span<const uint8_t> image, bool partial)
+{
     const xsflib::Reader r(image);
     if (image.size() < kHeaderBytes)
     {
@@ -131,6 +155,7 @@ Rom Rom::Parse(std::span<const uint8_t> image)
 
     Rom rom;
     rom.image_ = image;
+    rom.partial_ = partial;
     RomHeader& h = rom.header_;
     h.title = Text(r, 0, 12);
     h.game_code = Text(r, 12, 4);
@@ -167,28 +192,58 @@ Rom Rom::Parse(std::span<const uint8_t> image)
         }
     }
 
-    CheckSpan(r, h.arm9.rom_offset, h.arm9.size, "the ARM9 binary");
-    CheckSpan(r, h.arm7.rom_offset, h.arm7.size, "the ARM7 binary");
-    rom.arm9_overlays_ = ReadOverlays(r, h.arm9_overlay_offset, h.arm9_overlay_size);
-    rom.arm7_overlays_ = ReadOverlays(r, h.arm7_overlay_offset, h.arm7_overlay_size);
+    if (!partial)
+    {
+        CheckSpan(r, h.arm9.rom_offset, h.arm9.size, "the ARM9 binary");
+        CheckSpan(r, h.arm7.rom_offset, h.arm7.size, "the ARM7 binary");
+    }
+    rom.arm9_overlays_ = ReadOverlays(r, h.arm9_overlay_offset, h.arm9_overlay_size, partial);
+    rom.arm7_overlays_ = ReadOverlays(r, h.arm7_overlay_offset, h.arm7_overlay_size, partial);
 
     // The FAT gives each file's start and end.
-    CheckSpan(r, h.fat_offset, h.fat_size, "the file allocation table");
-    for (uint32_t id = 0; id < h.fat_size / kFatEntryBytes; id++)
+    const uint32_t fat_size = TableSize(r, h.fat_offset, h.fat_size, partial, "the file allocation table");
+    for (uint32_t id = 0; id < fat_size / kFatEntryBytes; id++)
     {
         const std::size_t at = h.fat_offset + std::size_t{id} * kFatEntryBytes;
         RomFile file{id, "", r.U32(at), r.U32(at + 4)};
-        if (file.end < file.start || file.end > image.size())
+        if (file.end < file.start || (!partial && file.end > image.size()))
         {
             throw xsflib::FormatError("file " + std::to_string(id) + " lies past the end of the image");
         }
         rom.files_.push_back(std::move(file));
     }
 
-    CheckSpan(r, h.fnt_offset, h.fnt_size, "the file name table");
-    NameFiles(r, h.fnt_offset, h.fnt_size, rom.files_);
+    if (!partial)
+    {
+        CheckSpan(r, h.fnt_offset, h.fnt_size, "the file name table");
+        NameFiles(r, h.fnt_offset, h.fnt_size, rom.files_);
+        return rom;
+    }
+
+    // In a partial image, the files stay unnamed when the FNT or the FAT extends past the end, or when the FNT doesn't
+    // parse.
+    if (!Fits(r, h.fnt_offset, h.fnt_size) || fat_size != h.fat_size)
+    {
+        return rom;
+    }
+    try
+    {
+        NameFiles(r, h.fnt_offset, h.fnt_size, rom.files_);
+    }
+    catch (const xsflib::FormatError&)
+    {
+        for (RomFile& file : rom.files_)
+        {
+            file.path.clear();
+        }
+    }
 
     return rom;
+}
+
+bool Rom::Partial() const
+{
+    return partial_;
 }
 
 const RomHeader& Rom::Header() const
@@ -201,14 +256,24 @@ std::span<const uint8_t> Rom::Image() const
     return image_;
 }
 
+std::span<const uint8_t> Rom::Held(uint32_t offset, uint32_t size) const
+{
+    if (offset >= image_.size())
+    {
+        return {};
+    }
+
+    return image_.subspan(offset, std::min<std::size_t>(size, image_.size() - offset));
+}
+
 std::span<const uint8_t> Rom::Arm9() const
 {
-    return image_.subspan(header_.arm9.rom_offset, header_.arm9.size);
+    return Held(header_.arm9.rom_offset, header_.arm9.size);
 }
 
 std::span<const uint8_t> Rom::Arm7() const
 {
-    return image_.subspan(header_.arm7.rom_offset, header_.arm7.size);
+    return Held(header_.arm7.rom_offset, header_.arm7.size);
 }
 
 std::span<const uint8_t> Rom::Arm9i() const
@@ -240,7 +305,7 @@ std::span<const uint8_t> Rom::FileData(uint32_t id) const
 {
     const RomFile& file = files_.at(id);
 
-    return image_.subspan(file.start, file.end - file.start);
+    return Held(file.start, file.end - file.start);
 }
 
 const RomFile* Rom::Find(std::string_view path) const
@@ -254,6 +319,20 @@ const RomFile* Rom::Find(std::string_view path) const
     }
 
     return nullptr;
+}
+
+std::vector<uint32_t> Rom::FilesIn(uint32_t start, uint32_t end) const
+{
+    std::vector<uint32_t> ids;
+    for (const RomFile& file : files_)
+    {
+        if (file.start < file.end && file.start < end && start < file.end)
+        {
+            ids.push_back(file.id);
+        }
+    }
+
+    return ids;
 }
 
 } // namespace ntdlib::ntr

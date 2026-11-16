@@ -353,6 +353,116 @@ void TestMainTrack()
                 { XSFLIB_CHECK(loops.size() >= 3 && loops == std::vector<int>(loops.size(), 0)); });
 }
 
+// A note that a track strikes at a level of -72.3 dB or less gets a volume of 0 in SOUNDxCNT, and changes nothing in
+// the sound. The table of levels gives -32768 for a volume of 0, -72.1 dB for a velocity of 2, -72.2 dB for a velocity
+// of 1 and -4.1 dB for a volume of 100.
+void TestSilentNotes()
+{
+    // Track 0 sets its volume to 0 and strikes a note of 2 ticks, in an endless loop. Track 1 plays a note of 24 ticks
+    // in a loop. Track 0's first pass changes its volume, and is a loop of the sequence. Its later passes are idle.
+    // Track 1 is then the main track: its passes at ticks 24, 48, 72 and 96 are the sequence's loops.
+    const Bytes busy = {
+        0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+        0x93, 0x01, 0x11, 0x00, 0x00, // 3: track 1 starts at 0x11
+        0xD4, 0x00,                   // 8: an endless loop
+        0xC1, 0x00,                   // 10: the volume takes 0
+        0x3C, 0x02, 0x02,             // 12: a note of 2 ticks at velocity 2
+        0xFC,                         // 15: the loop's end
+        0xFF,                         // 16
+        0x40, 0x7F, 0x18,             // 17: a note of 24 ticks
+        0x94, 0x11, 0x00, 0x00,       // 20: back to 17
+    };
+    AfterFrames(busy, 200,
+                [](const snd::Driver& driver, const std::vector<int>& loops)
+                {
+                    XSFLIB_CHECK(loops == (std::vector<int>{0, 1, 1, 1, 1}));
+                    XSFLIB_CHECK(driver.IsTrackIdle(0, 0) && !driver.IsTrackIdle(0, 1));
+                });
+
+    // A note at velocity 1 and volume 100 lies at -76.3 dB. Its passes are idle, and the sequence has no loop.
+    const Bytes faint = {
+        0xC1, 0x64,             // 0: the volume takes 100
+        0x3C, 0x01, 0x18,       // 2: a note of 24 ticks at velocity 1
+        0x94, 0x02, 0x00, 0x00, // 5: back to 2
+    };
+    AfterFrames(faint, 200, [](const snd::Driver& driver, const std::vector<int>& loops)
+                { XSFLIB_CHECK(loops.empty() && driver.IsTrackIdle(0, 0)); });
+
+    // A silent note counts as no note. The passes are still and quiet, and the player is stuck. Each pass strikes the
+    // note again, and the note's channel stays silent.
+    AfterFrames(faint, 200,
+                [](const snd::Driver& driver, const std::vector<int>&)
+                {
+                    bool silent = true;
+                    for (int c = 0; c < snd::kChannelCount; c++)
+                    {
+                        silent = silent && (!driver.GetChannel(c).active || driver.IsChannelSilent(c));
+                    }
+                    XSFLIB_CHECK(driver.IsStuck(0) && driver.ActiveChannels() > 0 && silent);
+                });
+
+    // The same note at velocity 2 and volume 127 lies at -72.1 dB, and sounds. Each pass is a loop.
+    const Bytes quiet = {
+        0x3C, 0x02, 0x18,       // 0: a note of 24 ticks at velocity 2
+        0x94, 0x00, 0x00, 0x00, // 3: back to 0
+    };
+    AfterFrames(quiet, 200, [](const snd::Driver&, const std::vector<int>& loops)
+                { XSFLIB_CHECK(loops == (std::vector<int>{0, 0, 0, 0})); });
+
+    // A note struck at volume 0 sounds once its track raises the volume. Notes don't wait here (0xC7 0). Each pass
+    // changes the volume, and is a loop.
+    const Bytes swell = {
+        0xC7, 0x00,             // 0: notes don't wait
+        0xC1, 0x00,             // 2: the volume takes 0
+        0x3C, 0x7F, 0x18,       // 4: a note of 24 ticks
+        0x80, 0x0C,             // 7: a wait of 12 ticks
+        0xC1, 0x7F,             // 9: the volume takes 127
+        0x80, 0x0C,             // 11: a wait of 12 ticks
+        0x94, 0x02, 0x00, 0x00, // 13: back to 2
+    };
+    AfterFrames(swell, 200, [](const snd::Driver&, const std::vector<int>& loops)
+                { XSFLIB_CHECK(loops == (std::vector<int>{0, 0, 0, 0})); });
+
+    // The note of 24 ticks in a loop straight back, after `settings`. A note that sounds makes each pass a loop, at
+    // ticks 24, 48, 72 and 96. A silent note makes none.
+    const auto loops_after = [](const Bytes& settings, uint8_t key, uint8_t velocity)
+    {
+        Bytes sequence = settings;
+        const auto start = static_cast<uint8_t>(sequence.size());
+        sequence.insert(sequence.end(), {key, velocity, 0x18, 0x94, start, 0x00, 0x00});
+        std::vector<int> found;
+        AfterFrames(sequence, 200, [&found](const snd::Driver&, const std::vector<int>& loops) { found = loops; });
+        return found;
+    };
+    const std::vector<int> each_pass = {0, 0, 0, 0};
+
+    // Velocity 1 at volume 126 lies at -72.2 dB - 0.1 dB = -72.3 dB, the level of a volume of 0.
+    XSFLIB_CHECK(loops_after({0xC1, 0x7E}, 0x3C, 0x01).empty());
+    XSFLIB_CHECK(loops_after({0xC1, 0x7F}, 0x3C, 0x01) == each_pass);
+
+    // An expression of 0 or a player volume of 0 silences a note at velocity 127 and volume 127.
+    XSFLIB_CHECK(loops_after({0xD5, 0x00}, 0x3C, 0x7F).empty());
+    XSFLIB_CHECK(loops_after({0xC2, 0x00}, 0x3C, 0x7F).empty());
+
+    // An LFO on the volume (0xCC 1) with a depth (0xCA) and a range (0xCD) can raise the level of the note at -76.3
+    // dB. Its notes count as sounding. Without the depth or the range, or on the pitch, an LFO leaves the note silent.
+    XSFLIB_CHECK(loops_after({0xC1, 0x64, 0xCC, 0x01, 0xCA, 0x7F}, 0x3C, 0x01) == each_pass);
+    XSFLIB_CHECK(loops_after({0xC1, 0x64, 0xCC, 0x01}, 0x3C, 0x01).empty());
+    XSFLIB_CHECK(loops_after({0xC1, 0x64, 0xCC, 0x01, 0xCA, 0x7F, 0xCD, 0x00}, 0x3C, 0x01).empty());
+    XSFLIB_CHECK(loops_after({0xC1, 0x64, 0xCA, 0x7F}, 0x3C, 0x01).empty());
+
+    // Two silent notes of 12 ticks at keys 60 and 62 in each pass. The key that a portamento starts from changes with
+    // each note. A silent note's key doesn't count, and the passes stay idle.
+    const Bytes keys = {
+        0xC1, 0x64,             // 0: the volume takes 100
+        0x3C, 0x01, 0x0C,       // 2: note 60 for 12 ticks at velocity 1
+        0x3E, 0x01, 0x0C,       // 5: note 62 for 12 ticks at velocity 1
+        0x94, 0x02, 0x00, 0x00, // 8: back to 2
+    };
+    AfterFrames(keys, 200, [](const snd::Driver& driver, const std::vector<int>& loops)
+                { XSFLIB_CHECK(loops.empty() && driver.IsTrackIdle(0, 0)); });
+}
+
 // Track 1 holds a tied note on a looping wave and changes its volume in each pass. Track 0 runs `track0` in a loop
 // meanwhile.
 Bytes HoldsNote(const Bytes& track0)
@@ -516,6 +626,7 @@ int main()
     TestChangedAt();
     TestTieThatSweeps();
     TestMainTrack();
+    TestSilentNotes();
     TestNoteHeldAlone();
     TestWithoutFollowing();
     TestIdlePassesOfOtherTracks();

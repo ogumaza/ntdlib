@@ -373,7 +373,7 @@ void Tracks::UpdateTempo(uint32_t index)
     if (track.parent == Track::kNone)
     {
         float rate = static_cast<float>(track.timebase) * static_cast<float>(track.tempo);
-        rate = rate / voices_.DacRate();
+        rate = rate / voices_->DacRate();
         rate = rate * 1.33333337f;
         if (track.outer != nullptr && track.outer->Check(OuterParam::kTempo))
         {

@@ -25,6 +25,8 @@
 #include "xsflib/ascii.h"
 #include "xsflib/binary.h"
 
+#include "ntdlib/dse/build.h"
+#include "ntdlib/dse/files.h"
 #include "ntdlib/dse/sets.h"
 #include "ntdlib/ntr/archive_player.h"
 #include "ntdlib/ntr/rom.h"
@@ -92,6 +94,24 @@ std::vector<Sequence> Selected(const ArchiveInput& input, const std::regex& only
     return selected;
 }
 
+// Reads --dse-model earlier or later into `perform.dse_model`. Returns false for any other option.
+bool DseModelOption(const std::string& option, OptionReader& reader, PerformOptions& perform)
+{
+    if (option != "--dse-model")
+    {
+        return false;
+    }
+
+    const std::string value = reader.Value();
+    if (value != "earlier" && value != "later")
+    {
+        throw std::runtime_error("--dse-model takes earlier or later, not " + value);
+    }
+    perform.dse_model = value == "earlier" ? ntdlib::dse::Build::kEarlier : ntdlib::dse::Build::kLater;
+
+    return true;
+}
+
 } // namespace
 
 std::string UsageText(const ArchiveConverter& archive_converter)
@@ -124,6 +144,12 @@ std::string UsageText(const ArchiveConverter& archive_converter)
     text += "  --seed N       the driver's initial random state (default 0x12345678)\n";
     text += "  --var N=V      set variable N (0-15 player, 16-31 global) to V before each\n";
     text += "                 sequence starts; repeat for more variables\n";
+    text += "  --dse-model earlier|later\n";
+    text += "                 convert DSE songs and sound effects on the model of Explorers\n";
+    text += "                 of Time (earlier) or Explorers of Sky (later) where no model\n";
+    text += "                 covers the game's driver build; the result only approximates\n";
+    text += "                 the game. DSE files of version 0x402, and packs compressed\n";
+    text += "                 other than with LZ77, aren't found, and give no warning\n";
     text += c.extra_options;
     text += kListQuietVersionHelp;
 
@@ -174,7 +200,10 @@ Converter<PerformOptions, ArchiveInput, Conversion> MakeArchiveConverter(const A
     {
         std::puts(UsageText(*c).c_str());
     };
-    converter.option = c->option;
+    converter.option = [c](const std::string& option, OptionReader& reader, PerformOptions& perform)
+    {
+        return DseModelOption(option, reader, perform) || (c->option && c->option(option, reader, perform));
+    };
     converter.open = [c](const fs::path& input, const std::string&) -> std::optional<ArchiveInput>
     {
         std::optional<std::vector<uint8_t>> bytes = ReadFile(input);
@@ -301,14 +330,41 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
         }
     }
 
-    // DSE's songs and sound effects, each folder of them with an output folder.
+    // DSE's songs and sound effects, loose or in packs, each folder of them with an output folder. They play on the
+    // model of the image's build of DSE's driver, or on the model that --dse-model names. Without either, the image's
+    // songs and sound effects are left out.
     std::vector<ntdlib::dse::NamedFile> named;
     for (const ntdlib::ntr::RomFile& file : rom->Files())
     {
         named.push_back({file.path.empty() ? "file " + std::to_string(file.id) : file.path, rom->FileData(file.id)});
     }
+    std::vector<std::vector<uint8_t>> decompressed;
+    std::vector<ntdlib::dse::NamedFile> dse_files =
+        ntdlib::dse::FindFiles(ntdlib::dse::Decompressed(named, decompressed));
+    std::optional<ntdlib::dse::Build> dse_build;
+    if (!dse_files.empty())
+    {
+        dse_build = ntdlib::dse::BuildOf(*rom);
+        if (!dse_build)
+        {
+            dse_build = options.perform.dse_model;
+        }
+        if (!dse_build)
+        {
+            const std::size_t songs = ntdlib::dse::FindSongSets(dse_files).size();
+            const std::size_t effects = ntdlib::dse::FindEffectSets(dse_files).size();
+            if (songs + effects > 0)
+            {
+                std::fprintf(stderr,
+                             "warning: %s: DSE's driver is a build that no model covers; %zu songs and %zu banks of "
+                             "sound effects aren't converted (--dse-model converts them on another build's model)\n",
+                             name.c_str(), songs, effects);
+            }
+            dse_files.clear();
+        }
+    }
     std::vector<std::string> dse_warnings;
-    const std::vector<dse::SequenceInput> dse_inputs = dse::ReadSequences(named, dse_warnings);
+    const std::vector<dse::SequenceInput> dse_inputs = dse::ReadSequences(dse_files, dse_warnings);
     struct FoundDse
     {
         std::string label;
@@ -478,7 +534,7 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
             std::printf("%s: %zu sequences -> %s\n", group.label.c_str(), group.selected.size(), Utf8(folder).c_str());
         }
 
-        const dse::PerformOptions perform{.loops = options.perform.loops, .build = ntdlib::dse::BuildOf(rom->Arm9())};
+        const dse::PerformOptions perform{.loops = options.perform.loops, .build = *dse_build};
         const auto convert = [&](std::size_t index)
         {
             const dse::SequenceInput& sequence = dse_inputs[group.inputs.at(index)];

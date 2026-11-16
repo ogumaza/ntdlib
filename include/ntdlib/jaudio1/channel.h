@@ -131,6 +131,9 @@ using DspChannel = jaudio2::DspChannel;
 class ChannelOwner
 {
 public:
+    ChannelOwner() = default;
+    ChannelOwner(const ChannelOwner&) = default;
+    ChannelOwner& operator=(const ChannelOwner&) = default;
     virtual ~ChannelOwner() = default;
 
     virtual void OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, DspBlock* block) = 0;

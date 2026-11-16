@@ -46,7 +46,6 @@ namespace dse_files = ntdlib::testing::dse_files;
 namespace dse_song_files = ntdlib::testing::dse_song_files;
 namespace dse = ntdlib::dse;
 namespace snd = ntdlib::ntr::snd;
-using dse_files::Builder;
 using dse_files::Bytes;
 using dse_files::HeaderStart;
 using dse_files::SequenceInfoBytes;
@@ -284,22 +283,6 @@ void TestEarlierSong()
     driver.PlaySong(song);
     CheckBlocks(driver, dse_driver_test_earlier::kBlockHashes, dse_driver_test_earlier::kStatus,
                 dse_driver_test_earlier::kBlockTicks, [](int) {});
-}
-
-// The earlier build's count of a note's ticks in a made-up binary: a load of the word at 0x14C, a test, a branch, a
-// subtraction of 1 and a store of the word. Another register in the store, or an empty binary, gives the later build.
-void TestBuildOf()
-{
-    const auto binary = [](uint32_t store)
-    {
-        Builder b;
-        b.U32(0xE1A00000).U32(0xE596014C).U32(0xE3500000).U32(0xDA000004).U32(0xE2500001).U32(store);
-        b.U32(0xE1A00000);
-        return b.Take();
-    };
-    XSFLIB_CHECK(dse::BuildOf(binary(0xE586014C)) == dse::Build::kEarlier);
-    XSFLIB_CHECK(dse::BuildOf(binary(0xE587014C)) == dse::Build::kLater);
-    XSFLIB_CHECK(dse::BuildOf({}) == dse::Build::kLater);
 }
 
 // A voice's release_ticks while the song plays: the ticks of a whole release while the voice sounds, then the rest of
@@ -543,7 +526,6 @@ int main(int argc, char** argv)
     TestViewsWithoutSong();
     TestSong();
     TestEarlierSong();
-    TestBuildOf();
     TestReleaseTicks();
     TestEffects();
     TestEffects(200);

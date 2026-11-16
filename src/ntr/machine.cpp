@@ -12,6 +12,7 @@ namespace ntdlib::ntr
 
 Machine::Machine(const Rom& rom, const BackupMemory& backup)
     : image_(rom.Image()),
+      past_image_(rom.Partial() ? 0 : 0xFF),
       arm7_(std::make_unique<Arm7System>(rom, static_cast<Arm9Link&>(*this))),
       arm9_(std::make_unique<arm::Cpu>(*this, arm::Architecture::kArmV5TE)),
       bios_(kBiosSize),

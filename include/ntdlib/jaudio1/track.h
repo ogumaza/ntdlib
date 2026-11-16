@@ -231,8 +231,10 @@ public:
 
     explicit Tracks(Voices& voices);
 
-    Tracks(const Tracks&) = delete;
-    Tracks& operator=(const Tracks&) = delete;
+    // A copy plays on the same voices. An engine's snapshot copies its tracks and later copies them back into the
+    // same object (Engine::Save and Restore). The tracks' outer parameters then stay where the tracks point.
+    Tracks(const Tracks&) = default;
+    Tracks& operator=(const Tracks&) = default;
 
     // The banks that the sequences' bank numbers name: JASBankMgr's table from a virtual number to a physical one,
     // then the physical bank. Numbers 0 to 255.
@@ -508,12 +510,23 @@ private:
     void JumpBack(uint32_t index, uint32_t target);
     int32_t GetRandomS32();
 
-    Voices& voices_;
+    // The outer parameters of the sequences' EXTSet commands, by the sequence and the offset. Tracks point at them. An
+    // assignment copies the values into the nodes that it finds or adds, and erases no node.
+    struct SequenceOuters
+    {
+        SequenceOuters() = default;
+        SequenceOuters(const SequenceOuters&) = default;
+        SequenceOuters& operator=(const SequenceOuters& other);
+
+        std::map<std::pair<const Sequence*, uint32_t>, OuterParam> map;
+    };
+
+    Voices* voices_;
     std::vector<Track> tracks_; // the pool's tracks, then the root tracks
     std::deque<uint32_t> free_tracks_;
     std::vector<uint32_t> list_;        // the playing root tracks, in the order that they started
     std::deque<OuterParam> pool_outer_; // the pool's tracks' outer parameters, allocated with the pool
-    std::map<std::pair<const Sequence*, uint32_t>, OuterParam> sequence_outer_;
+    SequenceOuters sequence_outer_;
     std::array<uint16_t, 256> virtual_banks_{};
     std::array<const InstrumentBank*, 256> banks_{};
     RandomFast inst_random_;

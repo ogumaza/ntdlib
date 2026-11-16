@@ -670,8 +670,80 @@ void TestSoundVolume()
     Check(MiniTag(mini_b, "volume").empty(), "a sound at 1 has no volume tag");
 
     xsflib::psf::Tags tags;
-    rip::SetVolumeTag(2.37f, tags);
+    rip::SetRatioTag("volume", 2.37f, tags);
     Check(tags["volume"] == "2.37", "2.37 keeps its decimal: " + tags["volume"]);
+}
+
+// A state's tempo ratio and pitch go into the tags that the tool names, as the shortest decimals that read back as the
+// same floats. A job at 1 gets neither tag, and so does every job of a tool that names no tags. The length analysis
+// gets each state's values.
+void TestTempoAndPitchTags()
+{
+    const TempFolder folder("rip_archive_mode_test");
+    const fs::path input = folder.Write("loose.bfsar", ArchiveWithTwoGroups());
+    folder.Write("GROUP_A.bfgrp", GroupOf(2));
+    folder.Write("GROUP_B.bfgrp", GroupOf(3));
+    std::string messages;
+
+    rip::ArchiveRipTool<TestFormat, TestRip> tool = TestTool();
+    tool.sound_states = [](const TestRip&, const std::vector<rip::Job>& selected)
+    {
+        std::vector<rip::Job> jobs;
+        for (const rip::Job& job : selected)
+        {
+            jobs.push_back(job);
+            if (job.label == "SEQ_A")
+            {
+                rip::Job faster = job;
+                faster.label = "SEQ_A 140 BPM";
+                faster.tempo_ratio = 140.0f / 120.0f;
+                faster.pitch = 1.122462f;
+                jobs.push_back(faster);
+                faster.label = "SEQ_A 200 BPM";
+                faster.tempo_ratio = 200.0f / 120.0f;
+                faster.pitch = 1.0f;
+                jobs.push_back(faster);
+            }
+        }
+
+        return jobs;
+    };
+    std::map<std::string, std::pair<float, float>> analyzed;
+    tool.analyze_lengths =
+        [&analyzed](std::vector<rip::Job>& jobs, sar::SoundArchive, const TestFormat::ArchiveDescriptor&, unsigned)
+    {
+        for (rip::Job& job : jobs)
+        {
+            job.timing = rip::EndAt(10, 5.0, 0.0);
+            analyzed[job.label] = {job.tempo_ratio, job.pitch};
+        }
+    };
+    rip::ArchiveRipTool<TestFormat, TestRip> without_tags = tool;
+    tool.tempo_tag = "tst_tempo";
+    tool.pitch_tag = "tst_pitch";
+    RipLoose(tool, input, "tags", "", messages, true);
+    RipLoose(without_tags, input, "none", "", messages, true);
+
+    const fs::path tags = folder.Path() / "tags";
+    Check(analyzed.at("SEQ_A 140 BPM") == std::pair(140.0f / 120.0f, 1.122462f) &&
+              analyzed.at("SEQ_A") == std::pair(1.0f, 1.0f),
+          "the length analysis gets each state's tempo ratio and pitch");
+    Check(MiniTag(tags / "0000 SEQ_A_140_BPM.minitst", "tst_tempo") == "1.1666666" &&
+              MiniTag(tags / "0000 SEQ_A_140_BPM.minitst", "tst_pitch") == "1.122462",
+          "a state's mini holds its tempo ratio and its pitch");
+    Check(MiniTag(tags / "0000 SEQ_A_200_BPM.minitst", "tst_tempo") == "1.6666666" &&
+              MiniTag(tags / "0000 SEQ_A_200_BPM.minitst", "tst_pitch").empty() &&
+              MiniTag(tags / "0000 SEQ_A_200_BPM.minitst", "_lib") == "loose.tstlib",
+          "a pitch of 1 gets no tag");
+    Check(MiniTag(tags / "0000 SEQ_A.minitst", "tst_tempo").empty() &&
+              MiniTag(tags / "0000 SEQ_A.minitst", "tst_pitch").empty() &&
+              MiniTag(tags / "0001 SEQ_B.minitst", "tst_tempo").empty() &&
+              MiniTag(tags / "0000 SEQ_A.minitst", "_lib") == "loose.tstlib",
+          "a job at 1 gets neither tag");
+    const fs::path none = folder.Path() / "none" / "0000 SEQ_A_140_BPM.minitst";
+    Check(MiniTag(none, "_lib") == "loose.tstlib" && MiniTag(none, "tst_tempo").empty() &&
+              MiniTag(none, "tst_pitch").empty(),
+          "a tool that names no tags writes none");
 }
 
 // A sound with variants is ripped once for each of them, and not without them. The length analysis gets each
@@ -934,6 +1006,7 @@ int main()
     TestCutAfterLengthAnalysis();
     TestSecondRipKeepsFirstLibrary();
     TestSoundVolume();
+    TestTempoAndPitchTags();
     TestVariants();
     TestWholeArchiveWhenFilesCantBeCut();
     TestListArchives();

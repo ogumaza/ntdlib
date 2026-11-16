@@ -8,19 +8,22 @@
 // 3DS's is ntdlib::ctr::snd::LengthConsole (ntdlib/ctr/snd/length_model.h), and the Wii's is
 // ntdlib::rvl::snd::LengthConsole (ntdlib/rvl/snd/length_model.h).
 //
-// A struct may give four more things. Where the console's engine doesn't run frames by itself, `static bool
+// A struct may give five more things. Where the console's engine doesn't run frames by itself, `static bool
 // RunFrame(Model&)` runs a frame of the model and returns false if the model fails. Where an open of a track keeps the
 // track's wait, `kOpenKeepsWait` is true (see TrackPasses::SetHooks). The Wii's struct gives both. Where the game's
 // code takes later steps that can change the sound, such as a script that starts the sound and sets its variables,
 // `static bool Pending(const Model&)` says whether a step is still to come. Where the frame's sound depends on more
 // than the output's samples, such as a volume that the caller applies, `static bool Sounded(const Model&)` replaces the
-// test of `Output`. The console's engine gives SetEndlessLoops (see MeasureSequence). The engines' hooks for the
-// analysis are in length_hooks.h.
+// test of `Output`. Where some tracks play no part in the sound, such as tracks that play at a volume of 0, `static
+// uint32_t Tracks(const Model&)` gives the tracks that play, a bit for each. Only those tracks hold a loop's fade back
+// (TrackPasses::OthersLooped). The console's engine gives SetEndlessLoops (see MeasureSequence). The engines' hooks for
+// the analysis are in length_hooks.h.
 
 #pragma once
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -276,9 +279,18 @@ public:
         passes_.SetHooks();
     }
 
+    // Whether every other track that plays has looped (TrackPasses::OthersLooped). The tracks that play are the
+    // struct's Tracks, or every track.
     bool OthersLooped(int track) const
     {
-        return passes_.OthersLooped(track);
+        if constexpr (requires { Console::Tracks(model_); })
+        {
+            return passes_.OthersLooped(track, Console::Tracks(model_));
+        }
+        else
+        {
+            return passes_.OthersLooped(track);
+        }
     }
 
 private:
@@ -327,38 +339,59 @@ CountedLoopSet OutermostCountedLoops(const Player& player)
     return loops;
 }
 
-// Measures sequence sound `sound` on a model that `make_model()` makes, a std::unique_ptr<Console::Model> with the
-// caller's settings, such as the effects. The counted loops in `endless_loops` loop for ever. Returns nothing for a
-// sound that doesn't start. A sequence can repeat its music in a counted loop that the game plays for longer than the
-// limit. When the measure reaches the limit inside counted loops, it runs again on a new model with each track's
-// outermost counted loop endless. Their passes then count as loops of the sequence. An inner loop that runs at the
-// limit, such as a fill, still ends, and repeats in each pass of the outer loop as the game plays it. The analysis's
-// exceptions pass through: xsflib::rip::TryMeasure turns them into nothing.
-template <class Console, class MakeModel>
-std::optional<xsflib::rip::Timing> MeasureSequence(const MakeModel& make_model, uint32_t sound,
+// Measures a sequence sound on a model that `make_model()` makes, a std::unique_ptr<Console::Model> with the caller's
+// settings, such as the effects. `start(model)` starts the sound with the caller's settings and returns its player.
+// `rules` gives the analysis's rules. The counted loops in `endless_loops` loop for ever. Returns nothing when
+// `make_model` gives no model or `start` gives no player. A sequence can repeat its music in a counted loop that the
+// game plays for longer than the limit. When the measure reaches the limit inside counted loops, it runs again on a new
+// model with each track's outermost counted loop endless. Their passes then count as loops of the sequence. The second
+// run calls `make_model` and `start` again. An inner loop that runs at the limit, such as a fill, still ends, and
+// repeats in each pass of the outer loop as the game plays it. The analysis's exceptions pass through:
+// xsflib::rip::TryMeasure turns them into nothing.
+template <class Console, class MakeModel, class Start>
+    requires std::invocable<const Start&, typename Console::Model&>
+std::optional<xsflib::rip::Timing> MeasureSequence(const MakeModel& make_model, const Start& start,
+                                                   const xsflib::rip::LengthRules& rules,
                                                    const CountedLoopSet& endless_loops = {})
 {
     const std::unique_ptr<typename Console::Model> model = make_model();
-    auto& engine = *model->engine;
-    engine.SetEndlessLoops(endless_loops);
-    auto* player = engine.StartSequence(sound);
+    if (!model)
+    {
+        return std::nullopt;
+    }
+
+    model->engine->SetEndlessLoops(endless_loops);
+    auto* player = start(*model);
     if (!player)
     {
         return std::nullopt;
     }
 
     LengthModel<Console> length_model(*model, *player);
-    const xsflib::rip::LengthRules rules = LengthRulesFor(Console::kFrameMs);
     const std::optional<xsflib::rip::Timing> timing = xsflib::rip::MeasureLength(length_model, rules);
     if (timing && endless_loops.empty() && length_model.Frames() >= rules.max_frames)
     {
         if (const CountedLoopSet running = OutermostCountedLoops(*player); !running.empty())
         {
-            return MeasureSequence<Console>(make_model, sound, running);
+            return MeasureSequence<Console>(make_model, start, rules, running);
         }
     }
 
     return timing;
+}
+
+// Measures sequence sound `sound` as the overload above does, with the engine's StartSequence(sound) as the start and
+// the rules for the console's frames (LengthRulesFor).
+template <class Console, class MakeModel>
+std::optional<xsflib::rip::Timing> MeasureSequence(const MakeModel& make_model, uint32_t sound,
+                                                   const CountedLoopSet& endless_loops = {})
+{
+    const auto start = [sound](typename Console::Model& model)
+    {
+        return model.engine->StartSequence(sound);
+    };
+
+    return MeasureSequence<Console>(make_model, start, LengthRulesFor(Console::kFrameMs), endless_loops);
 }
 
 } // namespace ntdlib::nwsnd

@@ -83,6 +83,39 @@ struct BankPrograms
     };
 
     using Program = std::variant<std::monostate, Instrument, DrumSet>;
+
+    // The wave ids of every velocity region of every key region of an instrument, or of every drum of a drum set, in
+    // the program's order. Empty for no program.
+    static std::vector<uint32_t> WavesOf(const Program& program)
+    {
+        std::vector<uint32_t> waves;
+        const auto add = [&waves](const std::vector<VelocityRegion>& velocities)
+        {
+            for (const VelocityRegion& v : velocities)
+            {
+                waves.push_back(v.wave_id);
+            }
+        };
+        if (const auto* instrument = std::get_if<Instrument>(&program))
+        {
+            for (const KeyRegion& key : instrument->keys)
+            {
+                add(key.velocities);
+            }
+        }
+        else if (const auto* drums = std::get_if<DrumSet>(&program))
+        {
+            for (const std::optional<Drum>& drum : drums->keys)
+            {
+                if (drum)
+                {
+                    add(drum->velocities);
+                }
+            }
+        }
+
+        return waves;
+    }
 };
 
 // The model's effects of a bank's effects.
@@ -250,6 +283,16 @@ public:
         return number_;
     }
 
+    // The number of the wave system whose waves the bank plays.
+    uint32_t WaveSystemNumber() const
+    {
+        return wave_system_;
+    }
+
+    // The wave ids that program `program` can play: every velocity region of every key region of an instrument, or of
+    // every drum of a drum set. Empty for a program that the bank doesn't have.
+    std::vector<uint32_t> ProgramWaves(uint32_t program) const;
+
     // The wave bank that the bank plays (JASBank::assignWaveBank), or null for none.
     void SetWaveBank(const WaveBank* waves)
     {
@@ -283,6 +326,7 @@ private:
     static void ApplyEffect(const Effect& effect, uint32_t key, uint32_t velocity, InstParam& param, uint32_t& random);
 
     uint32_t number_ = 0;
+    uint32_t wave_system_ = 0;
     std::vector<std::vector<OscPoint>> tables_; // each table from its start to the envelope chunk's end
     std::vector<OscData> oscillators_;
     std::array<Program, 0xf0> programs_{};

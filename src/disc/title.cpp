@@ -407,8 +407,53 @@ TitleFile UnpackSoundArchive(const std::string& path, const TitleFile& file)
     }
 }
 
+// The deepest U8 archive inside a title's U8 archive that the loader opens: an archive in an archive in an archive.
+constexpr int kMaxNesting = 3;
+
+// Adds the sound archives (.brsar) of `file` to `files` when `file`, at `path`, holds a U8 archive, compressed or not.
+// Each one goes at `path`, a slash and its path in the archive. The U8 archives in the archive are searched in the same
+// way, down to kMaxNesting. A file that only looks compressed, or that holds a damaged archive, adds nothing.
+void AddNestedSoundArchives(const std::string& path, const TitleFile& file, int depth,
+                            std::map<std::string, TitleFile>& files)
+{
+    std::span<const uint8_t> data(file.data->data() + file.offset, file.size);
+    std::shared_ptr<const std::vector<uint8_t>> archive = file.data;
+    size_t offset = file.offset;
+    try
+    {
+        if (IsCx(data))
+        {
+            archive = std::make_shared<const std::vector<uint8_t>>(DecompressCx(data, kMaxFileSize));
+            data = *archive;
+            offset = 0;
+        }
+        if (data.size() < 4 || xsflib::LoadBe32(data.data()) != kU8Magic)
+        {
+            return;
+        }
+
+        for (const auto& [inner, entry] : ReadU8(data, path))
+        {
+            const std::string inner_path = path + "/" + inner;
+            const TitleFile inner_file{archive, offset + static_cast<size_t>(entry.offset), entry.size};
+            if (xsflib::AsciiLower(inner).ends_with(".brsar"))
+            {
+                files[inner_path] = UnpackSoundArchive(inner_path, inner_file);
+            }
+            else if (depth < kMaxNesting)
+            {
+                AddNestedSoundArchives(inner_path, inner_file, depth + 1, files);
+            }
+        }
+    }
+    catch (const Error&)
+    {
+    }
+}
+
 // The files of the title's U8 archives, by path. The archives' files make one tree. When two archives hold a file at
-// the same path, each archive's files go in a folder named after its content instead: content5 for content 5.
+// the same path, each archive's files go in a folder named after its content instead: content5 for content 5. The
+// sound archives in U8 archives inside them are added too (see AddNestedSoundArchives).
 std::map<std::string, TitleFile> ArchiveFiles(const Contents& contents)
 {
     struct Found
@@ -443,6 +488,16 @@ std::map<std::string, TitleFile> ArchiveFiles(const Contents& contents)
         const std::string path = clash ? "content" + std::to_string(file.index) + "/" + file.path : file.path;
         files[path] = UnpackSoundArchive(path, file.file);
     }
+
+    std::map<std::string, TitleFile> nested;
+    for (const auto& [path, file] : files)
+    {
+        if (!xsflib::AsciiLower(path).ends_with(".brsar"))
+        {
+            AddNestedSoundArchives(path, file, 1, nested);
+        }
+    }
+    files.merge(nested);
 
     return files;
 }

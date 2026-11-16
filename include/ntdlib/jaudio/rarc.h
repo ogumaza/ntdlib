@@ -12,8 +12,6 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/yaz0.h"
-
 namespace ntdlib::jaudio
 {
 
@@ -41,11 +39,6 @@ inline constexpr std::size_t kWideRarcEntrySize = 24;
 // archive that starts with "CRAR" is little-endian. The Switch's releases of GameCube and Wii games store their
 // archives that way. Throws FormatError if it isn't an archive.
 std::vector<ArchiveFile> ReadRarc(std::span<const uint8_t> rarc, std::size_t entry_size = kRarcEntrySize);
-
-// The Yaz0 decoder (ntdlib/yaz0.h), under the names that programs call it by.
-using ntdlib::DecodeIfYaz0;
-using ntdlib::DecodeYaz0;
-using ntdlib::IsYaz0;
 
 // A sequence archive with the sequences of another release's sequence table. The table is a 32-bit count, zeros up to
 // 0x20, and then a 32-bit offset and size for each sequence. The result is `rarc` with each file's data replaced by the

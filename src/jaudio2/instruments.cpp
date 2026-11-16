@@ -67,8 +67,14 @@ InstrumentBank::InstrumentBank(const ntdlib::jaudio::Bank& bank, std::span<const
     }
 
     number_ = bank.number;
+    wave_system_ = bank.wave_system;
     ReadOscillators(file);
     CopyPrograms<Programs>(bank, programs_, [this](std::size_t i) { return &oscillators_[i]; });
+}
+
+std::vector<uint32_t> InstrumentBank::ProgramWaves(uint32_t program) const
+{
+    return program < programs_.size() ? Programs::WavesOf(programs_[program]) : std::vector<uint32_t>();
 }
 
 void InstrumentBank::ReadOscillators(std::span<const uint8_t> file)

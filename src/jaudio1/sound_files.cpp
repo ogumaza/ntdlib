@@ -24,8 +24,10 @@
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio1/engine.h"
 #include "ntdlib/jaudio1/instruments.h"
+#include "ntdlib/jaudio1/sequence_walk.h"
 #include "ntdlib/jaudio2/channel.h"
 #include "ntdlib/jaudio2/engine.h"
+#include "ntdlib/yaz0.h"
 
 namespace ntdlib::jaudio1
 {
@@ -130,7 +132,7 @@ SoundFiles::SoundFiles(std::span<const uint8_t> aaf, std::span<const uint8_t> se
     }
 
     std::vector<uint8_t> decoded;
-    for (const nj::ArchiveFile& file : nj::ReadRarc(nj::DecodeIfYaz0(sequences, decoded), nj::kWideRarcEntrySize))
+    for (const nj::ArchiveFile& file : nj::ReadRarc(ntdlib::DecodeIfYaz0(sequences, decoded), nj::kWideRarcEntrySize))
     {
         SequenceFile& entry = sequences_.emplace_back();
         entry.id = file.id;
@@ -230,12 +232,44 @@ const SoundFiles::SequenceFile* SoundFiles::FindSequence(uint16_t id) const
     return nullptr;
 }
 
+std::vector<std::string> SoundFiles::WaveArchivesOf(uint16_t file) const
+{
+    const SequenceFile* sequence = FindSequence(file);
+    if (sequence == nullptr)
+    {
+        return {};
+    }
+
+    // Tracks::SetBank and SetVirtualBank, as Engine::StartModel calls them: each bank at its place, and each number
+    // naming the last bank that gives it. A number that no bank gives names physical bank 0xffff, and the note looks
+    // at place 0xff. Number 0xffff names no bank.
+    std::array<uint16_t, 256> virtual_banks{};
+    virtual_banks.fill(0xffff);
+    std::array<const InstrumentBank*, 256> places{};
+    for (uint32_t i = 0; i < banks_.size(); i++)
+    {
+        places[i & 0xff] = banks_[i].get();
+        if (banks_[i]->Number() != 0xffff)
+        {
+            virtual_banks[banks_[i]->Number() & 0xff] = static_cast<uint16_t>(i);
+        }
+    }
+    std::array<const InstrumentBank*, 256> by_number{};
+    for (std::size_t number = 0; number < by_number.size(); number++)
+    {
+        by_number[number] = places[virtual_banks[number] & 0xff];
+    }
+
+    return jaudio2::WaveArchivesOfWalk(jaudio1::WalkSequence(sequence->sequence->Bytes()), by_number, systems_);
+}
+
 void SoundFiles::LoadWaves(const WaveArchives& waves)
 {
     // The game plays the copy of a wave in the group that it loaded last (JASBasicWaveBank::incWaveTable). The model
     // plays the copy in the last group that lists the wave. JAudio2 puts the waves at the same place.
     static_assert(kWaves == jaudio2::SoundFiles::kWaves);
-    jaudio2::LoadedWaves loaded = jaudio2::LoadWaveSystems(nj::ReadAafWaveSystems(aaf_), waves);
+    systems_ = nj::ReadAafWaveSystems(aaf_);
+    jaudio2::LoadedWaves loaded = jaudio2::LoadWaveSystems(systems_, waves);
     memory_ = std::move(loaded.memory);
     wave_banks_ = std::move(loaded.banks);
     missing_waves_ = std::move(loaded.missing);

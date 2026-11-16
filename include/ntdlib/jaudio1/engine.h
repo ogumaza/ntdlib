@@ -208,6 +208,12 @@ public:
         return missing_waves_;
     }
 
+    // The names of the wave archives that the sequence of file `file` can play, ascending, each once: those of the
+    // waves of the banks and programs that its notes can start with (jaudio1::WalkSequence from its start), or every
+    // archive that the wave systems name where the walk can't follow the sequence. Empty for a file that the sequence
+    // archive doesn't have.
+    std::vector<std::string> WaveArchivesOf(uint16_t file) const;
+
 private:
     void LoadWaves(const WaveArchives& waves);
     void LoadBanks();
@@ -217,6 +223,7 @@ private:
     std::vector<uint8_t> aaf_;
     std::vector<SequenceFile> sequences_;
     std::unique_ptr<DspMemory> memory_;
+    std::vector<ntdlib::jaudio::WaveSystem> systems_;
     std::map<uint32_t, WaveBank> wave_banks_; // by wave system
     std::vector<std::unique_ptr<InstrumentBank>> banks_;
     RandomFast inst_random_;
@@ -305,6 +312,9 @@ public:
     bool PlayedNotes(uint32_t track) const;
     bool QuietPass(uint32_t track) const;
 
+    // The offset in the sequence of the next command of a track of TreeOrder(). 0 before a start.
+    uint32_t Cursor(uint32_t track) const;
+
     // For a length analysis: the tests of a held sound. Held: each channel that plays holds its note on a looping wave,
     // with each envelope at its sustain level or in a cycle, and each open track has started a note, jumped back or
     // opened a track that is still open. Moving: a track's levels move. WaitsForEver: the track waits for its note to
@@ -325,6 +335,26 @@ public:
 private:
     struct Model;
 
+public:
+    // The model between two sub-frames, for a player that seeks back: the channels, the tracks, the DSP's state, JAI's
+    // state, the DSP's memory below the waves and the last sub-frame's output. The waves never change. A snapshot
+    // shares nothing with the engine.
+    struct Snapshot
+    {
+        std::shared_ptr<const Model> model; // null before the first start
+        const Engine* engine = nullptr;     // the engine that took it
+        uint64_t start = 0;                 // the engine's count of starts when it took it
+        std::vector<uint8_t> memory;
+        std::vector<int16_t> output;
+    };
+
+    Snapshot Save() const;
+
+    // Returns the engine to `snapshot`. Throws std::logic_error, and changes nothing, for a snapshot taken before the
+    // current start or by another engine.
+    void Restore(const Snapshot& snapshot);
+
+private:
     // The game's answer to a track's request (PSGame's seqCpuSync).
     uint16_t Sync(uint32_t track, uint32_t value);
 
@@ -374,6 +404,7 @@ private:
     std::unique_ptr<Model> model_;
     std::vector<int16_t> output_;
     LoopHook loop_hook_;
+    uint64_t starts_ = 0;
 };
 
 } // namespace ntdlib::jaudio1

@@ -421,14 +421,21 @@ inline SoundTableBlocks SoundTable(const std::vector<SectionSpec>& sections, boo
     return {t.Data(), n.Data()};
 }
 
-// A start-up archive with one wave system (number 0) of two waves, `bank` played with it, a sequence collection of one
-// category that holds `sequences`, and the sound table `sounds` if it has a table. A little-endian archive takes a
-// little-endian bank and table.
-inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
+// A wave system or a bank of a start-up archive: the number that its command or its list entry gives, and its file. A
+// wave system's command gives its number. A bank's gives the number of the wave system that it plays.
+struct BaaBlock
+{
+    uint32_t number = 0;
+    std::vector<uint8_t> file;
+};
+
+// A start-up archive with the wave systems `systems` and the banks `banks`, each with its command in that order, a
+// sequence collection of one category that holds `sequences`, and the sound table `sounds` if it has a table. A
+// little-endian archive takes little-endian systems, banks and a little-endian table.
+inline std::vector<uint8_t> StartUpArchive(const std::vector<BaaBlock>& systems, const std::vector<BaaBlock>& banks,
                                            const std::vector<std::vector<uint8_t>>& sequences,
                                            const SoundTableBlocks& sounds = {}, bool big_endian = true)
 {
-    const std::vector<uint8_t> ws = WaveSystemFile(0, 2, "test.aw", big_endian);
     Bytes sc(big_endian);
     sc.U8('S').U8('C').U16(1).U32(0).U32(12);
     sc.U32(static_cast<uint32_t>(sequences.size()));
@@ -450,15 +457,22 @@ inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
     const bool table = !sounds.table.empty();
     Bytes a(big_endian);
     a.Tag("AA_<");
-    const std::size_t list_size = 4 + 16 + 12 + 12 + (table ? 24 : 0) + 4;
-    const auto ws_at = static_cast<uint32_t>(list_size);
-    const auto bank_at = static_cast<uint32_t>(ws_at + ws.size());
-    const auto sc_at = static_cast<uint32_t>(bank_at + bank.size());
+    const std::size_t list_size = 4 + 16 * systems.size() + 12 * banks.size() + 12 + (table ? 24 : 0) + 4;
+    std::size_t block_at = list_size;
+    for (const BaaBlock& system : systems)
+    {
+        a.Tag("ws  ").U32(system.number).U32(static_cast<uint32_t>(block_at)).U32(0xffffffff);
+        block_at += system.file.size();
+    }
+    for (const BaaBlock& bank : banks)
+    {
+        a.Tag("bnk ").U32(bank.number).U32(static_cast<uint32_t>(block_at));
+        block_at += bank.file.size();
+    }
+    const auto sc_at = static_cast<uint32_t>(block_at);
     const auto bst_at = static_cast<uint32_t>(sc_at + sc.Size());
     const auto bstn_at = static_cast<uint32_t>(bst_at + sounds.table.size());
 
-    a.Tag("ws  ").U32(0).U32(ws_at).U32(0xffffffff);
-    a.Tag("bnk ").U32(0).U32(bank_at);
     a.Tag("bsc ").U32(sc_at).U32(static_cast<uint32_t>(sc_at + sc.Size()));
     if (table)
     {
@@ -467,13 +481,32 @@ inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
     }
 
     a.Tag(">_AA");
-    a.Append(ws).Append(bank).Append(sc.Data());
+    for (const BaaBlock& system : systems)
+    {
+        a.Append(system.file);
+    }
+    for (const BaaBlock& bank : banks)
+    {
+        a.Append(bank.file);
+    }
+    a.Append(sc.Data());
     if (table)
     {
         a.Append(sounds.table).Append(sounds.names);
     }
 
     return a.Data();
+}
+
+// A start-up archive with one wave system (number 0) of two waves, `bank` played with it, a sequence collection of one
+// category that holds `sequences`, and the sound table `sounds` if it has a table. A little-endian archive takes a
+// little-endian bank and table.
+inline std::vector<uint8_t> StartUpArchive(const std::vector<uint8_t>& bank,
+                                           const std::vector<std::vector<uint8_t>>& sequences,
+                                           const SoundTableBlocks& sounds = {}, bool big_endian = true)
+{
+    return StartUpArchive({{0, WaveSystemFile(0, 2, "test.aw", big_endian)}}, {{0, bank}}, sequences, sounds,
+                          big_endian);
 }
 
 // The AW file of WaveSystemFile: wave i is 64 samples of a square wave of period 16 at i * 128 bytes. The samples are
@@ -643,7 +676,8 @@ inline std::vector<uint8_t> AafSoundTable(const std::vector<AafSoundSpec>& sound
 // first. The Wind Waker's table has them first too. The table's header gives the effects and the streams format 6, and
 // the sequences `sequence_format`. The Wind Waker's sequences have format 5, whose bit 0 makes an entry give the file.
 // Luigi's Mansion's have format 0. The archive also has a chunk of a type that the sound library skips. With `index`,
-// it has a sequence index (BarcFile, chunk type 4) of those sequences, as Luigi's Mansion's has.
+// it has a sequence index (BarcFile, chunk type 4) of those sequences, as Luigi's Mansion's has. `more_banks` follow
+// `bank` in the list, each with the wave system that it plays, and in the file, each on a 32-byte boundary.
 //
 // A little-endian archive has the layout of the Switch's release of Pikmin 2. Each list entry takes 16 bytes: a 64-bit
 // offset, the size and the value. A block of type 5 comes after the sound table's, in 16 bytes too. The wave systems
@@ -651,7 +685,8 @@ inline std::vector<uint8_t> AafSoundTable(const std::vector<AafSoundSpec>& sound
 inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, const std::vector<std::string>& archives,
                                     uint8_t sequence_format = 5, const std::vector<AafSequenceSpec>& index = {},
                                     bool big_endian = true, const std::vector<uint8_t>& bank = {},
-                                    const std::vector<uint32_t>& system_ids = {}, uint32_t bank_system = 0)
+                                    const std::vector<uint32_t>& system_ids = {}, uint32_t bank_system = 0,
+                                    const std::vector<BaaBlock>& more_banks = {})
 {
     // The chunks: the sound table, the bank list, the wave system list, a chunk that the sound library skips up to its
     // 0 word, the sequence index if there is one, and the end. The index follows the wave systems.
@@ -691,6 +726,14 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     {
         block(static_cast<uint32_t>(bank_at), static_cast<uint32_t>(bank.size()), bank_system);
     }
+    std::vector<std::size_t> more_at;
+    std::size_t next_bank = AlignUp(bank_at + bank.size(), 0x20);
+    for (const BaaBlock& more : more_banks)
+    {
+        more_at.push_back(next_bank);
+        block(static_cast<uint32_t>(next_bank), static_cast<uint32_t>(more.file.size()), more.number);
+        next_bank = AlignUp(next_bank + more.file.size(), 0x20);
+    }
     chunks.insert(chunks.end(), {0, 3});
     for (std::size_t s = 0; s < archives.size(); s++)
     {
@@ -723,6 +766,10 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     if (!bank.empty())
     {
         b.PadTo(bank_at).Append(bank);
+    }
+    for (std::size_t i = 0; i < more_banks.size(); i++)
+    {
+        b.PadTo(more_at[i]).Append(more_banks[i].file);
     }
 
     return b.Take();

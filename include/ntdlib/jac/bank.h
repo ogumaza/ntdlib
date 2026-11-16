@@ -266,4 +266,12 @@ private:
     Aram aram_;
 };
 
+// The names of the wave archives that a set or a load of scene `scene` of the wave system at place `system` can read
+// (Jac_SceneSet): the archive of the scene's group, and, with an external mode other than 0, the archive of each
+// scene that a word of the scene's C-EX names in its high half (UpdateWave_Extern). Ascending, each once. Empty for a
+// scene that `systems` don't have. The system at a place is the first of `systems` with the place's number, as Banks
+// registers them. No other load of the model reads a wave archive.
+std::vector<std::string> SceneArchives(const std::vector<ntdlib::jaudio::WaveSystem>& systems, uint32_t system,
+                                       uint32_t scene);
+
 } // namespace ntdlib::jac

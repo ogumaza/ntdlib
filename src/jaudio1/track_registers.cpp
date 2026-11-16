@@ -185,7 +185,7 @@ uint32_t Tracks::ReadReg16(uint32_t index, uint32_t reg)
             {
                 const uint32_t channel = track.channels[note];
                 result = result << 1 |
-                         (channel == Track::kNone || voices_.ChannelAt(channel).status == Channel::kStop ? 1 : 0);
+                         (channel == Track::kNone || voices_->ChannelAt(channel).status == Channel::kStop ? 1 : 0);
             }
             return result;
         }
@@ -643,7 +643,7 @@ OscTable Tracks::SequenceTable(const Track& track, uint32_t offset) const
 
 OuterParam* Tracks::SequenceOuter(const Sequence* sequence, uint32_t offset)
 {
-    return &sequence_outer_[{sequence, offset}];
+    return &sequence_outer_.map[{sequence, offset}];
 }
 
 } // namespace ntdlib::jaudio1

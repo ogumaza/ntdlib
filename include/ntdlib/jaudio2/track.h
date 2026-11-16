@@ -49,6 +49,11 @@ public:
         return static_cast<uint32_t>(bytes_.size());
     }
 
+    std::span<const uint8_t> Bytes() const
+    {
+        return bytes_;
+    }
+
     uint8_t U8(uint32_t offset) const
     {
         return offset < bytes_.size() ? bytes_[offset] : 0xff;
@@ -236,8 +241,10 @@ public:
 
     explicit Tracks(Voices& voices);
 
-    Tracks(const Tracks&) = delete;
-    Tracks& operator=(const Tracks&) = delete;
+    // A copy plays on the same voices. An engine's snapshot copies its tracks and later copies them back into the
+    // same object (Engine::Save and Restore).
+    Tracks(const Tracks&) = default;
+    Tracks& operator=(const Tracks&) = default;
 
     // The bank that a track's bank number names (JASDefaultBankTable's registBank). Numbers 0 to 255.
     void SetBank(uint32_t number, const InstrumentBank* bank);
@@ -414,7 +421,7 @@ private:
                         uint16_t priority, uint32_t owner);
     uint32_t NoteOnOsc(uint32_t wave, uint32_t key, uint32_t velocity, uint16_t priority, uint32_t owner);
 
-    Voices& voices_;
+    Voices* voices_;
     std::vector<Track> tracks_; // the pool's tracks, then the root tracks
     std::vector<uint32_t> free_tracks_;
     std::vector<uint32_t> list_; // the playing sequences' root tracks, in the order that they started

@@ -116,6 +116,11 @@ struct ArchiveRipTool
     // 3sf_var (xsflib::psf::FormatVariables).
     std::function<std::string(const xsflib::psf::Variables&)> format_variables = xsflib::psf::FormatVariables;
 
+    // The tags that hold a job's tempo ratio and pitch (Job::tempo_ratio and Job::pitch) in its mini, such as
+    // "csf_tempo" and "csf_pitch". A mini gets a tag only when its value isn't 1. Empty for no tag.
+    std::string tempo_tag;
+    std::string pitch_tag;
+
     // Whether the tag `<format>_sound` of a later state or a variant holds the sound's label alone. Otherwise the tag
     // holds the job's label, as the title does: the sound's label with the state's or the variant's name.
     bool sound_tag_holds_sound_label = false;
@@ -146,15 +151,16 @@ struct ArchiveRipTool
     };
 };
 
-// Sets the volume tag to `volume`, unless it's 1, as the shortest decimal that reads back as the same float.
-inline void SetVolumeTag(float volume, xsflib::psf::Tags& tags)
+// Sets tag `name` to `value` as the shortest decimal that reads back as the same float. A value of 1 and an empty name
+// set nothing.
+inline void SetRatioTag(const std::string& name, float value, xsflib::psf::Tags& tags)
 {
-    if (volume == 1.0f)
+    if (value == 1.0f || name.empty())
     {
         return;
     }
 
-    tags["volume"] = ShortestDecimal(volume);
+    tags[name] = ShortestDecimal(value);
 }
 
 // The jobs that rip `selected` in the states that `tool` gives them (ArchiveRipTool::sound_states), in order. A job is
@@ -353,7 +359,9 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
         {
             tags[tool.format + "_sound"] = sound_label->second;
         }
-        SetVolumeTag(job.volume, tags);
+        SetRatioTag("volume", job.volume, tags);
+        SetRatioTag(tool.tempo_tag, job.tempo_ratio, tags);
+        SetRatioTag(tool.pitch_tag, job.pitch, tags);
         if (!job.variables.empty() && !tool.variables_tag.empty())
         {
             tags[tool.variables_tag] = tool.format_variables(job.variables);

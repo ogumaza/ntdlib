@@ -92,15 +92,28 @@ struct RomFile
 class Rom
 {
 public:
-    // Reads an image. Throws xsflib::FormatError when the header, the FNT or the FAT doesn't fit in the image, or when
-    // a file's bytes don't.
+    // Reads a whole image, such as a dump of a cartridge. Throws xsflib::FormatError when the header, the FNT or the
+    // FAT doesn't fit in the image, or when the bytes of a file don't. A cut-down image is an error here.
     static Rom Parse(std::span<const uint8_t> image);
+
+    // Reads a partial image, such as the image of a 2SF set: a game image cut down to the data that the music uses. The
+    // binaries, the overlay tables, the FNT, the FAT and the files may extend past the end of the image. Those bytes
+    // read as zeros, like the gaps between the blocks of a 2SF set. Header() returns the sizes as the header states
+    // them. Arm9(), Arm7() and FileData() return the part that the image contains. The overlay tables and the FAT stop
+    // at the end of the image. The files stay unnamed when the FNT or the FAT extends past the end, or when the FNT
+    // doesn't parse. Throws xsflib::FormatError for an image shorter than a header, or for a file that ends before it
+    // starts.
+    static Rom ParsePartial(std::span<const uint8_t> image);
+
+    // Whether ParsePartial read the image. The bytes past the end of a partial image read as zeros.
+    bool Partial() const;
 
     const RomHeader& Header() const;
 
     std::span<const uint8_t> Image() const;
 
-    // The binaries as the image holds them. An ARM9 binary may hold compressed parts.
+    // The binaries as the image contains them. An ARM9 binary may contain compressed parts. A partial image may contain
+    // only the start of a binary, or none of it.
     std::span<const uint8_t> Arm9() const;
     std::span<const uint8_t> Arm7() const;
 
@@ -121,8 +134,18 @@ public:
     // path.
     const RomFile* Find(std::string_view path) const;
 
+    // The IDs of the files whose bytes overlap the image's bytes from `start` up to `end`, in the FAT's order. An
+    // empty file overlaps nothing.
+    std::vector<uint32_t> FilesIn(uint32_t start, uint32_t end) const;
+
 private:
+    static Rom Read(std::span<const uint8_t> image, bool partial);
+
+    // The bytes of the image from `offset`, up to `size` of them: fewer at the end of a partial image.
+    std::span<const uint8_t> Held(uint32_t offset, uint32_t size) const;
+
     std::span<const uint8_t> image_;
+    bool partial_ = false;
     RomHeader header_;
     std::vector<Overlay> arm9_overlays_;
     std::vector<Overlay> arm7_overlays_;

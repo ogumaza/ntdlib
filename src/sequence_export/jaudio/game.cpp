@@ -47,6 +47,7 @@
 #include "ntdlib/sequence_export/jaudio/game_input.h"
 #include "ntdlib/sequence_export/jaudio/performance.h"
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
+#include "ntdlib/yaz0.h"
 #include "sequence_export/jaudio/chord_companion.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -83,6 +84,7 @@ void SetState(SequenceSound& seq, const SequenceState& state)
     seq.game_ports = state.game_ports;
     seq.status_by_section = state.status_by_section;
     seq.fade_in = state.fade_in;
+    seq.clear_child_15 = state.clears_child_15;
 }
 
 // The states in which The Wind Waker's code plays its music, and the other states that it gives the same pieces
@@ -571,6 +573,20 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // Yoshi.
         rules.mute_child_15 = true;
 
+        // Each of those pieces converts once more as it plays while Mario rides Yoshi. 0x80016548 takes the music's
+        // root track and stores 0 in the mute of its child 15 (0x800165e0) when Mario gets on (0x802704b0), and 1 when
+        // he gets off (0x802703c0). It acts only on a piece whose entry in the sound table has bit 28 of its first word
+        // set (0x80016594, through 0x80013278). The store changes nothing else: no volume and no fade. These are the
+        // sequences with that bit whose child 15 plays notes. Sequences 8, 20, 21, 26, 33 and 34 have the bit too.
+        // Five of them have no child 15 that the callback mutes. The child 15 of sequence 20 plays no notes. Each of
+        // the six would convert the same twice.
+        constexpr std::array<uint16_t, 9> kYoshiPieces{1, 2, 3, 4, 5, 7, 9, 19, 29};
+        for (const uint16_t piece : kYoshiPieces)
+        {
+            rules.arrangements.push_back(
+                {.sound = ntdlib::jaudio::kAafSequence | piece, .suffix = "YOSHI", .state = {.clears_child_15 = true}});
+        }
+
         // MSound's constructor (0x80014e70) gives each category of effects that has sounds a volume, in the loop from
         // 0x80014fe4 to 0x80015070. The category's row of the table at 0x803ac8ec (16 bytes a row) holds a float at +8.
         // The constructor passes the whole part of 127 times that float to JAIBasic::setSeCategoryVolume (0x803029a4).
@@ -884,6 +900,23 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
             }
         }
 
+        // At start-up, the game sets four FX lines from the block of type 7 in PSound.aaf (JASDsp::setFXLine,
+        // 0x800a54e4 in the GameCube's main.dol, 0x80056164 in the Wii's). A track's default mix lines (0x352 and
+        // 0x412) send to buses 0x0dc0 and 0x0e20, the inputs of lines 0 and 1. Lines 0 and 1 delay by 48 sub-frames.
+        // Their filter's taps are 0, 0, 0x034e, 0x034e, 0x126b, 0x2097, 0x346d and -0x1000. The filter is a low-pass.
+        // Its largest gain is 24075/32768, at 0 Hz. Line 0 goes to the left side at 0x1000/32768, and line 1 to the
+        // right side. Both lines also go to bus 0x0f40 at 0x1000/32768. That bus has no delay and no feedback. It is
+        // the left rear bus of the DSP program's surround matrix. The matrix scales the bus by 0x6784/32768 and adds it
+        // to the left side at 0x7fff/32768 and to the right side at -0x47e0/32768, a sub-frame late. The Wii's DSP
+        // program runs the matrix only while it has no third output buffer. The performer gives both lines one volume.
+        // A side gets at most 0x1000/32768 * (1 + 2 * 0x6784/32768) of the two lines' level, with or without the
+        // matrix. No echo of the game then falls silent later than the performer's. The function at 0x8033869c sets the
+        // mixer's levels through JASDriver::setMixerLevel (0x800a4808) at 0x803386cc: 0.9 for the channels and 3.9 for
+        // the DSP. The Wii's release does the same at 0x803b8974. The levels become 14745 and 15974 (0x800aa860). A
+        // voice at a volume of 1 then reaches the output at 14745/65536 times 15974/4096 of its samples.
+        rules.echo = EchoLine{48, 24075 / 32768.0f, 0x1000 / 32768.0f * (1.0f + 2.0f * 0x6784 / 32768.0f),
+                              14745.0f / 65536.0f * 15974.0f / 4096.0f};
+
         // The other pieces' roots wait between polls for as many ticks as call 0x2e00 gives
         // (SeqTrackRoot::beatUpdate, 0x803428c8). The time is 60 ticks (0x80342368). PikSceneMgr::initMainBgm halves
         // it for last and yakushima (0x80336e38 and 0x80336ec4). The root of an area's or a boss's music asks for its
@@ -912,21 +945,46 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // battle's directors, from track 8 on (PSM::DirectorMgr_2PBattle, 0x80470484). l_boss plays with the bosses'
         // directors (PSM::DirectorMgr_Battle, 0x804701f0). They take tracks 14 and 15 while a big boss exists, and 10
         // and 11 otherwise (newDirector, 0x80470240, through PSM::SceneMgr::curSceneIsBigBossFloor, 0x8045a2d8). The
-        // big boss's sound object sets the flag as it's made (0x8046083c). The order in which the game makes the boss
-        // and the directors isn't known. The rule mutes 10 and 11, as the directors do without a big boss. From
-        // l_boss's start point, the four tracks hold one note, on track 14.
+        // big boss's sound object sets the flag as it's made (0x8046083c). The game makes l_boss only while that object
+        // exists (initBossBgm, 0x8033606c). The rule therefore mutes 14 and 15. Track 14 holds one note, in parts 1 and
+        // 12. Track 15 holds notes only in parts 4 and 11 (see the parts below).
         // m_boss's tracks start at point 9 and never meet the directors. a_iron, a_zawinul01 and caveboss play
         // without directors.
         rules.muted_children = {
             {"forest.bms", 0x0fc0},     {"n_tutorial.bms", 0x0fe0}, {"last.bms", 0xff80},
             {"yakushima.bms", 0x07e0},  {"battle_t.bms", 0xff00},   {"2pbattle.bms", 0x0f00},
-            {"l_boss.bms", 0x0c00},     {"caveconc.bms", 0x03f0},   {"caveglass.bms", 0x1fc0},
+            {"l_boss.bms", 0xc000},     {"caveconc.bms", 0x03f0},   {"caveglass.bms", 0x1fc0},
             {"cavekeyget.bms", 0x0ff0}, {"cavemetal.bms", 0x07f0},  {"caverelax.bms", 0x1f00},
             {"cavesoil.bms", 0x07f0},   {"cavetile.bms", 0x0ff0},   {"cavetsumiki.bms", 0x3ff0},
             {"new_00.bms", 0xffc0},     {"new_01.bms", 0x3ff0},     {"new_02.bms", 0x7fe0},
             {"new_03.bms", 0xff80},     {"new_04.bms", 0x3ff0},     {"new_05.bms", 0x3ff0},
             {"new_06.bms", 0x3fe0},     {"new_07.bms", 0xff80},     {"new_08.bms", 0x1ff0},
         };
+
+        // A boss's actions jump to the other parts of its music (JumpBgmSeq::requestJumpBgmOnBeat, 0x80333728). The
+        // table of the game's pieces gives each part of m_boss and l_boss a variant that starts there (its start
+        // point). Call 0x4000 gives the root that point. l_boss's tension director turns track 15 on while a captain
+        // stands within 300 units of the boss (0x8046cc70). Parts 4 and 11 hold notes on that track, and play once more
+        // with it. The file itself plays from the start point that the bosses give it.
+        for (const ntdlib::jaudio::Pikmin2Piece& piece : ntdlib::jaudio::kPikmin2Pieces)
+        {
+            using enum ntdlib::jaudio::Pikmin2Piece::Kind;
+            const std::string file = piece.sequence;
+            if (file != "m_boss.bms" && file != "l_boss.bms")
+            {
+                continue;
+            }
+            // A variant's label is the file's name without its extension, then the part's suffix.
+            const std::size_t stem = file.rfind('.');
+            GameRules::Part part{.suffix = std::string(piece.Name().substr(stem)),
+                                 .ports = {},
+                                 .sync_answers = {{0x4000, piece.start_point}}};
+            if (piece.kind == kBigBossNear)
+            {
+                part.muted_children = static_cast<uint16_t>(rules.muted_children.at(file) & ~0x8000u);
+            }
+            rules.parts[file].push_back(std::move(part));
+        }
 
         // The sound layer plays each piece at the volume that user/Totaka/BgmList.txt gives it, out of 127
         // (PSSystem::SeqDataList::getSeqVolume, 0x80330e08). PSSystem::SeqBase::init and DirectedBgm::init write it
@@ -2107,6 +2165,14 @@ void Game::FindSequences()
             SequenceSound again = seq;
             again.name += part.suffix;
             again.ports = part.ports;
+            for (const auto& [id, answer] : part.sync_answers)
+            {
+                again.sync_answers[id] = answer;
+            }
+            if (part.muted_children)
+            {
+                again.muted_children = *part.muted_children;
+            }
             sequences_.push_back(std::move(again));
         }
     }

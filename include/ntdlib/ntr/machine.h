@@ -77,7 +77,8 @@ public:
     // The ARM9's cycles in halts that end at once after which they pass their time.
     static constexpr uint64_t kSpinCycles = 1 << 12;
 
-    // A machine with `rom` booted and `backup` in its card. Throws std::runtime_error when a binary doesn't fit in the
+    // A machine with `rom` booted and `backup` in its card. A card read past the end of the image returns 0xFF. For a
+    // partial image (Rom::ParsePartial) it returns zeros. Throws std::runtime_error when a binary doesn't fit in the
     // memory at its address, and std::invalid_argument for a backup memory of another size.
     explicit Machine(const Rom& rom, const BackupMemory& backup = {});
     Machine(const Machine&) = delete;
@@ -115,6 +116,10 @@ public:
 
     // Called for each word that a CPU puts into the IPC's FIFO to the other: `to_arm7` is set for the ARM9's words.
     std::function<void(bool to_arm7, uint32_t word)> on_fifo_word;
+
+    // Called for each plain read command (B7) of the card, with the address that the command gives and the bytes that
+    // the read transfers. A read below 0x8000 gives data from 0x8000 on, as the card does.
+    std::function<void(uint32_t address, uint32_t bytes)> on_card_read;
 
     // Called for each access of the ARM9 to an I/O register or a device that the machine doesn't model.
     std::function<void(uint32_t address, int size, bool write)> on_unknown_io;
@@ -207,6 +212,7 @@ private:
     void SquareRoot();
 
     std::span<const uint8_t> image_;
+    uint8_t past_image_; // the byte that a card read past the end of the image returns
     std::unique_ptr<Arm7System> arm7_;
     std::unique_ptr<arm::Cpu> arm9_;
     std::unique_ptr<SpiMemory> backup_;

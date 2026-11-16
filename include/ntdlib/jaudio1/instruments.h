@@ -74,6 +74,16 @@ public:
         return number_;
     }
 
+    // The number of the wave system whose waves the bank plays.
+    uint32_t WaveSystemNumber() const
+    {
+        return wave_system_;
+    }
+
+    // The wave ids that program `program` can play: every velocity region of every key region of an instrument, or of
+    // every drum of a drum set. Empty for a program that the bank doesn't have.
+    std::vector<uint32_t> ProgramWaves(uint32_t program) const;
+
     void SetWaveBank(const WaveBank* waves)
     {
         waves_ = waves;
@@ -107,6 +117,7 @@ private:
                             RandomFast& random);
 
     uint32_t number_ = 0;
+    uint32_t wave_system_ = 0;
     std::vector<std::unique_ptr<std::vector<OscPoint>>> tables_;
     std::vector<std::unique_ptr<OscData>> oscillators_;
     std::array<Program, 0x100> programs_{};

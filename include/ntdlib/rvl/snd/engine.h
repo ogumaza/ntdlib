@@ -205,6 +205,20 @@ public:
         sends_ = sends;
     }
 
+    // The settings of the sound player that plays the sounds that start from now on (see SoundPlayerSettings). Each
+    // sound takes them as it starts. The sends add to the sends that SetEffects gives the sound, and the sums are the
+    // sound's SoundSends. The low-pass becomes the low-pass of the sound's player (SeqPlayer::SetLpfFreq,
+    // WsdPlayer::SetLpfFreq and StrmPlayer::SetLpfFreq). The settings start at their defaults. They change nothing.
+    void SetSoundPlayerSettings(const SoundPlayerSettings& settings)
+    {
+        sound_player_ = settings;
+    }
+
+    const SoundPlayerSettings& GetSoundPlayerSettings() const
+    {
+        return sound_player_;
+    }
+
     // Whether any effect is set up.
     bool HasEffects() const
     {
@@ -216,7 +230,8 @@ public:
     std::vector<std::pair<uint32_t, int>> TrackVoices(int player) const;
 
     // The sends that the game sets through a sound's handle before the sound's first update (BasicSound::SetFxSend),
-    // for the sound of the player at `player`. BasicSound::Update passes them to the sound's player. Each track adds
+    // for the sound of the player at `player`, plus the sound player's sends (SetSoundPlayerSettings).
+    // BasicSound::Update passes them to the sound's player. Each track adds
     // the player's sends to the track's sends (SeqTrack::UpdateChannelParam), and a wave sound's player adds them to
     // the wave sound's (WsdPlayer::UpdateChannel). A stream sound's player gives them to its voices
     // (StrmPlayer::Update). A player that the engine doesn't have gets none.
@@ -269,7 +284,7 @@ public:
     StrmPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file, uint16_t tracks = kAllTracks);
 
     // The same for a stream sound of `sound`, an entry that the archive's sound table needn't hold, such as an editor's
-    // new sound. The game sets no sends on such a sound.
+    // new sound. The game sets no sends on such a sound. The sound player's settings still apply.
     StrmPlayer* StartStreamSound(const ntdlib::rsar::SoundInfo& sound, std::span<const uint8_t> file,
                                  uint16_t tracks = kAllTracks);
 
@@ -394,7 +409,11 @@ private:
     std::vector<std::unique_ptr<StrmPlayer>> stream_players_;
     std::vector<int> update_order_;
 
-    // The sends that the game sets on sounds (see SetEffects), and those of each player's sound, by the player's place.
+    // The sound player's settings for the sounds that start (see SetSoundPlayerSettings).
+    SoundPlayerSettings sound_player_;
+
+    // The sends that the game sets on sounds (see SetEffects), and those of each player's sound, by the player's place,
+    // with the sound player's sends added.
     std::vector<SoundSend> sends_;
     std::vector<std::array<float, ax::kAuxBusCount>> player_sends_;
     std::vector<std::array<float, ax::kAuxBusCount>> wave_player_sends_;

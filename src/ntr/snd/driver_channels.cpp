@@ -42,10 +42,8 @@ int PartOf(int twin)
 // The channels whose volume the surround decay lowers: all but channels 1 and 3. Those two play the captures.
 constexpr uint32_t kSurroundChannels = 0xFFF5;
 
-// The envelope's attenuation at a note's start, and the level at which a release ends the channel.
+// The envelope's attenuation at a note's start. A release ends the channel at kSilent.
 constexpr int32_t kStartAttenuation = -92544;
-
-constexpr int32_t kSilent = -723;
 
 enum Sync : uint8_t
 {
@@ -740,6 +738,7 @@ int Driver::Allocate(uint32_t mask, int priority, bool weak_locks_too, int owner
 
     channel.next = -1;
     channel.owner = owner;
+    channel.struck_silent = false;
     channel.length = 0;
     channel.priority = static_cast<uint8_t>(priority);
     channel.volume = 127;

@@ -24,6 +24,7 @@ constexpr std::string_view kSuperMario3dWorldSha1 = "96b005771143ce5508eb0136143
 constexpr std::string_view kNewSuperMarioBrosUSha1 = "e0da277f9eed3c9fbd6dcbce09230811932d14dc";
 constexpr std::string_view kWiiPartyUSha1 = "528580bb03f3fbdea2815d7fa7b355233d90d28d";
 constexpr std::string_view kRainbowCurseSha1 = "813a15124d13b1978e7e3cb49f6648b9cb50d705";
+constexpr std::string_view kGameAndWarioSha1 = "4d2c7f19370a0eea57de309b950c6af937e6e01f";
 
 constexpr SequenceVariable Var(uint8_t index, int16_t value)
 {
@@ -484,6 +485,59 @@ constexpr std::array<Sound, 1> kRainbowCurseSounds = {{
     {"BGM_SEQ_MENU_INTERACTIVE", {}, kStageSelect, Playing({7})},
 }};
 
+// Game & Wario (USA), Slate.rpx. Gamer's music follows the BPM of the game in play. SetBPM (0x025B480C) holds the BPM
+// to 100 to 360 and stores it at the game's +0x1BB0. 0x025B4698 then stores the tempo ratio, the BPM divided by 120
+// (0x10063A90), at +0x1BC4, and the pitch from the table at 0x10063A94 at +0x1BC0. Before each game, 0x025BCF50 sets
+// the BPM by the session's mode and the game's number (the session at the game's +0x1A40, its tail at 0x025BC474).
+// Every mode that it handles starts at 120, 140 or 200 BPM. Some modes then step the BPM up. The arrangements are the
+// two other first BPMs. A run of 0x025B480C and 0x025BCF50 on the game's code gave their ratios and pitches.
+//
+// The pieces that follow the BPM: BGM_NI_INTRO1, started after SetBPM with the session's BPM (0x025B8F4C and 0x025B8F5C
+// through 0x025B7040), the jingles that 0x025B82F8 starts with the ratio and the pitch (0x025B91B4, 0x025BA978,
+// 0x025BAC34, 0x025BAC9C and 0x025BAD04), and the microgames' pieces that the microgame's object at the game's +0x1C08
+// starts (0x0273F748 with the ratio and the pitch at all nine of its calls, or 0x0273F85C through 0x025B6F20). The
+// game sets the ratio and the pitch with SequenceSound::SetTempoRatio (0x02FFAC94) and BasicSound::SetPitch
+// (0x02FF589C). BGM_NI_TSUNAGI_LIFE1 and BGM_NI_CLEAR1 play after SetBPM with 120, and BGM_NI_GAMEOVER1 without the
+// ratio. They aren't listed.
+constexpr std::array<SequenceArrangement, 2> kGamerBpms = {{
+    {" 140 BPM", {}, 0xffff, 140.0f / 120.0f, 1.122462f},
+    {" 200 BPM", {}, 0xffff, 200.0f / 120.0f, 1.587401f},
+}};
+constexpr std::array<Sound, 32> kGameAndWarioSounds = {{
+    {"BGM_NI_INTRO1", {}, kGamerBpms},
+    {"BGM_NI_TSUNAGI_NEXT1", {}, kGamerBpms},
+    {"BGM_NI_TSUNAGI_OK1", {}, kGamerBpms},
+    {"BGM_NI_TSUNAGI_NG1", {}, kGamerBpms},
+    {"BGM_NI_TSUNAGI_BOSS1", {}, kGamerBpms},
+    {"BGM_NI_TSUNAGI_LEVELUP1", {}, kGamerBpms},
+    {"BGM_NI_TSUNAGI_SPEEDUP1", {}, kGamerBpms},
+    {"BGM_NI_GAME_NOSE1", {}, kGamerBpms},
+    {"BGM_NI_GAME_DOSHIN1", {}, kGamerBpms},
+    {"BGM_NI_GAME_DOSHIN3", {}, kGamerBpms},
+    {"BGM_NI_GAME_DOSHIN3_GAMEOVER", {}, kGamerBpms},
+    {"BGM_NI_GAME_MOLE1", {}, kGamerBpms},
+    {"BGM_NI_GAME_BREAK1", {}, kGamerBpms},
+    {"BGM_NI_GAME_ROLLER1", {}, kGamerBpms},
+    {"BGM_NI_GAME_SPOT1", {}, kGamerBpms},
+    {"BGM_NI_GAME_FLYWATTER1", {}, kGamerBpms},
+    {"BGM_NI_GAME_DINOSAUR1", {}, kGamerBpms},
+    {"BGM_NI_GAME_EYETEST1", {}, kGamerBpms},
+    {"BGM_NI_GAME_IAI1", {}, kGamerBpms},
+    {"BGM_NI_GAME_DACHSHUND1", {}, kGamerBpms},
+    {"BGM_NI_GAME_BANANAPEEL1", {}, kGamerBpms},
+    {"BGM_NI_GAME_FISH1", {}, kGamerBpms},
+    {"BGM_NI_GAME_SHAGYTOOTH1", {}, kGamerBpms},
+    {"BGM_NI_GAME_HANAMIZU1", {}, kGamerBpms},
+    {"BGM_NI_GAME_CHANGE1", {}, kGamerBpms},
+    {"BGM_NI_GAME_MATRYOSHKA1", {}, kGamerBpms},
+    {"BGM_NI_GAME_OYAZIRECORD1", {}, kGamerBpms},
+    {"BGM_NI_GAME_MAZE1", {}, kGamerBpms},
+    {"BGM_NI_GAME_DEFAULT1", {}, kGamerBpms},
+    {"BGM_NI_GAME_DEFAULT2", {}, kGamerBpms},
+    {"BGM_NI_GAME_MANTOBLOW1_INTRO", {}, kGamerBpms},
+    {"BGM_NI_GAME_MANTOBLOW1", {}, kGamerBpms},
+}};
+
 // The sequences that each archive lists, by its SHA-1. amiibo Festival's second archive holds the last of its list.
 struct ArchiveSounds
 {
@@ -491,7 +545,7 @@ struct ArchiveSounds
     std::span<const Sound> sounds;
 };
 
-constexpr std::array<ArchiveSounds, 8> kArchives = {{
+constexpr std::array<ArchiveSounds, 9> kArchives = {{
     {kAmiiboFestivalSha1, std::span(kAmiiboFestivalSounds).first(kAmiiboFestivalSounds.size() - 1)},
     {kAmiiboFestivalArc1Sha1, std::span(kAmiiboFestivalSounds).last(1)},
     {kMarioParty10Sha1, kMarioParty10Sounds},
@@ -500,6 +554,7 @@ constexpr std::array<ArchiveSounds, 8> kArchives = {{
     {kNewSuperMarioBrosUSha1, kNewSuperMarioBrosUSounds},
     {kWiiPartyUSha1, kWiiPartyUSounds},
     {kRainbowCurseSha1, kRainbowCurseSounds},
+    {kGameAndWarioSha1, kGameAndWarioSounds},
 }};
 
 // The entry for the sequence labelled `name` in the archive whose SHA-1 is `archive_sha1`, or nullptr.

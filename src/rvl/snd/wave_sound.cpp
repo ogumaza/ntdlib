@@ -136,9 +136,11 @@ void WsdPlayer::UpdateChannel(Engine& engine)
         fx_send[bus] = ntdlib::nwsnd::FractionOfSoundValue(settings_.fx_sends[bus]);
     }
 
-    // The player also gives the channel its low-pass filter and its LFO, which only the game's handle moves from the
-    // values that the channel starts with. The model leaves out the remotes.
+    // The player also gives the channel its low-pass filter and its LFO. Only the game's handle and the sound player
+    // move them from the values that the channel starts with. The model gives the channel the sound's low-pass and
+    // leaves out the LFO and the remotes.
     Channel& channel = engine.Channels().At(channel_);
+    channel.lpf = lpf_;
     channel.pan_mode = pan_mode_;
     channel.pan_curve = pan_curve_;
     channel.track_volume = volume_;

@@ -159,6 +159,7 @@ int Performer::OpenChild1(int t, uint32_t mode_and_number, uint32_t start)
             c.regs[i] = p.regs[i];
         }
         c.parent_calc = p.parent_calc;
+        c.handle_send_calc = p.handle_send_calc;
         c.channel_calc = p.channel_calc;
         c.bank = p.bank;
         c.program = p.program;
@@ -809,6 +810,14 @@ void Performer::SettingCommand1(int t, uint8_t cmd, const Arguments& a)
         tr.transpose = static_cast<int8_t>(a[0]);
         break;
 
+    case 0xdb:
+        // cmdOutSwitch: the values of the sound's handle that apply to the track, a bit for each. Bit 2 is the effect
+        // send. The sound library switches every value on for a track that the handle reaches. A cave's track of
+        // Pikmin 2 then keeps the send alone (0xdb with 4).
+        tr.handle_send_on = (a[0] & 4) != 0;
+        tr.dirty = true;
+        break;
+
     case 0xdd:
         // TTrack::connectBus: a mix line of the track's channels and its bus. Mix line 0 at 0xffff puts the channels
         // that the track starts from then on onto the DSP's automatic mixer. A track opens with the default lines
@@ -850,8 +859,12 @@ void Performer::SettingCommand1(int t, uint8_t cmd, const Arguments& a)
         {
             // cmdPanSwSet (0x8027f3bc): the top three bits of each byte pick how the track's value takes its parent's.
             // The low five bits pick the rule for its notes' values (kCalcRules). The game reads a rule past the table
-            // from the bytes after it.
+            // from the bytes after it. The same three bits pick how the value takes the value that the game's code
+            // gives the sound's handle for the track. The performer follows that for the effect send of a conductor's
+            // track (UpdateTrack1).
             constexpr std::array<uint8_t, 8> kParentCalc{0, 1, 2, 0, 2, 0, 2, 0};
+            constexpr std::array<uint8_t, 8> kHandleCalc{0, 0, 0, 1, 1, 2, 2, 0};
+            tr.handle_send_calc = kHandleCalc[(a[1] >> 5) & 7];
             for (std::size_t i = 0; i < 3; i++)
             {
                 tr.parent_calc[i] = kParentCalc[(a[i] >> 5) & 7];
@@ -936,7 +949,8 @@ void Performer::GameCommand1(int t, uint8_t cmd, const Arguments& a)
         }
         if (sound_.mute_child_15 && a[0] == 0 && tr.parent >= 0 && TrackAt(tr.parent).children[15] == t)
         {
-            tr.muted = true;
+            // The game's code can clear the mute of the root track's child 15 (SequenceSound::clear_child_15).
+            tr.muted = !(sound_.clear_child_15 && TrackAt(tr.parent).parent < 0);
         }
         break;
 
@@ -1337,6 +1351,17 @@ void Performer::UpdateTrack1(int t)
     p.pan = tr.move[3].value;
     p.fx_mix = tr.move[2].value;
     p.bend = bend;
+    // A conductor gives each of its tracks an effect send through the sound's handle (PSAutoBgm::AutoBgm::startSeq,
+    // 0x8033c058 in Pikmin 2's main.dol, through 0x800b44dc). The track's send takes it by the track's calc type, with
+    // register 11 as the weight (JASTrack::updateTrack). Each of the cave music's tracks keeps the handle's send alone
+    // (cmdOutSwitch with 4) and sets type 1 (cmdPanSwSet with 0x61): it plays the handle's send in place of its
+    // parameter. The tracks that it opens for its phrases take its send as their parent's (cmdPanSwSet with 0x21).
+    if (sound_.conductor && tr.conductor_track >= 0 && tr.handle_send_on)
+    {
+        const ConductorTrack& conducted = sound_.conductor->tracks[static_cast<std::size_t>(tr.conductor_track)];
+        const float send = static_cast<float>(std::min<uint8_t>(conducted.send, 127)) / 127.0f;
+        p.fx_mix = PanCalc(p.fx_mix, send, static_cast<float>(tr.regs[11]) / 32767.0f, tr.handle_send_calc);
+    }
     if (tr.parent < 0)
     {
         p.volume *= SoundVolume(tr);

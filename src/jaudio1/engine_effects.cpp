@@ -119,6 +119,7 @@ void SetDistanceLevels(Effect& e, uint32_t time)
 std::optional<std::string> Engine::StartEffect(uint16_t id, uint8_t volume, uint32_t sound_id)
 {
     model_.reset();
+    ++starts_;
     const SoundFiles::SequenceFile* file = files_.FindSequence(id);
     if (file == nullptr)
     {

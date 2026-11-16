@@ -594,6 +594,89 @@ void TestSnapshotEveryFrame()
     Check(mismatches == 0, std::to_string(mismatches) + " of 100 snapshots render other frames when restored");
 }
 
+// The output of the next `frames` frames: the 16-bit samples, and in the enhanced mode the floating-point ones too.
+struct Rendered
+{
+    friend bool operator==(const Rendered&, const Rendered&) = default;
+
+    std::vector<int16_t> samples;
+    std::vector<float> floats;
+};
+
+Rendered Render(snd::ArchiveModel& model, int frames)
+{
+    Rendered rendered;
+    for (int i = 0; i < frames; ++i)
+    {
+        model.engine->RunFrame();
+        const std::span<const int16_t> frame = model.system.Output();
+        const std::span<const float> floats = model.system.OutputFloat();
+        rendered.samples.insert(rendered.samples.end(), frame.begin(), frame.end());
+        rendered.floats.insert(rendered.floats.end(), floats.begin(), floats.end());
+    }
+
+    return rendered;
+}
+
+// `first` followed by `second`.
+Rendered Joined(Rendered first, const Rendered& second)
+{
+    first.samples.insert(first.samples.end(), second.samples.begin(), second.samples.end());
+    first.floats.insert(first.floats.end(), second.floats.begin(), second.floats.end());
+
+    return first;
+}
+
+// A snapshot taken while notes sound, and restored after later frames, renders what a model that never took a snapshot
+// renders, sample for sample. That holds with the reverb on aux A, in the console's mixing and in the enhanced mixing
+// mode, and at the tempo ratio and the pitch that the sequence got as it started. A change of the ratio and the pitch
+// after the snapshot goes with the restore. A sequence at 1 and 1 renders other samples.
+void TestSnapshotAgainstPlainRun()
+{
+    const ntdlib::sar::SoundArchive archive = LoopingArchive();
+    constexpr float kRatio = 200.0f / 120.0f;
+    constexpr float kPitch = 1.587401f;
+    for (const bool enhanced : {false, true})
+    {
+        snd::EngineOptions options = ReverbOptions();
+        options.enhanced = enhanced;
+        const std::string mode = enhanced ? "in the enhanced mode" : "in the console's mixing";
+        const auto start = [](snd::ArchiveModel& model, float ratio, float pitch)
+        {
+            snd::SequenceSoundPlayer* player = model.engine->StartSequence(0);
+            player->SetTempoRatio(ratio);
+            player->SetPitch(pitch);
+
+            return player;
+        };
+
+        snd::ArchiveModel plain(archive, options);
+        start(plain, kRatio, kPitch);
+        const Rendered expected = Render(plain, 1300);
+
+        snd::ArchiveModel restored(archive, options);
+        snd::SequenceSoundPlayer* player = start(restored, kRatio, kPitch);
+        const Rendered opening = Render(restored, 300);
+        const int voices = restored.engine->Voices().ActiveCount();
+        const snd::ArchiveModel::Snapshot snapshot = restored.Save();
+        Render(restored, 200);
+        player->SetTempoRatio(1.0f);
+        player->SetPitch(1.0f);
+        Render(restored, 200);
+        restored.Restore(snapshot);
+        const Rendered after = Joined(opening, Render(restored, 1000));
+
+        snd::ArchiveModel at_one(archive, options);
+        start(at_one, 1.0f, 1.0f);
+        const Rendered plain_at_one = Render(at_one, 1300);
+
+        Check(voices > 0 && Sounds(expected.samples) && expected.floats.empty() == !enhanced,
+              "notes sound at the snapshot " + mode);
+        Check(after == expected, "a restored snapshot renders the run without one " + mode);
+        Check(plain_at_one.samples != expected.samples, "the tempo ratio and the pitch change the output " + mode);
+    }
+}
+
 // The players keep their places through a restore, and the next player started takes the next place. A snapshot that
 // holds a start that waits restores the start onto the player in its place. That holds when an earlier restore removed
 // the player and a new player took its place.
@@ -1455,6 +1538,7 @@ int main()
     TestSnapshotEveryFrame();
     TestSnapshotPlayers();
     TestSnapshotOfAnotherModel();
+    TestSnapshotAgainstPlainRun();
     TestMuteTrack();
     TestMuteRelease();
     TestMuteThroughRestore();

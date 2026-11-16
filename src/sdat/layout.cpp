@@ -27,7 +27,8 @@ namespace
 constexpr std::size_t kKinds = 8;
 constexpr std::size_t kHeaderSize = 0x40;
 constexpr std::size_t kBlockHeaderSize = 0x40; // SYMB's and INFO's: the magic word, the size, 8 lists and 24 zeros
-constexpr std::size_t kFileAlignment = 32;
+constexpr uint32_t kMostFileAlignment = 32;
+constexpr uint32_t kLeastFileAlignment = 4;
 constexpr uint16_t kByteOrderMark = 0xFEFF;
 
 using detail::Writer;
@@ -213,6 +214,17 @@ ArchiveModel ReadArchiveModel(std::span<const uint8_t> sdat)
     model.groups = archive.groups;
     model.stream_players = archive.stream_players;
     model.streams = archive.streams;
+    model.file_alignment = kMostFileAlignment;
+    const auto aligned = [&model](std::size_t value)
+    {
+        return value % model.file_alignment == 0;
+    };
+    while (model.file_alignment > kLeastFileAlignment &&
+           (!aligned(archive.bytes.size()) ||
+            !std::ranges::all_of(archive.files, [&aligned](const FileEntry& file) { return aligned(file.offset); })))
+    {
+        model.file_alignment /= 2;
+    }
     for (uint32_t id = 0; id < archive.files.size(); id++)
     {
         const std::span<const uint8_t> file = archive.File(id);
@@ -273,12 +285,12 @@ std::vector<uint8_t> BuildArchive(const ArchiveModel& model)
     w.U32(static_cast<uint32_t>(model.files.size()));
     for (std::size_t id = 0; id < model.files.size(); id++)
     {
-        w.PadTo(AlignUp(w.Size(), kFileAlignment));
+        w.PadTo(AlignUp(w.Size(), model.file_alignment));
         w.Put32(entries + 16 * id, w.Size());
         w.Put32(entries + 16 * id + 4, model.files[id].size());
         w.Bytes(model.files[id]);
     }
-    w.PadTo(AlignUp(w.Size(), kFileAlignment));
+    w.PadTo(AlignUp(w.Size(), model.file_alignment));
     w.Put32(files + 4, w.Size() - files);
     block(3, files, w.Size() - files);
 

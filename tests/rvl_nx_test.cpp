@@ -8,11 +8,13 @@
 // stream voice is refused. The renderer's priorities follow the game's formula (0x103ee88). The game's reverbs
 // (rvl::nx::Effects) give a bus silence for two frames after its first reverb. Then the reverb runs on the bus's frames
 // and rings after its input stops. The reverb class gives nn::audio the parameters of the game's reverbs for buses A
-// and B, and holds other values to their ranges.
+// and B, and holds other values to their ranges. On the archive model, the music's state underwater gives a note's
+// voice a send to bus B and the low-pass, and a snapshot keeps the state.
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -23,11 +25,19 @@
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/nx/audio/reverb.h"
+#include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/system.h"
 #include "ntdlib/rvl/ax/voice.h"
+#include "ntdlib/rvl/nx/archive_model.h"
 #include "ntdlib/rvl/nx/effects.h"
 #include "ntdlib/rvl/nx/layer.h"
+#include "ntdlib/rvl/nx/music_states.h"
+#include "ntdlib/rvl/snd/effect_setup.h"
+#include "ntdlib/rvl/snd/rsar_options.h"
+#include "ntdlib/rvl/snd/util.h"
+#include "ntdlib/sound_build.h"
+#include "ntdlib/testing/rsar_files.h"
 
 namespace
 {
@@ -344,6 +354,76 @@ void CheckEffects()
     Check(other[0] == 0 && other[Layer::kAuxSamples - 1] == 0, "AxManager's callback silences a bus without effects");
 }
 
+// The music's state underwater (kUnderwaterMusic) on the archive model: the note's record gets a send to bus B and the
+// low-pass at the cutoff of a scale of 0.45. The default settings send nothing to bus B and leave the low-pass off. A
+// snapshot taken while the note plays, and restored, gives the output of a run without it.
+void CheckSoundPlayer()
+{
+    namespace nx = ntdlib::rvl::nx;
+    namespace snd = ntdlib::rvl::snd;
+    const rsar::SoundArchive archive = rsar::SoundArchive::Load(
+        testing::rsar_files::MakeAudibleArchive({0xD1, 0x7F, 0xD2, 0x7F, 0xD3, 0x7F, 60, 127, 96, 0xFF}, 1),
+        snd::kRsarOptions);
+
+    // The output of `frames` frames, the PB of the record that plays in the last, and the model's build of NW4R SND.
+    struct Run
+    {
+        std::vector<int16_t> output;
+        ax::Pb pb;
+        SndBuild build;
+    };
+    const auto run = [&archive](const snd::SoundPlayerSettings& settings, int frames, int restore_at = -1)
+    {
+        auto model = std::make_unique<nx::ArchiveModel>();
+        model->sound_player = settings;
+        model->Start(archive);
+        Check(model->engine->StartSequence(0) != nullptr, "the sequence starts");
+        Run found;
+        found.build = model->build;
+        for (int frame = 0; frame < frames; frame++)
+        {
+            if (frame == restore_at)
+            {
+                const nx::ArchiveModel::Snapshot snapshot = model->Save();
+                std::vector<int16_t> discarded;
+                for (int other = 0; other < 20; other++)
+                {
+                    model->RunFrame(discarded);
+                }
+                model->Restore(snapshot);
+            }
+
+            model->RunFrame(found.output);
+        }
+
+        for (uint32_t i = 0; i < Layer::kVoiceCount; i++)
+        {
+            if (model->ax.VoiceAt(i).pb.state == 1)
+            {
+                found.pb = model->ax.VoiceAt(i).pb;
+            }
+        }
+
+        return found;
+    };
+
+    const Run plain = run({}, 40);
+    const Run underwater = run(nx::kUnderwaterMusic, 40);
+    const auto bus_b = [](const ax::Pb& pb)
+    {
+        return pb.mix.aux_b_l != 0 || pb.mix.aux_b_r != 0 || pb.mix.aux_b_s != 0;
+    };
+    Check(plain.pb.state == 1 && !bus_b(plain.pb) && plain.pb.lpf.on != ax::kLpfOn,
+          "by default, the record sends nothing to bus B and the low-pass is off");
+    const ax::LpfCoefs coefs = ax::CalcLpfCoefs(snd::CalcLpfFreq(0.45f, underwater.build));
+    Check(underwater.pb.state == 1 && bus_b(underwater.pb) && underwater.pb.lpf.on == ax::kLpfOn &&
+              underwater.pb.lpf.a0 == coefs.a0 && underwater.pb.lpf.b0 == coefs.b0,
+          "underwater, the record sends to bus B and filters at the cutoff of a scale of 0.45");
+    Check(plain.output != underwater.output, "the output differs from the default's");
+    Check(run(nx::kUnderwaterMusic, 40, 15).output == underwater.output,
+          "a restored snapshot gives the output of a run without it");
+}
+
 } // namespace
 
 int main()
@@ -358,6 +438,7 @@ int main()
         CheckStream();
         CheckReverbParameters();
         CheckEffects();
+        CheckSoundPlayer();
     };
 
     return xsflib::testing::RunTest("rvl_nx", tests);

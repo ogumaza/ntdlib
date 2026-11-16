@@ -12,6 +12,7 @@
 #include <deque>
 #include <functional>
 #include <list>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/ctr/nnsnd/voice.h"
@@ -148,37 +149,48 @@ public:
     // (nnsnd::Voice::SetTwoChannelBus). The voice doesn't keep the flag.
     void SetTwoChannelBus(bool on); // 0x186c48
 
-    // The voice's state, which tests read too.
-    Engine* engine_ = nullptr;
-    VoiceId place_ = kNoVoice; // its place in the pool
-    std::array<nnsnd::Voice*, 2> nn_{};
-    int channel_count_ = 0;
-    Callback callback_;
-    int priority_ = 0;
-    bool active_ = false;                // +0x14
-    bool started_ = false;               // +0x15
-    bool playing_ = false;               // +0x16
-    uint16_t dirty_ = 0;                 // +0x20
-    uint8_t biquad_type_ = 0;            // +0x22
-    bool front_bypass_ = false;          // +0x23
-    float volume_ = 1.0f;                // +0x24
-    float pitch_ = 1.0f;                 // +0x28
-    uint8_t pan_mode_ = 0;               // +0x2c
-    uint8_t pan_curve_ = 0;              // +0x2d
-    float pan_ = 0.0f;                   // +0x30
-    float span_ = 0.0f;                  // +0x34
-    float lpf_ = 1.0f;                   // +0x38
-    float biquad_value_ = 0.0f;          // +0x3c
-    float main_send_ = 1.0f;             // +0x44 (stored as send + 1, clamped)
-    std::array<float, 2> fx_send_{};     // +0x48
-    nnsnd::WaveBuffer* watch_ = nullptr; // +0x1c: last wave buffer, used to detect the end
-    int interpolation_ = 0;              // recorded by SetInterpolationType, applied by AppendWave
+    // The voice's channels, and the DSP voice of a channel, or null.
+    int ChannelCount() const
+    {
+        return channel_count_;
+    }
 
-    // The wave buffers that the voice's DSP voices play, two for each channel (the wave and its loop), and their ADPCM
-    // contexts. nn::snd's voices point into them. The addresses stay valid because the pool never moves its voices.
-    std::array<nnsnd::WaveBuffer, 4> wave_buffers_;
-    std::array<nnsnd::AdpcmContext, 2> contexts_;
-    std::array<nnsnd::AdpcmContext, 2> loop_contexts_;
+    const nnsnd::Voice* DspVoice(int channel) const
+    {
+        return nn_[static_cast<std::size_t>(channel)];
+    }
+
+    int Priority() const
+    {
+        return priority_;
+    }
+
+    // Whether Start has started the voice, and nothing has stopped it since.
+    bool IsStarted() const
+    {
+        return started_;
+    }
+
+    float Volume() const
+    {
+        return volume_;
+    }
+
+    float Pitch() const
+    {
+        return pitch_;
+    }
+
+    // The owner's callback (Callback).
+    const Callback& OwnerCallback() const
+    {
+        return callback_;
+    }
+
+    void SetOwnerCallback(Callback callback)
+    {
+        callback_ = std::move(callback);
+    }
 
 private:
     friend class VoiceManager;
@@ -228,6 +240,37 @@ private:
     // Handles nn::snd dropping a DSP voice (0x18dc1c for mono, 0x18dc6c for stereo). Releases any second DSP voice,
     // returns this voice to the pool and notifies its owner.
     void OnDspVoiceDropped(nnsnd::Voice* dropped, bool stereo);
+
+    Engine* engine_ = nullptr;
+    VoiceId place_ = kNoVoice; // its place in the pool
+    std::array<nnsnd::Voice*, 2> nn_{};
+    int channel_count_ = 0;
+    Callback callback_;
+    int priority_ = 0;
+    bool active_ = false;                // +0x14
+    bool started_ = false;               // +0x15
+    bool playing_ = false;               // +0x16
+    uint16_t dirty_ = 0;                 // +0x20
+    uint8_t biquad_type_ = 0;            // +0x22
+    bool front_bypass_ = false;          // +0x23
+    float volume_ = 1.0f;                // +0x24
+    float pitch_ = 1.0f;                 // +0x28
+    uint8_t pan_mode_ = 0;               // +0x2c
+    uint8_t pan_curve_ = 0;              // +0x2d
+    float pan_ = 0.0f;                   // +0x30
+    float span_ = 0.0f;                  // +0x34
+    float lpf_ = 1.0f;                   // +0x38
+    float biquad_value_ = 0.0f;          // +0x3c
+    float main_send_ = 1.0f;             // +0x44 (stored as send + 1, clamped)
+    std::array<float, 2> fx_send_{};     // +0x48
+    nnsnd::WaveBuffer* watch_ = nullptr; // +0x1c: last wave buffer, used to detect the end
+    int interpolation_ = 0;              // recorded by SetInterpolationType, applied by AppendWave
+
+    // The wave buffers that the voice's DSP voices play, two for each channel (the wave and its loop), and their ADPCM
+    // contexts. nn::snd's voices point into them. The addresses stay valid because the pool never moves its voices.
+    std::array<nnsnd::WaveBuffer, 4> wave_buffers_;
+    std::array<nnsnd::AdpcmContext, 2> contexts_;
+    std::array<nnsnd::AdpcmContext, 2> loop_contexts_;
 
     bool allocating_ = false;   // +0x1a
     bool alloc_failed_ = false; // +0x1b

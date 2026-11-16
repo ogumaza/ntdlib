@@ -15,11 +15,13 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "ntdlib/jaudio/archive.h"
+#include "ntdlib/jaudio/sequence_walk.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio2/channel.h"
 #include "ntdlib/jaudio2/dsp.h"
@@ -132,6 +134,11 @@ public:
         return missing_waves_;
     }
 
+    // The names of the wave archives that `sound` can play, ascending, each once: those of the waves of the banks and
+    // programs that its sequence's notes can start with (jaudio::WalkSequence), or every archive that the wave systems
+    // name where the walk can't follow the sequence. Empty for a sound that plays no sequence that the files hold.
+    std::vector<std::string> WaveArchivesOf(const ntdlib::jaudio::SoundEntry& sound) const;
+
 private:
     void LoadWaves(const WaveArchives& waves);
     void LoadBanks();
@@ -141,10 +148,69 @@ private:
     std::unique_ptr<Sequence> collection_;
     std::map<uint32_t, std::unique_ptr<Sequence>> files_; // the sequence archive's files by id, decoded
     std::unique_ptr<DspMemory> memory_;
+    std::vector<ntdlib::jaudio::WaveSystem> systems_;
     std::map<uint32_t, WaveBank> wave_banks_; // by wave system
     std::vector<std::unique_ptr<InstrumentBank>> banks_;
     std::vector<std::string> missing_waves_;
 };
+
+// The names of the wave archives that hold `waves`, ascending, each once: for each wave, the archive that
+// WaveSystem::waves gives its id in each system of its number. The models load a wave from the last such system whose
+// archive they hold (LoadWaveSystems). A wave that no system gives adds nothing.
+std::vector<std::string> WaveArchivesOf(const std::vector<ntdlib::jaudio::WaveSystem>& systems,
+                                        const std::set<ntdlib::jaudio::WaveUse>& waves);
+
+// The names of the wave archives that the groups of `systems` name, ascending, each once.
+std::vector<std::string> AllWaveArchives(const std::vector<ntdlib::jaudio::WaveSystem>& systems);
+
+// The names of the wave archives that the notes of a walk (jaudio/sequence_walk.h) can play, ascending, each once.
+// `banks` gives the bank that each bank number of a track names, as the engine resolves the number, or null. A use
+// takes its bank, or every bank for InstrumentUse::kAny, and the waves of its program (ProgramWaves), or of every
+// program below 0xf0 for kAny. Each wave plays from its bank's wave system (WaveSystemNumber). An incomplete walk can
+// play every archive that `systems` name. `Bank` is JAudio2's or JAudio1's InstrumentBank.
+template <typename Bank>
+std::vector<std::string> WaveArchivesOfWalk(const ntdlib::jaudio::SequenceInstruments& walk,
+                                            const std::array<const Bank*, 256>& banks,
+                                            const std::vector<ntdlib::jaudio::WaveSystem>& systems)
+{
+    using ntdlib::jaudio::InstrumentUse;
+    if (!walk.complete)
+    {
+        return AllWaveArchives(systems);
+    }
+
+    // Programs from 0xf0 on play the DSP's oscillator in both engines.
+    constexpr uint32_t kWavePrograms = 0xf0;
+    std::set<ntdlib::jaudio::WaveUse> waves;
+    for (const InstrumentUse& use : walk.uses)
+    {
+        for (uint32_t number = 0; number < banks.size(); number++)
+        {
+            const Bank* bank = banks[number];
+            if (bank == nullptr || (use.bank != InstrumentUse::kAny && use.bank != number))
+            {
+                continue;
+            }
+
+            for (uint32_t program = 0; program < kWavePrograms; program++)
+            {
+                if (use.program != InstrumentUse::kAny && use.program != program)
+                {
+                    continue;
+                }
+                for (const uint32_t id : bank->ProgramWaves(program))
+                {
+                    if (id <= 0xffff && bank->WaveSystemNumber() <= 0xffff)
+                    {
+                        waves.insert({static_cast<uint16_t>(bank->WaveSystemNumber()), static_cast<uint16_t>(id)});
+                    }
+                }
+            }
+        }
+    }
+
+    return WaveArchivesOf(systems, waves);
+}
 
 // The wave archives of a game's wave systems in the DSP's memory, and a wave bank for each wave system.
 struct LoadedWaves
@@ -220,6 +286,10 @@ public:
     bool PlayedNotes(uint32_t track) const;
     bool QuietPass(uint32_t track) const;
 
+    // The offset in the sequence of the next command of a track of TreeOrder(). 0 before a start. Once the sequence
+    // has ended (Playing), the root stays in TreeOrder with its cursor past the 0xff that ended it.
+    uint32_t Cursor(uint32_t track) const;
+
     // For a length analysis: the tests of a held sound. Held: each channel that plays holds its note at the sustain
     // level of its envelopes, on a looping wave, and each open track has started a note, jumped back or opened a track
     // that is still open. Moving: a track's levels move, or a channel's key sweeps. WaitsForEver: the track waits for
@@ -240,6 +310,26 @@ public:
 private:
     struct Model;
 
+public:
+    // The model between two sub-frames, for a player that seeks back: the channels, the tracks, the DSP's state, the
+    // DSP's memory below the waves and the last sub-frame's output. The waves never change. A snapshot shares nothing
+    // with the engine.
+    struct Snapshot
+    {
+        std::shared_ptr<const Model> model; // null before the first start
+        const Engine* engine = nullptr;     // the engine that took it
+        uint64_t start = 0;                 // the engine's count of starts when it took it
+        std::vector<uint8_t> memory;
+        std::vector<int16_t> output;
+    };
+
+    Snapshot Save() const;
+
+    // Returns the engine to `snapshot`. Throws std::logic_error, and changes nothing, for a snapshot taken before the
+    // current start or by another engine.
+    void Restore(const Snapshot& snapshot);
+
+private:
     // Start's steps: a new model with the DSP's start-up, the FX lines and the banks; the sound's levels from the
     // sound table and the managers' volumes; and the BGM manager's track controllers for `states`.
     void StartModel();
@@ -256,6 +346,7 @@ private:
     std::unique_ptr<Model> model_;
     std::vector<int16_t> output_;
     LoopHook loop_hook_;
+    uint64_t starts_ = 0;
 };
 
 } // namespace ntdlib::jaudio2

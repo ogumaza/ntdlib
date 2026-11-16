@@ -236,6 +236,9 @@ struct Channel
     uint32_t data = 0; // the wave's samples' address, or a PSG channel's duty
     int owner = -1;    // the track whose list holds the channel, or -1 for none
     int next = -1;     // the next channel of the owner's list
+    // While the driver follows lengths: whether the channel's note was struck silent and hasn't sounded since
+    // (Driver::IsChannelSilent).
+    bool struck_silent = false;
 };
 
 // A track (SNDTrack).
@@ -391,13 +394,15 @@ public:
     std::function<void(int player)> on_tick;
 
     // For a rip tool's length analysis: while `hooks.on_loop` is set, the driver follows each command's place in the
-    // order that a player's tracks run them, and whether the command changes the track's sound. It follows the rules of
-    // nwsnd's sequence player (nwsnd/sequence.h, SequenceTrack::CountLoop) with the defaults of nwsnd::LengthRules. The
-    // 3DS takes the same rules. A jump back to a command that the track has run is a loop, outside a subroutine. So is
-    // each pass of a loop whose count is 0 (0xD4 and 0xFC). The counted loops in `endless_loops` loop for ever, and
-    // their passes count too. A loop of the sequence is a pass that changed the sound, of track 0, of a track that
-    // plays notes after tracks that pass idly or wait for ever, or of a track that holds a note while every other track
-    // rests. The driver has no such following. A start of a sequence clears what the driver has followed of it.
+    // order that a player's tracks run them, and whether the command changes the track's sound. A note that a track
+    // strikes at -72.3 dB or less, where the channel's volume is 0, changes nothing and counts as no note. A rise of
+    // the level that makes it sound counts as a note at that point. It follows the rules of nwsnd's sequence player (nwsnd/sequence.h, SequenceTrack::CountLoop) with the defaults of
+    // nwsnd::LengthRules. The 3DS takes the same rules. A jump back to a command that the track has run is a loop,
+    // outside a subroutine. So is each pass of a loop whose count is 0 (0xD4 and 0xFC). The counted loops in
+    // `endless_loops` loop for ever, and their passes count too. A loop of the sequence is a pass that changed the
+    // sound, of track 0, of a track that plays notes after tracks that pass idly or wait for ever, or of a track that
+    // holds a note while every other track rests. The driver has no such following. A start of a sequence clears what
+    // the driver has followed of it.
     void FollowLengths(LengthHooks hooks, std::set<LoopPlace> endless_loops = {});
 
     // The analysis's tests of player `player`. They hold while the driver follows lengths. A player is settled when
@@ -427,6 +432,11 @@ public:
     bool AnyChannelChanging() const;
     int ActiveChannels() const;
 
+    // While the driver follows lengths: whether channel `channel` plays a note that its track struck at -72.3 dB or
+    // less, and that stays there. The channel's volume in SOUNDxCNT holds 0. A rise of the track's volume, its
+    // expression or the player volume makes the note sound. So does an LFO on the volume.
+    bool IsChannelSilent(int channel) const;
+
     // A held note, for the length analysis: one of this many ticks or more. That's 200 beats, and minutes at any usual
     // tempo. A sound that plays until the game stops it gives a note this length.
     static constexpr int32_t kHeldTicks = ntdlib::kHeldTicks;
@@ -451,6 +461,7 @@ private:
         bool quiet = false;
         bool holds = false;
         bool held_wait = false;
+        bool struck_silent = false; // whether the command that runs struck a note that makes no sound (StrikesSilent)
     };
 
     struct PlayerFollow
@@ -503,6 +514,8 @@ private:
     bool WaitsForNotes(int track) const;
     bool HasEndingNote(int track) const;
     bool HoldsSustainedNote(int track) const;
+    bool StrikesSilent(const Track& track, const Player& player, int velocity) const;
+    bool IsSilentLevel(int velocity, int32_t level, const LfoParameters& lfo) const;
     bool ChannelWaveLoops(const Channel& channel) const;
     bool IsMainTrack(const Player& player, int number) const;
     bool OthersRest(const Player& player, int number) const;

@@ -319,35 +319,6 @@ uint32_t Hang::Offset() const
     return offset_;
 }
 
-Build BuildOf(std::span<const uint8_t> arm9)
-{
-    // ldr rT, [rN, #0x14C], then subs rT, rT, #1 within three words, then str rT, [rN, #0x14C].
-    const std::size_t words = arm9.size() / 4;
-    const auto word = [&](std::size_t i)
-    {
-        return xsflib::LoadLe32(&arm9[4 * i]);
-    };
-    for (std::size_t i = 0; i + 4 < words; i++)
-    {
-        const uint32_t load = word(i);
-        if ((load & 0xFFF00FFF) != 0xE590014C)
-        {
-            continue;
-        }
-        const uint32_t base = load >> 16 & 0xF;
-        const uint32_t value = load >> 12 & 0xF;
-        for (std::size_t j = i + 1; j <= i + 3 && j + 1 < words; j++)
-        {
-            if (word(j) == (0xE2500001 | value << 16 | value << 12) &&
-                word(j + 1) == (0xE580014C | base << 16 | value << 12))
-            {
-                return Build::kEarlier;
-            }
-        }
-    }
-    return Build::kLater;
-}
-
 Driver::Driver(Build build) : state_(std::make_unique<State>())
 {
     State& s = *state_;

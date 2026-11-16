@@ -32,6 +32,7 @@
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/testing/jaudio_files.h"
+#include "ntdlib/yaz0.h"
 
 namespace jaudio = ntdlib::jaudio;
 namespace files = ntdlib::testing::jaudio_files;
@@ -515,16 +516,16 @@ void TestRarc()
 
     // The same archive compressed with Yaz0.
     const std::vector<uint8_t> yaz0 = files::LiteralYaz0(rarc);
-    Check(jaudio::IsYaz0(yaz0) && !jaudio::IsYaz0(rarc), "IsYaz0 checks the magic");
-    const std::vector<uint8_t> decoded = jaudio::DecodeYaz0(yaz0);
+    Check(ntdlib::IsYaz0(yaz0) && !ntdlib::IsYaz0(rarc), "IsYaz0 checks the magic");
+    const std::vector<uint8_t> decoded = ntdlib::DecodeYaz0(yaz0);
     Check(decoded == rarc && jaudio::ReadRarc(decoded).size() == 2, "a Yaz0 archive decodes to the archive");
 
     // DecodeIfYaz0 gives the archive itself, or decodes the compressed archive into its vector.
     std::vector<uint8_t> into;
-    const std::span<const uint8_t> plain = jaudio::DecodeIfYaz0(rarc, into);
+    const std::span<const uint8_t> plain = ntdlib::DecodeIfYaz0(rarc, into);
     Check(plain.data() == rarc.data() && plain.size() == rarc.size() && into.empty(),
           "DecodeIfYaz0 gives data that isn't Yaz0 as it is");
-    const std::span<const uint8_t> unpacked = jaudio::DecodeIfYaz0(yaz0, into);
+    const std::span<const uint8_t> unpacked = ntdlib::DecodeIfYaz0(yaz0, into);
     Check(into == rarc && unpacked.data() == into.data() && unpacked.size() == into.size(),
           "DecodeIfYaz0 decodes Yaz0 data into its vector");
 }
@@ -1069,7 +1070,7 @@ void TestLittleEndianRarc()
 
     Check(le != be && le[0] == 'C' && le[3] == 'R', "the archive is little-endian");
     Check(text(le) == text(be) && jaudio::ReadRarc(le).size() == 2, "the little-endian archive gives the same files");
-    Check(text(jaudio::DecodeYaz0(files::LiteralYaz0(le))) == text(be), "so does the archive compressed with Yaz0");
+    Check(text(ntdlib::DecodeYaz0(files::LiteralYaz0(le))) == text(be), "so does the archive compressed with Yaz0");
 
     // The Switch's release of Pikmin 2 has wide entries of 24 bytes.
     const std::vector<uint8_t> wide = files::RarcFile(kFiles, false, jaudio::kWideRarcEntrySize);

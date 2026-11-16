@@ -297,6 +297,12 @@ struct SequenceSound
     // child again, the mute is cleared (0x8031a3b4). GameRules::mute_child_15 sets this.
     bool mute_child_15 = false;
 
+    // The game's code clears the mute of the root track's child 15 once the callback has set it. Super Mario Sunshine
+    // does so while Mario rides Yoshi: 0x80016548 stores 0 in the mute of the music's child 15 alone (0x800165e0). A
+    // track that the child opened while it was muted keeps the mute that it took. SequenceState::clears_child_15 sets
+    // this.
+    bool clear_child_15 = false;
+
     // The answers that the game's code gives the sequence's calls to the game (command 0xe7), by the call's ID. A call
     // that isn't listed gets 0, as from The Wind Waker's callback (JAIBasic::setParameterSeqSync). Pikmin 2's sound
     // layer answers through the object that it makes for each piece (PSGame::seqCpuSync, 0x803372e0 in the USA

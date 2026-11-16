@@ -536,10 +536,7 @@ public:
             return RefuseMode();
         }
         GetAndSatAcc(Reg::rsi, a.GetName());
-        RnAddressAndModify(Reg::rax, Reg::rcx, unit, step, false);
-        OffsetAddress(Reg::rdx, Reg::rax, unit, offset, false);
-        CheckData(Reg::rdx);
-        CheckData(Reg::rax);
+        TwoWordAddresses(Reg::rdx, unit, step, offset);
         e.Mov(R(modes.r[unit]), Reg::rcx, 16);
         StoreData(Reg::rdx, Reg::rsi); // the low word first, as the interpreter writes them
         e.ShiftImm(Shift::shr, Reg::rsi, 16, 32);
@@ -555,10 +552,7 @@ public:
         if (!OffsetSupported(unit, offset, false)) {
             return RefuseMode();
         }
-        RnAddressAndModify(Reg::rax, Reg::rcx, unit, step, false);
-        OffsetAddress(Reg::rdx, Reg::rax, unit, offset, false);
-        CheckData(Reg::rdx);
-        CheckData(Reg::rax);
+        TwoWordAddresses(Reg::rdx, unit, step, offset);
         LoadData(Reg::rsi, Reg::rdx); // l
         LoadData(Reg::rdi, Reg::rax); // h
         e.Mov(R(modes.r[unit]), Reg::rcx, 16);
@@ -850,10 +844,7 @@ public:
         GetAndSatAccNoFlag(Reg::rdi, ay.GetName());
         e.ShiftImm(Shift::shr, Reg::rsi, 16, 64);
         e.ShiftImm(Shift::shr, Reg::rdi, 16, 64);
-        RnAddressAndModify(Reg::rax, Reg::rcx, unit, step, false);
-        OffsetAddress(Reg::r8, Reg::rax, unit, offset, false);
-        CheckData(Reg::r8);
-        CheckData(Reg::rax);
+        TwoWordAddresses(Reg::r8, unit, step, offset);
         e.Mov(R(modes.r[unit]), Reg::rcx, 16);
         StoreData(Reg::r8, Reg::rdi); // v first, as the interpreter writes them
         StoreData(Reg::rax, Reg::rsi);
@@ -869,10 +860,7 @@ public:
             return RefuseMode();
         }
         e.Mov(Reg::rsi, R(modes.p[a.Index()]), 32);
-        RnAddressAndModify(Reg::rax, Reg::rcx, unit, step, false);
-        OffsetAddress(Reg::r8, Reg::rax, unit, offset, false);
-        CheckData(Reg::r8);
-        CheckData(Reg::rax);
+        TwoWordAddresses(Reg::r8, unit, step, offset);
         e.Mov(R(modes.r[unit]), Reg::rcx, 16);
         StoreData(Reg::r8, Reg::rsi);
         e.ShiftImm(Shift::shr, Reg::rsi, 16, 32);
@@ -888,10 +876,7 @@ public:
         if (!OffsetSupported(unit, offset, false)) {
             return RefuseMode();
         }
-        RnAddressAndModify(Reg::rax, Reg::rcx, unit, step, false);
-        OffsetAddress(Reg::r8, Reg::rax, unit, offset, false);
-        CheckData(Reg::r8);
-        CheckData(Reg::rax);
+        TwoWordAddresses(Reg::r8, unit, step, offset);
         LoadData(Reg::rsi, Reg::r8);  // l
         LoadData(Reg::rdi, Reg::rax); // h
         e.Mov(R(modes.r[unit]), Reg::rcx, 16);
@@ -1007,10 +992,12 @@ public:
         }
         e.MovImm(Reg::rsi, a.Unsigned16());
         ExtendOperandForAlm(Reg::rsi, name);
-        e.Push(Reg::rdi);
-        AlmGeneric(name, Reg::rsi, b.GetName());
-        e.Pop(Reg::rdi);
         if (name == AlmOp::And) {
+            e.Push(Reg::rdi); // AlmGeneric clobbers rdi
+        }
+        AlmGeneric(name, Reg::rsi, b.GetName());
+        if (name == AlmOp::And) {
+            e.Pop(Reg::rdi);
             e.Mov(Reg::rax, Acc(b.GetName()), 64);
             e.MovImm(Reg::rcx, 0xFFFF'FFFF'FFFF'00FF);
             e.Op(Arith::and_, Reg::rax, Reg::rcx, 64);
@@ -1723,21 +1710,18 @@ private:
         e.Op(Arith::sub, Reg::rcx, Reg::rax, 64); // d = v - u
         // take = the condition on d
         Label take, done;
+        e.Test(Reg::rcx, Reg::rcx, 64);
         switch (op) {
         case MinMaxOp::MaxGe: // d >= 0 (sign clear)
-            e.Test(Reg::rcx, Reg::rcx, 64);
             e.J(CC::ns, take);
             break;
         case MinMaxOp::MaxGt: // sign clear and d != 0
-            e.Test(Reg::rcx, Reg::rcx, 64);
             e.J(CC::g, take);
             break;
         case MinMaxOp::MinLe: // sign set or d == 0
-            e.Test(Reg::rcx, Reg::rcx, 64);
             e.J(CC::le, take);
             break;
         case MinMaxOp::MinLt: // sign set
-            e.Test(Reg::rcx, Reg::rcx, 64);
             e.J(CC::s, take);
             break;
         }
@@ -3274,6 +3258,16 @@ private:
         e.Lea(dst, Ptr(address, 1), 32);
         e.Movzx(dst, dst, 16);
         e.Bind(done);
+    }
+
+    // The addresses of two words at [arrn]: the address in arrn into rax and the offset address
+    // into `low`, each checked as a data address. The new value of arrn goes into rcx. The caller
+    // stores it in the unit's register.
+    void TwoWordAddresses(Reg low, unsigned unit, StepValue step, OffsetValue offset) {
+        RnAddressAndModify(Reg::rax, Reg::rcx, unit, step, false);
+        OffsetAddress(low, Reg::rax, unit, offset, false);
+        CheckData(low);
+        CheckData(Reg::rax);
     }
 
     // The address of a memory operand into dst: [page:imm8], [imm16], [r7 + imm16] or

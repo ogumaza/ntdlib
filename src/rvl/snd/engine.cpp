@@ -3,6 +3,7 @@
 #include "ntdlib/rvl/snd/engine.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -70,6 +71,20 @@ void AdvanceWithoutDsp(ax::Pb& pb)
     const uint32_t address = AxVoice::DspAddressBySample(0, static_cast<uint32_t>(sample), format);
     pb.addr.current_address_hi = static_cast<uint16_t>(address >> 16);
     pb.addr.current_address_lo = static_cast<uint16_t>(address);
+}
+
+// The sends that BasicSound::UpdateParam gives a sound's player (0x100ef28 in Skyward Sword HD's main, version 0): the
+// sound's sends plus its sound player's.
+std::array<float, ax::kAuxBusCount> PlayerSends(const std::array<float, ax::kAuxBusCount>& sound_sends,
+                                                const SoundPlayerSettings& sound_player)
+{
+    std::array<float, ax::kAuxBusCount> sends = sound_sends;
+    for (std::size_t bus = 0; bus < sends.size(); bus++)
+    {
+        sends[bus] += sound_player.fx_sends[bus];
+    }
+
+    return sends;
 }
 
 } // namespace
@@ -147,11 +162,12 @@ SeqPlayer* Engine::StartSequence(uint32_t index, const Arrangement& arrangement)
         ntdlib::rsar::Sequence::Parse(file->file, ntdlib::rvl::snd::kRsarOptions)));
     players_.push_back(
         std::make_unique<SeqPlayer>(static_cast<int>(players_.size()), SequenceInfo(sound), sequences_.back()->data));
-    player_sends_.push_back(SendsOf(sends_, index));
+    player_sends_.push_back(PlayerSends(SendsOf(sends_, index), sound_player_));
     player_main_sends_.push_back(MainSendOf(sends_, index));
     update_order_.push_back(players_.back()->Id());
     SeqPlayer* player = players_.back().get();
     player->SetBuild(build_);
+    player->SetLpfFreq(sound_player_.lpf);
     player->Start();
 
     // What the game sets through the sound's handle before the first tick. The tracks' volumes require the tracks that
@@ -207,9 +223,10 @@ WsdPlayer* Engine::StartWaveSound(uint32_t index)
 
     const int id = kWavePlayers + static_cast<int>(wave_players_.size());
     wave_players_.push_back(std::make_unique<WsdPlayer>(id, sound, settings, std::move(wave), build_));
-    wave_player_sends_.push_back(SendsOf(sends_, index));
+    wave_player_sends_.push_back(PlayerSends(SendsOf(sends_, index), sound_player_));
     update_order_.push_back(id);
     WsdPlayer* player = wave_players_.back().get();
+    player->SetLpfFreq(sound_player_.lpf);
     player->Start();
 
     return player;
@@ -274,9 +291,10 @@ StrmPlayer* Engine::StartStream(const ntdlib::rsar::SoundInfo& sound, std::span<
     const int id = kStreamPlayers + static_cast<int>(stream_players_.size()) * StrmPlayer::kMaxTracks;
     stream_players_.push_back(
         std::make_unique<StrmPlayer>(id, sound, std::move(*tracks), wave, std::move(channels), build_));
-    stream_player_sends_.push_back(sends);
+    stream_player_sends_.push_back(PlayerSends(sends, sound_player_));
     update_order_.push_back(id);
     StrmPlayer* player = stream_players_.back().get();
+    player->SetLpfFreq(sound_player_.lpf);
     player->Start();
 
     // What the game sets through the sound's handle as the sound starts.

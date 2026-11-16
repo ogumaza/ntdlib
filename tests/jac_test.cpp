@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: MIT
 
 // The model of the C JAudio for Pikmin (jac): the pitch arithmetic, the generator of random numbers and an
-// oscillator's steps, on values built for the test. The keys' pitches follow equal temperament, within the rounding of
-// the game's table. The pitches of fractions of a semitone are Pikmin's. An oscillator's time counts in 600ths of a
+// oscillator's steps, on values built for the test, and the wave archives that a scene's load can read
+// (SceneArchives) on wave systems built for the test. The keys' pitches follow equal temperament, within the rounding
+// of the game's table. The pitches of fractions of a semitone are Pikmin's. An oscillator's time counts in 600ths of a
 // second at the DSP's rate, 32,028.5 Hz, in frames of 80 samples.
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <set>
+#include <string>
+#include <vector>
 
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/jac/bank.h"
 #include "ntdlib/jac/calc.h"
 #include "ntdlib/jac/oscillator.h"
+#include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio1/calc.h"
+#include "ntdlib/jaudio2/dsp.h"
 
 using namespace xsflib::testing;
 
@@ -132,6 +140,91 @@ void TestOscillatorStop()
     XSFLIB_CHECK(data.attack.At(5).mode == jac::kPointStop);
 }
 
+namespace nj = ntdlib::jaudio;
+using Names = std::vector<std::string>;
+
+// A group of `waves` waves of 64 bytes each in archive `name`. C-DF names them with ids from `first_id`. The scene's
+// external mode is `mode`, and C-EX holds `cex`.
+nj::WaveGroup Group(const std::string& name, uint16_t first_id, uint16_t waves, uint32_t mode,
+                    const std::vector<uint32_t>& cex)
+{
+    nj::WaveGroup group{.archive = name};
+    std::vector<uint32_t> cdf;
+    for (uint16_t i = 0; i < waves; i++)
+    {
+        group.archive_waves.push_back({.offset = 64u * i, .size = 64});
+        cdf.push_back(first_id + i);
+    }
+    group.scene.external_mode = mode;
+    group.scene.cdf = cdf;
+    if (!cex.empty())
+    {
+        group.scene.cex = cex;
+    }
+
+    return group;
+}
+
+// The wave systems of the tests below. The system at place 2 has four scenes. Scene 1's C-EX names waves of scenes 0
+// and 2, and a scene 9 that it doesn't have. Scene 3 has the same words with an external mode of 0. A second system of
+// number 2 comes later, and Banks leaves it out.
+std::vector<nj::WaveSystem> SceneSystems()
+{
+    nj::WaveSystem system{.number = 2};
+    system.groups = {Group("s0.aw", 0x10, 4, 0, {}), Group("s1.aw", 0x20, 2, 1, {0x00000011, 0x00020031, 0x00090001}),
+                     Group("s2.aw", 0x30, 2, 0, {}), Group("s3.aw", 0x40, 1, 0, {0x00000011, 0x00020031})};
+    nj::WaveSystem later{.number = 2};
+    later.groups = {Group("later.aw", 0x10, 1, 0, {})};
+
+    return {system, later};
+}
+
+// SceneArchives: the scene's archive, and with an external mode other than 0 the archives of the scenes that C-EX's
+// words name. A scene or a system that the systems don't have reads nothing.
+void TestSceneArchives()
+{
+    const std::vector<nj::WaveSystem> systems = SceneSystems();
+    XSFLIB_CHECK(jac::SceneArchives(systems, 2, 0) == (Names{"s0.aw"}));
+    XSFLIB_CHECK(jac::SceneArchives(systems, 2, 1) == (Names{"s0.aw", "s1.aw", "s2.aw"}));
+    XSFLIB_CHECK(jac::SceneArchives(systems, 2, 3) == (Names{"s3.aw"}));
+    XSFLIB_CHECK(jac::SceneArchives(systems, 2, 4).empty());
+    XSFLIB_CHECK(jac::SceneArchives(systems, 3, 0).empty());
+    XSFLIB_CHECK(jac::SceneArchives(systems, 0x102, 0).empty());
+}
+
+// Against the model: every archive that a scene's set asks the archive callback of Banks for is in SceneArchives,
+// whatever the scenes set before it.
+void TestSceneArchivesAgainstBanks()
+{
+    const std::vector<nj::WaveSystem> systems = SceneSystems();
+    for (const std::vector<uint32_t>& order : std::vector<std::vector<uint32_t>>{{0}, {1}, {3}, {1, 0, 2}, {0, 2, 1}})
+    {
+        std::set<std::string> asked;
+        std::vector<uint8_t> bytes(0x100, 0x11);
+        ntdlib::jaudio2::DspMemory memory(0x100000);
+        jac::Banks banks(
+            {}, systems,
+            [&asked, &bytes](const std::string& name)
+            {
+                asked.insert(name);
+                return &bytes;
+            },
+            memory, 0x10000, 0x80000);
+        std::set<std::string> allowed;
+        for (const uint32_t scene : order)
+        {
+            const Names names = jac::SceneArchives(systems, 2, scene);
+            allowed.insert(names.begin(), names.end());
+            XSFLIB_CHECK(banks.SetScene(2, scene, true));
+        }
+        XSFLIB_CHECK(!asked.empty() && std::includes(allowed.begin(), allowed.end(), asked.begin(), asked.end()));
+        if (order == std::vector<uint32_t>{1})
+        {
+            XSFLIB_CHECK((asked == std::set<std::string>{"s0.aw", "s1.aw", "s2.aw"}));
+        }
+    }
+}
+
 } // namespace
 
 int main()
@@ -144,6 +237,8 @@ int main()
         TestOscillatorWithoutData();
         TestOscillatorMoveThenHold();
         TestOscillatorStop();
+        TestSceneArchives();
+        TestSceneArchivesAgainstBanks();
     };
 
     return RunTest("jac", tests);

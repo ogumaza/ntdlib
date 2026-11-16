@@ -53,8 +53,11 @@ struct GameOptions
     // Whether LoadGame loads a title for the Wii's NAND from a folder that holds the title's TMD and decrypted
     // contents. With it, LoadGame rejects a WAD, a TMD or a content file with a message that says what to load instead.
     // A title's game ID is the last four characters of its title ID, and its title is the banner's English name. The
-    // title's main program serves as main.dol. The files of the title's U8 archives make up its file system. WiiBrew
-    // documents the TMD, U8 archives, the banner and the NAND Boot Program.
+    // title's main program serves as main.dol. The files of the title's U8 archives make up its file system. A sound
+    // archive (.brsar) in a U8 archive inside one of them, down to three archives deep, is listed too: at the inner
+    // archive's path, a slash and the sound archive's path in it, such as "data/pack.arc/sound/a.brsar". An archive or
+    // a file may be compressed in one of the CX library's formats (cx.h). WiiBrew documents the TMD, U8 archives, the
+    // banner and the NAND Boot Program.
     bool titles = false;
 
     // Whether LoadGame lists the sound archives (.brsar) inside the game's CPK archives (.cpk, see cpk.h). A sound
@@ -112,8 +115,9 @@ struct GameFiles
     std::optional<uint32_t> region;
 
     // Every file in the game's file system, sorted by path. The names on a disc are Shift-JIS. The paths are UTF-8,
-    // with %XX for each byte that doesn't decode. A title's files are those of its U8 archives. With
-    // GameOptions::cpk_sound_archives, the sound archives inside CPKs are listed too.
+    // with %XX for each byte that doesn't decode. A title's files are those of its U8 archives, with the sound archives
+    // of U8 archives inside them (GameOptions::titles). With GameOptions::cpk_sound_archives, the sound archives
+    // inside CPKs are listed too.
     std::vector<GameFile> files;
 
     // Reads a file by its path in `files`. Returns false when the file can't be found. Throws Error if the image's data

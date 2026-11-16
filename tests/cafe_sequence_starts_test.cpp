@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of how known Wii U games start some sequences (ntdlib/cafe/snd/sequence_starts.h): the variables that they set,
-// the later states and their names, a piece whose tracks a game turns down, and the archives and sequences that the
-// lists leave out. Each game's code gives the values, at the addresses that src/cafe/snd/sequence_starts.cpp cites.
+// the later states and their names, a piece whose tracks a game turns down, the pieces that a game plays at other tempo
+// ratios and pitches, and the archives and sequences that the lists leave out. Each game's code gives the values, at
+// the addresses that src/cafe/snd/sequence_starts.cpp cites.
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -36,6 +40,12 @@ constexpr std::string_view kSuperMario3dWorld = "96b005771143ce5508eb0136143bde8
 constexpr std::string_view kNewSuperMarioBrosU = "e0da277f9eed3c9fbd6dcbce09230811932d14dc";
 constexpr std::string_view kWiiPartyU = "528580bb03f3fbdea2815d7fa7b355233d90d28d";
 constexpr std::string_view kRainbowCurse = "813a15124d13b1978e7e3cb49f6648b9cb50d705";
+constexpr std::string_view kGameAndWario = "4d2c7f19370a0eea57de309b950c6af937e6e01f";
+
+// The archives whose lists hold no tempo ratio and no pitch.
+constexpr std::array<std::string_view, 8> kArchivesAtOneTempo = {
+    kAmiiboFestival,    kAmiiboFestivalArc1, kMarioParty10, kNintendoLand,
+    kSuperMario3dWorld, kNewSuperMarioBrosU, kWiiPartyU,    kRainbowCurse};
 
 // The variables that `variables` sets, each followed by a space: "index=value" for a variable of the sequence or a
 // global variable, and "track:index=value" for a variable of a track.
@@ -192,6 +202,60 @@ void TestTrackStates()
     Check(StartOfSequence(kRainbowCurse, "BGM_SEQ_TITLE").tracks == 0xffff, "the game's other pieces play every track");
 }
 
+// Whether `arrangements` are Game & Wario's two arrangements of Gamer's music: 140 BPM and 200 BPM, with no variables
+// and every track playing. The tempo ratio is the BPM divided by 120 (0x025B4698). The pitches are the game's table at
+// 0x10063A94: 0x3F8FACD6 for 140 BPM and 0x3FCB2FF5 for 200 BPM.
+bool AreGamerBpms(std::span<const SequenceArrangement> arrangements)
+{
+    return arrangements.size() == 2 && arrangements[0].suffix == " 140 BPM" &&
+           arrangements[0].tempo_ratio == 140.0f / 120.0f &&
+           std::bit_cast<uint32_t>(arrangements[0].pitch) == 0x3F8FACD6 && arrangements[1].suffix == " 200 BPM" &&
+           arrangements[1].tempo_ratio == 200.0f / 120.0f &&
+           std::bit_cast<uint32_t>(arrangements[1].pitch) == 0x3FCB2FF5 &&
+           std::all_of(arrangements.begin(), arrangements.end(), [](const SequenceArrangement& arrangement)
+                       { return arrangement.tracks == 0xffff && Set(arrangement.variables).empty(); });
+}
+
+// Game & Wario lists 32 of Gamer's pieces: the introduction, six jingles and 25 microgames' pieces. Each comes at 140
+// and 200 BPM as well. The clear music plays at 120 BPM alone. No other listed arrangement changes the tempo or the
+// pitch.
+void TestTempoAndPitch()
+{
+    const std::vector<std::string_view> gamer = ListedSequences(kGameAndWario);
+    const auto lists = [&gamer](std::string_view label)
+    {
+        return std::find(gamer.begin(), gamer.end(), label) != gamer.end();
+    };
+    Check(gamer.size() == 32 && gamer.front() == "BGM_NI_INTRO1" && lists("BGM_NI_TSUNAGI_SPEEDUP1") &&
+              lists("BGM_NI_GAME_MANTOBLOW1") && !lists("BGM_NI_TSUNAGI_LIFE1") && !lists("BGM_NI_GAMEOVER1"),
+          "Game & Wario lists Gamer's 32 pieces that follow the BPM");
+    Check(AreGamerBpms(SequenceArrangements(kGameAndWario, "BGM_NI_GAME_MOLE1")),
+          "a microgame's piece comes at 140 and 200 BPM");
+    Check(AreGamerBpms(SequenceArrangements(kGameAndWario, "BGM_NI_INTRO1")),
+          "the introduction comes at 140 and 200 BPM");
+    Check(std::all_of(gamer.begin(), gamer.end(),
+                      [](std::string_view label) { return AreGamerBpms(SequenceArrangements(kGameAndWario, label)); }),
+          "every listed piece has the two arrangements");
+
+    const SequenceStart clear = StartOfSequence(kGameAndWario, "BGM_NI_CLEAR1");
+    Check(SequenceArrangements(kGameAndWario, "BGM_NI_CLEAR1").empty() && clear.tracks == 0xffff &&
+              Set(clear.variables).empty(),
+          "the clear music has no arrangement");
+
+    bool all_at_one = true;
+    for (const std::string_view archive : kArchivesAtOneTempo)
+    {
+        for (const std::string_view label : ListedSequences(archive))
+        {
+            for (const SequenceArrangement& arrangement : SequenceArrangements(archive, label))
+            {
+                all_at_one = all_at_one && arrangement.tempo_ratio == 1.0f && arrangement.pitch == 1.0f;
+            }
+        }
+    }
+    Check(all_at_one, "the other games' arrangements keep a tempo ratio and a pitch of 1");
+}
+
 // The labels that the lists hold for each archive, in order. Every listed label has an entry. amiibo Festival's second
 // archive holds the last sequence of the game's list.
 void TestListedSequences()
@@ -210,9 +274,10 @@ void TestListedSequences()
     Check(ListedSequences("0000000000000000000000000000000000000000").empty() && ListedSequences("").empty(),
           "an unlisted archive lists nothing");
 
+    std::vector<std::string_view> archives(kArchivesAtOneTempo.begin(), kArchivesAtOneTempo.end());
+    archives.push_back(kGameAndWario);
     bool all_found = true;
-    for (const std::string_view archive : {kAmiiboFestival, kAmiiboFestivalArc1, kMarioParty10, kNintendoLand,
-                                           kSuperMario3dWorld, kNewSuperMarioBrosU, kWiiPartyU, kRainbowCurse})
+    for (const std::string_view archive : archives)
     {
         for (const std::string_view label : ListedSequences(archive))
         {
@@ -232,6 +297,7 @@ int main()
     TestArrangements();
     TestNames();
     TestTrackStates();
+    TestTempoAndPitch();
     TestListedSequences();
 
     return xsflib::testing::Summary("cafe_sequence_starts");

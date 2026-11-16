@@ -11,17 +11,20 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <list>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "xsflib/psf/psf.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/dsp/memory.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rsar/formats.h"
@@ -572,6 +575,56 @@ void TestSoundsTogether()
     Check(model.engine.SoundSends(0)[0] == 0.5f && model.engine.SoundSends(1)[0] == 0.0f &&
               model.engine.SoundSends(-1)[0] == 0.0f,
           "a player that the engine doesn't have gets no sends");
+}
+
+// Whether two PBs give their voices the same mix, bit for bit.
+bool SameMix(const ax::Pb& a, const ax::Pb& b)
+{
+    static_assert(std::has_unique_object_representations_v<ax::PbMix>);
+    return std::memcmp(&a.mix, &b.mix, sizeof(ax::PbMix)) == 0;
+}
+
+// The settings of a sound player: a sequence that starts takes the player's low-pass and adds the player's sends to the
+// sends that the game sets on its sound (BasicSound::UpdateParam).
+void TestSoundPlayer()
+{
+    const Bytes kNote = {0xd3, 0x7f, 0x3c, 0x64, 0x30, 0xff};
+
+    // The first PB of the note, and the low-pass scale of its voice, with `settings` and the game's `sends`.
+    struct Note
+    {
+        ax::Pb pb;
+        float lpf_freq = -1.0f;
+    };
+    const auto note = [&kNote](const snd::SoundPlayerSettings& settings, const std::vector<snd::SoundSend>& sends)
+    {
+        Note found;
+        Model model(kNote, kBuildSeptember2009);
+        model.engine.SetEffects({}, sends, 0);
+        model.engine.SetSoundPlayerSettings(settings);
+        model.engine.SetVoiceParamHook(
+            [&found](snd::ChannelId, const ntdlib::nwsnd::RevolutionPolicy::ChannelVoiceParam& param)
+            { found.lpf_freq = param.lpf_freq; });
+        model.engine.StartSequence(0);
+        found.pb = model.PbAfter(1);
+        return found;
+    };
+
+    const Note plain = note({}, {});
+    const Note filtered = note({.lpf = -0.55f}, {});
+    Check(plain.lpf_freq == 1.0f && plain.pb.lpf.on != ax::kLpfOn, "by default, the scale is 1 and the low-pass off");
+    Check(filtered.lpf_freq == 0.45f && filtered.pb.lpf.on == ax::kLpfOn,
+          "a low-pass of -0.55 gives a scale of 0.45 and turns AX's low-pass on");
+
+    const std::vector<snd::SoundSend> kQuarter = {{.sound = 0, .bus = 1, .send = 0.25f}};
+    const std::vector<snd::SoundSend> kHalf = {{.sound = 0, .bus = 1, .send = 0.5f}};
+    const snd::SoundPlayerSettings kPlayerQuarter = {.fx_sends = {0.0f, 0.25f, 0.0f}};
+    const Note by_player = note(kPlayerQuarter, {});
+    const Note by_sound = note({}, kQuarter);
+    Check(by_player.pb.mix.aux_b_l > 0 && SameMix(by_player.pb, by_sound.pb),
+          "a player's send of 0.25 mixes as the game's send of 0.25 on the sound");
+    Check(SameMix(note(kPlayerQuarter, kQuarter).pb, note({}, kHalf).pb),
+          "the player's send adds to the sound's: 0.25 and 0.25 mix as 0.5");
 }
 
 // The voices' PBs after the first frame of a sequence of `commands` played under `build`, and the model to play on.
@@ -1263,6 +1316,7 @@ int main()
         TestSequence();
         TestArrangement();
         TestSoundsTogether();
+        TestSoundPlayer();
         TestSweepPitch();
         TestTempo();
         TestVelocityRange();

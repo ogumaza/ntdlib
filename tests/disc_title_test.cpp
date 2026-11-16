@@ -3,10 +3,11 @@
 // Builds small titles for the Wii's NAND, like WiiWare games, in folders. A title has a TMD, a banner, a main program
 // compressed with LZ77, U8 archives and a boot program. One archive is compressed as a whole. The other holds sound
 // archives compressed with LZ77 and with Huffman coding. Checks that LoadGame reads a title with its contents named by
-// index and by content ID, with some contents missing, and with AppleDouble files beside its files. Checks that it
-// rejects a WAD, contents that don't match the TMD, and folders without the main program or the TMD. Also checks the
-// decompressors of LZ77 (types 0x10 and 0x11) and Huffman coding against data made by hand and by the compressors here.
-// The compressors follow the formats' descriptions.
+// index and by content ID, with some contents missing, with AppleDouble files beside its files, and with sound archives
+// in U8 archives inside its archives. Checks that it rejects a WAD, contents that don't match the TMD, and folders
+// without the main program or the TMD. Also checks the decompressors of LZ77 (types 0x10 and 0x11) and Huffman coding
+// against data made by hand and by the compressors here, and those of LH and LRC against the compressors of
+// ntdlib/testing/cx_encoders.h. The compressors follow the formats' descriptions.
 
 #include <algorithm>
 #include <cstddef>
@@ -31,6 +32,7 @@
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/testing/cx_encoders.h"
 #include "temp_folder.h"
 
 using xsflib::testing::Check;
@@ -39,6 +41,7 @@ namespace
 {
 
 namespace fs = std::filesystem;
+namespace cx = ntdlib::testing::cx_encoders;
 using Bytes = std::vector<uint8_t>;
 using disc_files::AppleDouble;
 using disc_files::CheckFiles;
@@ -644,13 +647,102 @@ void TestHuffman()
     XSFLIB_CHECK(!Decompress({0x28, 0x40, 0x00, 0x00, 0x01, 0xC0, 'A', 'B', 0x00, 0x00, 0x00, 0x60}));
 
     // What isn't in a format that the decompressors read: a U8 archive, Huffman coding of 4-bit symbols (type 0x24),
-    // the SDK's other formats (0x30, 0x40), a short header, and Huffman coding after the magic "LZ77".
+    // the SDK's other formats (run-length coding, 0x30, and the difference filter, 0x80), a short header, and Huffman
+    // coding after the magic "LZ77".
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{0x55, 0xAA, 0x38, 0x2D, 0x00, 0x00, 0x00, 0x20}));
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{0x24, 0x04, 0x00, 0x00}));
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{0x30, 0x04, 0x00, 0x00}) &&
-                 !ntdlib::disc::IsCx(Bytes{0x40, 0x04, 0x00, 0x00}));
+                 !ntdlib::disc::IsCx(Bytes{0x80, 0x04, 0x00, 0x00}));
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{0x10, 0x04, 0x00}));
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{'L', 'Z', '7', '7', 0x28, 0x04, 0x00, 0x00}));
+}
+
+// A literal byte, and a copy of `length` bytes from `distance` back.
+cx::Token Literal(uint8_t byte)
+{
+    return {false, byte, 0, 0};
+}
+
+cx::Token Copy(uint32_t length, uint32_t distance)
+{
+    return {true, 0, length, distance};
+}
+
+// LH and LRC (types 0x40 and 0x50): round trips through the compressors, and data that the decompressors refuse.
+void TestLhAndLrc()
+{
+    using Compressor = std::vector<uint8_t> (*)(std::span<const uint8_t>);
+    using Coder = std::vector<uint8_t> (*)(const std::vector<cx::Token>&, size_t);
+    struct Format
+    {
+        std::string name;
+        Compressor compress;
+        Coder code;
+    };
+
+    const Bytes text = Text("abcabcabcd");
+    const Bytes few = FewValues(0x3000, 12);
+    const Bytes runs = Compressible(13);
+    for (const Format& format :
+         {Format{"LH", cx::CompressLh, cx::EncodeLh}, Format{"LRC", cx::CompressLrc, cx::EncodeLrc}})
+    {
+        const Bytes small = format.compress(text);
+        Check(ntdlib::disc::IsCx(small) && Decompress(small) == text, format.name + ": abcabcabcd");
+        Check(Decompress(format.compress(few)) == few, format.name + ": a few values");
+        Check(Decompress(format.compress(Bytes(1000, 0x33))) == Bytes(1000, 0x33), format.name + ": one value");
+        Check(Decompress(format.compress(Bytes{})) == Bytes{}, format.name + ": no data, with a 32-bit size");
+        if (format.name == "LRC")
+        {
+            Check(Decompress(format.compress(runs)) == runs, format.name + ": every form of copy");
+        }
+
+        // The longest copy, from the farthest place: 258 bytes from 4,096 back. The literal bytes take 16 values. LH's
+        // tree then stays within the format's offsets.
+        Bytes far(4096);
+        Fill(far, 0, far.size(), 14);
+        std::vector<cx::Token> tokens;
+        for (uint8_t& byte : far)
+        {
+            byte &= 0x0F;
+            tokens.push_back(Literal(byte));
+        }
+        tokens.push_back(Copy(258, 4096));
+        far.insert(far.end(), far.begin(), far.begin() + 258);
+        Check(Decompress(format.code(tokens, far.size())) == far,
+              format.name + ": a copy of 258 bytes from 4,096 back");
+
+        // Damaged data: a copy from before the start, a copy past the end, data that ends early, more than 0x20 bytes
+        // after the last symbol (0x10 more pass), and a size over the limit.
+        Check(!Decompress(format.code({Literal('a'), Copy(3, 2)}, 4)), format.name + ": a copy from before the start");
+        Check(!Decompress(format.code({Literal('a'), Copy(3, 1)}, 3)), format.name + ": a copy past the end");
+        Check(!Decompress(Bytes(small.begin(), small.end() - 8)), format.name + ": data that ends early");
+        Bytes trailing = small;
+        trailing.resize(trailing.size() + 0x10, 0);
+        Check(Decompress(trailing) == text, format.name + ": 0x10 more bytes after the last symbol");
+        trailing.resize(trailing.size() + 0x30, 0);
+        Check(!Decompress(trailing), format.name + ": 0x40 more bytes after the last symbol");
+        Check(!Decompress(small, 9), format.name + ": a size over the limit");
+    }
+
+    // LH's distances: 1, 2, 3 and 0xFFFF back, each with its number of bits.
+    Bytes wide(0xFFFF);
+    Fill(wide, 0, wide.size(), 15);
+    std::vector<cx::Token> tokens;
+    for (uint8_t& byte : wide)
+    {
+        byte &= 0x0F;
+        tokens.push_back(Literal(byte));
+    }
+    for (const uint32_t distance : {1u, 2u, 3u, 0xFFFFu})
+    {
+        tokens.push_back(Copy(3, distance));
+        for (int i = 0; i < 3; ++i)
+        {
+            const uint8_t byte = wide[wide.size() - distance];
+            wide.push_back(byte);
+        }
+    }
+    XSFLIB_CHECK(Decompress(cx::EncodeLh(tokens, wide.size())) == wide);
 }
 
 // The title read from its folder: with its contents named by index, by ID (with a TMD named title.tmd and padding after
@@ -707,6 +799,44 @@ void TestOtherTitles(const fs::path& dir)
     WriteTitle(dir / "boot", title, Naming::kIndex, "boot.tmd");
 
     CheckTitle("the boot content as the main program", dir / "boot", title, title.files, kTitleName);
+}
+
+// Sound archives in U8 archives inside a title's U8 archive. Content 5 holds an archive compressed with LH, an archive
+// compressed with LRC with three more archives inside one another, a damaged archive and a file that only looks
+// compressed. The sound archives down to the third archive inside the content's archive are listed at the paths of the
+// archives that hold them. The fourth archive's is left out. The archives stay among the files.
+void TestNestedArchives(const fs::path& dir)
+{
+    TestTitle title = BuildTitle();
+    const Bytes first = FewValues(0x400, 20);
+    const Bytes second = FewValues(0x500, 21);
+    const Bytes third = FewValues(0x600, 22);
+    const Bytes fourth = FewValues(0x700, 23);
+    const Bytes fifth = FewValues(0x800, 24);
+    const Bytes deepest = BuildU8({{"bottom.arc", BuildU8({{"e.brsar", fifth}}, false)}, {"d.brsar", fourth}}, false);
+    const Bytes deeper = BuildU8({{"c.brsar", cx::CompressLrc(third)}, {"deepest.arc", deepest}}, false);
+    const Bytes deep = BuildU8({{"deeper.arc", deeper}, {"sound/b.brsar", second}}, false);
+    const Bytes lh = cx::CompressLh(BuildU8({{"sound/a.brsar", first}}, false));
+    const Bytes lrc = cx::CompressLrc(deep);
+    const Bytes damaged = {0x55, 0xAA, 0x38, 0x2D, 0x00, 0x00, 0x00, 0x20};
+    const Bytes looks = {0x50, 0x10, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF};
+    title.contents.push_back(
+        {0x1005, 5, 1,
+         BuildU8(
+             {{"pack/damaged.arc", damaged}, {"pack/deep.arc", lrc}, {"pack/lh.arc", lh}, {"pack/looks.arc", looks}},
+             false)});
+
+    std::map<std::string, Bytes> files = title.files;
+    files.insert({{"pack/damaged.arc", damaged},
+                  {"pack/deep.arc", lrc},
+                  {"pack/lh.arc", lh},
+                  {"pack/looks.arc", looks},
+                  {"pack/lh.arc/sound/a.brsar", first},
+                  {"pack/deep.arc/sound/b.brsar", second},
+                  {"pack/deep.arc/deeper.arc/c.brsar", third},
+                  {"pack/deep.arc/deeper.arc/deepest.arc/d.brsar", fourth}});
+    WriteTitle(dir / "nested", title, Naming::kIndex, "game.tmd");
+    CheckTitle("nested archives", dir / "nested", title, files, kTitleName);
 }
 
 // What LoadGame rejects: contents that don't match the TMD, a folder without the main program or the TMD or with two
@@ -773,7 +903,9 @@ int main(int argc, char** argv)
         fs::create_directories(dir);
         TestLz();
         TestHuffman();
+        TestLhAndLrc();
         TestTitles(dir);
+        TestNestedArchives(dir);
         TestOtherTitles(dir);
         TestRefusals(dir);
     };

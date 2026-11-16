@@ -42,6 +42,7 @@ void ArchiveModel::Start(const ntdlib::rsar::SoundArchive& archive)
 {
     engine.emplace(memory, ax, archive, build, kPools);
     engine->SetOutputMode(ntdlib::nwsnd::OutputMode::kDpl2);
+    engine->SetSoundPlayerSettings(sound_player);
     effects.AppendReverb(ax, layer, 1, kBusBReverb);
     effects.AppendReverb(ax, layer, 0, kBusAReverb);
 }

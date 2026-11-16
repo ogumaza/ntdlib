@@ -12,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
@@ -369,6 +370,53 @@ void TestLayoutWithoutNames()
                      .find("isn't laid out as the SDK's tools lay it out") != std::string::npos);
 }
 
+// Some games' archives have their files on multiples of 4 bytes. The model reads the multiple and lays the archive out
+// the same way again.
+void TestLayoutOnFourBytes()
+{
+    sdat::ArchiveModel model = LayoutModel();
+    model.file_alignment = 4;
+    const Bytes bytes = sdat::BuildArchive(model);
+    const xsflib::Reader r(bytes);
+
+    // The tables are as on 32 bytes. FILE starts at 0x1C8, its files follow its 12 bytes of header with no gap, and
+    // the archive ends after the last one, at 0x1FC.
+    XSFLIB_CHECK(bytes.size() == 0x1FC && r.U32(8) == 0x1FC);
+    XSFLIB_CHECK(r.U32(0x28) == 0x1C8 && r.U32(0x2C) == 0x34);
+    const std::vector<uint32_t> offsets = {0x1D4, 0x1D8, 0x1E0, 0x1EC};
+    for (uint32_t id = 0; id < 4; id++)
+    {
+        XSFLIB_CHECK(r.U32(0x17C + 12 + 16 * id) == offsets[id] && r.U8(offsets[id]) == id + 1);
+    }
+
+    const sdat::ArchiveModel read = sdat::ReadArchiveModel(bytes);
+    XSFLIB_CHECK(read.file_alignment == 4 && read.files == model.files && sdat::BuildArchive(read) == bytes);
+    XSFLIB_CHECK(sdat::ReadArchiveModel(sdat::BuildArchive(LayoutModel())).file_alignment == 32);
+
+    // A file of the 4-byte layout that moves by 4 is still refused.
+    Bytes moved = bytes;
+    moved[0x17C + 12] = static_cast<uint8_t>(moved[0x17C + 12] + 4);
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sdat::ReadArchiveModel(moved); })
+                     .find("isn't laid out as the SDK's tools lay it out") != std::string::npos);
+}
+
+// An archive laid out on 8 or 16 bytes reads back with that alignment. A file lies on a multiple of the alignment that
+// isn't a multiple of twice the alignment, so no larger alignment fits.
+void TestLayoutOnEightAndSixteenBytes()
+{
+    for (const auto& [alignment, first] : {std::pair<uint32_t, uint32_t>{8, 0x1D8}, {16, 0x1E0}})
+    {
+        sdat::ArchiveModel model = LayoutModel();
+        model.file_alignment = alignment;
+        const Bytes bytes = sdat::BuildArchive(model);
+        const xsflib::Reader r(bytes);
+        XSFLIB_CHECK(r.U32(0x17C + 12) == first && bytes.size() % alignment == 0);
+
+        const sdat::ArchiveModel read = sdat::ReadArchiveModel(bytes);
+        XSFLIB_CHECK(read.file_alignment == alignment && read.files == model.files && sdat::BuildArchive(read) == bytes);
+    }
+}
+
 uint32_t Word(const Bytes& memory, uint32_t address)
 {
     return xsflib::Reader(memory).U32(address - 0x02000000);
@@ -497,6 +545,8 @@ int main()
     TestRefusals();
     TestLayout();
     TestLayoutWithoutNames();
+    TestLayoutOnFourBytes();
+    TestLayoutOnEightAndSixteenBytes();
     TestHeap();
 
     return xsflib::testing::Summary("DS sound archive");

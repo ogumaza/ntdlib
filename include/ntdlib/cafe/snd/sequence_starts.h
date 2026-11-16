@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // How known Wii U games start some of their sequences, and the later states that the games give them. A game's code can
-// set the variables that a sequence waits for as it starts the sound, or turn some tracks of a piece down through the
-// sound's handle. The lists below find a sequence by the SHA-1 of its sound archive and its label. Any other sequence,
-// and every sequence of an unknown archive, starts as nw::snd starts it: with its variables at -1 and every track at
-// full volume. `archive_sha1` is the SHA-1 of the sound archive in 40 lowercase hex digits.
+// set the variables that a sequence waits for as it starts the sound, turn some tracks of a piece down, or set the
+// sound's tempo ratio and pitch through the sound's handle. The lists below find a sequence by the SHA-1 of its sound
+// archive and its label. Any other sequence, and every sequence of an unknown archive, starts as nw::snd starts it:
+// with its variables at -1 and every track at full volume. `archive_sha1` is the SHA-1 of the sound archive in 40
+// lowercase hex digits.
 
 #pragma once
 
@@ -51,6 +52,14 @@ struct SequenceArrangement
     std::string_view suffix;
     SequenceVariables variables = {};
     uint16_t tracks = 0xffff;
+
+    // The tempo ratio that the game sets (SequenceSoundHandle::SetTempoRatio). The sequence's ticks come at its tempo
+    // times the ratio.
+    float tempo_ratio = 1.0f;
+
+    // The pitch that the game sets (SoundHandle::SetPitch), as a ratio of frequencies. Every voice of the sequence
+    // plays at its pitch times the ratio.
+    float pitch = 1.0f;
 };
 
 // How a known game starts the sequence labelled `sound`. An unlisted sequence or archive starts with no variables set

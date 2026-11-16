@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 
 #include "jaudio1/track_internal.h"
 
@@ -46,7 +47,20 @@ void OuterParam::SetParam(uint8_t flag, float value)
     outer_update |= flag;
 }
 
-Tracks::Tracks(Voices& voices) : voices_(voices)
+Tracks::SequenceOuters& Tracks::SequenceOuters::operator=(const SequenceOuters& other)
+{
+    // Every node stays where it is, and the tracks' pointers to it stay valid. A node that `other` doesn't hold stays
+    // too: the tracks of a later snapshot can point at it. Each EXTSet sets its node's values again (Init), and nothing
+    // else reads the map. A kept node therefore changes no output.
+    for (const auto& [key, outer] : other.map)
+    {
+        map[key] = outer;
+    }
+
+    return *this;
+}
+
+Tracks::Tracks(Voices& voices) : voices_(&voices)
 {
     tracks_.resize(kPoolTracks + kRootTracks);
     notes_.resize(tracks_.size());
@@ -482,7 +496,7 @@ bool Tracks::ReadyToParse(Track& track)
     if (track.wait == -1)
     {
         const uint32_t channel = track.channels[0];
-        if (channel != Track::kNone && voices_.ChannelAt(channel).status != Channel::kStop)
+        if (channel != Track::kNone && voices_->ChannelAt(channel).status != Channel::kStop)
         {
             return false;
         }
@@ -517,8 +531,8 @@ void Tracks::ReleaseChannels(uint32_t index)
     Track& track = tracks_[index];
     for (const uint32_t channel : track.channel_list)
     {
-        voices_.Release(channel, 0);
-        voices_.Free(channel);
+        voices_->Release(channel, 0);
+        voices_->Free(channel);
     }
     track.channel_list.clear();
 }
@@ -538,7 +552,7 @@ void Tracks::Close(uint32_t index)
     {
         if (channel != Track::kNone)
         {
-            voices_.Release(channel, release);
+            voices_->Release(channel, release);
             channel = Track::kNone;
         }
     }
@@ -698,7 +712,7 @@ void Tracks::MuteTrack(uint32_t index, bool mute)
         {
             if (channel != Track::kNone)
             {
-                voices_.Release(channel, 10);
+                voices_->Release(channel, 10);
                 channel = Track::kNone;
             }
         }

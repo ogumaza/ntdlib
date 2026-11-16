@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -71,6 +72,17 @@ struct ReverbPreset
     }
 };
 
+// A delay (nn::atk's EffectDelay) or a light limiter (EffectLightLimiter) that the game's code puts on an aux bus. Each
+// value is the one that nn::atk's setter is given. A delay has its longest delay and its delay (whole microseconds),
+// its input, feedback and dry gains, its low-pass amount, its channel spread and nn::atk's channel mode (0 to 3 for 1,
+// 2, 4 or 6 channels). A limiter has its longest look-ahead, its attack, its release and its look-ahead (whole
+// microseconds), its threshold, its input and output gains, and the channel mode.
+struct AuxEffectPreset
+{
+    std::string name;
+    std::array<float, 8> parameters{};
+};
+
 // Values of a sound's variables, by their numbers in the sequence commands: 0 to 15 for the sound's variables, 16 to 31
 // for the global ones.
 using VariableValues = std::map<int, int16_t>;
@@ -112,11 +124,15 @@ struct ArchiveRules
     // sends to bus A then leave it (PerformOptions::bus_a_delay).
     bool bus_a_delay = false;
 
+    // The delay that the game's code keeps on aux bus A, and the limiter that it keeps on aux bus C, or none.
+    std::optional<AuxEffectPreset> bus_a_delay_preset;
+    std::optional<AuxEffectPreset> bus_c_limiter;
+
     // Whether the archive has rules.
     bool Empty() const
     {
         return layered.empty() && bus_b_presets.empty() && bus_b.empty() && bus_b_later.empty() &&
-               bus_b_always.empty() && starts.empty() && !bus_a_delay;
+               bus_b_always.empty() && starts.empty() && !bus_a_delay && !bus_a_delay_preset && !bus_c_limiter;
     }
 
     // The preset named `name`, or none.

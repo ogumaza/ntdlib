@@ -439,6 +439,137 @@ void TestPerform()
     Check(tied.seconds >= 10.5 && tied.seconds < 10.5 + 2.0 * kFrameMs / 1000.0,
           "the hold ends 10 s after the second pass, where the sound settles");
 
+    // Track 0 strikes a note of 2 ticks at volume 0 in an endless loop, as a track does that only keeps a sequence
+    // busy. Track 1 plays note 64 for 24 ticks and a wait of 24 ticks in a loop. The silent passes aren't the
+    // sequence's loop. The markers go on track 1's 48 ticks, and 20 passes reach 10 s.
+    const TestArchive busy({
+        0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+        0x93, 0x01, 0x11, 0x00, 0x00, // 3: track 1 starts at 0x11
+        0xD4, 0x00,                   // 8: an endless loop
+        0xC1, 0x00,                   // 10: the volume takes 0
+        0x3C, 0x02, 0x02,             // 12: note 60 at velocity 2 for 2 ticks
+        0xFC,                         // 15: the loop's end
+        0xFF,                         // 16
+        0x40, 0x7F, 0x18,             // 17: note 64 for 24 ticks
+        0x80, 0x18,                   // 20: a wait of 24 ticks
+        0x94, 0x11, 0x00, 0x00,       // 22: back to 17
+    });
+    const Performance kept = Perform(busy.archive, {0});
+    Check(kept.loop && kept.loop->start == 0 && kept.loop->end == 48 && kept.end_tick == 960,
+          "a track of silent notes doesn't own the loop");
+
+    // Track 0 strikes note 60 at velocity 127 and volume 0 every 10 ticks, in an endless loop. Track 1 waits 190 ticks,
+    // then plays note 64 for 24 ticks and waits 742 ticks, in a loop of 766 ticks. 766 isn't a multiple of 10. The
+    // markers go on track 1's first pass, from tick 190 to 956. That pass ends at 9.96 s, short of 10 s. The second
+    // pass ends at tick 1722.
+    const TestArchive misaligned({
+        0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+        0x93, 0x01, 0x11, 0x00, 0x00, // 3: track 1 starts at 0x11
+        0xC1, 0x00,                   // 8: the volume takes 0
+        0xD4, 0x00,                   // 10: an endless loop
+        0x3C, 0x7F, 0x0A,             // 12: note 60 for 10 ticks
+        0xFC,                         // 15: the loop's end
+        0xFF,                         // 16
+        0x80, 0x81, 0x3E,             // 17: a wait of 190 ticks
+        0x40, 0x7F, 0x18,             // 20: note 64 for 24 ticks
+        0x80, 0x85, 0x66,             // 23: a wait of 742 ticks
+        0x94, 0x14, 0x00, 0x00,       // 26: back to 20
+    });
+    const Performance offset = Perform(misaligned.archive, {0});
+    Check(offset.loop && offset.loop->start == 190 && offset.loop->end == 956 && offset.loops == 2 &&
+              offset.end_tick == 1722 && !offset.truncated,
+          "a silent loop of 10 ticks beside a loop of 766: the markers on the loop of 766");
+
+    // A note at velocity 1 and volume 100 lies at -76.3 dB, and plays at a volume of 0. The loop goes straight back to
+    // it. The first pass ends at tick 24. It changed nothing and played no note that sounds, and nothing sounds. The
+    // sequence ends there, without loop markers.
+    const Bytes faint_sequence = {
+        0xC1, 0x64,             // 0: the volume takes 100
+        0x3C, 0x01, 0x18,       // 2: note 60 for 24 ticks at velocity 1
+        0x94, 0x02, 0x00, 0x00, // 5: back to 2
+    };
+    const TestArchive faint(faint_sequence);
+    const Performance faded = Perform(faint.archive, {0});
+    Check(!faded.loop && !faded.truncated && !faded.holds && faded.end_tick == 24,
+          "a loop of silent notes ends after its first pass");
+
+    // Track 0 plays note 60 for 48 ticks, waits 48 ticks and ends. Track 1 strikes note 60 at volume 0 for 24 ticks in
+    // a loop, back to back, or tied (0xC8 1). Once track 0 has ended at tick 96, track 1 passes still and silent, and
+    // nothing sounds. The sequence ends at tick 96, as track 0 does alone.
+    const auto one_shot = [](const Bytes& silent_track)
+    {
+        Bytes bytecode = {
+            0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+            0x93, 0x01, 0x0E, 0x00, 0x00, // 3: track 1 starts at 0x0E
+            0x3C, 0x7F, 0x30,             // 8: note 60 for 48 ticks
+            0x80, 0x30,                   // 11: a wait of 48 ticks
+            0xFF,                         // 13
+        };
+        bytecode.insert(bytecode.end(), silent_track.begin(), silent_track.end());
+        const TestArchive test(bytecode);
+        return Perform(test.archive, {0});
+    };
+    for (const Bytes& silent_track : {
+             Bytes{0xC1, 0x00, 0x3C, 0x7F, 0x18, 0x94, 0x10, 0x00, 0x00},             // 14: back to 16
+             Bytes{0xC8, 0x01, 0xC1, 0x00, 0x3C, 0x7F, 0x18, 0x94, 0x12, 0x00, 0x00}, // 14: back to 18
+         })
+    {
+        const Performance ended = one_shot(silent_track);
+        Check(!ended.loop && !ended.truncated && !ended.holds && ended.end_tick == 96 &&
+                  EventsOf(ended, 0, EventKind::kNoteOn).size() == 1,
+              "a one-shot piece beside a loop of silent notes ends with the piece");
+    }
+
+    // Notes don't wait (0xC7 0). The track strikes note 60 for 48 ticks at volume 0 and raises the volume to 127 at
+    // tick 12. The note sounds from then to tick 48 and its release. The track waits 2000 ticks (20.9 s) and ends,
+    // more than 10 s after the sound has died away. The performance ends at the sound, as for a note that sounds from
+    // the start.
+    const TestArchive swell({
+        0xC7,
+        0x00, // 0: notes don't wait
+        0xC1,
+        0x00, // 2: the volume takes 0
+        0x3C,
+        0x7F,
+        0x30, // 4: note 60 for 48 ticks
+        0x80,
+        0x0C, // 7: a wait of 12 ticks
+        0xC1,
+        0x7F, // 9: the volume takes 127
+        0x80,
+        0x8F,
+        0x50, // 11: a wait of 2000 ticks
+        0xFF, // 14
+    });
+    const Performance swelled = Perform(swell.archive, {0});
+    Check(swelled.end_tick >= 48 && swelled.end_tick < 96 && !swelled.truncated,
+          "a note struck silent sounds once its track raises the volume");
+
+    // Track 0 plays note 60 for 48 ticks, waits 48 ticks and ends at tick 96. Track 1's notes don't wait. In a loop of
+    // 36 ticks, it sets the expression to 0, strikes note 60 for 24 ticks, waits 12 ticks, raises the expression to 127
+    // and waits 24 ticks. Each note is struck silent and sounds from 12 ticks on. Track 1's passes end at ticks 36, 72
+    // and 108. At 36 and 72, track 0 still plays, and track 1 isn't the main track. At 108, track 0 has ended. The pass
+    // from 72 played a note that sounds, and its markers go from 72 to 108. The loop plays until the performance
+    // reaches 10 s, 960 ticks at the default tempo. Its 25th pass ends at tick 972.
+    const TestArchive swell_loop({
+        0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+        0x93, 0x01, 0x0E, 0x00, 0x00, // 3: track 1 starts at 0x0E
+        0x3C, 0x7F, 0x30,             // 8: note 60 for 48 ticks
+        0x80, 0x30,                   // 11: a wait of 48 ticks
+        0xFF,                         // 13
+        0xC7, 0x00,                   // 14: notes don't wait
+        0xD5, 0x00,                   // 16: the expression takes 0
+        0x3C, 0x7F, 0x18,             // 18: note 60 for 24 ticks
+        0x80, 0x0C,                   // 21: a wait of 12 ticks
+        0xD5, 0x7F,                   // 23: the expression takes 127
+        0x80, 0x18,                   // 25: a wait of 24 ticks
+        0x94, 0x10, 0x00, 0x00,       // 27: back to 16
+    });
+    const Performance swell_looped = Perform(swell_loop.archive, {0});
+    Check(swell_looped.loop && swell_looped.loop->start == 72 && swell_looped.loop->end == 108 &&
+              swell_looped.loops == 25 && swell_looped.end_tick == 972 && !swell_looped.truncated,
+          "a loop of notes struck silent and swelled later keeps its markers once track 0 has ended");
+
     // Program 7, an attack of 100 and a release of 50, then the note.
     const TestArchive program({0x81, 0x07, 0xD0, 100, 0xD3, 50, 0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF});
     const Performance seven = Perform(program.archive, {0});
@@ -548,6 +679,47 @@ void TestStolenChannel()
     Check(q.approximations.size() == 1 &&
               q.approximations.begin()->first == "note cut short by another note's channel (rings on in its release)",
           "the release that the synthesizer plays counts as an approximation");
+}
+
+// A track's pitch events from `tick` on, in semitones.
+std::vector<float> PitchesFrom(const Performance& p, int track, uint32_t tick)
+{
+    std::vector<float> pitches;
+    for (const seqlib::midi::TrackEvent& e : EventsOf(p, track, EventKind::kPitch))
+    {
+        if (e.tick >= tick)
+        {
+            pitches.push_back(e.semitones);
+        }
+    }
+
+    return pitches;
+}
+
+// A tie that starts the channel's sweep again. With a portamento time of 8, a sweep of p 64ths of a semitone runs for
+// 64 * |p| >> 11 frames. Each frame's update plays p * (length - counter) / length and steps the counter. A tick runs
+// every second frame, and the notes last 24 ticks.
+void TestTiedSweeps()
+{
+    // 0: ties on; 2: a portamento time of 8; 4: a sweep of 32; 7: note 60; 10: a sweep of 128; 13: note 60; 16: end.
+    // The first sweep has a length of 1. It plays half a semitone in the note's first frame, and its counter stays at
+    // 1. The tie's sweep has a length of 4, and its counter starts at 0 again. Its first frame steps the counter to 1.
+    // The sweep plays 2, 1.5, 1 and 0.5 semitones, then ends.
+    const TestArchive restarted(
+        {0xC8, 0x01, 0xCF, 0x08, 0xE3, 0x20, 0x00, 0x3C, 0x7F, 0x18, 0xE3, 0x80, 0x00, 0x3C, 0x7F, 0x18, 0xFF});
+    const Performance p = Perform(restarted.archive, {0});
+    Check(PitchesFrom(p, 0, 0) == std::vector<float>{0.5f, 0.0f, 2.0f, 1.5f, 1.0f, 0.5f, 0.0f} &&
+              PitchesFrom(p, 0, 24) == std::vector<float>{2.0f, 1.5f, 1.0f, 0.5f, 0.0f},
+          "a tie's sweep plays from its first frame, whatever the count of the sweep before");
+    Check(EventsOf(p, 0, EventKind::kNoteOn).size() == 1 && p.approximations.empty(), "and the tie starts no note");
+
+    // The same with sweeps of 64 and 16. The first has a length of 2: 1 and 0.5 semitones. The tie's sweep has a
+    // length of 0, and the driver plays none of it. The performer divides by no length of 0.
+    const TestArchive without_length(
+        {0xC8, 0x01, 0xCF, 0x08, 0xE3, 0x40, 0x00, 0x3C, 0x7F, 0x18, 0xE3, 0x10, 0x00, 0x3C, 0x7F, 0x18, 0xFF});
+    const Performance q = Perform(without_length.archive, {0});
+    Check(PitchesFrom(q, 0, 0) == std::vector<float>{1.0f, 0.5f, 0.0f} && PitchesFrom(q, 0, 24).empty(),
+          "a tie's sweep of no length plays nothing");
 }
 
 // A conversion's files pass seqlib's checks, and each tick's frame starts no earlier than the tick, within a frame of
@@ -852,7 +1024,8 @@ void TestFrame()
     Check(run(loose) == 0 && passes(folder.Path() / "loose_xyz2midi" / "BGM_TEST"), "a loose archive converts");
 
     // DSE's songs and sound effects: each folder of them goes to a folder of its name. A sound effect takes the name
-    // of its bank of sound effects and its slot.
+    // of its bank of sound effects and its slot. The image's ARM9 binary holds no build of DSE's driver that a model
+    // covers: its songs convert only on the model that --dse-model names.
     nds_files::Image dse;
     dse.files = {
         {"SOUND/BGM/bgm0001.smd", dse_song_files::SongFile()},
@@ -869,9 +1042,12 @@ void TestFrame()
         {"SOUND/SE/fx.swd", dse_song_files::BankFile()}};
     const fs::path dse_image = folder.Write("dse.nds", nds_files::BuildImage(dse).first);
     const fs::path dse_out = folder.Path() / "dse_xyz2midi";
-    Check(run(dse_image) == 0 && passes(dse_out / "BGM" / "bgm0001") && passes(dse_out / "SE" / "fx_001") &&
+    Check(run(dse_image) == 1 && !fs::exists(dse_out), "DSE's songs don't convert on a build that no model covers");
+    Check(RunArchiveConverter({kProgram, "--quiet", "--dse-model", "later", ntdlib::sequence_export::Utf8(dse_image)},
+                              converter) == 0 &&
+              passes(dse_out / "BGM" / "bgm0001") && passes(dse_out / "SE" / "fx_001") &&
               fs::exists(dse_out / "SE" / "sfz" / "fx_001" / "Track 0.sfz"),
-          "DSE's songs and sound effects convert");
+          "DSE's songs and sound effects convert on the model that --dse-model names");
 
     // Universomo's songs: the songs beside the bank go to the folder universomo, each named after its file. --only
     // picks songs by name.
@@ -1010,6 +1186,7 @@ int main()
     TestPerform();
     TestChanges();
     TestStolenChannel();
+    TestTiedSweeps();
     TestConvert();
     TestConvertBank();
     TestFrame();

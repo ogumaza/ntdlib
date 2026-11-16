@@ -219,6 +219,17 @@ inline float MainSendOf(const std::vector<SoundSend>& sends, uint32_t sound)
     return found;
 }
 
+// The settings of NW4R SND's SoundPlayer that a game moves for every sound on the player: the low-pass at +0x54 and the
+// sends to aux buses A, B and C at +0x7c, +0x80 and +0x84. BasicSound::UpdateParam adds each to the sound's value
+// (Skyward Sword HD's main, version 0, 0x100ef28). The low-pass then adds to the low-pass of each of the sound's tracks
+// or channels, and each send to their send to its bus. The defaults are those of a player that the game leaves alone.
+// A low-pass of -1 takes the filter's cutoff to its lowest.
+struct SoundPlayerSettings
+{
+    float lpf = 0.0f;
+    std::array<float, ax::kAuxBusCount> fx_sends{};
+};
+
 // Another state of a game in which some of its sounds play, such as the Photo Channel 1.1's moods and the Mii Channel's
 // scenes. A player of the game's states plays each of the sounds once more in each variant, with the variant's effects
 // and sends after the archive's (WithVariant). `name` names the state.

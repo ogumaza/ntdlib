@@ -107,6 +107,13 @@ public:
     // Sports' main.dol 0x80049d00). There, the track's volume changes nothing.
     void SetTrackVolume(uint32_t tracks, float volume);
 
+    // Sets the sound's low-pass (BasicSound::SetLpfFreq, through the sound's handle and its sound player). It adds to
+    // the low-pass filter's scale of each track's voice. It starts at 0, the filter off.
+    void SetLpfFreq(float lpf)
+    {
+        lpf_ = lpf;
+    }
+
     // Each sound frame (Update, 0x80049bb0 and 0x800a6e30): the voices start in the first (StrmPlayer::Start,
     // 0x80048cac and 0x800a5e10). In each frame, the player stops once a track's voice has gone, and otherwise gives
     // each track's voice its parameters (UpdateVoiceParams, 0x800a6ff0). The player finishes when its voices can't all
@@ -158,8 +165,9 @@ private:
     bool finished_ = false;
 
     // The volume that SoundArchivePlayer::PrepareStrmImpl (0x800452a0) gives the sound from its entry. Archive mode
-    // leaves the game's other parameters at their starting values.
+    // leaves the game's other parameters at their starting values. The low-pass is the sound's (SetLpfFreq).
     float volume_ = 1.0f;
+    float lpf_ = 0.0f;
 };
 
 // The tracks that a known game plays of stream sound `sound`, by its name, as the sound starts, bit N for track N. The

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 4.2.0 LANGUAGES C CXX)
+project(ntdlib VERSION 5.0.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -121,14 +121,15 @@ xsflib_add_project_test(ntdlib cafe_sequence_starts ntdlib::cafe_sequence_starts
 
 # The readers of JAudio2's sound data: the start-up archive (BAA) with its sound table, sequence collection, wave
 # systems and banks, and RARC archives. The readers of JAudio1's start-up archive (AAF), of the bank file of Pikmin's
-# JAudio (.bx), of the sequence index (BARC) and of JMap tables (BCSV). And the length analysis of a sound in game mode
-# (LoopFinder and game_lengths.h).
+# JAudio (.bx), of the sequence index (BARC) and of JMap tables (BCSV). The length analysis of a sound in game mode
+# (LoopFinder and game_lengths.h). And the static walk of a sequence's bytecode for the banks and programs that its
+# notes can play (sequence_walk.h).
 xsflib_add_project_library(ntdlib jaudio src/jaudio/aaf.cpp src/jaudio/archive.cpp src/jaudio/bank.cpp
                            src/jaudio/barc.cpp src/jaudio/bx.cpp src/jaudio/chord_files.cpp src/jaudio/chord_keys.cpp
                            src/jaudio/chord_layer.cpp src/jaudio/chord_player.cpp src/jaudio/game_lengths.cpp
                            src/jaudio/jac_effects.cpp src/jaudio/jmap.cpp src/jaudio/loop_finder.cpp
-                           src/jaudio/pikmin2_pieces.cpp src/jaudio/rarc.cpp src/jaudio/wave_system.cpp
-                           src/jaudio/wind_waker_ports.cpp)
+                           src/jaudio/pikmin2_pieces.cpp src/jaudio/rarc.cpp src/jaudio/sequence_walk.cpp
+                           src/jaudio/wave_system.cpp src/jaudio/wind_waker_ports.cpp)
 target_link_libraries(ntdlib_jaudio PUBLIC xsflib::common ntdlib::common)
 xsflib_add_project_test(ntdlib jaudio ntdlib::jaudio)
 xsflib_add_project_test(ntdlib aaf ntdlib::jaudio)
@@ -151,21 +152,22 @@ xsflib_add_project_test(ntdlib jaudio2 ntdlib::jaudio2)
 
 # The model of the older sound library (JAudio1) that Pikmin 2's Switch port builds on the same DSP program: its
 # arithmetic, oscillators, banks, channels and sequences, the conductor of the cave music, and the engine that plays
-# the game's music and effects on them.
+# the game's music and effects on them. And the static walk of its sequences (sequence_walk.h).
 xsflib_add_project_library(ntdlib jaudio1 src/jaudio1/calc.cpp src/jaudio1/channel.cpp src/jaudio1/conductor.cpp
                            src/jaudio1/engine.cpp src/jaudio1/engine_effects.cpp src/jaudio1/sound_files.cpp
                            src/jaudio1/instruments.cpp src/jaudio1/oscillator.cpp src/jaudio1/track.cpp
                            src/jaudio1/track_levels.cpp src/jaudio1/track_registers.cpp src/jaudio1/track_notes.cpp
-                           src/jaudio1/track_parser.cpp)
+                           src/jaudio1/track_parser.cpp src/jaudio1/sequence_walk.cpp)
 target_link_libraries(ntdlib_jaudio1 PUBLIC ntdlib::jaudio2)
 # The parts of the engine and of the tracks build as one translation unit each. The compiler can then inline their
-# small helpers across them.
+# small helpers across them. The walk builds alone.
 set_target_properties(ntdlib_jaudio1 PROPERTIES UNITY_BUILD ON UNITY_BUILD_MODE GROUP)
 set_source_files_properties(src/jaudio1/engine.cpp src/jaudio1/engine_effects.cpp src/jaudio1/sound_files.cpp
                             PROPERTIES UNITY_GROUP jaudio1_engine)
 set_source_files_properties(src/jaudio1/track.cpp src/jaudio1/track_levels.cpp src/jaudio1/track_registers.cpp
                             src/jaudio1/track_notes.cpp src/jaudio1/track_parser.cpp PROPERTIES UNITY_GROUP jaudio1_track)
 xsflib_add_project_test(ntdlib jaudio1 ntdlib::jaudio1)
+xsflib_add_project_test(ntdlib sequence_walk ntdlib::jaudio1)
 
 # The model of the C JAudio (the Jac) of Pikmin's Switch port, on the same DSP program: its arithmetic, oscillators,
 # banks with their wave scenes in ARAM, channels and sequences, and the game's code that plays its sounds.
@@ -223,9 +225,13 @@ xsflib_add_project_test(ntdlib rsar ntdlib::rsar)
 xsflib_add_project_test(ntdlib rsar_cut ntdlib::rsar)
 
 # The DS's cartridge images (NDS ROMs): the header, the ARM9 and ARM7 binaries, their overlays and the file system. The
-# writer lays an image out again with new bytes for its files.
-xsflib_add_project_library(ntdlib ntr src/ntr/rom.cpp src/ntr/rom_writer.cpp src/ntr/sound.cpp)
+# writer lays an image out again with new bytes for its files, and the compact writer cuts an image down to the files
+# that a caller keeps. The ARM9 binary and its overlays decompress.
+xsflib_add_project_library(ntdlib ntr src/ntr/code.cpp src/ntr/compact_image.cpp src/ntr/rom.cpp src/ntr/rom_writer.cpp
+                           src/ntr/sound.cpp)
 target_link_libraries(ntdlib_ntr PUBLIC xsflib::common ntdlib::wave)
+xsflib_add_project_test(ntdlib ntr_code ntdlib::ntr)
+xsflib_add_project_test(ntdlib ntr_compact_image ntdlib::ntr)
 xsflib_add_project_test(ntdlib ntr_rom ntdlib::ntr)
 xsflib_add_project_test(ntdlib ntr_rom_writer ntdlib::ntr)
 xsflib_add_project_test(ntdlib ntr_sound ntdlib::ntr)
@@ -253,14 +259,17 @@ target_link_libraries(ntdlib_sdat_cut PUBLIC ntdlib::sdat ntdlib::commands PRIVA
 xsflib_add_project_test(ntdlib sdat_cut ntdlib::sdat_cut)
 
 # The readers and writers of the files of Procyon Studio's sound driver for the DS, Digital Sound Elements (DSE): songs,
-# wave banks and banks of sound effects. A model of the driver's part on the ARM9 plays songs.
-xsflib_add_project_library(ntdlib dse src/dse/formats.cpp src/dse/driver.cpp src/dse/driver_sequences.cpp
-                           src/dse/driver_events.cpp src/dse/driver_voices.cpp src/dse/sets.cpp)
-target_link_libraries(ntdlib_dse PUBLIC xsflib::common ntdlib::ntr_snd)
+# wave banks and banks of sound effects. A model of the driver's part on the ARM9 plays songs. The build of the driver
+# in a game's code tells which model plays them.
+xsflib_add_project_library(ntdlib dse src/dse/build.cpp src/dse/formats.cpp src/dse/driver.cpp
+                           src/dse/driver_sequences.cpp src/dse/driver_events.cpp src/dse/driver_voices.cpp
+                           src/dse/files.cpp src/dse/sets.cpp)
+target_link_libraries(ntdlib_dse PUBLIC xsflib::common ntdlib::ntr ntdlib::ntr_snd PRIVATE ntdlib::disc)
 # The sequences and the handlers of their commands build as one translation unit.
 set_target_properties(ntdlib_dse PROPERTIES UNITY_BUILD ON UNITY_BUILD_MODE GROUP)
 set_source_files_properties(src/dse/driver_sequences.cpp src/dse/driver_events.cpp PROPERTIES UNITY_GROUP dse_sequences)
 xsflib_add_project_test(ntdlib dse ntdlib::dse)
+xsflib_add_project_test(ntdlib dse_build ntdlib::dse)
 xsflib_add_project_test(ntdlib dse_driver ntdlib::dse)
 
 # DSE's tracks in the common form of the commands, and a game's DSE files cut into pieces for an editor.
@@ -304,6 +313,18 @@ xsflib_add_project_test(ntdlib arm_thumb ntdlib::arm)
 xsflib_add_project_library(ntdlib arm_assembler src/arm/assembler.cpp)
 target_link_libraries(ntdlib_arm_assembler PUBLIC xsflib::common)
 xsflib_add_project_test(ntdlib arm_assembler ntdlib::arm_assembler)
+
+# A reader of ARM routines as steps (calls, loads, compares, branches and returns) with the values that the registers
+# hold, for searches of a binary by the shapes of its routines.
+xsflib_add_project_library(ntdlib arm_routine src/arm/routine.cpp)
+target_link_libraries(ntdlib_arm_routine PUBLIC xsflib::common)
+xsflib_add_project_test(ntdlib arm_routine ntdlib::arm_routine ntdlib::arm_assembler)
+
+# A search of a DS game's ARM9 binary for the routines of the SDK's sound library that play one sequence: the update,
+# the start, the load, the wait for the vertical blank and the start-up decompressor.
+xsflib_add_project_library(ntdlib ntr_sound_routines src/ntr/sound_routines.cpp)
+target_link_libraries(ntdlib_ntr_sound_routines PUBLIC ntdlib::ntr ntdlib::arm_routine)
+xsflib_add_project_test(ntdlib ntr_sound_routines ntdlib::ntr_sound_routines ntdlib::arm_assembler)
 
 # The ARM7's side of a DS: the CPU, the memories, the timers, the interrupts, the IPC and the sound unit, with a BIOS of
 # high-level calls. It runs a cartridge's ARM7 binary with its sound driver.

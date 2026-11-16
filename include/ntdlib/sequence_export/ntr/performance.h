@@ -21,6 +21,7 @@
 
 #include "seqlib/midi/performance.h"
 
+#include "ntdlib/dse/driver.h"
 #include "ntdlib/ntr/archive_player.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/sdat/formats.h"
@@ -147,6 +148,10 @@ struct PerformOptions
 
     // The build of the driver (snd::Build).
     ntdlib::ntr::snd::Build build = ntdlib::ntr::snd::kDefaultBuild;
+
+    // The model of DSE's driver for the songs and sound effects of a cartridge image whose build of DSE no model covers
+    // (dse::BuildOf). Nothing leaves them out. The model of another build only approximates the game.
+    std::optional<ntdlib::dse::Build> dse_model = {};
 };
 
 // The pan of the DS's mixer is linear (ntdlib/sequence_export/linear_pan.h).

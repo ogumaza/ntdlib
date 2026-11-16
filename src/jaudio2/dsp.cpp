@@ -184,7 +184,7 @@ void DspMemory::SetNative32(uint32_t address, uint32_t value)
     SetNative16(address + 2, static_cast<uint16_t>(value >> 16));
 }
 
-Dsp::Dsp(DspMemory& memory, const Tables& tables, uint32_t flags) : memory_(memory), tables_(tables), flags_(flags)
+Dsp::Dsp(DspMemory& memory, const Tables& tables, uint32_t flags) : memory_(&memory), tables_(tables), flags_(flags)
 {
 }
 
@@ -225,7 +225,7 @@ void Dsp::StartFrame(uint16_t subframes, uint16_t level, uint32_t left, uint32_t
             const uint32_t address = (fx_settings_ & 0x3fffffc) + static_cast<uint32_t>(line * DspFxLine::kBytes);
             for (std::size_t i = 0; i < words.size(); i++)
             {
-                words[i] = memory_.Native16(address + static_cast<uint32_t>(2 * i));
+                words[i] = memory_->Native16(address + static_cast<uint32_t>(2 * i));
             }
             continue;
         }
@@ -237,7 +237,7 @@ void Dsp::StartFrame(uint16_t subframes, uint16_t level, uint32_t left, uint32_t
         words = {};
         for (std::size_t i = 0; i < kPlaces.size(); i++)
         {
-            words[kPlaces[i]] = memory_.Native16(address + static_cast<uint32_t>(2 * i));
+            words[kPlaces[i]] = memory_->Native16(address + static_cast<uint32_t>(2 * i));
         }
     }
 }
@@ -343,7 +343,7 @@ void Dsp::ReadFxLine(const DspFxLine& line, uint16_t position, Bus& bus)
     const uint32_t address = (line.Buffer() + position * 0xa0u) & 0x7fffffc;
     for (int i = 0; i < kSubframeSamples; i++)
     {
-        const auto delayed = static_cast<int16_t>(memory_.Big16(address + static_cast<uint32_t>(2 * i)));
+        const auto delayed = static_cast<int16_t>(memory_->Big16(address + static_cast<uint32_t>(2 * i)));
         bus[8 + i] = Wrap16(bus[8 + i], RoundQ15(delayed * int64_t{kUnity}));
     }
 
@@ -483,7 +483,7 @@ void Dsp::FinishFxLines()
         const uint32_t address = (settings.Buffer() + position * 0xa0u) & 0x7fffffc;
         for (int i = 0; i < kSubframeSamples; i++)
         {
-            memory_.SetBig16(address + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(buses_[7 + line][i]));
+            memory_->SetBig16(address + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(buses_[7 + line][i]));
         }
         position =
             settings.Subframes() <= static_cast<uint16_t>(position + 1) ? 0 : static_cast<uint16_t>(position + 1);
@@ -509,7 +509,7 @@ void Dsp::EndSubframe()
     const uint32_t left = outputs_[0] & 0x7fffffc;
     for (int i = 0; i < kSubframeSamples; i++)
     {
-        memory_.SetBig16(left + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(buses_[5][i]));
+        memory_->SetBig16(left + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(buses_[5][i]));
     }
 
     for (int i = 0; i < kSubframeSamples; i++)
@@ -523,7 +523,7 @@ void Dsp::EndSubframe()
     const uint32_t right = outputs_[1] & 0x7fffffc;
     for (int i = 0; i < kSubframeSamples; i++)
     {
-        memory_.SetBig16(right + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(buses_[6][i]));
+        memory_->SetBig16(right + static_cast<uint32_t>(2 * i), static_cast<uint16_t>(buses_[6][i]));
     }
 
     outputs_[0] += 0xa0;
@@ -556,7 +556,7 @@ void Dsp::DecodeAfc(DspChannelBlock& block, std::span<int16_t> destination, int 
         const uint32_t start = line + (address & 0x1f);
         block.SetU32(DspChannelBlock::kReadAddress, address + block.U16(DspChannelBlock::kFormat));
 
-        const uint8_t header = memory_.Byte(start);
+        const uint8_t header = memory_->Byte(start);
         const int scale = header >> 4;
         const int64_t c0 = tables_.adpcm[2 * (header & 0xf)];
         const int64_t c1 = tables_.adpcm[2 * (header & 0xf) + 1];
@@ -566,12 +566,12 @@ void Dsp::DecodeAfc(DspChannelBlock& block, std::span<int16_t> destination, int 
             int32_t raw = 0;
             if (two_bit)
             {
-                const uint8_t byte = memory_.Byte(start + 1 + static_cast<uint32_t>(s / 4));
+                const uint8_t byte = memory_->Byte(start + 1 + static_cast<uint32_t>(s / 4));
                 raw = static_cast<int16_t>(static_cast<uint16_t>(((byte >> (6 - 2 * (s % 4))) & 3) << 14));
             }
             else
             {
-                const uint8_t byte = memory_.Byte(start + 1 + static_cast<uint32_t>(s / 2));
+                const uint8_t byte = memory_->Byte(start + 1 + static_cast<uint32_t>(s / 2));
                 raw = static_cast<int16_t>(static_cast<uint16_t>(((s % 2 == 0 ? byte >> 4 : byte) & 0xf) << 12));
             }
 
@@ -601,7 +601,7 @@ void Dsp::ReadPcm(const DspChannelBlock& block, int16_t* out, uint32_t count, ui
     {
         for (uint32_t i = 0; i < count; i++)
         {
-            out[i] = static_cast<int16_t>(memory_.Byte(line + (address & 0x1f) + i) << 8);
+            out[i] = static_cast<int16_t>(memory_->Byte(line + (address & 0x1f) + i) << 8);
         }
         return;
     }
@@ -609,7 +609,7 @@ void Dsp::ReadPcm(const DspChannelBlock& block, int16_t* out, uint32_t count, ui
     const uint32_t offset = (address >> 1) & 0xf;
     for (uint32_t i = 0; i < count; i++)
     {
-        out[i] = static_cast<int16_t>(memory_.Big16(line + (offset + i) * 2));
+        out[i] = static_cast<int16_t>(memory_->Big16(line + (offset + i) * 2));
     }
 }
 
@@ -1232,7 +1232,7 @@ void Dsp::ProcessChannel(uint16_t index)
     DspChannelBlock block;
     for (std::size_t i = 0; i < block.words.size(); i++)
     {
-        block.words[i] = memory_.Native16(address + static_cast<uint32_t>(2 * i));
+        block.words[i] = memory_->Native16(address + static_cast<uint32_t>(2 * i));
     }
 
     if (block.U16(DspChannelBlock::kActive) == 0 || block.U16(DspChannelBlock::kFinished) != 0)
@@ -1298,7 +1298,7 @@ void Dsp::ProcessChannel(uint16_t index)
     }
     for (std::size_t i = 0; i < DspChannelBlock::kWrittenBytes / 2; i++)
     {
-        memory_.SetNative16(address + static_cast<uint32_t>(2 * i), block.words[i]);
+        memory_->SetNative16(address + static_cast<uint32_t>(2 * i), block.words[i]);
     }
 }
 

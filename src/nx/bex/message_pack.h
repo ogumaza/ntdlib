@@ -18,21 +18,22 @@
 namespace ntdlib::nx::bex::detail
 {
 
+struct MapEntry;
+
 // A value of MessagePack, as far as the engine's files use the format: nil, booleans, integers, strings, arrays and
 // maps.
 struct Value
 {
-    std::variant<std::monostate, bool, int64_t, std::string, std::vector<Value>, std::vector<std::pair<Value, Value>>>
-        v;
+    std::variant<std::monostate, bool, int64_t, std::string, std::vector<Value>, std::vector<MapEntry>> v;
 
     const std::string* String() const
     {
         return std::get_if<std::string>(&v);
     }
 
-    const std::vector<std::pair<Value, Value>>* Map() const
+    const std::vector<MapEntry>* Map() const
     {
-        return std::get_if<std::vector<std::pair<Value, Value>>>(&v);
+        return std::get_if<std::vector<MapEntry>>(&v);
     }
 
     const std::vector<Value>* Array() const
@@ -41,22 +42,32 @@ struct Value
     }
 
     // The value of key `key` in a map, or null.
-    const Value* Get(const std::string& key) const
+    const Value* Get(const std::string& key) const;
+};
+
+// An entry of a map. A std::pair of two values doesn't compile with libstdc++ 15. Its constructors test the traits of
+// Value while Value is still incomplete.
+struct MapEntry
+{
+    Value key;
+    Value value;
+};
+
+inline const Value* Value::Get(const std::string& key) const
+{
+    if (const auto* map = Map())
     {
-        if (const auto* map = Map())
+        for (const auto& [k, value] : *map)
         {
-            for (const auto& [k, value] : *map)
+            if (const std::string* s = k.String(); s && *s == key)
             {
-                if (const std::string* s = k.String(); s && *s == key)
-                {
-                    return &value;
-                }
+                return &value;
             }
         }
-
-        return nullptr;
     }
-};
+
+    return nullptr;
+}
 
 // Reads a MessagePack value from a file. `what` names the file in the messages, such as "the jump setting". Throws
 // xsflib::FormatError for a file that ends early, nests more than 16 deep or holds another type.
@@ -177,12 +188,12 @@ private:
 
     Value ReadMap(uint32_t count, int depth)
     {
-        std::vector<std::pair<Value, Value>> items;
+        std::vector<MapEntry> items;
         for (uint32_t i = 0; i < count; ++i)
         {
             Value key = Read(depth + 1);
             Value value = Read(depth + 1);
-            items.emplace_back(std::move(key), std::move(value));
+            items.push_back({std::move(key), std::move(value)});
         }
 
         return {std::move(items)};

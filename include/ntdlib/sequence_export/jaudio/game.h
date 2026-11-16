@@ -29,7 +29,9 @@ namespace ntdlib::sequence_export::jaudio
 // fade-in that its start gives the sound, the tracks that the code mutes, and the statuses that it writes by section
 // (SequenceSound::child_volumes, tempo_ratio, game_ports, fade_in, tracks and status_by_section). Index n of
 // child_volumes is the root track's child n in a JAudio1 sequence, and JAISeq::getChildTrack(n) in a JAudio2 sequence:
-// child n % 16 of the root's child n / 16.
+// child n % 16 of the root's child n / 16. `clears_child_15` is for a game whose sequence callback mutes child 15
+// (GameRules::mute_child_15): in this state, the game's code clears that mute on the root track's child 15
+// (SequenceSound::clear_child_15).
 struct SequenceState
 {
     std::map<uint8_t, float> child_volumes = {};
@@ -38,6 +40,7 @@ struct SequenceState
     uint16_t fade_in = 0;
     TrackMask tracks = kEveryTrack;
     std::map<uint16_t, uint16_t> status_by_section = {};
+    bool clears_child_15 = false;
 };
 
 // Another state in which the game plays a sequence of its sound table. The sequence converts once more in that state,
@@ -234,12 +237,16 @@ struct GameRules
     bool bank_of_number = false;
 
     // A file of the sequence archive that plays several pieces. The game's code picks one through the root track's
-    // ports. The file is listed once for each part, with the part's ports (SequenceSound::ports). Its name then ends in
-    // the part's suffix.
+    // ports, or through its answers to the tracks' calls. The file is listed once for each part, with the part's ports
+    // (SequenceSound::ports). Its name then ends in the part's suffix. A part's answers replace the file's answers to
+    // the same calls (sync_answers). A part with children to mute mutes those in place of the file's
+    // (muted_children).
     struct Part
     {
         std::string suffix;
         std::map<uint8_t, uint16_t> ports;
+        std::map<uint16_t, uint16_t> sync_answers = {};
+        std::optional<uint16_t> muted_children = std::nullopt;
     };
     std::map<std::string, std::vector<Part>> parts; // by the file's name in the archive
 

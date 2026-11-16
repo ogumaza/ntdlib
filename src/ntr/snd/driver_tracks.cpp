@@ -738,7 +738,9 @@ int Driver::RunCommand(int index, int number, Player& player, bool play_notes)
         key = std::clamp(key, 0, 127);
         if (following_)
         {
-            follow.noted_at = now;
+            // A note struck silent counts as no note.
+            follow.struck_silent = StrikesSilent(track, player, velocity);
+            follow.noted_at = follow.struck_silent ? follow.noted_at : now;
             follow.holds = length >= kHeldTicks;
         }
         if (!track.muted && play_notes)
@@ -749,11 +751,15 @@ int Driver::RunCommand(int index, int number, Player& player, bool play_notes)
             const uint8_t tied_key = tied ? tied->key : 0;
             const uint8_t tied_velocity = tied ? tied->velocity : 0;
             const int channel = PlayNote(index, player, key, velocity, played_length);
-            if (following_ && channel >= 0 &&
-                (!tie || tied_key != key || tied_velocity != velocity ||
-                 channels_[static_cast<std::size_t>(channel)].sweep_pitch != 0))
+            if (following_ && channel >= 0)
             {
-                MarkChange(index, player);
+                Channel& played = channels_[static_cast<std::size_t>(channel)];
+                played.struck_silent = follow.struck_silent;
+                if (!follow.struck_silent &&
+                    (!tie || tied_key != key || tied_velocity != velocity || played.sweep_pitch != 0))
+                {
+                    MarkChange(index, player);
+                }
             }
             if (on_note)
             {
@@ -1251,6 +1257,14 @@ void Driver::UpdateTrackChannels(Track& track, const Player& player, bool releas
         channel.user_pan = static_cast<int8_t>(pan);
         channel.pan_range = track.pan_range;
         channel.lfo.parameters = track.modulation;
+        // A note struck silent that a rise of the level makes audible counts as the track's note from then on.
+        if (following_ && channel.struck_silent &&
+            !IsSilentLevel(channel.velocity, channel.user_decay, channel.lfo.parameters))
+        {
+            channel.struck_silent = false;
+            track_follows_[static_cast<std::size_t>(&track - tracks_.data())].noted_at =
+                player_follows_[player.id].commands_run;
+        }
         if (channel.length == 0 && release)
         {
             channel.priority = 1;

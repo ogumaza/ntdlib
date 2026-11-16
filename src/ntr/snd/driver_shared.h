@@ -49,6 +49,9 @@ inline uint32_t ChannelRegister(int channel, uint32_t offset)
     return kChannelRegisters + static_cast<uint32_t>(channel) * 0x10 + offset;
 }
 
+// The lowest level of a channel, in 0.1 dB. The volume field of SOUNDxCNT holds 0 there.
+constexpr int32_t kSilent = -723;
+
 constexpr uint8_t kNoTrack = 0xFF;
 
 enum ChannelType : uint8_t

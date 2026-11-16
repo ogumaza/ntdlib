@@ -45,9 +45,7 @@ constexpr uint16_t kLifeDim = 10;     // SYSSE_ORIMA_LIFEDIM
 constexpr uint16_t kViewChange = 12;  // SYSSE_VIEW_CHANGE
 constexpr uint16_t kUnpause = 15;     // SYSSE_UNPAUSE
 
-// The scene of wave system kPartSystem that kShipPartEffect sets, and the count of kCountdown at which the game fades
-// the music.
-constexpr uint16_t kShipPartScene = 6;
+// The count of kCountdown at which the game fades the music.
 constexpr uint16_t kCountdownLimit = 10;
 
 } // namespace

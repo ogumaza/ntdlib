@@ -4,7 +4,9 @@
 // (ntdlib/testing/length_cases.h), on the Switch's model and the Wii U's. The analysis waits for the loops of the
 // tracks other than the main track. Counted loops that run past the limit follow. The analysis then takes each track's
 // outermost counted loop as endless. Then a step of the game's code still to come (a console's Pending) holds the
-// sequence back. Last, a console's Sounded replaces the test of the output.
+// sequence back, and a console's Sounded replaces the test of the output. Last, the overload of MeasureSequence that
+// takes a start and the rules gives the timings of the overload that takes a sound, and a console's Tracks leaves
+// tracks out of the wait for the other tracks' loops.
 
 #include <cstddef>
 #include <cstdint>
@@ -53,6 +55,51 @@ std::optional<xsflib::rip::Timing> Measure(const ntdlib::sar::SoundArchive& arch
     };
 
     return xsflib::rip::TryMeasure(measure);
+}
+
+// The index of the case `name`, or the count of the cases.
+uint32_t CaseIndex(const std::string& name)
+{
+    uint32_t index = 0;
+    while (index < length_cases::Cases().size() && name != length_cases::Cases()[index].name)
+    {
+        ++index;
+    }
+
+    return index;
+}
+
+// The timing of sound `sound` of `archive` on the console's model, measured by the overload of MeasureSequence that
+// takes a start and the rules, or nothing.
+template <class Console>
+std::optional<xsflib::rip::Timing> MeasureWithStart(const ntdlib::sar::SoundArchive& archive, uint32_t sound)
+{
+    const auto make_model = [&archive]
+    {
+        return std::make_unique<typename Console::Model>(archive);
+    };
+    const auto start = [sound](typename Console::Model& model)
+    {
+        return model.engine->StartSequence(sound);
+    };
+    const auto measure = [&make_model, &start]
+    {
+        return ntdlib::nwsnd::MeasureSequence<Console>(make_model, start,
+                                                       ntdlib::nwsnd::LengthRulesFor(Console::kFrameMs));
+    };
+
+    return xsflib::rip::TryMeasure(measure);
+}
+
+// Whether two measures give the same timing, or both give nothing.
+bool SameTiming(const std::optional<xsflib::rip::Timing>& a, const std::optional<xsflib::rip::Timing>& b)
+{
+    if (!a || !b)
+    {
+        return !a && !b;
+    }
+
+    return a->length_ms == b->length_ms && a->fade_ms == b->fade_ms && a->silent == b->silent;
 }
 
 // The length of the case `name` on the console's model, or -1.
@@ -285,6 +332,132 @@ void TestSounded()
     g_sounded = false;
 }
 
+// With the engine's StartSequence as the start and the console's rules, the overload that takes a start gives each
+// case and each sequence of CheckLongLoops the timing of the overload that takes a sound.
+template <class Console>
+void CheckSameTimings(bool big_endian, const std::string& console)
+{
+    const ntdlib::sar::SoundArchive archive = LoadArchive(length_cases::Archive(big_endian), big_endian);
+    int differing = 0;
+    for (uint32_t i = 0; i < length_cases::Cases().size(); ++i)
+    {
+        if (!SameTiming(MeasureWithStart<Console>(archive, i), Measure<Console>(archive, i)))
+        {
+            ++differing;
+        }
+    }
+    Check(differing == 0, "on " + console + ", the overload that takes a start gives every case the same timing, " +
+                              std::to_string(differing) + " differ");
+
+    const std::vector<std::vector<uint8_t>> long_loops = {
+        CountedLoopArchive(big_endian), NestedLoopsArchive(big_endian), CountedInEndlessArchive(big_endian)};
+    for (const std::vector<uint8_t>& bytes : long_loops)
+    {
+        const ntdlib::sar::SoundArchive loops = LoadArchive(bytes, big_endian);
+        Check(SameTiming(MeasureWithStart<Console>(loops, 0), Measure<Console>(loops, 0)),
+              "on " + console + ", the overload that takes a start gives a long loop the same timing");
+    }
+}
+
+// A model that doesn't start and a sound that doesn't start each give nothing. A measure that reaches the limit inside
+// a counted loop makes the model and starts the sound twice. A measure that ends before the limit does each once.
+void TestStart()
+{
+    using ntdlib::nx::atk::LengthConsole;
+    using Model = LengthConsole::Model;
+    const ntdlib::sar::SoundArchive archive = LoadArchive(length_cases::Archive(false), false);
+    const xsflib::rip::LengthRules rules = ntdlib::nwsnd::LengthRulesFor(LengthConsole::kFrameMs);
+    int models = 0;
+    int starts = 0;
+    const auto make_model = [&archive, &models]
+    {
+        ++models;
+        return std::make_unique<Model>(archive);
+    };
+    const auto start = [&starts](Model& model)
+    {
+        ++starts;
+        return model.engine->StartSequence(CaseIndex("SEQ_JUMP"));
+    };
+
+    const auto no_model = []
+    {
+        return std::unique_ptr<Model>();
+    };
+    Check(!ntdlib::nwsnd::MeasureSequence<LengthConsole>(no_model, start, rules) && starts == 0,
+          "a model that doesn't start gives nothing, and nothing starts the sound");
+    const auto no_player = [](Model&)
+    {
+        return static_cast<ntdlib::nx::atk::SequenceSoundPlayer*>(nullptr);
+    };
+    Check(!ntdlib::nwsnd::MeasureSequence<LengthConsole>(make_model, no_player, rules) && models == 1,
+          "a sound that doesn't start gives nothing");
+
+    models = 0;
+    const std::optional<xsflib::rip::Timing> jump =
+        ntdlib::nwsnd::MeasureSequence<LengthConsole>(make_model, start, rules);
+    Check(jump && models == 1 && starts == 1, "a measure that ends before the limit runs once");
+
+    const ntdlib::sar::SoundArchive counted = LoadArchive(CountedLoopArchive(false), false);
+    int counted_models = 0;
+    int counted_starts = 0;
+    const auto make_counted = [&counted, &counted_models]
+    {
+        ++counted_models;
+        return std::make_unique<Model>(counted);
+    };
+    const auto start_counted = [&counted_starts](Model& model)
+    {
+        ++counted_starts;
+        return model.engine->StartSequence(0);
+    };
+    const std::optional<xsflib::rip::Timing> timing =
+        ntdlib::nwsnd::MeasureSequence<LengthConsole>(make_counted, start_counted, rules);
+    Check(timing && counted_models == 2 && counted_starts == 2,
+          "a measure that reaches the limit inside a counted loop makes the model and starts the sound twice");
+}
+
+// The tracks that TracksConsole gives, a bit for each.
+uint32_t g_tracks = ~0u;
+
+// The Switch's console, with the tracks that play from g_tracks.
+struct TracksConsole : ntdlib::nx::atk::LengthConsole
+{
+    static uint32_t Tracks(const Model&)
+    {
+        return g_tracks;
+    }
+};
+
+// In SEQ_OTHER_LOOP, track 0 loops every 24 ticks and track 1 every 60 ticks. With both tracks, the fade waits for
+// track 1's second loop at 120 ticks. A console's Tracks that leaves track 1 out gives the fade after track 0's second
+// loop at 48 ticks, as in SEQ_JUMP. 48 ticks take 500 ms. The bounds are the case's.
+void TestTracks()
+{
+    const ntdlib::sar::SoundArchive archive = LoadArchive(length_cases::Archive(false), false);
+    const uint32_t index = CaseIndex("SEQ_OTHER_LOOP");
+    if (!Check(index < length_cases::Cases().size(), "SEQ_OTHER_LOOP is a case"))
+    {
+        return;
+    }
+
+    const length_cases::Case& other_loop = length_cases::Cases()[index];
+    g_tracks = 0b11;
+    const std::optional<xsflib::rip::Timing> both = MeasureWithStart<TracksConsole>(archive, index);
+    g_tracks = 0b01;
+    const std::optional<xsflib::rip::Timing> main_only = MeasureWithStart<TracksConsole>(archive, index);
+    g_tracks = ~0u;
+
+    Check(
+        both && both->length_ms >= other_loop.others_min_ms && both->length_ms <= other_loop.others_max_ms &&
+            both->fade_ms == other_loop.fade_ms,
+        "with both tracks, the fade waits for track 1's loops, " + std::to_string(both ? both->length_ms : -1) + " ms");
+    Check(main_only && main_only->length_ms >= other_loop.min_ms && main_only->length_ms <= other_loop.max_ms &&
+              main_only->fade_ms == other_loop.fade_ms,
+          "a console's Tracks that leaves track 1 out gives the fade after track 0's loops, " +
+              std::to_string(main_only ? main_only->length_ms : -1) + " ms");
+}
+
 } // namespace
 
 int main()
@@ -293,6 +466,10 @@ int main()
     TestWiiU();
     TestPending();
     TestSounded();
+    CheckSameTimings<ntdlib::nx::atk::LengthConsole>(false, "the Switch");
+    CheckSameTimings<ntdlib::cafe::snd::LengthConsole>(true, "the Wii U");
+    TestStart();
+    TestTracks();
 
     return xsflib::testing::Summary("nwsnd_length_model");
 }

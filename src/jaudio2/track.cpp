@@ -64,7 +64,7 @@ std::span<const OscPoint> Sequence::Table(uint32_t offset) const
     return table->second;
 }
 
-Tracks::Tracks(Voices& voices) : voices_(voices)
+Tracks::Tracks(Voices& voices) : voices_(&voices)
 {
     tracks_.resize(kPoolTracks + kRootTracks);
     notes_.resize(tracks_.size());
@@ -234,7 +234,7 @@ void Tracks::Init(uint32_t index)
     track.timebase = 48;
     track.tempo_rate = 1.0f;
     track.skip_samples = 0;
-    track.interval = track.tempo_rate * (7680.0f / voices_.DacRate());
+    track.interval = track.tempo_rate * (7680.0f / voices_->DacRate());
     track.transpose = 0;
     track.latest_key = 60;
     track.bank = 0;
@@ -506,7 +506,7 @@ void Tracks::UpdateTempo(Track& track)
 
     const uint32_t ticks = uint32_t{track.tempo} * track.timebase;
     const float scaled = static_cast<float>(static_cast<int32_t>(ticks)) * kTempoScale;
-    track.interval = track.tempo_rate * (scaled / voices_.DacRate());
+    track.interval = track.tempo_rate * (scaled / voices_->DacRate());
 }
 
 void Tracks::UpdateTrack(uint32_t index, float num)
@@ -597,8 +597,8 @@ void Tracks::ReleaseAll(ChannelMgr& mgr)
     {
         if (channel != Channel::kNone)
         {
-            voices_.Release(channel, 0);
-            voices_.Free(channel);
+            voices_->Release(channel, 0);
+            voices_->Free(channel);
             channel = Channel::kNone;
         }
     }
@@ -737,8 +737,8 @@ void Tracks::NoteOn(uint32_t index, uint32_t note, uint32_t key, uint32_t veloci
 
         if (mgr.channels[note] != Channel::kNone)
         {
-            voices_.Release(mgr.channels[note], 0);
-            voices_.Free(mgr.channels[note]);
+            voices_->Release(mgr.channels[note], 0);
+            voices_->Free(mgr.channels[note]);
             mgr.channels[note] = Channel::kNone;
         }
         mgr.channels[note] = ChannelStart(index, i, played, velocity, 0);
@@ -758,8 +758,8 @@ void Tracks::NoteOff(uint32_t index, uint32_t note, uint16_t direct_release)
         ChannelMgr& mgr = track.mgrs[i];
         if (mgr.exists && mgr.channels[note] != Channel::kNone)
         {
-            voices_.Release(mgr.channels[note], direct_release);
-            voices_.Free(mgr.channels[note]);
+            voices_->Release(mgr.channels[note], direct_release);
+            voices_->Free(mgr.channels[note]);
             mgr.channels[note] = Channel::kNone;
         }
     }
@@ -823,7 +823,7 @@ void Tracks::GateOn(uint32_t index, uint32_t key, uint32_t velocity, uint32_t fl
         {
             if (channel != Channel::kNone)
             {
-                Channel& c = voices_.ChannelAt(channel);
+                Channel& c = voices_->ChannelAt(channel);
                 c.velocity = static_cast<uint16_t>(velocity);
                 c.update_timer = timer;
                 c.key = static_cast<int16_t>(note_key - c.wave.base_key);
@@ -833,8 +833,8 @@ void Tracks::GateOn(uint32_t index, uint32_t key, uint32_t velocity, uint32_t fl
         {
             if (channel != Channel::kNone)
             {
-                voices_.Release(channel, 0);
-                voices_.Free(channel);
+                voices_->Release(channel, 0);
+                voices_->Free(channel);
                 channel = Channel::kNone;
             }
             if (!Muted(index))
@@ -846,7 +846,7 @@ void Tracks::GateOn(uint32_t index, uint32_t key, uint32_t velocity, uint32_t fl
         if ((flags & 1) != 0 && channel != Channel::kNone)
         {
             // setKeySweepTarget: a sweep from the latest key to this one over the note's length, or at once.
-            Channel& c = voices_.ChannelAt(channel);
+            Channel& c = voices_->ChannelAt(channel);
             float delta = static_cast<float>(sweep);
             if (length != 0)
             {
@@ -887,7 +887,7 @@ uint32_t Tracks::ChannelStart(uint32_t index, uint32_t mgr_index, uint32_t key, 
         return Channel::kNone;
     }
 
-    Channel& c = voices_.ChannelAt(channel);
+    Channel& c = voices_->ChannelAt(channel);
     c.update_timer = timer;
     c.skip_samples = track.skip_samples;
     c.vibrato.SetDelay(track.vibrato_delay);
@@ -935,18 +935,18 @@ uint32_t Tracks::BankNoteOn(const InstrumentBank* bank, uint32_t program, uint32
     }
 
     // The game's pool of channels never runs out in its music. Without a channel, the model drops the note.
-    const uint32_t channel = voices_.NewChannel(owner);
+    const uint32_t channel = voices_->NewChannel(owner);
     if (channel == Channel::kNone)
     {
         return Channel::kNone;
     }
 
-    Channel& c = voices_.ChannelAt(channel);
+    Channel& c = voices_->ChannelAt(channel);
     c.priority = priority;
     c.wave = wave->info;
     c.wave_address = wave->address;
     c.type = param.type;
-    c.sound_params.pitch = (wave->info.sample_rate / voices_.DacRate()) * param.pitch;
+    c.sound_params.pitch = (wave->info.sample_rate / voices_->DacRate()) * param.pitch;
     if (!param.fixed_key)
     {
         c.key = static_cast<int16_t>((key & 0xff) - wave->info.base_key);
@@ -962,27 +962,27 @@ uint32_t Tracks::BankNoteOn(const InstrumentBank* bank, uint32_t program, uint32
     }
     c.oscillators[0].SetDirectRelease(param.direct_release);
 
-    return voices_.Play(this, channel) ? channel : Channel::kNone;
+    return voices_->Play(this, channel) ? channel : Channel::kNone;
 }
 
 uint32_t Tracks::NoteOnOsc(uint32_t wave, uint32_t key, uint32_t velocity, uint16_t priority, uint32_t owner)
 {
-    const uint32_t channel = voices_.NewChannel(owner);
+    const uint32_t channel = voices_->NewChannel(owner);
     if (channel == Channel::kNone)
     {
         return Channel::kNone;
     }
 
-    Channel& c = voices_.ChannelAt(channel);
+    Channel& c = voices_->ChannelAt(channel);
     c.priority = priority;
     c.wave_address = wave;
     c.type = Channel::kOsc;
     c.key = static_cast<int16_t>((key & 0xff) - c.wave.base_key);
     c.velocity = static_cast<uint16_t>(velocity & 0xff);
-    c.sound_params.pitch = kOscillatorRate / voices_.DacRate();
+    c.sound_params.pitch = kOscillatorRate / voices_->DacRate();
     c.oscillators[0].InitStart(&kOscEnv);
 
-    return voices_.Play(this, channel) ? channel : Channel::kNone;
+    return voices_->Play(this, channel) ? channel : Channel::kNone;
 }
 
 void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, DspBlock* block)
@@ -995,7 +995,7 @@ void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, D
 
     Track& track = tracks_[index];
     ChannelMgr& mgr = track.mgrs[owner % 4];
-    Channel& c = voices_.ChannelAt(channel);
+    Channel& c = voices_->ChannelAt(channel);
 
     switch (event)
     {
@@ -1032,8 +1032,8 @@ void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, D
         break;
 
     case Channel::kEventTimer:
-        voices_.Release(channel, 0);
-        voices_.Free(channel);
+        voices_->Release(channel, 0);
+        voices_->Free(channel);
         mgr.channels[0] = Channel::kNone;
         break;
     }

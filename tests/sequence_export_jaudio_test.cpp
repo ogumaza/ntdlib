@@ -20,6 +20,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1629,6 +1630,25 @@ void TestGameRules()
                                                     {5, 74 / 127.0f}, {6, 114 / 127.0f}, {8, 96 / 127.0f}};
     Check(sunshine.category_volumes == sunshine_volumes,
           "Super Mario Sunshine gives six of its categories of effects a volume below 1 at start-up");
+    // While Mario rides Yoshi, the game clears the mute of child 15 in the pieces whose entries set bit 28. Nine of
+    // them have a child 15 with notes: sequences 1, 2, 3, 4, 5, 7, 9, 19 and 29.
+    std::vector<uint32_t> yoshi_sounds;
+    bool yoshi_states = true;
+    for (const Arrangement& arrangement : sunshine.arrangements)
+    {
+        if (arrangement.suffix == "YOSHI")
+        {
+            yoshi_sounds.push_back(arrangement.sound);
+            yoshi_states = yoshi_states && arrangement.state.clears_child_15;
+        }
+    }
+    std::vector<uint32_t> nine;
+    for (const uint32_t piece : {1, 2, 3, 4, 5, 7, 9, 19, 29})
+    {
+        nine.push_back(0x80000000u | piece);
+    }
+    Check(sunshine.mute_child_15 && yoshi_sounds == nine && yoshi_states,
+          "Super Mario Sunshine converts nine pieces once more with Yoshi's track");
     const GameRules jungle_beat = RulesOf("8cf5a451fc0533f8922e4cd0b922029a4d1f5129");
     Check(jungle_beat.start_states.size() == 62 && jungle_beat.start_states.at(0x01000005).tracks[0] == 0x0ffe &&
               jungle_beat.start_states.at(0x01000006).tracks[0] == 0xfffe &&
@@ -1689,6 +1709,60 @@ void TestGameRules()
               RulesOf("6747c3c7bce964bc62f817e1c8c32711c905c4c3").effects_sequence == "se.bms" &&
               usa.effects_sequence.empty(),
           "Pikmin 2 plays its effects in se.bms on the GameCube and the Wii");
+    // FX lines 0 and 1 delay by 48 sub-frames. Their filter's largest gain is 24075/32768. Each line goes to a side at
+    // 0x1000/32768 and to the surround matrix's left rear bus. The matrix adds that bus to a side at up to
+    // 0x6784/32768. The mixer's levels are 0.9 of 16383.5 and 3.9 of 4096.
+    for (const char* sha1 : {"a8b63d2f333c34aaf9cb859f37f23011149af917", "6747c3c7bce964bc62f817e1c8c32711c905c4c3"})
+    {
+        const std::optional<EchoLine> echo = RulesOf(sha1).echo;
+        Check(echo && echo->delay == 48 && echo->feedback == 24075 / 32768.0f &&
+                  echo->volume == 0.125f * (1.0f + 2.0f * 0x6784 / 32768.0f) &&
+                  echo->voice_level == 14745.0f / 65536.0f * 15974.0f / 4096.0f,
+              "Pikmin 2's echo is FX lines 0 and 1 of the start-up scene");
+    }
+
+    // Pikmin 2's bosses. The game makes l_boss only with the final boss in place, and its directors then mute tracks 14
+    // and 15. m_boss converts once for each part that a boss's actions jump to, from its start point: the middle
+    // bosses' 9 first, then 0 to 8 and 10 to 12. l_boss converts from the final boss's 1, then from 2 to 13. Parts 4
+    // and 11 of l_boss hold notes on track 15, and play once more with that track on. Each part's call 0x4000 answers
+    // its start point. -1 stands for the file's mute.
+    using BossPart = std::tuple<std::string, uint16_t, int>;
+    const auto boss_parts = [](const GameRules& rules, const std::string& file)
+    {
+        std::vector<BossPart> parts;
+        const auto it = rules.parts.find(file);
+        for (const GameRules::Part& part : it != rules.parts.end() ? it->second : std::vector<GameRules::Part>{})
+        {
+            const auto answer = part.sync_answers.find(0x4000);
+            parts.emplace_back(part.suffix, answer != part.sync_answers.end() ? answer->second : 0xffff,
+                               part.muted_children ? *part.muted_children : -1);
+        }
+
+        return parts;
+    };
+    std::vector<BossPart> middle{{"", 9, -1}};
+    std::vector<BossPart> big{{"", 1, -1}};
+    for (uint16_t part = 0; part <= 13; part++)
+    {
+        if (part != 9 && part <= 12)
+        {
+            middle.emplace_back("-" + std::to_string(part), part, -1);
+        }
+        if (part >= 2)
+        {
+            big.emplace_back("-" + std::to_string(part), part, -1);
+        }
+    }
+    big.emplace_back("-4-near", 4, 0x4000);
+    big.emplace_back("-11-near", 11, 0x4000);
+    for (const char* sha1 : {"a8b63d2f333c34aaf9cb859f37f23011149af917", "6747c3c7bce964bc62f817e1c8c32711c905c4c3"})
+    {
+        const GameRules pikmin2 = RulesOf(sha1);
+        Check(pikmin2.muted_children.at("l_boss.bms") == 0xc000, "l_boss's directors mute tracks 14 and 15");
+        Check(boss_parts(pikmin2, "m_boss.bms") == middle, "m_boss converts once for each of its 13 parts");
+        Check(boss_parts(pikmin2, "l_boss.bms") == big,
+              "l_boss converts from parts 1 to 13, and parts 4 and 11 once more with track 15");
+    }
 
     // The Wind Waker's music on the GameCube and in The Wind Waker HD. Each Japanese release has its USA release's
     // table of the tracks that the starters keep.
@@ -2091,6 +2165,11 @@ void TestVolumeTable()
 // than a delay. No repeat overlaps it. A note of 48 ticks lasts three delays. The line then holds the send and its
 // earlier repeats. They add by power to 1.15 times the send. Its 6th repeat after the note is the last at 12 or above.
 // Added as levels, they would give 1.875 times the send and a 7th repeat. A note without a send gets no echo.
+// Pikmin 2's echo delays by 48 sub-frames, 120 ms. A voice reaches its line at 14745/65536 * 15974/4096 = 0.8774 of its
+// samples. At a full send and the centre's pan gain, the line takes in 16384 * 0.7071 * 0.8774 = 10,165 a side. A note
+// of 6 ticks lasts 62.5 ms, less than a delay. The volume is 0.125 * (1 + 2 * 0x6784/32768) = 0.3272, and the feedback
+// 24075/32768 = 0.7347. The first repeat plays at their product times the send, 2,444. Each later repeat plays at
+// 0.7347 of the one before. The 18th plays at 12.9, and the 19th at 9.5.
 void TestEchoLengthensTheEnd()
 {
     const auto note = [](uint32_t send, uint32_t ticks)
@@ -2101,24 +2180,28 @@ void TestEchoLengthensTheEnd()
 
         return s.Data();
     };
-    const auto repeats = [](const std::vector<uint8_t>& sequence)
+    const auto repeats = [](const std::vector<uint8_t>& sequence, const std::string& sha1)
     {
         TestGame game(files::BankV0File(0, 0), {sequence});
         SequenceSound with_echo = game.Sound(0);
-        with_echo.echo = RulesOf("8c55097f2cc9f5800fd8ab96da4e3b09727e0a39").echo;
+        with_echo.echo = RulesOf(sha1).echo;
         const Performance dry = Perform(game.Sound(0), game.banks, {}, kProgram);
         const Performance wet = Perform(with_echo, game.banks, {}, kProgram);
 
-        return (wet.seconds - dry.seconds) / (64 * kSubFrameSeconds);
+        return (wet.seconds - dry.seconds) / (with_echo.echo->delay * kSubFrameSeconds);
     };
 
-    const double short_note = repeats(note(22, 12));
-    const double long_note = repeats(note(22, 48));
-    const double unsent = repeats(note(0, 12));
+    const std::string four_swords = "8c55097f2cc9f5800fd8ab96da4e3b09727e0a39";
+    const double short_note = repeats(note(22, 12), four_swords);
+    const double long_note = repeats(note(22, 48), four_swords);
+    const double unsent = repeats(note(0, 12), four_swords);
+    const double pikmin2 = repeats(note(127, 6), "a8b63d2f333c34aaf9cb859f37f23011149af917");
 
     Check(std::abs(short_note - 6.0) < 0.05, "a short note's echo adds six repeats: " + std::to_string(short_note));
     Check(std::abs(long_note - 6.0) < 0.05, "a long note's echo adds six repeats: " + std::to_string(long_note));
     Check(unsent == 0.0, "a note without a send gets no echo");
+    Check(std::abs(pikmin2 - 18.0) < 0.05,
+          "a short note at a full send adds 18 repeats of Pikmin 2's echo: " + std::to_string(pikmin2));
 }
 
 void TestLateChangeAfterTheSoundIsLeftOut()
@@ -2667,12 +2750,13 @@ void TestJAudio1Random()
 // A game's code can mute child 15 of a track that calls it with ID 0 (SequenceSound::mute_child_15). The first track
 // opens children 0 and 15. Each calls the game with `id` and plays a note. Child 15 opens its child 0 first, and that
 // child plays a note too. With the rule and ID 0, child 15 and its child stay silent. Child 0 plays. Without the rule,
-// or with ID 1, every track plays.
+// or with ID 1, every track plays. So does every track in a state in which the game's code clears the mute
+// (SequenceSound::clear_child_15).
 void TestMuteChild15()
 {
     constexpr uint32_t kFifteen = kChild + 0x20;
     constexpr uint32_t kGrandchild = kFifteen + 0x20;
-    const auto play = [](uint32_t id, bool rule)
+    const auto play = [](uint32_t id, bool rule, bool clear = false)
     {
         Sequence1 s;
         s.OpenTrack(0, kChild).OpenTrack(15, kFifteen).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
@@ -2684,6 +2768,7 @@ void TestMuteChild15()
         SequenceSound sound = game.Sound(0);
         sound.jaudio1 = true;
         sound.mute_child_15 = rule;
+        sound.clear_child_15 = clear;
         const Performance perf = Perform(sound, game.banks, {}, kProgram);
 
         return std::array{NoteTicks(perf, "Track 0").size(), NoteTicks(perf, "Track 15").size(),
@@ -2694,6 +2779,7 @@ void TestMuteChild15()
     Check(play(0, true) == Counts{1, 0, 0}, "with the rule, child 15 and its child start no notes");
     Check(play(0, false) == Counts{1, 1, 1}, "without the rule, every track plays");
     Check(play(1, true) == Counts{1, 1, 1}, "a call with ID 1 mutes nothing");
+    Check(play(0, true, true) == Counts{1, 1, 1}, "in a state that clears the mute, every track plays");
 }
 
 // Pikmin's code can give children of the first track volumes through their external buffers
@@ -2783,15 +2869,30 @@ void TestSyncAnswers()
 // three phrases of one note each: keys 60, 62 and 64. The game's random numbers start at 0. Its draws pick phrases 0,
 // 2, 1 and 1. The round ends, and the round of rests has no rests. The next draw would give phrase 1 a third time. The
 // game draws again from the other two, and the next phrases are 2, 1, 0, 2 and 1.
-void TestConductor()
+// The conductor's send. In the cases with the commands, child 0 runs `db 04` and `ef 61 61 61` at its start, as a
+// cave's track does. The track then keeps the handle's send alone and plays it in place of the track's parameter. Child
+// 0 also plays a note before the loop. Each phrase runs `db 00` and `ef 34 21 34` and takes the parent's send. Child 0
+// sets its parameter to 0x4000 (64 of 127), and each phrase to 0x2000 (32 of 127). Without the commands, each track
+// keeps that parameter.
+struct ConductorSendCase
+{
+    bool commands = false;
+    uint8_t send = 0;
+};
+
+// The performance of the sequence above, with the case's commands and send. Without a case, the sequence is the one
+// that the phrases' checks use.
+Performance PerformConductor(const std::optional<ConductorSendCase>& send_case = std::nullopt)
 {
     constexpr uint32_t kLoop = kFirstSequence + 0x30;
     constexpr uint32_t kTrack = kFirstSequence + 0x40;
-    constexpr uint32_t kTrackLoop = kTrack + 0x10;
-    constexpr uint32_t kRest = kTrack + 0x30;
-    constexpr uint32_t kTables = kFirstSequence + 0x90;
+    constexpr uint32_t kTrackLoop = kTrack + 0x20;
+    constexpr uint32_t kRest = kTrackLoop + 0x20;
+    constexpr uint32_t kTables = kRest + 0x10;
     constexpr uint32_t kLists = kTables + 0x10;
     constexpr uint32_t kPhrases = kLists + 0x20;
+    constexpr uint32_t kPhraseSize = 0x20;
+    const bool commands = send_case && send_case->commands;
     Sequence1 s;
     const auto load = [&s](uint32_t reg, uint32_t value)
     {
@@ -2805,17 +2906,35 @@ void TestConductor()
     s.WritePort(4, 0x10).WritePort(5, 0x11);
     s.Byte(0xe7).Byte(0x03).Byte(0x00).OpenTrack(0, kTrack).Timebase(120).Byte(0xe7).Byte(0x0e).Byte(0x00);
     s.PadTo(kLoop).Byte(0xe7).Byte(0x2e).Byte(0x00).Byte(0xcf).Byte(3).Jump(0, kLoop).PadTo(kTrack);
+    if (commands)
+    {
+        s.Byte(0xdb).Byte(0x04).PanRules(0x61, 0x61, 0x61);
+    }
     s.Byte(0xe7).Byte(0x06).Byte(0x00).Byte(0xcf).Byte(3).Byte(0xe7).Byte(0x08).Byte(0x00).Byte(0xcf).Byte(3);
-    s.ReadPort(3, 6).PadTo(kTrackLoop);
+    s.ReadPort(3, 6);
+    if (send_case)
+    {
+        s.Send(0x4000).NoteOn(48, 1, 100).Wait(1).NoteOff(1);
+    }
+    s.PadTo(kTrackLoop);
     s.Byte(0xe7).Byte(0x09).Byte(0x00).Byte(0xe7).Byte(0x0a).Byte(0x00).Byte(0xe7).Byte(0x0c).Byte(0x00).Jump(2, kRest);
     s.ReadPort(6, 0x10).ReadPort(7, 0x11).Byte(0xb1).Byte(0xc1).Byte(0x40).Byte(0).Byte(0x28).PadTo(kRest);
     s.ReadPort(8, 4).Byte(0xcf).Byte(4).Jump(0, kTrackLoop).PadTo(kTables);
     s.Offset(kLists).Offset(kLists + 0x10).PadTo(kLists);
-    s.Offset(kPhrases).Offset(kPhrases + 0x10).Offset(kPhrases + 0x20).Offset(0xffffff).PadTo(kLists + 0x10);
-    s.Byte(0).Byte(120).Byte(0xff).Byte(0xff).PadTo(kPhrases);
+    s.Offset(kPhrases).Offset(kPhrases + kPhraseSize).Offset(kPhrases + 2 * kPhraseSize).Offset(0xffffff);
+    s.PadTo(kLists + 0x10).Byte(0).Byte(120).Byte(0xff).Byte(0xff).PadTo(kPhrases);
     for (const uint32_t key : {60, 62, 64})
     {
-        s.NoteOn(key, 1, 100).Wait(60).NoteOff(1).Finish().PadTo(s.Here() + 0x10 - (s.Here() - kPhrases) % 0x10);
+        const uint32_t phrase = s.Here();
+        if (commands)
+        {
+            s.Byte(0xdb).Byte(0x00).PanRules(0x34, 0x21, 0x34);
+        }
+        if (send_case)
+        {
+            s.Send(0x2000);
+        }
+        s.NoteOn(key, 1, 100).Wait(60).NoteOff(1).Finish().PadTo(phrase + kPhraseSize);
     }
 
     TestGame game(files::BankV0File(0, 60), {s.Data()});
@@ -2826,11 +2945,29 @@ void TestConductor()
     conductor.poll = 60;
     conductor.tempo = 120;
     ConductorTrack track;
+    track.send = send_case ? send_case->send : 0;
     track.modules.push_back({.beats = 64, .phrases = 4, .transpose = 12, .volume = 127, .pan = 64});
     conductor.tracks.push_back(track);
     sound.conductor = conductor;
-    const Performance perf = Perform(sound, game.banks, {}, kProgram);
 
+    return Perform(sound, game.banks, {}, kProgram);
+}
+
+// The CC91 values on `perf`'s MIDI track named `name`, without repeats.
+std::set<int> SendsOf(const Performance& perf, const std::string& name)
+{
+    std::set<int> values;
+    for (const TrackEvent& e : NamedTrackEvents(perf, name, EventKind::kReverb))
+    {
+        values.insert(e.value);
+    }
+
+    return values;
+}
+
+void TestConductor()
+{
+    const Performance perf = PerformConductor();
     std::vector<uint32_t> keys;
     for (const TrackEvent& e : NamedTrackEvents(perf, "Track 0.0", EventKind::kNoteOn))
     {
@@ -2841,6 +2978,16 @@ void TestConductor()
           "the conductor picks the game's phrases, transposed by 12");
     Check(NoteTicks(perf, "Track 0.0").size() >= 5 && NoteTicks(perf, "Track 0.0")[4] == 600,
           "the round of rests waits for a length before the fifth phrase");
+
+    const Performance sent = PerformConductor(ConductorSendCase{.commands = true, .send = 82});
+    const Performance unsent = PerformConductor(ConductorSendCase{.commands = true, .send = 0});
+    const Performance plain = PerformConductor(ConductorSendCase{.commands = false, .send = 82});
+    Check(SendsOf(sent, "Track 0") == std::set<int>{82}, "a conductor's track plays the conductor's send of 82");
+    Check(SendsOf(sent, "Track 0.0") == std::set<int>{82}, "its phrases take that send as their parent's");
+    Check(SendsOf(unsent, "Track 0") == std::set<int>{0} && SendsOf(unsent, "Track 0.0") == std::set<int>{0},
+          "a conductor's send of 0 plays 0");
+    Check(SendsOf(plain, "Track 0") == std::set<int>{64} && SendsOf(plain, "Track 0.0") == std::set<int>{32},
+          "a track that runs neither command keeps its parameter");
 }
 
 // Pikmin 2's later JAudio1 counts down a track's wait while an interrupt runs (SequenceSound::later_jaudio1). The first

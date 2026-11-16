@@ -9,7 +9,8 @@
 // zero byte at its end. The archive's header gives SYMB's size without the zeros that bring INFO to a multiple of 4
 // bytes. The size in SYMB's block header counts them. INFO holds each kind's list followed by its records. FILE holds
 // the files in the order of their IDs, each on a multiple of 32 bytes from the archive's start, with zeros up to the
-// next. The archive ends on a multiple of 32 bytes.
+// next. The archive ends on a multiple of 32 bytes. Some games' archives have their files on multiples of 4 bytes, and
+// end on one: the model gives the multiple.
 
 #pragma once
 
@@ -38,10 +39,15 @@ struct ArchiveModel
     std::vector<std::optional<StreamPlayerInfo>> stream_players;
     std::vector<std::optional<StreamInfo>> streams;
     std::vector<std::vector<uint8_t>> files; // by ID
+
+    // The multiple of bytes from the archive's start that each file and the archive's end lie on: 32, 16, 8 or 4. The
+    // SDK's tools use 32. Some games' archives use 4.
+    uint32_t file_alignment = 32;
 };
 
-// Reads an archive's model. Throws xsflib::FormatError when the archive can't be read, or when BuildArchive doesn't
-// give the archive's bytes back from the model.
+// Reads an archive's model. The file alignment is the largest of 4, 8, 16 and 32 bytes that every file's offset and
+// the archive's size are a multiple of. Throws xsflib::FormatError when the archive can't be read, or when
+// BuildArchive doesn't give the archive's bytes back from the model.
 ArchiveModel ReadArchiveModel(std::span<const uint8_t> sdat);
 
 // Lays an archive out from its model.

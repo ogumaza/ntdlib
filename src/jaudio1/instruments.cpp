@@ -93,6 +93,7 @@ InstrumentBank::InstrumentBank(const ntdlib::jaudio::Bank& bank, RandomFast& ran
     }
 
     number_ = bank.number;
+    wave_system_ = bank.wave_system;
 
     // Each oscillator gets its copies of its two tables, as the game's parser makes them.
     const auto copy = [&](const std::vector<ntdlib::jaudio::OscPoint>& points) -> OscTable
@@ -136,6 +137,11 @@ InstrumentBank::InstrumentBank(const ntdlib::jaudio::Bank& bank, RandomFast& ran
 bool InstrumentBank::HasProgram(uint32_t program) const
 {
     return program < programs_.size() && !std::holds_alternative<std::monostate>(programs_[program]);
+}
+
+std::vector<uint32_t> InstrumentBank::ProgramWaves(uint32_t program) const
+{
+    return program < programs_.size() ? Programs::WavesOf(programs_[program]) : std::vector<uint32_t>();
 }
 
 void InstrumentBank::ApplyEffect(const Effect& effect, uint32_t key, uint32_t velocity, InstParam& param,

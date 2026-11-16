@@ -5,13 +5,16 @@
 #include "ntdlib/jaudio2/engine.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,12 +24,14 @@
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/rarc.h"
+#include "ntdlib/jaudio/sequence_walk.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio2/channel.h"
 #include "ntdlib/jaudio2/dsp.h"
 #include "ntdlib/jaudio2/instruments.h"
 #include "ntdlib/jaudio2/tables.h"
 #include "ntdlib/jaudio2/track.h"
+#include "ntdlib/yaz0.h"
 
 namespace ntdlib::jaudio2
 {
@@ -59,7 +64,7 @@ constexpr uint32_t kReservedTracks = 16;
 std::vector<uint8_t> Decoded(std::span<const uint8_t> data)
 {
     std::vector<uint8_t> decoded;
-    const std::span<const uint8_t> bytes = nj::DecodeIfYaz0(data, decoded);
+    const std::span<const uint8_t> bytes = ntdlib::DecodeIfYaz0(data, decoded);
 
     return std::vector<uint8_t>(bytes.begin(), bytes.end());
 }
@@ -131,9 +136,32 @@ SoundFiles::SequenceRef SoundFiles::SequenceOf(const nj::SoundEntry& sound) cons
     return {};
 }
 
+std::vector<std::string> SoundFiles::WaveArchivesOf(const nj::SoundEntry& sound) const
+{
+    const SequenceRef sequence = SequenceOf(sound);
+    if (sequence.sequence == nullptr)
+    {
+        return {};
+    }
+
+    // Tracks::SetBank, as Engine::StartModel calls it: each bank by its number in the order of Banks(), the last of a
+    // number winning. Numbers from 256 on name no bank.
+    std::array<const InstrumentBank*, 256> by_number{};
+    for (const std::unique_ptr<InstrumentBank>& bank : banks_)
+    {
+        if (bank->Number() < by_number.size())
+        {
+            by_number[bank->Number()] = bank.get();
+        }
+    }
+
+    return WaveArchivesOfWalk(nj::WalkSequence(sequence.sequence->Bytes(), sequence.offset), by_number, systems_);
+}
+
 void SoundFiles::LoadWaves(const WaveArchives& waves)
 {
-    LoadedWaves loaded = LoadWaveSystems(nj::ReadWaveSystems(baa_), waves);
+    systems_ = nj::ReadWaveSystems(baa_);
+    LoadedWaves loaded = LoadWaveSystems(systems_, waves);
     memory_ = std::move(loaded.memory);
     wave_banks_ = std::move(loaded.banks);
     missing_waves_ = std::move(loaded.missing);
@@ -218,6 +246,7 @@ Engine::~Engine() = default;
 std::optional<std::string> Engine::Start(uint32_t id, const TrackStates& states)
 {
     model_.reset();
+    ++starts_;
     const nj::SoundEntry* sound = files_.Find(id);
     if (sound == nullptr)
     {
@@ -266,6 +295,37 @@ std::optional<std::string> Engine::Start(uint32_t id, const TrackStates& states)
     output_.assign(2 * Dsp::kSubframeSamples, int16_t{0});
 
     return std::nullopt;
+}
+
+Engine::Snapshot Engine::Save() const
+{
+    Snapshot snapshot;
+    if (model_ != nullptr)
+    {
+        // The copy's pointers name the parts of this model: the voices, the DSP's memory and the levels that the
+        // tracks read. Restore copies it back into this model.
+        snapshot.model = std::make_shared<const Model>(*model_);
+        snapshot.engine = this;
+        snapshot.start = starts_;
+        snapshot.memory.assign(memory_->Bytes().begin(), memory_->Bytes().begin() + SoundFiles::kWaves);
+        snapshot.output = output_;
+    }
+
+    return snapshot;
+}
+
+void Engine::Restore(const Snapshot& snapshot)
+{
+    if (snapshot.model == nullptr || snapshot.engine != this || snapshot.start != starts_ || model_ == nullptr)
+    {
+        throw std::logic_error("the snapshot wasn't taken after the engine's current start");
+    }
+
+    // The assignment keeps the model's address and the controllers' storage. The tracks' pointers to the levels
+    // therefore stay valid.
+    *model_ = *snapshot.model;
+    std::copy(snapshot.memory.begin(), snapshot.memory.end(), memory_->Bytes().begin());
+    output_ = snapshot.output;
 }
 
 void Engine::StartModel()
@@ -461,6 +521,11 @@ bool Engine::QuietPass(uint32_t track) const
     return model_ && model_->tracks.QuietPass(track);
 }
 
+uint32_t Engine::Cursor(uint32_t track) const
+{
+    return model_ ? model_->tracks.TrackAt(track).cursor : 0;
+}
+
 bool Engine::Held() const
 {
     if (!model_)
@@ -590,6 +655,41 @@ Engine::WavePlace Engine::DspChannelPlace(uint32_t index) const
     }
 
     return PlayingWavePlace(*memory_, kBlocks + index * static_cast<uint32_t>(DspChannelBlock::kBytes));
+}
+
+std::vector<std::string> WaveArchivesOf(const std::vector<nj::WaveSystem>& systems, const std::set<nj::WaveUse>& waves)
+{
+    std::set<std::string> names;
+    for (const nj::WaveUse& wave : waves)
+    {
+        for (const nj::WaveSystem& system : systems)
+        {
+            if (system.number != wave.system)
+            {
+                continue;
+            }
+            if (const auto info = system.waves.find(wave.id); info != system.waves.end())
+            {
+                names.insert(info->second.archive);
+            }
+        }
+    }
+
+    return {names.begin(), names.end()};
+}
+
+std::vector<std::string> AllWaveArchives(const std::vector<nj::WaveSystem>& systems)
+{
+    std::set<std::string> names;
+    for (const nj::WaveSystem& system : systems)
+    {
+        for (const nj::WaveGroup& group : system.groups)
+        {
+            names.insert(group.archive);
+        }
+    }
+
+    return {names.begin(), names.end()};
 }
 
 LoadedWaves LoadWaveSystems(const std::vector<nj::WaveSystem>& systems, const SoundFiles::WaveArchives& waves,

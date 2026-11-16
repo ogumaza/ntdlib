@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the conversion of DSE's songs and sound effects (ntdlib/sequence_export/dse) and of the search for their
-// banks (ntdlib/dse/sets.h), on the files of dse_song_files.h. The expected values are worked out by hand from the
-// files and from the driver's model: its keys, its envelopes' levels and its timers.
+// Tests of the conversion of DSE's songs and sound effects (ntdlib/sequence_export/dse), of the search for DSE files in
+// packs (ntdlib/dse/files.h) and of the search for their banks (ntdlib/dse/sets.h), on the files of dse_song_files.h.
+// The expected values are worked out by hand from the files and from the driver's model: its keys, its envelopes'
+// levels and its timers.
 
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/dse/driver.h"
+#include "ntdlib/dse/files.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/sets.h"
 #include "ntdlib/sequence_export/dse/convert.h"
@@ -181,6 +183,178 @@ void TestSongSets()
     Check(found[4].song == 8 && !found[4].bank, "a folder with two lone banks gives its song none");
     Check(found[5].song == 11 && found[5].bank == 12 && found[5].main_bank == 2,
           "a bank without a main bank in its folder takes the first in the files");
+}
+
+// A DSE file as a pack holds it: the magic word, its size, version 0x415, the id at 0x0E, `name` at 0x20 and the
+// kind at 0x4B, with zeros up to `size` bytes.
+Bytes Packed(const char* magic, uint16_t id, const std::string& name, std::size_t size = 0x60, uint8_t kind = 0)
+{
+    Bytes bytes = Header(magic, id, kind);
+    bytes.resize(size, 0);
+    xsflib::StoreLe32(&bytes[0x08], static_cast<uint32_t>(size));
+    xsflib::StoreLe16(&bytes[0x0C], 0x0415);
+    std::copy(name.begin(), name.end(), bytes.begin() + 0x20);
+    return bytes;
+}
+
+// The DSE files of loose files and of packs. A loose file keeps its path. A pack's files take their names, an
+// extension for their kind where they have none or one cut short, a number where a name comes again, and _ for a byte
+// that a name can't hold. A header with another version is no file.
+void TestFindFiles()
+{
+    Bytes bad_version = Packed("smdl", 1, "OLD.SMD", 0x50);
+    xsflib::StoreLe16(&bad_version[0x0C], 0x0402);
+    const Bytes pack =
+        files::Join({Bytes(0x20, 0xEE), Packed("swdl", 5, "BGM_A"), Packed("smdl", 5, "BGM_A", 0x50),
+                     Packed("swdl", 6, "BGM_A"), Packed("smdl", 6, "BGM_A", 0x50), bad_version,
+                     Packed("sedl", 7, "", 0x40), Packed("smdl", 8, "a/b\x01.SMD", 0x50),
+                     Packed("swdl", 11, "BGM_CUT_SHORT.S"), Packed("smdl", 11, "BGM_CUT_SHORT.S", 0x50)});
+    const Bytes starts_as_file = files::Join({Packed("sedl", 9, "S.SED", 0x50), Packed("smdl", 10, "D01.SMD", 0x50)});
+    const Named named = {
+        {"SOUND/BGM/song.smd", Packed("smdl", 1, "other", 0x50)},
+        {"SOUND/BGM/old.smd", bad_version},
+        {"sound/bgm.bin", pack},
+        {"data/sound.pb", starts_as_file},
+        {"readme.txt", Bytes(0x100, 's')},
+    };
+
+    const std::vector<sets::NamedFile> found = sets::FindFiles(named.files);
+
+    std::vector<std::string> paths;
+    for (const sets::NamedFile& file : found)
+    {
+        paths.push_back(file.path);
+    }
+    const std::size_t sedl_at = 0x20 + 0x60 + 0x50 + 0x60 + 0x50 + 0x50;
+    Check(paths == std::vector<std::string>{"SOUND/BGM/song.smd", "SOUND/BGM/old.smd", "sound/bgm.bin/BGM_A.swd",
+                                            "sound/bgm.bin/BGM_A.smd", "sound/bgm.bin/BGM_A_2.swd",
+                                            "sound/bgm.bin/BGM_A_2.smd", "sound/bgm.bin/0x1D0.sed",
+                                            "sound/bgm.bin/a_b_.SMD", "sound/bgm.bin/BGM_CUT_SHORT.swd",
+                                            "sound/bgm.bin/BGM_CUT_SHORT.smd", "data/sound.pb/S.SED",
+                                            "data/sound.pb/D01.SMD"},
+          "the loose files, and each file of the packs by its name");
+    if (found.size() != 12)
+    {
+        return;
+    }
+    Check(found[0].bytes.size() == 0x50 && found[1].bytes.size() == 0x50, "a loose file keeps its bytes");
+    Check(found[2].bytes.data() == named.bytes[2].data() + 0x20 && found[2].bytes.size() == 0x60 &&
+              found[3].bytes.size() == 0x50 && found[6].bytes.data() == named.bytes[2].data() + sedl_at,
+          "a pack's file points into the pack, with the size of its header");
+}
+
+// `bytes` as the SDK's LZ77 compresses them with no copies: the type 0x10 and the size, then a flag byte of 0 before
+// each 8 bytes.
+Bytes Lz77Literals(const Bytes& bytes)
+{
+    Bytes out = {0x10, static_cast<uint8_t>(bytes.size()), static_cast<uint8_t>(bytes.size() >> 8),
+                 static_cast<uint8_t>(bytes.size() >> 16)};
+    for (std::size_t at = 0; at < bytes.size(); at += 8)
+    {
+        out.push_back(0);
+        out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(at),
+                   bytes.begin() + static_cast<std::ptrdiff_t>(std::min(at + 8, bytes.size())));
+    }
+    return out;
+}
+
+// A compressed pack of a song and its bank: Decompressed gives its bytes decompressed under its path, and FindFiles
+// then finds the two files in them. A compressed file without a DSE header, a damaged one and a loose file stay as they
+// are.
+void TestDecompressed()
+{
+    const Bytes pack =
+        files::Join({Bytes(0x50, 0x11), Packed("smdl", 3, "BG_007.SMD", 0x50), Packed("swdl", 3, "BG_007.SWD")});
+    Bytes damaged = Lz77Literals(pack);
+    damaged.resize(damaged.size() / 2);
+    const Named named = {
+        {"snd/BG_007.csnd", Lz77Literals(pack)},
+        {"img/face.bin", Lz77Literals(Bytes(0x200, 's'))},
+        {"snd/BG_008.csnd", damaged},
+        {"SOUND/BGM/song.smd", Packed("smdl", 1, "other", 0x50)},
+    };
+
+    std::vector<std::vector<uint8_t>> storage;
+    const std::vector<sets::NamedFile> decompressed = sets::Decompressed(named.files, storage);
+    Check(decompressed.size() == 4 && storage.size() == 1, "one file decompresses to DSE files");
+    if (decompressed.size() != 4)
+    {
+        return;
+    }
+    Check(decompressed[0].path == "snd/BG_007.csnd" && std::ranges::equal(decompressed[0].bytes, pack),
+          "the pack's bytes, decompressed, under its path");
+    for (std::size_t i = 1; i < 4; i++)
+    {
+        Check(decompressed[i].path == named.files[i].path && decompressed[i].bytes.data() == named.bytes[i].data(),
+              "the other files stay as they are");
+    }
+
+    std::vector<std::string> paths;
+    for (const sets::NamedFile& file : sets::FindFiles(decompressed))
+    {
+        paths.push_back(file.path);
+    }
+    Check(paths == std::vector<std::string>{"snd/BG_007.csnd/BG_007.SMD", "snd/BG_007.csnd/BG_007.SWD",
+                                            "SOUND/BGM/song.smd"},
+          "FindFiles finds the files in the decompressed pack");
+}
+
+// A pack whose files hold a name and the name with _2. A name that comes again takes the first number that no file of
+// the pack has had yet, in either order.
+void TestFindFilesNumbersPastNamesInThePack()
+{
+    const Bytes first = files::Join({Packed("smdl", 1, "P32.SMD", 0x50), Packed("smdl", 2, "P32_2.SMD", 0x50),
+                                     Packed("smdl", 3, "P32.SMD", 0x50)});
+    const Bytes later = files::Join({Packed("smdl", 1, "P33.SMD", 0x50), Packed("smdl", 2, "p33.smd", 0x50),
+                                     Packed("smdl", 3, "P33_2.SMD", 0x50), Packed("smdl", 4, "P33.SMD", 0x50)});
+    const Named named = {{"a.bin", first}, {"b.bin", later}};
+
+    std::vector<std::string> paths;
+    for (const sets::NamedFile& file : sets::FindFiles(named.files))
+    {
+        paths.push_back(file.path);
+    }
+    Check(paths == std::vector<std::string>{"a.bin/P32.SMD", "a.bin/P32_2.SMD", "a.bin/P32_3.SMD", "b.bin/P33.SMD",
+                                            "b.bin/p33_2.smd", "b.bin/P33_2_2.SMD", "b.bin/P33_3.SMD"},
+          "a name that comes again takes a number that no file of the pack holds");
+}
+
+// Songs whose banks lie in another folder or follow them in a pack. A song in a folder without banks takes the only
+// bank of its name, or else the only bank of its id. A song followed by a bank of its id in its folder takes it. A song
+// in a folder with banks takes neither.
+void TestSongSetsApart()
+{
+    const Bytes in_folder = Header("swdl", 0x41);
+    const Named named = {
+        {"mid/x.smd", Header("smdl", 0x10)},          // 0
+        {"mid/y.smd", Header("smdl", 0x40)},          // 1
+        {"mid/z.smd", Header("smdl", 0x41)},          // 2
+        {"BGM/x.swd", Header("swdl", 0x22)},          // 3
+        {"BGM/me.swd", Header("swdl", 0x40)},         // 4
+        {"BGM/z1.swd", in_folder},                    // 5
+        {"BGM/z2.swd", in_folder},                    // 6
+        {"pack/SR_000_D.SMD", Header("smdl", 0x200)}, // 7
+        {"pack/SR_000.SWD", Header("swdl", 0x200)},   // 8
+        {"pack/SR_003.SMD", Header("smdl", 0x200)},   // 9
+        {"pack/SR_003.SWD", Header("swdl", 0x200)},   // 10
+        {"pack/x.smd", Header("smdl", 0x22)},         // 11
+        {"pack/SE.SWD", Header("swdl", 0x300)},       // 12
+        {"pack/SE2.SWD", Header("swdl", 0x301)},      // 13
+    };
+
+    const std::vector<sets::SongSet> found = sets::FindSongSets(named.files);
+
+    Check(found.size() == 6, "a set for each song");
+    if (found.size() != 6)
+    {
+        return;
+    }
+    Check(found[0].bank == 3, "a song apart from banks takes the bank of its name in another folder");
+    Check(found[1].bank == 4, "or else the only bank of its id");
+    Check(!found[2].bank, "two banks of its id give it none");
+    Check(found[3].song == 7 && found[3].bank == 8, "a song followed by a bank of its id takes it");
+    Check(found[4].song == 9 && found[4].bank == 10, "a bank of its name comes first");
+    Check(found[5].song == 11 && !found[5].bank, "a song in a folder with banks takes no bank of another folder");
 }
 
 // The banks of sound effects. A list's id takes the bank in the effects' folder, else a bank that no song plays, named
@@ -757,6 +931,10 @@ void TestReadSequences()
 int main()
 {
     TestSongSets();
+    TestFindFiles();
+    TestDecompressed();
+    TestFindFilesNumbersPastNamesInThePack();
+    TestSongSetsApart();
     TestEffectSets();
     TestPresetZones();
     TestWaves();

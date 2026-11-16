@@ -143,9 +143,9 @@ struct DemoEvent
 // play can read them too.
 //
 // The system's effects that Jac_PlaySystemSe (0x266530) plays as other sounds. kContainerFilled plays the captain's
-// effect kContainerSound. kShipPartEffect sets scene 6 of wave system kPartSystem and plays piece kShipPart of the
-// cutscenes' music. kHighScore plays a stream. kPauseAll and kResumeAll pause and resume the game's sounds.
-// kPlayerDownPause pauses the events and stops the formation's sound.
+// effect kContainerSound. kShipPartEffect sets scene kShipPartScene of wave system kPartSystem and plays piece
+// kShipPart of the cutscenes' music. kHighScore plays a stream. kPauseAll and kResumeAll pause and resume the game's
+// sounds. kPlayerDownPause pauses the events and stops the formation's sound.
 inline constexpr uint16_t kContainerFilled = 0x10;
 inline constexpr uint16_t kShipPartEffect = 0x12;
 inline constexpr uint16_t kHighScore = 0x20;
@@ -154,6 +154,7 @@ inline constexpr uint16_t kResumeAll = 0x27;
 inline constexpr uint16_t kPlayerDownPause = 0x28;
 inline constexpr uint16_t kContainerSound = 0xe;
 inline constexpr uint16_t kPartSystem = 13;
+inline constexpr uint16_t kShipPartScene = 6;
 inline constexpr uint16_t kShipPart = 8;
 
 // The captain's effects (Jac_PlayOrimaSe, 0x265250): bit 15 marks an effect of the Pikmin. The pluck (kPluck) draws a

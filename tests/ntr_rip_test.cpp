@@ -287,6 +287,27 @@ void TestKeepSequenceData()
     moved[fat + 12] = static_cast<uint8_t>(moved[fat + 12] + 4);
     const sdat::Archive other = sdat::Archive::Parse(moved);
     XSFLIB_CHECK(!rip::KeepSequenceData(other, field));
+
+    // An archive with its files on multiples of 4 bytes keeps that layout.
+    sdat::ArchiveModel packed_model = Model();
+    packed_model.file_alignment = 4;
+    const Bytes packed_bytes = sdat::BuildArchive(packed_model);
+    const sdat::Archive packed = sdat::Archive::Parse(packed_bytes);
+    const std::optional<Bytes> packed_library = rip::KeepSequenceData(packed, field);
+    XSFLIB_CHECK(packed_library.has_value());
+    if (packed_library)
+    {
+        sdat::ArchiveModel expected = packed_model;
+        for (uint32_t id = 0; id < expected.files.size(); id++)
+        {
+            if (id != 0 && id != 3 && id != 4)
+            {
+                expected.files[id].clear();
+            }
+        }
+        XSFLIB_CHECK(*packed_library == sdat::BuildArchive(expected));
+        XSFLIB_CHECK(packed_library->size() % 32 != 0);
+    }
 }
 
 void TestSoundIds()

@@ -150,18 +150,25 @@ bool IsSoundSheet(std::string_view name)
 
 SoundLevels ReadSoundLevels(const fs::path& folder)
 {
-    SoundLevels levels;
+    // A directory lists its files in an order that differs between file systems. The sheets go in the order of their
+    // names, so that the levels don't depend on it.
+    std::vector<fs::path> sheets;
     std::error_code ec;
     for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec))
     {
-        if (!IsSoundSheet(xsflib::Utf8(it->path().filename())))
+        if (IsSoundSheet(xsflib::Utf8(it->path().filename())))
         {
-            continue;
+            sheets.push_back(it->path());
         }
+    }
 
+    std::sort(sheets.begin(), sheets.end());
+    SoundLevels levels;
+    for (const fs::path& path : sheets)
+    {
         std::vector<uint8_t> bytes;
         Sheet sheet;
-        if (xsflib::ReadFile(it->path(), bytes) && !Sheet::Parse(std::move(bytes), sheet))
+        if (xsflib::ReadFile(path, bytes) && !Sheet::Parse(std::move(bytes), sheet))
         {
             levels.AddSheet(sheet);
         }

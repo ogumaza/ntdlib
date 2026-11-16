@@ -28,27 +28,6 @@ constexpr std::size_t kMixerDelays = DspChannelBlock::kMixers + 6;
 constexpr std::array<uint8_t, 8> kCalcTypes = {0, 0, 0, 1, 1, 2, 2, 0};
 constexpr std::array<uint8_t, 8> kParentCalcTypes = {0, 1, 2, 0, 2, 0, 2, 0};
 
-// JASSeqParser's Arglist (0x94b542): for each command from 0xc0, the count of arguments, and their widths in 2 bits
-// each from the low bits: 0 a byte, 1 16 bits, 2 24 bits, 3 a register's value by a byte.
-struct ArgSpec
-{
-    uint16_t count;
-    uint16_t types;
-};
-
-// clang-format off
-constexpr std::array<ArgSpec, 64> kArgs = {{
-    {0, 0}, {2, 8}, {2, 8}, {1, 2}, {0, 0}, {0, 0}, {1, 0}, {1, 2}, {0, 0}, {1, 1}, {0, 0}, {2, 0}, {2, 0xc}, {1, 0},
-    {1, 0}, {1, 3}, {0, 0}, {2, 0xc}, {2, 0xc}, {0, 0}, {1, 0}, {1, 0}, {1, 0}, {2, 8}, {5, 0x155}, {1, 0}, {1, 0},
-    {1, 0}, {1, 1}, {2, 4}, {1, 0}, {2, 8}, {1, 0}, {0, 0}, {0, 0}, {0, 0}, {2, 4}, {1, 0}, {1, 1}, {1, 1}, {0, 0},
-    {0, 0}, {1, 2}, {5, 0}, {4, 0x55}, {1, 2}, {1, 2}, {3, 0}, {1, 0}, {1, 0}, {3, 0x28}, {1, 0}, {1, 0}, {0, 0},
-    {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1, 1}, {0, 0}, {0, 0}, {1, 1}, {1, 1}, {0, 0},
-}};
-// clang-format on
-
-// The commands from 0xc0 without a handler (sCmdPList's null entries).
-constexpr uint64_t kNullCommands = 0x03e00000000900a9ull;
-
 } // namespace
 
 void Tracks::CmdSetParam(uint32_t index, uint32_t flags)
@@ -881,7 +860,7 @@ void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, D
 {
     // JASTrack::channelUpdateCallback (0x3dfb0c) and JASChannelUpdater's two updates (0x3e15c4 and 0x3e17b4).
     Track& track = tracks_[owner];
-    Channel& ch = voices_.ChannelAt(channel);
+    Channel& ch = voices_->ChannelAt(channel);
     const ChannelUpdater& updater = track.updater;
     switch (event)
     {
@@ -960,7 +939,7 @@ void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, D
         }
 
     case Channel::kEventTimer:
-        voices_.Release(channel, 0);
+        voices_->Release(channel, 0);
         return;
 
     default:

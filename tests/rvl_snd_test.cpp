@@ -14,10 +14,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -26,6 +28,7 @@
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/snd/driver.h"
 #include "ntdlib/rvl/snd/engine.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
@@ -38,6 +41,7 @@ namespace
 
 using namespace ntdlib;
 using namespace ntdlib::testing::rsar_files;
+namespace ax = ntdlib::rvl::ax;
 namespace snd = ntdlib::rvl::snd;
 using VoiceParam = ntdlib::nwsnd::RevolutionPolicy::ChannelVoiceParam;
 using xsflib::testing::Check;
@@ -84,14 +88,18 @@ struct Played
     std::vector<int16_t> output;
 };
 
-// Plays wave sound `index` on the renderer's model in `build` for `frames` frames. `each` runs after each frame.
+// Plays wave sound `index` on the renderer's model in `build` for `frames` frames. `each` runs after each frame. The
+// sound player has `settings`, and the game sets `sends` on the sound.
 Played Play(const rsar::SoundArchive& archive, uint32_t index, SndBuild build, int frames,
-            const std::function<void(snd::ArchiveModel&, snd::WsdPlayer&)>& each = {})
+            const std::function<void(snd::ArchiveModel&, snd::WsdPlayer&)>& each = {},
+            const snd::SoundPlayerSettings& settings = {}, const std::vector<snd::SoundSend>& sends = {})
 {
     Played played;
     auto model = std::make_unique<snd::ArchiveModel>();
     model->build = build;
     model->StartWithRenderer(archive);
+    model->engine->SetEffects({}, sends, 0);
+    model->engine->SetSoundPlayerSettings(settings);
     int frame = 0;
     model->engine->SetVoiceParamHook([&](snd::ChannelId, const VoiceParam& param) { played.params.push_back(param); });
     model->engine->SetChannelEventHook([&](const snd::Channel&, snd::Channel::CallbackStatus)
@@ -370,6 +378,60 @@ void CheckSnapshots()
     Check(refused, "a restore after another start is refused");
 }
 
+// The settings of a sound player: a wave sound that starts takes the player's low-pass and adds the player's sends to
+// the sends that the game sets on it (BasicSound::UpdateParam).
+void CheckSoundPlayer()
+{
+    const TestArchive test({SoundWith(0)}, {{127, 0, 64, false, 0, 0}});
+
+    // The low-pass scale of the channel's voice in the second frame, and the PB of the voice that plays then.
+    struct Note
+    {
+        float lpf_freq = -1.0f;
+        ax::Pb pb;
+    };
+    const auto note = [&test](const snd::SoundPlayerSettings& settings, const std::vector<snd::SoundSend>& sends)
+    {
+        Note found;
+        const auto take_pb = [&found](snd::ArchiveModel& model, snd::WsdPlayer&)
+        {
+            for (uint32_t i = 0; i < model.ax.VoiceCount(); i++)
+            {
+                if (model.ax.VoiceAt(i).pb.state == 1)
+                {
+                    found.pb = model.ax.VoiceAt(i).pb;
+                }
+            }
+        };
+        const Played played = Play(test.archive, 0, k2008, 2, take_pb, settings, sends);
+        if (played.params.size() >= 2)
+        {
+            found.lpf_freq = played.params[1].lpf_freq;
+        }
+
+        return found;
+    };
+    const auto same_mix = [](const Note& a, const Note& b)
+    {
+        static_assert(std::has_unique_object_representations_v<ax::PbMix>);
+        return std::memcmp(&a.pb.mix, &b.pb.mix, sizeof(ax::PbMix)) == 0;
+    };
+
+    const Note plain = note({}, {});
+    const Note filtered = note({.lpf = -0.55f}, {});
+    Check(plain.lpf_freq == 1.0f && plain.pb.lpf.on != ax::kLpfOn, "by default, the scale is 1 and the low-pass off");
+    Check(filtered.lpf_freq == 0.45f && filtered.pb.lpf.on == ax::kLpfOn,
+          "a low-pass of -0.55 gives a scale of 0.45 and turns AX's low-pass on");
+
+    const snd::SoundPlayerSettings kPlayerQuarter = {.fx_sends = {0.0f, 0.25f, 0.0f}};
+    const std::vector<snd::SoundSend> kQuarter = {{.sound = 0, .bus = 1, .send = 0.25f}};
+    const Note by_player = note(kPlayerQuarter, {});
+    Check(by_player.pb.mix.aux_b_l > 0 && same_mix(by_player, note({}, kQuarter)),
+          "a player's send of 0.25 mixes as the game's send of 0.25 on the sound");
+    Check(same_mix(note(kPlayerQuarter, kQuarter), note({}, {{.sound = 0, .bus = 1, .send = 0.5f}})),
+          "the player's send adds to the sound's: 0.25 and 0.25 mix as 0.5");
+}
+
 } // namespace
 
 void CheckDpl2Mix()
@@ -426,6 +488,7 @@ int main()
         CheckEnds();
         CheckMissing();
         CheckSnapshots();
+        CheckSoundPlayer();
         CheckDpl2Mix();
     };
 

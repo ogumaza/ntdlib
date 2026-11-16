@@ -376,7 +376,7 @@ private:
     void DelayCenter();
     void FinishFxLines();
 
-    DspMemory& memory_;
+    DspMemory* memory_;
     Tables tables_;
     uint32_t flags_;
 

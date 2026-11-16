@@ -58,7 +58,9 @@ private:
 // (SoundVoice_Voice_*) only name voice clips, and are left out.
 bool IsSoundSheet(std::string_view name);
 
-// The levels from the sound sheets in `folder`. A file that can't be read as a sheet adds no record.
+// The levels from the sound sheets in `folder`, added in the order of the sheets' names. A record named after a sound
+// in a later sheet replaces one in an earlier sheet. No sound of either game has such a record in two sheets. A file
+// that can't be read as a sheet adds no record.
 SoundLevels ReadSoundLevels(const std::filesystem::path& folder);
 
 // The folder of the sound sheets that belong to the sound archive at `archive`. An archive and the sheets lie in

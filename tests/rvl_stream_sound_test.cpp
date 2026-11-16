@@ -16,10 +16,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -29,9 +31,11 @@
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/stream_file.h"
 #include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/rvl/ax/voice.h"
 #include "ntdlib/rvl/snd/engine.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/rvl/snd/stream_sound.h"
+#include "ntdlib/rvl/snd/util.h"
 #include "ntdlib/sound_build.h"
 #include "ntdlib/testing/rsar_streams.h"
 
@@ -438,6 +442,57 @@ void CheckSnapshots()
     Check(refused, "a restore after another start is refused");
 }
 
+// The settings of a sound player: a stream sound that starts takes the player's low-pass and adds the player's sends to
+// the sends that the game sets on it (BasicSound::UpdateParam).
+void CheckSoundPlayer()
+{
+    streams::StreamSpec spec;
+    spec.loop_start = 0;
+    spec.channels = {Tone(20000, 0), Tone(20000, 1)};
+    spec.tracks = {{127, 64, {0, 1}}};
+    const std::vector<uint8_t> file = streams::MakeStream(spec);
+    const TestArchive test({});
+
+    // The PB of the first track's voice after 3 frames.
+    const auto pb_of =
+        [&test, &file](const snd::SoundPlayerSettings& settings, const std::vector<snd::SoundSend>& sends)
+    {
+        auto model = std::make_unique<snd::ArchiveModel>();
+        model->build = k2008;
+        model->StartWithRenderer(test.archive);
+        model->engine->SetEffects({}, sends, 0);
+        model->engine->SetSoundPlayerSettings(settings);
+        snd::StrmPlayer* player = model->engine->StartStreamSound(0, file);
+        std::vector<int16_t> output;
+        for (int frame = 0; frame < 3; frame++)
+        {
+            model->RunFrame(output);
+        }
+
+        const std::vector<uint32_t> indices = model->engine->Voices().At(player->TrackVoice(0)).AxVoiceIndices();
+        return model->ax.ReadPb(indices.at(0));
+    };
+    const auto same_mix = [](const ax::Pb& a, const ax::Pb& b)
+    {
+        static_assert(std::has_unique_object_representations_v<ax::PbMix>);
+        return std::memcmp(&a.mix, &b.mix, sizeof(ax::PbMix)) == 0;
+    };
+
+    Check(pb_of({}, {}).lpf.on != ax::kLpfOn, "by default, the low-pass is off");
+    const ax::Pb filtered = pb_of({.lpf = -0.55f}, {});
+    const ax::LpfCoefs coefs = ax::CalcLpfCoefs(snd::CalcLpfFreq(0.45f, k2008));
+    Check(filtered.lpf.on == ax::kLpfOn && filtered.lpf.a0 == coefs.a0 && filtered.lpf.b0 == coefs.b0,
+          "a low-pass of -0.55 filters each voice at the cutoff of a scale of 0.45");
+
+    const snd::SoundPlayerSettings kPlayerQuarter = {.fx_sends = {0.0f, 0.25f, 0.0f}};
+    const std::vector<snd::SoundSend> kQuarter = {{0, 1, 0.25f}};
+    const ax::Pb by_player = pb_of(kPlayerQuarter, {});
+    Check(by_player.mix.aux_b_l != 0 && same_mix(by_player, pb_of({}, kQuarter)),
+          "a player's send of 0.25 mixes as the game's send of 0.25 on the sound");
+    Check(same_mix(pb_of(kPlayerQuarter, kQuarter), pb_of({}, {{0, 1, 0.5f}})),
+          "the player's send adds to the sound's: 0.25 and 0.25 mix as 0.5");
+}
+
 // The volumes that a game's code sets on the tracks through the sound's handle. The builds from March 2008 multiply the
 // volume of each track's voice by the track's volume (UpdateVoiceParams, Mario Kart Wii's main.dol 0x800a6ff0). A track
 // that the start leaves out plays as a track whose stream file gives a volume of 0. A later volume reaches the voice in
@@ -552,6 +607,7 @@ int main()
         CheckEntriesOutsideTable();
         CheckEnds();
         CheckSnapshots();
+        CheckSoundPlayer();
         CheckTrackVolumes();
         CheckStartingTracks();
     };

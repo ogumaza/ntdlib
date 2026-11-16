@@ -95,7 +95,8 @@ constexpr TrackVolumes TrackVolumesOf(uint16_t muted)
 // (ArchiveRipTool::sound_states). Each state is a separate job, under a label that names the state. A job can also give
 // the variables that the game sets as it starts the sound, by their numbers: a variant of a sound that waits for them
 // (ArchiveRipTool::variants in archive_mode.h), or a state. The length analysis sets them before the sequence's first
-// tick. A sound that never sounds when the game starts it at once can sound in another state that the game can give it.
+// tick. A state can also give the tempo ratio and the pitch that the game sets as it starts the sound. A sound that
+// never sounds when the game starts it at once can sound in another state that the game can give it.
 // A tool's length analysis may then give the job the first of `start_states` in which it sounds, the archive's rules
 // for its variables (sar::StartsOf). Or the analysis may give the job the frames that the game's sound system runs
 // before the start (`start_frame`): the sound library steps its random numbers once a frame. The same tool's minis
@@ -114,6 +115,12 @@ struct Job
     // The reverb, one of the archive's rules (sar::ArchiveRules::bus_b_presets), or none to leave bus B as the tool's
     // settings have it.
     const sar::ReverbPreset* bus_b_reverb = nullptr;
+
+    // The tempo ratio that the game sets (SequenceSoundHandle::SetTempoRatio), and the pitch that it sets
+    // (SoundHandle::SetPitch) as a ratio of frequencies. They come last. Positional initializers of the older fields
+    // then keep working.
+    float tempo_ratio = 1.0f;
+    float pitch = 1.0f;
 };
 
 // The sequence sounds whose labels match `only`, and with `bgm` only those that are music (IsMusic). Streams and wave

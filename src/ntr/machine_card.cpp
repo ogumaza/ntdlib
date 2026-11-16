@@ -150,11 +150,15 @@ void Machine::StartCard()
                 {
                     at = 0x8000 + (at & 0x1FF);
                 }
-                card_.data[i] = at < image_.size() ? image_[at] : 0xFF;
+                card_.data[i] = at < image_.size() ? image_[at] : past_image_;
             }
 
             counts_.card_reads++;
             counts_.card_bytes += bytes;
+            if (on_card_read)
+            {
+                on_card_read(address, static_cast<uint32_t>(bytes));
+            }
             break;
         }
     case kReadChipId:
