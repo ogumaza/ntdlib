@@ -29,9 +29,10 @@ std::vector<NamedFile> FindFiles(std::span<const NamedFile> files);
 
 // `files`, with the decompressed bytes in place of each file that is compressed with the SDK's LZ77 (type 0x10) and
 // holds a DSE header of version 0x415 once decompressed. The decompressed bytes keep the file's path. Some games
-// compress each song with its bank, in a small pack of their making. FindFiles then finds the DSE files in the
-// decompressed bytes. `storage` keeps the decompressed bytes for as long as the list is in use. A file that doesn't
-// decompress, or that would decompress to more than 16 MiB, stays as it is.
+// compress each song with its bank, in a small pack of their making. A GFSA archive of Level-5's games gives its files
+// that hold such a header once decompressed in its place, under its path, a '/' and the file's path in the archive.
+// FindFiles then finds the DSE files in the decompressed bytes. `storage` keeps the decompressed bytes for as long as
+// the list is in use. A file that doesn't decompress, or that would decompress to more than 16 MiB, stays as it is.
 std::vector<NamedFile> Decompressed(std::span<const NamedFile> files, std::vector<std::vector<uint8_t>>& storage);
 
 } // namespace ntdlib::dse

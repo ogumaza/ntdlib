@@ -50,8 +50,8 @@ constexpr RhythmController kSoundStageController = {"SQ_BGM_BDCN001_MAIN_RHYTHM"
 // and v27 its tempo. The game picks a minigame's B piece when the tempo is 121 or more (0x4429c0). The rhythm stage
 // plays at 120 until its half-way minigame, and then at its speed-up tempo: 180 unless the game sets another
 // (Scene::SettingBpm at 0x2c564 and Params::createInstance at 0x2ba34 of rc_stage01's module). The table gives the B
-// pieces 180 and the others 120. An Eden run of the stage's start shows the game writing 120 to v27, then starting the
-// controller and the first piece in the same frame.
+// pieces 180 and the others 120. At the stage's start, the game writes 120 to v27, then starts the controller and the
+// first piece in the same frame.
 std::vector<RhythmArchive> Jamboree()
 {
     return {

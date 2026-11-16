@@ -98,6 +98,10 @@ struct Performance : PerformanceBase
     std::vector<NoteVoices> note_channels; // at the note's ID less 1
     std::vector<std::vector<MixChange>> mix;
     std::vector<UnstartedNote> unstarted;
+
+    // The length of the driver's tick that the sequence played with (PerformOptions::tick_microseconds). The
+    // presets' envelopes and LFOs use it.
+    int tick_microseconds = ntdlib::dse::Driver::kTickMicroseconds;
 };
 
 // Options for playing a sequence.
@@ -106,6 +110,11 @@ struct PerformOptions
     // Main loop repetitions, at least 1. The default plays the intro and one loop, with MIDI loop markers.
     int loops = 1;
     ntdlib::dse::Build build = ntdlib::dse::Build::kLater; // the build of DSE's driver (dse::BuildOf)
+
+    // The length of the driver's tick that the game's settings give (dse::PlayerOptions::tick_microseconds). It sets
+    // the times of the driver's ticks, and with them the MIDI tempo, the lengths and the envelopes. A converter reads
+    // it from the game's profile (dse::TickOf).
+    int tick_microseconds = ntdlib::dse::Driver::kTickMicroseconds;
 };
 
 // Plays the song or the sound effect of `files` and records it. Throws std::invalid_argument for files with neither.

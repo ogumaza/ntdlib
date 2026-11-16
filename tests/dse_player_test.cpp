@@ -223,6 +223,25 @@ void TestRuns()
                  "the player doesn't mix in the enhanced mode");
 }
 
+// DSE's ticks come every 10 ms of the alarm, or once a video frame with the tick of 16.715 ms. Professor Layton and the
+// Last Specter's main game, on its code, runs DSE's thread 560,190 system clocks apart. The driver has no other tick.
+void TestTicks()
+{
+    SongPlayer alarm;
+    SongPlayer frames({.tick_microseconds = dse::Driver::kSlowTickMicroseconds});
+    XSFLIB_CHECK(alarm.player.TickClocks() == 335104 && alarm.player.NextTick() == 335104);
+    XSFLIB_CHECK(frames.player.TickClocks() == 560190 && frames.player.NextTick() == 560190);
+    std::vector<ntdlib::ntr::SoundOutput> out;
+    for (int i = 0; i < 100; i++)
+    {
+        frames.player.RunTick(out);
+    }
+    XSFLIB_CHECK(frames.player.Clock() == 100 * 560190 && frames.player.NextTick() == 101 * 560190);
+    XSFLIB_CHECK(std::ranges::any_of(out, Sounds));
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([] { dse::Player({.tick_microseconds = 16'000}); }) ==
+                 "DSE's driver has no tick of 16000 us");
+}
+
 // A host's release of a held note gives the samples of a note whose length runs out in the same tick, in both builds.
 // The note starts in the song's tick 0, in the driver's tick 2. A note of 24 ticks ends in the song's tick 24, which
 // runs in the driver's first tick d with 480,000 d > 500,000 * 25: tick 27. The host therefore releases the held note
@@ -331,6 +350,7 @@ int main()
     TestStatus();
     TestSnapshot();
     TestRuns();
+    TestTicks();
     TestRelease();
     TestMutes();
     return xsflib::testing::Summary("dse_player_test");

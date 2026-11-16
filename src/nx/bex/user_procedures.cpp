@@ -29,8 +29,7 @@ int16_t& At(ProcedureVariables& variables, VariablePlace place)
     return set[static_cast<std::size_t>(place.index) & 15];
 }
 
-// The places that Jamboree's constructor gives the procedures (fn_1039c0). No code of the game changes them
-// (fn_104354, fn_10438c and fn_1043a8 never ran in the Eden runs of the game).
+// The places that Jamboree's constructor gives the procedures (fn_1039c0). No code of the game changes them.
 constexpr VariablePlace kDrawSlot{1, 14};   // +0x8: the slot, and the result
 constexpr VariablePlace kDrawCount{1, 15};  // +0xc
 constexpr VariablePlace kTableIndex{1, 15}; // +0x201c

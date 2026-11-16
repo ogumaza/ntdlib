@@ -323,23 +323,20 @@ inline constexpr std::array kTwilightPrincessStates{
 };
 
 // Twilight Princess's states on the Wii: the table above, with Z2BGM_DUNGEON_LV9_02's _status3150 in place of its
-// _status12. Runs on a CPU emulator of changeBgmStatus and changeSubBgmStatus from the GameCube's USA release
-// (0x802aff8c, 0x802b1df4) and the Wii's third USA version (0x80294254, 0x80295dd0) logged each call of
-// setChildTrackVolume and setPortData. They covered every piece from 0x01000000 to 0x010000c0, with statuses 0 to 20
-// and twelve more up to 6200. The volumes differ only in that piece. The Wii's changeBgmStatus tests its status for 8
-// and 0x33, not 12, in each release: at 0x802957e0 in the third USA version, 0x8029601c in the first, 0x80295c48 in
-// the European release and 0x80297300 in the Japanese one. Either value gives room 8's volumes. For room 12, the code
-// passes volumes that it never sets: what its callers left in f28 to f31. setChildTrackVolume clamps each to the range
-// 0 to 1 (0x8029784c).
+// _status12. changeBgmStatus and changeSubBgmStatus set the volumes through setChildTrackVolume and setPortData: in the
+// GameCube's USA release at 0x802aff8c and 0x802b1df4, and in the Wii's third USA version at 0x80294254 and 0x80295dd0.
+// The volumes differ only in that piece. The Wii's changeBgmStatus tests its status for 8 and 0x33, not 12, in each
+// release: at 0x802957e0 in the third USA version, 0x8029601c in the first, 0x80295c48 in the European release and
+// 0x80297300 in the Japanese one. Either value gives room 8's volumes. For room 12, the code passes volumes that it
+// never sets: what its callers left in f28 to f31. setChildTrackVolume clamps each to the range 0 to 1 (0x8029784c).
 //
 // Those volumes last one frame. setSceneName turns on a flag for rooms 8 and 12 (0x8029bec4). While the flag is on and
 // the piece plays, processBgmFramework calls changeBgmStatus in each frame with Link's height as the status
 // (0x80297464), and the volumes move to the new ones over 30 frames. Room 12's floors run from 3150 to 6150, by its
 // player starts in R12_00.arc. Room 8's floor is at 6150. At 3150, the foot of room 12, the code gives room 12's
-// volumes. Runs of processBgmFramework's block on a CPU emulator, with Link at heights from 2999 to 7150, gave the
-// same volumes over 3000 in the four Wii releases and the GameCube's USA release. _status3150 holds them, as in HD's
-// table (kTwilightPrincessHdStates). HD's code tests the same values. Link's Crossbow Training's code tests for 8 and
-// 12, as the GameCube's does (0x8015770c and 0x801576f0).
+// volumes. Over 3000, processBgmFramework's block gives the same volumes in the four Wii releases and the GameCube's
+// USA release. _status3150 holds them, as in HD's table (kTwilightPrincessHdStates). HD's code tests the same values.
+// Link's Crossbow Training's code tests for 8 and 12, as the GameCube's does (0x8015770c and 0x801576f0).
 inline constexpr auto kTwilightPrincessWiiStates = []
 {
     auto wii = kTwilightPrincessStates;
@@ -368,10 +365,9 @@ static_assert(
     }());
 
 // Twilight Princess HD's states: the table above, with two changes that HD's code makes (Zelda.rpx of the USA release,
-// version 81). Runs of HD's changeBgmStatus (0x02c2286c), changeSubBgmStatus (0x02c214e4) and sceneBgmStart
-// (0x02c1954c) on a CPU emulator logged each call of setChildTrackVolume (0x02c20b24) and Z2SoundStarter::setPortData
-// (0x02c2e138). The runs covered every piece from 0x01000000 to 0x010000c0, with statuses 0 to 17 and ten more up to
-// 6150. The other states match the table. So do the four that change only port 9.
+// version 81). HD's changeBgmStatus (0x02c2286c), changeSubBgmStatus (0x02c214e4) and sceneBgmStart (0x02c1954c) set
+// the volumes through setChildTrackVolume (0x02c20b24) and Z2SoundStarter::setPortData (0x02c2e138). The other states
+// match the table. So do the four that change only port 9.
 //
 // Z2BGM_DUNGEON_LV9_02: HD tests the status for 8 and 0x33, not 12 (0x02c241f4 and 0x02c241fc). Either gives room
 // 8's volumes. Any other status up to 3000 plays children 3 to 6 at 0.3 without 0 to 2 and 7 to 9. sceneBgmStart passes
@@ -429,13 +425,12 @@ static_assert(kTwilightPrincessHdStates.back().sound != 0 && kTwilightPrincessHd
 // releases give the same states. The game's Z2SceneMgr::setSceneName (0x8015d03c) looks the stage's name up in a list
 // of 41 (0x802c7210). It takes the stage's music from a table that a static initialiser fills (0x8015d918). Its
 // sceneBgmStart (0x8015d2f0) then calls changeBgmStatus (0x80155f3c) for two of the stages' pieces. Z2BGM_DUNGEON_LV5
-// (stage ZP_007) takes the room as its status, and Z2BGM_HOLY_FOREST (ZP_038) takes 0. Runs of sceneBgmStart on a CPU
-// emulator, for each stage and each room on the disc, logged each call of setChildTrackVolume (0x80159e00). In rooms 1
-// and 2 of ZP_007, the snow ruins' music plays without children 0 to 4. In the stage's other rooms, it plays without
-// children 8 to 13, as in Twilight Princess. ZP_038 plays the game's version of the grove's music, which differs from
-// Twilight Princess's, without children 4 to 6. No other stage's music gets a state as it starts. The boss d_a_b_tn
-// (stage ZP_037) starts Z2BGM_TN_MBOSS and writes 1 to it through changeSubBgmStatus (0x80157cf0) as the fight goes
-// on, as in Twilight Princess.
+// (stage ZP_007) takes the room as its status, and Z2BGM_HOLY_FOREST (ZP_038) takes 0. sceneBgmStart sets the volumes
+// through setChildTrackVolume (0x80159e00). In rooms 1 and 2 of ZP_007, the snow ruins' music plays without children 0
+// to 4. In the stage's other rooms, it plays without children 8 to 13, as in Twilight Princess. ZP_038 plays the game's
+// version of the grove's music, which differs from Twilight Princess's, without children 4 to 6. No other stage's music
+// gets a state as it starts. The boss d_a_b_tn (stage ZP_037) starts Z2BGM_TN_MBOSS and writes 1 to it through
+// changeSubBgmStatus (0x80157cf0) as the fight goes on, as in Twilight Princess.
 //
 // Twilight Princess's other states don't arise from the scenes. The field code (fieldBgmFramework, 0x8015b618) runs
 // only in scenes 0x47 and 0x48, and sceneBgmStart's other special cases test scenes 0x2b to 0x41. Those are places in

@@ -19,6 +19,7 @@
 #include "xsflib/ascii.h"
 #include "xsflib/bytes.h"
 
+#include "gfsa.h"
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/error.h"
 #include "ntdlib/dse/formats.h"
@@ -200,6 +201,20 @@ std::vector<NamedFile> Decompressed(std::span<const NamedFile> files, std::vecto
     std::vector<NamedFile> result;
     for (const NamedFile& file : files)
     {
+        // An archive's stored files would give FindFiles their DSE files twice.
+        if (const std::optional<std::vector<GfsaMember>> members = GfsaMembers(file.bytes))
+        {
+            for (const GfsaMember& member : *members)
+            {
+                std::optional<std::vector<uint8_t>> bytes = DecompressLevel5(member.bytes, kMostDecompressed);
+                if (bytes && NextFile(*bytes, 0) < bytes->size())
+                {
+                    storage.push_back(std::move(*bytes));
+                    result.push_back({file.path + "/" + member.path, storage.back()});
+                }
+            }
+            continue;
+        }
         result.push_back(file);
         if (file.bytes.size() < 4 || file.bytes[0] != kLz77 || (xsflib::LoadLe32(file.bytes.data()) >> 8) < kHeaderSize)
         {

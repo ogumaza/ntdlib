@@ -6,7 +6,8 @@
 // tick starts, and when the driver's tick ends. A MIDI note ends when its voices release, or when each of its voices
 // has ended or gone to another note.
 //
-// The driver runs a tick about every 10 ms. A sequence's tempo adds to a counter each tick, and a tick of the sequence
+// The driver runs a tick about every 10 ms, or once a video frame where the game's settings give the tick of 16.715
+// ms (PerformOptions::tick_microseconds). A sequence's tempo adds to a counter each tick, and a tick of the sequence
 // runs each time the counter passes the length of a quarter note. MIDI's tempo puts each of the sequence's ticks at its
 // nominal time, up to a driver's tick before the driver's tick that runs it. The events of a sequence's tick go at the
 // start of that driver's tick (Performance::frame_ticks). The ends of voices that a driver's tick finds go at its start
@@ -83,10 +84,6 @@ const ntdlib::sequence_export::LoopRules kLoopRules{{}, false};
 
 constexpr int kVoices = ntdlib::dse::Driver::kVoices;
 constexpr int kMidiTracks = 16;
-
-// A tick of the driver in milliseconds, and the driver's nominal tick, for which a sequence's tempo counts.
-constexpr double kTickMs = 1000.0 * Player::kTickClocks / ntdlib::ntr::kSystemClockHz;
-constexpr double kNominalTickMs = ntdlib::dse::Driver::kTickMicroseconds / 1000.0;
 
 // An LFO's output that changes the pan (LfoValues::output).
 constexpr uint8_t kPanOutput = 3;
@@ -280,6 +277,10 @@ private:
     std::vector<uint8_t> track_channels_; // the channel of each of the sequence's tracks, by the tracks' slots
     PerformOptions options_;
     std::unique_ptr<Player> player_;
+
+    // A tick of the driver in milliseconds, and the driver's nominal tick, for which a sequence's tempo counts.
+    double tick_ms_ = 0.0;
+    double nominal_tick_ms_ = 0.0;
     State s_;
     bool stop_ = false;
     std::optional<uint32_t> stop_tick_;
@@ -290,9 +291,13 @@ Performer::Performer(const SequenceFiles& files, const PerformOptions& options, 
                      const std::array<uint8_t, 16>& part_limits, const std::vector<LoopChoice>& loop_choices)
     : files_(files),
       options_(options),
-      player_(std::make_unique<Player>(ntdlib::dse::PlayerOptions{.build = options.build})),
+      player_(std::make_unique<Player>(
+          ntdlib::dse::PlayerOptions{.build = options.build, .tick_microseconds = options.tick_microseconds})),
+      tick_ms_(1000.0 * static_cast<double>(player_->TickClocks()) / ntdlib::ntr::kSystemClockHz),
+      nominal_tick_ms_(options.tick_microseconds / 1000.0),
       s_(loop_choices)
 {
+    s_.out.tick_microseconds = options.tick_microseconds;
     const std::vector<ntdlib::dse::Track>* tracks = nullptr;
     if (files.song != nullptr)
     {
@@ -577,7 +582,7 @@ void Performer::OnNote(const NoteEvent& e)
 
     // SoundFont holds a pitch LFO and a volume LFO, each a triangle without a fade (convert.h).
     std::set<uint8_t> outputs;
-    for (const LfoShape& lfo : PresetLfos(key))
+    for (const LfoShape& lfo : PresetLfos(key, options_.tick_microseconds))
     {
         if (lfo.output == kPanOutput)
         {
@@ -665,7 +670,7 @@ void Performer::SyncTempo()
     }
 
     // A tick of the sequence takes tempo / timebase microseconds of the driver's nominal ticks.
-    s_.ms_per_tick = tempo / 1000.0 / s_.out.timebase * (kTickMs / kNominalTickMs);
+    s_.ms_per_tick = tempo / 1000.0 / s_.out.timebase * (tick_ms_ / nominal_tick_ms_);
     s_.recorder.SetTempo(s_.out, s_.tick, 60000.0 / s_.ms_per_tick / s_.out.timebase);
 }
 
@@ -974,7 +979,7 @@ bool Performer::AnySounding() const
 
 double Performer::FrameMs(uint64_t frame) const
 {
-    return static_cast<double>(frame) * kTickMs - static_cast<double>(s_.first_frame) * kTickMs;
+    return static_cast<double>(frame) * tick_ms_ - static_cast<double>(s_.first_frame) * tick_ms_;
 }
 
 double Performer::TickMs(uint32_t tick) const
@@ -1177,7 +1182,7 @@ void Performer::EndPerformance(bool finished)
     double end_ms = FrameMs(s_.frame);
     if (finished)
     {
-        const auto limit = s_.frame + static_cast<uint64_t>(kMaxTailSeconds * 1000.0 / kTickMs);
+        const auto limit = s_.frame + static_cast<uint64_t>(kMaxTailSeconds * 1000.0 / tick_ms_);
         while (AnySounding() && s_.frame < limit)
         {
             player_->RunTick();

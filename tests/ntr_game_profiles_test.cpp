@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Tests of the DS games' profiles (ntdlib/ntr/game_profiles.h). The expected values come from the games' code at the
-// addresses that src/ntr/game_profiles.cpp cites, and from the runs of the games' code on ntdlib's DS machine that its
-// comments give.
+// addresses that src/ntr/game_profiles.cpp cites.
 
 #include <algorithm>
 #include <cstddef>
@@ -10,13 +9,13 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
-
-#include "xsflib/testing/check.h"
 
 #include "ntdlib/ntr/archive_player.h"
 #include "ntdlib/ntr/game_profiles.h"
 #include "ntdlib/ntr/snd/driver.h"
+#include "xsflib/testing/check.h"
 
 namespace
 {
@@ -124,8 +123,8 @@ void TestBlueRescueTeam()
     Check(title.settings.channels.empty(), "the archive's players keep their channels");
 }
 
-// Diamond's room sets the TV's music to volume 50 (script command 0x283, 0x0200488C). A run of the game's code sent
-// the player's level of -81 (0.1 dB).
+// Diamond's room sets the TV's music to volume 50 (script command 0x283, 0x0200488C). The call sets the player's level
+// to -81 (0.1 dB).
 void TestRoomVolume()
 {
     const GameProfile tv = GameProfileOf("ADAE", "data/sound/sound_data.sdat", 0, "SEQ_TV_HOUSOU");
@@ -244,6 +243,51 @@ void TestOutputEffect()
     Check(!diamond.settings.effect, "Diamond starts no output effect");
 }
 
+// Spirit Tracks' BGM manager plays SEQ_36 as SEQ_35 in its mixer's state 6, and SEQ_40 as SEQ_39 in state 7
+// (0x0206CBC8 to 0x0206CF44, the table at 0x020AA534). Runs of the manager on ntdlib's DS machine sent the player's
+// levels of -52 and -47 (0.1 dB), the tracks' faders and the tempo's ratio of 253. The manager writes local variable 0
+// with 0 after a start of SEQ_39 (0x0206CF50), and after a start of SEQ_37 that follows SEQ_39 (0x0206CF70). A new
+// start of SEQ_27 takes state 20 (0x0206CFF0), and the run sent its tracks' faders. The rows hold for the USA and
+// European releases (BKIE, BKIP).
+void TestSpiritTracks()
+{
+    constexpr std::string_view kArchive = "SoundData/final_sound_data.sdat";
+    const GameProfile seq36 = GameProfileOf("BKIE", kArchive, 0, "SEQ_36");
+    const GameProfile seq40 = GameProfileOf("BKIP", kArchive, 0, "SEQ_40");
+    const GameProfile seq37 = GameProfileOf("BKIE", kArchive, 0, "SEQ_37");
+
+    const snd::CommandList kState6 = {
+        {.id = CommandId::kPlayerParameter, .args = {0, 0x06, static_cast<uint32_t>(-52), 2}},
+        {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x0001, 0x0A, static_cast<uint32_t>(-47)}},
+        {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x01E0, 0x0A, 0xFFFF8000}},
+        {.id = CommandId::kPlayerParameter, .args = {0, 0x1A, 253, 2}},
+    };
+    Check(seq36.commands == kState6 && seq36.arrangements.empty(), "SEQ_36 plays SEQ_35's level in state 6");
+
+    const snd::CommandList kState7 = {
+        {.id = CommandId::kPlayerParameter, .args = {0, 0x06, static_cast<uint32_t>(-47), 2}},
+        {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x0082, 0x0A, 0xFFFF8000}},
+        {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x0104, 0x0A, static_cast<uint32_t>(-30)}},
+        {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x0008, 0x0A, static_cast<uint32_t>(-6)}},
+    };
+    Check(seq40.commands == kState7, "SEQ_40 plays SEQ_39 in state 7");
+    Check(seq40.settings.variables.local[0] == 0 && seq40.arrangements.size() == 1 &&
+              seq40.arrangements[0].suffix == "_INTRO" &&
+              seq40.arrangements[0].variables == std::map<uint8_t, int16_t>{{0, -1}},
+          "SEQ_40 starts at section 0, and _INTRO plays the intro");
+
+    Check(seq37.commands.empty() && !seq37.settings.variables.local[0] && seq37.arrangements.size() == 1 &&
+              seq37.arrangements[0].suffix == "_RESUME" &&
+              seq37.arrangements[0].variables == std::map<uint8_t, int16_t>{{0, 0}},
+          "SEQ_37 starts with its intro, and _RESUME at section 0");
+    Check(IsDefault(GameProfileOf("BKIE", kArchive, 0, "SEQ_35")), "SEQ_35 plays as the archive gives it");
+
+    const snd::CommandList kState20 = {
+        {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0xC004, 0x0A, 0xFFFF8000}}};
+    Check(GameProfileOf("BKIE", kArchive, 0, "SEQ_27").commands == kState20,
+          "SEQ_27 silences tracks 2, 14 and 15 at the archive's level");
+}
+
 // A sequence, a file or a game that no row names plays as the archive gives it.
 void TestNoProfile()
 {
@@ -268,6 +312,7 @@ int main()
                                         TestNewSuperMarioBros();
                                         TestMarioKartVariables();
                                         TestOutputEffect();
+                                        TestSpiritTracks();
                                         TestNoProfile();
                                     });
 }

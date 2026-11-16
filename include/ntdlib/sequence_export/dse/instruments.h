@@ -70,7 +70,8 @@ struct Sf2Envelope
     int attack = -12000, hold = -12000, decay = -12000, sustain = 0, release = -12000;
 };
 
-Sf2Envelope ConvertEnvelope(const ntdlib::dse::EnvelopeValues& e);
+// The envelope of `e` as the driver steps it with a tick of `tick_microseconds` (dse::PlayerOptions).
+Sf2Envelope ConvertEnvelope(const ntdlib::dse::EnvelopeValues& e, int tick_microseconds);
 
 // The amplitude envelope in SFZ's terms: times in seconds, and the sustain in percent of full amplitude. The decay and
 // the release fall by a factor of e^-8 (69.49 dB) over their time. sfzformat.com's ampeg_attack page gives that fall.
@@ -79,7 +80,8 @@ struct SfzEnvelope
     double attack = 0.0, hold = 0.0, decay = 0.0, sustain = 100.0, release = 0.0;
 };
 
-SfzEnvelope ConvertEnvelopeForSfz(const ntdlib::dse::EnvelopeValues& e);
+// The same in SFZ's terms.
+SfzEnvelope ConvertEnvelopeForSfz(const ntdlib::dse::EnvelopeValues& e, int tick_microseconds);
 
 // An LFO of a preset in the units that SoundFont and SFZ take: its rate in Hz, its delay and fade in seconds, and half
 // its swing: in cents of pitch, in steps of the note's level from 0 to 127, or in steps of the pan from 0 to 127.
@@ -96,8 +98,9 @@ struct LfoShape
     bool triangle = false;
 };
 
-// The preset's LFOs that change the sound, in the order of their slots.
-std::vector<LfoShape> PresetLfos(const PresetKey& key);
+// The preset's LFOs that change the sound, in the order of their slots, with a tick of `tick_microseconds` in the
+// game's settings.
+std::vector<LfoShape> PresetLfos(const PresetKey& key, int tick_microseconds);
 
 // The swing of a volume LFO of `depth` steps of the note's level in dB, at the level of the zone's notes at a velocity
 // of 127: half the difference between its two peaks. The driver adds the LFO to the level before it squares it.
@@ -116,6 +119,12 @@ public:
     // The name of wave `wave` of bank `bank` among the sequence's samples: "w<bank>_<wave>".
     static std::string WaveName(uint16_t bank, uint16_t wave);
 
+    // Gives the waves of each bank of `names` the name "<name>_<wave>" in the SFZ files (SfzBankNames).
+    void SetSfzNames(std::map<uint16_t, std::string> names);
+
+    // The name of wave `wave` of bank `bank` in the SFZ files: the one that SetSfzNames gives, or else WaveName's.
+    std::string SfzWaveName(uint16_t bank, uint16_t wave) const;
+
     // The wave, or null for one that can't be read. A wave that can't be read gives a warning.
     const Pcm* Wave(uint16_t bank, uint16_t wave);
 
@@ -128,6 +137,7 @@ private:
     std::map<uint16_t, const ntdlib::dse::WaveBank*> banks_;
     const ntdlib::dse::WaveBank* main_bank_ = nullptr;
     std::map<std::pair<uint16_t, uint16_t>, std::optional<Pcm>> waves_;
+    std::map<uint16_t, std::string> sfz_names_;
     std::vector<std::string> warnings_;
 };
 

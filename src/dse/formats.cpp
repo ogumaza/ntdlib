@@ -82,6 +82,43 @@ void CheckHeader(const xsflib::Reader& r, const char* magic)
     }
 }
 
+// Whether the bank of sound effects of `r` has the second layout (UnsupportedLayout): no seq chunk at 0x40, but a table
+// of offsets there whose first entry gives a sequence's settings and then a track chunk or an eoc chunk. A bank whose
+// slots are all empty ends after its table, padded to 16 bytes.
+bool IsSecondLayout(const xsflib::Reader& r)
+{
+    constexpr std::size_t kTable = 0x40;
+    if (r.Size() < kTable + 4 || std::memcmp(r.Sub(kTable, 4).data(), "seq ", 4) == 0)
+    {
+        return false;
+    }
+
+    const std::size_t slots = r.U16(0x30);
+    const std::size_t table_end = kTable + 2 * slots;
+    if (slots == 0 || table_end > r.Size())
+    {
+        return false;
+    }
+    for (std::size_t i = 0; i < slots; i++)
+    {
+        const std::size_t offset = r.U16(kTable + 2 * i);
+        if (offset == 0)
+        {
+            continue;
+        }
+
+        const std::size_t chunk = offset + SequenceInfo::kSize;
+        if (offset < table_end || chunk + 4 > r.Size())
+        {
+            return false;
+        }
+        const std::span<const uint8_t> label = r.Sub(chunk, 4);
+        return std::memcmp(label.data(), "trk ", 4) == 0 || std::memcmp(label.data(), "eoc ", 4) == 0;
+    }
+
+    return r.Size() == AlignUp(table_end, 16);
+}
+
 // Reads a track chunk at `at`, and gives the place after it and its padding. The events can run on into the padding.
 Track ReadTrack(const xsflib::Reader& r, std::size_t at, std::size_t& next)
 {
@@ -699,7 +736,7 @@ std::vector<uint8_t> WaveBank::Write() const
 
     WriteEnd(w, "eod ", kBankChunk);
     w.Put32(0x08, static_cast<uint32_t>(w.Size()));
-    if (samples)
+    if (samples && xsflib::LoadLe32(&header[0x40]) != 0)
     {
         w.Put32(0x40, static_cast<uint32_t>(samples->size()));
     }
@@ -708,7 +745,10 @@ std::vector<uint8_t> WaveBank::Write() const
     {
         w.Put16(0x48, static_cast<uint32_t>(instruments->programs.size()));
     }
-    w.Put32(0x4C, static_cast<uint32_t>(wavi_size));
+    if (xsflib::LoadLe32(&header[0x4C]) != kNoWaviSize)
+    {
+        w.Put32(0x4C, static_cast<uint32_t>(wavi_size));
+    }
     return w.Take();
 }
 
@@ -716,6 +756,10 @@ SoundEffects SoundEffects::Parse(std::span<const uint8_t> file)
 {
     const xsflib::Reader r(file);
     CheckHeader(r, "sedl");
+    if (IsSecondLayout(r))
+    {
+        throw UnsupportedLayout("the layout without a seq chunk isn't supported");
+    }
 
     SoundEffects effects;
     effects.header = Take<kHeaderSize>(r, 0);

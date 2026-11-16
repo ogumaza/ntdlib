@@ -42,7 +42,8 @@ struct SongSet
 // only bank of its name in any folder, such as BGM/x.swd for mid/x.smd, or else the only bank of its id. Only the
 // bank of the song's name in its folder can be a main bank. The other rules leave main banks out. A bank whose waves
 // lie in a main bank takes the main bank of the id at the bank's 0x40: the one in its folder, or else the first in
-// `files`. The sets come in the order of the songs' files.
+// `files` of those whose paths start with the longest part of the bank's path, such as lt4/wav/BG.SWD for
+// lt4_main_en.fa/snd/BG_004.cse/BG_004.SWD. The sets come in the order of the songs' files.
 std::vector<SongSet> FindSongSets(std::span<const NamedFile> files);
 
 // The banks of a sound effect: indices into the list of files, and the ids of its list that no file holds.

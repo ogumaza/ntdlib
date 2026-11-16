@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the model of the two games' user procedures against runs of the games' routines from hand-set states:
-// fn_1039c0, fn_104290, fn_104318 and fn_103b80 in Super Mario Party Jamboree's main, and fn_479c04, fn_479d34 and
-// fn_479c60 in Mario Party Superstars'. Each case starts from the constructor's state and calls a procedure a few times
-// with the same slot and count. The expected values are what the game's routine wrote to the slot's variable after
-// each call.
+// Checks the model of the two games' user procedures against the games' routines: fn_1039c0, fn_104290, fn_104318 and
+// fn_103b80 in Super Mario Party Jamboree's main, and fn_479c04, fn_479d34 and fn_479c60 in Mario Party Superstars'.
+// Each case starts from the constructor's state and calls a procedure a few times with the same slot and count. The
+// expected values are what the game's routine writes to the slot's variable after each call.
 
 #include <array>
 #include <cstddef>

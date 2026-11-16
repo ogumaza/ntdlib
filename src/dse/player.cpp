@@ -37,15 +37,18 @@ constexpr uint32_t kSoundBiasMiddle = 0x200;
 // The channels' status in the shared work (SNDSharedWork).
 constexpr uint32_t kChannelStatus = 0x08;
 
-// DSE's start-up commands (0x0206C3E0): it locks every channel against the driver's sequences, stops every channel,
-// capture and alarm, and sets up and starts alarm 0, whose wake-ups run DSE's ticks.
-const std::vector<snd::CommandList> kStartUp = {{
+// DSE's start-up commands (0x0206C3E0): it locks every channel against the driver's sequences, and stops every
+// channel, capture and alarm. With the tick of 10 ms, it then sets up and starts alarm 0, whose wake-ups run DSE's
+// ticks (kAlarm).
+const snd::CommandList kStartUp = {
     {snd::CommandId::kLockChannels, {0xFFFF, 0, 0, 0}},
     {snd::CommandId::kStartTimer, {0, 0, 0, 0}},
     {snd::CommandId::kStopTimer, {0xFFFF, 0xFFFF, 0xFFFF, 0}},
+};
+const snd::CommandList kAlarm = {
     {snd::CommandId::kSetUpAlarm, {0, Player::kTickClocks / 64, Player::kTickClocks / 64, 2}},
     {snd::CommandId::kStartTimer, {0, 0, 1, 0}},
-}};
+};
 
 } // namespace
 
@@ -68,8 +71,10 @@ Player::Player(const PlayerOptions& options)
       unit_(memory_),
       registers_(unit_),
       driver_(memory_, registers_),
-      dse_(options.build),
-      next_frame_(options.first_frame)
+      dse_(options.build, options.tick_microseconds),
+      next_frame_(options.first_frame),
+      tick_clocks_(TickClocks(options.tick_microseconds)),
+      next_tick_(tick_clocks_)
 {
     if (options.first_frame == 0 || options.first_frame > snd::kFrameClocks)
     {
@@ -78,8 +83,13 @@ Player::Player(const PlayerOptions& options)
     unit_.Write(kSoundBias, 2, kSoundBiasMiddle);
     driver_.Start();
     snd::InitSharedWork(std::span(memory_).subspan(kSharedWork - kMainMemory, snd::kSharedWorkSize));
-    std::vector<snd::CommandList> lists = {{{snd::CommandId::kSetSharedWork, {kSharedWork, 0, 0, 0}}}};
-    lists.insert(lists.end(), kStartUp.begin(), kStartUp.end());
+    snd::CommandList start_up = kStartUp;
+    if (options.tick_microseconds == dse::Driver::kTickMicroseconds)
+    {
+        start_up.insert(start_up.end(), kAlarm.begin(), kAlarm.end());
+    }
+    const std::vector<snd::CommandList> lists = {{{snd::CommandId::kSetSharedWork, {kSharedWork, 0, 0, 0}}},
+                                                 std::move(start_up)};
     driver_.Frame(true, lists);
     channel_tracks_.fill(-1);
     if (options.enhanced)
@@ -335,7 +345,7 @@ void Player::Tick()
     {
         pending_.push_back(std::move(list));
     }
-    next_tick_ += kTickClocks;
+    next_tick_ += tick_clocks_;
 }
 
 void Player::Play(uint64_t end, std::vector<ntr::SoundOutput>* out, std::vector<float>* enhanced_out)
@@ -362,6 +372,24 @@ void Player::Play(uint64_t end, std::vector<ntr::SoundOutput>* out, std::vector<
 uint64_t Player::Clock() const
 {
     return clock_;
+}
+
+uint64_t Player::TickClocks(int tick_microseconds)
+{
+    switch (tick_microseconds)
+    {
+    case dse::Driver::kTickMicroseconds:
+        return kTickClocks;
+    case dse::Driver::kSlowTickMicroseconds:
+        return kVideoFrameClocks;
+    default:
+        throw std::invalid_argument("DSE's driver has no tick of " + std::to_string(tick_microseconds) + " us");
+    }
+}
+
+uint64_t Player::TickClocks() const
+{
+    return tick_clocks_;
 }
 
 uint64_t Player::NextTick() const

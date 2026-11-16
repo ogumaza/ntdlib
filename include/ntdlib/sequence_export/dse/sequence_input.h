@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -32,6 +33,7 @@ struct SequenceInput
     std::shared_ptr<const ntdlib::dse::SoundEffects> effects = {}; // in place of a song
     uint16_t effect = 0;
     std::vector<std::shared_ptr<const ntdlib::dse::WaveBank>> banks = {};
+    std::vector<std::string> bank_paths = {}; // the banks' files, in the order of `banks`
     std::shared_ptr<const ntdlib::dse::WaveBank> main_bank = {};
 
     // The files for Perform. They point into the input, which must outlive them.
@@ -43,5 +45,12 @@ struct SequenceInput
 // a sound effect whose list names a bank that no file holds.
 std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile> files,
                                          std::vector<std::string>& warnings);
+
+// The names of the banks' waves in the SFZ files of `inputs`, for inputs that share a folder of samples
+// (BankSet::SetSfzNames). Two banks of one id in different files would give their waves the same names
+// ("w<bank>_<wave>"). For each input, the result maps each such id to the stem of its bank's file, made safe for a file
+// name. Where two such banks have one stem, or a stem matches the "w<bank>" of a kept name, the banks take their paths
+// without the extension, made safe. The other banks keep their names. Each input's `bank_paths` must name its banks.
+std::vector<std::map<uint16_t, std::string>> SfzBankNames(std::span<const SequenceInput* const> inputs);
 
 } // namespace ntdlib::sequence_export::dse

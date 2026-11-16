@@ -20,10 +20,12 @@ namespace
 {
 
 constexpr uint8_t kLz = 0x10;
-constexpr uint8_t kLzLong = 0x11;  // LZ77 with longer copies
-constexpr uint8_t kHuffman = 0x28; // Huffman coding of 8-bit symbols
-constexpr uint8_t kLh = 0x40;      // LZ77 with Huffman coding of its symbols
-constexpr uint8_t kLrc = 0x50;     // LZ77 with range coding of its symbols
+constexpr uint8_t kLzLong = 0x11;    // LZ77 with longer copies
+constexpr uint8_t kHuffman4 = 0x24;  // Huffman coding of 4-bit symbols, without the header only
+constexpr uint8_t kHuffman = 0x28;   // Huffman coding of 8-bit symbols
+constexpr uint8_t kRunLength = 0x30; // run-length coding, without the header only
+constexpr uint8_t kLh = 0x40;        // LZ77 with Huffman coding of its symbols
+constexpr uint8_t kLrc = 0x50;       // LZ77 with range coding of its symbols
 
 // The most bytes that LH and LRC data may hold after their last symbol. The game's LH decoder refuses data with more
 // (see DecompressLh). Its LRC decoder doesn't check. The check here keeps data that only starts like LRC data from
@@ -183,12 +185,13 @@ std::vector<uint8_t> DecompressLz(std::span<const uint8_t> data, const Header& h
     return out;
 }
 
-// Huffman coding with 8-bit symbols. The tree follows the header. Its first byte n gives the tree's size: (n + 1) * 2
-// bytes with that byte. The nodes follow, the root first. A node that isn't a symbol gives in its low 6 bits where its
-// pair of children is: at the node's offset with bit 0 cleared, plus 2, plus twice that value. Bit 7 is set when the
-// first child is a symbol. Bit 6 is set when the second is. The bits follow the tree, in 32-bit little-endian words.
-// Each word is read from its top bit down. A bit of 0 chooses the first child. A bit of 1 chooses the second. Reaching
-// a symbol writes it and starts again at the root.
+// Huffman coding with 8-bit symbols, or with 4-bit symbols (type 0x24), two to a byte, the first in its low half. The
+// tree follows the header. Its first byte n gives the tree's size: (n + 1) * 2 bytes with that byte. The nodes follow,
+// the root first. A node that isn't a symbol gives in its low 6 bits where its pair of children is: at the node's
+// offset with bit 0 cleared, plus 2, plus twice that value. Bit 7 is set when the first child is a symbol. Bit 6 is set
+// when the second is. The bits follow the tree, in 32-bit little-endian words. Each word is read from its top bit down.
+// A bit of 0 chooses the first child. A bit of 1 chooses the second. Reaching a symbol writes it and starts again at
+// the root.
 std::vector<uint8_t> DecodeHuffman(std::span<const uint8_t> data, const Header& header)
 {
     if (header.start >= data.size() || data.size() - header.start < (size_t{data[header.start]} + 1) * 2)
@@ -198,14 +201,17 @@ std::vector<uint8_t> DecodeHuffman(std::span<const uint8_t> data, const Header& 
 
     const size_t root = header.start + 1;
     const size_t bits = header.start + (size_t{data[header.start]} + 1) * 2;
+    const bool nibbles = header.type == kHuffman4;
     std::vector<uint8_t> out;
     out.reserve(ReserveSize(data, header));
     Reader in(data, bits);
     size_t node = root;
-    while (out.size() < header.size)
+    // A byte whose low half is written waits for its high half.
+    bool low_written = false;
+    while (out.size() < header.size || low_written)
     {
         const uint32_t word = in.Word();
-        for (int bit = 31; bit >= 0 && out.size() < header.size; --bit)
+        for (int bit = 31; bit >= 0 && (out.size() < header.size || low_written); --bit)
         {
             const uint32_t branch = word >> bit & 1;
             const uint8_t value = data[node];
@@ -215,15 +221,53 @@ std::vector<uint8_t> DecodeHuffman(std::span<const uint8_t> data, const Header& 
                 throw Error("Huffman data is damaged");
             }
 
-            if (value & (0x80u >> branch))
+            if (!(value & (0x80u >> branch)))
+            {
+                node = child;
+                continue;
+            }
+
+            node = root;
+            if (!nibbles)
             {
                 out.push_back(data[child]);
-                node = root;
+            }
+            else if (!low_written)
+            {
+                out.push_back(data[child] & 0xF);
+                low_written = true;
             }
             else
             {
-                node = child;
+                out.back() = static_cast<uint8_t>(out.back() | (data[child] & 0xF) << 4);
+                low_written = false;
             }
+        }
+    }
+
+    return out;
+}
+
+// Run-length coding: a flag byte before each run. With its top bit set, the run is the next byte (flag & 0x7F) + 3
+// times. Otherwise it is the next (flag & 0x7F) + 1 bytes. A run stops at the end of the data.
+std::vector<uint8_t> DecodeRunLength(std::span<const uint8_t> data, const Header& header)
+{
+    std::vector<uint8_t> out;
+    out.reserve(ReserveSize(data, header));
+    Reader in(data, header.start);
+    while (out.size() < header.size)
+    {
+        const uint8_t flag = in.Byte();
+        const size_t length = (flag & 0x80) != 0 ? (flag & 0x7Fu) + 3 : (flag & 0x7Fu) + 1;
+        const size_t end = std::min(header.size, out.size() + length);
+        if ((flag & 0x80) != 0)
+        {
+            out.resize(end, in.Byte());
+            continue;
+        }
+        while (out.size() < end)
+        {
+            out.push_back(in.Byte());
         }
     }
 
@@ -633,6 +677,21 @@ std::vector<uint8_t> DecompressCx(std::span<const uint8_t> data, size_t max_size
         return DecompressLrc(data, *header);
     default:
         return DecompressLz(data, *header);
+    }
+}
+
+std::vector<uint8_t> DecompressBody(std::span<const uint8_t> data, BodyFormat format, size_t size)
+{
+    switch (format)
+    {
+    case BodyFormat::kHuffman4:
+        return DecodeHuffman(data, Header{kHuffman4, size, 0});
+    case BodyFormat::kHuffman8:
+        return DecodeHuffman(data, Header{kHuffman, size, 0});
+    case BodyFormat::kRunLength:
+        return DecodeRunLength(data, Header{kRunLength, size, 0});
+    default:
+        return DecompressLz(data, Header{kLz, size, 0});
     }
 }
 

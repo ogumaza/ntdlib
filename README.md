@@ -169,7 +169,7 @@ From installed copies (`cmake --install build` after configuring each library wi
 installed first:
 
 ```cmake
-find_package(ntdlib 5.0 REQUIRED)
+find_package(ntdlib 6.0 REQUIRED)
 target_link_libraries(my_program PRIVATE ntdlib::sar)
 ```
 

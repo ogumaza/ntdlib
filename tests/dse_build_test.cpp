@@ -124,7 +124,8 @@ void TestFingerprintSeesChangedCode()
     XSFLIB_CHECK(constant != original);
 }
 
-// Made-up code is no build that the model covers. Neither is code without a table, nor a table of Thumb handlers.
+// Made-up code is no build that the model covers, as ARM code or as Thumb code. Code without a table has none, and
+// neither has a table that mixes ARM and Thumb handlers.
 void TestUnknownBuild()
 {
     const std::vector<uint8_t> bytes = DriverCode(0x02000000, {});
@@ -133,15 +134,24 @@ void TestUnknownBuild()
     {
         thumb[4 * i] |= 1;
     }
+    std::vector<uint8_t> mixed = bytes;
+    mixed[0] |= 1;
     const std::vector<uint8_t> plain(0x1000, 0);
 
     const std::vector<dse::CodeBlock> made_up = {{0x02000000, bytes}};
     const std::vector<dse::CodeBlock> thumb_code = {{0x02000000, thumb}};
+    const std::vector<dse::CodeBlock> mixed_code = {{0x02000000, mixed}};
     const std::vector<dse::CodeBlock> no_table = {{0x02000000, plain}};
+
+    const std::vector<dse::DriverCode> found = dse::FindDriverCode(thumb_code);
 
     XSFLIB_CHECK(!dse::BuildOf(made_up));
     XSFLIB_CHECK(!dse::BuildOf(std::vector<dse::CodeBlock>{}));
-    XSFLIB_CHECK(dse::FindDriverCode(thumb_code).empty());
+    XSFLIB_CHECK(found.size() == 1);
+    XSFLIB_CHECK(found.at(0).thumb);
+    XSFLIB_CHECK(found.at(0).table == 0x02000000);
+    XSFLIB_CHECK(!dse::BuildOf(thumb_code));
+    XSFLIB_CHECK(dse::FindDriverCode(mixed_code).empty());
     XSFLIB_CHECK(dse::FindDriverCode(no_table).empty());
 }
 

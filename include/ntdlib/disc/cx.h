@@ -28,4 +28,19 @@ bool IsCx(std::span<const uint8_t> data);
 // than `max_size` bytes. LH or LRC data with more than 0x20 bytes after its last symbol counts as damaged.
 std::vector<uint8_t> DecompressCx(std::span<const uint8_t> data, std::size_t max_size);
 
+// The formats of the DS's BIOS that DecompressBody takes. GBATEK documents them as types 0x10, 0x24, 0x28 and 0x30.
+enum class BodyFormat
+{
+    kLz77,      // LZ77 (type 0x10)
+    kHuffman4,  // Huffman coding of 4-bit symbols (type 0x24)
+    kHuffman8,  // Huffman coding of 8-bit symbols (type 0x28)
+    kRunLength, // run-length coding (type 0x30)
+};
+
+// Decompresses `size` bytes of data in `format` that comes without the 4-byte header, as in packs with a header that
+// gives the format and the size. Two 4-bit Huffman symbols make a byte, the first in its low half. Run-length data is a
+// flag byte before each run: with its top bit set, the next byte (flag & 0x7F) + 3 times, else the next (flag & 0x7F)
+// + 1 bytes. Throws Error if the data is damaged.
+std::vector<uint8_t> DecompressBody(std::span<const uint8_t> data, BodyFormat format, std::size_t size);
+
 } // namespace ntdlib::disc

@@ -338,17 +338,17 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 //
 // Mii Maker sets the levels of MEDIT_BGM_FACE's tracks from its code (0x19E97C, through SetTrackVolume at 0x1EFF90).
 // Its first screen starts the piece and sets tracks 8 to 15 to a volume of 0 at once (0x27D0FC). The list gives that
-// start. Two other routines give the same tracks (0x27D038, and 0x1C4718 with the sound's volume at 0.7). Two more
-// give the later mixes. 0x27D470 (state 6 of a screen's update at 0x171344) sets the sound's volume to 0.7 (0x19EAD0),
+// start. Two other routines give the same tracks (0x27D038, and 0x1C4718 with the sound's volume at 0.7). Two more give
+// the later mixes. 0x27D470 (state 6 of a screen's update at 0x171344) sets the sound's volume to 0.7 (0x19EAD0),
 // tracks 8 and 9 to 0.8 and tracks 3, 4 and 7 to 0. 0x27D9E4 (state 8, at 0x171470) also sets track 10 to 0.75. While
 // the piece plays, each fades over 30 frames, and the tracks that go out fade over 60. Tracks 10 to 15 keep the first
-// screen's volume of 0 through 0x27D470. kMiiMakerMixes gives the two mixes, named by the tracks that they add. A
-// Unicorn run of each routine from a hand-set state gives the values. Which screens run the two states wasn't mapped.
+// screen's volume of 0 through 0x27D470. kMiiMakerMixes gives the two mixes, named by the tracks that they add. Which
+// screens run the two states wasn't mapped.
 //
 // Seven of Mario Party: Island Tour's minigame and boss pieces set their tempo from player variable 0. A track moves a
 // copy of the variable toward it every 2 ticks, clamps the copy and scales it (TEMPO_CONTROL_START). The game writes
 // the variable as the piece plays. Each minigame's code is in a separate module (rom:/dll/mod_mg*.cro.p), and the
-// addresses below are offsets in its file. Azahar runs that patched the game into each minigame give the values.
+// addresses below are offsets in its file.
 // mg3801 starts SEQ_BGM_MNG_MG3801 (0xF4C0) with row 10 of rom:/ts_sound_ctrl_track.bin (0xF4D4) and writes the
 // player's time left out of 100 seconds (0xBE18). The piece plays at 145 BPM down to 50 seconds, 165 at 20 and 215 at
 // 0. At 20 seconds the game moves to row 11, and back to row 10 at 40 (0xBE9C and 0xBE60).
@@ -357,12 +357,10 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // mg3704 starts SEQ_BGM_BOSS_04_A (0x13DC) and writes 20 at once (0x13EC). Each round then writes its timer (0xFD4 and
 // 0x2F5C). The timer starts at 20 seconds. The piece plays at 122 BPM at 20 seconds and 170 at 0. A round that starts
 // with the value at 0xEA4 at 50 or less starts _B, _B2 or _B3 (0xF00, 0xF30 and 0xF48). Those play at 148 BPM at 20
-// seconds and 170 at 0. Runs patched that value to 50 and the choice at 0xED0 to 0, 1 and 2. They started each piece,
-// and each wrote 20.
+// seconds and 170 at 0. The choice at 0xED0 (0, 1 or 2) picks one of them. Each writes 20 as it starts.
 // mg3419 starts SEQ_BGM_MNG_012 (0x1C44) with row 7 (0x1C54) and writes the ball's speed times 96 (0x1E6C, 0xE4D0).
-// The piece plays at 60 BPM with the ball at rest. With the tilt patched to its maximum, the speed stays at 1 and the
-// variable at 96, or 165 BPM. Rows 8 and 9 come with the byte at 0x1DEC at 2 and 3 (0x1E10 and 0x1E2C). A run patched
-// that byte reached both.
+// The piece plays at 60 BPM with the ball at rest. At the tilt's maximum, the speed stays at 1 and the variable at 96,
+// or 165 BPM. Rows 8 and 9 come with the byte at 0x1DEC at 2 and 3 (0x1E10 and 0x1E2C).
 // The list starts each piece at the value of its first seconds, or of full speed. kArrangedSequences gives the rest.
 //
 // Mario Party: Star Rush plays the music of minigame 708 from one sequence. The minigame's code is in a separate
@@ -370,10 +368,10 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // variables through the sound's handle (nd::SysAudio::SoundHandle::writeVariable). Variable 10 picks the pattern that
 // each pass of the loop plays: 0 MGN708_A_OTEHON, 1 _A_RHYTHM_LOOP, 2 _A_KAITOU and 3 _A_INTERVAL_LOOP, and the same
 // four for the B set. Variable 9 at 1 moves the A set on to the B set. At 2 it ends the music. SQ_BGM_MGN708_A_FIRST,
-// _A_INTERVAL_START, _B_FIRST and _B_INTERVAL_START set both variables as they start. SQ_BGM_MGN708 sets neither,
-// and it ends at once unless variable 9 is 0. The module can start SQ_BGM_MGN708 or _A_FIRST as the minigame starts
-// (0x6314). An Azahar run of the USA game, with the module at 0x924000, shows the start: the minigame plays
-// SQ_BGM_MGN708 and writes 0 to variable 9 right after it (0x73CC). The list gives that start.
+// _A_INTERVAL_START, _B_FIRST and _B_INTERVAL_START set both variables as they start. SQ_BGM_MGN708 sets neither, and
+// it ends at once unless variable 9 is 0. The module can start SQ_BGM_MGN708 or _A_FIRST as the minigame starts
+// (0x6314). In the USA game, the minigame plays SQ_BGM_MGN708 and writes 0 to variable 9 right after it (0x73CC). The
+// list gives that start.
 //
 // Super Mario 3D Land plays a melody as the player collects the notes of a trail. The melody's sequence waits at each
 // beat, on every track, until track variable 0 (32 in the commands) changes, unless track variable 2 (34) is 1. The
@@ -490,8 +488,8 @@ constexpr SequenceStart DjStart(SequenceVariable variable)
     return {.variables = {{variable}}, .fx_send = kClubSend, .game_effect = kClubEffect};
 }
 
-// What DJ K.K.'s player writes to track 15's variables 0 to 15 for New Leaf's first default tune (0x8BBCE2) in key 0. A
-// Unicorn run of 0x28B08C gives the values.
+// What DJ K.K.'s player writes to track 15's variables 0 to 15 for New Leaf's first default tune (0x8BBCE2) in key 0,
+// through 0x28B08C.
 constexpr std::array<int16_t, 16> kFirstDefaultTune = {12, 10000, 7, 4,      5, 5,     5,     10000,
                                                        7,  7,     5, -10000, 0, 10000, 10000, 10000};
 
@@ -837,11 +835,10 @@ constexpr std::array<SequenceArrangement, 2> kMng012Layers = {{
 }};
 
 // Minigame 708's music with variable 10 at `pattern` in the A set. The module writes variable 10 as the minigame goes
-// on: 0 at 0x1FCC, 1 at 0x343C, 2 at 0x15D8, 0x1654 and 0x1D84, and 3 at 0x6CC4 and 0x7224. In the Azahar run, the
-// minigame plays the A set's four patterns on SQ_BGM_MGN708. It leaves variable 10 unwritten for the first 12
-// seconds. It then writes 3 (0x6CC4), 0 (0x1FCC, from 15 s), 1 (0x343C, 42 s), 2 (0x1D84, 50 s), 1, 3 (0x7224, 66 s)
-// and 0 again. SQ_BGM_MGN708 sets neither variable. Its patterns take variable 10 from the first tick, with variable 9
-// at 0.
+// on: 0 at 0x1FCC, 1 at 0x343C, 2 at 0x15D8, 0x1654 and 0x1D84, and 3 at 0x6CC4 and 0x7224. The minigame plays the A
+// set's four patterns on SQ_BGM_MGN708. It leaves variable 10 unwritten at first, then writes 3 (0x6CC4), 0 (0x1FCC), 1
+// (0x343C), 2 (0x1D84), 1, 3 (0x7224) and 0 again. SQ_BGM_MGN708 sets neither variable. Its patterns take variable 10
+// from the first tick, with variable 9 at 0.
 constexpr SequenceStart Mgn708APattern(int16_t pattern)
 {
     return {.variables = {{{.index = 9, .value = 0}, {.index = 10, .value = pattern}}}};
@@ -849,16 +846,16 @@ constexpr SequenceStart Mgn708APattern(int16_t pattern)
 
 // Minigame 708's music with variable 10 at `pattern` in the B set, from frame 1. SQ_BGM_MGN708_B_FIRST sets the
 // variable to 3 at the first tick. The loop's first pass comes after frame 1 and plays the pattern. The module moves
-// the music on to the B set with variable 9 at 1 (0x135C). A patched Azahar run set r2 to 1 at the module's check at
-// 0x6BD8 in the second round. The module then wrote variable 9 = 1 for 7 seconds. Each later round wrote variable 10 =
-// 3, 0, 1, 2 and 1, as in the A set, and the B set's four patterns played at those times.
+// the music on to the B set with variable 9 at 1 (0x135C). The module's check at 0x6BD8 leads there with r2 at 1. Each
+// later round writes variable 10 = 3, 0, 1, 2 and 1, as in the A set, and the B set's four patterns play at those
+// times.
 constexpr SequenceStart Mgn708BPattern(int16_t pattern)
 {
     return {.variables = {{{.index = 10, .value = pattern, .frame = 1}}}};
 }
 
-// The patterns in the order in which the run plays them: 3, 0, 1 and 2. SQ_BGM_MGN708_A_FIRST starts with pattern 0,
-// and _B_FIRST with pattern 3.
+// The patterns in the minigame's order: 3, 0, 1 and 2. SQ_BGM_MGN708_A_FIRST starts with pattern 0, and _B_FIRST with
+// pattern 3.
 constexpr std::array<SequenceArrangement, 4> kMgn708APatterns = {{
     {"_interval_loop", Mgn708APattern(3)},
     {"_otehon", Mgn708APattern(0)},

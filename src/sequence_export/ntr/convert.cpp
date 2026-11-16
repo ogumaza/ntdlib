@@ -160,6 +160,33 @@ sf2::Instrument PresetInstrument(BankSet& banks, SoundFontSamples& samples, cons
     return instrument;
 }
 
+// The volume that `archive` gives `sequence`, or nothing when the archive doesn't hold the sequence.
+std::optional<uint8_t> ArchiveVolume(const sdat::Archive& archive, const ntdlib::ntr::SequenceRef& sequence)
+{
+    if (!sequence.archived)
+    {
+        if (sequence.index < archive.sequences.size() && archive.sequences[sequence.index])
+        {
+            return archive.sequences[sequence.index]->volume;
+        }
+
+        return std::nullopt;
+    }
+
+    if (sequence.index >= archive.sequence_archives.size() || !archive.sequence_archives[sequence.index])
+    {
+        return std::nullopt;
+    }
+    const sdat::SequenceArchive parsed =
+        sdat::SequenceArchive::Parse(archive.File(archive.sequence_archives[sequence.index]->file_id));
+    if (*sequence.archived >= parsed.sequences.size())
+    {
+        return std::nullopt;
+    }
+
+    return parsed.sequences[*sequence.archived].volume;
+}
+
 } // namespace
 
 double ZoneGain(const PresetZone& zone)
@@ -232,6 +259,12 @@ Conversion ConvertSequence(const sdat::Archive& archive, const ntdlib::ntr::Sequ
                                             program);
     c.sfz = BuildSfz(c.performance, midi, banks, options.build, name, names, program);
     ntdlib::sequence_export::CollectWarnings(c, midi, warnings, banks.Warnings());
+
+    // The SDK plays a sequence of volume 0 silent (StartCommands in ntr/archive_player.h), and the files do too.
+    if (ArchiveVolume(archive, sequence) == 0)
+    {
+        c.warnings.push_back("volume 0 in the sound archive. The game plays it silent, and so does the conversion.");
+    }
 
     return c;
 }

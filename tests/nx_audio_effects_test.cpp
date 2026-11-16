@@ -6,8 +6,8 @@
 // path and its pass-through, and a limiter's look-ahead, envelope, gain, reciprocals and output holds, with the sdk's
 // expf against the exponential function. The effects then run on a voice through the renderer: a delay of a frame, the
 // calls that start it again or give it new gains, a disabled delay, frames without mixing, a new reverb and a disabled
-// one, the modes that the renderer refuses, a snapshot, a new limiter, and the enhanced mixing mode. Nintendo's code is
-// the anchor for the reverb's sums. A test outside this repository runs it against the model.
+// one, the modes that the renderer refuses, a snapshot, a new limiter, and the enhanced mixing mode. The reverb's sums
+// follow Nintendo's code.
 
 #include <algorithm>
 #include <array>

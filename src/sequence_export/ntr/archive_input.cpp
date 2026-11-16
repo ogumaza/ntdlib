@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -26,8 +27,10 @@
 #include "xsflib/binary.h"
 
 #include "ntdlib/dse/build.h"
+#include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/files.h"
 #include "ntdlib/dse/sets.h"
+#include "ntdlib/dse/ticks.h"
 #include "ntdlib/ntr/archive_player.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/snd/driver.h"
@@ -149,7 +152,8 @@ std::string UsageText(const ArchiveConverter& archive_converter)
     text += "                 of Time (earlier) or Explorers of Sky (later) where no model\n";
     text += "                 covers the game's driver build; the result only approximates\n";
     text += "                 the game. DSE files of version 0x402, and packs compressed\n";
-    text += "                 other than with LZ77, aren't found, and give no warning\n";
+    text += "                 other than with LZ77 or in GFSA archives, aren't found, and\n";
+    text += "                 give no warning\n";
     text += c.extra_options;
     text += kListQuietVersionHelp;
 
@@ -371,10 +375,32 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
         std::string folder;
         std::vector<std::size_t> inputs; // indices into `dse_inputs`
         std::vector<Sequence> selected;
+        int tick_microseconds = 0;
     };
+
+    // Each folder plays with the tick that the game's settings give it (ntdlib::dse::TickOf). A folder of a game that
+    // the profiles list, but whose tick they don't give, is left out. A game that they don't list plays with the
+    // driver's default tick.
+    const std::string game_code = rom->Header().game_code;
+    struct UnknownTick
+    {
+        std::size_t songs = 0;
+        std::size_t effects = 0;
+    };
+    std::map<std::string, UnknownTick> unknown_ticks;
+    bool default_tick = false;
     std::vector<FoundDse> found_dse;
     for (std::size_t i = 0; i < dse_inputs.size(); i++)
     {
+        const ntdlib::dse::GameTick tick = ntdlib::dse::TickOf(game_code, dse_inputs[i].folder);
+        if (tick.listed && !tick.tick_microseconds)
+        {
+            UnknownTick& unknown = unknown_ticks[dse_inputs[i].folder];
+            (dse_inputs[i].effects ? unknown.effects : unknown.songs)++;
+            continue;
+        }
+        default_tick = default_tick || !tick.listed;
+
         if (found_dse.empty() || dse_inputs[i].folder != dse_inputs[found_dse.back().inputs[0]].folder)
         {
             const std::string dse_path =
@@ -385,7 +411,11 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
             {
                 folder = base + "_" + std::to_string(n);
             }
-            found_dse.push_back({name + "/" + dse_path, folder, {}, {}});
+            found_dse.push_back({name + "/" + dse_path,
+                                 folder,
+                                 {},
+                                 {},
+                                 tick.tick_microseconds.value_or(ntdlib::dse::Driver::kTickMicroseconds)});
         }
         FoundDse& group = found_dse.back();
         if (std::regex_search(dse_inputs[i].name, only))
@@ -394,8 +424,22 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
         }
         group.inputs.push_back(i);
     }
+    for (const auto& [folder, unknown] : unknown_ticks)
+    {
+        std::fprintf(stderr,
+                     "warning: %s: %s: the DSE driver's tick is unknown for this folder; %zu songs and %zu sound "
+                     "effects aren't converted\n",
+                     name.c_str(), folder.c_str(), unknown.songs, unknown.effects);
+    }
     if (!options.quiet)
     {
+        if (default_tick)
+        {
+            std::fprintf(stderr,
+                         "warning: %s: the DSE driver's tick is unknown for this game; its songs convert with the "
+                         "default of 10 ms, and note timing may be off by a few hundredths of a second\n",
+                         name.c_str());
+        }
         for (const std::string& warning : dse_warnings)
         {
             std::fprintf(stderr, "warning: %s: %s\n", name.c_str(), warning.c_str());
@@ -534,11 +578,21 @@ std::optional<int> ConvertImage(const std::string& path, const Options<PerformOp
             std::printf("%s: %zu sequences -> %s\n", group.label.c_str(), group.selected.size(), Utf8(folder).c_str());
         }
 
-        const dse::PerformOptions perform{.loops = options.perform.loops, .build = *dse_build};
+        // The folder's sequences share its samples. Two banks of one id get distinct names for their waves.
+        std::vector<const dse::SequenceInput*> sequences;
+        for (const std::size_t i : group.inputs)
+        {
+            sequences.push_back(&dse_inputs[i]);
+        }
+        const std::vector<std::map<uint16_t, std::string>> sfz_names = dse::SfzBankNames(sequences);
+
+        const dse::PerformOptions perform{
+            .loops = options.perform.loops, .build = *dse_build, .tick_microseconds = group.tick_microseconds};
         const auto convert = [&](std::size_t index)
         {
-            const dse::SequenceInput& sequence = dse_inputs[group.inputs.at(index)];
-            return dse::ConvertSequence(sequence.Files(), sequence.name, perform, converter.program);
+            const dse::SequenceInput& sequence = *sequences.at(index);
+            return dse::ConvertSequence(sequence.Files(), sequence.name, perform, converter.program,
+                                        sfz_names.at(index));
         };
         failed += ConvertAll<dse::Conversion>(group.selected, folder, options.quiet, converter.samples_folder, convert);
     }

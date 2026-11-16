@@ -457,7 +457,7 @@ void Driver::State::StepFades(Sequence& sequence)
 
 void Driver::State::StepNoteLengths(Sequence& sequence)
 {
-    if (build == Build::kEarlier)
+    if (!ListsNotes())
     {
         for (Channel& channel : sequence.synth.channels)
         {
@@ -576,10 +576,10 @@ void Driver::State::RunTrack(Sequence& sequence, TrackState& track)
                         Legato(channel, note, track.previous_key);
                         event.legato = true;
                     }
-                    else if (build == Build::kEarlier)
+                    else if (!ListsNotes())
                     {
-                        // 0x02062B98 in Explorers of Time's ARM9 binary: the earlier build releases no voice
-                        // of the key first.
+                        // 0x02062B98 in Explorers of Time's ARM9 binary: a build without a list of notes
+                        // releases no voice of the key first.
                         channel.bend_fade.current = 0;
                         event.voices = StartNote(channel, note);
                         event.number = notes_started;
@@ -626,21 +626,21 @@ void Driver::State::StepSequence(Sequence& sequence)
     {
         return;
     }
-    if (build == Build::kEarlier)
-    {
-        if (sequence.status[3] == 1 && sequence.volume.current == 0)
-        {
-            sequence.status = {};
-            FreeAllVoices(sequence.synth);
-        }
-    }
-    else if (sequence.delay != 0)
+    if (build != Build::kEarlier && sequence.delay != 0)
     {
         if (sequence.delay > 0)
         {
             sequence.delay--;
         }
         return;
+    }
+    if (build == Build::kEarlier || build == Build::kMiddle)
+    {
+        if (sequence.status[3] == 1 && sequence.volume.current == 0)
+        {
+            sequence.status = {};
+            FreeAllVoices(sequence.synth);
+        }
     }
     sequence.driver_ticks++;
     if (sequence.fades != 0 || build == Build::kEarlier)
@@ -711,7 +711,8 @@ void Driver::State::StepSequence(Sequence& sequence)
         sequence.status = {};
         FreeHeldNotes(sequence.synth);
     }
-    else if (build == Build::kLater && sequence.status[3] != 0 && sequence.volume.current == 0)
+    else if ((build == Build::kLater || build == Build::kLateMiddle) && sequence.status[3] != 0 &&
+             sequence.volume.current == 0)
     {
         if (sequence.status[3] == 1)
         {
@@ -722,7 +723,7 @@ void Driver::State::StepSequence(Sequence& sequence)
                 sequence.tracks_playing = 0;
             }
         }
-        else
+        else if (build == Build::kLater)
         {
             sequence.status[2] = 1;
             SilenceVoices(sequence.synth, 1);

@@ -490,7 +490,7 @@ constexpr std::array<Sound, 1> kRainbowCurseSounds = {{
 // (0x10063A90), at +0x1BC4, and the pitch from the table at 0x10063A94 at +0x1BC0. Before each game, 0x025BCF50 sets
 // the BPM by the session's mode and the game's number (the session at the game's +0x1A40, its tail at 0x025BC474).
 // Every mode that it handles starts at 120, 140 or 200 BPM. Some modes then step the BPM up. The arrangements are the
-// two other first BPMs. A run of 0x025B480C and 0x025BCF50 on the game's code gave their ratios and pitches.
+// two other first BPMs. 0x025B480C and 0x025BCF50 give their ratios and pitches.
 //
 // The pieces that follow the BPM: BGM_NI_INTRO1, started after SetBPM with the session's BPM (0x025B8F4C and 0x025B8F5C
 // through 0x025B7040), the jingles that 0x025B82F8 starts with the ratio and the pitch (0x025B91B4, 0x025BA978,

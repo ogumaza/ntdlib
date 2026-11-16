@@ -6,9 +6,11 @@
 // folders of DSE's songs and sound effects (ntdlib/sequence_export/dse) and of Universomo's songs
 // (ntdlib/sequence_export/universomo). The image's ARM7 binary gives the driver's build (ntdlib::ntr::snd::BuildOf). A
 // loose archive plays on the default build. DSE's files are found loose or inside the image's packs
-// (ntdlib::dse::FindFiles). They play on the image's build of DSE's driver (ntdlib::dse::BuildOf). Where no model covers
-// that build, they convert only on the model that --dse-model names. A converter gives its name, its version line, its
-// description and its options.
+// (ntdlib::dse::FindFiles). They play on the image's build of DSE's driver (ntdlib::dse::BuildOf). Where no model
+// covers that build, they convert only on the model that --dse-model names. Each folder of them plays with the driver's
+// tick that the game's settings give (ntdlib::dse::TickOf). A folder of a known game whose tick isn't known is left
+// out, and an unknown game plays with the driver's default tick of 10 ms. A converter gives its name, its version line,
+// its description and its options.
 
 #pragma once
 

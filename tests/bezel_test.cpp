@@ -3,8 +3,8 @@
 // Tests the reader of Bezel Engine's data sheets and the sound levels (ntdlib/bezel) on sheets built here: records of
 // both games' sizes, a level left to the default, a random change to the level, a level below 0, the choice among the
 // records that play a sound, a table in .bss, names in .bss, the sheets that the reader leaves out, and the search for
-// a game's sheets. The levels of the records follow a run of WarioWare: Get It Together!'s and WarioWare: Move It!'s
-// code on their sheets.
+// a game's sheets. The levels of the records follow WarioWare: Get It Together!'s and WarioWare: Move It!'s code
+// on their sheets.
 
 #include <algorithm>
 #include <bit>

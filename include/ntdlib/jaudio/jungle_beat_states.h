@@ -408,9 +408,8 @@ inline constexpr JungleBeatChordLayer kJungleBeatChordLayers[] = {
     // between the piece's start and the end of the bind. FinalKong's `hold` is for DK on the boss himself.
     {0x0100004b, 0x56, 136, 0, false, "dk_wait_attack", false, true}, // JA_BGM_BOSS_FINAL at VsFinalKong: PigPoppoBoss
     // A pig that faints starts the attack chance (FaintStart, 0x800e0af8) while slot +0xa4 of the pig's vtable returns
-    // 0. Only PigPoppoBoss returns 1 there. Dolphin runs that called the faint function show that startChordSe accepts
-    // both records over these four pieces. That DK's clap reaches the faint function is a reading. At VsFinalKong2,
-    // the pig stands outside the arena while JA_BGM_MAIN_22 plays.
+    // 0. Only PigPoppoBoss returns 1 there. startChordSe accepts both records over these four pieces. By the code, DK's
+    // clap reaches the faint function. At VsFinalKong2, the pig stands outside the arena while JA_BGM_MAIN_22 plays.
     {0x01000005, 0x1e, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_01 at MorningField: PigPoppoSleepWithHint
     {0x01000003, 0x2d, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_04 at BigGodTree: PigPoppoKiba
     {0x0100003f, 0x49, 157, 158, true, "attack_chance"}, // JA_BGM_MAIN_21 at DemonFireMarsh: PigPoppoFire
@@ -419,9 +418,8 @@ inline constexpr JungleBeatChordLayer kJungleBeatChordLayers[] = {
     // 0x80058938). A CocoNut that gets the message that ends DK's attack event (72) starts the attack chance. In the
     // Wii release it stops the pair 20 steps later. The rows of the four GoroPig stages (0x2e, 0x31, 0x34 and 0x37)
     // give JA_BGM_BOSS_GOROPY_A. The fight's demo starts JA_BGM_BOSS_GOROPY_B before any throw (DemoGoroPigBattleStart,
-    // 0x800cb688). In Dolphin runs whose hook sent the message, the state setter 0x802565b8 didn't run between that
-    // start and the attack chance. The layer rips over B's first state, the state the runs measured. In play, GoroPig's
-    // damage nerves may set `hit` or `round2_hit` first.
+    // 0x800cb688). The state setter 0x802565b8 doesn't run between that start and the attack chance. The layer rips
+    // over B's first state. In play, GoroPig's damage nerves may set `hit` or `round2_hit` first.
     {0x01000044, 0x2e, 157, 158, true, "attack_chance", false, true}, // JA_BGM_BOSS_GOROPY_B at VsGoroPig1: CocoNut
 };
 

@@ -53,6 +53,28 @@ void Driver::State::StepVoices()
     }
 }
 
+uint16_t Driver::State::UpdateChannel(Channel& channel)
+{
+    const Synth& synth = *channel.synth;
+    const uint16_t update = channel.update | synth.update;
+    if (update & 0x10)
+    {
+        channel.bend =
+            static_cast<uint16_t>(synth.bend + channel.tuning + static_cast<int16_t>(channel.bend_fade.current >> 16));
+    }
+    if (update & 0x20)
+    {
+        const int32_t product =
+            Wrap(int64_t{synth.combined_volume} * ((channel.volume_fade.current >> 16) * channel.expression));
+        channel.volume = static_cast<uint16_t>(product / (127 * 127));
+    }
+    if (update & 0x40)
+    {
+        channel.pan = static_cast<int16_t>(synth.pan - 0x40 + (channel.pan_fade.current >> 16));
+    }
+    return update;
+}
+
 void Driver::State::UpdateChannels(Synth& synth)
 {
     for (Channel& channel : synth.channels)
@@ -85,6 +107,17 @@ void Driver::State::UpdateChannels(Synth& synth)
 
 void Driver::State::UpdateVoices()
 {
+    if (build == Build::kMiddle || build == Build::kLateMiddle)
+    {
+        for (int i = 0; i < voice_count; i++)
+        {
+            Voice& voice = VoiceAt(i);
+            if (voice.channel != nullptr)
+            {
+                voice.flags |= UpdateChannel(*voice.channel);
+            }
+        }
+    }
     if (build == Build::kEarlier)
     {
         if (song)
@@ -194,11 +227,12 @@ void Driver::State::WriteCommands(ntr::snd::CommandList& list)
         list.push_back({CommandId::kStartTimer, {start_mask, 0, 0, 0}});
         start_mask = 0;
     }
-    // The earlier build keeps a freed voice in the stops of the lists that follow until the voice starts again.
+    // The earlier build keeps a freed voice in the stops of the lists that follow until the voice starts again. The
+    // other builds send the stop once (0x02076D24 in Luminous Arc 2's ARM9 binary for the middle builds).
     if ((stop_mask | deallocated_mask) != 0 || build == Build::kEarlier)
     {
         list.push_back({CommandId::kStopTimer, {uint32_t{stop_mask} | deallocated_mask, 0, 0, 0}});
-        if (build == Build::kLater)
+        if (build != Build::kEarlier)
         {
             deallocated_mask = 0;
         }
@@ -319,10 +353,11 @@ uint32_t Hang::Offset() const
     return offset_;
 }
 
-Driver::Driver(Build build) : state_(std::make_unique<State>())
+Driver::Driver(Build build, int tick_microseconds) : state_(std::make_unique<State>())
 {
     State& s = *state_;
     s.build = build;
+    s.tick = static_cast<int16_t>(tick_microseconds);
     s.defaults[7] = 100;
     s.defaults[10] = 0x40;
     s.defaults[11] = 0x7F;
@@ -651,8 +686,8 @@ void Driver::ReleaseFollowedNotes()
     }
     for (Channel& channel : sequence->synth.channels)
     {
-        // The earlier build counts down each voice's duration, and the later one each note's. A voice or a note that
-        // holds has none to count down.
+        // A build without a list of notes counts down each voice's duration, and the others each note's. A voice or a
+        // note that holds has none to count down.
         state_->ForEachVoice(channel,
                              [](Voice& voice)
                              {
@@ -782,17 +817,19 @@ bool Driver::TrackPlays(int track) const
     return sequence && sequence->tracks.at(static_cast<std::size_t>(track)).playing == 1;
 }
 
-std::optional<int32_t> EnvelopeTicks(uint8_t multiplier, uint8_t index)
+std::optional<int32_t> EnvelopeTicks(uint8_t multiplier, uint8_t index, int tick_microseconds)
 {
     if (index == 0x7F)
     {
         return std::nullopt;
     }
-    return SlideTicks(multiplier, index, Driver::kTickMicroseconds);
+    return SlideTicks(multiplier, index, static_cast<int16_t>(tick_microseconds));
 }
 
-std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int ticks, std::optional<int> release)
+std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int tick_microseconds, int ticks,
+                                    std::optional<int> release)
 {
+    const auto tick = static_cast<int16_t>(tick_microseconds);
     Envelope envelope;
     envelope.parameters.Reset();
     envelope.parameters.use = 1;
@@ -804,7 +841,7 @@ std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int ticks, std
     envelope.parameters.hold_time = values.hold_time;
     envelope.parameters.sustain_time = values.sustain_time;
     envelope.parameters.release_time = values.release_time;
-    envelope.Start(Driver::kTickMicroseconds);
+    envelope.Start(tick);
 
     std::vector<uint8_t> levels;
     levels.reserve(static_cast<std::size_t>(std::max(ticks, 0)));
@@ -812,9 +849,9 @@ std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int ticks, std
     {
         if (release && k == *release)
         {
-            envelope.Release(Driver::kTickMicroseconds);
+            envelope.Release(tick);
         }
-        levels.push_back(static_cast<uint8_t>(std::max<int8_t>(envelope.Tick(Driver::kTickMicroseconds), 0)));
+        levels.push_back(static_cast<uint8_t>(std::max<int8_t>(envelope.Tick(tick), 0)));
     }
     return levels;
 }

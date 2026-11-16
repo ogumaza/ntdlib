@@ -251,8 +251,7 @@ struct CtrPolicy
     // player's main volume over 127^3, squared, then times the product of the track's float volume and the player's
     // volume. The float volume is +8 of the track, which the sound's handle sets (SequenceSoundPlayer::SetTrackVolume:
     // driver command 0x19 and 0x2776cc in Mario Kart 7's code.bin). UpdateChannelParam reads it at 0x31de74 and
-    // multiplies it by the player's volume at 0x31de88. A Unicorn run of 0x31de18 at track volumes of 1, 0.8, 0.75, 0.5
-    // and 0 gives this product, bit for bit. At a volume of 1 it's the player's volume times the square.
+    // multiplies it by the player's volume at 0x31de88. At a volume of 1 it's the player's volume times the square.
     static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float track_volume,
                              float player_volume)
     {

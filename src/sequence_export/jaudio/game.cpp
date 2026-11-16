@@ -872,9 +872,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.effects_sequence = "se.bms";
 
         // Three effects draw a random number (JASPlayer::getRandomS32, 0x8009c6a4 in the GameCube's main.dol and
-        // 0x8004e508 in the Wii's) and end at once on some draws. The first draw ends all three. Renders of a run of
-        // the GameCube's code after 0 to 15 draws play each one first after 3, 1 and 1 draws. Each plays the same sound
-        // on every draw that doesn't end it.
+        // 0x8004e508 in the Wii's) and end at once on some draws. The first draw ends all three. On the GameCube's
+        // code, each one first plays after 3, 1 and 1 draws. Each plays the same sound on every draw that doesn't end
+        // it.
         rules.random_starts = {{0x5829, 3}, {0x58fc, 1}, {0x58fe, 1}};
 
         // The game's sound layer gives the sound table's sequences their data as it plays them. The files that the
@@ -1140,15 +1140,15 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
     }
 
     // The Wii's first USA version and its European release hold other start-up archives. Their code gives the rules
-    // below too. Runs on a CPU emulator of changeBgmStatus and changeSubBgmStatus (0x80294a90 and 0x8029660c in the
-    // first version's main.dol, 0x802946bc and 0x80296238 in the European one) logged the same calls as runs of the
-    // third version, for every piece and status. Z2AudioMgr::init passes the same volumes (0x802af710, 0x802af554).
+    // below too. Their changeBgmStatus and changeSubBgmStatus (0x80294a90 and 0x8029660c in the first version's
+    // main.dol, 0x802946bc and 0x80296238 in the European one) make the same calls as the third version's, for every
+    // piece and status. Z2AudioMgr::init passes the same volumes (0x802af710, 0x802af554).
     // JASDriver::getChannelLevel_dsp returns 12000 (0x8028342c, 0x80283030). With the linker's fields masked,
     // initDataArc, setFXLine, bgmStart, subBgmStart, sceneBgmStart and the battle and field functions match the code of
     // the third version, apart from changes that reach no start and no state. In both releases, the code that ends the
-    // battle music differs (0x80298508 and 0x802980d8 in the third version). The first version also differs in a
-    // volume of the whole piece that bgmStart and subBgmStart set for two pieces, in one scene's choice of piece and in
-    // FX lines 2 and 3. Its Hyrule Field sequence differs as well. The conversion plays the file on the disc.
+    // battle music differs (0x80298508 and 0x802980d8 in the third version). The first version also differs in a volume
+    // of the whole piece that bgmStart and subBgmStart set for two pieces, in one scene's choice of piece and in FX
+    // lines 2 and 3. Its Hyrule Field sequence differs as well. The conversion plays the file on the disc.
     const bool twilight_wii = std::ranges::find(kTwilightPrincessWii, archive_sha1) != kTwilightPrincessWii.end();
     if (archive_sha1 == kTwilightPrincessGameCube || twilight_wii)
     {

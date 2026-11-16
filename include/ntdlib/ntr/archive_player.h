@@ -195,8 +195,8 @@ struct ArchivePlayerOptions
     snd::Build build = {};
 
     // Where the driver's frames lie: the system clock of the frame that takes the shared work, and the frames before
-    // it, each of which steps the driver's random numbers. A player that follows an anchor takes the anchor's values.
-    // One that stands alone takes 0 for both.
+    // it, each of which steps the driver's random numbers. A player that lines up with the game's driver takes the
+    // driver's values. One that stands alone takes 0 for both.
     uint64_t clock = 0;
     uint64_t frames = 0;
 

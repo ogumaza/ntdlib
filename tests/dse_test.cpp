@@ -9,13 +9,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/dse/ticks.h"
 #include "ntdlib/testing/dse_files.h"
 
 using xsflib::testing::ErrorOf;
@@ -217,6 +220,13 @@ void TestWaveBank()
 
     XSFLIB_CHECK(bank.Write() == file);
 
+    // A header that gives 0 for the size of the samples and kNoWaviSize for the wavi chunk's keeps both, as some games'
+    // banks do.
+    Bytes kept_sizes = file;
+    xsflib::StoreLe32(kept_sizes.data() + 0x40, 0);
+    xsflib::StoreLe32(kept_sizes.data() + 0x4C, dse::WaveBank::kNoWaviSize);
+    XSFLIB_CHECK(dse::WaveBank::Parse(kept_sizes).Write() == kept_sizes);
+
     // A third split: the program's header counts it, and the prgi chunk grows by 0x30. The kgrp chunk then starts 0x30
     // bytes later.
     dse::WaveBank edited = bank;
@@ -306,6 +316,69 @@ void TestSoundEffects()
     XSFLIB_CHECK(reread.Write() == written);
     XSFLIB_CHECK(reread.sequences == edited.sequences && reread.macros == edited.macros &&
                  reread.bank_lists == edited.bank_lists);
+}
+
+// A bank of sound effects of the second layout: the header, the table of offsets from the file's start at 0x40, then
+// each sequence's settings, its tracks and an eoc chunk, with no chunk around them and no mcrl, bnkl or eod.
+Bytes SecondLayoutEffectsFile()
+{
+    Builder b;
+    HeaderStart(b, "sedl", 0x0024);
+    b.U16(2).Append({0x01, 0x00, 0x00, 0x00, 0x00, 0x00}).Fill(8, 0xFF);
+    b.U16(0).U16(0x50).Fill(12, 0);
+    b.Append(SequenceInfoBytes(1, 1));
+    TrackChunk(b, "trk ", 5).Append({0, 0, 0, 0, 0x98}).Fill(3, 0x98);
+    TrackChunk(b, "eoc ", 0);
+    b.Put32(0x08, static_cast<uint32_t>(b.Size()));
+    return b.Take();
+}
+
+// The reader recognises the second layout and says that it doesn't read it, with sound effects or with only empty
+// slots. A bank of the first layout without its seq chunk is an error of another kind.
+void TestSoundEffectsSecondLayout()
+{
+    const Bytes file = SecondLayoutEffectsFile();
+    XSFLIB_CHECK(ErrorOf<dse::UnsupportedLayout>([&] { dse::SoundEffects::Parse(file); }) ==
+                 "the layout without a seq chunk isn't supported");
+    Bytes empty(file.begin(), file.begin() + 0x50);
+    xsflib::StoreLe16(empty.data() + 0x30, 1);
+    xsflib::StoreLe16(empty.data() + 0x40, 0);
+    xsflib::StoreLe32(empty.data() + 0x08, 0x50);
+    XSFLIB_CHECK(!ErrorOf<dse::UnsupportedLayout>([&] { dse::SoundEffects::Parse(empty); }).empty());
+
+    Bytes broken = SoundEffectsFile();
+    std::ranges::copy(std::string_view("xxxx"), broken.begin() + 0x40);
+    bool unsupported = false;
+    std::string message;
+    try
+    {
+        dse::SoundEffects::Parse(broken);
+    }
+    catch (const dse::UnsupportedLayout&)
+    {
+        unsupported = true;
+    }
+    catch (const xsflib::FormatError& e)
+    {
+        message = e.what();
+    }
+    XSFLIB_CHECK(!unsupported && message == "the file has no seq  chunk where one belongs");
+}
+
+// The ticks of the profiled games: Professor Layton and the Last Specter's main game runs the tick of 16.715 ms, its
+// London Life 10 ms. Another path of a listed game has no tick, and an unlisted game has none either.
+void TestTicks()
+{
+    const dse::GameTick main = dse::TickOf("BLFE", "lt4_main_en.fa/snd/BG_004.cse/");
+    const dse::GameTick london = dse::TickOf("BLFE", "ll/common/ll_common.darc/");
+    const dse::GameTick other = dse::TickOf("BLFE", "lt4/wav/");
+    const dse::GameTick sky = dse::TickOf("C2SP", "SOUND/BGM/");
+    const dse::GameTick unknown = dse::TickOf("ANIE", "BGM/");
+    XSFLIB_CHECK(main.listed && main.tick_microseconds == dse::Driver::kSlowTickMicroseconds);
+    XSFLIB_CHECK(london.listed && london.tick_microseconds == dse::Driver::kTickMicroseconds);
+    XSFLIB_CHECK(other.listed && !other.tick_microseconds);
+    XSFLIB_CHECK(sky.listed && sky.tick_microseconds == dse::Driver::kTickMicroseconds);
+    XSFLIB_CHECK(!unknown.listed && !unknown.tick_microseconds);
 }
 
 // Each setter of a sequence's settings writes its value where SequenceInfoBytes holds it, and leaves the other bytes.
@@ -434,6 +507,8 @@ int main()
     TestWaveBank();
     TestWaveBankRefusals();
     TestSoundEffects();
+    TestSoundEffectsSecondLayout();
+    TestTicks();
     TestSequenceInfoSetters();
     TestWaveInfoSetters();
     TestSplitView();

@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <string>
 #include <vector>
@@ -47,6 +48,10 @@ struct Conversion
 Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, const PerformOptions& options,
                            const std::string& program);
 
+// The same, with the names that the SFZ files give the waves of the banks of `sfz_bank_names` (SfzBankNames).
+Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, const PerformOptions& options,
+                           const std::string& program, const std::map<uint16_t, std::string>& sfz_bank_names);
+
 // The presets' names for both writers: the bank and the program, numbered when a program has several presets
 // ("b1 p5 #2").
 std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys);
@@ -67,7 +72,7 @@ ZoneTuning TuningOf(const PresetZone& zone, uint32_t sample_rate);
 double ZoneLevel(const PresetZone& zone);
 
 // The sequence's SFZ files: one for each MIDI track, with the presets that it plays, and the WAV files of the samples,
-// named after the waves (BankSet::WaveName). The bend ranges come from `midi`, and the names from `title` and
+// named after the waves (BankSet::SfzWaveName). The bend ranges come from `midi`, and the names from `title` and
 // `preset_names`. `program` goes in each file's first comment.
 seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::MidiReport& midi, BankSet& banks,
                                   const std::string& title, const std::vector<std::string>& preset_names,
@@ -76,20 +81,21 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
 // Builds SoundFonts and SFZ files of the programs at `programs` of `bank`, in ascending order, each once. `main_bank`
 // is the bank that holds the waves of a bank without samples, or null. Each program p that plays something becomes
 // preset p % 128 in bank p / 128 of a SoundFont, and an SFZ file by itself (BuildBankSfz). It plays as a channel plays
-// it when it selects the program, with the splits' envelopes and the program's LFOs. A program that plays nothing gets
-// no preset and no file, and a warning, in the order given. A zone above full level makes every zone of the SoundFonts
-// quieter. A warning says so. `name` names the bank in the files, and `program` is the name that goes in the
+// it when it selects the program, with the splits' envelopes as the driver steps them with a tick of
+// `tick_microseconds` (dse::PlayerOptions), and the program's LFOs. A program that plays nothing gets no preset and no
+// file, and a warning, in the order given. A zone above full level makes every zone of the SoundFonts quieter. A
+// warning says so. `name` names the bank in the files, and `program` is the name that goes in the
 // SoundFonts' ISFT and comments and in the SFZ files.
 ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank& bank,
                                                     const ntdlib::dse::WaveBank* main_bank,
-                                                    std::span<const uint32_t> programs, const std::string& name,
-                                                    const std::string& program);
+                                                    std::span<const uint32_t> programs, int tick_microseconds,
+                                                    const std::string& name, const std::string& program);
 
 // The SFZ file of each of `programs` of bank `id` of `banks`, each of which plays its program by itself as a channel
 // plays it when it selects the program, and the WAV files of the samples, named after the waves (BankSet::WaveName).
-// Program p's file is "<title>_<p>.sfz", with p padded to the digits of the last program. `title` names the bank.
-// `program` goes in each file's first comment.
+// Program p's file is "<title>_<p>.sfz", with p padded to the digits of the last program. The envelopes take a tick of
+// `tick_microseconds`. `title` names the bank. `program` goes in each file's first comment.
 seqlib::sfz::Instruments BuildBankSfz(std::span<const uint32_t> programs, BankSet& banks, uint16_t id,
-                                      const std::string& title, const std::string& program);
+                                      int tick_microseconds, const std::string& title, const std::string& program);
 
 } // namespace ntdlib::sequence_export::dse

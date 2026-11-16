@@ -68,7 +68,7 @@ public:
         {
             const uint32_t crossfade = (pcm->sample_rate * 4 + 999) / 1000; // 4 ms
             const seqlib::PreparedWave prepared = seqlib::PrepareForSfz(*pcm, crossfade);
-            out.name = BankSet::WaveName(bank, wave) + ".wav";
+            out.name = banks.SfzWaveName(bank, wave) + ".wav";
             out.rate = pcm->sample_rate;
             files_.push_back({out.name, seqlib::WavFile(prepared.channels[0], pcm->sample_rate)});
             out.loop = prepared.loop;
@@ -150,9 +150,10 @@ std::string LfoOpcodes(const PresetZone& z, const std::vector<LfoShape>& shapes)
 }
 
 // A region's opcodes: its sample, keys, velocities, tuning, level, pan, envelope, loop and LFOs. `gain_db` adds to its
-// volume. A range of velocities from 0 starts at lovel=1: a velocity of 0 is a note-off.
+// volume. A range of velocities from 0 starts at lovel=1: a velocity of 0 is a note-off. The driver's ticks take
+// `tick_microseconds`.
 std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double gain_db,
-                       const std::vector<LfoShape>& shapes)
+                       const std::vector<LfoShape>& shapes, int tick_microseconds)
 {
     const ZoneTuning tuning = TuningOf(z, wave.rate);
     std::string s =
@@ -187,7 +188,7 @@ std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double
         s += " pan=" + Number(pan, 1);
     }
 
-    const SfzEnvelope e = ConvertEnvelopeForSfz(z.envelope);
+    const SfzEnvelope e = ConvertEnvelopeForSfz(z.envelope, tick_microseconds);
     s += seqlib::sfz::AmpEnvelopeOpcodes(
         {.attack = e.attack, .hold = e.hold, .decay = e.decay, .sustain = e.sustain, .release = e.release});
     s += seqlib::sfz::LoopOpcodes(wave.loop, wave.loop_start, wave.loop_end);
@@ -232,13 +233,13 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
                 return s;
             }
 
-            const std::vector<LfoShape> shapes = PresetLfos(key);
+            const std::vector<LfoShape> shapes = PresetLfos(key, perf.tick_microseconds);
             for (const PresetZone& z : PresetZones(*bank, key))
             {
                 const SfzSamples::Wave& wave = samples.Get(banks, key.bank, z.wave);
                 if (!wave.name.empty())
                 {
-                    s += RegionLine(z, wave, perf.level_cut_db, shapes);
+                    s += RegionLine(z, wave, perf.level_cut_db, shapes, perf.tick_microseconds);
                 }
             }
 
@@ -254,7 +255,7 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
 }
 
 seqlib::sfz::Instruments BuildBankSfz(std::span<const uint32_t> programs, BankSet& banks, uint16_t id,
-                                      const std::string& title, const std::string& program)
+                                      int tick_microseconds, const std::string& title, const std::string& program)
 {
     SfzSamples samples;
     seqlib::sfz::Instruments out;
@@ -265,13 +266,13 @@ seqlib::sfz::Instruments BuildBankSfz(std::span<const uint32_t> programs, BankSe
         s += "\n<group>\n";
         const auto number = static_cast<uint16_t>(p);
         const PresetKey key{.bank = id, .program = number, .lfos = ntdlib::dse::ProgramLfos(*bank, number)};
-        const std::vector<LfoShape> shapes = PresetLfos(key);
+        const std::vector<LfoShape> shapes = PresetLfos(key, tick_microseconds);
         for (const PresetZone& z : PresetZones(*bank, key))
         {
             const SfzSamples::Wave& wave = samples.Get(banks, id, z.wave);
             if (!wave.name.empty())
             {
-                s += RegionLine(z, wave, 0.0, shapes);
+                s += RegionLine(z, wave, 0.0, shapes, tick_microseconds);
             }
         }
 

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the model of Bezel Engine's music sync without game data: a stream file with regions and markers, and a
-// jump setting, made here. The stream plays an intro, a part A and a part B, then loops back to A. A beat of 4/4 at 120
+// Checks the model of Bezel Engine's music sync without game data: a stream file with regions and markers, and a jump
+// setting, made here. The stream plays an intro, a part A and a part B, then loops back to A. A beat of 4/4 at 120
 // beats a minute starts at 0 and again at A. B changes to 3/4 at 90. Chords fall on bar lines and inside bars. The
-// expected values come from runs of the game's routines (fn_c9870, fn_cb18c and fn_103b80 in Super Mario Party
-// Jamboree's main) on the same markers, a frame of 240 samples at a time. In the first stream, the frame after the jump
-// back lands on A's first sample. The routines then miss the beat and the chord there, and the counters run on in 3/4.
-// In the second, B is 100 samples longer, and the frame after the jump lands past A's start.
+// expected values follow the game's routines (fn_c9870, fn_cb18c and fn_103b80 in Super Mario Party Jamboree's main) on
+// the same markers, a frame of 240 samples at a time. In the first stream, the frame after the jump back lands on A's
+// first sample. The routines then miss the beat and the chord there, and the counters run on in 3/4. In the second, B
+// is 100 samples longer, and the frame after the jump lands past A's start.
 
 #include <array>
 #include <cstddef>
@@ -161,7 +161,7 @@ struct Reported
     int16_t tempo;
 };
 
-// Checks the writes of procedures 2 to 4 against the beats that the game's routines reported. Procedure 4 runs after
+// Checks the writes of procedures 2 to 4 against the beats that the game's routines give. Procedure 4 runs after
 // each reported beat in the game. Its last write up to the beat's frame gives the tempo there.
 void CheckWrites(const std::vector<bex::ProcedureWrite>& writes, const std::vector<Reported>& expected,
                  const std::string& what)

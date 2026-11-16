@@ -346,9 +346,9 @@ void TestArrangements()
 }
 
 // Mario Party: Star Rush starts SQ_BGM_MGN708 with variable 9 at 0. The other sounds of minigame 708 set their
-// variables as they start. SQ_BGM_MGN708 plays the A set's patterns in the order of an Azahar run, with variable 9 at 0
-// and variable 10 at the pattern from the start. The B set's other patterns follow SQ_BGM_MGN708_B_FIRST, with
-// variable 10 at the pattern from frame 1.
+// variables as they start. SQ_BGM_MGN708 plays the A set's patterns in the order in which the minigame plays them, with
+// variable 9 at 0 and variable 10 at the pattern from the start. The B set's other patterns follow
+// SQ_BGM_MGN708_B_FIRST, with variable 10 at the pattern from frame 1.
 void TestMinigame708()
 {
     CheckStart(kMarioPartyStarRush, "SQ_BGM_MGN708", {.variables = {{{.index = 9, .value = 0}}}});
@@ -358,7 +358,7 @@ void TestMinigame708()
     const auto a = SequenceArrangements(kMarioPartyStarRush, "SQ_BGM_MGN708");
     Check(a.size() == 4 && a[0].suffix == "_interval_loop" && a[1].suffix == "_otehon" &&
               a[2].suffix == "_rhythm_loop" && a[3].suffix == "_kaitou",
-          "the A set's four patterns follow the bare sequence in the run's order");
+          "the A set's four patterns follow the bare sequence in the minigame's order");
     Check(a.size() == 4 &&
               a[0].start == SequenceStart{.variables = {{{.index = 9, .value = 0}, {.index = 10, .value = 3}}}},
           "the A set's interval pattern starts with variable 9 at 0 and variable 10 at 3");
@@ -371,8 +371,8 @@ void TestMinigame708()
           "the A set's first sound and the interval starts have no other pattern");
 }
 
-// Mario Party: Island Tour's seven tempo pieces start at the variable 0 of an Azahar run. MG3801 and MNG_012 play the
-// run's rows of the game's track table. Each piece also has its later states.
+// Mario Party: Island Tour's seven tempo pieces start at the variable 0 that the game writes. MG3801 and MNG_012 play
+// rows of the game's track table. Each piece also has its later states.
 void TestIslandTourTempoPieces()
 {
     CheckStart(kIslandTour, "SEQ_BGM_MNG_MG3801", {.muted = 0x98b4, .variables = {{{.index = 0, .value = 100}}}});
@@ -477,9 +477,8 @@ void TestMarioKart7Effects()
 
 // New Leaf's DJ K.K. starts his songs with variable 0 at 1, and the birthday and event songs and the interludes at 0.
 // Each plays with the club's effect 0 and a send of 0.4 on bus A. The two interludes that play the town's tune also
-// take the game's first default tune in key 0 in track variables 0 to 15 (indices 32 to 47). A Unicorn run of the DJ's
-// writer (0x28B08C) gave the 16 values. The museum's entry for its whole name stays. The café's piece starts with
-// track 7 muted.
+// take the game's first default tune in key 0 in track variables 0 to 15 (indices 32 to 47). The DJ's writer (0x28B08C)
+// gives the 16 values. The museum's entry for its whole name stays. The café's piece starts with track 7 muted.
 void TestNewLeafDj()
 {
     constexpr SequenceStart kOne = {

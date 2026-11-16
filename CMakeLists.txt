@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 5.0.0 LANGUAGES C CXX)
+project(ntdlib VERSION 6.0.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -260,10 +260,10 @@ xsflib_add_project_test(ntdlib sdat_cut ntdlib::sdat_cut)
 
 # The readers and writers of the files of Procyon Studio's sound driver for the DS, Digital Sound Elements (DSE): songs,
 # wave banks and banks of sound effects. A model of the driver's part on the ARM9 plays songs. The build of the driver
-# in a game's code tells which model plays them.
+# in a game's code tells which model plays them, and the game's settings the length of its tick.
 xsflib_add_project_library(ntdlib dse src/dse/build.cpp src/dse/formats.cpp src/dse/driver.cpp
                            src/dse/driver_sequences.cpp src/dse/driver_events.cpp src/dse/driver_voices.cpp
-                           src/dse/files.cpp src/dse/sets.cpp)
+                           src/dse/files.cpp src/dse/gfsa.cpp src/dse/sets.cpp src/dse/ticks.cpp)
 target_link_libraries(ntdlib_dse PUBLIC xsflib::common ntdlib::ntr ntdlib::ntr_snd PRIVATE ntdlib::disc)
 # The sequences and the handlers of their commands build as one translation unit.
 set_target_properties(ntdlib_dse PROPERTIES UNITY_BUILD ON UNITY_BUILD_MODE GROUP)

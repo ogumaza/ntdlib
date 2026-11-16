@@ -87,11 +87,12 @@ sf2::Zone GlobalZone(const std::vector<LfoShape>& shapes)
     return global;
 }
 
-// The zone of `z` with sample `sample` of `sample_rate`, `quieter` centibels quieter.
+// The zone of `z` with sample `sample` of `sample_rate`, `quieter` centibels quieter, for a driver whose ticks take
+// `tick_microseconds`.
 sf2::Zone RegionZone(const PresetZone& z, uint16_t sample, uint32_t sample_rate, bool loop, double quieter,
-                     const std::vector<LfoShape>& shapes)
+                     const std::vector<LfoShape>& shapes, int tick_microseconds)
 {
-    const Sf2Envelope e = ConvertEnvelope(z.envelope);
+    const Sf2Envelope e = ConvertEnvelope(z.envelope, tick_microseconds);
     const ZoneTuning tuning = TuningOf(z, sample_rate);
     const double level = ZoneLevel(z);
     sf2::ZoneValues values;
@@ -201,6 +202,12 @@ std::vector<std::string> PresetNames(const std::vector<PresetKey>& keys)
 Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, const PerformOptions& options,
                            const std::string& program)
 {
+    return ConvertSequence(files, name, options, program, {});
+}
+
+Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, const PerformOptions& options,
+                           const std::string& program, const std::map<uint16_t, std::string>& sfz_bank_names)
+{
     Conversion c;
     c.performance = Perform(files, options);
 
@@ -230,7 +237,7 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
     for (std::size_t i = 0; i < c.performance.presets.size(); i++)
     {
         const PresetKey& key = c.performance.presets[i];
-        const std::vector<LfoShape> shapes = PresetLfos(key);
+        const std::vector<LfoShape> shapes = PresetLfos(key, c.performance.tick_microseconds);
         sf2::Instrument instrument;
         instrument.name = names[i];
         instrument.zones.push_back(GlobalZone(shapes));
@@ -245,7 +252,8 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
         {
             if (const auto sample = samples.Get(banks, key.bank, z.wave))
             {
-                instrument.zones.push_back(RegionZone(z, sample->id, sample->rate, sample->loop, quieter, shapes));
+                instrument.zones.push_back(RegionZone(z, sample->id, sample->rate, sample->loop, quieter, shapes,
+                                                      c.performance.tick_microseconds));
             }
         }
 
@@ -259,6 +267,7 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
     ntdlib::sequence_export::WriteSoundFont(
         c, sf, name, "Converted by " + program + (files.effects ? " from sound effect " : " from song ") + name + ".",
         program);
+    banks.SetSfzNames(sfz_bank_names);
     c.sfz = BuildSfz(c.performance, midi, banks, name, names, program);
     ntdlib::sequence_export::CollectWarnings(c, midi, warnings, banks.Warnings());
 
@@ -267,8 +276,8 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
 
 ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank& bank,
                                                     const ntdlib::dse::WaveBank* main_bank,
-                                                    std::span<const uint32_t> programs, const std::string& name,
-                                                    const std::string& program)
+                                                    std::span<const uint32_t> programs, int tick_microseconds,
+                                                    const std::string& name, const std::string& program)
 {
     const auto id = xsflib::LoadLe16(&bank.header[0x0E]);
     const auto key_of = [&bank, id](uint32_t p)
@@ -317,7 +326,7 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
         for (const uint32_t p : run)
         {
             const PresetKey key = key_of(p);
-            const std::vector<LfoShape> shapes = PresetLfos(key);
+            const std::vector<LfoShape> shapes = PresetLfos(key, tick_microseconds);
             const std::string preset = "Program " + std::to_string(p);
             sf2::Instrument instrument;
             instrument.name = preset;
@@ -326,7 +335,8 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
             {
                 if (const auto sample = samples.Get(banks, id, z.wave))
                 {
-                    instrument.zones.push_back(RegionZone(z, sample->id, sample->rate, sample->loop, quieter, shapes));
+                    instrument.zones.push_back(
+                        RegionZone(z, sample->id, sample->rate, sample->loop, quieter, shapes, tick_microseconds));
                 }
             }
             sf2::AddInstrumentPreset(sf, p, preset, std::move(instrument));
@@ -336,7 +346,7 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
     };
     sf2::SoundFont whole = part(playing);
     c.sound_fonts = ntdlib::sequence_export::BankSoundFonts(whole, playing, part, name, program);
-    c.sfz = BuildBankSfz(playing, banks, id, name, program);
+    c.sfz = BuildBankSfz(playing, banks, id, tick_microseconds, name, program);
     c.warnings.insert(c.warnings.end(), banks.Warnings().begin(), banks.Warnings().end());
 
     return c;

@@ -657,6 +657,48 @@ void TestHuffman()
     XSFLIB_CHECK(!ntdlib::disc::IsCx(Bytes{'L', 'Z', '7', '7', 0x28, 0x04, 0x00, 0x00}));
 }
 
+// `data` without its first 4 bytes, a header in the BIOS's form.
+Bytes Body(const Bytes& data)
+{
+    return {data.begin() + 4, data.end()};
+}
+
+// Data without the header (DecompressBody): LZ77, Huffman coding of 4-bit and of 8-bit symbols, and run-length coding,
+// each with the size from elsewhere.
+void TestBodies()
+{
+    namespace disc = ntdlib::disc;
+    const Bytes data = FewValues(0x3456, 7);
+    XSFLIB_CHECK(disc::DecompressBody(Body(CompressLz(data, false)), disc::BodyFormat::kLz77, data.size()) == data);
+    XSFLIB_CHECK(disc::DecompressBody(Body(CompressHuffman(data)), disc::BodyFormat::kHuffman8, data.size()) == data);
+
+    // 4-bit symbols: each byte's low half, then its high half.
+    Bytes halves;
+    for (const uint8_t byte : data)
+    {
+        halves.push_back(byte & 0xF);
+        halves.push_back(byte >> 4);
+    }
+    XSFLIB_CHECK(disc::DecompressBody(Body(CompressHuffman(halves)), disc::BodyFormat::kHuffman4, data.size()) == data);
+
+    // Run-length coding: 2 bytes as they are, the next byte 5 times, and one more byte. A run stops at the size.
+    const Bytes kRuns = {0x01, 'a', 'b', 0x82, 'c', 0x00, 'd'};
+    XSFLIB_CHECK(disc::DecompressBody(kRuns, disc::BodyFormat::kRunLength, 8) == Text("abcccccd"));
+    XSFLIB_CHECK(disc::DecompressBody(kRuns, disc::BodyFormat::kRunLength, 4) == Text("abcc"));
+
+    // Data that ends early.
+    bool threw = false;
+    try
+    {
+        disc::DecompressBody(kRuns, disc::BodyFormat::kRunLength, 9);
+    }
+    catch (const disc::Error&)
+    {
+        threw = true;
+    }
+    XSFLIB_CHECK(threw);
+}
+
 // A literal byte, and a copy of `length` bytes from `distance` back.
 cx::Token Literal(uint8_t byte)
 {
@@ -903,6 +945,7 @@ int main(int argc, char** argv)
         fs::create_directories(dir);
         TestLz();
         TestHuffman();
+        TestBodies();
         TestLhAndLrc();
         TestTitles(dir);
         TestNestedArchives(dir);

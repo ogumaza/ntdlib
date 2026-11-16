@@ -6,8 +6,8 @@
 //
 // WarioWare: Get It Together!'s code takes the record at 0x7e8c70 in its main, merges it with the default record and
 // gives the level to the sound's volume at 0xbfc640, over 0 frames. 0xbfc410 multiplies the volume into the sound's
-// total. WarioWare: Move It! does the same at 0xcef920 and 0xdbd5bc. A run of those functions on every record of the
-// two games' sheets gave the levels that AddSheet reads.
+// total. WarioWare: Move It! does the same at 0xcef920 and 0xdbd5bc. AddSheet reads the levels that those functions
+// give.
 
 #pragma once
 

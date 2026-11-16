@@ -37,8 +37,12 @@ namespace
 using ntdlib::dse::EnvelopeValues;
 using ntdlib::dse::SplitView;
 
-// A tick of the driver in milliseconds.
-constexpr double kTickMs = 1000.0 * ntdlib::dse::Player::kTickClocks / ntdlib::ntr::kSystemClockHz;
+// A tick of the driver in milliseconds, for a tick of `tick_microseconds` in the game's settings.
+double TickMs(int tick_microseconds)
+{
+    return 1000.0 * static_cast<double>(ntdlib::dse::Player::TickClocks(tick_microseconds)) /
+           ntdlib::ntr::kSystemClockHz;
+}
 
 // The ticks of an envelope that the fits read: 200 s. SoundFont's slowest decay takes about 102 s.
 constexpr int kEnvelopeTicks = 20000;
@@ -133,16 +137,16 @@ struct EnvelopeFit
 };
 
 // The time of SoundFont's linear ramp whose amplitudes come closest to `levels`, tick by tick, in the least squares.
-// The ramp ends within the levels.
-double FitRamp(std::span<const uint8_t> levels)
+// The ramp ends within the levels. A tick takes `tick_ms`.
+double FitRamp(std::span<const uint8_t> levels, double tick_ms)
 {
-    const double full_ms = static_cast<double>(levels.size()) * kTickMs;
+    const double full_ms = static_cast<double>(levels.size()) * tick_ms;
     const auto error = [&](double ramp_ms)
     {
         double sum = 0.0;
         for (std::size_t k = 0; k < levels.size(); k++)
         {
-            const double t = (static_cast<double>(k) + 0.5) * kTickMs;
+            const double t = (static_cast<double>(k) + 0.5) * tick_ms;
             const double d = Amplitude(levels[k]) - std::min(1.0, t / ramp_ms);
             sum += d * d;
         }
@@ -153,8 +157,8 @@ double FitRamp(std::span<const uint8_t> levels)
 }
 
 // The time of a fall of 100 dB that comes closest to `levels`, tick by tick, in amplitude in the least squares. The
-// fall starts from full level and stops at `sustain_cb`.
-double FitFall(std::span<const uint8_t> levels, double sustain_cb)
+// fall starts from full level and stops at `sustain_cb`. A tick takes `tick_ms`.
+double FitFall(std::span<const uint8_t> levels, double sustain_cb, double tick_ms)
 {
     const std::size_t step = std::max<std::size_t>(levels.size() / kFitSamples, 1);
     const double floor_db = -sustain_cb / 10.0;
@@ -164,7 +168,7 @@ double FitFall(std::span<const uint8_t> levels, double sustain_cb)
         double sum = 0.0;
         for (std::size_t k = 0; k < levels.size(); k += step)
         {
-            const double t = (static_cast<double>(k) + 0.5) * kTickMs;
+            const double t = (static_cast<double>(k) + 0.5) * tick_ms;
             const double db = std::max(-kSf2FallDb * t / fall_ms, floor_db);
             const double d = Amplitude(levels[k]) - std::pow(10.0, db / 20.0);
             sum += d * d;
@@ -175,38 +179,49 @@ double FitFall(std::span<const uint8_t> levels, double sustain_cb)
     return std::exp(Minimum(error, std::log(0.001), std::log(kSlowestSf2DecayMs)));
 }
 
-// The release's time of a fall of 100 dB for a release that takes `ticks`. The driver's release falls linearly in level
-// from where it starts to 0, in the same time from any level. Its shape relative to its start is therefore the same
-// from any level, and so is its fit.
-double FitRelease(int32_t ticks)
+// The release's time of a fall of 100 dB for a release that takes `ticks` of `tick_ms`. The driver's release falls
+// linearly in level from where it starts to 0, in the same time from any level. Its shape relative to its start is
+// therefore the same from any level, and so is its fit.
+double FitRelease(int32_t ticks, double tick_ms)
 {
-    static const double kRatio = []
+    // The fit of a release from full level over 1,000 ticks, for each length of a tick. Conversions on several threads
+    // share the fits, under the lock.
+    static std::mutex mutex;
+    static std::map<double, double> ratios;
+    double ratio = 0.0;
     {
-        // A release from full level over 1,000 ticks.
-        std::vector<uint8_t> levels(2000, 0);
-        for (std::size_t k = 0; k < 1000; k++)
+        const std::lock_guard lock(mutex);
+        auto found = ratios.find(tick_ms);
+        if (found == ratios.end())
         {
-            levels[k] = static_cast<uint8_t>(std::lround(127.0 * (1.0 - (static_cast<double>(k) + 1.0) / 1000.0)));
+            std::vector<uint8_t> levels(2000, 0);
+            for (std::size_t k = 0; k < 1000; k++)
+            {
+                levels[k] = static_cast<uint8_t>(std::lround(127.0 * (1.0 - (static_cast<double>(k) + 1.0) / 1000.0)));
+            }
+            found = ratios.emplace(tick_ms, FitFall(levels, 1440.0, tick_ms) / (1000.0 * tick_ms)).first;
         }
+        ratio = found->second;
+    }
 
-        return FitFall(levels, 1440.0) / (1000.0 * kTickMs);
-    }();
-
-    return kRatio * ticks * kTickMs;
+    return ratio * ticks * tick_ms;
 }
 
 // Fits the driver's envelope of `e`. The levels before the release start at the attack's start level, rise to their
 // peak, hold it, then fall to a level that they keep or to 0. The ramp fits the rise. The hold takes the rest of the
 // rise and the ticks at the peak. The decay fits the fall to a sustain at the level that the envelope keeps, or to
 // silence. A fall can start in the first tick or in the tick that ends the attack. The peak then lies a step below full
-// level. An envelope that stays at a peak below full level keeps it as its sustain.
-EnvelopeFit FitEnvelope(const EnvelopeValues& e)
+// level. An envelope that stays at a peak below full level keeps it as its sustain. The driver's ticks take
+// `tick_microseconds` in the game's settings.
+EnvelopeFit FitEnvelope(const EnvelopeValues& e, int tick_microseconds)
 {
-    const std::vector<uint8_t> levels = ntdlib::dse::EnvelopeLevels(e, kEnvelopeTicks);
+    const double tick_ms = TickMs(tick_microseconds);
+    const std::vector<uint8_t> levels = ntdlib::dse::EnvelopeLevels(e, tick_microseconds, kEnvelopeTicks);
     EnvelopeFit fit;
-    if (const std::optional<int32_t> release = ntdlib::dse::EnvelopeTicks(e.multiplier, e.release_time))
+    if (const std::optional<int32_t> release =
+            ntdlib::dse::EnvelopeTicks(e.multiplier, e.release_time, tick_microseconds))
     {
-        fit.release_ms = FitRelease(std::max(*release, 1));
+        fit.release_ms = FitRelease(std::max(*release, 1), tick_ms);
     }
     else
     {
@@ -225,9 +240,9 @@ EnvelopeFit FitEnvelope(const EnvelopeValues& e)
     const auto rise = static_cast<std::size_t>(peak_at - levels.begin());
     if (rise > 0)
     {
-        fit.ramp_ms = FitRamp(std::span(levels).first(rise + 1));
+        fit.ramp_ms = FitRamp(std::span(levels).first(rise + 1), tick_ms);
     }
-    fit.hold_ms = static_cast<double>(fall - levels.begin()) * kTickMs - fit.ramp_ms;
+    fit.hold_ms = static_cast<double>(fall - levels.begin()) * tick_ms - fit.ramp_ms;
 
     if (fall == levels.end())
     {
@@ -249,26 +264,27 @@ EnvelopeFit FitEnvelope(const EnvelopeValues& e)
         end = settled + std::min(settled - fall + 1, levels.end() - settled);
     }
     const std::span<const uint8_t> falling(fall - 1, end);
-    fit.decay_ms = falling.size() > 1 ? FitFall(falling, fit.sustain_cb) : 0.0;
+    fit.decay_ms = falling.size() > 1 ? FitFall(falling, fit.sustain_cb, tick_ms) : 0.0;
 
     return fit;
 }
 
-// Returns the fit of `e`, from a cache of the envelopes fitted so far. Conversions on several threads share the
-// cache, under the lock. The entries never move or change.
-const EnvelopeFit& FitOf(const EnvelopeValues& e)
+// Returns the fit of `e` with a tick of `tick_microseconds`, from a cache of the envelopes fitted so far. Conversions
+// on several threads share the cache, under the lock. The entries never move or change.
+const EnvelopeFit& FitOf(const EnvelopeValues& e, int tick_microseconds)
 {
     static std::mutex mutex;
-    static std::map<std::array<uint8_t, 8>, EnvelopeFit> fits;
-    const std::array<uint8_t, 8> key = {e.multiplier,    e.attack_begin, e.attack_time,  e.decay_time,
-                                        e.sustain_level, e.hold_time,    e.sustain_time, e.release_time};
+    static std::map<std::pair<int, std::array<uint8_t, 8>>, EnvelopeFit> fits;
+    const std::array<uint8_t, 8> values = {e.multiplier,    e.attack_begin, e.attack_time,  e.decay_time,
+                                           e.sustain_level, e.hold_time,    e.sustain_time, e.release_time};
+    const std::pair key{tick_microseconds, values};
     const std::lock_guard lock(mutex);
     if (const auto found = fits.find(key); found != fits.end())
     {
         return found->second;
     }
 
-    return fits.emplace(key, FitEnvelope(e)).first->second;
+    return fits.emplace(key, FitEnvelope(e, tick_microseconds)).first->second;
 }
 
 // The split's value, or the channel's where the channel sets one.
@@ -369,10 +385,10 @@ std::vector<PresetZone> PresetZones(const ntdlib::dse::WaveBank& bank, const Pre
     return zones;
 }
 
-Sf2Envelope ConvertEnvelope(const EnvelopeValues& e)
+Sf2Envelope ConvertEnvelope(const EnvelopeValues& e, int tick_microseconds)
 {
     using seqlib::sf2::ToTimecents;
-    const EnvelopeFit& fit = FitOf(e);
+    const EnvelopeFit& fit = FitOf(e, tick_microseconds);
 
     Sf2Envelope out;
     out.attack = ToTimecents(fit.ramp_ms, -12000, 8000);
@@ -384,9 +400,9 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& e)
     return out;
 }
 
-SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& e)
+SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& e, int tick_microseconds)
 {
-    const EnvelopeFit& fit = FitOf(e);
+    const EnvelopeFit& fit = FitOf(e, tick_microseconds);
 
     SfzEnvelope out;
     out.attack = fit.ramp_ms / 1000.0;
@@ -398,14 +414,14 @@ SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& e)
     return out;
 }
 
-std::vector<LfoShape> PresetLfos(const PresetKey& key)
+std::vector<LfoShape> PresetLfos(const PresetKey& key, int tick_microseconds)
 {
     // A voice's LFOs (0x020752F8): the waveform's value over 256 times the LFO's level, which the fade raises to full
     // for an LFO of type 1, and which event 0xBE gives the others. The waveforms (0x020753AC to 0x020755B8) swing over
     // the LFO's amplitude times 1,024 in each phase of `phase_ms`. Waveform 3 rises to half of it in half a phase, then
     // swings between its two halves. Waveform 1 jumps between the full amplitude above and below 0, and waveform 6
     // holds random values up to half of it. The others swing between 0 and the full amplitude. Waveforms 4 to 7 take a
-    // phase for a cycle, the others two.
+    // phase for a cycle, the others two. A phase lasts phase_ms * 1000 / tick whole ticks, at least one (0x020750B4).
     std::vector<LfoShape> shapes;
     for (const ntdlib::dse::LfoValues& lfo : key.lfos)
     {
@@ -435,7 +451,9 @@ std::vector<LfoShape> PresetLfos(const PresetKey& key)
         LfoShape shape;
         shape.output = lfo.output;
         shape.waveform = lfo.waveform;
-        shape.hz = 1000.0 / (lfo.waveform >= 4 ? lfo.phase_ms : 2.0 * lfo.phase_ms);
+        const int phase_ticks = std::max(lfo.phase_ms * 1000 / std::max(tick_microseconds, 1), 1);
+        const double phase_ms = phase_ticks * tick_microseconds / 1000.0;
+        shape.hz = 1000.0 / (lfo.waveform >= 4 ? phase_ms : 2.0 * phase_ms);
         shape.delay = lfo.type == 1 ? lfo.delay_ms / 1000.0 : 0.0;
         shape.fade = lfo.type == 1 ? lfo.envelope_ms / 1000.0 : 0.0;
         shape.depth = depth;
@@ -472,6 +490,17 @@ const ntdlib::dse::WaveBank* BankSet::Bank(uint16_t id) const
 std::string BankSet::WaveName(uint16_t bank, uint16_t wave)
 {
     return "w" + std::to_string(bank) + "_" + std::to_string(wave);
+}
+
+void BankSet::SetSfzNames(std::map<uint16_t, std::string> names)
+{
+    sfz_names_ = std::move(names);
+}
+
+std::string BankSet::SfzWaveName(uint16_t bank, uint16_t wave) const
+{
+    const auto found = sfz_names_.find(bank);
+    return found != sfz_names_.end() ? found->second + "_" + std::to_string(wave) : WaveName(bank, wave);
 }
 
 const Pcm* BankSet::Wave(uint16_t bank_id, uint16_t wave)

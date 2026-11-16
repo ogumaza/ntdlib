@@ -446,7 +446,7 @@ struct Voice
     int32_t pan = 0;
     // The envelope's level in bits 0 to 7, bit 8 while the voice sounds, and the voice's priority from bit 16 on.
     uint32_t state = 0;
-    // The earlier build: the ticks until the voice's note ends. That build keeps no list of held notes.
+    // A build without a list of held notes: the ticks until the voice's note ends.
     int32_t duration = 0;
     int next = kNone;
     struct Channel* channel = nullptr;
@@ -471,7 +471,7 @@ struct Channel
 {
     uint32_t sequence = 0;
     uint8_t flags = 0;
-    uint16_t update = 0; // the earlier build: the parameters that the channel's voices update next (UpdateVoices)
+    uint16_t update = 0; // all but the later build: the parameters that the channel's voices update (UpdateVoices)
     uint8_t index = 0;
     uint8_t unknown6 = 0;
     uint8_t allocation = 0;
@@ -517,7 +517,7 @@ struct Synth
     uint8_t paused = 0;
     uint8_t unknown_a = 0;
     uint8_t voices = 0;
-    uint16_t update = 0; // the earlier build: the parameters that the synth's voices update next (UpdateVoices)
+    uint16_t update = 0; // all but the later build: the parameters that the synth's voices update (UpdateVoices)
     std::vector<Channel> channels;
 };
 
@@ -684,10 +684,10 @@ struct Driver::State
         }
     }
 
-    // The earlier build marks the channel instead. Its voices take the marks when they update.
+    // All but the later build mark the channel instead. Its voices take the marks when they update.
     void FlagVoices(Channel& channel, uint16_t flags);
 
-    // The earlier build marks the synth instead. The voices of all its channels take the marks when they update.
+    // All but the later build mark the synth instead. The voices of all its channels take the marks when they update.
     void FlagSynth(Synth& synth, uint16_t flags);
 
     // Voices
@@ -741,8 +741,8 @@ struct Driver::State
     void ReleaseHeldNote(Channel& channel, int node);
 
     // 0x02073E10: a legato. The first held note with key `previous` takes `note`, and its voices take the new key.
-    // The earlier build (0x02064C1C in Explorers of Time's ARM9 binary) gives the key and the note's duration to the
-    // channel's first voice of key `previous` alone.
+    // The earlier and middle builds (0x02064C1C in Explorers of Time's ARM9 binary) give the key and the note's
+    // duration to the channel's first voice of key `previous` alone.
     void Legato(Channel& channel, const Note& note, uint8_t previous);
 
     // 0x02073EA0
@@ -753,8 +753,8 @@ struct Driver::State
     // share it, and the code soon walks a list that never ends. The model stops there.
     void ReleaseEndedNotes(Channel& channel);
 
-    // 0x0206530C in Explorers of Time's ARM9 binary: the earlier build releases each voice that a release has
-    // marked, those that release already among them.
+    // 0x0206530C in Explorers of Time's ARM9 binary: the earlier and middle builds release each voice that a release
+    // has marked, those that release already among them.
     void ReleaseDampedVoices(Channel& channel);
 
     // A split of the channel's program: 48 bytes from `at`. Nothing where the program ends before them.
@@ -764,9 +764,9 @@ struct Driver::State
     static std::optional<std::size_t> NextSplit(const std::vector<uint8_t>& program,
                                                 std::optional<std::size_t> previous, uint8_t key, int8_t velocity);
 
-    // 0x02073EDC: starts a voice for each split that holds the note. The earlier build (0x0206496C in Explorers of
-    // Time's ARM9 binary) first tests the program, then draws the jitter, then the key in the channel's region. Each of
-    // its voices takes the note's duration.
+    // 0x02073EDC: starts a voice for each split that holds the note. The earlier and middle builds (0x0206496C in
+    // Explorers of Time's ARM9 binary) first test the program, then draw the jitter, then the key in the channel's
+    // region. Each of their voices takes the note's duration.
     uint16_t StartNote(Channel& channel, const Note& given);
 
     // 0x02074CF4
@@ -797,12 +797,12 @@ struct Driver::State
     // 0x02073208
     void ResetSynth(Synth& synth);
 
-    // 0x0207356C. The earlier build (0x02064518 in Explorers of Time's ARM9 binary) leaves the channels' volumes
+    // 0x0207356C. All but the later build (0x02064518 in Explorers of Time's ARM9 binary) leave the channels' volumes
     // until the voices update with a mark of the volume.
     void SelectGlobalVolume(Synth& synth, uint8_t index, int flag);
 
-    // 0x02073654, 0x020736E8 and 0x020737B8. The earlier build (0x02064568, 0x02064580 and 0x020645C0 in Explorers
-    // of Time's ARM9 binary) only marks the synth. Its channels work out their values when the voices update.
+    // 0x02073654, 0x020736E8 and 0x020737B8. All but the later build (0x02064568, 0x02064580 and 0x020645C0 in
+    // Explorers of Time's ARM9 binary) only mark the synth. Its channels work out their values when the voices update.
     void SetSynthBend(Synth& synth, int16_t bend);
 
     void SetSynthVolume(Synth& synth, int8_t volume);
@@ -921,8 +921,9 @@ struct Driver::State
     // 0x02071784
     void StepFades(Sequence& sequence);
 
-    // 0x02071160. The earlier build (0x02062A00 in Explorers of Time's ARM9 binary) counts down each voice's
-    // duration instead, and releases the voice when the count reaches 0. A voice that starts with 0 never releases.
+    // 0x02071160. The earlier and middle builds (0x02062A00 in Explorers of Time's ARM9 binary) count down each
+    // voice's duration instead, and release the voice when the count reaches 0. A voice that starts with 0 never
+    // releases.
     void StepNoteLengths(Sequence& sequence);
 
     void RunEvent(Sequence& sequence, TrackState& track, uint8_t code, uint32_t& at);
@@ -931,7 +932,10 @@ struct Driver::State
     void RunTrack(Sequence& sequence, TrackState& track);
 
     // 0x020713E8. The earlier build (0x02062C14 in Explorers of Time's ARM9 binary) has no delay, and steps the fades
-    // on every tick. It stops a sequence that fades out before the fades step, and runs the rest of the step.
+    // on every tick. It stops a sequence that fades out before the fades step, and runs the rest of the step. The
+    // middle build (0x020743A4 in Luminous Arc 2's ARM9 binary) has the delay and steps the fades only while they
+    // run, but stops a faded sequence as the earlier build does. The late middle build (0x02129D74 in Shiren DS 2's
+    // ARM9 binary) stops a faded sequence as the later build does, but doesn't silence one.
     void StepSequence(Sequence& sequence);
 
     // The voices' steps of a tick
@@ -943,6 +947,11 @@ struct Driver::State
     // its voices update, for the parameters that the channel's and the synth's marks name. Each of the channel's voices
     // takes the marks.
     void UpdateChannels(Synth& synth);
+
+    // 0x020764BC in Luminous Arc 2's ARM9 binary: the middle builds work out a channel's pitch, volume and pan for each
+    // of its voices on every tick, for the parameters that the marks of the channel and of the synth name. The marks
+    // stay set. Gives the marks for the voice.
+    uint16_t UpdateChannel(Channel& channel);
 
     // 0x02074194
     void UpdateVoices();
@@ -958,6 +967,13 @@ struct Driver::State
     void Repoint(const State& from);
 
     Build build = Build::kLater;
+
+    // Whether the build keeps a list of the notes that its channels hold, and counts their ticks there.
+    bool ListsNotes() const
+    {
+        return build == Build::kLater || build == Build::kLateMiddle;
+    }
+
     ntr::snd::CommandList commands; // the commands since the last list, which the next list starts with
     int16_t tick = Driver::kTickMicroseconds;
     int32_t total_ticks = 0;

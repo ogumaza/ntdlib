@@ -206,8 +206,12 @@ void TestPartialImage()
     xsflib::StoreLe32(&backwards[h.fat_offset + 4], 0);
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { Rom::ParsePartial(backwards); }) ==
                  "file 0 lies past the end of the image");
-    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { Rom::ParsePartial(std::vector<uint8_t>(0x100)); }) ==
-                 "the image is shorter than a cartridge header");
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>(
+                     [&]
+                     {
+                         const std::vector<uint8_t> short_image(0x100);
+                         Rom::ParsePartial(short_image);
+                     }) == "the image is shorter than a cartridge header");
 }
 
 // A partial image whose FNT doesn't parse leaves the files unnamed. Parse refuses the same FNT in a whole image.
@@ -252,8 +256,12 @@ void TestRefusals()
     const uint32_t name = image[fnt + root];
     looped[fnt + root + 1 + name + 1 + (image[fnt + root + 1 + name] & 0x7F)] = 0;
 
-    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { Rom::Parse(std::vector<uint8_t>(0x100)); }) ==
-                 "the image is shorter than a cartridge header");
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>(
+                     [&]
+                     {
+                         const std::vector<uint8_t> short_image(0x100);
+                         Rom::Parse(short_image);
+                     }) == "the image is shorter than a cartridge header");
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { Rom::Parse(short_fat); }) ==
                  "file 2 lies past the end of the image");
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { Rom::Parse(looped); }) ==

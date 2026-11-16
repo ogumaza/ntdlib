@@ -95,6 +95,9 @@ public:
     // Reads a whole image, such as a dump of a cartridge. Throws xsflib::FormatError when the header, the FNT or the
     // FAT doesn't fit in the image, or when the bytes of a file don't. A cut-down image is an error here.
     static Rom Parse(std::span<const uint8_t> image);
+    // A Rom keeps a view of the image, so the image must outlive it. A temporary vector would be gone at the end of the
+    // call.
+    static Rom Parse(std::vector<uint8_t>&& image) = delete;
 
     // Reads a partial image, such as the image of a 2SF set: a game image cut down to the data that the music uses. The
     // binaries, the overlay tables, the FNT, the FAT and the files may extend past the end of the image. Those bytes
@@ -104,6 +107,7 @@ public:
     // doesn't parse. Throws xsflib::FormatError for an image shorter than a header, or for a file that ends before it
     // starts.
     static Rom ParsePartial(std::span<const uint8_t> image);
+    static Rom ParsePartial(std::vector<uint8_t>&& image) = delete;
 
     // Whether ParsePartial read the image. The bytes past the end of a partial image read as zeros.
     bool Partial() const;

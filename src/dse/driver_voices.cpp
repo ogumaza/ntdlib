@@ -78,7 +78,7 @@ void Driver::State::FreeNote(int node)
 
 void Driver::State::FlagVoices(Channel& channel, uint16_t flags)
 {
-    if (build == Build::kEarlier)
+    if (build != Build::kLater)
     {
         channel.update |= flags;
         return;
@@ -88,7 +88,7 @@ void Driver::State::FlagVoices(Channel& channel, uint16_t flags)
 
 void Driver::State::FlagSynth(Synth& synth, uint16_t flags)
 {
-    if (build == Build::kEarlier)
+    if (build != Build::kLater)
     {
         synth.update |= flags;
         return;
@@ -547,7 +547,7 @@ void Driver::State::ReleaseHeldNote(Channel& channel, int node)
 
 void Driver::State::Legato(Channel& channel, const Note& note, uint8_t previous)
 {
-    if (build == Build::kEarlier)
+    if (!ListsNotes())
     {
         for (int v = channel.voice_list; v != kNone; v = VoiceAt(v).next)
         {
@@ -691,7 +691,7 @@ uint16_t Driver::State::StartNote(Channel& channel, const Note& given)
 {
     const uint32_t number = ++notes_started;
     uint16_t started = 0;
-    if (build == Build::kEarlier && channel.instrument == nullptr)
+    if (!ListsNotes() && channel.instrument == nullptr)
     {
         return 0;
     }
@@ -702,7 +702,7 @@ uint16_t Driver::State::StartNote(Channel& channel, const Note& given)
         jitter = static_cast<int16_t>(product / 32768 - channel.jitter);
     }
     Note note = given;
-    if (build == Build::kEarlier)
+    if (!ListsNotes())
     {
         RandomKey(channel, note);
     }
@@ -838,8 +838,9 @@ void Driver::State::SelectProgram(Channel& channel, uint16_t index)
         }
         if (program != nullptr)
         {
-            // The earlier build keeps the bend range (0x020647F8 in Explorers of Time's ARM9 binary).
-            if (build != Build::kEarlier)
+            // The earlier and middle builds keep the bend range (0x020647F8 in Explorers of Time's ARM9 binary). The
+            // late middle build clears it (0x0212BD0C in Shiren DS 2's ARM9 binary).
+            if (build == Build::kLater || build == Build::kLateMiddle)
             {
                 channel.bend_range = 0;
             }
@@ -876,6 +877,11 @@ void Driver::State::SelectBank(Channel& channel, uint16_t id)
 void Driver::State::ApplyKeyBend(Channel& channel, int16_t value)
 {
     channel.key_bend = value;
+    // The middle builds also mark the channel's pitch (0x0207611C in Luminous Arc 2's ARM9 binary).
+    if (build == Build::kMiddle || build == Build::kLateMiddle)
+    {
+        channel.update |= 0x10;
+    }
     ForEachVoice(channel,
                  [value](Voice& voice)
                  {
@@ -960,7 +966,7 @@ void Driver::State::SelectGlobalVolume(Synth& synth, uint8_t index, int flag)
     synth.global_volume = global_volumes[index & 0xF];
     synth.global_volume_index = static_cast<int8_t>(index);
     synth.combined_volume = static_cast<int8_t>(synth.global_volume * synth.volume / 127);
-    if (build != Build::kEarlier)
+    if (build == Build::kLater)
     {
         ChannelVolumes(synth);
     }

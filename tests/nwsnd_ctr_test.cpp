@@ -34,8 +34,8 @@ uint32_t Bits(float x)
 void TestArithmetic()
 {
     XSFLIB_CHECK(Bits(Ctr::TrackVolume(100, 90, 127, 1.0f, Ctr::PlayerVolume(100))) == 0x3e7b0db4);
-    // The track's float volume (SetTrackVolume) multiplies the player's volume. A Unicorn run of Pokémon X's
-    // UpdateChannelParam (0x31de18) from a hand-set track and player stored these channel volumes (+0xcc).
+    // The track's float volume (SetTrackVolume) multiplies the player's volume. Pokémon X's UpdateChannelParam
+    // (0x31de18) stores these channel volumes (+0xcc).
     XSFLIB_CHECK(Bits(Ctr::TrackVolume(100, 90, 127, 0.8f, Ctr::PlayerVolume(100))) == 0x3e48d7c3);
     XSFLIB_CHECK(Bits(Ctr::TrackVolume(100, 90, 127, 0.75f, Ctr::PlayerVolume(100))) == 0x3e3c4a46);
     XSFLIB_CHECK(Bits(Ctr::TrackVolume(100, 90, 127, 0.5f, Ctr::PlayerVolume(100))) == 0x3dfb0db4);

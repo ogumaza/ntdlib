@@ -10,7 +10,7 @@
 // channel and two zeros), then its events. A wave bank holds its waves' parameters (wavi), its programs (prgi), its key
 // groups (kgrp), its samples (pcmd) and an end chunk (eod), each on a multiple of 16 bytes. A bank's waves can lie in
 // another bank, the main bank. A bank of sound effects holds its sequences (seq), two tables (mcrl and bnkl) and an end
-// chunk.
+// chunk. Some games' banks of sound effects have a second layout. The reader doesn't read it (UnsupportedLayout).
 //
 // The readers keep every byte of a file. The writers give the file back byte for byte, and lay out a changed one in the
 // same way.
@@ -25,12 +25,23 @@
 #include <type_traits>
 #include <vector>
 
+#include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
 namespace ntdlib::dse
 {
 
 constexpr uint16_t kVersion = 0x0415;
+
+// A file of a layout that the readers recognise but don't read. A bank of sound effects of the second layout holds no
+// chunk around its sequences, and no mcrl, bnkl or eod chunk. The table of its sequences' offsets follows the header
+// at 0x40, with the slots' number at 0x30, and each offset counts from the file's start. Each sequence holds its
+// settings (SequenceInfo), its track chunks and an eoc chunk, and the last eoc chunk ends the file.
+class UnsupportedLayout : public xsflib::FormatError
+{
+public:
+    using xsflib::FormatError::FormatError;
+};
 
 // An event of a track: a note, a pause or a command. A note's code is its velocity, from 0 to 0x7F. Its first argument
 // gives the key in its low 4 bits, the change of octave plus 2 in the next 2 and the number of the length's bytes in
@@ -462,6 +473,9 @@ struct WaveBank
     // A bank's header gives this size of samples when the bank holds none.
     static constexpr uint32_t kNoSamples = 0xAAAA0000;
 
+    // Some banks' headers give this in place of the wavi chunk's size.
+    static constexpr uint32_t kNoWaviSize = 0xFFFFFFFF;
+
     // Reads `file`. Throws xsflib::FormatError as Song::Parse does, and for a table that names an entry past its
     // chunk or an entry of another number.
     static WaveBank Parse(std::span<const uint8_t> file);
@@ -469,8 +483,9 @@ struct WaveBank
     std::vector<uint8_t> Write() const;
 
     // Every byte of the header, with the date and the name as in a song's. The writer sets the size at 0x08, the size
-    // of the samples at 0x40 when the bank holds them, the slots of the waves at 0x46, those of the programs at 0x48
-    // when the bank holds programs, and the size of the wavi chunk at 0x4C.
+    // of the samples at 0x40 when the bank holds them and the header doesn't give 0 there, the slots of the waves at
+    // 0x46, those of the programs at 0x48 when the bank holds programs, and the size of the wavi chunk at 0x4C unless
+    // the header gives kNoWaviSize there. Some of Soma Bringer's banks give 0 and kNoWaviSize.
     std::array<uint8_t, kHeaderSize> header = {};
     std::vector<std::optional<WaveInfo>> waves; // by the wave's number, the table's slots
     std::optional<Instruments> instruments;
@@ -503,7 +518,8 @@ struct SoundEffects
 
     static constexpr std::size_t kHeaderSize = 0x40;
 
-    // Reads `file`. Throws xsflib::FormatError as WaveBank::Parse does.
+    // Reads `file`. Throws xsflib::FormatError as WaveBank::Parse does, and UnsupportedLayout for a bank of the
+    // second layout.
     static SoundEffects Parse(std::span<const uint8_t> file);
 
     std::vector<uint8_t> Write() const;

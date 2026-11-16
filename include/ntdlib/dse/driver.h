@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // A model of the ARM9's part of Procyon Studio's sound driver for the DS (DSE). The driver's thread runs a tick every
-// 10 ms. A tick runs the song's sequence and those of the sound effects, then each voice's envelope and LFOs, and sends
-// the ARM7's SND driver a list of commands for the hardware channels. The model keeps the driver's state as the driver
-// keeps it, and follows the driver's arithmetic, the widths of its fields included. The addresses in the comments are
-// those in Pokémon Mystery Dungeon: Explorers of Sky's ARM9 binary (North America).
+// 10 ms, or every 16.715 ms where a game's settings ask for it. A tick runs the song's sequence and those of the sound
+// effects, then each voice's envelope and LFOs, and sends the ARM7's SND driver a list of commands for the hardware
+// channels. The model keeps the driver's state as the driver keeps it, and follows the driver's arithmetic, the widths
+// of its fields included. The addresses in the comments are those in Pokémon Mystery Dungeon: Explorers of Sky's ARM9
+// binary (North America).
 //
 // A song and each sound effect play as a sequence. Each track of a sequence plays on a channel of the sequence's
 // synth. A channel holds the bank, the program, the volume, the pan and the LFO settings that its tracks' events set.
@@ -194,27 +195,40 @@ struct SequenceHooks
 // sequences have no delay, and step their fades on every tick. A sequence that has faded out stops before its fades
 // step. A change of a synth's volume, pan or bend only marks the synth. Its channels take the change when the voices
 // update. The later build stops a freed voice once, with the list's stop. It sends the start and the stop only when
-// they name a channel. BuildOf (ntdlib/dse/build.h) tells a game's build.
+// they name a channel.
+//
+// The middle build keeps no list of notes. A change of a synth only marks the synth. Both follow the earlier build, and
+// so do the handlers, apart from the octave at the end of a repeat. The lists, the stops and the delay of a sequence
+// follow the later build. A sequence steps its fades only while a fade runs. Channels and synths keep their marks from
+// tick to tick. Each voice of a marked channel therefore updates on every tick. A key bend marks the pitch of the
+// channel too. The late middle build is the middle build with the list of notes and the program changes of the later
+// build: a program change clears the bend range. A sequence ends a fade-out as in the later build, but never silences
+// its voices. BuildOf (ntdlib/dse/build.h) tells a game's build.
 enum class Build
 {
     kLater,
     kEarlier,
+    kMiddle,
+    kLateMiddle,
 };
 
 class Driver
 {
 public:
-    // The voices and the length of a tick, in microseconds, that the driver starts with.
+    // The voices and the length of a tick, in microseconds, that the driver starts with. A game's settings give the
+    // tick (ntdlib/dse/ticks.h). In the later build, byte 0x11 of 0 gives kTickMicroseconds and any other value
+    // kSlowTickMicroseconds (0x0206C3E0).
     static constexpr int kVoices = 16;
     static constexpr int kTickMicroseconds = 10'000;
+    static constexpr int kSlowTickMicroseconds = 16'715;
 
     // The pool of sequences of the sound effects, as the driver's default settings give it (0x0206C1C0).
     static constexpr int kEffectSequences = 4;
     static constexpr int kEffectTracks = 4;
 
-    // The driver of `build` after its start-up (0x0206C3E0). A copy goes on from the same state, with the same hooks
-    // and the same banks' files.
-    explicit Driver(Build build = Build::kLater);
+    // The driver of `build` after its start-up (0x0206C3E0), with a tick of `tick_microseconds`. A copy goes on from
+    // the same state, with the same hooks and the same banks' files.
+    explicit Driver(Build build = Build::kLater, int tick_microseconds = kTickMicroseconds);
     ~Driver();
     Driver(const Driver& other);
     Driver& operator=(const Driver& other);
@@ -302,18 +316,19 @@ private:
     std::unique_ptr<State> state_;
 };
 
-// The driver's arithmetic, for a converter. EnvelopeTicks gives the ticks that a stage of an envelope takes: entry
-// `index` of the table of times, `multiplier` times over, or of the table without a multiplier where `multiplier` is 0.
-// An index of 0x7F takes for ever, and gives nothing (0x02074D58). VoiceTimer gives a voice's timer at `pitch`, in
-// 256ths of a semitone, for a wave whose byte 0x13 is `format`: 3 and up for the PSG and the noise (0x02074194). The
-// voice plays 0xFFB0FF / timer samples a second, or steps of the PSG and the noise.
-std::optional<int32_t> EnvelopeTicks(uint8_t multiplier, uint8_t index);
+// The driver's arithmetic, for a converter. EnvelopeTicks gives the ticks of `tick_microseconds` that a stage of an
+// envelope takes: entry `index` of the table of times, `multiplier` times over, or of the table without a multiplier
+// where `multiplier` is 0. An index of 0x7F takes for ever, and gives nothing (0x02074D58). VoiceTimer gives a voice's
+// timer at `pitch`, in 256ths of a semitone, for a wave whose byte 0x13 is `format`: 3 and up for the PSG and the noise
+// (0x02074194). The voice plays 0xFFB0FF / timer samples a second, or steps of the PSG and the noise.
+std::optional<int32_t> EnvelopeTicks(uint8_t multiplier, uint8_t index, int tick_microseconds);
 int32_t VoiceTimer(uint16_t pitch, uint8_t format);
 
 // The levels, from 0 to 127, that an envelope of `values` gives a voice in each of its first `ticks` ticks, as the
-// driver steps it (0x02074E0C and 0x02074F54), for a converter. Every value applies, a value above 0x7F included. The
-// envelope releases before the tick `release` where that is given.
-std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int ticks, std::optional<int> release = {});
+// driver steps it with a tick of `tick_microseconds` (0x02074E0C and 0x02074F54), for a converter. Every value applies,
+// a value above 0x7F included. The envelope releases before the tick `release` where that is given.
+std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int tick_microseconds, int ticks,
+                                    std::optional<int> release = {});
 
 // The LFOs that program `program` of `bank` gives a channel that selects it (0x02073BC8), for a converter. Each is off
 // for a program that the bank lacks.

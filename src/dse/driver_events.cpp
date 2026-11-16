@@ -269,10 +269,10 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
         {
             const uint16_t ms = next16();
             uint16_t ticks = 0;
-            if (build == Build::kEarlier)
+            if (build != Build::kLater)
             {
-                // 0x0206326C in Explorers of Time's ARM9 binary: the earlier build multiplies only the high byte of
-                // the time by 1000, and a fade can take 0 ticks.
+                // 0x0206326C in Explorers of Time's ARM9 binary: all but the later build multiply only the high byte
+                // of the time by 1000, and a fade can take 0 ticks.
                 const auto earlier = static_cast<int32_t>((ms & 0xFF00) * 1000 + (ms & 0xFF));
                 ticks = static_cast<uint16_t>(Divide(earlier, tick));
             }
@@ -350,8 +350,8 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
         {
             const auto level = static_cast<int8_t>(next());
             channel.lfo_level = level;
-            // The earlier build also marks the channel's pitch (0x02064894 in Explorers of Time's ARM9 binary).
-            if (build == Build::kEarlier)
+            // All but the later build also mark the channel's pitch (0x02064894 in Explorers of Time's ARM9 binary).
+            if (build != Build::kLater)
             {
                 FlagVoices(channel, 0x10);
             }
@@ -366,7 +366,7 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
         else
         {
             track.channel->flags &= static_cast<uint8_t>(~1);
-            if (build == Build::kEarlier)
+            if (!ListsNotes())
             {
                 ReleaseDampedVoices(*track.channel);
             }
@@ -487,9 +487,9 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
         break;
     case kVolume:
         {
-            // The earlier build reads the volume unsigned (0x020636C8 in Explorers of Time's ARM9 binary).
+            // All but the later build read the volume unsigned (0x020636C8 in Explorers of Time's ARM9 binary).
             const uint8_t byte = next();
-            const int32_t volume = build == Build::kEarlier ? int32_t{byte} : int32_t{static_cast<int8_t>(byte)};
+            const int32_t volume = build != Build::kLater ? int32_t{byte} : int32_t{static_cast<int8_t>(byte)};
             channel.volume_fade.target = volume << 16;
             channel.volume_fade.current = volume << 16;
             channel.volume_fade.ticks = 0;
@@ -508,9 +508,10 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
         }
     case kVolumeSlide:
         set_fade(channel.volume_fade);
-        if (build == Build::kEarlier)
+        if (build != Build::kLater)
         {
-            // The earlier build updates the channel's volume at once (0x02063738 in Explorers of Time's ARM9 binary).
+            // All but the later build update the channel's volume at once (0x02063738 in Explorers of Time's
+            // ARM9 binary).
             update_volume(channel.volume_fade.current >> 16);
         }
         break;
@@ -551,9 +552,10 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
         }
     case kPanSlide:
         set_fade(channel.pan_fade);
-        if (build == Build::kEarlier)
+        if (build != Build::kLater)
         {
-            // The earlier build updates the channel's pan at once (0x020638E0 in Explorers of Time's ARM9 binary).
+            // All but the later build update the channel's pan at once (0x020638E0 in Explorers of Time's ARM9
+            // binary).
             channel.pan = static_cast<int16_t>((channel.pan_fade.current >> 16) + (synth.pan - 0x40));
             FlagVoices(channel, 0x40);
         }

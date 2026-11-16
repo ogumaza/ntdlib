@@ -829,6 +829,14 @@ void TestConvert()
                   {"pan LFO (omitted from SoundFont)", 1}},
           "the cut of the SoundFont, and the pan LFO in SFZ alone");
 
+    // A sequence that the archive gives a volume of 0 plays silent in the game. The report says why its files are
+    // silent.
+    const TestArchive muted(kOneNote, 0, 0);
+    Check(ConvertSequence(muted.archive, {0}, "BGM_TEST", {}, kProgram).warnings ==
+              std::vector<std::string>{
+                  "volume 0 in the sound archive. The game plays it silent, and so does the conversion."},
+          "a sequence of volume 0: one line in the report");
+
     const TestArchive loop(kLoop);
     CheckFiles(ConvertSequence(loop.archive, {0}, "BGM_LOOP", {.loops = 2}, kProgram), "a loop");
     const TestArchive one_note(kOneNote);

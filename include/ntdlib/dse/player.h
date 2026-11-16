@@ -4,15 +4,20 @@
 // side, the model of the DS's sound driver (ntr::snd::Driver) on the ARM7's, and the sound unit. The player keeps the
 // banks' samples in main memory, where the sound unit reads them.
 //
-// DSE's start-up locks every channel of the ARM7's driver against the driver's sequences, and sets up an alarm of the
-// ARM7's driver: 5,236 ticks of the OS timer, 64 system clocks each, about 10 ms. Each alarm wakes DSE's thread. The
-// thread reads the channels' status in the shared work, runs a tick of DSE's driver and sends the ARM7's driver its
-// commands. The ARM7's driver runs them in its next frame, and writes the channels' status at the frame's end. Its
+// DSE's start-up locks every channel of the ARM7's driver against the driver's sequences. With the tick of 10 ms, it
+// sets up an alarm of the ARM7's driver: 5,236 ticks of the OS timer, 64 system clocks each, about 10 ms. Each alarm
+// wakes DSE's thread. With the tick of 16.715 ms, the start-up sets up no alarm, and the thread wakes at the start of
+// each VBlank, once a video frame. In overlay 0 of Professor Layton and the Last Specter, the start-up keeps settings
+// byte 0x11 (0x02044580), the alarm's set-up skips the alarm where the byte is set (0x02047694), and 0x0204792C wakes
+// the thread. On the game's code, the thread's wakes come 560,190 system clocks apart, at the VBlank's first clock.
+//
+// The thread reads the channels' status in the shared work, runs a tick of DSE's driver and sends the ARM7's driver
+// its commands. The ARM7's driver runs them in its next frame, and writes the channels' status at the frame's end. Its
 // frames come every snd::kFrameClocks. A channel stops when its wave ends without a loop, and DSE's next tick after the
 // next frame then frees the voice.
 //
 // The player starts the ARM7's driver, sets up the shared work and gives it to the driver in its first frame, with
-// DSE's start-up commands. That frame's clock is 0. DSE's ticks come every kTickClocks after it.
+// DSE's start-up commands. That frame's clock is 0. DSE's ticks come every TickClocks() after it.
 //
 // A host can mute the followed sequence's tracks and meter them. DSE has neither. A voice belongs to the track whose
 // note last started it, and its hardware channel goes on belonging to that track until another voice of DSE's starts
@@ -56,6 +61,10 @@ struct PlayerOptions
     uint64_t first_frame = ntr::snd::kFrameClocks;
     Build build = Build::kLater; // the build of DSE's driver
 
+    // The length of DSE's tick that the game's settings give: Driver::kTickMicroseconds or
+    // Driver::kSlowTickMicroseconds. The player throws std::invalid_argument for any other.
+    int tick_microseconds = Driver::kTickMicroseconds;
+
     // Mixes in the sound unit's enhanced mode (ntr::SoundUnit::StartEnhanced), from clock 0. Run(clocks,
     // std::vector<float>&) then gives the samples. DSE's driver keeps its 16 voices.
     bool enhanced = false;
@@ -70,8 +79,14 @@ public:
     static constexpr uint32_t kSharedWork = 0x02001000;
     static constexpr uint32_t kSamples = 0x02010000;
 
-    // The time between DSE's ticks, in system clocks.
+    // The time between DSE's ticks, in system clocks: the alarm's period for the tick of 10 ms, and a video frame (263
+    // lines of 355 dots, 6 system clocks each) for the tick of 16.715 ms.
     static constexpr uint64_t kTickClocks = 5236 * 64;
+    static constexpr uint64_t kVideoFrameClocks = 263 * 355 * 6;
+
+    // The time between DSE's ticks for a tick of `tick_microseconds`, as PlayerOptions gives it. Throws
+    // std::invalid_argument for a tick that the driver's settings can't give.
+    static uint64_t TickClocks(int tick_microseconds);
 
     // The tracks of the followed sequence that a host can mute and meter.
     static constexpr int kHostTracks = 32;
@@ -130,6 +145,9 @@ public:
 
     // The system clock of DSE's next tick.
     uint64_t NextTick() const;
+
+    // The time between DSE's ticks, in system clocks.
+    uint64_t TickClocks() const;
 
     // Whether commands wait for the ARM7's next frame, DSE plays a song or a sound effect, or a channel sounds.
     bool Busy() const;
@@ -223,6 +241,7 @@ private:
     std::map<uint16_t, const WaveBank*> banks_; // the files of DSE's banks, by their ids
     uint64_t clock_ = 0;
     uint64_t next_frame_ = 0;
+    uint64_t tick_clocks_ = kTickClocks;
     uint64_t next_tick_ = kTickClocks;
     uint16_t status_ = 0;
     std::vector<ntr::snd::CommandList> pending_; // the commands that wait for the ARM7's next frame

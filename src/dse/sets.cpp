@@ -2,6 +2,7 @@
 
 #include "ntdlib/dse/sets.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -168,7 +169,8 @@ public:
         return next;
     }
 
-    // The main bank of `bank`: a main bank of the id that `bank` gives, the one in its folder, or else the first.
+    // The main bank of `bank`: a main bank of the id that `bank` gives, the one in its folder, or else the first of
+    // those whose paths start with the longest part of the bank's path.
     std::optional<std::size_t> MainBank(std::size_t bank) const
     {
         const std::span<const uint8_t> header = files_[bank].bytes;
@@ -177,7 +179,9 @@ public:
             return std::nullopt;
         }
         const uint16_t id = xsflib::LoadLe16(&header[0x40]);
+        const std::string& path = files_[bank].path;
         std::optional<std::size_t> found;
+        std::size_t found_shares = 0;
         for (const std::size_t i : banks_)
         {
             const std::span<const uint8_t> other = files_[i].bytes;
@@ -185,11 +189,17 @@ public:
             {
                 continue;
             }
-            if (FolderOf(files_[i].path) == FolderOf(files_[bank].path))
+            if (FolderOf(files_[i].path) == FolderOf(path))
             {
                 return i;
             }
-            found = found ? found : i;
+            const std::size_t shares =
+                static_cast<std::size_t>(std::ranges::mismatch(files_[i].path, path).in1 - files_[i].path.begin());
+            if (!found || shares > found_shares)
+            {
+                found = i;
+                found_shares = shares;
+            }
         }
         return found;
     }

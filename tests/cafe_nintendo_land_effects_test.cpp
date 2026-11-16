@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Checks the models of Nintendo Land's effect classes (cafe/snd/nintendo_land_effects.h) against the classes' code.
-// Each setting runs a test signal through both of a class's paths. The SHA-256 of each output was recorded from the
-// game's code (Lunch.rpx of the American release) run under Unicorn, a CPU emulator, from a hand-set state. The
-// settings are those of the game's scenes, and a delay with feedback.
+// Each setting runs a test signal through both of a class's paths. The SHA-256 of each output follows the game's code
+// (Lunch.rpx of the American release). The settings are those of the game's scenes, and a delay with feedback.
 
 #include <array>
 #include <cstddef>
