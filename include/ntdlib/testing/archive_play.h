@@ -145,7 +145,7 @@ std::optional<Command<Console>> ReadCommand(int argc, char** argv)
     return command;
 }
 
-// Runs `frames` frames of `model`, which plays `player`. Writes each frame's channels to the log at `channels_path`
+// Runs `frames` frames of `model` as it plays `player`. Writes each frame's channels to the log at `channels_path`
 // unless that's empty. Gives the stereo samples of every frame.
 template <typename Console, typename Player>
 std::vector<int16_t> RunFrames(typename Console::Model& model, const Player& player, int frames,

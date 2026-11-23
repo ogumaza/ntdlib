@@ -10,9 +10,10 @@
 #include <list>
 #include <memory>
 
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/snd/engine.h"
-
+#include "ntdlib/rvl/snd/util.h"
 #include "rvl/snd/held_gain.h"
 
 namespace ntdlib::rvl::snd

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -29,6 +30,7 @@ namespace
 {
 
 namespace bex = ntdlib::nx::bex;
+using seqlib::testing::Throws;
 
 void PutName(std::vector<uint8_t>& b, std::size_t at, const std::string& name)
 {
@@ -225,15 +227,8 @@ void TestReaders()
     const bex::RegionOrder order = bex::PlayOrder(cues, sequences);
     XSFLIB_CHECK((order.regions == std::vector<std::size_t>{0, 1, 2}) && order.loop == 1);
 
-    bool refused = false;
-    try
-    {
-        bex::ReadStreamCues(std::span<const uint8_t>(file).first(0x30));
-    }
-    catch (const xsflib::FormatError&)
-    {
-        refused = true;
-    }
+    const bool refused =
+        Throws<xsflib::FormatError>([&] { bex::ReadStreamCues(std::span<const uint8_t>(file).first(0x30)); });
     Check(refused, "a stream file cut inside its blocks is refused");
 }
 
@@ -307,15 +302,7 @@ void TestCounterTable()
         {0, 4, 15, 0}, {0, 3, 13, 0}, {1, 2, 14, -1}, {1, 2, 13, 1}, {1, 2, 12, -1}};
     XSFLIB_CHECK(halves == expected);
 
-    bool refused = false;
-    try
-    {
-        bex::UserProcedureWrites(frames, 5);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::invalid_argument>([&] { bex::UserProcedureWrites(frames, 5); });
     XSFLIB_CHECK(refused);
 }
 
@@ -342,15 +329,8 @@ void TestPlaySynced()
     XSFLIB_CHECK(play.frames == 2800 && play.writes == expected);
     XSFLIB_CHECK(!play.writes.empty() && play.writes.back().frame > 2800 && play.writes.back().frame <= 3100);
 
-    bool refused = false;
-    try
-    {
-        bex::PlaySynced(piece, StreamFile(Regions(384000), 44000), JumpSetting(), 300);
-    }
-    catch (const xsflib::FormatError&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<xsflib::FormatError>(
+        [&] { bex::PlaySynced(piece, StreamFile(Regions(384000), 44000), JumpSetting(), 300); });
     XSFLIB_CHECK(refused);
     XSFLIB_CHECK(bex::SyncedPieces(file).empty() && bex::SyncedPieces(std::vector<uint8_t>(462'848)).empty());
 }

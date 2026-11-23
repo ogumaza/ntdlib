@@ -161,8 +161,8 @@ struct CutsceneSong
     std::vector<uint8_t> song;
 };
 
-// The sound effects of one of Resident Evil Zero's cutscenes, which the game plays as songs: the cutscene's name, the
-// ID of the effects' group, the group's files, and the songs in the order of their parts.
+// The sound effects of one of Resident Evil Zero's cutscenes. The game plays them as songs. An entry gives the
+// cutscene's name, the ID of the effects' group, the group's files, and the songs in the order of their parts.
 struct CutsceneEffects
 {
     std::string name;
@@ -186,7 +186,7 @@ struct Cutscenes
 // files come from the first cutscene that holds the group, in the order of the paths in lower case. Part 6 of the
 // archive holds the cutscene's sound effects, if it has any: the pool, the project and the sample directory of their
 // group, then an archive of songs. Part 0 of the archive of samples holds their samples. Throws FormatError if a
-// cutscene's archives can't be read, are damaged or lack a part of the music or of the effects.
+// cutscene's archives can't be read, are damaged or are missing a part of the music or of the effects.
 Cutscenes ReadCutscenes(const AnyCaseFiles& files)
 {
     constexpr std::string_view kCutscenes = "bio0/demo/", kCompressed = ".alz";
@@ -367,7 +367,7 @@ void AddResidentEvilZeroSongs(Catalogue& catalogue, ArchiveSets& sets, const Any
         }
         else if (const auto cutscene = cutscene_songs.find(sound.song_group); cutscene != cutscene_songs.end())
         {
-            // A song that bio0/sound/ lacks is a cutscene's.
+            // A song missing from bio0/sound/ is a cutscene's.
             const auto [set, added] = cutscene_sets.try_emplace(sound.song_group, catalogue.sets.size());
             if (added)
             {
@@ -500,13 +500,13 @@ struct ResidentEvilMix
 // (0x80155BB8) on the slot's sequence: CC7 for the volume and CC10 for the pan. A volume or a pan of -1 leaves that
 // controller alone.
 //
-// sg74's first pattern gives channels 0 to 2 a volume of 80. 0x800AFB68 sets all three to 80: the mix of the file,
-// which the sound sg74 plays. The other rooms that give constant levels play one of the three alone at 80 and the
-// other two at 0: channel 0 in 0x800DB360, channel 1 in 0x800CC938 and channel 2 in 0x800DAFE8. sg7a's first pattern
-// gives its seven channels a volume of 0. 0x801002A0 gives channels 0 to 3 and 5 a volume of 80 and channels 4 and 6 a
-// volume of 0, each at a pan of 64 (0x801002F4 to 0x80100330). 0x800FBF0C plays channel 5 alone at 80 (0x800FC1B8
-// and 0x800FC1CC). 0x8010D640 plays channel 4 alone at 80 (0x8010D7A8 to 0x8010D820). Both set every pan to 64. Other
-// rooms give channel 5 of sg7a other volumes and pans.
+// sg74's first pattern gives channels 0 to 2 a volume of 80. 0x800AFB68 sets all three to 80: the mix of the file that
+// the sound sg74 plays. The other rooms that give constant levels play one of the three alone at 80 and the other two
+// at 0: channel 0 in 0x800DB360, channel 1 in 0x800CC938 and channel 2 in 0x800DAFE8. sg7a's first pattern gives its
+// seven channels a volume of 0. 0x801002A0 gives channels 0 to 3 and 5 a volume of 80 and channels 4 and 6 a volume of
+// 0, each at a pan of 64 (0x801002F4 to 0x80100330). 0x800FBF0C plays channel 5 alone at 80 (0x800FC1B8 and
+// 0x800FC1CC). 0x8010D640 plays channel 4 alone at 80 (0x8010D7A8 to 0x8010D820). Both set every pan to 64. Other rooms
+// give channel 5 of sg7a other volumes and pans.
 const std::vector<ResidentEvilMix>& ResidentEvilMixes()
 {
     static const std::vector<ResidentEvilMix> kMixes = {
@@ -555,13 +555,12 @@ void AddResidentEvilMixes(Catalogue& catalogue)
 } // namespace
 
 // Resident Evil Zero's sounds. Both discs hold the same main.dol. The game's code lists its songs at `songs`, 12 bytes
-// each: MusyX's song ID and the song's group in big-endian halves, then the addresses of two names. The first names
-// the archive that holds the group, and the second the song's file. A song ID of 0xFFFF ends the list. The game reads
-// the files from bio0/sound/: the archive (.arc), its samples (.sam) and the song (.son). The archive's parts of the
-// types "proj", "pool" and "sdir" are MusyX's project, pool and sample directory. The game's disc library matches names
-// in any case. The list names the songs of both discs, and songs that neither disc holds. Some of the songs that
-// bio0/sound/ lacks are the music of a cutscene (ReadCutscenes). The songs that the disc holds come in the list's
-// order.
+// each: MusyX's song ID and the song's group in big-endian halves, then the addresses of two names. The first names the
+// archive that holds the group, and the second the song's file. A song ID of 0xFFFF ends the list. The game reads the
+// files from bio0/sound/: the archive (.arc), its samples (.sam) and the song (.son). The archive's parts of the types
+// "proj", "pool" and "sdir" are MusyX's project, pool and sample directory. The game's disc library matches names in
+// any case. The list names the songs of both discs, and songs that neither disc holds. Some of the songs missing from
+// bio0/sound/ are the music of a cutscene (ReadCutscenes). The songs that the disc holds come in the list's order.
 //
 // The game pushes a song's group and plays the song through sndSeqPlayEx. A room or a cutscene starts a song at the
 // volume of one of the game's sound options. Each option starts at 127, MusyX's full volume (0x80148F8C). The game's

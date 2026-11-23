@@ -23,6 +23,7 @@
 
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/sets.h"
+#include "ntdlib/file_paths.h"
 #include "ntdlib/sequence_export/dse/performance.h"
 
 namespace ntdlib::sequence_export::dse
@@ -30,22 +31,8 @@ namespace ntdlib::sequence_export::dse
 namespace
 {
 
-std::string FolderOf(const std::string& path)
-{
-    const std::size_t slash = path.rfind('/');
-    return slash == std::string::npos ? "" : path.substr(0, slash + 1);
-}
-
-std::string StemOf(const std::string& path)
-{
-    std::string name = path.substr(FolderOf(path).size());
-    if (const std::size_t dot = name.rfind('.'); dot != std::string::npos && dot > 0)
-    {
-        name.erase(dot);
-    }
-
-    return name;
-}
+using ntdlib::detail::FolderOf;
+using ntdlib::detail::StemOf;
 
 // Each file read once, by its index. A file that can't be read gives a warning, once.
 template <typename T>

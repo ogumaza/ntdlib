@@ -48,9 +48,9 @@ double KeyPitch(int key, const ResamplingRegion& region)
 
 } // namespace
 
-// The 3DS mixes at the DSP's rate, which nn::snd takes as 32728 Hz. AX mixes at 32 kHz on the Wii and the Wii U, and
-// the Switch's renderer at 48 kHz. The Wii U plays a voice at a rate of 8 at most, and the Switch at a pitch ratio of
-// 1/16 to 16 (resampling.h).
+// The 3DS mixes at the DSP's rate. nn::snd takes that rate as 32728 Hz. AX mixes at 32 kHz on the Wii and the Wii U,
+// and the Switch's renderer at 48 kHz. The Wii U plays a voice at a rate of 8 at most, and the Switch at a pitch ratio
+// of 1/16 to 16 (resampling.h).
 const ResamplingRule kCtrResampling = {32728.0, kCtrKernels};
 const ResamplingRule kRevolutionResampling = {32000.0, kAxFilters};
 const ResamplingRule kCafeResampling = {32000.0, kAxFilters, 8.0};

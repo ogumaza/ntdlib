@@ -270,7 +270,7 @@ class Switch(NwsndTables):
     48 kHz. Types 1 to 5 are the Wii U's tables for its 32 kHz renderer. The Switch's renderer runs them at 48 kHz.
     Types 6 to 10 are made for 48 kHz."""
 
-    rate = 48000.0  # Hz, the Switch's audio renderer's rate
+    rate = 48000.0  # Hz, the rate of the Switch's audio renderer
     per_line = 10
     biquads = {  # type: (table in nwsnd/tables.h, sets, name)
         1: ("kBiquadLpf", 112, "low-pass"),

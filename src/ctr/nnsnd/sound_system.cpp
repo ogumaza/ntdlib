@@ -221,8 +221,8 @@ void SoundSystem::AddVoice()
 
 void SoundSystem::InsertByPriority(Voice* voice)
 {
-    // The list runs from the highest priority to the lowest; a voice goes in front of voices of equal priority, so the
-    // tail is the oldest of the lowest priority (0x18ec58).
+    // The list runs from the highest priority to the lowest. A voice goes in front of voices of equal priority. The
+    // tail is therefore the oldest of the lowest priority (0x18ec58).
     auto it = std::find_if(priority_list_.begin(), priority_list_.end(),
                            [&](Voice* v) { return v->Priority() <= voice->Priority(); });
     priority_list_.insert(it, voice);

@@ -33,7 +33,7 @@ std::unique_ptr<FileDisc> DiscFromFiles(const std::vector<xsflib::psf::FileChunk
                                         const std::string& header_path, uint32_t magic_offset, uint32_t magic,
                                         uint32_t offset_unit);
 
-// Copies a set's MEM chunks into `memory`, at their CPU addresses. Returns false at the first chunk that lies outside
+// Copies a set's MEM chunks into `memory`, at their CPU addresses. Returns false at the first chunk that is outside
 // it.
 template <typename Memory>
 bool LoadMemChunks(Memory& memory, const std::vector<xsflib::psf::MemChunk>& chunks)
@@ -56,6 +56,31 @@ bool LoadMemChunks(Memory& memory, const std::vector<xsflib::psf::MemChunk>& chu
 // block's samples holds the right channel's 16 bits, then the left's.
 void AppendAudioBlock(std::vector<int16_t>& out, std::span<const uint8_t, 32> block);
 
+// The big-endian word at the CPU address `address` of `memory`, or nothing outside it. The tools that watch a driver
+// during a render read its variables this way.
+template <typename Memory>
+std::optional<uint32_t> WordAt(Memory& memory, uint32_t address)
+{
+    const uint8_t* p = memory.At(dsp::ToPhysical(address), 4);
+    return p != nullptr ? std::optional<uint32_t>(xsflib::LoadBe32(p)) : std::nullopt;
+}
+
+// The big-endian halfword at the CPU address `address` of `memory`, or nothing outside it.
+template <typename Memory>
+std::optional<uint16_t> HalfAt(Memory& memory, uint32_t address)
+{
+    const uint8_t* p = memory.At(dsp::ToPhysical(address), 2);
+    return p != nullptr ? std::optional<uint16_t>(xsflib::LoadBe16(p)) : std::nullopt;
+}
+
+// The byte at the CPU address `address` of `memory`, or nothing outside it.
+template <typename Memory>
+std::optional<uint8_t> ByteAt(Memory& memory, uint32_t address)
+{
+    const uint8_t* p = memory.At(dsp::ToPhysical(address), 1);
+    return p != nullptr ? std::optional<uint8_t>(*p) : std::nullopt;
+}
+
 // The status word of the set's driver at the CPU address `address`: 0 while it boots, 1 while the sound plays and 2
 // once it has finished. After an error, bit 31 is set and the low byte holds the step that failed. A set without a
 // status word (`address` 0), or with one outside memory, plays: 1.
@@ -67,8 +92,7 @@ uint32_t DriverStatus(Memory& memory, uint32_t address)
         return xsflib::player::kDriverPlaying;
     }
 
-    const uint8_t* word = memory.At(dsp::ToPhysical(address), 4);
-    return word != nullptr ? xsflib::LoadBe32(word) : xsflib::player::kDriverPlaying;
+    return WordAt(memory, address).value_or(xsflib::player::kDriverPlaying);
 }
 
 // The message for a CPU stop that ends a render (a fault or an instruction that the CPU doesn't support), or nothing.

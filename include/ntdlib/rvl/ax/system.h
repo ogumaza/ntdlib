@@ -8,12 +8,13 @@
 //
 // The model also follows the build of October 2006 (Build::kOctober2006). WarioWare: Smooth Moves links it. That build
 // has 64 voices and a PB of another layout (see LoadPbOctober2006). The build counts other DSP cycles for each voice
-// and numbers the commands otherwise. A table in system.cpp (BuildTraits) holds what the two builds differ in. Comments
-// give the addresses of the build's functions with "October 2006".
+// and numbers the commands otherwise. A table in system_internal.h (BuildTraits) gives what the two builds differ in.
+// Comments give the addresses of the build's functions with "October 2006".
 
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <utility>
@@ -154,7 +155,7 @@ public:
     }
 
     // The PB of voice `index` in main memory, in the build's layout, and its replacement. PbAddress gives where the PB
-    // lies.
+    // is.
     Pb ReadPb(uint32_t index) const;
     void WritePb(uint32_t index, const Pb& pb);
     ntdlib::PAddr PbAddress(uint32_t index) const;

@@ -152,7 +152,7 @@ struct Track
     static constexpr uint8_t kGateByTempo = 0x04; // a gate note's time turns into sub-frames by the track's tempo
     static constexpr uint8_t kOwned = 0x08;       // a child that its parent allocated and frees
     static constexpr uint8_t kGateTie = 0x10;     // the next gate note goes on with the playing channel
-    static constexpr uint8_t kInvalid = 0x20;     // the levels need an update
+    static constexpr uint8_t kInvalid = 0x20;     // the levels require an update
 
     bool in_pool = false; // allocated from the track pool
     bool allocated = false;

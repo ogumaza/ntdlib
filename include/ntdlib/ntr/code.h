@@ -7,7 +7,7 @@
 // decompressed part is. The bytes before the compressed part stay as they are. The stream runs from below the footer
 // down to the compressed part's start. Each flag byte gives 8 steps, from its top bit: a 0 copies one byte, and a 1
 // reads two bytes as a 16-bit value. Its top 4 bits plus 3 give the count of bytes to copy, and its low 12 bits plus 3
-// how far above the output's current end they lie. The output grows downwards from the end of the decompressed part.
+// how far above the output's current end they are. The output grows downwards from the end of the decompressed part.
 //
 // The ARM9 binary's module parameters are nine words: the start and the end of the autoload list, the start of the
 // autoloaded blocks, the start and the end of the static part's BSS, the address where the compressed part ends (0 for
@@ -31,8 +31,13 @@
 namespace ntdlib::ntr
 {
 
-// Decompresses `data`, a binary whose compressed part ends at its end. Throws xsflib::FormatError when the footer or
-// the stream reaches outside the data.
+// The largest output of UncompressBackward: 256 MiB, the FCRAM of a New 3DS. No console has room for a larger program.
+// A damaged footer can ask for up to 4 GiB.
+constexpr std::size_t kMaxUncompressedBytes = std::size_t{1} << 28;
+
+// Decompresses `data`, a binary whose compressed part ends at its end. The 3DS compresses a program's code the same
+// way. Throws xsflib::FormatError when the footer or the stream reaches outside the data, and when the footer asks for
+// more than kMaxUncompressedBytes.
 std::vector<uint8_t> UncompressBackward(std::span<const uint8_t> data);
 
 // A binary as the console loads it: its address, its bytes decompressed, and the overlay's ID for an overlay.
@@ -90,7 +95,7 @@ void WriteModuleParams(std::span<uint8_t> arm9, const ModuleParams& params);
 // console runs it as it is: the start-up decompressor returns at once.
 std::vector<uint8_t> UncompressedArm9(const Rom& rom);
 
-// The start-up decompressor and its call in the entry code. Its body lies from `body` up to its return.
+// The start-up decompressor and its call in the entry code. Its body is from `body` up to its return.
 struct StartupDecompressor
 {
     friend bool operator==(const StartupDecompressor&, const StartupDecompressor&) = default;

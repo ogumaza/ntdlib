@@ -258,7 +258,7 @@ struct DspChannel
     uint32_t channel = Channel::kNone; // the channel that the callback reports to, or kNone with no callback
 };
 
-// The DSP channels' side of the voices, which JAudio1's model shares. JAudio1 keeps the DSP channels' fields, their
+// The DSP channels' side of the voices. JAudio1's model shares it. JAudio1 keeps the DSP channels' fields, their
 // allocation and their update as JAudio2 does.
 
 // main's constants, by their bits: the curve of a surround level in a mixer's second level.

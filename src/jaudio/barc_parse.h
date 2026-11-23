@@ -12,6 +12,7 @@
 
 #include "xsflib/binary.h"
 
+#include "ntdlib/jaudio/barc.h"
 #include "ntdlib/jaudio/rarc.h"
 
 namespace ntdlib::jaudio::detail
@@ -27,6 +28,11 @@ struct BarcLayout
 
 inline constexpr BarcLayout kBarc{12, 0x20};
 inline constexpr BarcLayout kWideBarc{16, 0x24};
+
+// Reads the entries of the sequence index at `at` with `r`, as ReadBarcEntries does. Throws "<what> is damaged" for an
+// index without its tag or with more than 0x10000 entries.
+std::vector<BarcEntry> ParseBarcEntries(const xsflib::Reader& r, std::size_t at, BarcLayout layout,
+                                        const std::string& what);
 
 // Reads the sequence index at `at` with `r`, as ReadBarcSequenceFiles does. The messages name the index `what`: "<what>
 // is damaged", "<what> names a sequence outside the sequence archive", "<what> shares the data of a sequence past its

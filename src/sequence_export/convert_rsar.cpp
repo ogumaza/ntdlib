@@ -10,7 +10,6 @@
 // also get a copy in bank 128. Synths take drum instruments from there.
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -19,10 +18,10 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/loop.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/sf2/presets.h"
 #include "seqlib/sf2/soundfont.h"
+#include "seqlib/sf2/units.h"
 
 #include "ntdlib/rsar/decode.h"
 #include "ntdlib/rsar/formats.h"
@@ -83,22 +82,7 @@ private:
 
 const std::vector<uint16_t>& SoundFontBuilder::WaveSamples(uint32_t wave_index, uint8_t root_key)
 {
-    // With balance, each channel of a stereo pair plays at kBalanceScale. The pair takes the first two channels.
-    const auto balance = [this](seqlib::PreparedWave& w)
-    {
-        if (w.channels.size() >= 2 && balance_)
-        {
-            for (std::size_t c = 0; c < 2; c++)
-            {
-                for (int16_t& v : w.channels[c])
-                {
-                    v = static_cast<int16_t>(std::lround(v * kBalanceScale));
-                }
-            }
-        }
-    };
-
-    return Samples(banks_.WaveKey(wave_index), root_key, [&] { return banks_.GetWave(wave_index); }, balance);
+    return Samples(banks_.WaveKey(wave_index), root_key, [&] { return banks_.GetWave(wave_index); });
 }
 
 void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::string& name)
@@ -127,7 +111,8 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
         }
 
         // NW4R SND pan: (region pan + track initial pan - 64) / 63, for each channel of a stereo wave as its pan mode
-        // places it. Balance mode's samples are already 3 dB down.
+        // places it. The samples are the wave's points. The zone takes the channel's level in balance mode as
+        // attenuation.
         const double pan = (static_cast<int>(r.pan) + key.init_pan - 64) / 63.0;
         const rsar::Pcm& wave = *banks_.GetWave(wave_index);
         const RegionGenerators g =
@@ -137,8 +122,7 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
         const auto zone = [&](std::size_t c, std::pair<int, int> keys, std::pair<int, int> velocities)
         {
             const ChannelPan place = WaveChannelPan(pan, c, ids.size(), balance_);
-            const double gain_db = ids.size() == 2 && balance_ ? place.gain_db - kBalanceDb : place.gain_db;
-            const double extra = gain_db <= -144.0 ? 1440.0 : -10.0 * gain_db;
+            const double extra = place.gain_db <= -144.0 ? double{sf2::kMaxCentibels} : -10.0 * place.gain_db;
 
             return RegionZone(g, keys, velocities, place.pan, extra, ids[c]);
         };

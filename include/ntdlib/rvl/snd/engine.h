@@ -23,6 +23,8 @@
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/length_hooks.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
+#include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/dsp_link.h"
 #include "ntdlib/rvl/ax/pb.h"
@@ -63,7 +65,7 @@ struct LoadedWaveSoundFile
     ntdlib::PAddr wave_address = 0;     // where wave_data is in MEM2
 };
 
-// The sizes of NW4R SND's pools, which a game's start-up sets up, and how a voice takes its AxVoices. The defaults are
+// The sizes of NW4R SND's pools that a game's start-up sets up, and how a voice takes its AxVoices. The defaults are
 // the Wii's. Each count is at least 1.
 struct EngineOptions
 {
@@ -270,8 +272,8 @@ public:
 
     // Starts the wave sound at `index` in the archive's sound table, from the next sound frame (SoundArchivePlayer's
     // PrepareWaveSoundImpl, 0x80045400). Returns its player, or nullptr if the sound isn't a wave sound or its file
-    // isn't in the archive. A wave sound or a note that the file lacks gives a player that ends in its first update, as
-    // in the game. Throws xsflib::FormatError for a file or a wave that can't be read.
+    // isn't in the archive. A wave sound or a note that the file doesn't hold gives a player that ends in its first
+    // update, as in the game. Throws xsflib::FormatError for a file or a wave that can't be read.
     WsdPlayer* StartWaveSound(uint32_t index);
 
     // Starts the stream sound at `index` in the archive's sound table in the same way, with `file`: the bytes of the
@@ -454,7 +456,7 @@ struct ArchiveModel
     // (SndBuild::october_2006). `archive` must outlive the model.
     void StartWithRenderer(const ntdlib::rsar::SoundArchive& archive);
 
-    // One frame: AX's frame, which the microcode mixes, then the sound frame. Appends the frame's 96 stereo samples to
+    // One frame: AX's frame, mixed by the microcode, then the sound frame. Appends the frame's 96 stereo samples to
     // `output`, left then right. Returns false if the microcode stopped responding.
     bool RunFrame(std::vector<int16_t>& output);
 

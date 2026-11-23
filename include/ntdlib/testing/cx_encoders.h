@@ -19,7 +19,10 @@
 #include <queue>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
+
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::testing::cx_encoders
 {
@@ -64,28 +67,25 @@ inline std::vector<Token> ParseLz(std::span<const uint8_t> data, uint32_t max_di
     {
         size_t best_length = 0;
         size_t best_from = 0;
-        if (at + kMinLength <= data.size())
+        const auto found = at + kMinLength <= data.size() ? places.find(key(at)) : places.end();
+        if (found != places.end())
         {
-            const auto found = places.find(key(at));
-            if (found != places.end())
+            for (const size_t from : found->second)
             {
-                for (const size_t from : found->second)
+                if (at - from > max_distance)
                 {
-                    if (at - from > max_distance)
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    size_t length = 0;
-                    while (length < kMaxLength && at + length < data.size() && data[from + length] == data[at + length])
-                    {
-                        ++length;
-                    }
-                    if (length >= best_length)
-                    {
-                        best_length = length;
-                        best_from = from;
-                    }
+                size_t length = 0;
+                while (length < kMaxLength && at + length < data.size() && data[from + length] == data[at + length])
+                {
+                    ++length;
+                }
+                if (length >= best_length)
+                {
+                    best_length = length;
+                    best_from = from;
                 }
             }
         }
@@ -164,21 +164,18 @@ struct LhTreeCode
     std::map<uint32_t, std::vector<bool>> codes;
 };
 
-inline LhTreeCode BuildLhTree(std::map<uint32_t, uint64_t> counts, int bits)
+// A node of a Huffman tree: a symbol, or a node with two children.
+struct LhNode
 {
-    // A tree has at least two symbols.
-    while (counts.size() < 2)
-    {
-        counts.emplace(counts.empty() || counts.begin()->first != 0 ? 0 : 1, 1);
-    }
+    uint64_t count;
+    uint32_t symbol;
+    int children[2];
+};
 
-    struct Node
-    {
-        uint64_t count;
-        uint32_t symbol;
-        int children[2];
-    };
-    std::vector<Node> nodes;
+// The Huffman tree of the symbols that `counts` gives: the nodes, and the index of the root.
+inline std::pair<std::vector<LhNode>, int> LhHuffman(const std::map<uint32_t, uint64_t>& counts)
+{
+    std::vector<LhNode> nodes;
     using Entry = std::pair<uint64_t, int>;
     std::priority_queue<Entry, std::vector<Entry>, std::greater<>> queue;
     for (const auto& [symbol, count] : counts)
@@ -196,20 +193,63 @@ inline LhTreeCode BuildLhTree(std::map<uint32_t, uint64_t> counts, int bits)
         queue.push({nodes.back().count, static_cast<int>(nodes.size()) - 1});
     }
 
+    return {nodes, queue.top().second};
+}
+
+// LH's table of a tree's `entries` of `bits` bits: the size field, then the entries from entry 1, padded to a multiple
+// of 4 bytes.
+inline std::vector<uint8_t> LhTable(const std::vector<uint32_t>& entries, int bits)
+{
+    const size_t field = bits > 8 ? 2 : 1;
+    BitWriter packed;
+    for (size_t i = 1; i < entries.size(); ++i)
+    {
+        packed.Put(entries[i], bits);
+    }
+
+    const size_t size = ntdlib::AlignUp(field + packed.Bytes().size(), 4);
+    const size_t words = size / 4 - 1;
+    if (words >= (size_t{1} << (field * 8)))
+    {
+        throw std::length_error("the tree doesn't fit LH's table");
+    }
+
+    std::vector<uint8_t> table = {static_cast<uint8_t>(words)};
+    if (field == 2)
+    {
+        table.push_back(static_cast<uint8_t>(words >> 8));
+    }
+    table.insert(table.end(), packed.Bytes().begin(), packed.Bytes().end());
+    table.resize(size, 0);
+
+    return table;
+}
+
+// The tree of the symbols that `counts` gives, with table entries of `bits` bits.
+inline LhTreeCode BuildLhTree(std::map<uint32_t, uint64_t> counts, int bits)
+{
+    // A tree has at least two symbols.
+    while (counts.size() < 2)
+    {
+        counts.emplace(counts.empty() || counts.begin()->first != 0 ? 0 : 1, 1);
+    }
+
+    const auto [nodes, root] = LhHuffman(counts);
+
     // Level by level: the root is entry 1. Each node that isn't a symbol gets the next free pair of entries for its
     // children.
     const uint32_t max_offset = (1u << (bits - 2)) - 1;
     const uint32_t first_symbol = 1u << (bits - 1);
     std::vector<uint32_t> entries(2, 0);
     LhTreeCode tree;
-    std::deque<std::pair<int, size_t>> pending = {{queue.top().second, 1}}; // a node and its entry
-    std::map<int, std::vector<bool>> paths = {{queue.top().second, {}}};
+    std::deque<std::pair<int, size_t>> pending = {{root, 1}}; // a node and its entry
+    std::map<int, std::vector<bool>> paths = {{root, {}}};
     size_t next_pair = 1;
     while (!pending.empty())
     {
         const auto [index, entry] = pending.front();
         pending.pop_front();
-        const Node& node = nodes[static_cast<size_t>(index)];
+        const LhNode& node = nodes[static_cast<size_t>(index)];
         const size_t pair = next_pair++;
         const size_t offset = pair - entry / 2 - 1;
         if (offset > max_offset)
@@ -222,7 +262,7 @@ inline LhTreeCode BuildLhTree(std::map<uint32_t, uint64_t> counts, int bits)
         for (int branch = 0; branch < 2; ++branch)
         {
             const int child = node.children[branch];
-            const Node& child_node = nodes[static_cast<size_t>(child)];
+            const LhNode& child_node = nodes[static_cast<size_t>(child)];
             std::vector<bool> path = paths[index];
             path.push_back(branch == 1);
             if (child_node.children[0] < 0)
@@ -240,34 +280,13 @@ inline LhTreeCode BuildLhTree(std::map<uint32_t, uint64_t> counts, int bits)
         entries[entry] = value;
     }
 
-    // The size field, then the entries from entry 1, padded to a multiple of 4 bytes.
-    const size_t field = bits > 8 ? 2 : 1;
-    BitWriter packed;
-    for (size_t i = 1; i < entries.size(); ++i)
-    {
-        packed.Put(entries[i], bits);
-    }
-
-    const size_t size = (field + packed.Bytes().size() + 3) & ~size_t{3};
-    const size_t words = size / 4 - 1;
-    if (words >= (size_t{1} << (field * 8)))
-    {
-        throw std::length_error("the tree doesn't fit LH's table");
-    }
-
-    tree.table = {static_cast<uint8_t>(words)};
-    if (field == 2)
-    {
-        tree.table.push_back(static_cast<uint8_t>(words >> 8));
-    }
-    tree.table.insert(tree.table.end(), packed.Bytes().begin(), packed.Bytes().end());
-    tree.table.resize(size, 0);
+    tree.table = LhTable(entries, bits);
 
     return tree;
 }
 
-// Codes `tokens` in LH, for data of `size` bytes. The tokens' copies may be any that the format holds: 3 to 258 bytes,
-// from 1 to 0xFFFF bytes back.
+// Codes `tokens` in LH, for data of `size` bytes. The tokens' copies may be any that the format supports: 3 to 258
+// bytes, from 1 to 0xFFFF bytes back.
 inline std::vector<uint8_t> EncodeLh(const std::vector<Token>& tokens, size_t size)
 {
     std::map<uint32_t, uint64_t> symbol_counts;
@@ -317,7 +336,7 @@ inline std::vector<uint8_t> EncodeLh(const std::vector<Token>& tokens, size_t si
     result.insert(result.end(), symbols.table.begin(), symbols.table.end());
     result.insert(result.end(), distances.table.begin(), distances.table.end());
     result.insert(result.end(), out.Bytes().begin(), out.Bytes().end());
-    result.resize((result.size() + 3) & ~size_t{3}, 0);
+    result.resize(ntdlib::AlignUp(result.size(), 4), 0);
 
     return result;
 }
@@ -439,7 +458,7 @@ inline std::vector<uint8_t> EncodeLrc(const std::vector<Token>& tokens, size_t s
     {
         out.push_back(static_cast<uint8_t>(low >> shift));
     }
-    out.resize((out.size() + 3) & ~size_t{3}, 0);
+    out.resize(ntdlib::AlignUp(out.size(), 4), 0);
 
     return out;
 }

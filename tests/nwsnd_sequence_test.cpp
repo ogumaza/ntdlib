@@ -1002,7 +1002,7 @@ void TestEndlessCountedLoop(const std::string& name)
 }
 
 // Track 0 opens tracks 1 and 2, plays C4 for two ticks and loops. Track 1 plays E4 for three ticks and loops. Track 2
-// waits a tick and loops, which changes nothing. The offsets are in the console's byte order.
+// waits a tick and loops. The loop changes nothing. The offsets are in the console's byte order.
 std::vector<uint8_t> TrackLoopsSequence(bool little_endian)
 {
     // An offset below 256, in three bytes.
@@ -1660,8 +1660,8 @@ void TestWiiTrackVolumes()
 // SetTrackSilence), set after Start, as a game sets them when the sound starts. Track 0 plays two notes. A mute in any
 // mode keeps both notes from starting (the track's mute, SeqTrack::SetMute). A silence lets them start at a silence of
 // 0, with no ramp. A silence over 10 frames on sounding notes ramps from where their silence stands. Bits of tracks
-// that aren't allocated change nothing. The expected values follow the library's rules, which the sequence's mute
-// command already follows.
+// that aren't allocated change nothing. The expected values follow the library's rules. The sequence's mute command
+// already follows them.
 template <typename Console>
 void TestTrackMuteAndSilence(const std::string& name)
 {
@@ -1722,7 +1722,7 @@ void TestTrackMuteAndSilence(const std::string& name)
 
 // Track 0 ends at its first tick unless its variable 47 holds 1, and then plays C4. A game sets the variable through
 // the sound's handle after the start (SequenceSoundPlayer::SetTrackVariable), as amiibo Festival's SQ_SE_ACT_HUMMING
-// requires. A write before Start, which allocates the tracks, takes effect there.
+// requires. A write before Start takes effect there. Start allocates the tracks.
 void TestCafeTrackVariable()
 {
     using Policy = TestPolicy<ntdlib::nwsnd::CafePolicy>;

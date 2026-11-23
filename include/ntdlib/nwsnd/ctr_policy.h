@@ -19,8 +19,8 @@ namespace ntdlib::nwsnd
 {
 
 // nw::snd in the 3DS's SDK, on the ARM11's VFPv2. This library is older than the Wii U's library: one LFO, no extended
-// commands, a call stack 3 deep. The library lacks a channel's silence, the outputs, the pan range, the user's pitch,
-// and the player's filters that override the track's filters. code.bin keeps reciprocals as floats, and the code
+// commands, a call stack 3 deep. The library has none of a channel's silence, the outputs, the pan range, the user's
+// pitch and the player's filters that override the track's filters. code.bin keeps reciprocals as floats, and the code
 // multiplies by them. The Wii U's code divides instead, and the results differ in the last bit.
 struct CtrPolicy
 {
@@ -119,9 +119,9 @@ struct CtrPolicy
     {
     };
 
-    // The commands the 3DS's library lacks: the extended LFO commands (0xBD, 0xBE, 0xE4, 0xF0 0xA0 to 0xBF and 0xF0
-    // 0xE1 to 0xE6) and the third send (0xDE). Its parser skips 0xF0 0xA0 to 0xBF without their byte. `command` is a
-    // byte, or 0xF000 plus the byte after 0xF0.
+    // The commands missing from the 3DS's library: the extended LFO commands (0xBD, 0xBE, 0xE4, 0xF0 0xA0 to 0xBF and
+    // 0xF0 0xE1 to 0xE6) and the third send (0xDE). Its parser skips 0xF0 0xA0 to 0xBF without their byte. `command` is
+    // a byte, or 0xF000 plus the byte after 0xF0.
     static bool HasCommand(const Build&, uint32_t command)
     {
         if (command >= 0xF000)
@@ -249,7 +249,7 @@ struct CtrPolicy
 
     // The channel's track volume (UpdateChannelParam, 0x31de18): the product of the track's volume, volume2 and the
     // player's main volume over 127^3, squared, then times the product of the track's float volume and the player's
-    // volume. The float volume is +8 of the track, which the sound's handle sets (SequenceSoundPlayer::SetTrackVolume:
+    // volume. The float volume is +8 of the track. The sound's handle sets it (SequenceSoundPlayer::SetTrackVolume:
     // driver command 0x19 and 0x2776cc in Mario Kart 7's code.bin). UpdateChannelParam reads it at 0x31de74 and
     // multiplies it by the player's volume at 0x31de88. At a volume of 1 it's the player's volume times the square.
     static float TrackVolume(uint32_t volume, uint32_t volume2, uint32_t main_volume, float track_volume,

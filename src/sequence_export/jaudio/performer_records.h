@@ -291,11 +291,12 @@ struct Track
     std::array<int, kChildren> children{};
     int slot = -1; // the MIDI track it records into
     std::string name;
-    bool muted = false;         // JASTrack::mute's flag (SequenceSound::tracks)
-    bool silent = false;        // at a volume of 0 through the sound's handle (SequenceSound::child_volumes)
-    float handle_volume = 1.0f; // its volume through the sound's handle, other than 0 (SequenceSound::child_volumes)
-    int conductor_track = -1;   // the conductor's track whose module its last call 0x800 started
-    int voice = -1;             // the companion's voice that the track plays, or -1 for the sequence
+    bool muted = false;          // JASTrack::mute's flag (SequenceSound::tracks)
+    bool silent = false;         // at a volume of 0 through the sound's handle (SequenceSound::child_volumes)
+    float handle_volume = 1.0f;  // its volume through the sound's handle, other than 0 (SequenceSound::child_volumes)
+    float handle_octaves = 0.0f; // its pitch through the sound's handle, in octaves (SequenceSound::child_pitches)
+    int conductor_track = -1;    // the conductor's track whose module its last call 0x800 started
+    int voice = -1;              // the companion's voice that the track plays, or -1 for the sequence
 
     // The reader.
     uint32_t pc = 0;

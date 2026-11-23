@@ -14,6 +14,7 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/disc/header.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::flipper
 {
@@ -115,12 +116,12 @@ FileDisc::FileDisc(std::vector<uint8_t> header, const Files& files, uint32_t off
     std::vector<uint64_t> offsets(files.size(), 0);
     FstWriter measure(files, offsets, offset_unit);
     measure.Write(root, "", 0);
-    uint64_t at = (kFstOffset + measure.Table().size() + 0x7fff) & ~uint64_t{0x7fff};
+    uint64_t at = AlignUp<uint64_t>(kFstOffset + measure.Table().size(), 0x8000);
     for (std::size_t i = 0; i < files.size(); i++)
     {
         offsets[i] = at;
         files_.push_back({at, files[i].second});
-        at = (at + files[i].second.size() + 0x1f) & ~uint64_t{0x1f};
+        at = AlignUp<uint64_t>(at + files[i].second.size(), 0x20);
     }
 
     FstWriter writer(files, offsets, offset_unit);
@@ -138,7 +139,7 @@ bool FileDisc::Read(uint64_t offset, void* out, std::size_t size)
     // block. A disc without files ends with the table.
     auto* bytes = static_cast<uint8_t*>(out);
     const uint64_t end = files_.empty() ? kFstOffset + fst_.size()
-                                        : (files_.back().offset + files_.back().data.size() + 0x1f) & ~uint64_t{0x1f};
+                                        : AlignUp<uint64_t>(files_.back().offset + files_.back().data.size(), 0x20);
     if (offset + size > end)
     {
         return false;

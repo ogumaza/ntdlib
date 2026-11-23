@@ -53,7 +53,7 @@ private:
 };
 
 // Splits a read of `size` bytes at `offset`, from data stored in blocks of `block_size` bytes, into pieces that each
-// lie in one block. Calls `read(index, within, out, n)` for each piece: `n` bytes at `within` in block `index`, into
+// are in one block. Calls `read(index, within, out, n)` for each piece: `n` bytes at `within` in block `index`, into
 // `out`.
 template <typename ReadPiece>
 void ReadByBlocks(uint64_t offset, uint8_t* out, size_t size, uint64_t block_size, ReadPiece read)

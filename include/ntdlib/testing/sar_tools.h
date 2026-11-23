@@ -84,8 +84,9 @@ inline std::vector<uint8_t> SoundEntry(sar::Flavor flavor, const sar_files::Soun
     entry.U32(4, sar::ItemId(sar::kPlayerItem, sound.player));
     entry.U8(8, sound.volume);
 
-    // The options: the string index, the pan, the priorities and the offset of the 3D settings, which follow them. A
-    // sequence sound and a wave sound hold a 32-bit value of 0 after the 3D settings. A stream sound holds none.
+    // The options: the string index, the pan, the priorities and the offset of the 3D settings. The 3D settings follow
+    // them. A sequence sound and a wave sound hold a 32-bit value of 0 after the 3D settings. A stream sound holds
+    // none.
     std::vector<std::pair<int, uint32_t>> values = names.Option(sound.name, sar::kSoundItem, index);
     values.push_back({1, sound.pan.value_or(0)});
     values.push_back({2, sound.priority.value_or(64)});
@@ -134,7 +135,7 @@ inline std::vector<uint8_t> SoundEntry(sar::Flavor flavor, const sar_files::Soun
 }
 
 // The entry of an item that holds its file's ID, then a reference to a list of 32-bit values, then its options: a bank
-// and its list of wave archives, which the specs leave empty.
+// and its list of wave archives. The specs leave the list empty.
 inline std::vector<uint8_t> BankEntry(sar::Flavor flavor, uint32_t file,
                                       const std::vector<std::pair<int, uint32_t>>& options)
 {
@@ -164,8 +165,8 @@ inline std::vector<uint8_t> PlainEntry(sar::Flavor flavor, const std::vector<uin
     return entry.data;
 }
 
-// The entry of `file`, which starts `offset` bytes after the end of the FILE block's size. `group_file` gives whether
-// the file is a group's file.
+// The entry of `file`. The file starts `offset` bytes after the end of the FILE block's size. `group_file` gives
+// whether the file is a group's file.
 inline std::vector<uint8_t> FileEntry(sar::Flavor flavor, const sar_files::FileSpec& file, uint32_t offset,
                                       bool group_file)
 {
@@ -235,8 +236,7 @@ inline std::pair<std::vector<std::size_t>, std::size_t> FilePlaces(sar::Flavor f
 
 // A group's file: the files that it holds, each with the bytes of its copy or as a link, and the items that it lists,
 // each with the bits of the parts that the group loads. A group's file of the 3DS takes the version `ctr_version`:
-// 1.0.0.0, which holds no INFX block and lists no items, or 1.1.0.0, which holds INFX. Without INFX, the spec's items
-// stay out.
+// 1.0.0.0, without an INFX block or items, or 1.1.0.0, with INFX. Without INFX, the spec's items stay out.
 struct GroupSpec
 {
     std::vector<std::pair<uint32_t, std::optional<std::vector<uint8_t>>>> files;
@@ -497,7 +497,7 @@ inline std::vector<uint8_t> WithoutValuePlaces(std::span<const uint8_t> archive,
             return true;
         };
 
-        // The sound's options start 20 bytes in. The reference to the details lies 12 bytes in, and its offset 16.
+        // The sound's options start 20 bytes in. The reference to the details is 12 bytes in, and its offset 16.
         // Bit 8 gives the offset of the 3D settings.
         const auto sound_option = [&](uint32_t option)
         {
@@ -520,7 +520,7 @@ inline std::vector<uint8_t> WithoutValuePlaces(std::span<const uint8_t> archive,
             sound_option(1u << 2);
         }
 
-        // A sequence sound's details start with the reference to its list of banks. Its options lie 12 bytes in, and
+        // A sequence sound's details start with the reference to its list of banks. Its options are 12 bytes in, and
         // bit 1 gives its channel priority.
         if (values.channel && xsflib::Reader(entry, big_endian).U16(12) == 0x2203)
         {

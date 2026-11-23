@@ -322,10 +322,16 @@ struct PerformOptions
     // amplitude. It multiplies the sound's volume from the archive, and the MIDI file's levels take it in the same way.
     float volume = 1.0f;
 
+    // The low-pass that the game sets through the sound's handle (nw::snd's BasicSound::SetLpfFreq). The player adds it
+    // to each track's low-pass, (0xd8 argument - 64) / 64. The SoundFont and SFZ files take the sum as the track's
+    // low-pass (LowPassArgument in filter.h). The conversions of the 3DS, the Wii U and the Switch read it. The
+    // Wii's conversion ignores it.
+    float lpf = 0.0f;
+
     // The banks that the game gives the sequence's bank slots in place of the archive's, as item IDs (nw::snd's
-    // SeqSoundInfo, which a StartInfo with flag 0x10 holds). The four replace all of the archive's slots, and
-    // 0xFFFFFFFF leaves a slot empty. Without a value, the archive's banks hold. The 3DS's conversion reads them. The
-    // other consoles' conversions ignore them.
+    // SeqSoundInfo in a StartInfo with flag 0x10). The four replace all of the archive's slots, and 0xFFFFFFFF leaves a
+    // slot empty. Without a value, the archive's banks hold. The 3DS's conversion reads them. The other consoles'
+    // conversions ignore them.
     std::optional<std::array<uint32_t, 4>> banks = std::nullopt;
 
     // The reverbs that a game's code puts on aux buses A, B and C while the sound plays: each one's dry gain, the share

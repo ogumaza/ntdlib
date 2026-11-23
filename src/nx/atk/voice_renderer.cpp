@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/nx_policy.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/nx/atk/hardware.h"
 #include "ntdlib/nx/atk/low_level_voice.h"

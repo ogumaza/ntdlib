@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
@@ -28,6 +29,7 @@
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sar_tools.h"
 
+using seqlib::testing::Throws;
 using xsflib::testing::ErrorOf;
 
 namespace
@@ -51,7 +53,7 @@ constexpr uint32_t kAll = 0xFFFFFFFF; // the bits of every part of an item that 
 // The bytes of file 3: the copy in group 0's file.
 const std::vector<uint8_t> kBankCopy(20, 0xF3);
 
-// The files of EveryItem whose bytes the FILE block holds. File 3's copy lies inside file 8.
+// The files of EveryItem whose bytes the FILE block holds. File 3's copy is inside file 8.
 constexpr uint32_t kPlaced[] = {0, 1, 2, 4, 6, 8};
 
 std::size_t AlignmentOf(Flavor flavor)
@@ -86,12 +88,6 @@ sar::SoundArchive Load(const std::vector<uint8_t>& archive, Flavor flavor)
 InfoBlock InfoOf(std::span<const uint8_t> archive, Flavor flavor)
 {
     return InfoBlock::Read(sar::TablesOf(archive, flavor).info, flavor);
-}
-
-template <class Error, class Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
 }
 
 // The version of the tests' archives: CSAR 2.0.0.0 on the 3DS, FSAR 2.2.0 on the Wii U, and 2.5.0 on the Switch.
@@ -408,10 +404,10 @@ std::size_t CopyOffset(Flavor flavor)
 }
 
 // A model with items of each kind, and with files of each place. Sound 1, sound group 1, wave archive 1 and player 1
-// have no names. Sound 3 plays a stream beside the archive, and names a prefetch file and an extension. Sound 4 holds
-// a reference to no extension, and sound 5 neither field. Sound group 0 is a wave sound set. Group 0's file holds a
-// copy of file 3, which gives file 3's place, and links to file 2. Group 1 lies beside the archive, and so does file
-// 7, wave archive 1's file.
+// have no names. Sound 3 plays a stream beside the archive, and names a prefetch file and an extension. Sound 4 holds a
+// reference to no extension, and sound 5 neither field. Sound group 0 is a wave sound set. Group 0's file holds a copy
+// of file 3 and links to file 2. The copy gives file 3's place. Group 1 is beside the archive, and so is file 7, wave
+// archive 1's file.
 ArchiveModel EveryItem(Flavor flavor)
 {
     SoundModel plain;
@@ -963,7 +959,7 @@ void TestToolsArchive(Flavor flavor)
     }
 }
 
-// The 3DS's versions of CSAR, with a sound of each kind and a file of each place where the model knows the version's
+// The 3DS's versions of CSAR, with a sound of each kind and a file of each place where the model supports the version's
 // layout of them. Each sound below holds a name, a pan, priorities and its 3D settings at 40. Its details start at 56,
 // or at 60 after the value that follows the 3D settings. A wave sound of 2.0.0.0 holds sends after its details'
 // options, at the offset of option 8. From 2.3.1.0 on, it holds none. A stream sound of 2.0.0.0 holds the value after
@@ -971,7 +967,7 @@ void TestToolsArchive(Flavor flavor)
 // adds the table of tracks after options that hold the extension's values. From 2.3.2.0 on, the details take the
 // layout of FSAR 2.2.0 with sends of 4 bytes. A file's entry lists no groups. A file without a place has an entry that
 // refers to nothing before 2.3.0.0, and an internal file's entry whose place refers to nothing from 2.3.2.0 on. The
-// builder refuses a sound or a file whose layout in the version the model doesn't know, and the reader refuses an
+// builder refuses a sound or a file whose layout in the version the model doesn't support, and the reader refuses an
 // archive that holds one.
 void TestCtrVersions()
 {
@@ -1160,7 +1156,7 @@ void TestCtrVersions()
 
     // Stream sounds that the builder refuses: tracks or options in a version without them, options without an
     // extension or with an unknown bit, fields after the sends before 2.3.2.0, and a version whose layout the model
-    // doesn't know. The model doesn't know a wave sound of that version either.
+    // doesn't support. The model doesn't support a wave sound of that version either.
     const auto refused = [](uint32_t version, auto change)
     {
         SoundModel sound;
@@ -1199,7 +1195,7 @@ void TestCtrVersions()
     XSFLIB_CHECK(refused(0x02010000, [](SoundModel&) {}));
     XSFLIB_CHECK(refused(0x02010000, [](SoundModel& sound) { sound.type = sar::SoundType::kWaveSound; }));
 
-    // The reader refuses the archive of 2.0.0.0 as an archive of 2.2.0.0: the model doesn't know the wave sounds of
+    // The reader refuses the archive of 2.0.0.0 as an archive of 2.2.0.0: the model doesn't support the wave sounds of
     // 2.2.0.0.
     first.at(8 + 2) = 0x02;
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { sar::ReadArchiveModel(first, kCtr); }) ==

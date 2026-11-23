@@ -68,8 +68,8 @@ bool RunBoth(const std::string& label, Teakra::Teakra& jit, Teakra::Teakra& refe
         same = false;
     }
 
-    // After an exception the interpreter's pc is the one it had when RunOrdinary began, not the failing instruction's,
-    // so it isn't compared then.
+    // After an exception the interpreter's pc is the one it had when RunOrdinary began, not the failing instruction's.
+    // The check then leaves it out.
     if (!reference_result.empty())
     {
         ++threw;
@@ -108,7 +108,7 @@ bool RunBoth(const std::string& label, Teakra::Teakra& jit, Teakra::Teakra& refe
         }
     }
 
-    // The components, through their registers (reading some changes them, which no longer matters).
+    // The components, through their registers (reading some changes them, and that no longer matters).
     reported = 0;
     for (uint16_t address = 0; address < 0x800; address += 2)
     {
@@ -273,7 +273,8 @@ int main(int argc, char** argv)
     }
 
     // Without translated code on the first DSP, or with some on the second, the test compared a DSP with itself. A
-    // program can throw before a block runs, so only a run of 100 programs or more must have run translated code.
+    // program can throw before a block runs. Only a run of 100 programs or more must therefore have run translated
+    // code.
     if ((kHostHasJit && trials >= 100 && translated == 0) || translated_without != 0)
     {
         std::fprintf(stderr, "translated code ran %llu instructions with the JIT and %llu without\n",

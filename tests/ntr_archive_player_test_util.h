@@ -15,8 +15,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
+
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/ntr/archive_player.h"
 #include "ntdlib/ntr/snd/commands.h"
@@ -56,6 +58,7 @@ inline files::Archive ArchiveSpec()
         .data = {0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0}};
     spec.files = {files::Sequence(kNote), files::SequenceArchive({{.channel_priority = 50}}, kNote),
                   files::Bank({{.type = 1, .region = {.wave = 0}}}), files::WaveArchive({wave})};
+
     return spec;
 }
 
@@ -70,17 +73,13 @@ inline Bytes ArchiveFile(const Bytes& sequence, int release = 127)
     files::Archive spec = ArchiveSpec();
     spec.files[0] = files::Sequence(sequence);
     spec.files[2] = files::Bank({{.type = 1, .region = {.wave = 0, .release = static_cast<uint8_t>(release)}}});
+
     return files::SoundArchive(spec);
 }
 
 // Track 0 plays key 60, then key 62 on its channel with a tie, and ends. The bank's release of 100 keeps the channel
 // for 305 frames after the end (see TestBusyWhileReleasing).
 const Bytes kTiedNotes = {0xC8, 0x01, 0x3C, 0x7F, 0x30, 0x3E, 0x7F, 0x30, 0xFF};
-
-inline uint32_t Align32(uint32_t value)
-{
-    return (value + 31) & ~31u;
-}
 
 inline uint32_t Word16(std::span<const uint8_t> memory, uint32_t address)
 {

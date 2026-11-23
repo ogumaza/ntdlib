@@ -3,14 +3,20 @@
 #include "ntdlib/nx/bex/music_sync.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <map>
 #include <optional>
+#include <span>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
-#include <variant>
+#include <vector>
 
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
@@ -200,8 +206,8 @@ private:
     }
 
     // Whether the pair passes a marker at `pos`, as the search for `kind` decides it, with the jump `from` to `to` that
-    // the search read before it started. Without a jump, the pair passes what lies after `prev`, up to `cur`. After a
-    // jump, it passes what lies from the jump's target up to `cur`. The search for beats (fn_c9b90) passes everything
+    // the search read before it started. Without a jump, the pair passes what is after `prev`, up to `cur`. After a
+    // jump, it passes what is from the jump's target up to `cur`. The search for beats (fn_c9b90) passes everything
     // up to `cur` after a jump that doesn't go forward. The search for chords (fn_cb890) doesn't.
     static bool Passes(MarkerKind kind, int64_t prev, int64_t cur, int64_t pos, int64_t from, int64_t to)
     {

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -53,6 +54,10 @@ struct SampleInfo
 // Reads the sample directory `file`, in the file's order. Throws FormatError if it's damaged, or if a sample has a
 // format other than those of SampleFormat.
 std::vector<SampleInfo> ReadSampleDirectory(std::span<const uint8_t> file);
+
+// The bytes of the samples file that `info`'s sample takes: 8 for each frame of 14 DSP-ADPCM samples, the last frame
+// whole, 2 for each 16-bit sample and 1 for each 8-bit sample.
+std::size_t SampleDataSize(const SampleInfo& info);
 
 // A sample decoded to 16-bit PCM.
 struct DecodedSample

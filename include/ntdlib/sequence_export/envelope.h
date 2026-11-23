@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "seqlib/sf2/units.h"
+
 #include "ntdlib/sequence_export/settings.h"
 
 namespace ntdlib::sequence_export
@@ -62,7 +64,8 @@ constexpr int kKeyGroupRelease = 126;
 // SoundFont volume envelope generators (timecents; sustain in centibels of attenuation).
 struct Sf2Envelope
 {
-    int attack = -12000, hold = -12000, decay = -12000, sustain = 0, release = -12000;
+    int attack = seqlib::sf2::kShortestTimecents, hold = seqlib::sf2::kShortestTimecents,
+        decay = seqlib::sf2::kShortestTimecents, sustain = 0, release = seqlib::sf2::kShortestTimecents;
 };
 
 // Converts the game's envelope timing. The SoundFont attack is linear, fitted to the game's attack curve.

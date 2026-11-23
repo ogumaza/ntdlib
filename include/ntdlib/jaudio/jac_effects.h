@@ -95,7 +95,7 @@ public:
     // Event type `type`'s first entry in the table of actions. `type` is below kEventTypes.
     uint32_t FirstEntry(uint32_t type) const;
 
-    // The number of the effect that the action at `entry` plays, or nothing if the entry lies past the table's section.
+    // The number of the effect that the action at `entry` plays, or nothing if the entry is past the table's section.
     std::optional<uint16_t> EffectOf(std::size_t entry) const;
 
 private:
@@ -143,8 +143,9 @@ std::vector<JacEffectSound> ListJacEffects(const Dol& dol, const JacEffectRules&
 //   voices of the player by the time (0x80019c58). Voice 0x800c is the one that the GameCube release plays in 123
 //   cases of 128. The game passes 0x1800c. Jac_PlayOrimaSe reads only the low 16 bits. The game's code plays the sound
 //   of the formation as the player moves the formation.
-// - Effect 0 of the system stops the effects. The effects sequence plays nothing for 15. 18 plays part 8 of demobgm,
-//   which a ripper lists as music. 32 plays a stream. The cases of Jac_PlaySystemSe (Wii 0x80019c00) for them match.
+// - Effect 0 of the system stops the effects. The effects sequence plays nothing for 15. 18 plays part 8 of demobgm.
+//   A ripper lists that part as music. 32 plays a stream. The cases of Jac_PlaySystemSe (Wii 0x80019c00) for them
+//   match.
 // - Jac_CreateEvent (Wii 0x8001ac00) starts the ship's idling (action 4) as it creates an event of type 7, the ship's.
 inline constexpr uint32_t kPikminOtherEffects[] = {
     JacEffectId(JacEffect::kSystem, 25), JacEffectId(JacEffect::kSystem, 30),     JacEffectId(JacEffect::kSystem, 31),

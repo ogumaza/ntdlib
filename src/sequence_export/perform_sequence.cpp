@@ -48,7 +48,6 @@ void TuneChannels(Performance& performance, float pitch)
     const long fine = std::clamp(8192 + std::lround((semitones - static_cast<double>(coarse)) * 8192.0), 0L, 16383L);
     constexpr uint8_t kCoarseTuning = 2;
     constexpr uint8_t kFineTuning = 1;
-    constexpr uint8_t kNullRpn = 127;
     const std::array<std::pair<uint8_t, long>, 10> controls = {{
         {seqlib::midi::cc::kRpnMsb, 0},
         {seqlib::midi::cc::kRpnLsb, kCoarseTuning},
@@ -58,8 +57,8 @@ void TuneChannels(Performance& performance, float pitch)
         {seqlib::midi::cc::kRpnLsb, kFineTuning},
         {seqlib::midi::cc::kDataEntry, fine >> 7},
         {seqlib::midi::cc::kDataEntryLsb, fine & 0x7f},
-        {seqlib::midi::cc::kRpnMsb, kNullRpn},
-        {seqlib::midi::cc::kRpnLsb, kNullRpn},
+        {seqlib::midi::cc::kRpnMsb, seqlib::midi::cc::kNullRpn},
+        {seqlib::midi::cc::kRpnLsb, seqlib::midi::cc::kNullRpn},
     }};
     for (std::vector<TrackEvent>& events : performance.tracks)
     {

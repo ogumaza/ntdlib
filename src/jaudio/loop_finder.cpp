@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <utility>
 
 namespace ntdlib::jaudio
 {
@@ -108,6 +109,11 @@ bool LoopFinder::Holds(uint64_t now) const
     }
 
     return idles && settled && FramesToMs(now - last_move, sample_rate_) >= kStillMs;
+}
+
+uint64_t LoopFinder::PassFrames() const
+{
+    return pass_frames_;
 }
 
 LoopFinder::Track& LoopFinder::Find(uint32_t track, uint64_t frame)
@@ -214,7 +220,7 @@ LoopFinder::Verdict LoopFinder::Jump(Track& track, const TrackEvent& event, cons
 
     track.moves.erase(first, last);
 
-    // A pass that doesn't count starts the count again. Such a pass keeps the count when its loop lies inside the loop
+    // A pass that doesn't count starts the count again. Such a pass keeps the count when its loop is inside the loop
     // being counted.
     if (idles || !sounded.any || HeldBack(event.track, track, event.frame))
     {
@@ -236,7 +242,16 @@ LoopFinder::Verdict LoopFinder::Jump(Track& track, const TrackEvent& event, cons
     track.loops = track.counted && track.counted->start == event.to ? track.loops + 1 : 1;
     track.counted = Loop{event.to, event.at};
 
-    return track.loops == 2 ? Verdict::kLoops : Verdict::kNone;
+    // The pass runs from the end of the pass before it to this jump back.
+    const uint64_t previous_end = std::exchange(track.counted_end, event.frame);
+    if (track.loops != 2)
+    {
+        return Verdict::kNone;
+    }
+
+    pass_frames_ = event.frame - previous_end;
+
+    return Verdict::kLoops;
 }
 
 // With restarts_as_passes: a track that has finished runs its first command again. The pass started when the track
@@ -260,7 +275,15 @@ LoopFinder::Verdict LoopFinder::Restart(Track& track, const TrackEvent& event, c
     }
 
     track.restarts++;
-    return track.restarts == 2 ? Verdict::kLoops : Verdict::kNone;
+    const uint64_t previous_end = std::exchange(track.restart_end, event.frame);
+    if (track.restarts != 2)
+    {
+        return Verdict::kNone;
+    }
+
+    pass_frames_ = event.frame - previous_end;
+
+    return Verdict::kLoops;
 }
 
 // With idle_in_calls: a jump back inside a call. The pass started when the track last reached the jump's target. A pass

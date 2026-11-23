@@ -85,6 +85,10 @@ void ApplySequenceStart(Engine& engine, SequenceSoundPlayer& player, const Seque
     player.SetTempoRatio(start.tempo_ratio);
     player.SetPitch(start.pitch);
 
+    // The low-pass that the game sets through the sound's handle (SoundHandle::SetLpfFreq). It is 0 unless the game
+    // sets it.
+    player.SetLpfFreq(start.lpf);
+
     // The sends that the sound's handle and its sound player give it on the aux buses (BasicSound's update, 0x52B7F8
     // to 0x52B818 in Animal Crossing: New Leaf's code.bin). Both are 0 unless the game sets them.
     player.PlayerOutputs().fx_send = start.fx_send;

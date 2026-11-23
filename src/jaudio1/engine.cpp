@@ -303,7 +303,7 @@ void Engine::OuterInit(uint32_t number, uint16_t kept)
 {
     // JAInter::SystemInterface::outerInit. The track's levels switch on at once. Each level that `kept` leaves out
     // drops to 0 at once. The port command then sets the levels at the next sub-frame's start. A child also takes its
-    // mute from JAI's mute bits, which stay off while the game leaves the piece alone.
+    // mute from JAI's mute bits. Those bits stay off while the game leaves the piece alone.
     Model& m = *model_;
     const uint32_t index = JaiTrack(number);
     if (index == Track::kNone)

@@ -14,7 +14,7 @@ namespace
 constexpr double kPi = 3.141592653589793;
 constexpr double kBeta = 8.0;
 
-// sin(x), from its Taylor series once x lies between -pi and pi. The terms to x^31 leave an error far below a float's
+// sin(x), from its Taylor series once x is between -pi and pi. The terms to x^31 leave an error far below a float's
 // precision.
 double Sine(double x)
 {

@@ -584,7 +584,7 @@ void LoadTitle(const std::filesystem::path& folder, GameFiles& out, const GameOp
     }
 }
 
-void RejectTitleFile(const std::filesystem::path& path, const GameOptions& options)
+std::optional<std::string> TitleFileMessage(const std::filesystem::path& path, const GameOptions& options)
 {
     // An installable WAD starts with its header's size, 0x20, and its type, "Is" ("ib" for boot2). The System Menu
     // writes backup WADs to SD cards. A backup WAD starts with 0x70 and "Bk" (WiiBrew's "WAD files").
@@ -597,12 +597,14 @@ void RejectTitleFile(const std::filesystem::path& path, const GameOptions& optio
     if ((header_size == 0x20 && (type == "Is" || type == "ib")) || (header_size == 0x70 && type == "Bk") ||
         extension == ".wad")
     {
-        throw Error(WadMessage(options));
+        return WadMessage(options);
     }
     if (extension == ".tmd" || extension == ".app")
     {
-        throw Error("it's one of a title's files. Use the folder that holds the title's TMD and contents");
+        return "it's one of a title's files. Use the folder that holds the title's TMD and contents";
     }
+
+    return std::nullopt;
 }
 
 } // namespace ntdlib::disc::detail

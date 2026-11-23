@@ -17,8 +17,9 @@
 #include "ntdlib/rsar/bank_file.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/wave_file.h"
+#include "throws_about.h"
 
-using xsflib::testing::ErrorOf;
+using ntdlib::testing::ThrowsAbout;
 
 namespace
 {
@@ -215,14 +216,6 @@ void TestRawWaveData()
     XSFLIB_CHECK(rsar::BankFile::FromInstruments(0x0101, {}, waves).Write().wave_data == raw);
 }
 
-template <class Error, class Call>
-bool Throws(Call call, const std::string& part)
-{
-    const std::string message = ErrorOf<Error>(call);
-
-    return !message.empty() && message.find(part) != std::string::npos;
-}
-
 // The writers refuse a wave without channels or with more than 255, a rate past 24 bits, a wave without samples, a
 // loop that starts past the wave's end, and a DSP-ADPCM info that doesn't match the encoding. An archive's wave has to
 // take a multiple of 32 bytes. The readers refuse other files and missing blocks.
@@ -250,18 +243,18 @@ void TestRefusals()
     std::vector<uint8_t> moved = file;
     moved[0x100] = 'X';
 
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { none.Write(); }, "holds 0 channels"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { many.Write(); }, "holds 256 channels"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { fast.Write(); }, "passes 24 bits"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { empty.Write(); }, "loop ends before it starts"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { backwards.Write(); }, "loop ends before it starts"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { bare.Write(); }, "has no DSP-ADPCM info"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { pcm.Write(); }, "a PCM channel has a DSP-ADPCM info"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { odd.Write(); }, "isn't a multiple of 32 bytes"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WaveFile::Read(odd.waves[0]); }, "not an RWAV file"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WaveFile::Read(no_data); }, "has no DATA block"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WaveFile::Read(moved); }, "has no DATA block"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WaveArchiveFile::Read(file); }, "not an RWAR file"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { none.Write(); }, "holds 0 channels"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { many.Write(); }, "holds 256 channels"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { fast.Write(); }, "passes 24 bits"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { empty.Write(); }, "loop ends before it starts"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { backwards.Write(); }, "loop ends before it starts"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { bare.Write(); }, "has no DSP-ADPCM info"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { pcm.Write(); }, "a PCM channel has a DSP-ADPCM info"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { odd.Write(); }, "isn't a multiple of 32 bytes"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WaveFile::Read(odd.waves[0]); }, "not an RWAV file"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WaveFile::Read(no_data); }, "has no DATA block"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WaveFile::Read(moved); }, "has no DATA block"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WaveArchiveFile::Read(file); }, "not an RWAR file"));
 }
 
 } // namespace

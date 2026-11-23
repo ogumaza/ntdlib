@@ -25,8 +25,65 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/binary.h"
+#include "xsflib/bytes.h"
+
 namespace ntdlib
 {
+
+// The section of a relocation's place before the list's first relocation of type 202.
+constexpr uint32_t kNoRelSection = 0xffffffff;
+
+// A relocation of a module: its place, as a section and an offset there, its type, and its target, as a section and an
+// offset there.
+struct RelRelocation
+{
+    uint32_t section = kNoRelSection;
+    uint32_t offset = 0;
+    uint8_t type = 0;
+    uint8_t target_section = 0;
+    uint32_t addend = 0;
+};
+
+// Reads the list of relocations at file offset `at` of the module in `file`, up to type 203, and calls
+// `visit(relocation)` for each relocation of another type than 201, 202 and 203. Throws xsflib::FormatError if the list
+// runs past the file.
+template <typename Visit>
+void ForEachRelocation(std::span<const uint8_t> file, std::size_t at, Visit visit)
+{
+    constexpr std::size_t kRelocationSize = 8;
+    constexpr uint8_t kNothing = 201;
+    constexpr uint8_t kSectionStart = 202;
+    constexpr uint8_t kEnd = 203;
+
+    const xsflib::Reader r(file, true);
+    uint32_t section = kNoRelSection;
+    uint32_t offset = 0;
+    for (;; at += kRelocationSize)
+    {
+        const std::span<const uint8_t> relocation = r.Sub(at, kRelocationSize);
+        const uint8_t type = relocation[2];
+        const uint8_t target = relocation[3];
+        if (type == kEnd)
+        {
+            break;
+        }
+        if (type == kSectionStart)
+        {
+            section = target;
+            offset = 0;
+            continue;
+        }
+
+        offset += xsflib::LoadBe16(relocation.data());
+        if (type == kNothing)
+        {
+            continue;
+        }
+
+        visit(RelRelocation{section, offset, type, target, xsflib::LoadBe32(relocation.data() + 4)});
+    }
+}
 
 // A module, read in place: its sections, and the places that its relocations against itself give.
 class RelModule

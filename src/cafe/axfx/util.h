@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 
 // What the effects' models share: the library's conversions of integers to floats, the PowerPC's fused multiply-adds,
-// the test of a gain's range, the clear and the position's step of a line, and the renderer's samples per millisecond.
+// the test of a gain's range, the clear and the position's step of a line, the renderer's samples per millisecond, and
+// the steps of Settings in the reverbs and the chorus.
 // The library converts a float to an unsigned integer as the rest of the Wii U's code does (ntdlib::CafeToUint32).
 
 #pragma once
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <vector>
 
+#include "ntdlib/ax/axfx.h"
+#include "ntdlib/cafe/axfx/axfx.h"
 #include "ntdlib/fused.h"
 
 namespace ntdlib::cafe::axfx
@@ -28,7 +29,7 @@ inline float ToFloat(int32_t value)
 }
 
 // The PowerPC's fmadds: a * c + b, rounded once to single precision. Game mode's interpreter rounds it to double
-// precision first, then to single. The two differ only where the result in double precision lies halfway between two
+// precision first, then to single. The two differ only where the result in double precision is halfway between two
 // floats. Which of the two the Wii U's CPU does isn't known.
 inline float Fmadds(float a, float c, float b)
 {
@@ -41,33 +42,34 @@ inline float NegatedFms(float a, float c, float b)
     return ntdlib::NegatedFma(a, c, -b);
 }
 
-// Whether a gain is below 0 or above 1. A NaN gain passes the library's tests.
-inline bool OutOfRange(float value)
-{
-    return value < 0.0f || value > 1.0f;
-}
-
-// Sets every sample of a line to 0.
-template <typename Sample>
-void Clear(std::vector<Sample>& line)
-{
-    std::fill(line.begin(), line.end(), Sample{});
-}
-
-// Moves a line's position on by a sample. The position wraps to 0 at the line's length.
-inline void Step(uint32_t& position, uint32_t length)
-{
-    position++;
-    if (position >= length)
-    {
-        position = 0;
-    }
-}
+// The range test of a gain, and the clear, the release and the step of a line. The Wii's effects use the same
+// (ax/axfx.h).
+using ntdlib::ax::axfx::Clear;
+using ntdlib::ax::axfx::Free;
+using ntdlib::ax::axfx::OutOfRange;
+using ntdlib::ax::axfx::Step;
 
 // The renderer's samples per millisecond: the rate divided by 1,000 (mulhwu and srwi).
 inline uint32_t SamplesPerMs(uint32_t rate)
 {
     return rate / 1000;
+}
+
+// Settings in the reverbs and the chorus: `off` turns the effect off and frees its lines, and `init` runs Init. A
+// failed Init leaves the effect off. After Init succeeds, the next Process leaves its frame as it is.
+template <typename Off, typename Init>
+bool Settings(uint32_t& active, const Off& off, const Init& init)
+{
+    off();
+    if (!init())
+    {
+        off();
+        return false;
+    }
+
+    active = (active | kSkip) & ~kOff;
+
+    return true;
 }
 
 } // namespace ntdlib::cafe::axfx

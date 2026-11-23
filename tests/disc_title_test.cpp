@@ -24,15 +24,18 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/bytes.h"
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
 
-#include "disc_files.h"
+#include "disc_helpers.h"
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/rounding.h"
 #include "ntdlib/testing/cx_encoders.h"
+#include "ntdlib/testing/disc_files.h"
 #include "temp_folder.h"
 
 using xsflib::testing::Check;
@@ -42,13 +45,14 @@ namespace
 
 namespace fs = std::filesystem;
 namespace cx = ntdlib::testing::cx_encoders;
+using seqlib::testing::Throws;
 using Bytes = std::vector<uint8_t>;
-using disc_files::AppleDouble;
-using disc_files::CheckFiles;
-using disc_files::CheckRefused;
-using disc_files::Fill;
-using disc_files::Text;
-using disc_files::WriteFile;
+using disc_helpers::AppleDouble;
+using disc_helpers::CheckFiles;
+using disc_helpers::CheckRefused;
+using disc_helpers::Fill;
+using disc_helpers::Text;
+using ntdlib::testing::WriteFile;
 
 // The made-up title's ID: the high half of a WiiWare game's title ID, and the game ID WWST.
 constexpr uint64_t kTitleId = uint64_t{0x00010001} << 32 | 0x57575354;
@@ -322,21 +326,22 @@ std::string Hex8(uint32_t value)
     return text;
 }
 
-// A U8 archive that holds `files`, by path. With `dot`, the files are in a folder named "." in the root, as in some of
-// the SDK's archives.
-Bytes BuildU8(const std::map<std::string, Bytes>& files, bool dot)
+// A node of a U8 archive: a folder or a file.
+struct U8Node
 {
-    struct Node
-    {
-        bool folder;
-        std::string name;
-        uint32_t parent; // a folder's parent
-        uint32_t end;    // the index after a folder's last node
-        const Bytes* data;
-    };
+    bool folder;
+    std::string name;
+    uint32_t parent; // a folder's parent
+    uint32_t end;    // the index after a folder's last node
+    const Bytes* data;
+};
 
-    // The nodes in order: each folder, then what it holds. The open folders' paths end in '/'.
-    std::vector<Node> nodes = {{true, "", 0, 0, nullptr}};
+// The nodes of a U8 archive that contains `files`, by path, in order: each folder, then what it contains. With `dot`,
+// the files are in a folder named "." in the root, as in some of the SDK's archives.
+std::vector<U8Node> U8Nodes(const std::map<std::string, Bytes>& files, bool dot)
+{
+    std::vector<U8Node> nodes = {{true, "", 0, 0, nullptr}};
+    // The open folders, by path and node. Their paths end in '/'.
     std::vector<std::pair<std::string, size_t>> open = {{"", 0}};
     if (dot)
     {
@@ -373,16 +378,24 @@ Bytes BuildU8(const std::map<std::string, Bytes>& files, bool dot)
         close();
     }
 
-    // The header, the nodes, their names, then the files' data, each at a multiple of 0x20.
+    return nodes;
+}
+
+// A U8 archive that contains `files`, by path. With `dot`, the files are in a folder named "." in the root, as in some
+// of the SDK's archives. The archive contains the header, the nodes, their names, then the files' data, each at a
+// multiple of 0x20.
+Bytes BuildU8(const std::map<std::string, Bytes>& files, bool dot)
+{
+    const std::vector<U8Node> nodes = U8Nodes(files, dot);
     std::string names;
-    for (const Node& node : nodes)
+    for (const U8Node& node : nodes)
     {
         names += node.name;
         names += '\0';
     }
 
     const size_t table_size = nodes.size() * 12 + names.size();
-    Bytes out((0x20 + table_size + 0x1F) & ~size_t{0x1F}, 0);
+    Bytes out(ntdlib::AlignUp(0x20 + table_size, 0x20), 0);
     xsflib::StoreBe32(&out[0], 0x55AA382D);
     xsflib::StoreBe32(&out[4], 0x20);
     xsflib::StoreBe32(&out[8], static_cast<uint32_t>(table_size));
@@ -391,7 +404,7 @@ Bytes BuildU8(const std::map<std::string, Bytes>& files, bool dot)
     size_t name = 0;
     for (size_t i = 0; i < nodes.size(); ++i)
     {
-        const Node& node = nodes[i];
+        const U8Node& node = nodes[i];
         uint8_t* entry = &out[0x20 + i * 12];
         xsflib::StoreBe32(entry, static_cast<uint32_t>(name));
         entry[0] = node.folder ? 1 : 0;
@@ -405,7 +418,7 @@ Bytes BuildU8(const std::map<std::string, Bytes>& files, bool dot)
 
         const size_t offset = out.size();
         out.insert(out.end(), node.data->begin(), node.data->end());
-        out.resize((out.size() + 0x1F) & ~size_t{0x1F}, 0);
+        out.resize(ntdlib::AlignUp(out.size(), 0x20), 0);
         entry = &out[0x20 + i * 12];
         xsflib::StoreBe32(entry + 4, static_cast<uint32_t>(offset));
         xsflib::StoreBe32(entry + 8, static_cast<uint32_t>(node.data->size()));
@@ -687,15 +700,7 @@ void TestBodies()
     XSFLIB_CHECK(disc::DecompressBody(kRuns, disc::BodyFormat::kRunLength, 4) == Text("abcc"));
 
     // Data that ends early.
-    bool threw = false;
-    try
-    {
-        disc::DecompressBody(kRuns, disc::BodyFormat::kRunLength, 9);
-    }
-    catch (const disc::Error&)
-    {
-        threw = true;
-    }
+    const bool threw = Throws<disc::Error>([&] { disc::DecompressBody(kRuns, disc::BodyFormat::kRunLength, 9); });
     XSFLIB_CHECK(threw);
 }
 

@@ -8,7 +8,7 @@
 //
 // With a policy that gives the whole frame (UpdateChannel), the user writes no explicit instantiation and includes this
 // file in each source file that uses the templates. An explicit instantiation would also build the template's frame,
-// and the policy's voices may lack the methods that the frame calls.
+// and the policy's voices may not have the methods that the frame calls.
 
 #pragma once
 

@@ -26,10 +26,11 @@ namespace ntdlib::sequence_export::jaudio
 
 // A state in which a game's code plays a sequence, through the sound's handle: the volumes of the tracks that the
 // handle reaches, the tempo ratio, the ports that the code writes to the root track once the sequence runs, the
-// fade-in that its start gives the sound, the tracks that the code mutes, and the statuses that it writes by section
-// (SequenceSound::child_volumes, tempo_ratio, game_ports, fade_in, tracks and status_by_section). Index n of
-// child_volumes is the root track's child n in a JAudio1 sequence, and JAISeq::getChildTrack(n) in a JAudio2 sequence:
-// child n % 16 of the root's child n / 16. `clears_child_15` is for a game whose sequence callback mutes child 15
+// fade-in that its start gives the sound, the tracks that the code mutes, the statuses that it writes by section and
+// the pitch ratios of the tracks that the handle reaches (SequenceSound::child_volumes, tempo_ratio, game_ports,
+// fade_in, tracks, status_by_section and child_pitches). Index n of child_volumes and child_pitches is the root
+// track's child n in a JAudio1 sequence, and JAISeq::getChildTrack(n) in a JAudio2 sequence: child n % 16 of the
+// root's child n / 16. `clears_child_15` is for a game whose sequence callback mutes child 15
 // (GameRules::mute_child_15): in this state, the game's code clears that mute on the root track's child 15
 // (SequenceSound::clear_child_15).
 struct SequenceState
@@ -41,6 +42,7 @@ struct SequenceState
     TrackMask tracks = kEveryTrack;
     std::map<uint16_t, uint16_t> status_by_section = {};
     bool clears_child_15 = false;
+    std::map<uint8_t, float> child_pitches = {};
 };
 
 // Another state in which the game plays a sequence of its sound table. The sequence converts once more in that state,
@@ -197,16 +199,16 @@ struct GameRules
     };
     std::optional<VolumeTable> volume_table;
 
-    // Pikmin's effects, which its code starts in two sequences without a sound table (EffectRequest::kPort). The
+    // Pikmin's effects. The game's code starts them in two sequences without a sound table (EffectRequest::kPort). The
     // game's main.dol has a catalogue of effects at `catalogue`, `count` rows of 20 bytes: the effect's number at +4,
-    // the address of its name at +8, and its kind at +16. Kind -2 is an effect of the system, which the effects
-    // sequence's track `system_track` plays. Kind -1 is the player's, on `player_track`. A number of the player's from
-    // 0x8000 goes to port 1 without its top bit, and any other to port 0. Any other kind is an event's type. The
-    // sequence `events_sequence` plays the events' effects. Its first track's child 0 takes an effect's number at port
-    // 0. The table at `event_offsets` gives each type's first action. The table of actions follows its 8 words. A row's
-    // number counts from its type's first action. An action's 6 bytes give its effect's number at +4. An effect of
-    // the events that several rows play comes once. The events' sequence isn't listed as music. The game's code can
-    // also start an effect by writing ports of a track of the effects sequence (`port_effects`).
+    // the address of its name at +8, and its kind at +16. Kind -2 is an effect of the system. Track `system_track` of
+    // the effects sequence plays it. Kind -1 is the player's, on `player_track`. A number of the player's from 0x8000
+    // goes to port 1 without its top bit, and any other to port 0. Any other kind is an event's type. The sequence
+    // `events_sequence` plays the events' effects. Its first track's child 0 takes an effect's number at port 0. The
+    // table at `event_offsets` gives each type's first action. The table of actions follows its 8 words. A row's number
+    // counts from its type's first action. An action's 6 bytes give its effect's number at +4. An effect of the events
+    // that several rows play comes once. The events' sequence isn't listed as music. The game's code can also start an
+    // effect by writing ports of a track of the effects sequence (`port_effects`).
     struct PortEffect
     {
         std::string name{};
@@ -226,7 +228,7 @@ struct GameRules
         uint8_t player_track = 0;
         std::vector<uint16_t> left_out;                // effects of the system that aren't listed
         std::map<uint16_t, uint16_t> played_by_player; // effects of the system that play an effect of the player's
-        std::vector<uint16_t> other_system;            // effects of the system that the catalogue lacks
+        std::vector<uint16_t> other_system;            // effects of the system missing from the catalogue
         std::vector<uint16_t> other_player;            // and the player's
         std::vector<PortEffect> port_effects{};
     };
@@ -253,6 +255,16 @@ struct GameRules
     // The volumes that the game's code gives children of the first track of a file of the sequence archive that no
     // sound plays (SequenceSound::child_volumes), by the file's name in the archive.
     std::map<std::string, std::map<uint8_t, float>> child_volumes;
+
+    // Other volumes that the game's code gives the same children as play goes on. The file is listed once more for
+    // each, right after the file, with these volumes in place of child_volumes. Its name then ends in "_" and the
+    // suffix.
+    struct FileArrangement
+    {
+        std::string suffix;
+        std::map<uint8_t, float> child_volumes;
+    };
+    std::map<std::string, std::vector<FileArrangement>> file_arrangements; // by the file's name in the archive
 
     // The answers that the game's code gives the calls that the tracks of a file of the sequence archive make to the
     // game (command 0xe7), by the call's ID (SequenceSound::sync_answers), by the file's name in the archive.
@@ -380,10 +392,10 @@ private:
     // Whether the sequences list a JAudio1 game's effects (GameOptions::jaudio1_effects and known_effects).
     bool ListsEffects() const;
 
-    // The sequence of JAudio1 effect `s`, which plays in the effects sequence `sequence` (GameOptions).
+    // The sequence of JAudio1 effect `s`. The effect plays in the effects sequence `sequence` (GameOptions).
     SequenceSound EffectSound(const SoundEntry& s, std::span<const uint8_t> sequence) const;
 
-    // Pikmin's effects (GameRules::jac_effects), named after the catalogue. An effect that the catalogue lacks is
+    // Pikmin's effects (GameRules::jac_effects), named after the catalogue. An effect missing from the catalogue is
     // named "system-" or "player-" and its number in hex.
     std::vector<SequenceSound> JacEffectSounds();
 

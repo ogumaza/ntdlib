@@ -95,6 +95,13 @@ extern const FilterTables kSwitchFilters;
 // argument that leaves the low-pass on the Wii U's cutoffs for the argument.
 const FilterTables& RevolutionFilters(const SndBuild& build);
 
+// The 0xd8 argument that stands for a track's low-pass `track_lpf`, (argument - 64) / 64, plus the sound's low-pass
+// `sound_lpf` (PerformOptions::lpf). The sum can fall between two arguments. On the 3DS, the Wii U and the Switch, the
+// result is the argument of those two whose low-pass step is the sum's. The arguments are 1/64 apart and the steps
+// about 1/30. One of the two arguments therefore always has the sum's step. On the Wii, the result is `track_lpf`'s
+// argument, and `sound_lpf` is ignored.
+int LowPassArgument(float track_lpf, float sound_lpf, const Settings& settings);
+
 // Returns the value of kSfzLowPassController for the 0xd8 argument `low_pass`.
 uint8_t SfzLowPassValue(int low_pass);
 

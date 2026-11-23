@@ -23,6 +23,7 @@
 #include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/nx/audio/renderer.h"
+#include "ntdlib/testing/downmix_cases.h"
 
 using namespace xsflib::testing;
 
@@ -650,7 +651,7 @@ void TestRendererSplitter()
 
 void TestRendererSplitterPools()
 {
-    // The renderer takes the splitter and the destinations that were freed first. A splitter that needs more
+    // The renderer takes the splitter and the destinations that were freed first. A splitter that requires more
     // destinations than are free isn't taken. The enhanced mode has no splitters.
     audio::RendererParameter parameter = OneVoice::Parameter(0);
     audio::Renderer renderer(parameter);
@@ -870,24 +871,14 @@ void TestI3dl2Presets()
     }
 }
 
-// The three downmix functions: the outputs of seven examples, and FNV-1a over the outputs of 65,536 cases from a linear
-// congruential generator. The expected values follow the code of the audio DSP in the system module of firmware 22.5.0.
-// The examples: the front pair alone, the low frequency alone, the rear pair at -6 dB, the rear pair at -1 and 1
-// (rounded down, and halved to -1 in mono), the centre alone, sums beyond 16 bits, and every channel but the low
-// frequency.
+// The three downmix functions on the cases of testing/downmix_cases.h: the outputs of the seven examples, and the hash
+// of the outputs of 65,536 cases. The expected values follow the code of the audio DSP in the system module of
+// firmware 22.5.0.
 void TestDownmix()
 {
-    using Channels = std::array<int16_t, 6>;
+    using ntdlib::testing::DownmixChannels;
     using Stereo = std::array<int16_t, 2>;
-    const std::array<Channels, 7> examples = {{
-        {1000, -1000, 0, 0, 0, 0},
-        {0, 0, 0, 32767, 0, 0},
-        {0, 0, 0, 0, 16384, -16384},
-        {0, 0, 0, 0, -1, 1},
-        {0, 0, 1000, 0, 0, 0},
-        {32767, -32768, 32767, 0, 32767, -32768},
-        {1000, 3001, -3, 0, 0, -1},
-    }};
+    const std::array<DownmixChannels, 7>& examples = ntdlib::testing::kDownmixExamples;
     struct Expected
     {
         audio::Downmix downmix;
@@ -913,29 +904,11 @@ void TestDownmix()
             XSFLIB_CHECK(audio::DownmixSample(examples[i], mode.downmix) == mode.outputs[i]);
         }
 
-        uint32_t state = 1;
-        const auto sample = [&state]()
+        const auto downmix = [&mode](const DownmixChannels& channels)
         {
-            state = state * 1664525u + 1013904223u;
-            return static_cast<int16_t>(state >> 16);
+            return audio::DownmixSample(channels, mode.downmix);
         };
-        uint64_t hash = 0xcbf29ce484222325;
-        const auto add = [&hash](int16_t value)
-        {
-            const uint16_t bits = static_cast<uint16_t>(value);
-            hash = (hash ^ (bits & 0xff)) * 0x100000001b3;
-            hash = (hash ^ (bits >> 8)) * 0x100000001b3;
-        };
-        for (int i = 0; i < 65536; ++i)
-        {
-            Channels channels{};
-            std::generate(channels.begin(), channels.end(), sample);
-            const Stereo output = audio::DownmixSample(channels, mode.downmix);
-            add(output[0]);
-            add(output[1]);
-        }
-
-        XSFLIB_CHECK(hash == mode.hash);
+        XSFLIB_CHECK(ntdlib::testing::DownmixCaseHash(downmix) == mode.hash);
     }
 
     // The front pair, and a frame of two samples through DownmixFrame.

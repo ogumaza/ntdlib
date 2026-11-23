@@ -2,12 +2,11 @@
 
 // Builds small JAudio2 files for tests, in the layout of Four Swords Adventures' files: wave systems (WSYS) with their
 // AW file, banks (IBNK) of both versions, sound tables with their names (BST and BSTN), sequence archives (RARC) and
-// start-up archives (BAA). It also builds JAudio1's start-up archive (AAF) in The Wind Waker's layout, the bank file
-// of Pikmin's JAudio (.bx) and the sequence index (BARC). It writes a small JAudio2 game's files too. The GameCube's
-// formats are big-endian.
-// The builders with a `big_endian` parameter also build the little-endian files of the Switch's releases of GameCube
-// and Wii games, such as Super Mario Galaxy's: each field in the width that the release stores it in, and each tag
-// reversed.
+// start-up archives (BAA). It also builds JAudio1's start-up archive (AAF) in The Wind Waker's layout and its name file
+// (JaiInfo.asn), the bank file of Pikmin's JAudio (.bx) and the sequence index (BARC). It writes a small JAudio2 game's
+// files too. The GameCube's formats are big-endian. The builders with a `big_endian` parameter also build the
+// little-endian files of the Switch's releases of GameCube and Wii games, such as Super Mario Galaxy's: each field in
+// the width that the release stores it in, and each tag reversed.
 
 #pragma once
 
@@ -17,15 +16,15 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
-#include "xsflib/files.h"
 
+#include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/testing/byte_writer.h"
+#include "ntdlib/testing/write_file.h"
 #include "ntdlib/testing/yaz0_files.h"
 
 namespace ntdlib::testing::jaudio_files
@@ -585,6 +584,22 @@ inline std::vector<uint8_t> RarcFile(const std::vector<RarcFileSpec>& files, boo
     return r.Data();
 }
 
+// A sequence table as The Wind Waker HD keeps its sequences (jaudio::ReadSequenceTable): the count, zeros up to 0x20,
+// then each sequence's offset and size, then the sequences.
+inline std::vector<uint8_t> SequenceTable(const std::vector<std::string>& sequences)
+{
+    std::vector<uint8_t> table(0x20 + sequences.size() * 8);
+    xsflib::StoreBe32(table.data(), static_cast<uint32_t>(sequences.size()));
+    for (std::size_t i = 0; i < sequences.size(); i++)
+    {
+        xsflib::StoreBe32(table.data() + 0x20 + i * 8, static_cast<uint32_t>(table.size()));
+        xsflib::StoreBe32(table.data() + 0x24 + i * 8, static_cast<uint32_t>(sequences[i].size()));
+        table.insert(table.end(), sequences[i].begin(), sequences[i].end());
+    }
+
+    return table;
+}
+
 // A sound of an AAF's sound table: its category (0 to 15 for an effect, 16 for a sequence), its volume, a sequence's
 // file in the sequence archive, and its pitch. The entry holds the pitch only if it isn't 1.
 struct AafSoundSpec
@@ -775,7 +790,31 @@ inline std::vector<uint8_t> AafFile(const std::vector<AafSoundSpec>& sounds, con
     return b.Take();
 }
 
-// A sequence that opens track 0 at 0x20, and the track there, which plays key 60 for a beat on program 0 of bank 0.
+// JAudio1's name file (JaiInfo.asn) of `sounds`: the 16-byte header with the count, 18 records for the categories, then
+// a record for each sound. A record is a name of up to 28 bytes, then the sound's ID. The count is big-endian in either
+// order.
+inline std::vector<uint8_t> NameFile(const std::vector<jaudio::AsnSound>& sounds, bool big_endian = true)
+{
+    std::vector<uint8_t> b(16 + (18 + sounds.size()) * 32);
+    xsflib::StoreBe32(b.data() + 12, static_cast<uint32_t>(sounds.size()));
+    for (std::size_t i = 0; i < 18; i++)
+    {
+        const std::string category = std::to_string(i) + " CATEGORY";
+        std::copy(category.begin(), category.end(), b.begin() + static_cast<std::ptrdiff_t>(16 + i * 32));
+    }
+
+    for (std::size_t i = 0; i < sounds.size(); i++)
+    {
+        const std::size_t at = 16 + (18 + i) * 32;
+        std::copy(sounds[i].name.begin(), sounds[i].name.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
+        big_endian ? xsflib::StoreBe32(b.data() + at + 28, sounds[i].id)
+                   : xsflib::StoreLe32(b.data() + at + 28, sounds[i].id);
+    }
+
+    return b;
+}
+
+// A sequence that opens track 0 at 0x20, and the track there. The track plays key 60 for a beat on program 0 of bank 0.
 inline std::vector<uint8_t> OneNoteSequence()
 {
     Bytes s;
@@ -796,9 +835,9 @@ inline std::vector<uint8_t> OneNoteSequence()
     return s.Data();
 }
 
-// Write the sound files of a small JAudio2 game in `folder`, as a disc holds them: the start-up archive test.baa, its
-// sequence archive Seqs/test.arc and its wave archive Waves/test.aw. The sound table holds one piece of music,
-// BGM_FIELD, which plays OneNoteSequence. Throw std::runtime_error if a file can't be written.
+// Writes the sound files of a small JAudio2 game in `folder`, laid out as on a disc: the start-up archive test.baa,
+// its sequence archive Seqs/test.arc and its wave archive Waves/test.aw. The sound table contains one piece of music,
+// BGM_FIELD. It plays OneNoteSequence. Throws std::runtime_error if a file can't be written.
 inline void WriteGameFiles(const std::filesystem::path& folder)
 {
     const SoundTableBlocks sounds = SoundTable({{"BGM", {{"FIELD", {{0x11, 127, 7, "BGM_FIELD"}}}}}});
@@ -808,11 +847,7 @@ inline void WriteGameFiles(const std::filesystem::path& folder)
         {std::filesystem::path("Waves") / "test.aw", AwFile()}};
     for (const auto& [path, bytes] : game)
     {
-        std::filesystem::create_directories((folder / path).parent_path());
-        if (const std::optional<std::string> error = xsflib::WriteFile(folder / path, bytes))
-        {
-            throw std::runtime_error(*error);
-        }
+        WriteFile(folder / path, bytes);
     }
 }
 

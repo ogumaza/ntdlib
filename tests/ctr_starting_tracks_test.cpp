@@ -514,6 +514,49 @@ void TestNewLeafDj()
           "the café's piece plays every track after its fade");
 }
 
+// Ninja Launcher's play routine sends each of the game's jingles to the reverb on bus A at 0.15. Its routine for music
+// sets no send on the music. The send applies only to the launcher's archive. A sound of the same name in the Plaza's
+// archive starts with nothing set.
+void TestLauncherJingles()
+{
+    constexpr SequenceStart kSent = {.fx_send = {0.15f, 0.0f}};
+
+    for (const std::string_view jingle : {"SEQ_JIN_NOTICE", "SEQ_JIN_UPDATE", "SEQ_JIN_OPDEMO", "SEQ_JIN_BTL_START"})
+    {
+        CheckStart(kNinjaLauncher, jingle, kSent);
+    }
+
+    for (const std::string_view piece : {"SEQ_BGM_TITLE", "SEQ_BGM_BATTLE1", "SEQ_BGM_CLEAR"})
+    {
+        CheckStart(kNinjaLauncher, piece, {});
+    }
+
+    CheckStart(kMiiPlaza, "SEQ_JIN_NOTICE", {});
+
+    Check(SequenceArrangements(kNinjaLauncher, "SEQ_JIN_NOTICE").empty(), "a jingle has no later states");
+}
+
+// Find Mii II plays a room's battle piece behind a wall of fire or poison with a low-pass of -0.4, Battle01 at a volume
+// of 0.45 and Battle02 at 0.4. Each piece starts without the wall. The boss pieces and the system title's archive have
+// no wall state.
+void TestFindMiiWalls()
+{
+    const auto battle01 = SequenceArrangements(kMiiPlaza, "BGM_DEN2_Battle01");
+    const auto battle02 = SequenceArrangements(kMiiPlaza, "BGM_DEN2_Battle02");
+
+    Check(battle01.size() == 1 && battle01[0].suffix == "_wall" &&
+              battle01[0].start == SequenceStart{.volume = 0.45f, .lpf = -0.4f},
+          "Battle01 plays behind a wall at 0.45 with a low-pass of -0.4");
+    Check(battle02.size() == 1 && battle02[0].suffix == "_wall" &&
+              battle02[0].start == SequenceStart{.volume = 0.4f, .lpf = -0.4f},
+          "Battle02 plays behind a wall at 0.4 with a low-pass of -0.4");
+    CheckStart(kMiiPlaza, "BGM_DEN2_Battle01", {});
+    CheckStart(kMiiPlaza, "BGM_DEN2_Battle02", {});
+    Check(SequenceArrangements(kMiiPlaza, "BGM_DEN2_Boss01").empty(), "the boss's piece plays behind no wall");
+    Check(SequenceArrangements(kMiiPlazaSystemTitle, "BGM_DEN2_Battle01").empty(),
+          "the system title's archive has no wall state");
+}
+
 // Tomodachi Life's apartment music plays five more sets of tracks, and its night version one more.
 void TestTomodachiApartment()
 {
@@ -605,6 +648,8 @@ int main()
                                         TestMarioKart7Beats();
                                         TestMarioKart7Effects();
                                         TestNewLeafDj();
+                                        TestLauncherJingles();
+                                        TestFindMiiWalls();
                                         TestTomodachiApartment();
                                         TestTunePlayer();
                                         TestCountdownAndChord();

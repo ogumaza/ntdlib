@@ -10,6 +10,10 @@
 #include <vector>
 
 #include "ntdlib/aarch64.h"
+#include "ntdlib/nx/audio/reverb.h"
+#include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/rvl/ax/system.h"
+#include "ntdlib/rvl/nx/layer.h"
 
 namespace ntdlib::rvl::nx
 {

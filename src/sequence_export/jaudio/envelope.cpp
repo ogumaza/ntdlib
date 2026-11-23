@@ -14,6 +14,9 @@
 #include <span>
 #include <vector>
 
+#include "seqlib/sf2/units.h"
+#include "seqlib/sfz/opcodes.h"
+
 #include "ntdlib/sequence_export/jaudio/sound_data.h"
 
 namespace ntdlib::sequence_export::jaudio
@@ -121,7 +124,7 @@ void OscillatorState::Release(uint16_t direct_release, uint16_t default_release)
         return;
     }
 
-    // A release table that is the attack table carries on from where the attack is.
+    // A release table that is the attack table continues from where the attack is.
     if (!osc_->release_is_attack)
     {
         counter_ = 0.0f;
@@ -156,7 +159,7 @@ bool OscillatorState::HoldsSilent() const
     }
 
     // The release starts from the held level of 0 and moves to its points' values. A release table that is the attack
-    // table carries on from the hold point, and a loop can reach any point of it.
+    // table continues from the hold point, and a loop can reach any point of it.
     std::span<const OscPoint> release = osc_->release;
     const bool loops = std::ranges::any_of(release, [](const OscPoint& p) { return p.mode == kModeLoop; });
     if (osc_->release_is_attack && !loops)
@@ -436,33 +439,35 @@ Sf2Envelope ConvertEnvelope(const EnvelopeCurve& curve)
     const Shape s = FitShape(curve);
     Sf2Envelope e;
     e.peak_db = s.peak_db;
-    e.delay = ToTimecents(s.delay * 1000.0, -12000, 5000);
-    e.attack = ToTimecents(s.attack * 1000.0, -12000, 8000);
-    e.hold = ToTimecents(s.hold * 1000.0, -12000, 5000);
+    e.delay = ToTimecents(s.delay * 1000.0, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestHoldTimecents);
+    e.attack = ToTimecents(s.attack * 1000.0, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
+    e.hold = ToTimecents(s.hold * 1000.0, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestHoldTimecents);
     if (s.decay_db_per_second > 0.0)
     {
-        e.decay = ToTimecents(100.0 / s.decay_db_per_second * 1000.0, -12000, 8000);
+        e.decay = ToTimecents(seqlib::sf2::kEnvelopeFallDb / s.decay_db_per_second * 1000.0,
+                              seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
     }
-    e.sustain = std::clamp(static_cast<int>(std::lround(-10.0 * s.sustain_db)), 0, 1440);
-    e.release = ToTimecents(100.0 / s.release_db_per_second * 1000.0, -12000, 8000);
+    e.sustain = seqlib::sf2::SustainCentibels(s.sustain_db);
+    e.release = ToTimecents(seqlib::sf2::kEnvelopeFallDb / s.release_db_per_second * 1000.0,
+                            seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
 
     return e;
 }
 
 SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeCurve& curve)
 {
-    // A decay or release falls by a factor of e^-8 (8 * 20 / ln(10) dB) over its time (sfzformat.com's ampeg_attack
-    // page).
-    const double kFallDb = 8.0 * 20.0 / std::log(10.0);
     const Shape s = FitShape(curve);
     SfzEnvelope e;
     e.peak_db = s.peak_db;
     e.delay = s.delay;
     e.attack = s.attack;
     e.hold = s.hold;
-    e.decay = s.decay_db_per_second > 0.0 ? kFallDb / s.decay_db_per_second : 0.0;
+
+    // A decay or release falls by a factor of e^-8 (seqlib::sfz::kEnvelopeFallDb) over its time (sfzformat.com's
+    // ampeg_attack page).
+    e.decay = s.decay_db_per_second > 0.0 ? seqlib::sfz::kEnvelopeFallDb / s.decay_db_per_second : 0.0;
     e.sustain = std::clamp(100.0 * std::pow(10.0, s.sustain_db / 20.0), 0.0, 100.0);
-    e.release = kFallDb / s.release_db_per_second;
+    e.release = seqlib::sfz::kEnvelopeFallDb / s.release_db_per_second;
 
     return e;
 }

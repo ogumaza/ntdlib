@@ -11,13 +11,14 @@
 #include <stdexcept>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/info_block.h"
 
-using xsflib::testing::ErrorOf;
+using seqlib::testing::Throws;
 
 namespace
 {
@@ -87,12 +88,6 @@ std::vector<uint8_t> Start(Flavor flavor, uint32_t size, const std::array<uint32
     }
 
     return bytes;
-}
-
-template <class Error, class Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
 }
 
 // Checks that `block` writes `expected`, and that `expected` reads as `block`.
@@ -200,7 +195,7 @@ void TestEveryTable(Flavor flavor)
     CheckBoth(block, expected);
 }
 
-// A block whose settings end at a multiple of 32 bytes needs no padding. The group of 32 bytes starts at 100, after
+// A block whose settings end at a multiple of 32 bytes takes no padding. The group of 32 bytes starts at 100, after
 // its table at 88. The tables of players and files follow at 132 and 136. The settings run from 140 to 160.
 void TestNoPadding(Flavor flavor)
 {

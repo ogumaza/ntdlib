@@ -59,7 +59,8 @@ sf2::Zone GlobalZone(const PresetKey& key)
     if (hz > 0.0)
     {
         global.generators.push_back(sf2::Generator::Value(sf2::kFreqVibLfo, sf2::LfoFrequency(hz)));
-        const int delay = ToTimecents(key.vibrato_delay * kSubFrameSeconds * 1000.0, -12000, 5000);
+        const int delay = ToTimecents(key.vibrato_delay * kSubFrameSeconds * 1000.0, sf2::kShortestTimecents,
+                                      sf2::kLongestHoldTimecents);
         global.generators.push_back(sf2::Generator::Value(sf2::kDelayVibLfo, delay));
     }
 
@@ -81,7 +82,7 @@ sf2::Zone RegionZone(const PresetZone& z, const FilterLayer& layer, double quiet
     // JAudio2's pan law is the sin/cos law of MIDI RP-036. Most SoundFont players pan by it too. The left side plays at
     // the cosine and the right at the sine of a quarter turn times the pan.
     values.pan = std::clamp(static_cast<int>(std::lround((z.pan - 0.5) * 1000.0)), -500, 500);
-    if (e.delay > -12000)
+    if (e.delay > sf2::kShortestTimecents)
     {
         values.delay = e.delay;
     }

@@ -20,10 +20,12 @@
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
 
-#include "disc_files.h"
+#include "disc_helpers.h"
 #include "ntdlib/disc/cpk.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/rounding.h"
+#include "ntdlib/testing/disc_files.h"
 #include "temp_folder.h"
 
 namespace
@@ -32,12 +34,13 @@ namespace
 namespace fs = std::filesystem;
 namespace disc = ntdlib::disc;
 using Bytes = std::vector<uint8_t>;
-using disc_files::Fill;
-using disc_files::StoreBe32;
-using disc_files::StoreBe64;
-using disc_files::Text;
-using disc_files::WriteFile;
+using disc_helpers::Fill;
+using disc_helpers::StoreBe32;
+using disc_helpers::StoreBe64;
+using disc_helpers::Text;
 using ntdlib::testing::TempFolder;
+using ntdlib::testing::WriteFile;
+using ntdlib::testing::disc_files::WriteSystemFiles;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
 
@@ -440,8 +443,8 @@ Bytes TocTable(const std::vector<Entry>& entries, const std::vector<uint64_t>& o
     return UtfTable("CpkTocInfo", static_cast<uint32_t>(entries.size()), columns);
 }
 
-// A CPK that holds `entries`, each at a multiple of 0x40. Its first chunk lies at 0. By default, the TOC lies at 0x800
-// and the files from 0x2000, and the files' offsets count from the TOC's offset.
+// A CPK that holds `entries`, each at a multiple of 0x40. Its first chunk is at 0. By default, the TOC is at 0x800 and
+// the files from 0x2000, and the files' offsets count from the TOC's offset.
 Bytes Cpk(const std::vector<Entry>& entries, const Layout& layout)
 {
     const uint64_t content = layout.toc_last ? 0x600 : 0x2000;
@@ -449,12 +452,12 @@ Bytes Cpk(const std::vector<Entry>& entries, const Layout& layout)
     Bytes files;
     for (const Entry& entry : entries)
     {
-        files.resize((files.size() + 0x3F) & ~size_t{0x3F});
+        files.resize(ntdlib::AlignUp(files.size(), 0x40));
         offsets.push_back(content + files.size());
         files.insert(files.end(), entry.stored.begin(), entry.stored.end());
     }
 
-    const uint64_t toc = layout.toc_last ? (content + files.size() + 0x7FF) & ~uint64_t{0x7FF} : 0x800;
+    const uint64_t toc = layout.toc_last ? ntdlib::AlignUp<uint64_t>(content + files.size(), 0x800) : 0x800;
     const uint64_t base = layout.content_offset ? std::min(toc, content) : toc;
     const Bytes toc_chunk = Chunk("TOC ", TocTable(entries, offsets, base, layout), layout.masked);
     const uint64_t size = layout.toc_last ? toc + toc_chunk.size() : content + files.size();
@@ -517,7 +520,7 @@ std::vector<Entry> EntriesOf(const std::vector<TestFile>& files)
     return entries;
 }
 
-// Reads a CPK in memory. Every read must lie inside the CPK.
+// Reads a CPK in memory. Every read must be inside the CPK.
 disc::CpkRead MemoryRead(const Bytes& cpk)
 {
     return [&cpk](uint64_t offset, size_t size)
@@ -723,7 +726,7 @@ Bytes GameCubeImage(const std::vector<std::pair<std::string, Bytes>>& files)
     for (const auto& [name, data] : files)
     {
         offsets.push_back(offset);
-        offset = (offset + static_cast<uint32_t>(data.size()) + 0x7FFF) & ~uint32_t{0x7FFF};
+        offset = ntdlib::AlignUp(offset + static_cast<uint32_t>(data.size()), 0x8000);
     }
 
     const Bytes table = FileTable(files, offsets);
@@ -740,9 +743,7 @@ Bytes GameCubeImage(const std::vector<std::pair<std::string, Bytes>>& files)
 // An extracted GameCube disc with `files` under files/, each at its path.
 void WriteExtractedDisc(const fs::path& root, const std::vector<std::pair<std::string, Bytes>>& files)
 {
-    WriteFile(root / "sys" / "boot.bin", GameCubeHeader(0, 0));
-    WriteFile(root / "sys" / "main.dol", {0});
-    WriteFile(root / "sys" / "fst.bin", {0});
+    WriteSystemFiles(root, {.boot = GameCubeHeader(0, 0), .dol = {0}, .fst = {0}});
     for (const auto& [path, data] : files)
     {
         WriteFile(root / "files" / fs::path(path), data);
@@ -754,12 +755,12 @@ Bytes U8Archive(const std::vector<std::pair<std::string, Bytes>>& files)
 {
     std::vector<uint32_t> offsets;
     const Bytes sizing = FileTable(files, std::vector<uint32_t>(files.size()));
-    uint32_t offset = (0x20 + static_cast<uint32_t>(sizing.size()) + 0x1F) & ~uint32_t{0x1F};
+    uint32_t offset = ntdlib::AlignUp(0x20 + static_cast<uint32_t>(sizing.size()), 0x20);
     const uint32_t data_offset = offset;
     for (const auto& [name, data] : files)
     {
         offsets.push_back(offset);
-        offset = (offset + static_cast<uint32_t>(data.size()) + 0x1F) & ~uint32_t{0x1F};
+        offset = ntdlib::AlignUp(offset + static_cast<uint32_t>(data.size()), 0x20);
     }
 
     const Bytes table = FileTable(files, offsets);

@@ -14,10 +14,12 @@
 #include <vector>
 
 #include "seqlib/sf2/units.h"
+#include "seqlib/sfz/opcodes.h"
 
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sequence_export/sf2_limits.h"
 
 namespace ntdlib::sequence_export
 {
@@ -31,10 +33,6 @@ namespace
 // At that point, nw::snd is within 0.5 dB of full level. The remaining time goes to the hold. The decay then starts on
 // time. An initial envelope delay would fit the start better, but FluidSynth delays sample playback too.
 constexpr double kAttackRamp = 0.55;
-
-// SoundFont's slowest decay or release, 8000 timecents, in milliseconds for a 100 dB fall. MML values 0 to 2 are
-// slower.
-constexpr double kSlowestSf2DecayMs = 101593.6673259648;
 
 // Calls `function` with the std::type_identity of the console policy (nwsnd/console.h) for `engine`.
 template <typename Function>
@@ -283,13 +281,13 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& v, const Settings& settings)
     const double scale = settings.env_time_scale;
     const Engine engine = settings.engine;
     Sf2Envelope e;
-    e.attack = ToTimecents(Sf2AttackMs(v, settings), -12000, 8000);
+    e.attack = ToTimecents(Sf2AttackMs(v, settings), seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
 
-    // SoundFont decay and release times specify a 100 dB fall, linear in dB. A decay slower than SoundFont allows gets
-    // a longer hold, up to the longest hold SoundFont allows. Holding until the faster decay reaches the sustain level
-    // when the game's decay does would leave the note too loud until then. The error would be largest at the end of the
-    // hold. Half that hold splits the error evenly: as loud at the end of the hold as quiet when the decay reaches the
-    // sustain level.
+    // SoundFont decay and release times specify a 100 dB fall, linear in dB. A decay slower than SoundFont allows, as
+    // MML values 0 to 2 give, gets a longer hold, up to the longest hold SoundFont allows. Holding until the faster
+    // decay reaches the sustain level when the game's decay does would leave the note too loud until then. The error
+    // would be largest at the end of the hold. Half that hold splits the error evenly: as loud at the end of the hold
+    // as quiet when the decay reaches the sustain level.
     const double decay_ms = 1000.0 / DecayRate(v.decay, engine) * scale;
     double hold_ms = ConvertedHoldMs(v, settings);
     if (decay_ms > kSlowestSf2DecayMs)
@@ -297,10 +295,11 @@ Sf2Envelope ConvertEnvelope(const EnvelopeValues& v, const Settings& settings)
         hold_ms += -nwsnd::DecibelSquare(v.sustain) / 1000.0 * (decay_ms - kSlowestSf2DecayMs) / 2.0;
     }
 
-    e.hold = ToTimecents(hold_ms, -12000, 5000);
-    e.decay = ToTimecents(decay_ms, -12000, 8000);
-    e.sustain = std::clamp(-static_cast<int>(nwsnd::DecibelSquare(v.sustain)), 0, 1440);
-    e.release = ToTimecents(1000.0 / DecayRate(v.release, engine) * scale, -12000, 8000);
+    e.hold = ToTimecents(hold_ms, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestHoldTimecents);
+    e.decay = ToTimecents(decay_ms, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
+    e.sustain = std::clamp(-static_cast<int>(nwsnd::DecibelSquare(v.sustain)), 0, seqlib::sf2::kMaxCentibels);
+    e.release = ToTimecents(1000.0 / DecayRate(v.release, engine) * scale, seqlib::sf2::kShortestTimecents,
+                            seqlib::sf2::kLongestTimecents);
 
     return e;
 }
@@ -315,7 +314,7 @@ SfzEnvelope ConvertEnvelopeForSfz(const EnvelopeValues& v, const Settings& setti
     // sfzformat.com's ampeg_attack page gives a decay's or release's step as close to exp(-8 / (time * rate)) a sample.
     // The stage then falls 8 * 200 / ln(10) tenths of a dB over its time. sfizz 1.2.3 steps by exp(-9 / (time * rate)).
     // Its decays and releases fall 12.5 % faster than the page gives.
-    constexpr double kSfzFall = 8.0 * 200.0 / 2.302585092994046;
+    constexpr double kSfzFall = seqlib::sfz::kEnvelopeFallDb * 10.0;
 
     const double scale = settings.env_time_scale;
     SfzEnvelope e;

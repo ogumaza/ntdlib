@@ -289,7 +289,7 @@ std::vector<uint8_t> StreamDetails(const SoundModel& sound, Flavor flavor, uint3
 }
 
 // A stream sound's details in a 3DS archive of `version`, as the tools write them. Throws std::invalid_argument for a
-// version whose layout the model doesn't know, fields after the sends, tracks or an extension in a version without
+// version whose layout the model doesn't support, fields after the sends, tracks or an extension in a version without
 // them, options without an extension, and the exceptions of StreamDetails.
 std::vector<uint8_t> CtrStreamDetails(const SoundModel& sound, uint32_t version)
 {
@@ -383,7 +383,7 @@ void AppendSequenceDetails(Out& out, const SoundModel& sound)
 
 // Appends the details of `sound`, a wave sound, to its entry in `out`, after the value that follows its 3D settings,
 // as the tools write them in an archive of `version`. A 3DS archive (`ctr`) of 2.0.0.0 holds sends after the options.
-// Throws std::invalid_argument for a version of the 3DS whose layout the model doesn't know.
+// Throws std::invalid_argument for a version of the 3DS whose layout the model doesn't support.
 void AppendWaveSoundDetails(Out& out, const SoundModel& sound, bool ctr, uint32_t version)
 {
     out.U32(out.Zeros(4), sound.after_3d);
@@ -513,7 +513,7 @@ StreamSoundInfo ReadStream(const xsflib::Reader& r, std::size_t details, uint32_
 }
 
 // Reads into `sound` the details at `details` of the entry of a 3DS stream sound that `r` reads, in an archive of
-// `version` before 2.3.2.0. The 3D settings lie at `settings`.
+// `version` before 2.3.2.0. The 3D settings are at `settings`.
 void ReadCtrStream(const xsflib::Reader& r, std::size_t details, std::size_t settings, uint32_t version,
                    SoundModel& sound)
 {
@@ -879,7 +879,7 @@ PlayerSettings ReadSettings(const std::array<uint8_t, 20>& bytes, Flavor flavor)
 // The entry of `file` in an archive of `flavor` and `version`, whose place starts `offset` bytes after the end of the
 // FILE block's size and takes `size` bytes. `group_file` gives whether the file is a group's file. The 3DS's entries
 // hold no list of groups. Throws std::invalid_argument for a 3DS file without a place in a version whose entry the
-// model doesn't know.
+// model doesn't support.
 std::vector<uint8_t> FileEntry(const FileModel& file, uint32_t offset, uint32_t size, bool group_file, Flavor flavor,
                                uint32_t version)
 {
@@ -929,7 +929,7 @@ std::vector<uint8_t> FileEntry(const FileModel& file, uint32_t offset, uint32_t 
     return out.Take();
 }
 
-// Where the copy of file `file` lies in `group`, a group's file of `flavor`: its offset from the group's start and its
+// Where the copy of file `file` is in `group`, a group's file of `flavor`: its offset from the group's start and its
 // size. Nothing for a group's file that holds no copy of the file. Throws xsflib::FormatError for bytes that aren't a
 // group's file laid out as the tools lay one out (ntdlib/sar/groups.h).
 std::optional<std::pair<std::size_t, std::size_t>> CopyPlace(std::span<const uint8_t> group, uint32_t file,

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
@@ -26,6 +27,7 @@ namespace
 using ntdlib::ntr::SoundOutput;
 using ntdlib::ntr::SoundUnit;
 using ntdlib::wave::ImaAdpcmState;
+using seqlib::testing::Throws;
 
 constexpr uint32_t kBusy = 1u << 31;
 constexpr uint16_t kBias = 0x200;
@@ -100,7 +102,7 @@ struct Unit
     }
 
     // Sets up and starts capture `capture` at `address`: SNDCAPxDAD and SNDCAPxLEN first, then SNDCAPxCNT with the
-    // start bit. The capture counts with channel 1's or channel 3's timer, which takes `timer`.
+    // start bit. The capture counts with channel 1's or channel 3's timer. That timer takes `timer`.
     void StartCapture(int capture, uint8_t control, uint32_t words, uint32_t timer = kOneSamplePeriod,
                       uint32_t address = kBufferAddress)
     {
@@ -602,7 +604,7 @@ void TestCaptureBuffer()
 
 // The SDK's reverb: channel 1 plays capture 0's buffer in a loop, with the same timer, at volume 30 and pan 0. An
 // impulse on channel 0 comes back each pass of the 32-sample buffer, 34 samples later: the channel reads its words 8
-// words ahead, so it plays what the capture took one pass before, two overflows after the capture took it.
+// words ahead. It therefore plays what the capture took one pass before, two overflows after the capture took it.
 void TestReverb()
 {
     std::vector<int16_t> impulse(8, 0);
@@ -646,6 +648,7 @@ std::vector<double> Side(const std::vector<float>& out, int side)
     {
         samples.push_back(out[i]);
     }
+
     return samples;
 }
 
@@ -663,6 +666,7 @@ double Amplitude(const std::vector<double>& samples, double frequency)
         sum += weight * samples[i] * std::complex<double>(std::cos(angle), -std::sin(angle));
         weights += weight;
     }
+
     return 2.0 * std::abs(sum) / weights;
 }
 
@@ -682,15 +686,7 @@ void TestEnhancedFrames()
     XSFLIB_CHECK(out.size() == 8 * ntdlib::ntr::kEnhancedFrameSamples);
 
     Unit console;
-    bool refused = false;
-    try
-    {
-        console.unit.Run(100, out);
-    }
-    catch (const std::logic_error&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::logic_error>([&] { console.unit.Run(100, out); });
     XSFLIB_CHECK(refused);
 }
 
@@ -728,9 +724,9 @@ void TestEnhancedSine()
 void TestEnhancedSquare()
 {
     // A rectangular wave with duty 3, one step per 512 ticks: 8 steps a cycle, 4,091 Hz. At volume 127, pan 0 and
-    // master 127, its levels of +-0x7FFF give +-0x7FFF / 0x8000 on the left. Its fundamental then has 4/pi of that.
-    // The 7th harmonic, 28.6 kHz, lies past the mode's Nyquist frequency. The band-limited steps leave out its alias
-    // at 19.4 kHz. The console's sampling would put it there.
+    // master 127, its levels of +-0x7FFF give +-0x7FFF / 0x8000 on the left. Its fundamental then has 4/pi of that. The
+    // 7th harmonic, 28.6 kHz, is past the mode's Nyquist frequency. The band-limited steps leave out its alias at 19.4
+    // kHz. The console's sampling would put it there.
     constexpr double kPi = 3.14159265358979323846;
     Unit unit;
     unit.unit.StartEnhanced();

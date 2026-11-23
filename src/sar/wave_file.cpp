@@ -38,6 +38,7 @@ constexpr std::size_t kSettingsSize = 0x14;
 constexpr std::size_t kChannelInfoSize = 0x14;
 
 using detail::AppendHeader;
+using detail::HasFileMagic;
 using detail::kBankInfoBlock;
 using detail::kBlockAlignment;
 using detail::kDataReference;
@@ -69,8 +70,8 @@ std::pair<std::size_t, std::size_t> BlockOf(const xsflib::Reader& r, uint16_t ty
 std::pair<std::size_t, xsflib::Reader> WaveTableOf(std::span<const uint8_t> file, Flavor flavor)
 {
     // The file's kind and console. INFO's first two references lead to its tables.
-    const bool bank = file.size() >= 4 && std::memcmp(file.data() + 1, "BNK", 3) == 0;
-    if (!bank && (file.size() < 4 || std::memcmp(file.data() + 1, "WSD", 3) != 0))
+    const bool bank = HasFileMagic(file, "BNK");
+    if (!bank && !HasFileMagic(file, "WSD"))
     {
         throw xsflib::FormatError("not a bank file or a wave sound file");
     }
@@ -250,7 +251,7 @@ std::vector<uint8_t> WaveArchiveFile::Write() const
     Out out(flavor == Flavor::kCafe);
     AppendHeader(out, flavor == Flavor::kCtr ? "CWAR" : "FWAR", version, 2);
 
-    // INFO: each wave's offset and size, which FILE fills in.
+    // INFO: each wave's offset and size. FILE fills them in.
     const std::size_t info = StartBlock(out, "INFO");
     const std::size_t table = out.Zeros(4 + waves.size() * 12);
     out.U32(table, static_cast<uint32_t>(waves.size()));

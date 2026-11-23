@@ -94,7 +94,7 @@ sf2::Zone GlobalZone(const PresetKey& key, const Settings& settings)
     global.modulators.push_back({sf2::kSrcModWheel, sf2::kVibLfoToPitch, amount(pitch_amount), 0});
 
     const int freq = sf2::LfoFrequency(std::max(hz, 0.001));
-    const int delay = ToTimecents(LfoDelayMs(key, settings), -12000, 5000);
+    const int delay = ToTimecents(LfoDelayMs(key, settings), sf2::kShortestTimecents, sf2::kLongestHoldTimecents);
     if (key.lfo_type == 1 && lfo)
     {
         // A note whose volume LFO the voice holds at full level swings less (PresetKey::lfo_swing).
@@ -438,8 +438,8 @@ RegionGenerators ConvertRegion(const PresetKey& key, const EnvelopeValues& env, 
     // A lift raises the zone up to full level and no further (PresetKey::lift). A note whose volume LFO the voice holds
     // at full level plays lower (PresetKey::lfo_cut).
     const double below = volume != 0 ? -200.0 * std::log10(volume / 127.0) : 0.0;
-    g.attenuation =
-        volume != 0 ? quieter + (key.lift > 0 ? std::max(0.0, below - key.lift) : below) + key.lfo_cut : 1440.0;
+    g.attenuation = volume != 0 ? quieter + (key.lift > 0 ? std::max(0.0, below - key.lift) : below) + key.lfo_cut
+                                : double{sf2::kMaxCentibels};
     g.root_key = original_key;
     g.loop = loop;
 
@@ -589,8 +589,7 @@ std::vector<BankSoundFont> BankSoundFonts(sf2::SoundFont& whole, std::span<const
 }
 
 const std::vector<uint16_t>& SoundFontParts::Samples(std::pair<uint32_t, uint32_t> key, uint8_t root_key,
-                                                     const std::function<const wave::Pcm*()>& pcm,
-                                                     const std::function<void(seqlib::PreparedWave&)>& adjust)
+                                                     const std::function<const wave::Pcm*()>& pcm)
 {
     if (auto it = samples_.find(key); it != samples_.end())
     {
@@ -600,12 +599,8 @@ const std::vector<uint16_t>& SoundFontParts::Samples(std::pair<uint32_t, uint32_
     std::vector<uint16_t> ids;
     if (const wave::Pcm* decoded = pcm())
     {
-        seqlib::PreparedWave w = seqlib::PrepareForSoundFont(ToSeqlib(*decoded));
-        if (adjust)
-        {
-            adjust(w);
-        }
-        ids = sf2::AddSamples(sf_, std::move(w), WaveFileName(key), decoded->sample_rate, root_key);
+        ids = sf2::AddSamples(sf_, seqlib::PrepareForSoundFont(ToSeqlib(*decoded)), WaveFileName(key),
+                              decoded->sample_rate, root_key);
     }
 
     return samples_.emplace(key, std::move(ids)).first->second;

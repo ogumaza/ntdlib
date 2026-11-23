@@ -2,11 +2,10 @@
 
 // The channel managers and their lists of channels: free, playing, releasing and waiting (see channel.cpp).
 
-#include "ntdlib/jac/channel.h"
-
 #include <cstdint>
 
 #include "jac/channel_internal.h"
+#include "ntdlib/jac/channel.h"
 
 namespace ntdlib::jac
 {

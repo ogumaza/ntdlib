@@ -17,8 +17,9 @@
 #include "ntdlib/rsar/bank_file.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/wave_file.h"
+#include "throws_about.h"
 
-using xsflib::testing::ErrorOf;
+using ntdlib::testing::ThrowsAbout;
 
 namespace
 {
@@ -61,8 +62,8 @@ BankFile::KeyRegion Keys(uint8_t first, uint8_t last, int n)
     return {first, last, {{0, 127, Values(n)}}};
 }
 
-// Five programs: one region over every key; nothing; three key regions with a gap; two velocity regions; and ten
-// single keys with a run of three after a gap, which take an index table.
+// Five programs: one region over every key; nothing; three key regions with a gap; two velocity regions; and ten single
+// keys with a run of three after a gap. The single keys take an index table.
 Instruments FiveInstruments()
 {
     Instruments instruments(5);
@@ -225,14 +226,6 @@ void TestSharedTree()
     XSFLIB_CHECK(BankFile::Read(files.file, files.wave_data) == bank);
 }
 
-template <class Error, class Call>
-bool Throws(Call call, const std::string& part)
-{
-    const std::string message = ErrorOf<Error>(call);
-
-    return !message.empty() && message.find(part) != std::string::npos;
-}
-
 // Write refuses a tree that Read wouldn't give back, and FromInstruments runs that overlap, don't follow their order,
 // run backwards or pass 127. Read refuses other files and versions, and a bank that the tools didn't lay out.
 void TestRefusals()
@@ -259,15 +252,15 @@ void TestRefusals()
         };
     };
 
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(0), "a version other than 1.1 and 1.2"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(1), "to a node that the bank lacks"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(2), "doesn't match its node's kind"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(3), "don't follow the order"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(4), "a node that no reference names"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(5), "only references of data type 4 reach has a kind"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(6), "a range table's keys don't match its entries"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(7), "has keys or entries"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(write(8), "an index table's keys run backwards"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(0), "a version other than 1.1 and 1.2"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(1), "to a node that the bank lacks"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(2), "doesn't match its node's kind"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(3), "don't follow the order"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(4), "a node that no reference names"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(5), "only references of data type 4 reach has a kind"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(6), "a range table's keys don't match its entries"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(7), "has keys or entries"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(write(8), "an index table's keys run backwards"));
 
     const auto from = [](BankFile::Instrument instrument)
     {
@@ -282,11 +275,11 @@ void TestRefusals()
     BankFile::Instrument backwards{{Keys(10, 5, 0)}};
     BankFile::Instrument past{{Keys(0, 200, 0)}};
     BankFile::Instrument velocities{{{0, 127, {{0, 64, Values(0)}, {64, 127, Values(1)}}}}};
-    XSFLIB_CHECK(Throws<std::invalid_argument>(from(overlapping), "key regions overlap"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(from(unordered), "key regions overlap"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(from(backwards), "key regions overlap"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(from(past), "key regions overlap"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>(from(velocities), "velocity regions overlap"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(from(overlapping), "key regions overlap"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(from(unordered), "key regions overlap"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(from(backwards), "key regions overlap"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(from(past), "key regions overlap"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>(from(velocities), "velocity regions overlap"));
 
     const BankFile::Files files = SharedTree().Write();
     std::vector<uint8_t> newer = files.file;
@@ -298,13 +291,13 @@ void TestRefusals()
     std::vector<uint8_t> type = files.file;
     type[0x34 + 1] = 5;
     const std::vector<uint8_t> wave = TwoWaves()[0].Write();
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { BankFile::Read(wave, files.wave_data); }, "not an RBNK file"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { BankFile::Read(newer, files.wave_data); }, "other than 1.1"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { BankFile::Read(wave, files.wave_data); }, "not an RBNK file"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { BankFile::Read(newer, files.wave_data); }, "other than 1.1"));
     XSFLIB_CHECK(
-        Throws<xsflib::FormatError>([&] { BankFile::Read(tail, files.wave_data); }, "other bytes of the file"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { BankFile::Read(padding, files.wave_data); }, "other bytes"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { BankFile::Read(type, files.wave_data); }, "of another kind"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { BankFile::Read(files.file, wave); }, "not an RWAR file"));
+        ThrowsAbout<xsflib::FormatError>([&] { BankFile::Read(tail, files.wave_data); }, "other bytes of the file"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { BankFile::Read(padding, files.wave_data); }, "other bytes"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { BankFile::Read(type, files.wave_data); }, "of another kind"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { BankFile::Read(files.file, wave); }, "not an RWAR file"));
 }
 
 } // namespace

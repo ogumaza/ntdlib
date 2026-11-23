@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -99,6 +100,16 @@ int Performer::NewTrack(int parent, int number)
         }
     }
 
+    // A pitch ratio through the sound's handle multiplies the pitch that the track passes to its notes and its children
+    // (JAISoundChild's parameters reach the track's pitch). It plays as a bend in octaves.
+    const auto pitch = handle_index && *handle_index < 256 && !sound_.jaudio1
+                           ? sound_.child_pitches.find(static_cast<uint8_t>(*handle_index))
+                           : sound_.child_pitches.end();
+    if (pitch != sound_.child_pitches.end() && pitch->second > 0.0f)
+    {
+        tr.handle_octaves = std::log2(pitch->second);
+    }
+
     tracks_.push_back(std::move(tr));
 
     return static_cast<int>(tracks_.size() - 1);
@@ -143,6 +154,7 @@ int Performer::OpenChild(int t, uint32_t number, uint32_t start)
         fresh.name = c.name;
         fresh.silent = c.silent;
         fresh.handle_volume = c.handle_volume;
+        fresh.handle_octaves = c.handle_octaves;
         fresh.output = c.output;
         fresh.visited = c.visited;
         fresh.voice = c.voice;
@@ -1040,7 +1052,7 @@ void Performer::UpdateTrack(int t, float pan_scale)
         p.pitch = up.pitch;
         p.pan = (up.pan - 0.5f) + pan;
         p.fx_mix = up.fx_mix + tr.move[2].value;
-        p.bend = up.bend + bend;
+        p.bend = up.bend + bend + tr.handle_octaves;
     }
     p.pan += 0.5f;
     tr.params = p;

@@ -17,6 +17,7 @@
 
 #include "xsflib/binary.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sar/reference.h"
 #include "sar/reading.h"
 
@@ -241,7 +242,7 @@ std::vector<std::tuple<int, int, std::size_t>> ReadRegionTable(const xsflib::Rea
     case 0x6001: // range: count, upper keys, refs
         {
             const uint32_t n = r.U32(q);
-            const std::size_t refs = q + 4 + ((n + 3) & ~3u);
+            const std::size_t refs = q + 4 + AlignUp(n, 4);
             int lo = 0;
             for (uint32_t i = 0; i < n; i++)
             {
@@ -628,7 +629,7 @@ bool StartsAtLabel(std::span<const uint8_t> bytecode, bool big_endian, uint32_t 
         return true;
     }
 
-    // The checks subtract rather than add, so that no sum wraps in a 32-bit build.
+    // The checks subtract rather than add. No sum then wraps in a 32-bit build.
     const std::size_t at = label;
     if (sound.start_offset < 3 || label != sound.start_offset - 3 || bytecode.size() < 3 || at > bytecode.size() - 3 ||
         bytecode[at] != 0xFE)

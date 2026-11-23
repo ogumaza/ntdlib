@@ -3,9 +3,9 @@
 // Archive mode's model of nw::snd for one sound archive. The model runs the sound thread's frame
 // (SoundThread::FrameProcess) and AX's frame callback (HwCallbackProc) around cafe/ax. The model lays the archive's
 // wave archives out in AX's memory, the same way a game's sound heap would hold them. The model plays the archive's
-// sequence sounds and wave sounds. A stream sound plays from the bytes of its stream file, which the game keeps beside
-// the archive. The model lays the stream's channels out in AX's memory too. Each function's comment gives the address
-// of the routine it follows in Animal Crossing: amiibo Festival's executable.
+// sequence sounds and wave sounds. A stream sound plays from the bytes of its stream file. The game keeps that file
+// beside the archive. The model lays the stream's channels out in AX's memory too. Each function's comment gives the
+// address of the routine it follows in Animal Crossing: amiibo Festival's executable.
 
 #pragma once
 
@@ -31,6 +31,7 @@
 #include "ntdlib/cafe/snd/voice.h"
 #include "ntdlib/nwsnd/archive_files.h"
 #include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nwsnd/engine_host.h"
 #include "ntdlib/nwsnd/length_hooks.h"
 #include "ntdlib/nwsnd/sound_players.h"
 #include "ntdlib/nwsnd/voice.h"
@@ -91,9 +92,9 @@ public:
     SequenceSoundPlayer* StartSequence(uint32_t index);
 
     // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
-    // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks
-    // its wave sound file or the file lacks the sound. A missing wave leaves the player nothing to play: it finishes in
-    // its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
+    // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive has
+    // no wave sound file or the file doesn't hold the sound. A missing wave leaves the player nothing to play: it
+    // finishes in its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
     WaveSoundPlayer* StartWaveSound(uint32_t index);
 
     // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
@@ -105,7 +106,7 @@ public:
     StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file,
                                         uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
-    // The same for a stream sound of `info`, which the archive needn't hold.
+    // The same for a stream sound of `info`. The archive needn't hold the sound.
     StreamSoundPlayer* StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file,
                                         uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
@@ -226,7 +227,7 @@ private:
     void SetHostMixes();
 
     // Puts a wave archive's whole file in AX's memory, as the game loads the file into its sound heap. The waves then
-    // lie where they lie in the file.
+    // keep their places in the file.
     void MapWaveArchive(ntdlib::nwsnd::LoadedWaveArchive& loaded);
 
     // Puts `bytes` in AX's memory after the files there, and returns their address.
@@ -262,8 +263,8 @@ private:
     int ringing_frames_ = 0;
 
     std::set<std::pair<int, uint32_t>> endless_loops_;
-    std::set<std::pair<int, int>> muted_tracks_; // each a player and a track
-    int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
+    ntdlib::nwsnd::TrackMutes muted_tracks_; // the host's mutes (MuteTrack)
+    int metered_player_ = -1;                // the player whose tracks have meters (MeterTracks)
 
     // SetHostMixes's mute and meter of each AX voice.
     std::vector<bool> host_muted_;

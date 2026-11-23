@@ -19,8 +19,8 @@ namespace ntdlib::sar
 // Loads the sound archive at `archive_path` among a set's files, then adds the group files at `group_paths` in order.
 // `set.File(path)` gives the set's file at `path`, or null when the set has none. The bytes of the archive and of the
 // group files move out of the set. A const set keeps them, and the archive takes copies. Returns "the set has no file
-// P" for the first path that the set lacks, and then leaves `archive` empty. Otherwise `archive` holds the archive with
-// its group files added. Load and AddGroupFile throw FormatError for a file that isn't an archive or a group file.
+// P" for the first path missing from the set, and then leaves `archive` empty. Otherwise `archive` holds the archive
+// with its group files added. Load and AddGroupFile throw FormatError for a file that isn't an archive or a group file.
 template <typename Set>
 std::optional<std::string> LoadSetArchive(Set& set, const std::string& archive_path,
                                           const std::vector<std::string>& group_paths, const Options& options,

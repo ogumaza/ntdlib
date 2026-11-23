@@ -26,8 +26,8 @@ constexpr std::size_t kMemoryBytes = 0x80000;
 constexpr uint32_t kProgramWords = 0x20000;
 
 // Jumps, calls, returns, repeats and the like, by the disassembler's name for them: programs keep few of them (and more
-// of the block repeats, whose loops the JIT runs itself), so that the runs between them, which the JIT translates, are
-// long.
+// of the block repeats, whose loops the JIT runs itself). The runs between them are then long. The JIT translates those
+// runs.
 enum class Kind : uint8_t
 {
     kOrdinary,
@@ -36,7 +36,7 @@ enum class Kind : uint8_t
     kThrows, // undefined, or the interpreter throws for it whatever the state (not something to test)
 };
 
-// Sets TEAKRA_JIT while a DSP is made, which is when its JIT reads it.
+// Sets TEAKRA_JIT while a DSP is made. Its JIT reads the variable then.
 class JitSetting
 {
 public:
@@ -84,7 +84,7 @@ inline std::unique_ptr<Teakra::Teakra> MakeDsp(bool with_jit)
     return std::make_unique<Teakra::Teakra>(Teakra::UserConfig{});
 }
 
-// Marks the opcodes the interpreter throws for from a reset state, which programs leave out.
+// Marks the opcodes the interpreter throws for from a reset state. Programs leave them out.
 inline void FindThrowing(Teakra::Teakra& dsp, std::vector<Kind>& kinds)
 {
     for (uint32_t op = 0; op < 0x10000; ++op)

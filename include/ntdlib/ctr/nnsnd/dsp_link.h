@@ -43,8 +43,8 @@ public:
     void Commit();
 
     // The structures in the region the ARM11 is preparing (frame & 1) and in the region the DSP last wrote (the read
-    // region). They're host copies of DSP RAM, kept in step with it by Initialize, WaitForFrame and Commit, which are
-    // the only places the DSP runs. In the enhanced mode, the device keeps the sources' structures outside DSP RAM
+    // region). They're host copies of DSP RAM, kept in step with it by Initialize, WaitForFrame and Commit. The DSP
+    // runs only there. In the enhanced mode, the device keeps the sources' structures outside DSP RAM
     // (dsp::Device::SourceStructure), and the copies come from there.
     SourceParams& SourceParamsOf(int voice);
     int16_t* AdpcmCoefs(int voice);
@@ -158,7 +158,7 @@ private:
     void BeforeDspRuns();
     void AfterDspRuns();
 
-    dsp::Device* dsp_; // a pointer, so that the link can be copied into a snapshot
+    dsp::Device* dsp_; // a pointer: a snapshot can then copy the link
     std::array<uint16_t, 15> struct_addr_{};
     uint16_t frame_ = 0;   // nn::snd +0x131a
     int read_region_ = 0;  // nn::snd +0x131c

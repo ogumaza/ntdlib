@@ -14,6 +14,7 @@
 #include <variant>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
@@ -24,6 +25,7 @@
 #include "ntdlib/rsar/sequence_file.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sound_build.h"
+#include "ntdlib/testing/layout_edits.h"
 #include "ntdlib/testing/rsar_tools.h"
 
 namespace
@@ -34,9 +36,10 @@ using ntdlib::SndBuild;
 using ntdlib::commands::kOne;
 using ntdlib::rsar::Layout;
 using ntdlib::rsar::SequenceFile;
-using ntdlib::sar::Field;
 using ntdlib::sar::Piece;
 using ntdlib::sar::SequencePiece;
+using ntdlib::testing::layout_edits::Insert;
+using seqlib::testing::Throws;
 using Bytes = std::vector<uint8_t>;
 
 // The build of 2007 and the build of June 2008, whose sequences take time prefixes.
@@ -136,31 +139,6 @@ Bytes Join(const Layout& layout, const SndBuild& build = kBuild2008)
     return ntdlib::rsar::Join(build, layout.sequences, layout.pieces, layout.fields);
 }
 
-// Inserts `count` copies of item `copied` of sequence `sequence` before item `at`. Moves the labels and the places at
-// or after it the way an editor moves them.
-void Insert(Layout& layout, uint32_t sequence, uint32_t at, uint32_t count, uint32_t copied)
-{
-    std::vector<ntdlib::commands::Command>& items = layout.sequences[sequence].items;
-    const ntdlib::commands::Command command = items[copied];
-    items.insert(items.begin() + at, count, command);
-    for (ntdlib::commands::Label& label : layout.sequences[sequence].labels)
-    {
-        label.item += label.item >= at ? count : 0;
-    }
-
-    for (Field& field : layout.fields)
-    {
-        for (ntdlib::sar::Place* place : {&field.from, &field.to})
-        {
-            const auto* piece = place->item ? std::get_if<SequencePiece>(&layout.pieces[place->piece]) : nullptr;
-            if (piece != nullptr && piece->sequence == sequence && place->offset >= at)
-            {
-                place->offset += count;
-            }
-        }
-    }
-}
-
 void TestSequenceFile()
 {
     // Labels whose names pad to 4 bytes in three ways. Each block pads to 32 bytes.
@@ -180,10 +158,10 @@ void TestSequenceFile()
     // A file without LABL, and one of another console, are refused.
     Bytes no_labels = file;
     xsflib::StoreBe16(&no_labels[0x0E], 1);
-    XSFLIB_CHECK(!xsflib::testing::ErrorOf<xsflib::FormatError>([&] { SequenceFile::Read(no_labels); }).empty());
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { SequenceFile::Read(no_labels); }));
     Bytes other = file;
     other[0] = 'C';
-    XSFLIB_CHECK(!xsflib::testing::ErrorOf<xsflib::FormatError>([&] { SequenceFile::Read(other); }).empty());
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { SequenceFile::Read(other); }));
 }
 
 void TestCut()
@@ -359,22 +337,6 @@ void TestBuilds()
     }
 }
 
-// Whether `call` throws std::invalid_argument.
-template <class Call>
-bool Refused(Call call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
-}
-
 void TestReplaceFile()
 {
     const Bytes archive = Archive();
@@ -426,8 +388,8 @@ void TestReplaceFile()
     XSFLIB_CHECK(FileOf(both_tables, 1) == FileOf(tables, 1));
 
     // A sequence file is no run of its own, and the second song has no wave data.
-    XSFLIB_CHECK(Refused([&replace] { replace(0, Other(0x20, 1), std::nullopt); }));
-    XSFLIB_CHECK(Refused([&replace, &tables] { replace(1, FileOf(tables, 1), Other(0x20, 1)); }));
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&replace] { replace(0, Other(0x20, 1), std::nullopt); }));
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&replace, &tables] { replace(1, FileOf(tables, 1), Other(0x20, 1)); }));
     XSFLIB_CHECK(
         (ntdlib::rsar::FileCopies(kBuild2008, layout.sequences, layout.pieces, layout.fields, 1, true).empty()));
 }

@@ -225,8 +225,8 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // variables 4 and 5. The player reads them there (0x410F90 to 0x411148). At -1 a sound plays no note. TuneStart gives
 // each sound the tune's note 3, the C, and the transpose of its scale and offset. Variables 15 and 13 stay at -1. The
 // sequences compare variable 15 only with 1. They set variable 13 to 0 when it's -1. SE_MELODY_TRAIN_ANNOUNCE plays a
-// fixed tune (0x8BBD22, which 0x217BB8 loads). TuneStart gives it the tune's first note, 9. Each sound holds its note
-// for the length that the sequence gives it. The game stops each note after variable 1 of the sound's block times 1.5
+// fixed tune (0x8BBD22, loaded by 0x217BB8). TuneStart gives it the tune's first note, 9. Each sound holds its note for
+// the length that the sequence gives it. The game stops each note after variable 1 of the sound's block times 1.5
 // frames (0x410CF4, 0x411120). A held step lets the note sound on.
 //
 // Tomodachi Life plays BGM_MANSION_AND_ROOM in a Mii's apartment, or BGM_AKICHI_NIGHT when a flag of the room is set
@@ -257,12 +257,11 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // Ultimate Angler, an add-on game of StreetPass Mii Plaza, holds a speaker mix and a headphone mix of one part on
 // tracks 14 and 15 of its pieces. As each piece starts on the main BGM player (0xD52678), the game reads whether
 // headphones are plugged in (0xD3C284). It mutes track 15 on the speakers and track 14 on headphones (0xD52C74 and
-// 0xD52D88). The mute goes through 0x33E834, which builds the mute command (0x16) in the mode that keeps the
-// channels sounding (SEQ_MUTE_NO_STOP). The program builds no silence command. The game starts SEQ_BGM_SPOT_00_A on a
-// second player (0xD52718). SEQ_BGM_CROSS holds two arrangements: tracks 0 to 9 with tracks 14 and 15, and tracks 8
-// to 13 (0xD50C70). It starts in the first, with no fade (0xD52B3C). The other tracks get a volume of 0 (0xD3BEB0,
-// through 0xD3F5D4 and 0xD3D0B0 to the builder of the volume command at 0x33E7DC). The list gives the speakers'
-// state.
+// 0xD52D88). The mute goes through 0x33E834. It builds the mute command (0x16) in the mode that keeps the channels
+// sounding (SEQ_MUTE_NO_STOP). The program builds no silence command. The game starts SEQ_BGM_SPOT_00_A on a second
+// player (0xD52718). SEQ_BGM_CROSS holds two arrangements: tracks 0 to 9 with tracks 14 and 15, and tracks 8 to 13
+// (0xD50C70). It starts in the first, with no fade (0xD52B3C). The other tracks get a volume of 0 (0xD3BEB0, through
+// 0xD3F5D4 and 0xD3D0B0 to the builder of the volume command at 0x33E7DC). The list gives the speakers' state.
 //
 // Each of Ultimate Angler's four reeling pieces holds a layer that plays only at tension level 2 and up (0xD508D8):
 // track 5 of SEQ_BGM_REELING_NORMAL, track 8 of _BIG, track 6 of _KAIGYO and track 12 of _LASTBOSS. Below level 2,
@@ -308,7 +307,7 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // (0xD51F1C, 0xD521AC, 0xD517C0 and 0xD51470). 0xD50E00 builds the state from the counts of three kinds of Mii
 // (0x75BE18). Bits 0 and 1 give kind A's level: 1 Mii, 2 to 6, or 7 to 10. Bits 2 and 3 give kind B's level. With no
 // Mii of kind B, bit 4 is set, and bits 2 and 3 give kind C's level. Tracks 0 and 2 play kind A's voices, and tracks 1
-// and 3 kind B's or kind C's. The list gives the fullest crowd, 0x1F, which plays as the default of -1 does. Each other
+// and 3 kind B's or kind C's. The list gives the fullest crowd, 0x1F. It plays as the default of -1 does. Each other
 // state that 0xD50E00 can give is an arrangement, 26 in all. The state with no Mii of any kind is left out. It plays
 // nothing.
 //
@@ -319,6 +318,16 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 //
 // Flower Town's SE_COLOR_WHEEL_LIGHT sets global variable 19 to 0. SE_COLOR_WHEEL_LIGHT_2 then plays its first note
 // at 0 and its second at 1, and adds 1 each time. At any other value it plays nothing. The list gives the first note.
+//
+// Ninja Launcher, another add-on game of the Plaza, starts its music through a routine for music (0x8514DC, then
+// 0x85158C). That routine sets nothing on the sound. The game starts its other sounds through a play routine
+// (0x8513D4). After each start, the play routine reads the send level of the game's sound manager (+0x44). A level
+// above 0 becomes the sound's send on bus A (0x851410 to 0x85142C, through 0x806048 to BasicSound's setter at
+// 0x33D40C). The manager's constructor sets the level to 0.15 (0x8517B4), and no other code writes it. The game's six
+// jingles, SEQ_JIN_*, start through the play routine (0x82FBEC, 0x830208, 0x839F80, 0x843900, 0x858500, 0x858568 and
+// 0x85859C). The list gives them that send. Feed Mii's manager is of the same class and sets the same level
+// (0x6A9F8C). Feed Mii starts every piece of its music through its routine for music (0x6A96A8). The manager of
+// Monster Manor sets a level of 0 (0x891044).
 //
 // Ultimate Angler's SE_CATCHED_092 and SE_CATCHED_120 draw a random number as they start. They play their sound on
 // one draw in five and one in three, a quieter one on some of the other draws, and nothing on the rest. The list gives
@@ -347,9 +356,9 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 //
 // Seven of Mario Party: Island Tour's minigame and boss pieces set their tempo from player variable 0. A track moves a
 // copy of the variable toward it every 2 ticks, clamps the copy and scales it (TEMPO_CONTROL_START). The game writes
-// the variable as the piece plays. Each minigame's code is in a separate module (rom:/dll/mod_mg*.cro.p), and the
-// addresses below are offsets in its file.
-// mg3801 starts SEQ_BGM_MNG_MG3801 (0xF4C0) with row 10 of rom:/ts_sound_ctrl_track.bin (0xF4D4) and writes the
+// the variable as the piece plays. Each minigame's code is in a separate module, and the addresses below are offsets in
+// its file.
+// mg3801 starts SEQ_BGM_MNG_MG3801 (0xF4C0) with row 10 of the game's table of track settings (0xF4D4) and writes the
 // player's time left out of 100 seconds (0xBE18). The piece plays at 145 BPM down to 50 seconds, 165 at 20 and 215 at
 // 0. At 20 seconds the game moves to row 11, and back to row 10 at 40 (0xBE9C and 0xBE60).
 // mg3802 starts SEQ_BGM_MNG_MG3802 (0x9C40) and writes the time left, 99 as the piece starts (0x614C). The piece plays
@@ -364,14 +373,13 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // The list starts each piece at the value of its first seconds, or of full speed. kArrangedSequences gives the rest.
 //
 // Mario Party: Star Rush plays the music of minigame 708 from one sequence. The minigame's code is in a separate
-// module, romfs/dll/mod_mgn708.cro.p. The offsets below are offsets in that file. The module writes the music's
-// variables through the sound's handle (nd::SysAudio::SoundHandle::writeVariable). Variable 10 picks the pattern that
-// each pass of the loop plays: 0 MGN708_A_OTEHON, 1 _A_RHYTHM_LOOP, 2 _A_KAITOU and 3 _A_INTERVAL_LOOP, and the same
-// four for the B set. Variable 9 at 1 moves the A set on to the B set. At 2 it ends the music. SQ_BGM_MGN708_A_FIRST,
-// _A_INTERVAL_START, _B_FIRST and _B_INTERVAL_START set both variables as they start. SQ_BGM_MGN708 sets neither, and
-// it ends at once unless variable 9 is 0. The module can start SQ_BGM_MGN708 or _A_FIRST as the minigame starts
-// (0x6314). In the USA game, the minigame plays SQ_BGM_MGN708 and writes 0 to variable 9 right after it (0x73CC). The
-// list gives that start.
+// module. The offsets below are offsets in that module's file. The module writes the music's variables through the
+// sound's handle (nd::SysAudio::SoundHandle::writeVariable). Variable 10 picks the pattern that each pass of the loop
+// plays: 0 MGN708_A_OTEHON, 1 _A_RHYTHM_LOOP, 2 _A_KAITOU and 3 _A_INTERVAL_LOOP, and the same four for the B set.
+// Variable 9 at 1 moves the A set on to the B set. At 2 it ends the music. SQ_BGM_MGN708_A_FIRST, _A_INTERVAL_START,
+// _B_FIRST and _B_INTERVAL_START set both variables as they start. SQ_BGM_MGN708 sets neither, and it ends at once
+// unless variable 9 is 0. The module can start SQ_BGM_MGN708 or _A_FIRST as the minigame starts (0x6314). In the USA
+// game, the minigame plays SQ_BGM_MGN708 and writes 0 to variable 9 right after it (0x73CC). The list gives that start.
 //
 // Super Mario 3D Land plays a melody as the player collects the notes of a trail. The melody's sequence waits at each
 // beat, on every track, until track variable 0 (32 in the commands) changes, unless track variable 2 (34) is 1. The
@@ -384,11 +392,10 @@ constexpr std::string_view kMarioPartyStarRush = "90fa0978d0f4e3af259a48b48141d3
 // also sets the melody's tempo ratio to 16 divided by a value of the trail. The ratio stays between 0.4 and 2
 // (0x1710E8 to 0x171114, through 0x1EA6E8 and driver command 0x0F). The list leaves the ratio at 1.
 //
-// Super Mario 3D Land's BGM player gives each piece of its table (romfs/SoundData/BgmTable.szs, read at 0x1D7EC4) the
-// volume of its entry times the line's volume. The player's constructor sets the line's volume to 1 (0x250A98). After
-// each start, 0x1E9130 passes the product to the sound's SetVolume (0x1E91A4). The table's sequences are the seven
-// note melodies and two gift fanfares. The game's code names none of them, and plays them only through the table. The
-// list gives each its entry's volume.
+// Super Mario 3D Land's BGM player gives each piece of its table (read at 0x1D7EC4) the volume of its entry times the
+// line's volume. The player's constructor sets the line's volume to 1 (0x250A98). After each start, 0x1E9130 passes the
+// product to the sound's SetVolume (0x1E91A4). The table's sequences are the seven note melodies and two gift fanfares.
+// The game's code names none of them, and plays them only through the table. The list gives each its entry's volume.
 //
 // Super Mario 3D Land also starts some effects with a player variable, through 0x278B90 or 0x26CE48. Most of them
 // transpose their notes by it. The list gives each the value of its first play:
@@ -511,6 +518,9 @@ constexpr SequenceVariable kTrainTuneFirstNote = {.index = 14, .value = 9};
 constexpr SequenceVariable kFirstChord = {.index = 26, .value = 0};
 constexpr SequenceVariable kRunCountdown = {.index = 0, .value = 928};
 
+// Ninja Launcher's send on bus A for each sound that its play routine starts: the level of its sound manager.
+constexpr std::array<float, 2> kLauncherSend = {0.15f, 0.0f};
+
 // Mario Kart 7's beat sequences' tempo ratios: each stream's BPM over the beat's 120.
 constexpr float kMusicParkTempo = 139.0f / 120.0f;
 constexpr float kMusicParkFinalLapTempo = 166.0f / 120.0f;
@@ -519,7 +529,7 @@ constexpr float kKillerShipFinalLapTempo = 178.0f / 120.0f;
 constexpr float kWaluigiPinballTempo = 135.0f / 120.0f;
 constexpr float kWaluigiPinballFinalLapTempo = 166.0f / 120.0f;
 
-constexpr std::array<StartingSequence, 121> kStartingSequences = {{
+constexpr std::array<StartingSequence, 122> kStartingSequences = {{
     {kOcarinaOfTime3D, "NA_BGM_RONRON", {.silenced = 0x2000}},
     {kIslandTour, "SEQ_BGM_MENU", {.muted = 0xfff0}},
     {kWarioWareGold, "SEQ_M_TSUNAGI_TRICKY_NEXT1", {.silenced = 0x0fff}},
@@ -564,6 +574,7 @@ constexpr std::array<StartingSequence, 121> kStartingSequences = {{
     {kUltimateAngler, "SE_MIIS_VOICE_START_FEVER", {.variables = {{{.index = 0, .value = 0x1f}}}}},
     {kFlowerTown, "BGM_FLOWER_ATELIER", {.silenced = 0xffc0}},
     {kFlowerTown, "SE_COLOR_WHEEL_LIGHT_2", {.variables = {{{.index = 19, .value = 0}}}}},
+    {kNinjaLauncher, "SEQ_JIN_", {.fx_send = kLauncherSend}, true},
     {kMiiPlaza, "SEQ_USAGI", {.muted = 0xf102}},
     {kMiiPlaza, "BGM_MAIN_Mii_Only_One_From_New_Mii", {.variables = {{kNewMiiBeat}}}},
     {kMiiPlaza, "BGM_MAIN_Mii_MIN_From_New_Mii", {.variables = {{kNewMiiBeat}}}},
@@ -674,7 +685,7 @@ constexpr std::array<SequenceArrangement, 4> kEndingSteps = {{
 // 0xD51CAC mutes the other tracks with release, with no fade. Groups 0 and 7 play tracks 0 and 1. Groups 1 to 5 play
 // tracks 2 to 4, 5 to 7, 8 to 10, 11 and 12, and 13 to 15. Group 6 plays track 0. The list gives each other group,
 // named by its tracks. Group 1's mute leaves tracks 3 to 5 as they are before it unmutes tracks 2 to 4 (0xD51D84).
-// After the start, which mutes tracks 2 to 15, group 1 plays tracks 2 to 4.
+// The start mutes tracks 2 to 15. Group 1 then plays tracks 2 to 4.
 constexpr std::array<SequenceArrangement, 6> kHomeAmbienceGroups = {{
     {"_tracks_2_to_4", {.muted = 0xffe3}},
     {"_tracks_5_to_7", {.muted = 0xff1f}},
@@ -809,10 +820,26 @@ constexpr std::array<SequenceArrangement, 1> kQuickModeAfterJingle = {{
     {"_quick", {.variables = {{kNewMiiBeat}}, .tempo_ratio = 1.1625f, .pitch = 1.25f}},
 }};
 
-// The other layers of Island Tour's SEQ_BGM_MENU: rows 26 to 28 of the game's table rom:/ts_sound_ctrl_track.bin, which
-// 0x272D00 picks from the list at 0x3D5274. Game select and party select play tracks 0 to 6 (0x165A90 and 0x168C58),
-// character select tracks 0 to 9 (0x178884), and the rule entrance and minigame select all 16 tracks (0x16F3A4 and
-// 0x174658). The game's fader takes the other tracks to a volume of 0 and then mutes them (0x18EE04).
+// Find Mii II's walls. The Plaza's second player plays the music of Find Mii and Find Mii II (0x1D7498, the record at
+// 0x10B4998). A room whose foe is a wall of fire, ice or poison (states 2 to 4 of the wall at 0x10B49BC, named by the
+// table at 0x1087394) starts the room's battle piece (0x215194) with a low-pass of -0.4 (0x2151A8). The volume comes
+// from a table for each wall (0xEE7758, through 0x249A7C): 0.45 for BGM_DEN2_Battle01 and 0.4 for BGM_DEN2_Battle02
+// behind fire and poison, and 0.3 and 0.25 behind ice. Any other piece gets 0. The state lasts until a hero breaks the
+// wall or the party leaves the room. Then 0x1F145C clears the low-pass and takes the volume to 1 over 120 frames, or
+// 150 behind poison. No timer ends it. The game's stage tables (module/mgLegend/two/param/db.gfa) put Battle01 behind
+// one wall of fire and one of poison, and Battle02 behind two walls of each kind. The states below are those behind
+// fire and poison.
+constexpr std::array<SequenceArrangement, 1> kBattle01Wall = {{
+    {"_wall", {.volume = 0.45f, .lpf = -0.4f}},
+}};
+constexpr std::array<SequenceArrangement, 1> kBattle02Wall = {{
+    {"_wall", {.volume = 0.4f, .lpf = -0.4f}},
+}};
+
+// The other layers of Island Tour's SEQ_BGM_MENU: rows 26 to 28 of the game's table of track settings. 0x272D00 picks
+// them from the list at 0x3D5274. Game select and party select play tracks 0 to 6 (0x165A90 and 0x168C58), character
+// select tracks 0 to 9 (0x178884), and the rule entrance and minigame select all 16 tracks (0x16F3A4 and 0x174658). The
+// game's fader takes the other tracks to a volume of 0 and then mutes them (0x18EE04).
 constexpr std::array<SequenceArrangement, 3> kIslandTourMenuLayers = {{
     {"_game_select", {.muted = 0xff80}},
     {"_character_select", {.muted = 0xfc00}},
@@ -995,7 +1022,7 @@ constexpr std::array<SequenceArrangement, 57> kSyncBeat120States = {{
     {"_sfc_rainbow_road_final_lap", {.tempo_ratio = 174.0f / 120.0f}},
 }};
 
-constexpr std::array<ArrangedSequence, 58> kArrangedSequences = {{
+constexpr std::array<ArrangedSequence, 60> kArrangedSequences = {{
     {kTomodachiLife, "BGM_MANSION_AND_ROOM", kApartmentStates},
     {kTomodachiLife, "BGM_AKICHI_NIGHT", kNightApartmentStates},
     {kNewLeaf, "SEQ_BGM_IND_CAFEARBEIT", kCafeTrack7},
@@ -1030,6 +1057,8 @@ constexpr std::array<ArrangedSequence, 58> kArrangedSequences = {{
     {kMiiPlaza, "BGM_MAIN_Mii_No6_From_New_Mii", kQuickModeAfterJingle},
     {kMiiPlaza, "BGM_MAIN_Mii_No7_From_New_Mii", kQuickModeAfterJingle},
     {kMiiPlaza, "SEQ_VIPROOM", kQuickMode},
+    {kMiiPlaza, "BGM_DEN2_Battle01", kBattle01Wall},
+    {kMiiPlaza, "BGM_DEN2_Battle02", kBattle02Wall},
     {kNinjaLauncher, "SEQ_BGM_BATTLE1", kHurryUp},
     {kNinjaLauncher, "SEQ_BGM_BATTLE2", kHurryUp},
     {kNinjaLauncher, "SEQ_BGM_BATTLE3", kHurryUp},
@@ -1206,12 +1235,12 @@ struct BankRule
 // player's sound objects at a table of four StartInfos (0x41E270, built at 0x211B5C), and it loads
 // BANK_PLAYER_VOICE_LU. The banks' names make that Luigi's case. The condition behind the argument (0x268E5C, 0x277CE4)
 // wasn't read. The table's method (0x3448C8) looks the sequence's first bank up in a list (0x3A88CC). It then starts
-// the sound with the StartInfo of that bank. Each StartInfo holds flag 0x10 and another bank for slot 0, and
-// leaves slots 1 to 3 empty. BANK_PLAYER_VOICE_MR (0x03000000) becomes BANK_PLAYER_VOICE_LU (0x03000001), and
+// the sound with the StartInfo of that bank. Each StartInfo holds flag 0x10 and another bank for slot 0, and leaves
+// slots 1 to 3 empty. BANK_PLAYER_VOICE_MR (0x03000000) becomes BANK_PLAYER_VOICE_LU (0x03000001), and
 // BANK_PLAYER_VOICE_DEMO (0x0300000C) becomes BANK_PLAYER_VOICE_DEMO_LU (0x0300000D). No sequence names either of
 // Luigi's banks. BANK_PLAYER_VOICE_DEMOKOOPA (0x03000016) keeps its bank. The list leaves out the change of
 // BANK_PLAYER_VOICE_DEMOKOOPALAST_MR (0x03000017) to _LU (0x03000018): the archive holds Luigi's sequences of those
-// lines (SePvDLu*), which name the bank.
+// lines (SePvDLu*), and they name the bank.
 constexpr std::array<SequenceArrangement, 1> kLuigiVoice = {{
     {"_Luigi", {.banks = {{0x03000001, kNoBank, kNoBank, kNoBank}}}},
 }};

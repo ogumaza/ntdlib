@@ -116,8 +116,8 @@ void TestNewTrack()
 
 void TestReadTrackOpening()
 {
-    // The start of OneTrack's track gives its number 1 and its channel 2. A start of 20 bytes needs the whole label of
-    // a track chunk.
+    // The start of OneTrack's track gives its number 1 and its channel 2. A start of 20 bytes requires the whole label
+    // of a track chunk.
     const Sequence sequence = DecodeSong(OneTrack({0x98}));
     Command other = sequence.items[0];
     other.bytes[4] = 1;
@@ -212,7 +212,7 @@ void TestWaits()
         0x90,                   // 32 again
         0x91, 0xFC,             // 28
         0x91, 0x02,             // 30
-        0x92, 0x40,             // 64, which a pause holds
+        0x92, 0x40,             // 64: a pause holds it
         0x92, 0x41,             // 65
         0x93, 0x00, 0x01,       // 256
         0x94, 0x00, 0x00, 0x01, // 65,536
@@ -242,7 +242,7 @@ void TestCommands()
         0x9C, 0x03,             // a repeat of 3
         0x9D,                   // its end
         0x99,                   // the main loop
-        0xD4, 0x30, 0x00, 0x02, // a fade of the bend, which the common form has no kind for
+        0xD4, 0x30, 0x00, 0x02, // a fade of the bend: the common form has no kind for it
         0x98,
     });
     XSFLIB_CHECK(items[0].kind == Kind::kTempo);
@@ -312,7 +312,7 @@ void TestEndInThePadding()
 
 void TestDataAfterAnEndInThePadding()
 {
-    // The bytes after the end count in the chunk's size. The end then lies inside the chunk.
+    // The bytes after the end count in the chunk's size. The end is then inside the chunk.
     Bytes song = OneTrack({0x92, 0x41, 0x99, 0x98});
     xsflib::StoreLe32(&song[kSongTracks + 12], 7);
     Sequence sequence = DecodeSong(song);
@@ -787,7 +787,7 @@ void TestJoinRefusals()
     XSFLIB_CHECK(!refused(pieces, {}));
     XSFLIB_CHECK(refused({SequencePiece{.sequence = 1}}, {}));
 
-    // At, from and to must lie in the set.
+    // At, from and to must be in the set.
     const auto field = [](const Place& at, const Place& from, const Place& to, uint8_t bytes = 4)
     {
         return std::vector<Field>{Field{at, from, to, bytes}};

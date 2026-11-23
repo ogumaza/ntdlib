@@ -19,6 +19,7 @@
 
 namespace musyx = ntdlib::musyx;
 using BigEndianBytes = ntdlib::testing::BigEndianBytes;
+using ntdlib::testing::DolWithData;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
 
@@ -29,17 +30,6 @@ namespace
 std::vector<uint8_t> TextBytes(const std::string& text)
 {
     return {text.begin(), text.end()};
-}
-
-// A DOL whose first data section holds `data` at load address `address`.
-std::vector<uint8_t> DolWithData(uint32_t address, const std::vector<uint8_t>& data)
-{
-    constexpr std::size_t kHeader = 0x100;
-    std::vector<uint8_t> dol(kHeader);
-    ntdlib::testing::SetDolSection(dol, 7, static_cast<uint32_t>(kHeader), address, static_cast<uint32_t>(data.size()));
-    dol.insert(dol.end(), data.begin(), data.end());
-
-    return dol;
 }
 
 // A module's table of sounds lists songs and sound effects in entries of 12 bytes. A song's entry gives its song group,

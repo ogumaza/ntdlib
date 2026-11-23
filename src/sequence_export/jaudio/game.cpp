@@ -33,9 +33,11 @@
 #include "ntdlib/disc/error.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/dol.h"
+#include "ntdlib/file_paths.h"
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/barc.h"
 #include "ntdlib/jaudio/chord_files.h"
+#include "ntdlib/jaudio/galaxy_states.h"
 #include "ntdlib/jaudio/jac_effects.h"
 #include "ntdlib/jaudio/jmap.h"
 #include "ntdlib/jaudio/jungle_beat_states.h"
@@ -57,6 +59,8 @@ namespace
 
 namespace fs = std::filesystem;
 
+using ntdlib::detail::FileNameOf;
+using ntdlib::detail::FolderOf;
 using xsflib::AsciiLower;
 using xsflib::Utf8;
 
@@ -79,6 +83,7 @@ std::optional<fs::path> Subfolder(const fs::path& folder, const std::string& nam
 void SetState(SequenceSound& seq, const SequenceState& state)
 {
     seq.child_volumes = state.child_volumes;
+    seq.child_pitches = state.child_pitches;
     seq.tracks = state.tracks;
     seq.tempo_ratio = state.tempo_ratio;
     seq.game_ports = state.game_ports;
@@ -106,9 +111,9 @@ void SetState(SequenceSound& seq, const SequenceState& state)
 // sail down, the boat still and Link off board (its constructor, 0x802a1c78). Those states start the pieces here.
 //
 // The battle music and the minibosses' music bring layers in and out as the fight goes (bgmNowBattle at 0x802a4eb8,
-// mbossBgmNearByProcess at 0x802a591c, mbossBgmMuteProcess at 0x802a5818). JA_BGM_BATTLE_NORM starts in state 0 of
-// its row, and bgmNowBattle gives child 9 a volume of 1 while Link's sword is sheathed. With the sword out, child 0
-// plays in its place (SWORD_USING_TRACK, which nothing sets, so 0). An enemy within 30 units brings in children 4 and
+// mbossBgmNearByProcess at 0x802a591c, mbossBgmMuteProcess at 0x802a5818). JA_BGM_BATTLE_NORM starts in state 0 of its
+// row, and bgmNowBattle gives child 9 a volume of 1 while Link's sword is sheathed. With the sword out, child 0 plays
+// in its place (SWORD_USING_TRACK: nothing sets it, and it stays 0). An enemy within 30 units brings in children 4 and
 // 10. JA_BGM_MBOSS and JA_BGM_MBOSS_S start in state 0 of their rows. An enemy within 30 units brings in child 9, and
 // the sword child 2. The game fades those layers in over 5 or 10 frames. Here they play from the start. A spin attack
 // brings in child 8 of the battle music, or child 15 of the minibosses', for a moment. Those moments aren't
@@ -283,6 +288,32 @@ void AddTwilightPrincessMusicStates(std::span<const ntdlib::jaudio::MusicState> 
     }
 }
 
+// Adds the later states of the Galaxy games' music (`states`) to the rules as arrangements. Each arrangement is named
+// with the state's suffix. It plays the children of track 0 that the state names, at the state's tempo ratio. The
+// pitched children take the pitch ratio, and the quiet child plays at the quiet volume. Child m of track 0 is the
+// handle's child m (JAISeq::getChildTrack).
+void AddGalaxyStates(std::span<const ntdlib::jaudio::GalaxyState> states, GameRules& rules)
+{
+    for (const ntdlib::jaudio::GalaxyState& galaxy : states)
+    {
+        SequenceState state;
+        state.tracks[0] = galaxy.children;
+        state.tempo_ratio = galaxy.tempo;
+        for (uint8_t child = 0; child < 16; child++)
+        {
+            if (galaxy.pitch != 1.0f && (galaxy.pitched_children >> child & 1) != 0)
+            {
+                state.child_pitches[child] = galaxy.pitch;
+            }
+        }
+        if (galaxy.quiet_child >= 0)
+        {
+            state.child_volumes[static_cast<uint8_t>(galaxy.quiet_child)] = galaxy.quiet_volume;
+        }
+        rules.arrangements.push_back({galaxy.sound, std::string(galaxy.suffix.substr(1)), state});
+    }
+}
+
 // Give a volume of 0 to the children of track 0 that a game mutes as it starts each piece of `starts`, through the
 // sound's handle. Child m of track 0 is the handle's child m. A piece's second start becomes an arrangement, such as
 // Hyrule Field's day music as Link rides. Its suffix starts with the "_" that the arrangement's name adds.
@@ -353,7 +384,7 @@ std::optional<ContainedArchive> FindContainedArchive(
     for (const ntdlib::disc::GameFile* f : files)
     {
         const std::string path = AsciiLower(f->path);
-        std::string folder = path.substr(0, path.rfind('/') + 1);
+        std::string folder = FolderOf(path);
         if (!path.ends_with(".szs") || !sound_folders.contains(folder))
         {
             continue;
@@ -604,16 +635,16 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
 
     if (std::ranges::find(kJungleBeat, archive_sha1) != kJungleBeat.end())
     {
-        // The game starts its music through its BGM player (0x80253a7c in the USA release's main.dol). The player
-        // gives the piece its first states at once (0x80253d20): the first state of its row of the table at
-        // 0x8035223c, then the first of its row of the table at 0x803533bc. The table at 0x80351e58 gives 44 pieces
-        // their rows, by the low half of their IDs. A state holds a code for each child of the piece's track 0, a
-        // nibble each, from child 0 in the high nibble (0x80253684). Codes 0 and 2 turn a child off: 0 sets its volume
-        // to 0, and 2 mutes it too. Codes 1 and 3 turn it on, and code 7 leaves it. The game turns some children on
-        // later. JA_BGM_OP_CEMEMONY's first state turns every child off, and the game turns them on as the piece goes
-        // on. It plays here with the children of its next state on. The player then hands the game's rhythm the piece
-        // whose entry in the sound table sets bit 0 of the halfword at +4 (0x80253444). 62 pieces set it. The rhythm
-        // mutes child 0 of track 0, which writes the beat to port 0xe (0x80247e20). Each mask gives the children of
+        // The game starts its music through its BGM player (0x80253a7c in the USA release's main.dol). The player gives
+        // the piece its first states at once (0x80253d20): the first state of its row of the table at 0x8035223c, then
+        // the first of its row of the table at 0x803533bc. The table at 0x80351e58 gives 44 pieces their rows, by the
+        // low half of their IDs. A state holds a code for each child of the piece's track 0, a nibble each, from child
+        // 0 in the high nibble (0x80253684). Codes 0 and 2 turn a child off: 0 sets its volume to 0, and 2 mutes it
+        // too. Codes 1 and 3 turn it on, and code 7 leaves it. The game turns some children on later.
+        // JA_BGM_OP_CEMEMONY's first state turns every child off, and the game turns them on as the piece goes on. It
+        // plays here with the children of its next state on. The player then hands the game's rhythm the piece whose
+        // entry in the sound table sets bit 0 of the halfword at +4 (0x80253444). 62 pieces set it. The rhythm mutes
+        // child 0 of track 0. That child writes the beat to port 0xe (0x80247e20). Each mask gives the children of
         // track 0 that play. The Wii release's code does the same. In its main.dol, the BGM player starts a piece at
         // 0x802796ec and gives it its first states at 0x80279940, from the tables at 0x803ab6b0, 0x803abac4 and
         // 0x803acc44. The player hands the piece to the rhythm at 0x80278fd0, and the rhythm mutes child 0 at
@@ -881,9 +912,8 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // table names hold other pieces. The name file would call c_result PSSQ_JUNGLE and comp_result PSSQ_FOREST.
         rules.sequence_names = false;
 
-        // Each piece is an object of the game's sound layer, which answers the calls that the piece's tracks make
-        // (PSGame::seqCpuSync, 0x803372e0). The game's sound library is a later JAudio1
-        // (SequenceSound::later_jaudio1).
+        // Each piece is an object of the game's sound layer. The layer answers the calls that the piece's tracks make
+        // (PSGame::seqCpuSync, 0x803372e0). The game's sound library is a later JAudio1 (SequenceSound::later_jaudio1).
         rules.later_jaudio1 = true;
 
         // A cave's music is an AutoBgm: a conductor picks the phrases that its tracks play (SequenceSound::conductor).
@@ -989,9 +1019,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // The sound layer plays each piece at the volume that user/Totaka/BgmList.txt gives it, out of 127
         // (PSSystem::SeqDataList::getSeqVolume, 0x80330e08). PSSystem::SeqBase::init and DirectedBgm::init write it
         // into the piece's sound information (0x80331740 and 0x80332d30). The sound table's volumes play no part. The
-        // list pairs a file's name with a number, up to "endoffile". The first pair with the name wins, so new_00
-        // plays at 50, not at the 60 of its second pair. Stream::readByte reads the number with sscanf's "%d"
-        // (0x8041449c), so new_04's "50+5" gives 50. The Wii release's list is the same file.
+        // list pairs a file's name with a number, up to "endoffile". The first pair with the name wins. new_00
+        // therefore plays at 50, not at the 60 of its second pair. Stream::readByte reads the number with sscanf's "%d"
+        // (0x8041449c). new_04's "50+5" then gives 50. The Wii release's list is the same file.
         rules.piece_volumes = {
             {"2pbattle.bms", 85},    {"a_iron.bms", 50},         {"a_zawinul01.bms", 50},
             {"caveboss.bms", 50},    {"caveconc.bms", 50},       {"caveglass.bms", 40},
@@ -1034,9 +1064,9 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         rules.mix_level = (wii ? 26213.0f * 6144.0f : 18022.0f * 8192.0f) / kSunshineMix;
 
         // Addresses are in the USA release's main.dol. At start-up, the sound library starts pikise.jam, the effects
-        // sequence, and sysevent.jam, which plays the events' effects (0x800189c0, from the table at 0x80222278). The
-        // game plays a piece through 0x80018c80. That function gives the piece's root track the bank of the piece's
-        // number (0x80018df4).
+        // sequence, and sysevent.jam. sysevent.jam plays the events' effects (0x800189c0, from the table at
+        // 0x80222278). The game plays a piece through 0x80018c80. That function gives the piece's root track the bank
+        // of the piece's number (0x80018df4).
         rules.effects_sequence = "pikise.jam";
         rules.bank_of_number = true;
 
@@ -1070,20 +1100,43 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         {
             rules.child_volumes[name] = volumes(0xffff, 0.5f);
         }
-        rules.child_volumes["tutorial.jam"] = volumes(0x103c, 0.5f);
-        rules.child_volumes["play3.jam"] = volumes(0x0033, 0.5f);
-        rules.child_volumes["yaku.jam"] = volumes(0xc00f, 0.5f);
-        rules.child_volumes["cave.jam"] = volumes(0x0047, 0.5f);
-        rules.child_volumes["flow.jam"] = volumes(0x057d, 0.55f);
         rules.child_volumes["cresult.jam"] = volumes(0xffff, 0.35f);
 
-        // The game's catalogue of effects. The system's effects go to track 0x10009 of pikise.jam, child 9 of its
-        // first track (0x80016a60), and the player's to child 10 (0x800183f8). Effect 0 of the system stops the others.
-        // Effect 15 plays only after a pause (0x80016d78). Effect 18 plays part 8 of demobgm.jam (0x80016de0), and 32
-        // a stream (0x80016df8). Effect 16 plays the player's effect 14 (0x80016bf8). The catalogue lacks the
-        // system's effects 25, 30, 31 and 36, which the demo of a found part of the ship plays (0x8001b120 and
-        // 0x8001a748), and the player's voice 0x800c, which the first scene's set-up picks (0x80019c58). An event's
-        // effect goes to the track for the event in sysevent.jam (0x80017dcc).
+        // The mode is the sum of the flags that Jac_SetBgmModeFlag sets: 1, 2, 4 and 8. Modes 0 to 3 pick the mask:
+        // the piece starts with the first. Flag 4 picks the second volume, 0.15, and flag 8 a volume of 0. The game's
+        // camera code (Jac_UpdateCamera, 0x80017860) sets flag 1 while a sound event of an enemy (type 1, from BTeki's
+        // and Boss's constructors through SeContext) is within 0.8 of the camera's reach (`enemy_near`). The system's
+        // effect 4, SYSSE_EVENING_ALERT, sets flag 2 for the rest of the day (`evening`; 0x80016c60 through the
+        // switch of Jac_PlaySystemSe). Pausing (effects 3 and 6) sets flag 4, and unpausing (7 and 15) clears it. That
+        // only lowers the volume. Jac_PlayBgm clears the flags as a piece starts (0x80018d4c). The Wii's
+        // Jac_SetBgmModeFlag (0x8001c4c0) ignores flags 1 and 2 in the first 6,000 frames of scene 5.
+        struct Masks
+        {
+            const char* name;
+            std::array<uint16_t, 4> masks;
+            float volume;
+        };
+        for (const Masks& piece : {Masks{"tutorial.jam", {0x103c, 0x17d8, 0x8003, 0x19c3}, 0.5f},
+                                   Masks{"play3.jam", {0x0033, 0x00f3, 0x003c, 0x00fc}, 0.5f},
+                                   Masks{"yaku.jam", {0xc00f, 0xf78d, 0xc07c, 0xfe2c}, 0.5f},
+                                   Masks{"cave.jam", {0x0047, 0x0297, 0x002d, 0x023d}, 0.5f},
+                                   Masks{"flow.jam", {0x057d, 0x05fb, 0x0a78, 0x0afa}, 0.55f}})
+        {
+            rules.child_volumes[piece.name] = volumes(piece.masks[0], piece.volume);
+            rules.file_arrangements[piece.name] = {
+                {"enemy_near", volumes(piece.masks[1], piece.volume)},
+                {"evening", volumes(piece.masks[2], piece.volume)},
+                {"evening_enemy_near", volumes(piece.masks[3], piece.volume)},
+            };
+        }
+
+        // The game's catalogue of effects. The system's effects go to track 0x10009 of pikise.jam, child 9 of its first
+        // track (0x80016a60), and the player's to child 10 (0x800183f8). Effect 0 of the system stops the others.
+        // Effect 15 plays only after a pause (0x80016d78). Effect 18 plays part 8 of demobgm.jam (0x80016de0), and 32 a
+        // stream (0x80016df8). Effect 16 plays the player's effect 14 (0x80016bf8). The catalogue has no entry for the
+        // system's effects 25, 30, 31 and 36, or for the player's voice 0x800c. The demo of a found part of the ship
+        // plays those effects (0x8001b120 and 0x8001a748). The first scene's set-up picks the voice (0x80019c58). An
+        // event's effect goes to the track for the event in sysevent.jam (0x80017dcc).
         // The Wii's catalogue (0x80341868) adds row 309 for the system's effect 41, named "Change Piki". The rows that
         // follow it are the GameCube's rows 309 to 330.
         rules.jac_effects = GameRules::JacEffects{
@@ -1128,7 +1181,7 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
 
         // The start then calls 0x8011684c. It gives two of the sound manager's parts 1.3 x 1.5 = 1.95 (at +0x73c) and
         // 1.3 x 1.2 = 1.56 (at +0x7a0), times two factors of the audio object that start at 1. The game's music plays
-        // at 1.95 times its entry's volume. The other part plays the streams, which the conversion leaves out.
+        // at 1.95 times its entry's volume. The other part plays the streams. The conversion leaves them out.
         rules.sequence_volume = 1.95f;
 
         // The audio object's set-up registers a sequence callback, 0x80116d9c, at 0x80113e88. The callback answers 0
@@ -1355,6 +1408,17 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
         // them in place of Mario's in that mode (AudSceneMgr::loadPlayerResource, 0x80031fd4 in Galaxy).
         // AudSystem::startLevelSound doesn't call switchToLuigi.
         rules.port_variants.push_back({.group = 0x0001, .suffix = "_Luigi", .ports = {{0xc, 20}}});
+
+        // The game's code gives some pieces other states as play goes on (ntdlib/jaudio/galaxy_states.h). Each state
+        // converts as an arrangement of its piece.
+        if (archive_sha1 == kGalaxy)
+        {
+            AddGalaxyStates(ntdlib::jaudio::kGalaxyStates, rules);
+        }
+        else
+        {
+            AddGalaxyStates(ntdlib::jaudio::kGalaxy2States, rules);
+        }
     }
 
     if (archive_sha1 == kGalaxy2)
@@ -1539,7 +1603,7 @@ std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles>
     {
         archive = game.ReadDiscFile(baa->path);
         game.disc_path_ = baa->path;
-        folder = AsciiLower(baa->path.substr(0, baa->path.rfind('/') + 1));
+        folder = AsciiLower(FolderOf(baa->path));
     }
     else if (std::optional<ContainedArchive> found =
                  FindContainedArchive(files, [&game](const std::string& path) { return game.ReadDiscFile(path); }))
@@ -1554,7 +1618,7 @@ std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles>
         game.OpenBankFile(game.ReadDiscFile(pikmin->bank_file->path));
         game.sequence_index_ = std::move(pikmin->index);
         game.sequence_archive_ = game.ReadDiscFile(pikmin->sequences->path);
-        game.sequence_archive_name_ = pikmin->sequences->path.substr(pikmin->sequences->path.rfind('/') + 1);
+        game.sequence_archive_name_ = FileNameOf(pikmin->sequences->path);
         folder = std::move(pikmin->folder);
     }
     else
@@ -1585,7 +1649,7 @@ std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles>
             game.sequence_archive_.empty())
         {
             game.sequence_archive_ = game.ReadDiscFile(f->path);
-            game.sequence_archive_name_ = f->path.substr(f->path.rfind('/') + 1);
+            game.sequence_archive_name_ = FileNameOf(f->path);
             game.sequence_table_ = below.ends_with(".bdt");
         }
         else if (below.starts_with(waves) && below.ends_with(".aw"))
@@ -1611,7 +1675,7 @@ std::optional<Game> Game::FromDiscFiles(std::shared_ptr<ntdlib::disc::GameFiles>
         else if (game.jaudio1_ && below.find('/') == std::string::npos && below.ends_with(".asn") &&
                  game.names_.empty())
         {
-            game.ReadNames(game.ReadDiscFile(f->path), f->path.substr(f->path.rfind('/') + 1));
+            game.ReadNames(game.ReadDiscFile(f->path), FileNameOf(f->path));
         }
     }
     if (game.disc_waves_.empty())
@@ -2101,7 +2165,10 @@ void Game::FindSequences()
                 const ChordCompanion check(chords, layer);
                 SequenceSound other = seq;
                 other.name += "_" + std::string(layer.suffix);
-                other.companion = [chords, layer] { return std::make_unique<ChordCompanion>(chords, layer); };
+                other.companion = [chords, layer]
+                {
+                    return std::make_unique<ChordCompanion>(chords, layer);
+                };
                 sequences_.push_back(std::move(other));
             }
             catch (const FormatError& e)
@@ -2156,7 +2223,19 @@ void Game::FindSequences()
         const auto parts = rules_.parts.find(file.name);
         if (parts == rules_.parts.end())
         {
-            sequences_.push_back(std::move(seq));
+            sequences_.push_back(seq);
+            const auto arrangements = rules_.file_arrangements.find(file.name);
+            if (arrangements == rules_.file_arrangements.end())
+            {
+                continue;
+            }
+            for (const GameRules::FileArrangement& arrangement : arrangements->second)
+            {
+                SequenceSound other = seq;
+                other.name += "_" + arrangement.suffix;
+                other.child_volumes = arrangement.child_volumes;
+                sequences_.push_back(std::move(other));
+            }
             continue;
         }
 

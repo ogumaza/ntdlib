@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// nn::atk's aux effects (EffectAux), which run in the game's process on what the renderer sends them from a bus, and
-// the I3DL2 reverb that the reference game runs on its aux bus A that way. Each function's comment gives the address of
-// the routine it follows in WarioWare: Get It Together!'s main. Also nn::atk's effects that the renderer runs
+// nn::atk's aux effects (EffectAux), and the I3DL2 reverb that the reference game runs on its aux bus A as one. An aux
+// effect runs in the game's process on what the renderer sends it from a bus. Each function's comment gives the address
+// of the routine it follows in WarioWare: Get It Together!'s main. Also nn::atk's effects that the renderer runs
 // (EffectBase): the delay and the light limiter of the version of nn::atk in WarioWare: Move It!'s main, and the reverb
 // of the version in Clubhouse Games: 51 Worldwide Classics' main. Their comments give the addresses in those mains.
 

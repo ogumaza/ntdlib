@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // What known DS games' code sets as it starts a sequence of their sound archives, and the states of a sequence that
-// the code keeps set while it plays. The profiles come from the games' code. The comments in game_profiles.cpp give the
-// addresses.
+// the code keeps set while it plays. The profiles come from the games' code. The comments in game_profiles.cpp and
+// game_profile_rows.h give the addresses.
 //
 // A profile finds a sequence by the game's code in the cartridge's header, the path of the image's file that holds the
 // sound archive, the archive's place among that file's archives (sdat::FindArchives) and the sequence's label (Label).
@@ -10,7 +10,8 @@
 //
 // A host plays a sequence as the game starts it with ArchivePlayer::Start(sequence, profile.settings, player). It then
 // sends profile.commands, when it holds any, with ArchivePlayer::Send before the next frame. The driver runs them in
-// the sequence's first frame, after its start. The commands address the driver's player 0.
+// the sequence's first frame, after its start. The commands address the driver's player 0. The host sends the commands
+// of each of profile.channel_locks (ChannelLockCommands) before the driver's frame of the lock.
 
 #pragma once
 
@@ -33,6 +34,8 @@ namespace ntdlib::ntr
 // - `variables` gives values in place of those of GameSettings::variables. Indices 0 to 15 are the player's
 //   variables, and 16 to 31 the global variables.
 // - `commands` follow GameProfile::commands in the same list. Where both set a value, the state's takes effect.
+// - `tick_commands` gives the commands that the game's code sends once the sequence has run some ticks, such as a
+//   fade at the end of an intro.
 //
 // A state's name is the sequence's label followed by `suffix`.
 struct ProfileArrangement
@@ -40,6 +43,7 @@ struct ProfileArrangement
     std::string suffix;
     std::map<uint8_t, int16_t> variables;
     snd::CommandList commands;
+    std::vector<TickCommands> tick_commands = {};
 };
 
 // How a known game starts a sequence, and the other states that its code gives the sequence while it plays.
@@ -52,6 +56,9 @@ struct GameProfile
     // The driver's commands that the game's code sends once the sequence has started, in their order: the player's
     // volume, the tracks' volumes, the tempo's ratio, the tracks' pitch and the mutes.
     snd::CommandList commands;
+
+    // The channels that the game's code locks once the sequence has played some frames, in the order of their frames.
+    std::vector<ChannelLock> channel_locks;
 
     // The sequence's other states, in the order of the profile's table.
     std::vector<ProfileArrangement> arrangements;

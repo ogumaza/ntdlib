@@ -7,11 +7,12 @@
 #include <cstdint>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
+
+#include "common/magic.h"
 
 namespace ntdlib::universomo
 {
@@ -19,18 +20,14 @@ namespace ntdlib::universomo
 namespace
 {
 
+using ntdlib::detail::HasMagic;
+
 constexpr std::size_t kSongHeaderSize = 0x27;
 constexpr std::size_t kEventSize = 4;
 constexpr std::size_t kInstrumentSize = 4;
 constexpr std::size_t kBankHeaderSize = 13;
 constexpr std::size_t kSampleHeaderSize = 14;
 constexpr std::size_t kSoundSize = 7;
-
-// Whether the data starts with `magic`.
-bool HasMagic(std::span<const uint8_t> data, std::string_view magic)
-{
-    return data.size() >= magic.size() && std::equal(magic.begin(), magic.end(), data.begin());
-}
 
 // Throws unless `count` records of `size` bytes fit between `offset` and the end of the data.
 void CheckRecords(const xsflib::Reader& reader, std::size_t offset, uint64_t count, std::size_t size)
@@ -117,7 +114,8 @@ Song ReadSong(std::span<const uint8_t> data)
     song.orders.assign(orders.begin(), orders.end());
     offset += order_count;
 
-    // The patterns. Each one takes at least 4 bytes, so a count past the file's end fails before the reservation.
+    // The patterns. Each one takes at least 4 bytes. A count past the file's end therefore fails before the
+    // reservation.
     CheckRecords(reader, offset, pattern_count, 4);
     song.patterns.reserve(pattern_count);
     for (uint32_t p = 0; p < pattern_count; ++p)

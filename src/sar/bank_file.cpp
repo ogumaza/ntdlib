@@ -60,7 +60,7 @@ struct Run
     int last = 0;
 };
 
-// The runs of the table that the reference at `owner` leads to, in the order of their values. A run lies at the entries
+// The runs of the table that the reference at `owner` leads to, in the order of their values. A run is at the entries
 // that name one item, one after another. Throws xsflib::FormatError for a table of an unknown kind, and for an item
 // that two runs name.
 std::vector<Run> RunsOf(const xsflib::Reader& r, std::size_t owner)
@@ -412,8 +412,8 @@ std::pair<std::size_t, std::size_t> InfoTablesOf(const xsflib::Reader& r)
     return {body + static_cast<std::size_t>(r.S32(body + 4)), body + static_cast<std::size_t>(r.S32(body + 12))};
 }
 
-// Reads into `bank` the instruments of the table at `instruments`, and the order of their places, which is empty for
-// the order of their programs.
+// Reads into `bank` the instruments of the table at `instruments`, and the order of their places. The order stays empty
+// when the places follow the programs.
 void ReadInstruments(const xsflib::Reader& r, std::size_t instruments, BankFile& bank)
 {
     std::vector<std::pair<std::size_t, uint32_t>> places;
@@ -445,7 +445,7 @@ void ReadInstruments(const xsflib::Reader& r, std::size_t instruments, BankFile&
 
 BankFile BankFile::Read(std::span<const uint8_t> file)
 {
-    if (file.size() < kHeaderSize || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, "BNK", 3) != 0)
+    if (file.size() < kHeaderSize || !detail::HasFileMagic(file, "BNK"))
     {
         throw xsflib::FormatError("not a bank file (CBNK or FBNK)");
     }

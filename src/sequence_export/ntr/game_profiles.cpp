@@ -32,6 +32,8 @@ void ApplyProfile(const ntdlib::ntr::GameProfile& profile, PerformOptions& perfo
     }
 
     perform.commands.insert(perform.commands.end(), profile.commands.begin(), profile.commands.end());
+    perform.channel_locks.insert(perform.channel_locks.end(), profile.channel_locks.begin(),
+                                 profile.channel_locks.end());
 
     for (std::size_t i = 0; i < settings.variables.local.size(); i++)
     {
@@ -56,7 +58,10 @@ std::vector<Arrangement> ArrangementsOf(const ntdlib::ntr::GameProfile& profile)
     arrangements.reserve(profile.arrangements.size());
     for (const ntdlib::ntr::ProfileArrangement& state : profile.arrangements)
     {
-        arrangements.push_back({.suffix = state.suffix, .variables = state.variables, .commands = state.commands});
+        arrangements.push_back({.suffix = state.suffix,
+                                .variables = state.variables,
+                                .commands = state.commands,
+                                .tick_commands = state.tick_commands});
     }
 
     return arrangements;

@@ -36,13 +36,13 @@ struct SequenceInput
     std::vector<std::string> bank_paths = {}; // the banks' files, in the order of `banks`
     std::shared_ptr<const ntdlib::dse::WaveBank> main_bank = {};
 
-    // The files for Perform. They point into the input, which must outlive them.
+    // The files for Perform. They point into the input. The input must outlive them.
     SequenceFiles Files() const;
 };
 
 // The songs of `files` in the order of FindSongSets, then the sound effects in the order of FindEffectSets and their
-// slots. A file that can't be read gives a line in `warnings`. So does a song without its bank, which is left out, and
-// a sound effect whose list names a bank that no file holds.
+// slots. A file that can't be read gives a line in `warnings`. So does a song without its bank, and a sound effect
+// whose list names a bank that no file contains. The song is left out.
 std::vector<SequenceInput> ReadSequences(std::span<const ntdlib::dse::NamedFile> files,
                                          std::vector<std::string>& warnings);
 

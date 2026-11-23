@@ -67,7 +67,7 @@ struct OuterParam
         return (outer_switch & flag) != 0;
     }
 
-    // setParam: one level by its flag, which then counts as updated. Other flags change nothing.
+    // setParam: one level by its flag. The level then counts as updated. Other flags change nothing.
     void SetParam(uint8_t flag, float value);
 
     // onSwitch.
@@ -372,7 +372,7 @@ public:
     // What the model leaves out because the game would read or write memory outside the tracks: a register or a
     // port past the end of its array, a command byte below 0xc0 from a register, a jump to a 32-bit register's
     // address, a child that the pool can't give, or a command on a missing parent or child. The game's result
-    // depends on whatever lies in that memory, or the game crashes.
+    // depends on whatever is in that memory, or the game crashes.
     uint32_t Unmodelled() const
     {
         return unmodelled_;

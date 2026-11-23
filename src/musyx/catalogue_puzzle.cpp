@@ -19,6 +19,7 @@
 
 #include "musyx/catalogue_parts.h"
 #include "ntdlib/disc/game.h"
+#include "ntdlib/file_paths.h"
 #include "ntdlib/musyx/catalogue.h"
 #include "ntdlib/rel_module.h"
 #include "ntdlib/yay0.h"
@@ -494,8 +495,8 @@ void AddPuzzleGame(PuzzleSounds& sounds, const AnyCaseFiles& files, const Puzzle
 // motion of 0 keeps the pan still. Every row holds a motion of 0. The game starts a queued effect through sndFXStartEx
 // with the row's volume and pan and studio 0 (0x42D94 in section 1). The game then sets controller 0x5B to the reverb
 // send and controller 0x83 to the surround pan. In stereo, the game gives every effect a surround pan of 64. The table
-// holds 80 rows. A row whose effect the project lacks starts nothing. An effect is named "ycookie-se-" and its ID in
-// four digits.
+// holds 80 rows. A row whose effect is missing from the project starts nothing. An effect is named "ycookie-se-" and
+// its ID in four digits.
 void AddYoshisCookie(PuzzleSounds& sounds, const AnyCaseFiles& files)
 {
     constexpr uint32_t kData = 5, kItems = 0xd16d0, kSongs = 0x17928c, kMusicLevels = 0x179b74;
@@ -555,7 +556,7 @@ void AddYoshisCookie(PuzzleSounds& sounds, const AnyCaseFiles& files)
             throw xsflib::FormatError("Yoshi's Cookie's song " + std::to_string(s) + " has no group");
         }
 
-        const std::string name = Stem(TextBeforeZero(row.subspan(kPathOffset, kPathSize)));
+        const std::string name = ntdlib::detail::StemOf(TextBeforeZero(row.subspan(kPathOffset, kPathSize)));
         Sound sound;
         sound.name = "ycookie-" + name;
         sound.id = static_cast<uint16_t>(id);

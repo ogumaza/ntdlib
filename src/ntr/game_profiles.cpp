@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "game_profile_rows.h"
 #include "ntdlib/ntr/archive_player.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/snd/tables.h"
@@ -19,404 +20,6 @@ namespace ntdlib::ntr
 {
 namespace
 {
-
-// A piece that a game starts with other channels for its archive player, other channels for some of the piece's
-// tracks, or the capture units' reverb.
-struct Piece
-{
-    std::string_view game; // the game code, or its first three letters for every region of the game
-    std::string_view file; // the path of the image's file that holds the archive
-    std::string_view label;
-    uint32_t player;                  // the archive's player
-    uint16_t channels;                // its channels while the piece plays
-    TrackChannels tracks;             // some tracks' channels: none when its tracks are 0
-    std::optional<int> reverb_volume; // the reverb's volume, or no reverb
-};
-
-// Pokémon Diamond and Pearl: 0x0200516C gives the BGM's player (7) channels 0x7FFF and starts the reverb through
-// 0x02004C80 (NNS_SndCaptureStartReverb at 0x020C1FF0, with a buffer of 0x1000 bytes, PCM16 and 16,000 Hz). The scene
-// function 0x0200433C calls it for scene 1 at volume 30 and for scene 14 at volume 15. Overlay 63 starts SEQ_TITLE00
-// (0x021D8890) and SEQ_TITLE01 (0x021D74E0) in scene 1, and overlay 84 starts SEQ_BLD_ENDING in scene 14. Scenes 2 and
-// 4 give player 7 the archive's 0x7FF again and stop the reverb. Platinum does the same at 0x020053CC, through
-// 0x02004EC8 (NNS_SndCaptureStartReverb at 0x020B8ED0), for the same pieces in pl_sound_data.sdat.
-//
-// Pokémon HeartGold and SoulSilver have no reverb. The scene function's table at 0x02004F1E calls 0x02005AF8 with 1 or
-// 2 for scenes 1 and 14, and 0x02005AF8 then gives player 7 channels 0x3FFF in place of the archive's 0xA7FE
-// (NNS_SndPlayerSetAllocatableChannel). The title screen starts SEQ_GS_POKEMON_THEME in scene 1, or
-// SEQ_GS_P_POKEMON_THEME with the GB sounds (the table at 0x020F5730). The credits start SEQ_GS_ENDING in scene 14,
-// then SEQ_GS_ENDING2. After each start, 0x02006C14 calls 0x02005CC0. That function gives tracks 0 to 3 of the
-// field's, the BGM's and the ME's handles channels 0xA7FE (NNS_SndPlayerSetTrackAllocatableChannel). The radio plays
-// SEQ_GS_P_POKEMON_THEME on player 9. That player keeps the archive's channels, 0xA7FE. The table takes the title's.
-constexpr TrackChannels kGsTracks = {.tracks = 0x000F, .channels = 0xA7FE};
-constexpr Piece kPieces[] = {
-    {"ADA", "data/sound/sound_data.sdat", "SEQ_TITLE00", 7, 0x7FFF, {}, 30},
-    {"ADA", "data/sound/sound_data.sdat", "SEQ_TITLE01", 7, 0x7FFF, {}, 30},
-    {"ADA", "data/sound/sound_data.sdat", "SEQ_BLD_ENDING", 7, 0x7FFF, {}, 15},
-    {"APA", "data/sound/sound_data.sdat", "SEQ_TITLE00", 7, 0x7FFF, {}, 30},
-    {"APA", "data/sound/sound_data.sdat", "SEQ_TITLE01", 7, 0x7FFF, {}, 30},
-    {"APA", "data/sound/sound_data.sdat", "SEQ_BLD_ENDING", 7, 0x7FFF, {}, 15},
-    {"CPU", "data/sound/pl_sound_data.sdat", "SEQ_TITLE00", 7, 0x7FFF, {}, 30},
-    {"CPU", "data/sound/pl_sound_data.sdat", "SEQ_TITLE01", 7, 0x7FFF, {}, 30},
-    {"CPU", "data/sound/pl_sound_data.sdat", "SEQ_BLD_ENDING", 7, 0x7FFF, {}, 15},
-    {"IPK", "data/sound/gs_sound_data.sdat", "SEQ_GS_POKEMON_THEME", 7, 0x3FFF, kGsTracks, {}},
-    {"IPK", "data/sound/gs_sound_data.sdat", "SEQ_GS_P_POKEMON_THEME", 7, 0x3FFF, kGsTracks, {}},
-    {"IPK", "data/sound/gs_sound_data.sdat", "SEQ_GS_ENDING", 7, 0x3FFF, kGsTracks, {}},
-    {"IPK", "data/sound/gs_sound_data.sdat", "SEQ_GS_ENDING2", 7, 0x3FFF, kGsTracks, {}},
-    {"IPG", "data/sound/gs_sound_data.sdat", "SEQ_GS_POKEMON_THEME", 7, 0x3FFF, kGsTracks, {}},
-    {"IPG", "data/sound/gs_sound_data.sdat", "SEQ_GS_P_POKEMON_THEME", 7, 0x3FFF, kGsTracks, {}},
-    {"IPG", "data/sound/gs_sound_data.sdat", "SEQ_GS_ENDING", 7, 0x3FFF, kGsTracks, {}},
-    {"IPG", "data/sound/gs_sound_data.sdat", "SEQ_GS_ENDING2", 7, 0x3FFF, kGsTracks, {}},
-};
-
-// Pokémon Mystery Dungeon: Blue Rescue Team's sound start-up (0x0200B1F8) starts the capture units' reverb with a
-// buffer of 0x900 bytes, PCM16, 16,000 Hz and volume 45 (NNS_SndCaptureStartReverb at 0x0206EFE8). That is the one call
-// of the function. The one other stop of its timers is a callback that the SDK registers (0x0206D9F4). Every sequence
-// of sound.sbin therefore plays with it. The BGM's function (0x0200A5F0) starts a sequence. Then it gives the
-// sequence's tracks channels (NNS_SndPlayerSetTrackAllocatableChannel at 0x0206E410). The five sequences of the table
-// at 0x02086040 get 0xFFFA on every track. Every other BGM gets 0x8FFA on tracks 0 to 7 and 0x7000 on tracks 8 to 15.
-// The ME's function (0x0200A564) starts its sequence on player 1 and sets no channels. Players 0 and 1 both have the
-// archive's 0xFFFA. The profile comes from the USA's image (APHE).
-//
-// The channels drop some of SND_BGM_M_HABITAT_HOME01's notes, all on track 10.
-constexpr Reverb kBlueRescueReverb = {.size = 0x900, .pcm8 = false, .sample_rate = 16000, .volume = 45};
-constexpr std::array<std::string_view, 5> kBlueRescueWholeTracks = {"SND_BGM_M_SYS_TITLE_01", "SND_BGM_M_SYS_TITLE_02",
-                                                                    "SND_BGM_M_SYS_TITLE_03", "SND_BGM_M_SYS_ENDING_01",
-                                                                    "SND_BGM_M_SYS_ENDING_02"};
-
-// New Super Mario Bros. and Mario Kart DS start the SDK's output effect (NNS_SndCaptureStartEffect) in mode 1, the
-// surround, at boot. New Super Mario Bros.' boot starts it at 0x0204F1DC, through the SDK's function at 0x02060BEC.
-// Mario Kart DS's boot does the same, through the same code at 0x0212F690. Each game's buffer holds 4,096 bytes in two
-// parts, in PCM16 at 32,000 Hz: OutputEffect's defaults. OutputEffectCommands gives the effect's commands with those
-// values. The effect changes the whole output. Every sequence of each game's archives therefore plays through it. New
-// Super Mario Bros.' save setting picks the mode after the boot (0x02006444): 0 gives mode 1, 1 gives mode 2 and 2
-// gives mode 0. A new save holds 0. The profile takes a new save's mode. The games are the USA releases (the codes A2DE
-// and AMCE). Nobody has read the other releases' code.
-constexpr std::string_view kOutputEffectGames = "A2DE AMCE";
-
-// A sequence that the game starts with values in some of its variables (0 to 15 the player's, 16 to 31 the global
-// ones). The variable that the game sets for the whole of a state, such as a race, also gives arrangements: one for
-// each value of the first variable after the base's, up to `last`. An arrangement's suffix is `suffix`, then the value
-// plus `number_offset`.
-struct VariablePiece
-{
-    std::string_view game; // the game code, or its first three letters for every region of the game
-    std::string_view file; // the path of the image's file that holds the archive
-    std::string_view label;
-    std::array<std::pair<uint8_t, int16_t>, 2> values; // a pair of {0, 0} after the first ends the list
-    int16_t last;
-    std::string_view suffix;
-    int16_t number_offset;
-};
-
-// Mario Kart DS: SEQARC_0_193 to SEQARC_0_205 start with a program change whose program is local variable 0 (a1 81 00).
-// Bank 45 holds programs 0 to 12. The game has 13 drivers. Each program is therefore probably one driver's voice, and
-// the driver stays set for a whole race. The game's write of the variable isn't read yet. Until it is, the base takes
-// the first program, and the arrangements the other 12, named by their programs.
-// Without a value, the program is -1, and the effects play nothing.
-//
-// Mario Kart DS: SEQARC_0 and SEQARC_1's 290, 291, 292 and 294 add local variable 1 to local variable 2 and pan by
-// variable 2 as they play (a1 b1 02 01, then a1 c0 02): a sweep across from the start that variable 2 gives, by steps
-// of variable 1. The game's write of the two isn't read yet. If they come from an object's position, the effects are
-// positional. The table plays them at the centre without a sweep: 64 and 0.
-//
-// New Super Mario Bros.: the ARM9's function at 0x0204DE10 starts a sound effect of a sequence archive. For
-// SE_OBJ_GET_RED_COIN (archive 29, sequence 19), it writes global variable 1 (17 here) with the value it's given less
-// 1, at 0x0204E0C8 (NNS_SndPlayerWriteGlobalVariable at 0x0205DAF4). Values 0 to 7 play the eight red coins' rising
-// notes, and 7 adds the last coin's fanfare. The base takes the first coin's, and the arrangements coins 2 to 8. For
-// SE_OBJ_BLOCK_EXTEND (archive 29, sequence 28), it writes global variable 0 (16 here) with its value held to 0 to 2,
-// at 0x0204E07C. The sequence plays -1 as 0. The table therefore leaves it out. These addresses are where the code
-// runs. The boot copies that part of the ARM9 binary 0x87E0 lower (the autoload block at 0x02043380).
-constexpr VariablePiece kVariablePieces[] = {
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_193", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_194", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_195", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_196", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_197", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_198", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_199", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_200", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_201", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_202", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_203", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_204", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_205", {{{0, 0}}}, 12, "_PROGRAM", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_290", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_291", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_292", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_0_294", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_1_290", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_1_291", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_1_292", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQARC_1_294", {{{1, 0}, {2, 64}}}, 0, "", 0},
-    {"A2D", "sound_data.sdat", "SE_OBJ_GET_RED_COIN", {{{17, 0}}}, 7, "_COIN", 1},
-};
-
-// A state of a sequence's tracks that a game's code sets once the sequence has started, and that stays set while it
-// plays: the tracks of `on` at full volume and those of `off` at volume 0 (NNS_SndPlayerSetTrackVolume at 127 and 0),
-// the tempo's ratio (NNS_SndPlayerSetTempoRatio, 256 for the sequence's tempo), the pitch of the tracks of
-// `pitch_tracks` in 64ths of a semitone (NNS_SndPlayerSetTrackPitch), the player's volume in place of the archive's
-// volume of the sequence (NNS_SndPlayerSetInitialVolume), and the tracks of `muted` muted and those of `unmuted` not
-// (NNS_SndPlayerSetTrackMute with TRUE and FALSE). A muted track starts no notes. A row without a suffix gives the
-// base, and the sequence's other rows give arrangements, in their order. An arrangement's commands follow the base's.
-// Each row therefore gives the volume and the mute of every track that another row of its sequence changes.
-struct TrackState
-{
-    std::string_view games; // game codes, or their first three letters for every region, with a space between them
-    std::string_view file;  // the path of the image's file that holds the archive
-    std::string_view label;
-    std::string_view suffix;
-    uint16_t on;
-    uint16_t off;
-    uint16_t tempo_ratio;
-    uint16_t pitch_tracks;
-    int16_t pitch;
-    int16_t volume = -1; // the player's volume from 0 to 127, or -1 for the archive's
-    uint16_t muted = 0;
-    uint16_t unmuted = 0;
-};
-
-// Pokémon Black, White, Black 2 and White 2: the field's sound units give some zones' BGM states of their tracks. The
-// rows below give the commands that the game's code sends for each state, in the form of TrackCommands. The zones are
-// the zone table's (a/0/1/2) and their names its place names (a/0/0/2, file 89 in Black and 109 in White 2). White 2
-// keeps Black's zones and tables, and the switch and dungeon units at other addresses (0x0203235C and 0x020316D4). They
-// send the same commands as Black's.
-//
-// White and Black 2 hold the same tables, scripts and sound archives as Black and White 2, byte for byte. Their calls
-// into the sound code match site for site at shifted addresses, and two differences remain. The title's cry is the
-// first. Opelucid City's music is the second. The zone table gives SEQ_BGM_C_08_B in all four games. White's zone BGM
-// function (0x02013BEC) plays SEQ_BGM_C_08_W for it (at 0x02013C1C). Black's function (0x02013BDC) doesn't. White 2
-// does the same as White at 0x020189B8, and Black 2's function (0x02018968) does the same as Black's. Each game's
-// Opelucid City row therefore names the sequence that it plays.
-//
-// The switch unit (a/1/3/6: a zone, the tracks to play, the tracks to silence and a fade of 60 frames) sets a zone's
-// state as the player enters it (Black's 0x0202BF54, then 0x0202BFF0 through 0x02005F24), and fades the tracks that
-// differ to the next zone's (0x0202BF90). A zone that the table leaves out keeps the state. Victory Road's
-// SEQ_BGM_D_CHAMPROAD plays in 25 zones of Black, each in the table, and its tracks 7 and 8 play in none. Black's base
-// takes Victory Road's 15 zones from 215 to 229, and White 2's _INNER does. White 2 plays the sequence in 12 more
-// zones, from 573 on. They start with every track. Zone 214 adds track 10 to those of zones 215 to 229. Route 10's
-// zones 356 to 364 play a track more in each zone, from track 10 alone to the tracks of zone 214. Undella Town's four
-// BGMs, one for each season, play every track outside (zone 412) and leave out track 10 in the town's zones inside
-// (414 to 417 in Black, 415 to 417 in White 2).
-//
-// The dungeon unit (a/1/4/6: a zone, a pitch and a tempo's ratio) lowers the BGM's pitch and tempo in some zones
-// (Black's 0x0202B2CC): the pitch of every track but 8 and 9, and the tempo. It also gives every track a pan of 0, the
-// pan that the tracks start with. The Dreamyard's SEQ_BGM_D_01 plays 3 semitones lower at 235/256 of its tempo in zone
-// 153. Chargestone Cave's SEQ_BGM_D_02 plays 3 semitones lower at 235/256 in zones 196, 325 and 353, and 6 lower at
-// 215/256 in zones 197 and 354.
-//
-// The parts unit (a/1/4/7: a sequence, up to nine groups of tracks and its zones) plays the first group alone as the
-// player enters a zone of the sequence (Black's 0x0202C1D4, then 0x0202C4A4 and 0x0202C518 through 0x0202C710, and
-// White 2's 0x02032B18 and 0x02032BA4). The field's scripts fade the other groups in and out with the script commands
-// 0xA3 and 0xA4 (0x021AF458 and 0x021AF484 in Black's overlay 21, 0x021A7400 and 0x021A742C in White 2's overlay 36).
-// The base takes every group: the sequence as the archive gives it. _ENTRY takes the first group alone.
-//
-// In Accumula Town (script 810), SEQ_BGM_T_02 has groups 0xFC7F, 0x0300 and 0x0080. Two musicians each turn on a group,
-// and nothing turns one off. At Village Bridge (script 510), SEQ_BGM_H_04 has groups 0xFC05, 0x010A, 0x0280, 0x0020 and
-// 0x0050. Four musicians each toggle a group. Those towns' other states are the player's free choice and have no rows.
-// The Battle Subway's SEQ_BGM_BATTLE_SUBWAY has groups 0xF948, 0x0200, 0x0080, 0x0400, 0x0006, 0x0001 and 0x0030. As a
-// car starts, the script command 0x15A turns on groups 1 to R, with R the battles won so far in the set (0x021CB182 in
-// Black's overlay 21, and 0x021E649C in White 2's overlay 50). _ROUND1 to _ROUND5 give those states, and the base gives
-// the last car.
-//
-// White 2 adds two gyms. Nimbasa City's SEQ_BGM_ERECTRIC_GYM_01 has groups 0xFCC0, 0x0032 and 0x030D. A stage of 0
-// plays the first group, 1 adds the second (_STAGE1), and 2 on plays them all (0x021EEF50 in overlay 92). Virbank
-// City's SEQ_BGM_POISONE_GYM_01 has groups 0xF800 (no tracks), 0x0100, 0x000E, 0x0671 and 0x0080. The zone turns on
-// each group whose trainer hasn't lost (0x021EEE8C in overlay 100), and script 1004 turns one off as its trainer loses.
-// The base gives the first visit. The player chooses the order of the trainers. The other states have no rows.
-//
-// The distance unit (a/1/3/2 in Black at 0x0202AB8C, a/1/3/3 in White 2 at 0x02030F94: a zone, a point and levels by
-// distance) sets tracks 8 and 9 of the zone's BGM to the product of its levels on the three axes (Black's 0x0202AF74,
-// then 0x0202AEBC through 0x02005F24). The level is 127 within 3 tiles of the point and 0 from 15 tiles on. The zones
-// are Nacrene City (SEQ_BGM_C_02), Icirrus City (SEQ_BGM_C_07), Opelucid City (SEQ_BGM_C_08_B or _W), Anville Town
-// (SEQ_BGM_T_03) and, in Black and White alone, Driftveil City's gym (SEQ_BGM_GYM_C05). The base gives the sequence at
-// the point, and _FAR gives it from 15 tiles on.
-//
-// The 3D unit (a/1/8/5 in Black at 0x0202BB48, a/1/8/2 in White 2 at 0x02031F50: a sequence and tracks) silences those
-// tracks as the sequence starts. Up to 16 sources then set one track each, by the distance from the camera and with a
-// pan by the direction (Black's 0x0202BBFC and 0x0202BCA0). Those are tracks 6 to 9 of Skyarrow Bridge's SEQ_BGM_H_01
-// and 7 to 9 of SEQ_BGM_H_03. The base gives every track at the sequence's pans, and _FAR gives the start's state. The
-// pans of a source aren't modelled.
-//
-// Pokémon Diamond, Pearl and Platinum: a new game starts with the TV's scene. It plays SEQ_TV_HOUSOU on the field's
-// handle at the archive's volume of 96 (Diamond's overlay 59, through 0x0200414C and 0x0200433C). The player's room
-// then loads with no new BGM, and the TV's music plays on. As the room loads, its script sets the sequence's volume to
-// 50: script command 0x283 in Diamond's script 982 (0x0200488C), and Platinum's script through 0x02004AD4. The music
-// keeps that volume until the program ends and the town's music starts. _ROOM gives the room's volume. The start sets
-// the player's volume to -24 (in 0.1 dB), and the call sets -81. Pearl takes Diamond's values.
-//
-// Pokémon Platinum, HeartGold and SoulSilver: the Wi-Fi Plaza's games play SEQ_PL_WIFIGAME (Platinum's overlay 114) and
-// SEQ_GS_WIFIGAME (HeartGold's overlay 90, at 0x02259588) in scene 19. One of them raises the tempo near the end of
-// each round: Platinum's overlay 115 and HeartGold's overlay 91. Once the round's counter reaches 660 (a round lasts
-// 1,200 frames), the ratio rises from 258 to 406 over 58 frames. It stays there until the round ends, and the end sets
-// 256 again. Each overlay's ramp and reset send the 58 ratios, then 256 (Platinum's 0x022658F8 and 0x02265A08,
-// HeartGold's 0x02261A00 and 0x02261B10). _FAST gives the last ratio.
-//
-// Mario Kart DS: each race course plays its BGM, one of SEQ_15 to SEQ_41 and SEQ_74 (the course table of the USA
-// release). On the race's final lap, the game plays the jingle SEQ_62, then starts the course's BGM again (0x0210D5C0)
-// and sets its tempo ratio to 300 (0x02106828, 0x02106CE8 and 0x02106E30). The ratio holds until the race ends.
-// _FINAL_LAP gives that ratio. The game's lap code (0x02106AB8) starts the jingle on another player at once. The sound
-// frame (0x021061B8) waits until the jingle's handle is free (0x02106740), then starts the BGM again. The same list of
-// commands sets the player's tempo ratio to 300 before the start.
-//
-// New Super Mario Bros.: in overlay 0, a level's time falls by 92/4096 of a unit each frame (0x020A2764). Once the
-// time reaches 100, the code sets the BGM's tempo ratio to 358 and plays the sound 318 (0x020A27A4 to 0x020A27C4,
-// through 0x02011D60). The ratio holds until the scene's sound reset (0x02012638). Each BGM that starts meanwhile
-// takes the ratio too (0x02011E7C). A level's music is the music byte of its area's entry (0x0201E020). The courses'
-// areas name the sequences of the rows below, apart from five. The code of the boss fights starts BGM_BOSS and
-// BGM_FINAL_KUPPA, and the power-ups start BGM_MUTEKI, BGM_HUGE and BGM_SWITCH. In the Mario vs. Luigi courses, the
-// ratio is 358 while one player leads by two stars and 256 otherwise (0x020A26E4 to 0x020A273C). _HURRY gives the ratio
-// of 358.
-//
-// The jingles of a course start through 0x020210DC. It stops the BGM (0x0204E87C), starts the jingle through 0x02011E7C
-// and then sets the ratio to 256 (0x0204E52C). The list of commands that starts a jingle therefore sets 358, then 256,
-// before the start. The 256 also clears the flag that makes each sound frame set 358 again (0x0204E4D0 and 0x0204E924).
-// Overlay 10 starts the jingles of the single-player courses this way: BGM_DOWN at each death (0x0210F8E8),
-// BGM_GOAL_FANFARE2 and BGM_COURSE_CLEAR at the goal (0x0211C184 and 0x0211C194), BGM_FINAL_CLEAR and BGM_BOSS_CLEAR
-// after a castle's boss (0x0211A58C and 0x0211A5B0), and BGM_BOSS_CLEAR after Bowser Jr. (0x0211B024). The jingles play
-// at 256, and none takes _HURRY. The scene of the game over resets the sound state before it starts BGM_GAMEOVER
-// (overlay 4's 0x020CC4E4 and 0x020CC8CC).
-//
-// The goal plays BGM_GOAL_FANFARE2 when the time's last two digits match, and BGM_COURSE_CLEAR otherwise. The star
-// plays BGM_MUTEKI at 358. The course's BGM then starts again from its start at 358. In the Mario vs. Luigi courses,
-// the code sets 256 after each jingle too (overlay 10's 0x020FB988, 0x020FB9D0, 0x020FBB54 and 0x020FBD70).
-//
-// New Super Mario Bros.: the World 8 map plays BGM_WORLD8. As the sequence starts, the code mutes tracks 1 and 8 while
-// a flag of the save is clear (0x0204E7D8 to 0x0204E818, through NNS_SndPlayerSetTrackMute at 0x0205DC74). The flag
-// is bit 7 of the save's byte at 0x125 (0x02088D01). The world map reads it again as it loads (overlay 8's 0x020D9828).
-// It then mutes the two tracks again, or unmutes every track (0x0204D98C). With the flag set, two functions of the map
-// return other values for World 8 (overlay 8's 0x020CE184 and 0x020DD038). A new save has the flag clear. Nobody has
-// found the code that sets it. The base mutes the two tracks, and _FULL plays every track. The addresses are the USA
-// release's. The title's music doesn't play on the BGM's handles.
-constexpr TrackState kTrackStates[] = {
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "", 0x027F, 0xFD80, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_1", 0x0400, 0xFBFF, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_2", 0x0600, 0xF9FF, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_3", 0x0610, 0xF9EF, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_4", 0x0650, 0xF9AF, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_5", 0x0654, 0xF9AB, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_6", 0x0674, 0xF98B, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_7", 0x067C, 0xF983, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_8", 0x067E, 0xF981, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_9", 0x067F, 0xF980, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_T_05_SP", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_T_05_SU", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_T_05_AU", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_T_05_WI", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_01", "_LOWER1", 0, 0, 235, 0xFCFF, -192},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_02", "_LOWER1", 0, 0, 235, 0xFCFF, -192},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_D_02", "_LOWER2", 0, 0, 215, 0xFCFF, -384},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_T_02", "_ENTRY", 0xFC7F, 0x0380, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_H_04", "_ENTRY", 0xFC05, 0x03FA, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ENTRY", 0xF948, 0x06B7, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND1", 0xFB48, 0x04B7, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND2", 0xFBC8, 0x0437, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND3", 0xFFC8, 0x0037, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND4", 0xFFCE, 0x0031, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND5", 0xFFCF, 0x0030, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_C_02", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_GYM_C05", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_C_07", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRBO", "wb_sound_data.sdat", "SEQ_BGM_C_08_B", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRAO", "wb_sound_data.sdat", "SEQ_BGM_C_08_W", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_T_03", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_H_01", "_FAR", 0, 0x03C0, 256, 0, 0},
-    {"IRBO IRAO", "wb_sound_data.sdat", "SEQ_BGM_H_03", "_FAR", 0, 0x0380, 256, 0, 0},
-
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_INNER", 0x027F, 0xFD80, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_1", 0x0400, 0xFBFF, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_2", 0x0600, 0xF9FF, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_3", 0x0610, 0xF9EF, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_4", 0x0650, 0xF9AF, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_5", 0x0654, 0xF9AB, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_6", 0x0674, 0xF98B, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_7", 0x067C, 0xF983, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_8", 0x067E, 0xF981, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_CHAMPROAD", "_ROUTE10_9", 0x067F, 0xF980, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_T_05_SP", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_T_05_SU", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_T_05_AU", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_T_05_WI", "_INDOORS", 0x03FF, 0xFC00, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_01", "_LOWER1", 0, 0, 235, 0xFCFF, -192},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_02", "_LOWER1", 0, 0, 235, 0xFCFF, -192},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_D_02", "_LOWER2", 0, 0, 215, 0xFCFF, -384},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_T_02", "_ENTRY", 0xFC7F, 0x0380, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_H_04", "_ENTRY", 0xFC05, 0x03FA, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ENTRY", 0xF948, 0x06B7, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND1", 0xFB48, 0x04B7, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND2", 0xFBC8, 0x0437, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND3", 0xFFC8, 0x0037, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND4", 0xFFCE, 0x0031, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_BATTLE_SUBWAY", "_ROUND5", 0xFFCF, 0x0030, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_ERECTRIC_GYM_01", "_ENTRY", 0xFCC0, 0x033F, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_ERECTRIC_GYM_01", "_STAGE1", 0xFCF2, 0x030D, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_C_02", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_C_07", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRDO", "swan_sound_data.sdat", "SEQ_BGM_C_08_W", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IREO", "swan_sound_data.sdat", "SEQ_BGM_C_08_B", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_T_03", "_FAR", 0, 0x0300, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_H_01", "_FAR", 0, 0x03C0, 256, 0, 0},
-    {"IRDO IREO", "swan_sound_data.sdat", "SEQ_BGM_H_03", "_FAR", 0, 0x0380, 256, 0, 0},
-
-    {"ADA APA", "data/sound/sound_data.sdat", "SEQ_TV_HOUSOU", "_ROOM", 0, 0, 256, 0, 0, 50},
-    {"CPU", "data/sound/pl_sound_data.sdat", "SEQ_TV_HOUSOU", "_ROOM", 0, 0, 256, 0, 0, 50},
-    {"CPU", "data/sound/pl_sound_data.sdat", "SEQ_PL_WIFIGAME", "_FAST", 0, 0, 406, 0, 0},
-    {"IPK IPG", "data/sound/gs_sound_data.sdat", "SEQ_GS_WIFIGAME", "_FAST", 0, 0, 406, 0, 0},
-
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_15", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_16", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_17", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_18", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_19", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_20", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_21", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_22", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_23", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_24", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_25", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_26", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_27", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_28", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_29", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_30", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_31", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_32", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_33", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_34", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_35", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_36", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_37", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_38", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_39", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_40", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_41", "_FINAL_LAP", 0, 0, 300, 0, 0},
-    {"AMCE", "data/Sound/sound_data.sdat", "SEQ_74", "_FINAL_LAP", 0, 0, 300, 0, 0},
-
-    {"A2DE", "sound_data.sdat", "BGM_VS_CHIJOU", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_TRIDE", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_MUTEKI", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_HUGE", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_SABAKU", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_BOSS", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_CHIKA", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_MAME", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_WATER3", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_KAZAN_SOTO", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_SANBASHI", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_KUPPAJR", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_OBAKE", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_SHIRO", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_SWITCH", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_FINAL_KUPPA", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_ATHLETIC", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_MINIGAME", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_CHIJOU_CONT", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_AMB_YOUGAN", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_AMB_SABAKU", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_AMB_WATER", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_AMB_SKY", "_HURRY", 0, 0, 358, 0, 0},
-    {"A2DE", "sound_data.sdat", "BGM_WORLD8", "", 0, 0, 256, 0, 0, -1, 0x0102, 0},
-    {"A2DE", "sound_data.sdat", "BGM_WORLD8", "_FULL", 0, 0, 256, 0, 0, -1, 0, 0xFFFF},
-};
 
 // The commands of a row of kTrackStates, in the order that the game's code sends them: the player's volume, the tracks'
 // volumes, the tempo, the pitch, then the mutes. The player's volume is its level in 0.1 dB (the driver's kDecibel) in
@@ -427,32 +30,35 @@ constexpr TrackState kTrackStates[] = {
 snd::CommandList TrackCommands(const TrackState& state)
 {
     using snd::CommandId;
-    constexpr uint32_t kTwoBytes = 2u << 24;
+    constexpr uint32_t kTwoBytes = 2u << snd::kTrackParameterSizeShift;
     snd::CommandList commands;
 
     if (state.volume >= 0)
     {
         const int16_t level = snd::tables::kDecibel[std::min<int16_t>(state.volume, 127)];
-        commands.push_back(
-            {.id = CommandId::kPlayerParameter, .args = {0, 0x06, static_cast<uint32_t>(int32_t{level}), 2}});
+        commands.push_back({.id = CommandId::kPlayerParameter,
+                            .args = {0, snd::kPlayerFaderOffset, static_cast<uint32_t>(int32_t{level}), 2}});
     }
     if (state.on != 0)
     {
-        commands.push_back({.id = CommandId::kTrackParameter, .args = {kTwoBytes, state.on, 0x0A, 0}});
+        commands.push_back(
+            {.id = CommandId::kTrackParameter, .args = {kTwoBytes, state.on, snd::kTrackFaderOffset, 0}});
     }
     if (state.off != 0)
     {
-        commands.push_back({.id = CommandId::kTrackParameter, .args = {kTwoBytes, state.off, 0x0A, 0xFFFF8000}});
+        commands.push_back(
+            {.id = CommandId::kTrackParameter, .args = {kTwoBytes, state.off, snd::kTrackFaderOffset, 0xFFFF8000}});
     }
     if (state.tempo_ratio != 256)
     {
-        commands.push_back({.id = CommandId::kPlayerParameter, .args = {0, 0x1A, state.tempo_ratio, 2}});
+        commands.push_back(
+            {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerTempoRatioOffset, state.tempo_ratio, 2}});
     }
     if (state.pitch_tracks != 0)
     {
-        commands.push_back(
-            {.id = CommandId::kTrackParameter,
-             .args = {kTwoBytes, state.pitch_tracks, 0x0C, static_cast<uint32_t>(static_cast<int32_t>(state.pitch))}});
+        commands.push_back({.id = CommandId::kTrackParameter,
+                            .args = {kTwoBytes, state.pitch_tracks, snd::kTrackPitchOffset,
+                                     static_cast<uint32_t>(static_cast<int32_t>(state.pitch))}});
     }
     if (state.muted != 0)
     {
@@ -487,18 +93,15 @@ snd::CommandList TrackCommands(const TrackState& state)
 //   and of SEQ_96 and 97 state 28 (0x0206CFD4 to 0x0206D014). A new start of SEQ_33, 35, 37, 42, 44, 46, 48, 50 or
 //   52 takes state 0 (0x0206CC38 to 0x0206CF08). Every other request takes the state that its caller gives.
 //
-// The mixer's states are the table at 0x020AA534 (kSpiritTracksMixer). The mixer sets the player's volume
-// (NNS_SndPlayerSetVolume at 0x02002D74, which adds its level to the archive's volume), the tempo's ratio (0x02002E98),
-// the pitch of every track (0x02002E38, 0 in every state) and the volume of each track (0x02002E08). A start in a state
-// sets the state at once (the mixer's 0x0206B32C).
+// The mixer's states are the table at 0x020AA534 (kSpiritTracksMixer): 32 states of 20 bytes, read as `index * 20`
+// (0x0206AC64 to 0x0206ACB0). The mixer sets the player's volume (NNS_SndPlayerSetVolume at 0x02002D74: the level adds
+// to the archive's volume), the tempo's ratio (0x02002E98), the pitch of every track (0x02002E38, 0 in every state) and
+// the volume of each track (0x02002E08). A start in a state sets the state at once (the mixer's 0x0206B32C).
 //
-// Runs of the USA release (NTR-BKIE) on ntdlib's DS machine anchor the table. Each run booted the image to the title,
-// called 0x0206C988 at the start of a frame (0x020023D0) with each request, after SEQ_1 in state 0, and read the
-// sequence that the handle at 0x020B51A0 played (NNS_SndPlayerGetSeqNo at 0x02002F04). The commands that each start
-// sent match MixerCommands below for every row. The runs patched the flags' word with each value above, and the
-// scene's load at 0x0206CB50 and 0x0206CA78 with a move of the scene's number. A patch of the scene's word didn't hold
-// at the title. The other releases (NTR-BKIE rev 1 and NTR-BKIP rev 0 and 1) hold the same archive and the same code
-// and table, 0x20 bytes higher in the European releases. Only the addresses in their literal pools differ.
+// 0x0206C988 takes each request with the scene's number (loaded at 0x0206CB50 and 0x0206CA78) and the flags' word, and
+// starts the sequence through the handle at 0x020B51A0 (NNS_SndPlayerGetSeqNo at 0x02002F04 reads it back).
+// MixerCommands below gives the commands that each start sends. The European releases use the same archive, code and
+// table, 0x20 bytes higher. Only the addresses in their literal pools differ.
 struct MixerState
 {
     uint8_t volume; // the player's volume, from 0 to 127
@@ -506,7 +109,7 @@ struct MixerState
     std::array<uint8_t, 16> tracks;
 };
 
-constexpr std::array<MixerState, 31> kSpiritTracksMixer = {{
+constexpr std::array<MixerState, 32> kSpiritTracksMixer = {{
     {127, 128, {127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127}},
     {95, 128, {127, 110, 127, 127, 127, 0, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127}},
     {70, 128, {0, 74, 0, 127, 127, 0, 127, 127, 0, 90, 127, 127, 0, 0, 127, 127}},
@@ -538,10 +141,20 @@ constexpr std::array<MixerState, 31> kSpiritTracksMixer = {{
     {127, 128, {127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 0, 127, 127}},
     {127, 128, {127, 0, 0, 127, 127, 127, 0, 127, 127, 127, 127, 127, 127, 127, 127, 127}},
     {127, 128, {0, 127, 127, 127, 127, 0, 127, 127, 127, 127, 0, 127, 0, 127, 127, 127}},
+    {127, 135, {127, 127, 127, 0, 127, 127, 127, 127, 127, 127, 127, 127, 127, 0, 127, 127}},
 }};
 
 // A request that Spirit Tracks' BGM manager starts as `played`, a sequence of the archive with the archive's volume
-// `volume`, in the mixer's state `state`.
+// `volume`, in the mixer's state `state`. Besides the manager's rows, four pieces start in a state that their scene's
+// code gives. Overlay 96 starts SEQ_6 in state 19 (0x02179D04). Overlay 23 starts SEQ_153 in state 26, or 27 once one
+// of three checks of 0x020EF444 passes (0x020EB410 to 0x020EB470). Overlay 91 starts SEQ_80 in state 0 (0x02174720),
+// and its frame (0x02175410) fades the mixer at once to the band of a distance (+0x880): state 15 above 0x4333, 16
+// above 0x2800 and 17 below. The base takes the far band. The train (overlay 26) sets the state of SEQ_18 by its speed
+// (+0x08) and a timer (+0x10), at 0x0212E604: 1 at a speed of 193 or more, 2 while it runs slower, and 3 once it has
+// stood for 60 frames or runs backwards at -28 or less. The manager keeps the train state at 0x48 (0x0212E764) and
+// starts SEQ_18 in it (0x0206C3C8), 1 at first. The base takes state 1, the speed the train keeps most. Of the 78
+// calls of 0x0206C988, 75 pass state 0. The others are SEQ_6's, SEQ_153's and SEQ_96's (state 28, as the manager
+// gives it). SEQ_65 plays in the mix that its handler gives (kSpiritTracksScenes): the base takes state 22.
 struct ManagerPiece
 {
     std::string_view label;
@@ -552,37 +165,89 @@ struct ManagerPiece
 
 constexpr std::string_view kSpiritTracksArchive = "SoundData/final_sound_data.sdat";
 constexpr ManagerPiece kSpiritTracksPieces[] = {
-    {"SEQ_34", "SEQ_33", 110, 5},  {"SEQ_36", "SEQ_35", 110, 6},  {"SEQ_38", "SEQ_37", 100, 8},
-    {"SEQ_40", "SEQ_39", 104, 7},  {"SEQ_43", "SEQ_42", 126, 9},  {"SEQ_45", "SEQ_44", 108, 10},
-    {"SEQ_47", "SEQ_46", 108, 11}, {"SEQ_49", "SEQ_48", 110, 12}, {"SEQ_51", "SEQ_50", 96, 13},
-    {"SEQ_53", "SEQ_52", 96, 14},  {"SEQ_39", "SEQ_39", 104, 18}, {"SEQ_27", "SEQ_27", 120, 20},
-    {"SEQ_87", "SEQ_87", 90, 30},  {"SEQ_88", "SEQ_88", 90, 30},  {"SEQ_96", "SEQ_96", 120, 28},
-    {"SEQ_97", "SEQ_97", 120, 28},
+    {"SEQ_34", "SEQ_33", 110, 5},  {"SEQ_36", "SEQ_35", 110, 6},    {"SEQ_38", "SEQ_37", 100, 8},
+    {"SEQ_40", "SEQ_39", 104, 7},  {"SEQ_43", "SEQ_42", 126, 9},    {"SEQ_45", "SEQ_44", 108, 10},
+    {"SEQ_47", "SEQ_46", 108, 11}, {"SEQ_49", "SEQ_48", 110, 12},   {"SEQ_51", "SEQ_50", 96, 13},
+    {"SEQ_53", "SEQ_52", 96, 14},  {"SEQ_39", "SEQ_39", 104, 18},   {"SEQ_27", "SEQ_27", 120, 20},
+    {"SEQ_87", "SEQ_87", 90, 30},  {"SEQ_88", "SEQ_88", 90, 30},    {"SEQ_96", "SEQ_96", 120, 28},
+    {"SEQ_97", "SEQ_97", 120, 28}, {"SEQ_6", "SEQ_6", 118, 19},     {"SEQ_18", "SEQ_18", 112, 1},
+    {"SEQ_80", "SEQ_80", 127, 15}, {"SEQ_153", "SEQ_153", 104, 26}, {"SEQ_65", "SEQ_65", 88, 22},
 };
 
-// The driver's commands of a row of kSpiritTracksPieces: the player's volume, the tracks' volumes, then the tempo. The
-// player's level is the sum of the levels of the archive's volume and the state's volume (kDecibel). It replaces the
-// level that the archive gives the label. A row whose sequence is its label, in a state at full volume, keeps the
-// archive's level. The tracks at full volume keep their fader at 0.
-snd::CommandList MixerCommands(const ManagerPiece& piece)
+// A state that a scene's code fades a playing piece to, and holds for a stretch (0x0206D160, through the mixer's
+// 0x0206A878): the arrangement `suffix` of the piece `label`. The piece has the archive's volume `volume`.
+//
+// - SEQ_6: overlay 96 fades to state 0 while an object's state (+0x0A of 0x02070540's result) is 0 or 4, and back to
+//   19 otherwise (0x02179D0C to 0x02179D2E).
+// - SEQ_18 and SEQ_23: the train states above. For SEQ_23, states 1 and 2 give 0, and 3 gives 4 (0x0212E714).
+// - SEQ_27: overlay 92 holds state 21 while a timer (+0x240) runs between 1 and 541, and 20 otherwise (0x02177A9C to
+//   0x02177AD4).
+// - SEQ_80: the distance's two nearer bands (overlay 91's 0x02175410).
+// - SEQ_87 and SEQ_88: in scenes 33 and 78 (0x0211C6FC), overlay 34 fades to state 31 in one phase of its object
+//   (0x0211B3CC) and to 30 in two others (0x0211BDB4, 0x0211C180).
+// - SEQ_96 and SEQ_97: overlay 75 fades to state 29 after a count in the first phase of its fight (0x021586C8 to
+//   0x02158700), and to 28 again in a later phase (0x02158B80).
+// - SEQ_153: overlay 23 fades to state 27 at an event (0x020ECF54), and to 26 again when a countdown ends
+//   (0x020ED9B4).
+// - SEQ_65: the mixer's handler (0x0206B668) sets the whole mix in each frame by a height at 0x9C of the mixer. Only
+//   overlay 102 writes that height (0x0206BDB4). Below 0x3998 the player is silent, and above it the volume of state 22
+//   rises with the height. States 22 to 25 play as they are at the heights 0xACD0, 0xE6A9, 0x14759 and 0x1A669 (the
+//   constants at 0x0206B9B4 to 0x0206B9C4, and runs of the USA release). Every height between two of them gives a mix
+//   of two states. The base takes state 22, and _HEIGHT2 to _HEIGHT4 states 23 to 25. The mixes between have no
+//   arrangement.
+//
+// Each of these states silences or lowers some tracks of the piece, and the scene holds it while its condition holds.
+// A fade between two states takes 8 to 60 frames (0x0206A8A0 to 0x0206A960). An arrangement sets the state from the
+// start.
+struct SceneState
+{
+    std::string_view label;
+    std::string_view suffix;
+    uint8_t volume;
+    uint8_t state;
+};
+
+constexpr SceneState kSpiritTracksScenes[] = {
+    {"SEQ_6", "_FULL", 118, 0},      {"SEQ_18", "_SLOW", 112, 2},    {"SEQ_18", "_STOPPED", 112, 3},
+    {"SEQ_23", "_STOPPED", 100, 4},  {"SEQ_27", "_PHASE2", 120, 21}, {"SEQ_80", "_CLOSER", 127, 16},
+    {"SEQ_80", "_CLOSEST", 127, 17}, {"SEQ_87", "_PHASE2", 90, 31},  {"SEQ_88", "_PHASE2", 90, 31},
+    {"SEQ_96", "_PHASE2", 120, 29},  {"SEQ_97", "_PHASE2", 120, 29}, {"SEQ_153", "_PHASE2", 104, 27},
+    {"SEQ_65", "_HEIGHT2", 88, 23},  {"SEQ_65", "_HEIGHT3", 88, 24}, {"SEQ_65", "_HEIGHT4", 88, 25},
+};
+
+// SEQ_18's handler in the mixer (0x0206B3C8) mutes tracks in each frame by the state (0x0206B4A0 to 0x0206B510): state
+// 1 unmutes 0xFFDF and mutes track 5, state 2 unmutes every track, and state 3 unmutes 0x02E2 and mutes 0x3101. A
+// muted track starts no notes. The game's SDK sends a mute with mode 3 (runs of the USA release). The commands of
+// `state`, or none.
+snd::CommandList Seq18Mutes(uint8_t state)
 {
     using snd::CommandId;
-    constexpr uint32_t kTwoBytes = 2u << 24;
-    const MixerState& state = kSpiritTracksMixer[piece.state];
-    snd::CommandList commands;
-
-    if (piece.played != piece.label || state.volume != 127)
+    constexpr uint32_t kMuteOn = 3;
+    switch (state)
     {
-        const int32_t level = snd::tables::kDecibel[piece.volume] + snd::tables::kDecibel[state.volume];
-        commands.push_back({.id = CommandId::kPlayerParameter, .args = {0, 0x06, static_cast<uint32_t>(level), 2}});
+    case 1:
+        return {{.id = CommandId::kMuteTrack, .args = {0, 0xFFDF, 0}},
+                {.id = CommandId::kMuteTrack, .args = {0, 0x0020, kMuteOn}}};
+    case 2:
+        return {{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, 0}}};
+    case 3:
+        return {{.id = CommandId::kMuteTrack, .args = {0, 0x02E2, 0}},
+                {.id = CommandId::kMuteTrack, .args = {0, 0x3101, kMuteOn}}};
+    default:
+        return {};
     }
+}
 
-    // One command for each volume below 127, for the tracks that take it, in the order of their first track.
+// Adds the commands that set the tracks' faders of `state` to `commands`: one command for each volume, for the tracks
+// that take it, in the order of their first track. Without `full_too`, the tracks at 127 keep their fader at 0.
+void AddTrackFaders(const MixerState& state, bool full_too, snd::CommandList& commands)
+{
+    constexpr uint32_t kTwoBytes = 2u << snd::kTrackParameterSizeShift;
     uint16_t done = 0;
     for (std::size_t track = 0; track < state.tracks.size(); track++)
     {
         const uint8_t volume = state.tracks[track];
-        if (volume == 127 || (done >> track & 1) != 0)
+        if ((volume == 127 && !full_too) || (done >> track & 1) != 0)
         {
             continue;
         }
@@ -597,16 +262,133 @@ snd::CommandList MixerCommands(const ManagerPiece& piece)
         }
         done |= tracks;
         const int32_t fader = snd::tables::kDecibel[volume];
+        commands.push_back({.id = snd::CommandId::kTrackParameter,
+                            .args = {kTwoBytes, tracks, snd::kTrackFaderOffset, static_cast<uint32_t>(fader)}});
+    }
+}
+
+// The driver's commands of a row of kSpiritTracksPieces: the player's volume, the tracks' volumes, then the tempo. The
+// player's level is the sum of the levels of the archive's volume and the state's volume (kDecibel). It replaces the
+// level that the archive gives the label. A row whose sequence is its label, in a state at full volume, keeps the
+// archive's level. The tracks at full volume keep their fader at 0.
+snd::CommandList MixerCommands(const ManagerPiece& piece)
+{
+    using snd::CommandId;
+    const MixerState& state = kSpiritTracksMixer[piece.state];
+    snd::CommandList commands;
+
+    if (piece.played != piece.label || state.volume != 127)
+    {
+        const int32_t level = snd::tables::kDecibel[piece.volume] + snd::tables::kDecibel[state.volume];
         commands.push_back(
-            {.id = CommandId::kTrackParameter, .args = {kTwoBytes, tracks, 0x0A, static_cast<uint32_t>(fader)}});
+            {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerFaderOffset, static_cast<uint32_t>(level), 2}});
     }
 
+    AddTrackFaders(state, false, commands);
     if (state.tempo != 128)
     {
-        commands.push_back({.id = CommandId::kPlayerParameter, .args = {0, 0x1A, state.tempo + 128u, 2}});
+        commands.push_back(
+            {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerTempoRatioOffset, state.tempo + 128u, 2}});
     }
 
     return commands;
+}
+
+// The driver's commands that set every value of `mix` for a sequence with the archive's volume `archive_volume`: the
+// player's level, the tracks' faders, then the tempo's ratio.
+snd::CommandList FullMixCommands(uint8_t archive_volume, const MixerState& mix)
+{
+    using snd::CommandId;
+    const int32_t level = snd::tables::kDecibel[archive_volume] + snd::tables::kDecibel[mix.volume];
+    snd::CommandList commands = {
+        {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerFaderOffset, static_cast<uint32_t>(level), 2}}};
+    AddTrackFaders(mix, true, commands);
+    commands.push_back(
+        {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerTempoRatioOffset, mix.tempo + 128u, 2}});
+
+    return commands;
+}
+
+// SEQ_39's handler in the mixer (0x0206B528) runs in each frame in which the handle plays SEQ_39 (the mixer's update at
+// 0x0206B348), the player's tick counter (NNS_SndPlayerGetTick at 0x02002FD4) is below 504 and the mixer's flag at 0x99
+// is clear. It sets the mixer's volume, tempo and pitch to state 1's, with every track at 127, and sends them. It then
+// sets a fade of 15 frames toward the state that the start gave. The fade takes one step in each frame (0x0206A9FC):
+// the value plus (target - value) * step / 15 (0x0206AC28). The handler's next run sets the values back. The fade
+// therefore goes on only once the counter reaches 504, the end of the intro. The first frame that reads a count of 504
+// or more sends step 0, the intro's values, and the next 15 frames send steps 1 to 15. A start sets its state and
+// clears the flag (0x0206B32C). The manager sets the flag after it writes variable 0 (0x0206D088). SEQ_39 and SEQ_40
+// therefore play their intro (_INTRO, variable 0 at -1) in this mix, then fade to their state. A start at section 0
+// plays in the state from its start. The game runs a frame in every second frame of the screen: on a run, its lists
+// come every 33.43 ms.
+//
+// SEQ_18's handler (0x0206B3C8) does the same while the counter is below 456 and the flag at 0x98 is clear, with a fade
+// of 85 frames (0x0206B47C). The request path's start, 0x0206C3C8, sets the flag (0x0206C40C). A start with nothing
+// playing goes through 0x0206C988 from 0x0206C2A0. It clears the flag and passes state 0. From then on, the train sound
+// update (overlay 26, 0x0212E584) sets the state in each frame by the train speed (0x0212E604, above). The profile
+// assumes that the game starts the piece this way where the train stands at a station, and that the scene leaves the
+// flag at +0x64 clear. A set flag would set state 1 once. No run of that scene shows it yet. A standing train sets
+// state 2 at once, and state 3 once the speed has held at 0 for 60 frames. The timer counts the frames since the speed
+// last changed (0x0212E594 to 0x0212E5AC). Where the train has stood before the piece starts, state 3 comes earlier.
+// The mutes of SEQ_18 go on in each frame, in the intro too. A run of the USA release (SEQ_18 started through
+// 0x0206C988 in state 0, the train sound update called in each frame at a speed held at 0 from the start) sent the
+// mutes of state 2 from the start, those of state 3 in the 61st frame after the start, then the fade to state 3. _INTRO
+// gives that intro: every track playing, the mutes of state 3 from the 61st frame, and the fade to state 3.
+struct IntroHandler
+{
+    std::string_view played;
+    uint32_t ticks;
+    int fade_frames;
+    bool train_start = false; // the train at a station sets the state after the start (AddTrainStart)
+};
+
+constexpr uint8_t kIntroState = 1;
+constexpr uint8_t kTrainStartState = 2;
+constexpr uint8_t kTrainStandingState = 3;
+constexpr std::size_t kTrainStandingFrames = 60;
+constexpr IntroHandler kIntroHandlers[] = {{"SEQ_39", 504, 15}, {"SEQ_18", 456, 85, true}};
+constexpr uint32_t kSpiritTracksVideoFrames = 2;
+
+// Gives `intro`, the _INTRO arrangement of a row of kSpiritTracksPieces that `handler` plays, the mix of the intro and
+// the fade that follows it: to the state of a standing train for a train start, and to the row's state otherwise.
+void AddIntroFade(const ManagerPiece& piece, const IntroHandler& handler, ProfileArrangement& intro)
+{
+    MixerState from = {
+        .volume = kSpiritTracksMixer[kIntroState].volume, .tempo = kSpiritTracksMixer[kIntroState].tempo, .tracks = {}};
+    from.tracks.fill(127);
+    const MixerState& to = kSpiritTracksMixer[handler.train_start ? kTrainStandingState : piece.state];
+    const snd::CommandList intro_mix = FullMixCommands(piece.volume, from);
+    intro.commands.insert(intro.commands.end(), intro_mix.begin(), intro_mix.end());
+
+    // Step 0 repeats the intro's values. The frame that sends it starts the fade.
+    TickCommands fade = {.tick = handler.ticks, .video_frames = kSpiritTracksVideoFrames};
+    for (int step = 1; step <= handler.fade_frames; step++)
+    {
+        const auto at = [step, &handler](uint8_t a, uint8_t b)
+        {
+            return static_cast<uint8_t>(a + (b - a) * step / handler.fade_frames);
+        };
+        MixerState mix = {.volume = at(from.volume, to.volume), .tempo = at(from.tempo, to.tempo), .tracks = {}};
+        for (std::size_t track = 0; track < mix.tracks.size(); track++)
+        {
+            mix.tracks[track] = at(from.tracks[track], to.tracks[track]);
+        }
+        fade.frames.push_back(FullMixCommands(piece.volume, mix));
+    }
+    intro.tick_commands.push_back(std::move(fade));
+}
+
+// Gives `intro`, the _INTRO arrangement of SEQ_18, the mutes of the train states at a station: those of state 2 from
+// the start, and those of state 3 in the frame after the train has stood for kTrainStandingFrames frames.
+void AddTrainStart(ProfileArrangement& intro)
+{
+    const snd::CommandList start = Seq18Mutes(kTrainStartState);
+    intro.commands.insert(intro.commands.end(), start.begin(), start.end());
+
+    // The frame that starts the piece reads the tick counter and sends nothing. Each later frame sends one list.
+    TickCommands standing = {.tick = 0, .video_frames = kSpiritTracksVideoFrames};
+    standing.frames.resize(kTrainStandingFrames);
+    standing.frames.push_back(Seq18Mutes(kTrainStandingState));
+    intro.tick_commands.push_back(std::move(standing));
 }
 
 // A value that a game's code writes to a variable of a sequence (0 to 15 the player's, 16 to 31 the global ones) as it
@@ -634,17 +416,20 @@ struct VariableState
 //   after SEQ_39, 40 or 54, and of SEQ_41 after SEQ_7, SEQ_33 or SEQ_304. It sets the kept section to 0 first
 //   (0x0206CF50 to 0x0206CFAC). It writes it after a start of SEQ_64 after SEQ_76 or 110, and of SEQ_67 or 69 after
 //   SEQ_77 (0x0206CB88 to 0x0206CBC4).
-// - A change of scene (0x0206C7DC) keeps a section for the next start (0x4C of the manager), which then writes it
-//   (0x0206CFB0).
+// - A change of scene (0x0206C7DC) keeps a section for the next start (0x4C of the manager). The next start then writes
+//   it (0x0206CFB0).
 //
 // SEQ_39 and SEQ_40 therefore start at section 0, without the intro, on every start but those after SEQ_37 or 38:
 // _INTRO gives those. The others start with the intro, and _RESUME gives a start at section 0. A start at a later
-// section plays the same loop from another point. The profile leaves those out. Runs of the USA release on ntdlib's DS
-// machine anchor the writes: SEQ_18 started through 0x0206C3C8 wrote 0; 15 s on, 0x0206C464 kept section 2, and the
-// next start through 0x0206C3C8 wrote 2. SEQ_39 after SEQ_18, SEQ_37 after SEQ_39, SEQ_41 after SEQ_33, SEQ_67 and 69
-// after SEQ_77, and SEQ_64 after SEQ_110 each wrote 0. SEQ_37 after SEQ_1 wrote nothing.
+// section plays the same loop from another point. The profile leaves those out. A start of SEQ_18 through 0x0206C3C8
+// writes the kept section. 0x0206C464 sets that section when the piece stops. SEQ_39 after SEQ_18, SEQ_37 after SEQ_39,
+// SEQ_41 after SEQ_33, SEQ_67 and 69 after SEQ_77, and SEQ_64 after SEQ_110 write 0. SEQ_37 after SEQ_1 writes nothing.
+//
+// The game's request of an effect (0x0206DB24, id = archive * 1024 + index) writes 180 to variable 0 after it starts
+// id 2 (0x0206DBC4 to 0x0206DBD8). SEQARC_0_2 waits that many ticks before its end (0xA1 0x80 0x00 in its track 0).
 constexpr VariableState kVariableStates[] = {
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_18", "_RESUME", 0, 0},
+    {"BKIE BKIP", kSpiritTracksArchive, "SEQ_18", "_INTRO", 0, -1},
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_23", "_RESUME", 0, 0},
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_24", "_RESUME", 0, 0},
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_37", "_RESUME", 0, 0},
@@ -663,6 +448,7 @@ constexpr VariableState kVariableStates[] = {
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_70", "_RESUME", 0, 0},
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_71", "_RESUME", 0, 0},
     {"BKIE BKIP", kSpiritTracksArchive, "SEQ_351", "_RESUME", 0, 0},
+    {"BKIE BKIP", kSpiritTracksArchive, "SEQARC_0_2", "", 0, 180},
 };
 
 // Whether `code` is one of `games`: a list of game codes or their first three letters, with a space between them.
@@ -745,6 +531,18 @@ void AddChannelsAndReverb(const Place& place, GameSettings& settings)
     }
 }
 
+// Adds the rows of kStreamLocks for the sequence at `place`, in the table's order.
+void AddStreamLocks(const Place& place, GameProfile& profile)
+{
+    for (const StreamLock& row : kStreamLocks)
+    {
+        if (Names(row.game, row.file, row.label, place))
+        {
+            profile.channel_locks.push_back(row.lock);
+        }
+    }
+}
+
 // Adds the rows of kTrackStates for the sequence at `place`: the base's commands, and an arrangement for each other
 // row.
 void AddTrackStates(const Place& place, GameProfile& profile)
@@ -809,7 +607,12 @@ void AddManagerPieces(const Place& place, GameProfile& profile)
     {
         if (Names("BKIE BKIP", kSpiritTracksArchive, piece.label, place))
         {
-            const snd::CommandList commands = MixerCommands(piece);
+            snd::CommandList commands = MixerCommands(piece);
+            if (piece.played == "SEQ_18")
+            {
+                const snd::CommandList mutes = Seq18Mutes(piece.state);
+                commands.insert(commands.end(), mutes.begin(), mutes.end());
+            }
             profile.commands.insert(profile.commands.end(), commands.begin(), commands.end());
         }
     }
@@ -838,6 +641,122 @@ void AddVariableStates(const Place& place, GameProfile& profile)
     }
 }
 
+// Adds an arrangement for each row of kSpiritTracksScenes of the sequence at `place`: every value of the row's state,
+// and SEQ_18's mutes.
+void AddSceneStates(const Place& place, GameProfile& profile)
+{
+    for (const SceneState& scene : kSpiritTracksScenes)
+    {
+        if (!Names("BKIE BKIP", kSpiritTracksArchive, scene.label, place))
+        {
+            continue;
+        }
+
+        snd::CommandList commands = FullMixCommands(scene.volume, kSpiritTracksMixer[scene.state]);
+        if (scene.label == "SEQ_18")
+        {
+            const snd::CommandList mutes = Seq18Mutes(scene.state);
+            commands.insert(commands.end(), mutes.begin(), mutes.end());
+        }
+        profile.arrangements.push_back({.suffix = std::string(scene.suffix), .commands = std::move(commands)});
+    }
+}
+
+// Gives the _INTRO arrangement of each row of kSpiritTracksPieces that an intro handler plays the intro's mix and the
+// fade after it (AddIntroFade), and the mutes of a train at a station where the handler is a train start
+// (AddTrainStart).
+void AddIntroFades(const Place& place, GameProfile& profile)
+{
+    for (const ManagerPiece& piece : kSpiritTracksPieces)
+    {
+        if (!Names("BKIE BKIP", kSpiritTracksArchive, piece.label, place))
+        {
+            continue;
+        }
+
+        for (const IntroHandler& handler : kIntroHandlers)
+        {
+            if (piece.played != handler.played)
+            {
+                continue;
+            }
+
+            for (ProfileArrangement& arrangement : profile.arrangements)
+            {
+                if (arrangement.suffix != "_INTRO")
+                {
+                    continue;
+                }
+
+                AddIntroFade(piece, handler, arrangement);
+                if (handler.train_start)
+                {
+                    AddTrainStart(arrangement);
+                }
+            }
+        }
+    }
+}
+
+// The Legend of Zelda: Phantom Hourglass (USA, AZEE): at sea, overlay 15's music object (0x02185180, updated each frame
+// through 0x02184A44) plays SEQ_101 on the first music handle, and SEQ_104 or SEQ_103 on the second. The sound
+// manager's start refuses SEQ_101 (0x020D7060). The object is therefore the piece's one path. The object sets the
+// tracks' volumes by a mode from the table at 0x02187264, in two groups for each handle (the table at 0x02187244:
+// SEQ_101's tracks 0x033A and 0x04D5, sent in that order). A volume of 0 also mutes the group (0x0201F81C), with mode 3
+// in runs of the USA release. Modes 0 and 1 set SEQ_101's tempo ratio to 250 (0x02185390, 0x021854FC).
+//
+// - Mode 2, while the ship sails (its speed at +0x78 is above 0, 0x0213A35C): both groups at 127. SEQ_101 plays as the
+//   archive gives it.
+// - Mode 1, while the ship stands: 0x033A at 64, and 0x04D5 at 0 and muted. Track 4 is in both groups and takes the
+//   second's value. _STOPPED gives this mode.
+// - Mode 0 (the start, and two modes of the touch screen) sets both groups to 48 at a ratio of 250. It has no
+//   arrangement. Modes 3 and 4 (an enemy within 8.0) silence SEQ_101 and play SEQ_104 at 127 or 64: levels of SEQ_104.
+// - Modes 5 and 6, in the fog (0x027E10A8): SEQ_101 stops, and SEQ_103 plays with tracks 0xFF7F at 127 or 64. Each
+//   frame sets SEQ_103's track 7 to 0 (0x02185154 to 0x02185174) unless the Ghost Ship's distance sets it
+//   (0x021855B8): 64 to 127 from 220.0 to 40.0. The base silences track 7, and _GHOST_SHIP plays it at 127.
+//
+// Changes within modes 0 to 4 ramp by steps of 2 or 6 in each update (0x02185758). An arrangement sets the mode from
+// the start. Nothing else in the game calls the setters of a track's volume or mute, or of the tempo.
+//
+// Runs of the USA release ran the object's code on ntdlib's DS machine, at the title: moved into free memory, with
+// its inputs set. The ship at rest gave _STOPPED's mix. A sailing ship gave SEQ_101 as the archive gives it, at a
+// ratio of 256. The fog gave SEQ_103 with tracks 0xFF7F at 127 and track 7 at 0, and track 7 at 127 with the Ghost
+// Ship's volume (0x021855B8) run at a distance of 0.
+constexpr std::string_view kPhantomHourglassArchive = "SoundData/final_sound_data.sdat";
+
+// Adds Phantom Hourglass's sea modes for the sequence at `place`: SEQ_101's _STOPPED, and SEQ_103's track 7 with its
+// _GHOST_SHIP.
+void AddSeaModes(const Place& place, GameProfile& profile)
+{
+    using snd::CommandId;
+    constexpr uint32_t kTwoBytes = 2u << snd::kTrackParameterSizeShift;
+
+    const auto fader = [](uint8_t volume)
+    {
+        return static_cast<uint32_t>(int32_t{snd::tables::kDecibel[volume]});
+    };
+
+    if (Names("AZEE", kPhantomHourglassArchive, "SEQ_101", place))
+    {
+        snd::CommandList stopped = {
+            {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x033A, snd::kTrackFaderOffset, fader(64)}},
+            {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x04D5, snd::kTrackFaderOffset, fader(0)}},
+            {.id = CommandId::kMuteTrack, .args = {0, 0x04D5, 3}},
+            {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerTempoRatioOffset, 250, 2}},
+        };
+        profile.arrangements.push_back({.suffix = "_STOPPED", .commands = std::move(stopped)});
+    }
+    else if (Names("AZEE", kPhantomHourglassArchive, "SEQ_103", place))
+    {
+        profile.commands.push_back(
+            {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x0080, snd::kTrackFaderOffset, fader(0)}});
+        profile.arrangements.push_back(
+            {.suffix = "_GHOST_SHIP",
+             .commands = {
+                 {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x0080, snd::kTrackFaderOffset, fader(127)}}}});
+    }
+}
+
 } // namespace
 
 GameProfile GameProfileOf(std::string_view game_code, std::string_view file, uint32_t index_in_file,
@@ -852,10 +771,14 @@ GameProfile GameProfileOf(std::string_view game_code, std::string_view file, uin
         profile.settings.effect = OutputEffect{};
     }
 
+    AddStreamLocks(place, profile);
     AddTrackStates(place, profile);
     AddVariables(place, profile);
     AddManagerPieces(place, profile);
     AddVariableStates(place, profile);
+    AddSceneStates(place, profile);
+    AddIntroFades(place, profile);
+    AddSeaModes(place, profile);
 
     return profile;
 }

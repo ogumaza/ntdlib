@@ -46,8 +46,8 @@ struct NoteSound
 // value: a preset can't vary note by note. The result reports that one was there.
 std::optional<NoteSound> FindSound(const Bank& bank, uint32_t program, int key, int velocity);
 
-// Programs from 0xf0 on play one of the DSP program's oscillators, the program's distance from 0xf0, and need no bank
-// (JASBank::noteOnOsc).
+// Programs from 0xf0 on play one of the DSP program's oscillators, the program's distance from 0xf0, and require no
+// bank (JASBank::noteOnOsc).
 constexpr uint32_t kFirstOscillatorProgram = 0xf0;
 
 // The wave system that holds the oscillators' waveforms. Wave n is oscillator n's waveform.

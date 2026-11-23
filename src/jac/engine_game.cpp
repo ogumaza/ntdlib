@@ -3,8 +3,6 @@
 // The game's code above the C JAudio, on the model: the start-up, the starts of pieces, parts and effects, and
 // the game's frames (see engine.cpp).
 
-#include "ntdlib/jac/engine.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -17,6 +15,7 @@
 #include <vector>
 
 #include "jac/engine_internal.h"
+#include "ntdlib/jac/engine.h"
 
 namespace ntdlib::jac
 {
@@ -204,7 +203,7 @@ public:
         return 0;
     }
 
-    // BgmFrameWork (0x2645a0) for the music's first record. A record that needs its buffers gets them
+    // BgmFrameWork (0x2645a0) for the music's first record. A record that requires its buffers gets them
     // (ChangeBgmTrackVol). The moves of the volumes start only from the game's changes of the music.
     void BgmFrameWork()
     {

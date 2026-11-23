@@ -61,7 +61,7 @@ struct StringBlock
 };
 
 // The ID of the item named `name` in `block`, a STRG block from its magic in the byte order of `flavor`. The walk of
-// the tree follows the sound library's. Nothing for a name that the block lacks. Throws xsflib::FormatError for bytes
+// the tree follows the sound library's. Nothing for a name missing from the block. Throws xsflib::FormatError for bytes
 // that aren't a STRG block, and for a tree whose walk leaves it or goes round in a loop.
 std::optional<uint32_t> FindItem(std::span<const uint8_t> block, Flavor flavor, std::string_view name);
 

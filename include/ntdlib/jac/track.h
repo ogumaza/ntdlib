@@ -383,7 +383,7 @@ public:
 
     // What the model leaves out because the game would read or write memory outside the tracks: a register or a port
     // past the end of its array, a command byte below 0xc0 from a register, a child that the pool can't give, or a
-    // command on a missing parent or child. The game's result depends on whatever lies in that memory.
+    // command on a missing parent or child. The game's result depends on whatever is in that memory.
     uint32_t Unmodelled() const
     {
         return unmodelled_;
@@ -545,7 +545,7 @@ private:
     std::array<PlayerCall, kPlayerCalls> game_calls_{};
     std::array<Registration, kRegistered> registered_{};
     uint32_t registrations_ = 0;     // T_LISTS
-    std::array<uint32_t, 8> args_{}; // SEQ_ARG: a command's arguments, which stay until the next command sets them
+    std::array<uint32_t, 8> args_{}; // SEQ_ARG: a command's arguments, kept until the next command sets them
     uint8_t command_ = 0;            // SEQ_CMD
     TrackCallback callback_;
     LoopHook loop_hook_;

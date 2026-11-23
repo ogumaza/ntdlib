@@ -104,7 +104,7 @@ private:
     std::vector<Heap> heaps_;
 };
 
-// A wave's record in its archive (Wave_ in WINF): the wave's settings, where its samples lie in the archive's file,
+// A wave's record in its archive (Wave_ in WINF): the wave's settings, where its samples are in the archive's file,
 // and the status of the load that the record points at. The game keeps a pointer to a status in each record:
 // WaveScene_Set points the records at their archive's status, and UpdateWave_Extern points a record at the status of a
 // handle's load of the record's samples. A channel points at a record. The game's channel does the same.

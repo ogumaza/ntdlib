@@ -110,7 +110,7 @@ private:
 
 // The bytes to reserve for the output. The header's size can be up to the caller's limit, and data that only starts
 // like a header fails within a few bytes. The reserve therefore stops at 64 times the input. The output grows past it
-// where real data needs more.
+// where real data requires more.
 size_t ReserveSize(std::span<const uint8_t> data, const Header& header)
 {
     return std::min<size_t>(header.size, 64 * data.size());

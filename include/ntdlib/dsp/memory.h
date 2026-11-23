@@ -3,7 +3,7 @@
 // The memory that the DSP reaches on each console: WiiMemory, GameCubeMemory and WiiUMemory. Dsp takes one of them as
 // its template parameter. Each provides:
 // - At(address, size): main memory at the addresses that the CPU and the DSP's DMA use, or nullptr unless the whole
-//   range lies in one region of it;
+//   range is in one region of it;
 // - Aram(address, size): the memory behind the DSP's accelerator and the ARAM DMA, or nullptr outside it;
 // - on the GameCube and the Wii, kAcceleratorReadsMem1: whether an accelerator address with bit 28 clear reads MEM1
 //   rather than ARAM;
@@ -215,7 +215,7 @@ public:
         snapshot.aram.Restore(aram_.get());
     }
 
-    // The `size` bytes at physical address `address` of main memory, or nullptr if any of them lies outside it.
+    // The `size` bytes at physical address `address` of main memory, or nullptr if any of them is outside it.
     uint8_t* At(PAddr address, std::size_t size = 1)
     {
         static_assert(kMem1Base == 0);
@@ -232,7 +232,7 @@ public:
         return const_cast<GameCubeMemory*>(this)->At(address, size);
     }
 
-    // The `size` bytes at `address` in ARAM, or nullptr if any of them lies outside it.
+    // The `size` bytes at `address` in ARAM, or nullptr if any of them is outside it.
     uint8_t* Aram(uint32_t address, std::size_t size = 1)
     {
         if (address > kAramSize || size > kAramSize - address)
@@ -272,7 +272,7 @@ public:
     {
     }
 
-    // The `size` bytes at physical address `address`, or nullptr if any of them lies outside the memory.
+    // The `size` bytes at physical address `address`, or nullptr if any of them is outside the memory.
     uint8_t* At(PAddr address, std::size_t size = 1)
     {
         if (address > size_ || size > size_ - address)

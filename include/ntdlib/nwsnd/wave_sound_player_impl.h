@@ -90,7 +90,7 @@ bool WaveSoundPlayer<Policy>::StartChannel(Engine& engine)
     channel->envelope.SetRelease(settings_.adshr.release);
     channel->release_priority_fix = release_priority_fix_;
 
-    // nw::snd gives the voice the player's front bypass. nn::atk gives it the player's update type instead, which
+    // nw::snd gives the voice the player's front bypass. nn::atk gives it the player's update type instead. That type
     // stays 0: the channel updates in the sound frame. On a console with receivers, the voice outputs to the player's.
     Policy::SetFrontBypass(engine, *channel, front_bypass_);
     if constexpr (!std::is_void_v<Receiver>)
@@ -116,8 +116,8 @@ void WaveSoundPlayer<Policy>::UpdateChannel(Engine& engine)
         return;
     }
 
-    // The filters: the sound's low-pass in 64ths from 64, which filters nothing, and its biquad filter unless the
-    // player's replaces it.
+    // The filters: the sound's low-pass in 64ths from 64, and its biquad filter unless the player's replaces it. A
+    // low-pass of 64 filters nothing.
     const float lpf = static_cast<float>(settings_.low_pass - 64) * (1.0f / 64.0f) + basic_.lpf;
     int biquad_type = settings_.biquad_type;
     float biquad_value = FractionOfSoundValue(settings_.biquad_value);
@@ -140,7 +140,7 @@ void WaveSoundPlayer<Policy>::UpdateChannel(Engine& engine)
     const auto outputs =
         Policy::CombineOutputs(basic_.outputs, typename Policy::Outputs{}, pan, span, main_send, fx_send);
 
-    // The player also gives the channel's first LFO the player's LFO, which only the game's handle moves from the
+    // The player also gives the channel's first LFO the player's LFO. Only the game's handle moves that LFO from the
     // values that the channel starts with. On the Wii U, the player's remote filter and remote outputs reach the
     // channel too. The model leaves out the remotes.
     Channel& channel = engine.Channels().At(channel_);

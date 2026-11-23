@@ -22,18 +22,19 @@ namespace ntdlib::ctr::snd
 namespace
 {
 
-// The DSP's highest priority, which the stream's voices take (0x18062c). nw::snd's voice manager keeps its low byte.
+// The DSP's highest priority, the priority of the stream's voices (0x18062c). nw::snd's voice manager keeps its low
+// byte.
 constexpr int kStreamVoicePriority = 0x7fff;
 
 // A pan from 0 to 127, with the centre at 64, as a distance from the centre in 63rds: 0 and 1 count from 63, the
-// rest from 64 (0x31ed80 and 0x31f6d0). 0 and 127 then lie 63 steps from the centre.
+// rest from 64 (0x31ed80 and 0x31f6d0). 0 and 127 then are 63 steps from the centre.
 int CentredPan(uint8_t pan)
 {
     return pan <= 1 ? pan - 63 : pan - 64;
 }
 
-// `base` plus a surround pan from 0 to 127: up to 63 in 63rds, and above 63 one step more in 64ths, which gives 2 at
-// 127. The product rounds before the sum (vmla).
+// `base` plus a surround pan from 0 to 127: up to 63 in 63rds, and above 63 one step more in 64ths. 127 gives 2. The
+// product rounds before the sum (vmla).
 float PlusSpan(float base, uint8_t span)
 {
     if (span <= 63)

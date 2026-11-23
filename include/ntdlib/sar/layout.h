@@ -35,9 +35,9 @@ namespace ntdlib::sar
 {
 
 // A place in the archive: a byte of a piece, or the start of an item in a sequence piece's bytecode. In an archive cut
-// short, a place can lie past the end: its byte counts from the end. A place can also name an item of a sequence with
+// short, a place can be past the end: its byte counts from the end. A place can also name an item of a sequence with
 // no piece among the archive's pieces, such as a sequence file that only group files hold. The distance between two
-// items of a sequence is the same wherever the sequence lies.
+// items of a sequence is the same wherever the sequence is.
 struct Place
 {
     friend bool operator==(const Place&, const Place&) = default;
@@ -86,8 +86,8 @@ struct Padding
 using Piece = std::variant<std::vector<uint8_t>, SequencePiece, Padding>;
 
 // A group file that a game keeps beside an archive, cut by the rules that cut the archive. The sequence pieces of a
-// group file name sequences of the archive's layout. The fields lie in the group file's runs, and their places lie
-// among the group file's pieces. A place at the end lies at the group file's end. Join gives the group file back from
+// group file name sequences of the archive's layout. The fields are in the group file's runs, and their places are
+// among the group file's pieces. A place at the end is at the group file's end. Join gives the group file back from
 // these pieces and fields.
 struct GroupFileLayout
 {
@@ -113,13 +113,13 @@ struct Layout
 // it overlaps another, when a field of the tables points inside it, or when any copy of it can't become a piece. So
 // does a file with bytes that no command reaches, but for zeros at its end: the player can run into them, and an edit
 // couldn't move the offsets that they hold. The zeros that pad a sequence's bytecode stay out of its commands: the
-// file's writer adds them back. Any other file becomes a run of its own when it lies whole in the archive, when zeros
-// pad it to the alignment or it ends the archive, and when no field lies in it or points inside it. A group holds
+// file's writer adds them back. Any other file becomes a run of its own when it is whole in the archive, when zeros
+// pad it to the alignment or it ends the archive, and when no field is in it or points inside it. A group holds
 // fields, and stays in the bytes. The files in it can still become runs. A sequence file that stays in the bytes can
 // become a run too. Padding follows each sequence piece and each run of a file. Its alignment is the largest that every
 // file of the archive keeps. That alignment is at most 64 bytes on the Switch and 32 on the 3DS and the Wii U. The
 // padding after a file that ends the archive aligns to 1 byte. It adds no bytes. In an archive cut short, a group that
-// lies partly past the end stays in the bytes whole. An archive whose fields can't all be placed becomes one run.
+// is partly past the end stays in the bytes whole. An archive whose fields can't all be placed becomes one run.
 // Throws xsflib::FormatError if the archive's tables can't be read.
 Layout Cut(std::span<const uint8_t> archive, const Options& options);
 
@@ -140,7 +140,7 @@ using KnownSequences = std::map<uint32_t, commands::Sequence>;
 //
 // A sequence file of `known` takes the commands that `known` gives it when they give its bytes back, with each of its
 // sounds' starts at an item's start. The decoder's commands take their place only where they don't. Such a file then
-// becomes a sequence where the decoder would leave it in the bytes: where some of its commands lie past a return that
+// becomes a sequence where the decoder would leave it in the bytes: where some of its commands are past a return that
 // a track runs on past, outside every call, and no label or start leads to them. A program that laid the archive out
 // from its sequences gives them, and its sequences come back whole. Every other file comes out as without `known`.
 Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t>> group_files, const Options& options,
@@ -148,9 +148,9 @@ Layout Cut(std::span<const uint8_t> archive, std::span<const std::vector<uint8_t
 
 // The archive's bytes from its pieces, whose sequences are in `sequences`, with `fields` written. A field whose places
 // name items of a sequence takes their distance in the sequence's bytecode. Throws std::invalid_argument for a piece or
-// a place that names a sequence the layout lacks, a sequence that the encoder can't write, a place past its piece or
-// its sequence, a field outside a run, a field whose places name items of a sequence and anything else, or a distance
-// below zero or past 32 bits.
+// a place that names a sequence missing from the layout, a sequence that the encoder can't write, a place past its
+// piece or its sequence, a field outside a run, a field whose places name items of a sequence and anything else, or a
+// distance below zero or past 32 bits.
 std::vector<uint8_t> Join(Flavor flavor, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
                           std::span<const Field> fields);
 
@@ -163,7 +163,7 @@ std::vector<std::size_t> Starts(std::span<const uint8_t> archive, Flavor flavor,
 // The pieces in which file `file` holds `bytes`. `pieces`, with `sequences` and `fields`, join to an archive of
 // `flavor`. Each copy of the file there, in the FILE block and in the groups, has to be a run of its own. Cut makes
 // such runs. Each run takes `bytes`. Joining the new pieces lays the files after each copy out again. The tables
-// follow. Throws std::invalid_argument for a file that the archive lacks, a copy of it that isn't a run of its own, a
+// follow. Throws std::invalid_argument for a file missing from the archive, a copy of it that isn't a run of its own, a
 // file whose bytes another file ID names too, and pieces that join to an archive whose tables don't give `bytes` for
 // each copy and the bytes as before for every other file. Throws xsflib::FormatError if the tables can't be read.
 std::vector<Piece> ReplaceFile(Flavor flavor, std::span<const commands::Sequence> sequences,

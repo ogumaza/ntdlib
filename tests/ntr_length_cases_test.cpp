@@ -17,6 +17,7 @@
 
 #include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/timing.h"
 
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
@@ -109,6 +110,7 @@ files::Wave ConstantWave(uint32_t samples, bool loop)
     {
         wave.data.insert(wave.data.end(), {0x00, 0x10});
     }
+
     return wave;
 }
 
@@ -150,11 +152,6 @@ void TestCases()
         }
 
         const std::optional<xsflib::rip::Timing> timing = Measure(i);
-        if (!xsflib::testing::Check(timing.has_value(), name + " has a length"))
-        {
-            continue;
-        }
-
         long long min_ms = item.others_min_ms >= 0 ? item.others_min_ms : item.min_ms;
         long long max_ms = item.others_min_ms >= 0 ? item.others_max_ms : item.max_ms;
         if (const auto ds = kDsLengths.find(name); ds != kDsLengths.end())
@@ -167,11 +164,7 @@ void TestCases()
             const std::optional<xsflib::rip::Timing> other = Measure(static_cast<std::size_t>(item.same_length_as));
             min_ms = max_ms = other ? other->length_ms : -1;
         }
-        xsflib::testing::Check(
-            timing->length_ms >= min_ms && timing->length_ms <= max_ms && timing->fade_ms == item.fade_ms,
-            name + "'s length is " + std::to_string(timing->length_ms) + " ms with a fade of " +
-                std::to_string(timing->fade_ms) + " ms");
-        xsflib::testing::Check(timing->silent == item.silent, name + (item.silent ? " is silent" : " isn't silent"));
+        xsflib::testing::CheckTiming(name, timing, min_ms, max_ms, item.fade_ms, item.silent);
     }
 }
 

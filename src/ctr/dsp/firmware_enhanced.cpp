@@ -237,7 +237,7 @@ void Audio::MixEnhanced()
     }
 
     // A bus that is on joins the main bus at its return volume, as MixAux adds it. Its bypass sends its front channels
-    // past the surround mode, which the enhanced mode mixes as stereo: the sum stays the same.
+    // past the surround mode. The enhanced mode mixes that mode as stereo: the sum stays the same.
     for (std::size_t bus = 0; bus < 2; bus++)
     {
         const int16_t volume = Signed(internal::kAuxReturn + 2 * static_cast<uint32_t>(bus));

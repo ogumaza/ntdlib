@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 
-"""Reads the Standard MIDI Files that the converters write, for the converters' checks and research tools.
+"""Reads Standard MIDI Files, for checks of a conversion's MIDI files and for research tools.
 
 tracks_of(midi) returns the header chunk and each track as its name and its events. An event is (tick, status, data),
 with the tick counted from the track's start:

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the ARM assembler (ntdlib/arm/assembler.h). The expected words are the encodings that ARM's architecture reference manual
-// gives each instruction, as GNU's and LLVM's assemblers emit them.
-
-#include "ntdlib/arm/assembler.h"
+// Tests of the ARM assembler (ntdlib/arm/assembler.h). The expected words are the encodings that ARM's architecture
+// reference manual gives each instruction, as GNU's and LLVM's assemblers emit them.
 
 #include <cstdint>
 #include <functional>
@@ -12,6 +10,8 @@
 
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
+
+#include "ntdlib/arm/assembler.h"
 
 namespace
 {
@@ -168,7 +168,7 @@ void TestLiterals()
     XSFLIB_CHECK(words[3] == 0x03007F00);
     XSFLIB_CHECK(words[4] == kBase + 4);
 
-    // A pool that Pool() places before data that lies past a load's reach. The label's address resolves after it.
+    // A pool that Pool() places before data that is past a load's reach. The label's address resolves after it.
     words = Words(
         [](ArmAssembler& a)
         {

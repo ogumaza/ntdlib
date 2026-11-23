@@ -282,7 +282,7 @@ std::vector<uint8_t> NtrPart(std::span<const uint8_t> image, std::span<Change> c
     return out;
 }
 
-// Where `offset` in the old image lies in the new one.
+// Where `offset` in the old image is in the new one.
 uint64_t Moved(std::span<const Change> changes, uint64_t offset)
 {
     int64_t to = static_cast<int64_t>(offset);
@@ -293,6 +293,7 @@ uint64_t Moved(std::span<const Change> changes, uint64_t offset)
             to += c.delta;
         }
     }
+
     return static_cast<uint64_t>(to);
 }
 
@@ -370,8 +371,7 @@ std::size_t AppendDsiPart(std::vector<uint8_t>& out, std::span<const uint8_t> im
     // A hash stays where its bytes stay the same. Otherwise it's written again with the key, or left at zeros.
     StaleHash stale_sectors{"the digest's sector hashes", 0, 0};
     StaleHash stale_blocks{"the digest's block hashes", 0, 0};
-    const auto rehash =
-        [&keys](std::span<uint8_t> hash, std::span<const uint8_t> bytes, StaleHash& stale, uint32_t at)
+    const auto rehash = [&keys](std::span<uint8_t> hash, std::span<const uint8_t> bytes, StaleHash& stale, uint32_t at)
     {
         if (keys)
         {
@@ -389,8 +389,7 @@ std::size_t AppendDsiPart(std::vector<uint8_t>& out, std::span<const uint8_t> im
         const std::span<const uint8_t> bytes =
             std::span(out).subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector);
         const std::span<uint8_t> hash = std::span(sectors).subspan(std::size_t{i} * kHashBytes, kHashBytes);
-        if (i < old_ntr_sectors &&
-            Same(bytes, image.subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector)))
+        if (i < old_ntr_sectors && Same(bytes, image.subspan(old.ntr_start + std::size_t{i} * old.sector, old.sector)))
         {
             std::ranges::copy(old_sectors.subspan(std::size_t{i} * kHashBytes, kHashBytes), hash.begin());
             continue;
@@ -399,9 +398,8 @@ std::size_t AppendDsiPart(std::vector<uint8_t>& out, std::span<const uint8_t> im
     }
     for (uint32_t j = 0; j < twl_sectors; j++)
     {
-        std::ranges::copy(
-            old_sectors.subspan((std::size_t{old_ntr_sectors} + j) * kHashBytes, kHashBytes),
-            sectors.begin() + static_cast<std::ptrdiff_t>((std::size_t{ntr_sectors} + j) * kHashBytes));
+        std::ranges::copy(old_sectors.subspan((std::size_t{old_ntr_sectors} + j) * kHashBytes, kHashBytes),
+                          sectors.begin() + static_cast<std::ptrdiff_t>((std::size_t{ntr_sectors} + j) * kHashBytes));
     }
 
     const auto blocks_at = static_cast<uint32_t>(AlignUp(uint64_t{ntr_end} + sectors.size(), kTableAlignment));

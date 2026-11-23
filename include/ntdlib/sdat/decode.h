@@ -20,6 +20,10 @@ namespace ntdlib::sdat
 // byte first.
 std::vector<int16_t> DecodeAdpcm(std::span<const uint8_t> data, uint32_t samples);
 
+// Decodes the samples that a sound channel plays from `words` words of `data` in `encoding`: 4 a word of 8-bit PCM, 2
+// of 16-bit PCM, and for IMA-ADPCM the state's word, then 8 a word.
+std::vector<int16_t> DecodeWords(std::span<const uint8_t> data, uint32_t words, WaveEncoding encoding);
+
 // Decodes a wave's samples, from its start to the end of its loop. Throws xsflib::FormatError for an unknown encoding
 // or for data shorter than the loop's end.
 std::vector<int16_t> DecodeWave(const Wave& wave);

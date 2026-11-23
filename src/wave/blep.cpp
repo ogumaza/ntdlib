@@ -47,8 +47,8 @@ std::vector<float> MakeResiduals()
         before = after;
     }
 
-    // A change p 256ths after sample i lies (k + 1) * 256 - p 256ths before sample i + 1 + k. The output runs
-    // kHalfWidth samples late. The response there is therefore the one at that distance from the span's start.
+    // A change p 256ths after sample i is (k + 1) * 256 - p 256ths before sample i + 1 + k. The output runs kHalfWidth
+    // samples late. The response there is therefore the one at that distance from the span's start.
     std::vector<float> residuals((kPhases + 1) * kTaps);
     for (int phase = 0; phase <= kPhases; ++phase)
     {

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // The length analysis of a song or a sound effect of DSE on dse::Player: xsflib's analysis (xsflib/rip/length.h) with
-// a model of the sequence that the player's driver follows. A frame is one of DSE's ticks, about 10 ms. A tick's
+// a model of the sequence that the player's driver follows. A frame is one of DSE's ticks: 10 ms, or a video frame of
+// about 16.715 ms where the game's settings give the slow tick (Driver::kSlowTickMicroseconds). A tick's
 // commands sound in the next tick's samples: the ARM7's driver runs them in its next frame, and a channel starts in the
 // frame after that. The DS's sound unit has no effects, and nothing rings.
 //
@@ -30,12 +31,14 @@
 namespace ntdlib::dse
 {
 
-// One of DSE's ticks in milliseconds.
-constexpr double kTickMs = 1000.0 * Player::kTickClocks / ntr::kSystemClockHz;
+// One of DSE's ticks of 10 ms in milliseconds.
+constexpr double kTickMs = TickMs(Driver::kTickMicroseconds);
 
 // The analysis's rules are those of the later consoles: at most 600 s, and a sequence that stays busy without a sound
-// for 180 s has ended. A tick's commands, a loop's point and a steady sequence's point sound a tick on.
-xsflib::rip::LengthRules LengthRules();
+// for 180 s has ended. A sequence that isn't busy for more than 100 ms has ended: 10 ticks of 10 ms, or 5 slow ticks. A
+// tick's commands, a loop's point and a steady sequence's point sound a tick on. A frame is a tick of
+// `tick_microseconds`, and each time is the most whole ticks that fit in it.
+xsflib::rip::LengthRules LengthRules(int tick_microseconds = Driver::kTickMicroseconds);
 
 // The model that xsflib's length analysis (xsflib::rip::MeasureLength) reads: the sequence that `player`'s driver
 // follows (Driver::Follow). The model sets the driver's hooks. It also counts each track's loops.
@@ -50,6 +53,11 @@ public:
     uint64_t Frames() const;
 
     bool Sounded() const;
+
+    // The milliseconds from the start of the tick just run to its first sample that isn't 0, on either side of the
+    // output at ntr::kOutputRate, or nothing when every sample of the tick is 0.
+    std::optional<double> FirstSampleMs() const;
+
     bool Ringing() const;
     std::size_t VoiceCount() const;
     xsflib::rip::VoicePlace Voice(std::size_t index) const;
@@ -121,9 +129,16 @@ private:
     std::vector<TrackFollow> tracks_;
 };
 
-// Measures the song or the sound effect of `files` on a player of `build` (Player::Start). Nothing when DSE refuses the
-// sound effect. The start's exceptions pass through: xsflib::rip::TryMeasure turns them into nothing. So does a Hang
-// when a track hangs the driver.
-std::optional<xsflib::rip::Timing> MeasureSequence(const SequenceFiles& files, Build build = Build::kLater);
+// Measures the song or the sound effect of `files` on a player of `build` (Player::Start). A song starts with
+// `song_start`, such as a game's level (game_starts.h): the level moves the times of the first and the last sample.
+// Nothing when DSE refuses the sound effect. With the long limit, the one measure runs to xsflib::rip::kLongLimitMs
+// (xsflib::rip::WithLongLimit): DSE's analysis has no second measure whose verdicts the first limit would change. The
+// start's exceptions pass through: xsflib::rip::TryMeasure turns them into nothing. So does a Hang when a track hangs
+// the driver. The player's driver runs a tick of `tick_microseconds`, the tick that the game's settings give
+// (ticks.h): Driver::kTickMicroseconds or Driver::kSlowTickMicroseconds. Any other tick throws std::invalid_argument.
+std::optional<xsflib::rip::Timing> MeasureSequence(const SequenceFiles& files, Build build = Build::kLater,
+                                                   xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault,
+                                                   const StartParameters& song_start = {},
+                                                   int tick_microseconds = Driver::kTickMicroseconds);
 
 } // namespace ntdlib::dse

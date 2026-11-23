@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "ntdlib/cafe/snd/engine.h"
+#include "ntdlib/nwsnd/sound_players.h"
 #include "ntdlib/nwsnd/stream_sound_player.h"
 #include "ntdlib/nwsnd/stream_sound_player_impl.h"
 #include "ntdlib/nwsnd/wave_sound_player.h"

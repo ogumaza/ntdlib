@@ -19,21 +19,21 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
-#include "disc_files.h"
+#include "disc_helpers.h"
 #include "disc_writers.h"
 #include "ntdlib/disc/compression.h"
 #include "ntdlib/disc/containers.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/testing/disc_files.h"
 #include "temp_folder.h"
 
 namespace
 {
 
-using disc_files::CheckFiles;
-using disc_files::CheckRefused;
-using disc_files::Fill;
-using disc_files::WriteFile;
+using disc_helpers::CheckFiles;
+using disc_helpers::CheckRefused;
+using disc_helpers::Fill;
 using disc_writers::AddRawData;
 using disc_writers::AllZero;
 using disc_writers::BuildGame;
@@ -50,6 +50,11 @@ using disc_writers::Wdf;
 using disc_writers::WiaContents;
 using disc_writers::WiaFile;
 using ntdlib::disc::Method;
+using ntdlib::testing::WriteFile;
+using ntdlib::testing::disc_files::kPartition;
+using ntdlib::testing::disc_files::kTmdOffset;
+using ntdlib::testing::disc_files::WriteGamePartition;
+using ntdlib::testing::disc_files::WriteSystemFiles;
 using xsflib::testing::Check;
 namespace fs = std::filesystem;
 
@@ -58,8 +63,7 @@ const ntdlib::disc::GameOptions kOptions{ntdlib::disc::Console::kWii, "xyz", {nt
 
 constexpr uint64_t kSector = 0x8000;
 constexpr uint64_t kSectorData = 0x7C00;
-constexpr uint64_t kPartition = 0x50000;             // where the game partition starts on the disc
-constexpr uint64_t kDataOffset = 0x20000;            // and its data, from the partition's start
+constexpr uint32_t kDataOffset = 0x20000;            // the game partition's data, from kPartition
 constexpr uint64_t kData = kPartition + kDataOffset; // its data on the disc
 
 // The test game in a Wii disc's game partition.
@@ -117,16 +121,9 @@ Bytes TestDisc::Iso(IsoOptions options) const
         std::copy_n("NKIT v01", 8, iso.begin() + 0x200);
     }
 
-    // The partition table, and the partition's header with the offsets of its TMD and data divided by 4.
-    xsflib::StoreBe32(iso.data() + 0x40000, 1);
-    xsflib::StoreBe32(iso.data() + 0x40004, 0x40020 / 4);
-    xsflib::StoreBe32(iso.data() + 0x40020, kPartition / 4);
-    xsflib::StoreBe32(iso.data() + 0x40024, 0);
-    xsflib::StoreBe32(iso.data() + kPartition + 0x2A4, static_cast<uint32_t>(tmd.size()));
-    xsflib::StoreBe32(iso.data() + kPartition + 0x2A8, 0x2C0 / 4);
-    xsflib::StoreBe32(iso.data() + kPartition + 0x2B8, kDataOffset / 4);
-    xsflib::StoreBe32(iso.data() + kPartition + 0x2BC, static_cast<uint32_t>(data_size / 4));
-    std::copy(tmd.begin(), tmd.end(), iso.begin() + kPartition + 0x2C0);
+    // The partition table, the partition's header and its TMD.
+    WriteGamePartition(iso, static_cast<uint32_t>(tmd.size()), kDataOffset, data_size);
+    std::copy(tmd.begin(), tmd.end(), iso.begin() + kPartition + kTmdOffset);
 
     if (!options.hashed)
     {
@@ -186,6 +183,27 @@ Bytes Wbfs(const Bytes& iso)
     return wbfs;
 }
 
+// The group of the partition's `count` sectors from sector `first`, with `lists` empty hash exception lists, and the
+// runs of junk that are wholly inside it.
+GroupData PartitionGroup(const TestDisc& disc, uint64_t first, uint64_t count, uint64_t lists)
+{
+    GroupData group;
+    group.lists.assign(lists * 2, 0);
+    group.data.assign(count * kSectorData, 0);
+    const uint64_t start = first * kSectorData;
+    const uint64_t size = std::min<uint64_t>(count * kSectorData, disc.data.size() - start);
+    std::copy_n(disc.data.begin() + static_cast<std::ptrdiff_t>(start), size, group.data.begin());
+    for (const Junk& j : disc.junk)
+    {
+        if (j.offset >= start && j.offset + j.size <= start + count * kSectorData)
+        {
+            group.junk.push_back({j.offset - start, j.size, j.seed});
+        }
+    }
+
+    return group;
+}
+
 // A WIA or RVZ file of the disc. With `partitions`, WIA and RVZ store the game partition's data decrypted and without
 // hashes. The disc header then marks the partition as encrypted. A real disc's header does the same. Without
 // `partitions`, the whole disc is raw data. Dolphin does that when it converts an NKit image.
@@ -202,7 +220,7 @@ Bytes Wia(const TestDisc& disc, bool rvz, Method method, uint32_t chunk_size, bo
                     .disc_size = iso_size,
                     .partitions = partitions ? 1u : 0u};
 
-    // Raw data: from 0x80 up to the partition's data, or to the end. The partition's junk lies in the raw data when the
+    // Raw data: from 0x80 up to the partition's data, or to the end. The partition's junk is in the raw data when the
     // partition isn't stored separately.
     std::vector<Junk> raw_junk;
     if (!partitions)
@@ -239,21 +257,7 @@ Bytes Wia(const TestDisc& disc, bool rvz, Method method, uint32_t chunk_size, bo
             {
                 const uint64_t first = sector + g * sectors_per_chunk;
                 const uint64_t n = std::min(sectors_per_chunk, sector + count - first);
-                GroupData group;
-                group.lists.assign(lists * 2, 0);
-                group.data.assign(n * kSectorData, 0);
-                const uint64_t start = first * kSectorData;
-                const uint64_t size = std::min<uint64_t>(n * kSectorData, disc.data.size() - start);
-                std::copy_n(disc.data.begin() + static_cast<std::ptrdiff_t>(start), size, group.data.begin());
-                for (const Junk& j : disc.junk)
-                {
-                    if (j.offset >= start && j.offset + j.size <= start + n * kSectorData)
-                    {
-                        group.junk.push_back({j.offset - start, j.size, j.seed});
-                    }
-                }
-
-                wia.groups.push_back(group);
+                wia.groups.push_back(PartitionGroup(disc, first, n, lists));
             }
 
             sector += count;
@@ -364,11 +368,7 @@ void TestExtractedDiscs(const fs::path& dir, const TestDisc& disc)
 {
     for (const fs::path& root : {dir / "extracted" / "DATA", dir / "partition"})
     {
-        WriteFile(root / "sys" / "boot.bin", disc.boot);
-        WriteFile(root / "sys" / "bi2.bin", disc.bi2);
-        WriteFile(root / "sys" / "apploader.img", disc.apploader);
-        WriteFile(root / "sys" / "main.dol", disc.dol);
-        WriteFile(root / "sys" / "fst.bin", disc.fst);
+        WriteSystemFiles(root, {disc.boot, disc.bi2, disc.apploader, disc.dol, disc.fst});
         WriteFile(root / "tmd.bin", disc.tmd);
         for (const auto& [path, data] : disc.files)
         {

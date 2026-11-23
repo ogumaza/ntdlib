@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // Band-limited steps: a signal that holds a level and changes it at times in a console's clocks, sampled at a lower
-// rate without aliasing. A chip's square, noise or wave channel gives such a signal. Each change adds the step
-// response of a low-pass filter at its time: the integral of a sinc under a Kaiser window with a beta of 8, 32 output
-// samples on each side. The cutoff lies at 0.92 of the output's Nyquist frequency. The response then stays within 0.01
-// dB of full level up to 0.84 of that frequency, and lies at least 77 dB down from it on. The interpolator of `sinc.h`
-// gives the same response at a step of 1.
+// rate without aliasing. A chip's square, noise or wave channel gives such a signal. Each change adds the step response
+// of a low-pass filter at its time: the integral of a sinc under a Kaiser window with a beta of 8, 32 output samples on
+// each side. The cutoff is at 0.92 of the output's Nyquist frequency. The response then stays within 0.01 dB of full
+// level up to 0.84 of that frequency, and is at least 77 dB down from it on. The interpolator of `sinc.h` gives the
+// same response at a step of 1.
 //
 // The step response reaches 32 samples before a change's time. The output therefore runs 32 samples late: sample m
 // holds the filtered signal at m - 32 samples, and only the changes before sample m reach it. A change thus has to
@@ -37,7 +37,7 @@ public:
     // Steps for an output of `samples` samples in each `clocks` clocks. Both have to be above 0.
     BandLimitedSteps(uint64_t clocks, uint32_t samples);
 
-    // Changes the level by `delta` at `clock` clocks from the start. The clock can't lie before the time of the last
+    // Changes the level by `delta` at `clock` clocks from the start. The clock can't be before the time of the last
     // sample read.
     void Step(uint64_t clock, float delta);
 

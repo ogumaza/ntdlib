@@ -13,6 +13,11 @@
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/system.h"
 #include "ntdlib/rvl/axfx/axfx.h"
+#include "ntdlib/rvl/axfx/chorus.h"
+#include "ntdlib/rvl/axfx/delay.h"
+#include "ntdlib/rvl/axfx/photo_mood.h"
+#include "ntdlib/rvl/axfx/reverb_hi.h"
+#include "ntdlib/rvl/axfx/reverb_std.h"
 #include "ntdlib/rvl/snd/effect_setup.h"
 #include "ntdlib/rvl/snd/util.h"
 

@@ -55,7 +55,7 @@ struct BankFile
         std::vector<KeyRegion> key_regions;
     };
 
-    // Reads `file`. `order` stays empty when the instruments lie in the order of their programs. Throws
+    // Reads `file`. `order` stays empty when the instruments are in the order of their programs. Throws
     // xsflib::FormatError for a file that isn't a bank file, and for a bank that NintendoWare's tools didn't lay out:
     // Write has to give `file` back.
     static BankFile Read(std::span<const uint8_t> file);

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 #include <teakra/teakra.h>
@@ -15,6 +16,8 @@ using namespace xsflib::testing;
 
 namespace
 {
+
+using seqlib::testing::Throws;
 
 // DMA registers, as offsets into the MMIO region.
 constexpr uint16_t kDmaChannel = 0x1BE;
@@ -67,7 +70,7 @@ void CopyWord(Teakra::Teakra& teakra, uint32_t source, uint32_t destination)
     Transfer(teakra, source, destination, 1, 1, 1, 0);
 }
 
-// A dword transfer of 0xFFFF words ends. Its counter steps by two, so a 16-bit one went from 0xFFFE to 0 and never
+// A dword transfer of 0xFFFF words ends. Its counter steps by two. A 16-bit counter went from 0xFFFE to 0 and never
 // reached the size.
 void TestDwordTransferEnds()
 {
@@ -86,15 +89,8 @@ void TestLongTransferRefused()
 {
     Teakra::Teakra teakra(Teakra::UserConfig{});
 
-    bool refused = false;
-    try
-    {
-        Transfer(teakra, 0x100, 0x8000, 0xFFFF, 0xFFFF, 0xFFFF, 0);
-    }
-    catch (const std::runtime_error&)
-    {
-        refused = true;
-    }
+    const bool refused =
+        Throws<std::runtime_error>([&] { Transfer(teakra, 0x100, 0x8000, 0xFFFF, 0xFFFF, 0xFFFF, 0); });
 
     XSFLIB_CHECK(refused);
 }

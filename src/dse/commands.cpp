@@ -113,7 +113,7 @@ uint8_t OctaveAfter(uint8_t octave, uint8_t low_bits)
     return static_cast<uint8_t>(octave + ((low_bits >> 4) & 3) - 2);
 }
 
-// The low 6 bits of a new note of `key` after `octave`, or nothing where its octave lies out of reach.
+// The low 6 bits of a new note of `key` after `octave`, or nothing where its octave is out of reach.
 std::optional<uint8_t> NewLowBits(uint8_t octave, uint8_t key)
 {
     const int change = key / 12 - static_cast<int8_t>(octave);

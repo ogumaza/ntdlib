@@ -160,8 +160,7 @@ std::string UsageText(const ArchiveConverter<Archive>& archive_converter)
     text += "or " + app + ".app on macOS.\n";
     text += "\n";
     text += "options:\n";
-    text += "  --output DIR   write to DIR (one archive only)\n";
-    text += "  --only REGEX   convert matching sequence names (for example --only BGM)\n";
+    text += OutputOnlyHelp("archive", "BGM");
     text += kLoopsHelp;
     text += "  --seed N       " + c.seed_option + "\n";
     text += "  --var N=V      set variable N (0-15 player, 16-31 global) to V before each\n";

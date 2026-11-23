@@ -16,6 +16,7 @@
 
 #include "xsflib/binary.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/wave_file.h"
 #include "rsar/file_blocks.h"
@@ -56,7 +57,7 @@ xsflib::FormatError OtherLayout(const std::string& what)
 // Where the references of a range table that holds `count` entries start, from the table's start.
 std::size_t RangeReferences(std::size_t count)
 {
-    return (count + 1 + 3) & ~std::size_t{3};
+    return AlignUp(count + 1, 4);
 }
 
 // The bytes that `node` takes in the layout.
@@ -223,7 +224,7 @@ public:
     }
 
 private:
-    // Where the references of a node of `kind` at `at` lie.
+    // Where the references of a node of `kind` at `at` are.
     std::vector<std::size_t> EntriesAt(uint8_t kind, std::size_t at) const
     {
         std::vector<std::size_t> entries;
@@ -453,9 +454,9 @@ void GatherKinds(const std::vector<TreeNode>& nodes, const TreeReference& refere
     }
 }
 
-// Checks that Read gives the tree of `bank` back. A node of a table's kind or a region has to lie where a reference
+// Checks that Read gives the tree of `bank` back. A node of a table's kind or a region has to be where a reference
 // first names it in pre-order, and a reference of its kind has to reach it through references of their kinds. Any
-// other node lies where references of data type 4 first name it, and has kind kNone.
+// other node is where references of data type 4 first name it, and has kind kNone.
 void CheckTree(const BankFile& bank)
 {
     const std::vector<TreeNode>& nodes = bank.nodes;

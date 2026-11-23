@@ -23,10 +23,12 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/nx/audio/delay.h"
+#include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/light_limiter.h"
 #include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/nx/audio/reverb.h"
@@ -37,6 +39,7 @@ namespace
 {
 
 namespace audio = ntdlib::nx::audio;
+using seqlib::testing::Throws;
 
 constexpr int32_t kOne = 0x4000; // 1.0 in Q14
 constexpr int32_t kRate = 48000;
@@ -720,15 +723,7 @@ void TestRendererReverb()
         sounds = sounds || !Silent(now);
     }
 
-    bool refused = false;
-    try
-    {
-        dry.renderer.SetReverbLateMode(0, 5);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::invalid_argument>([&] { dry.renderer.SetReverbLateMode(0, 5); });
 
     XSFLIB_CHECK(same && sounds);
     XSFLIB_CHECK(refused);

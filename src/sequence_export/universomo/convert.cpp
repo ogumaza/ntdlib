@@ -18,21 +18,21 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/loop.h"
 #include "seqlib/midi/performance_writer.h"
 #include "seqlib/pcm.h"
 #include "seqlib/sf2/presets.h"
 #include "seqlib/sf2/samples.h"
 #include "seqlib/sf2/soundfont.h"
-#include "seqlib/sfz/opcodes.h"
 #include "seqlib/sfz/track_file.h"
-#include "seqlib/wav.h"
 #include "xsflib/ascii.h"
 #include "xsflib/binary.h"
 
+#include "ntdlib/file_paths.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/sequence_export/conversion.h"
+#include "ntdlib/sequence_export/sfz_files.h"
 #include "ntdlib/universomo/formats.h"
+#include "sequence_export/ntr/sample_preset.h"
 
 namespace ntdlib::sequence_export::universomo
 {
@@ -42,8 +42,8 @@ namespace
 namespace sf2 = seqlib::sf2;
 namespace uv = ntdlib::universomo;
 
-// The title screen's song in Beat City (game code BEYE, the US release).
-constexpr uint32_t kTitleSong = 105;
+// The key at which a sample plays at kRootRate.
+constexpr uint8_t kRootKey = 60;
 
 // The bytes that the sound unit plays of `sample`: the data up to the loop's end, or all of it, in words of 4 bytes, as
 // 16-bit PCM. The loop's start and end are in samples.
@@ -99,19 +99,8 @@ sf2::SoundFont BuildSoundFont(const Performance& perf, const uv::SampleBank& ban
     sf2::SoundFont sf;
     for (std::size_t i = 0; i < perf.presets.size(); i++)
     {
-        const seqlib::Pcm pcm = PcmOf(bank.samples.at(perf.presets[i]));
-        const std::vector<uint16_t> ids =
-            sf2::AddSamples(sf, seqlib::PrepareForSoundFont(pcm), SampleName(perf.presets[i]), kRootRate, 60);
-        sf2::Instrument instrument;
-        instrument.name = names[i];
-        sf2::Zone global;
-        global.modulators.assign(sf2::kGlobalZoneModulators.begin(), sf2::kGlobalZoneModulators.end());
-        instrument.zones.push_back(std::move(global));
-        sf2::ZoneValues values;
-        values.loop = pcm.loop;
-        values.sample = ids.at(0);
-        instrument.zones.push_back(sf2::RegionZone(values));
-        sf2::AddInstrumentPreset(sf, static_cast<uint32_t>(i), names[i], std::move(instrument));
+        detail::AddSamplePreset(sf, static_cast<uint32_t>(i), names[i], SampleName(perf.presets[i]),
+                                PcmOf(bank.samples.at(perf.presets[i])), kRootRate, kRootKey);
     }
 
     return sf;
@@ -122,14 +111,6 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
                                   const uv::SampleBank& bank, const std::string& title,
                                   const std::vector<std::string>& names, const std::string& program)
 {
-    seqlib::sfz::TrackFileOptions options;
-    options.title = title;
-    options.program = program;
-    options.preset_names = names;
-    options.presets = perf.presets.size();
-    options.level_cut_db = perf.level_cut_db;
-    options.track_names = true;
-
     // Each sample gets a WAV file once.
     seqlib::sfz::Instruments out;
     std::map<uint8_t, std::string> regions;
@@ -140,28 +121,15 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
             return found->second;
         }
 
-        const seqlib::Pcm pcm = PcmOf(bank.samples.at(number));
-        const uint32_t crossfade = (kRootRate * 4 + 999) / 1000; // 4 ms
-        const seqlib::PreparedWave prepared = seqlib::PrepareForSfz(pcm, crossfade);
-        const std::string name = SampleName(number) + ".wav";
-        out.samples.push_back({name, seqlib::WavFile(prepared.channels[0], kRootRate)});
-        const std::string line =
-            "<region> sample=" + name + " lokey=0 hikey=127 pitch_keycenter=60 sample_quality=0" +
-            seqlib::sfz::LoopOpcodes(prepared.loop, prepared.loop_start, prepared.loop ? prepared.loop_end - 1 : 0) +
-            "\n";
+        const std::string line = detail::AddSampleRegion(out.samples, SampleName(number) + ".wav",
+                                                         PcmOf(bank.samples.at(number)), kRootRate, kRootKey);
         return regions.emplace(number, line).first->second;
     };
-    const auto text = [&](int)
+    const auto preset = [&](uint32_t p)
     {
-        seqlib::sfz::TrackText added;
-        added.preset = [&](uint32_t p)
-        {
-            return "<group>\n" + region(perf.presets.at(p));
-        };
-
-        return added;
+        return "<group>\n" + region(perf.presets.at(p));
     };
-    out.files = seqlib::sfz::TrackFiles(perf, midi, options, text);
+    out.files = SfzPresetFiles(perf, midi, title, names, program, preset);
 
     return out;
 }
@@ -230,8 +198,7 @@ std::vector<SongSet> FindSongs(const ntdlib::ntr::Rom& rom, std::vector<std::str
     std::vector<SongSet> sets;
     for (const ntdlib::ntr::RomFile& file : rom.Files())
     {
-        const std::string::size_type slash = file.path.rfind('/');
-        const std::string folder = slash == std::string::npos ? "" : file.path.substr(0, slash + 1);
+        const std::string folder = ntdlib::detail::FolderOf(file.path);
         if (xsflib::AsciiLower(file.path.substr(folder.size())) != "samplebank.usb")
         {
             continue;
@@ -247,7 +214,6 @@ std::vector<SongSet> FindSongs(const ntdlib::ntr::Rom& rom, std::vector<std::str
         }
     }
 
-    const bool beat_city = rom.Header().game_code == "BEYE";
     for (SongSet& set : sets)
     {
         // The table of sounds gives which songs loop.
@@ -283,10 +249,6 @@ std::vector<SongSet> FindSongs(const ntdlib::ntr::Rom& rom, std::vector<std::str
                 if (*number < sounds.size())
                 {
                     input.loop = sounds[*number].loops;
-                }
-                if (beat_city && *number == kTitleSong)
-                {
-                    input.name += "_title_screen";
                 }
                 set.songs.push_back(std::move(input));
             }

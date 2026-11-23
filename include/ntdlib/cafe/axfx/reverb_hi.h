@@ -11,8 +11,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "ntdlib/ax/reverb_lines.h"
 #include "ntdlib/cafe/axfx/axfx.h"
-#include "ntdlib/cafe/axfx/reverb_lines.h"
 
 namespace ntdlib::cafe::axfx
 {
@@ -63,10 +63,6 @@ public:
     void Process(const Buffers& frame, uint32_t samples, const Buffers& bus_in = {}, const Buffers& bus_out = {});
 
 private:
-    // The bits of the library's `active` (see DelayExp).
-    static constexpr uint32_t kOff = 1;
-    static constexpr uint32_t kSkip = 2;
-
     static constexpr int kTaps = 3;
     static constexpr int kCombs = 3;
     static constexpr int kAllpasses = 2;
@@ -93,7 +89,7 @@ private:
     std::array<float, kTaps> early_coef_{};
 
     // The pre-delay, the combs, the two allpasses after them and the low-pass.
-    detail::ReverbLines<kCombs, kAllpasses> lines_;
+    ntdlib::ax::axfx::ReverbLines<kChannelCount, kCombs, kAllpasses> lines_;
 
     // Each channel's last allpass, after the low-pass. It takes the other allpasses' gain.
     std::array<std::vector<float>, kChannelCount> last_allpass_line_;

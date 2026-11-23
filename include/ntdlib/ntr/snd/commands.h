@@ -241,6 +241,7 @@ PlayedCommand ReadPlayedCommand(const ByteAt& byte_at, uint32_t at)
 
     played.code = code;
     played.next = at;
+
     return played;
 }
 

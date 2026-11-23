@@ -4,13 +4,13 @@
 // flavor's format: the 3DS's, the Wii U's and the Switch's. Each archive holds two sequence files, a file of other
 // bytes, a sequence file laid out otherwise than the writer lays it out, and a group. The group holds a copy of a file
 // that only it holds, and a copy of one of the archive's sequence files. Another archive holds a sequence file with
-// bytes that no command reaches, and another one whose commands run on past a return, which the commands that a program
-// gives the cut make a sequence. A third archive's tables take new values. A fourth holds a wave sound beside a
-// sequence sound, for the fields of the sounds' starts. A fifth holds sounds with some of the options and without
-// them, for the places of the values. The files that stay in the bytes become runs of their own, and take new bytes:
-// in the FILE block, in a group, and in both. A copy with other bytes in a group can take other new bytes than the
-// archive's copy. The last archives come with group files beside them, and the cut takes those too. Another group
-// file's copies all start on multiples of 64 bytes. On the 3DS and the Wii U, the cut still pads them to 32.
+// bytes that no command reaches, and another one whose commands run on past a return. The commands that a program gives
+// the cut make that file a sequence. A third archive's tables take new values. A fourth holds a wave sound beside a
+// sequence sound, for the fields of the sounds' starts. A fifth holds sounds with some of the options and without them,
+// for the places of the values. The files that stay in the bytes become runs of their own, and take new bytes: in the
+// FILE block, in a group, and in both. A copy with other bytes in a group can take other new bytes than the archive's
+// copy. The last archives come with group files beside them, and the cut takes those too. Another group file's copies
+// all start on multiples of 64 bytes. On the 3DS and the Wii U, the cut still pads them to 32.
 
 #include <algorithm>
 #include <cstddef>
@@ -33,6 +33,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/groups.h"
 #include "ntdlib/sar/layout.h"
+#include "ntdlib/testing/layout_edits.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sar_tools.h"
 
@@ -53,6 +54,7 @@ using ntdlib::sar::Layout;
 using ntdlib::sar::Padding;
 using ntdlib::sar::Piece;
 using ntdlib::sar::SequencePiece;
+using ntdlib::testing::layout_edits::Insert;
 
 // A volume, a wait and an end, then a note and an end that only a sound's start reaches, at offset 5.
 const std::vector<uint8_t> kSong = {0xC1, 0x64, 0x80, 0x30, 0xFF, 0x3C, 0x64, 0x30, 0xFF};
@@ -125,37 +127,6 @@ std::vector<uint32_t> SequencesOfPieces(const Layout& layout)
 std::vector<uint8_t> Join(const Layout& layout)
 {
     return ntdlib::sar::Join(layout.flavor, layout.sequences, layout.pieces, layout.fields);
-}
-
-// Inserts `count` copies of item `copied` of sequence `sequence` before item `at`. Moves the labels and the places at
-// or after it the way an editor moves them.
-void Insert(Layout& layout, uint32_t sequence, uint32_t at, uint32_t count, uint32_t copied)
-{
-    std::vector<ntdlib::commands::Command>& items = layout.sequences[sequence].items;
-    const ntdlib::commands::Command command = items[copied];
-    items.insert(items.begin() + at, count, command);
-    for (ntdlib::commands::Label& label : layout.sequences[sequence].labels)
-    {
-        label.item += label.item >= at ? count : 0;
-    }
-
-    for (Field& field : layout.fields)
-    {
-        // A place at the archive's end has no piece. Only an item's place names a sequence piece, or a sequence.
-        for (ntdlib::sar::Place* place : {&field.from, &field.to})
-        {
-            if (!place->item)
-            {
-                continue;
-            }
-
-            const auto* piece = place->sequence ? nullptr : std::get_if<SequencePiece>(&layout.pieces[place->piece]);
-            if ((piece ? piece->sequence : place->piece) == sequence && place->offset >= at)
-            {
-                place->offset += count;
-            }
-        }
-    }
 }
 
 // Whether `cut` holds the commands, the copies and the fields of `layout`. The runs differ in the fields' values.
@@ -433,7 +404,7 @@ void TestRefusals(Flavor flavor)
 {
     const Layout layout = Cut(Archive(flavor), flavor);
 
-    // A piece that names a sequence the layout lacks.
+    // A piece that names a sequence missing from the layout.
     Layout missing = layout;
     missing.sequences.pop_back();
     XSFLIB_CHECK(Refuses(missing));
@@ -482,7 +453,7 @@ void TestBytes(Flavor flavor)
     const xsflib::Reader header(grown, flavor == Flavor::kCafe);
     XSFLIB_CHECK(grown.size() == short_archive.size() + 32 && header.U32(0x0C) == grown.size() + 8);
 
-    // A group that lies partly past the end stays whole in the bytes, with the file that only it holds.
+    // A group that is partly past the end stays whole in the bytes, with the file that only it holds.
     std::vector<uint8_t> shorter = Archive(flavor);
     shorter.resize(shorter.size() - 0x30);
 
@@ -689,7 +660,7 @@ void TestValuePlaces(Flavor flavor)
 
 // The file of other bytes and the odd sequence file become runs of their own. The group holds fields, and stays in the
 // bytes. A longer file of other bytes moves the files after it, and the tables follow. A shorter odd file moves them
-// back. A new cut of the new archive gives the same fields. In an archive cut short, the group lies partly past the
+// back. A new cut of the new archive gives the same fields. In an archive cut short, the group is partly past the
 // end, and a longer file still goes in. Without the fields, a shorter odd file leaves the group past the end.
 void TestFiles(Flavor flavor)
 {
@@ -773,7 +744,7 @@ void TestFilesInGroups(Flavor flavor)
 }
 
 // A group holds a copy of a file with other bytes, and a file that only it holds. FileCopies gives both copies of the
-// first, in the order of their starts, and the one copy of the second. A file that the archive lacks has none.
+// first, in the order of their starts, and the one copy of the second. A file missing from the archive has none.
 void TestFileCopies(Flavor flavor)
 {
     const std::vector<uint8_t> kFirst = {1, 2, 3, 4, 5};
@@ -852,7 +823,7 @@ void TestCopyBytes(Flavor flavor)
     XSFLIB_CHECK(FileOf(read, 0) == FileOf(tables, 0));
 }
 
-// ReplaceFile refuses a file that the archive lacks, an empty file, a file in a layout that keeps it inside a run, a
+// ReplaceFile refuses a file missing from the archive, an empty file, a file in a layout that keeps it inside a run, a
 // file whose bytes another file ID names too, and fields that don't follow the new size.
 void TestFileRefusals(Flavor flavor)
 {
@@ -1223,8 +1194,8 @@ Beside ArchiveWithGroupSequences(Flavor flavor)
 // file. The field of Entry's start names two items of the sequence: its first, and the item at offset 5. The sequence
 // file with other bytes in each group file stays in their bytes. Each joins to give its bytes back. More commands
 // before the start make both copies longer, the group files' tables follow, and Entry's start moves with its item. Join
-// refuses a field that names items of a sequence and anything else, a sequence that the layout lacks, and an item past
-// the sequence's end.
+// refuses a field that names items of a sequence and anything else, a sequence missing from the layout, and an item
+// past the sequence's end.
 void TestGroupFileSequences(Flavor flavor)
 {
     const Beside beside = ArchiveWithGroupSequences(flavor);

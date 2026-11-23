@@ -29,7 +29,7 @@
 // FILE holds the groups' files, from 32 bytes into the block: each group's files one after another, then their wave
 // data, then the next group. Each file's size and each wave data's size are multiples of 32 bytes. The last group of
 // the table has no name. It holds the files that the other groups don't hold, in the order of their IDs. A file beside
-// the archive lies in no group. A file's copies in several groups hold the same bytes.
+// the archive is in no group. A file's copies in several groups hold the same bytes.
 
 #pragma once
 
@@ -166,15 +166,15 @@ struct ArchiveModel
     bool terminated_paths = true; // a path whose length is a multiple of 4 bytes takes a zero after it too
 };
 
-// The model of `archive`, which NintendoWare for Revolution's tools laid out. BuildArchive gives `archive` back byte
-// for byte from it. Throws xsflib::FormatError for bytes that aren't an RSAR, for a version before 1.1 or after 1.4,
-// and for an archive laid out another way, such as one without names, one with a group beside it, or one whose copies
-// of a file differ.
+// The model of `archive`, an archive that NintendoWare for Revolution's tools laid out. BuildArchive gives `archive`
+// back byte for byte from it. Throws xsflib::FormatError for bytes that aren't an RSAR, for a version before 1.1 or
+// after 1.4, and for an archive laid out another way, such as one without names, one with a group beside it, or one
+// whose copies of a file differ.
 ArchiveModel ReadArchiveModel(std::span<const uint8_t> archive);
 
 // The archive of `model`, laid out as NintendoWare for Revolution's tools lay an archive out. Throws
 // std::invalid_argument for a version before 1.1 or after 1.4, a sound of an unknown kind, an item that names a file,
-// a bank or a player that the model lacks, a group that names a file beside the archive, a file beside the archive
+// a bank or a player missing from the model, a group that names a file beside the archive, a file beside the archive
 // with bytes, a file whose size or wave data's size isn't a multiple of 32 bytes, a name with a zero byte, two names
 // alike in one tree, and an archive past 4 GB.
 std::vector<uint8_t> BuildArchive(const ArchiveModel& model);

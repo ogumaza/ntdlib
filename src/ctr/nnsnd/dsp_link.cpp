@@ -89,7 +89,7 @@ bool DspLink::Initialize(std::span<const uint8_t> component)
         struct_addr_[i] = xsflib::LoadLe16(addrs.data() + i * 2);
     }
 
-    // Every structure used here has to lie inside DSP RAM in both regions (region 1 is the higher one).
+    // Every structure used here has to be inside DSP RAM in both regions (region 1 is the higher one).
     constexpr std::array<std::pair<int, std::size_t>, 6> kUsed = {{
         {kFrameCounter, sizeof(uint16_t)},
         {kSourceParams, sizeof(std::array<SourceParams, kNumSources>)},
@@ -253,7 +253,7 @@ bool DspLink::RunUntilAudioInterrupt(uint64_t limit, uint64_t slice)
     return true;
 }
 
-// The DSP reads the ARM11's parameters, and writes its own results, while it runs: the parameters go back to DSP RAM
+// The DSP reads the ARM11's parameters, and writes its results, while it runs: the parameters go back to DSP RAM
 // before it starts, and every copy is stale once it has run.
 void DspLink::BeforeDspRuns()
 {

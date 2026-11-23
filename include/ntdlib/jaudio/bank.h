@@ -5,7 +5,7 @@
 // Switch's releases of GameCube and Wii games store their banks that way. The tag is then "KNBI", and each field is
 // little-endian in the width of its type. A version 1 key region's high key is the top byte of a 32-bit word there. The
 // other bytes of the bank's records, such as a velocity region's high velocity, keep their places. The Switch's release
-// of Pikmin 2 has little-endian banks of version 0. Their drum table lies 100 words further on, at 0x544. Their size
+// of Pikmin 2 has little-endian banks of version 0. Their drum table is 100 words further on, at 0x544. Their size
 // leaves those words out. The Switch's release of Pikmin keeps the GameCube's banks of version 0 with each offset
 // widened to 64 bits. Each bank's tag and size keep the big-endian order, and its BANK chunk's tag is reversed. Its
 // other fields are little-endian. Its size gives the size of the bank with 32-bit offsets.

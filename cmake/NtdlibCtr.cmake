@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 
-# The 3DS's DSP and archive mode's model of the 3DS's sound libraries on it (ntdlib::ctr). The DSP is a model of the
-# DSP's audio firmware, which requires no image, or Teakra running a DSP1 firmware image, such as a game's
-# dspaudio.cdc. The program that uses the module supplies the image. The glue drives Teakra from the ARM11's side. The
-# models of nn::snd and nw::snd play a sound archive's sequences on either. CMakeLists.txt includes this file.
+# The 3DS's DSP and archive mode's model of the 3DS's sound libraries on it (ntdlib::ctr). The DSP is either a model of
+# the DSP's audio firmware or Teakra running a DSP1 firmware image, such as a game's dspaudio.cdc. The model requires no
+# image. The program that uses the module supplies the image. The glue drives Teakra from the ARM11's side. The models
+# of nn::snd and nw::snd play a sound archive's sequences on either. CMakeLists.txt includes this file.
 #
 # The package that NTDLIB_INSTALL installs holds no Teakra yet. A build that installs ntdlib leaves the module out.
 #
@@ -18,8 +18,8 @@ if (NOT NTDLIB_CTR)
 endif()
 
 # Teakra (MIT): the emulator of the Teak DSP. externals/teakra is upstream commit 3d697a1 with changes
-# (THIRD-PARTY-NOTICES.md). Teakra sets CMAKE_WARN_DEPRECATED, which CMake 4.4 and later ignore and warn about
-# (CMP0218).
+# (THIRD-PARTY-NOTICES.md). Teakra sets CMAKE_WARN_DEPRECATED. CMake 4.4 and later ignore that setting and warn about
+# it (CMP0218).
 if (NOT TARGET teakra)
     set(TEAKRA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
     set(TEAKRA_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
@@ -27,7 +27,7 @@ if (NOT TARGET teakra)
     add_subdirectory(${PROJECT_SOURCE_DIR}/externals/teakra ${PROJECT_BINARY_DIR}/externals/teakra EXCLUDE_FROM_ALL)
 
     # The interpreter has a handler for each value of the common instructions' register operands: thousands of
-    # functions in one object file, which can be more sections than a Windows object file holds by default.
+    # functions in one object file. They can take more sections than a Windows object file allows by default.
     if (MSVC)
         target_compile_options(teakra PRIVATE /bigobj)
     endif()

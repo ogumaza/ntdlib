@@ -6,8 +6,8 @@
 // AX's one-pole low-pass falls by 6 dB an octave above its cutoff. FluidSynth's low-pass has two poles and falls by
 // 12 dB an octave. The fitted tables (filter.h) give the two-pole filter the cutoff whose response comes closest to the
 // one-pole's in shape. The two filters still pass different amounts of a sound. Just above the cutoff, the two-pole
-// filter passes more. Far above the cutoff, it passes less. The difference depends on where the sound's power lies. A
-// sound whose power lies just above a low cutoff plays several decibels louder through the table's cutoff than in the
+// filter passes more. Far above the cutoff, it passes less. The difference depends on where the sound's power is. A
+// sound whose power is just above a low cutoff plays several decibels louder through the table's cutoff than in the
 // game.
 //
 // A zone of a preset with the one-pole's cutoff therefore takes the cutoff at which FluidSynth passes as much of the

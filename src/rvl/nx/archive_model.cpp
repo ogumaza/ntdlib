@@ -8,6 +8,12 @@
 #include <stdexcept>
 #include <vector>
 
+#include "ntdlib/nwsnd/util.h"
+#include "ntdlib/nx/audio/downmix.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/nx/effects.h"
+#include "ntdlib/rvl/snd/engine.h"
+
 namespace ntdlib::rvl::nx
 {
 

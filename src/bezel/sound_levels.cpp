@@ -151,7 +151,7 @@ bool IsSoundSheet(std::string_view name)
 SoundLevels ReadSoundLevels(const fs::path& folder)
 {
     // A directory lists its files in an order that differs between file systems. The sheets go in the order of their
-    // names, so that the levels don't depend on it.
+    // names. The levels then don't depend on the file system.
     std::vector<fs::path> sheets;
     std::error_code ec;
     for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec))

@@ -71,10 +71,10 @@ public:
     explicit Renderer(Build build = Build::kDecember2006);
 
     // Runs the `size`-byte command list at `command_list` (the cached address that AX mails), as the microcode does.
-    // Returns false for a command that the model lacks, and for a PB that selects a sample rate converter or a filter
-    // table that the microcode lacks. With `meters`, the frame also fills in the meters' peaks. The meters change
-    // nothing in the output, and they aren't part of the model's state. A host that returns the model to an earlier
-    // state returns the meters' `aux_surround` with it (see snd::ArchiveModel::Snapshot).
+    // Returns false for a command that the model doesn't have, and for a PB that selects a sample rate converter or a
+    // filter table that the microcode doesn't have. With `meters`, the frame also fills in the meters' peaks. The
+    // meters change nothing in the output, and they aren't part of the model's state. A host that returns the model to
+    // an earlier state returns the meters' `aux_surround` with it (see snd::ArchiveModel::Snapshot).
     bool RunFrame(ntdlib::dsp::WiiMemory& memory, uint32_t command_list, uint32_t size, Meters* meters = nullptr);
 
     // The DRAM as the model leaves it.
@@ -123,6 +123,7 @@ private:
     void MixBusOctober2006(int bus, uint32_t bits, int part, uint16_t source, uint16_t left, uint16_t right);
     uint16_t MixChannel(uint16_t source, uint16_t volume, bool ramp, uint16_t bus, int samples,
                         int64_t* meter = nullptr);
+    void ConvertRemote(int samples, uint16_t frac_at, uint16_t last);
     void Remote();
     void RemoteOctober2006(int part, uint16_t source);
     void MixAux(int bus, uint16_t volume, uint32_t write, uint32_t read);

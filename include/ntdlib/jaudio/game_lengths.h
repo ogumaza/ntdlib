@@ -103,11 +103,11 @@ struct GameWatch
     // down to a move.
     //
     // A JAudio1 sound's root track comes from its ID. A sequence's JAISound points to its parameters at
-    // `parameters_offset`. In The Wind Waker, the root track lies in the parameters at `parameters_track_offset`. An
+    // `parameters_offset`. In The Wind Waker, the root track is in the parameters at `parameters_track_offset`. An
     // earlier JAudio1, such as Luigi's Mansion's, takes its tracks from a pool. A table of `root_track_count` words at
     // `root_tracks` then holds the root track of each sequence that plays. The parameters hold the number of the
     // sequence's root track in that table, as a word at `parameters_track_offset`. With 0 at `root_tracks`, the root
-    // track lies in the parameters. An effect plays in a track of the effects sequence. The word at `effects_sequence`
+    // track is in the parameters. An effect plays in a track of the effects sequence. The word at `effects_sequence`
     // points to that sequence's JAISound. A game whose rips play no effects can leave `effects_sequence` 0. The
     // effect's JAISound holds the effect's slot in its byte at `effect_slot_offset`: 0xff until the sound library gives
     // the effect a slot. The slot's high nibble picks a child of the effects sequence's root track, and its low nibble
@@ -116,7 +116,7 @@ struct GameWatch
     // tracks, by each track's parents.
     //
     // A later JAudio1, such as Pikmin 2's, keeps a sequence's parameters in the sequence's JAISound. With
-    // `parameters_inline`, the parameters start at `parameters_offset` in the JAISound. The root track then lies in
+    // `parameters_inline`, the parameters start at `parameters_offset` in the JAISound. The root track is then in
     // them at `parameters_track_offset`.
     bool jaudio1 = false;
     uint32_t parameters_offset = 0;
@@ -138,19 +138,36 @@ struct GameWatch
 };
 
 // The analysis's rules, in the output's frames and in milliseconds. A sample louder than 8 of 32,767 (-72 dB) is sound
-// (xsflib::rip::Audible). A sound plays for at most `limit_ms`. One that stays busy without a sound for `silence_ms`
-// ended at its last sound. A sound that ends plays until `tail_ms` after its last sound. A loop gets two passes and a
-// fade of `loop_fade_ms`. A sound that holds loops there if it has sounded in the last `holding_ms`.
+// (xsflib::rip::Audible). A sound plays for at most `limit_ms`: 600 s, or xsflib::rip::kLongLimitMs for the long limit,
+// as the caller picks. A sound that reaches the limit gets `limit_length_ms` as its length, whatever the limit. One
+// that stays busy without a sound for `silence_ms` ended at its last sound. Once the game has released a sound, the
+// sound ends when it has made no sound for `ring_ms`. A sound that ends ends at its last sound. A loop gets two passes
+// and a fade of `loop_fade_ms`. Its pass is the second pass. The later passes repeat it. Its start is the length less
+// two passes. The first pass may have another length. A sound that holds loops there if it has sounded in the last
+// `holding_ms`, and gets the same fade.
 struct GameLengthRules
 {
     uint32_t sample_rate = 32028;  // the output's frames a second
     std::size_t block_frames = 32; // the frames that the analysis renders at a time
     long long limit_ms = 600'000;
+    long long limit_length_ms = 600'000;
     long long silence_ms = 180'000;
-    long long tail_ms = 500;
-    long long loop_fade_ms = 10'000;
+    long long ring_ms = 500;
+    long long loop_fade_ms = 7'000;
     long long holding_ms = 1'000;
 };
+
+// `rules` with the limit that `limit` picks: their `limit_ms`, or xsflib::rip::kLongLimitMs for the long limit. A sound
+// at either limit gets `limit_length_ms`.
+inline GameLengthRules WithLimit(GameLengthRules rules, xsflib::rip::Limit limit)
+{
+    if (limit == xsflib::rip::Limit::kLong)
+    {
+        rules.limit_ms = static_cast<long long>(xsflib::rip::kLongLimitMs);
+    }
+
+    return rules;
+}
 
 // The wave banks that wave discovery searches the table for.
 inline constexpr uint32_t kMaxWaveBanks = 256;
@@ -330,7 +347,9 @@ std::optional<uint32_t> RootTrack(Machine& machine, const GameWatch& watch, uint
 } // namespace detail
 
 // The length of a sound, worked out block by block as the sound plays (see AnalyzeGameSound for the rules). The class
-// counts the frames played and the first and last frames with sound, and notes when the game releases the sound. Once
+// counts the frames played, the first frame with a sample that isn't 0, and the first and last frames with sound, and
+// notes when the game releases the sound. Each timing that it returns for a sound that sounded has both first sounds
+// (xsflib::rip::Timing::first_sample_ms and first_sound_ms), and a loop has its pass. Once
 // Follow starts it, a LoopFinder follows the tracks of the sound. Each block goes through Hear, then Take for each
 // track event in the block, then EndBlock. The first length that Take or EndBlock returns is the length of the sound.
 // AtLimit returns the length of a sound that plays to the limit.
@@ -356,7 +375,8 @@ public:
     // Counts the frame Frames() as a sound. Wave discovery calls it for each lookup of a wave.
     void MarkSound();
 
-    // Counts each audible frame of `block`, the stereo frames that play from Frames(), as a sound.
+    // Counts each audible frame of `block`, the stereo frames that play from Frames(), as a sound, and notes the first
+    // frame that has a sample that isn't 0 on either side.
     void Hear(std::span<const int16_t> block);
 
     // Passes `event` to the LoopFinder. Returns the sound's length if the sound loops or ends there. Loops before the
@@ -365,21 +385,34 @@ public:
 
     // Ends a block: the frames played move past it, and the LoopFinder takes what each track waits for, through
     // `read_wait`. `held` is whether the game still holds the sound. Returns the sound's length if the sound ends here:
-    // `tail_ms` after the release and the last sound, 10 s after the release, where it holds, or once it has stayed
+    // `ring_ms` after the release and the last sound, 10 s after the release, where it holds, or once it has stayed
     // silent for `silence_ms`.
     std::optional<xsflib::rip::Timing> EndBlock(bool held, const std::function<TrackWait(uint32_t track)>& read_wait);
 
-    // The length of a sound that plays to the limit: the limit and a fade, or a silent sound if it never sounded.
+    // The length of a sound that plays to the limit: `limit_length_ms`, a fade and `at_limit`, or a silent sound if it
+    // never sounded.
     xsflib::rip::Timing AtLimit() const;
 
 private:
     long long Ms(uint64_t frames) const;
 
-    // The length of a sound that ends: `tail_ms` after its last sound.
+    // The length of a sound that ends: the end of its last sound.
     xsflib::rip::Timing Ended() const;
+
+    // A loop whose second pass ends at frame `frame`, with a second pass of `pass` frames (LoopFinder::PassFrames). The
+    // later passes repeat the second. The first pass may be longer or shorter. The pass's start is the length less two
+    // passes, as in xsflib::rip::PassesAt, and 0 where that falls before the analysis. Where xsflib::rip::KeepsPass
+    // refuses the pass, the loop has none: a pass of 0, or two passes that would start more than
+    // xsflib::rip::kShortFirstPassMs before the analysis did. Its milliseconds are whole, rounded down.
+    xsflib::rip::Timing Looped(uint64_t frame, uint64_t pass) const;
+
+    // `timing` with the sound's first sample that isn't 0 and its first sound, each rounded to the millisecond, for a
+    // sound that sounded.
+    xsflib::rip::Timing Heard(xsflib::rip::Timing timing) const;
 
     GameLengthRules rules_;
     uint64_t frames_ = 0;
+    std::optional<uint64_t> first_sample_;
     std::optional<uint64_t> first_sound_;
     uint64_t last_sound_ = 0;
     std::optional<uint64_t> released_; // the frame at which the game released the sound
@@ -500,8 +533,8 @@ private:
 // A sound that loops gets two loops and a fade. A sound loops when one of its tracks jumps back to a command it has
 // already played, twice to the same command (see LoopFinder). A sound holds when a track idles, every track has
 // settled, and nothing has moved for 10 s. It loops there if it still sounds. Any other sound runs until the game
-// releases it or until it falls silent for good, for at most the limit. It then ends `tail_ms` after its last sound. A
-// sound that never makes a sound is marked silent.
+// releases it or until it falls silent for good, for at most the limit. It then ends at its last sound. A sound that
+// never makes a sound is marked silent.
 template <typename Machine>
 std::optional<xsflib::rip::Timing> AnalyzeGameSound(Machine& machine, uint32_t handle_address, const GameWatch& watch,
                                                     const GameLengthRules& rules, std::set<WaveUse>* found = nullptr,

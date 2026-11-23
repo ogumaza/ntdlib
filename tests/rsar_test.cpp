@@ -228,7 +228,7 @@ std::vector<WaveSoundSpec> TestWaveSounds()
 }
 
 // The wave sound files of each version, as the builds from 2008 read them: version 1.1 adds the pitch, the pan and the
-// surround pan of a wave sound and of a note, and version 1.2 a wave sound's sends. The fields that a version lacks
+// surround pan of a wave sound and of a note, and version 1.2 a wave sound's sends. The fields missing from a version
 // take their defaults. The envelope, the hold, the note's key and its volume come in every version. A file up to
 // version 1.2 describes its waves in a WAVE block. Version 1.0's block gives no count, and the notes' highest wave
 // index gives it. Version 1.3's waves are in the RWAR of its wave data.
@@ -287,7 +287,7 @@ void CheckWaveSoundFiles()
         }
     }
 
-    // A wave that the WAVE block lacks, and a reference that isn't an offset.
+    // A wave missing from the WAVE block, and a reference that isn't an offset.
     const Bytes bytes = MakeWaveSoundFile(0x0102, specs);
     const rsar::WaveSoundFile file = rsar::WaveSoundFile::Parse(bytes, kPlayback);
     Check(file.Waves().empty() && file.ReadWave(1, raw_waves).channels.size() == 1, "a wave read on its own");
@@ -351,7 +351,7 @@ void CheckMusic()
         {{"SEQ_ODE", 1, 2}, true},         // on a SONG player
         {{"SEQ_JUNGLE_BGM1", 1, 3}, true}, // its label contains BGM
         {{"SEQ_WHISTLE", 1, 3}, false},    // a sound effect
-        {{"STRM_RACE", 2, 0}, false},      // a stream, which isn't ripped
+        {{"STRM_RACE", 2, 0}, false},      // a stream: not ripped
         {{"SEQ_GOAL", 1, 4}, true},        // on a FANFARE player
         {{"SEQ_BOSS", 1, 5}, true},        // on a BGM2 player
         {{"SEQ_TUNE", 1, 6}, false},       // MUSICAL isn't MUSIC

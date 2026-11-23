@@ -2,7 +2,7 @@
 
 // The consoles' arithmetic where a cast or a compiler's instructions would give another result on some hosts: the
 // PowerPC's negated fused multiply-add, the PowerPC's and ARM's conversions of a float to a 32-bit integer, and the
-// Wii U's conversion of a float to an unsigned one.
+// Wii U's and ARM's conversions of a float to an unsigned one.
 //
 // The negated fused multiply-add (fnmadd and fnmsub, in their double, single and paired-single forms) is a * c + b,
 // rounded once, then negated. Compilers turn a negated fma into one instruction that negates before it rounds instead
@@ -89,6 +89,22 @@ inline int32_t ArmToInt32(float x)
     }
 
     return static_cast<int32_t>(x);
+}
+
+// ARM's conversion of a float to a 32-bit unsigned integer, as both AArch64's fcvtzu and the VFP's ftouizs make it:
+// toward zero, held to the integer's range, and 0 for NaN.
+inline uint32_t ArmToUint32(float x)
+{
+    if (std::isnan(x) || x <= 0.0f)
+    {
+        return 0;
+    }
+    if (x >= 4294967296.0f)
+    {
+        return UINT32_MAX;
+    }
+
+    return static_cast<uint32_t>(x);
 }
 
 } // namespace ntdlib

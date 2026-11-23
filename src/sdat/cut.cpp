@@ -212,7 +212,7 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
     const auto size = static_cast<uint32_t>(bytes.size());
     Layout layout;
 
-    // The runs, by their first bytes in the archive. A sequence file's end lies at the start of the piece after its
+    // The runs, by their first bytes in the archive. A sequence file's end is at the start of the piece after its
     // padding.
     struct Run
     {
@@ -376,6 +376,7 @@ std::optional<Layout> LayOut(const Archive& archive, std::vector<CutFile> files)
     {
         return std::nullopt;
     }
+
     return layout;
 }
 
@@ -431,7 +432,7 @@ Layout Cut(std::span<const uint8_t> sdat)
     const std::span<const uint8_t> bytes = archive.bytes;
     const auto size = static_cast<uint32_t>(bytes.size());
 
-    // The files can't move the blocks before them: the sequence files that the cut takes lie after the header's blocks.
+    // The files can't move the blocks before them: the sequence files that the cut takes are after the header's blocks.
     // The FILE block counts up to its first file.
     uint64_t blocks_end = 0x40;
     for (uint32_t block = 0; block < 4; block++)
@@ -568,8 +569,7 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
         if (run ? place.offset > run->size() : place.offset != 0)
         {
             throw std::invalid_argument(run ? "a field names a byte past its run"
-                                            : "a field names a byte inside a "
-                                              "sequence or padding");
+                                            : "a field names a byte inside a sequence or padding");
         }
         return starts[place.piece] + place.offset;
     };

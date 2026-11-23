@@ -2,8 +2,8 @@
 
 // Tests of ntdlib::disc without disc_containers: the messages and checks that GameOptions sets for a program that reads
 // only plain images, the file system table's order, the files of an extracted disc, a disc whose header leaves out the
-// magic word, a file read in parts, reads split at blocks' bounds, and ContainerFormat, DiscConsole and ImageFormat.
-// The images and folders are made up here, in a temporary folder.
+// magic word, a file read in parts, reads split at blocks' bounds, ContainerFormat, DiscConsole and ImageFormat, and
+// IsGame. The images and folders are made up here, in a temporary folder.
 
 #include <algorithm>
 #include <cstddef>
@@ -17,18 +17,22 @@
 
 #include "xsflib/testing/check.h"
 
-#include "disc_files.h"
+#include "disc_helpers.h"
 #include "ntdlib/disc/error.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
 #include "ntdlib/disc/source.h"
+#include "ntdlib/testing/disc_files.h"
 #include "temp_folder.h"
 
 namespace fs = std::filesystem;
 namespace disc = ntdlib::disc;
-using disc_files::AppleDouble;
-using disc_files::StoreBe32;
+using disc_helpers::AppleDouble;
+using disc_helpers::StoreBe32;
 using ntdlib::testing::TempFolder;
+using ntdlib::testing::WriteFile;
+using ntdlib::testing::disc_files::DiscHeader;
+using ntdlib::testing::disc_files::WriteSystemFiles;
 using xsflib::testing::Check;
 
 namespace
@@ -239,13 +243,8 @@ void TestExtractedDisc()
 {
     const TempFolder folder("disc_options_test");
     const fs::path root = folder.Path() / "disc";
-    fs::create_directories(root / "sys");
     fs::create_directories(root / "files" / "Audio");
-    std::vector<uint8_t> boot(0x440, 0);
-    StoreBe32(boot, 0x1C, 0xC2339F3D);
-    folder.Write("disc/sys/boot.bin", boot);
-    folder.Write("disc/sys/main.dol", {0});
-    folder.Write("disc/sys/fst.bin", {0});
+    WriteSystemFiles(root, {.boot = DiscHeader(disc::Console::kGameCube), .dol = {0}, .fst = {0}});
 
     for (const char* name : {"a.bin", "m.bin", "z.bin", "Audio/b.bin"})
     {
@@ -279,10 +278,9 @@ void TestExtractedDisc()
           "an extracted disc's files, past the broken links and the locked folders, and without the AppleDouble files");
 }
 
-// A GameCube disc whose header leaves out the magic word loads if the rest of it is intact, from an image or from a
-// folder. Data without the magic word is otherwise refused as before, with the message for data of neither console.
-// The other console's options refuse even an intact disc.
-void TestUnmarkedDisc()
+// A GameCube disc image whose header leaves out the magic word loads if the rest of it is intact. The other console's
+// options refuse even an intact image.
+void TestUnmarkedImage()
 {
     const TempFolder folder("disc_options_test");
     const disc::GameOptions options = PlainOnly();
@@ -297,6 +295,16 @@ void TestUnmarkedDisc()
     error = disc::LoadGame(unmarked, game, kDefaults);
     Check(!error && game.dol == SmallDol() && game.region == 0u,
           "an unmarked image's system files read: " + error.value_or(""));
+    Check(Outcome(unmarked, {disc::Console::kWii, "xyz"}) == "it isn't a Wii disc image",
+          "the Wii's options refuse an unmarked image");
+}
+
+// Data without the magic word that fails any of the checks of an unmarked GameCube disc is refused as before, with the
+// message for data of neither console.
+void TestDamagedUnmarkedImages()
+{
+    const TempFolder folder("disc_options_test");
+    const disc::GameOptions options = PlainOnly();
 
     // Each image below breaks one check. Otherwise it is UnmarkedImage.
     std::vector<uint8_t> empty_dol = GameCubeImage();
@@ -334,24 +342,27 @@ void TestUnmarkedDisc()
     Check(Outcome(folder.Write("cut.iso", cut), options) == kNeither, "an unmarked image cut short in its table");
     Check(Outcome(folder.Write("short.iso", short_image), options) == kNeither,
           "an unmarked image shorter than the disc header");
-    Check(Outcome(unmarked, {disc::Console::kWii, "xyz"}) == "it isn't a Wii disc image",
-          "the Wii's options refuse an unmarked image");
+}
 
-    // An extracted disc gives its region in bi2.bin, with the magic word or without it.
+// An extracted GameCube disc whose header leaves out the magic word loads if the rest of it is intact. It gives its
+// region in bi2.bin, as a disc with the magic word does. The Wii's options refuse it.
+void TestUnmarkedExtractedDisc()
+{
+    const TempFolder folder("disc_options_test");
+    const disc::GameOptions kDefaults{disc::Console::kGameCube, "xyz"};
     const fs::path root = folder.Path() / "disc";
-    fs::create_directories(root / "sys");
     fs::create_directories(root / "files");
-    std::vector<uint8_t> boot(0x440, 0);
     std::vector<uint8_t> bi2(0x2000, 0);
     StoreBe32(bi2, 0x18, 1);
     const std::vector<uint8_t> image = UnmarkedImage();
-    folder.Write("disc/sys/boot.bin", boot);
-    folder.Write("disc/sys/bi2.bin", bi2);
-    folder.Write("disc/sys/main.dol", SmallDol());
-    folder.Write("disc/sys/fst.bin", std::vector<uint8_t>(image.begin() + 0x2800, image.begin() + 0x282F));
+    WriteSystemFiles(root, {.boot = std::vector<uint8_t>(0x440, 0),
+                            .bi2 = bi2,
+                            .dol = SmallDol(),
+                            .fst = std::vector<uint8_t>(image.begin() + 0x2800, image.begin() + 0x282F)});
     folder.Write("disc/files/a.bin", {1, 2, 3});
 
-    error = disc::LoadGame(root, game, kDefaults);
+    disc::GameFiles game;
+    const std::optional<std::string> error = disc::LoadGame(root, game, kDefaults);
     Check(!error && game.files.size() == 1 && game.region == 1u,
           "an unmarked extracted disc loads: " + error.value_or(""));
     Check(Outcome(root, {disc::Console::kWii, "xyz"}) == "sys/boot.bin isn't a Wii disc's header",
@@ -433,6 +444,62 @@ void TestFormats()
     XSFLIB_CHECK(!disc::ImageFormat({}) && !disc::ImageFormat(std::vector<uint8_t>(0x20, 0)));
 }
 
+// IsGame counts the folders and files that LoadGame reads as games: extracted discs, titles' folders and files with
+// GameOptions::titles, and disc images. It leaves out every other folder and file.
+void TestIsGame()
+{
+    const TempFolder folder("disc_options_test");
+    const fs::path root = folder.Path();
+    const disc::GameOptions wii{disc::Console::kWii, "xyz"};
+    const disc::GameOptions gamecube{disc::Console::kGameCube, "xyz"};
+    disc::GameOptions titles = wii;
+    titles.titles = true;
+
+    // The folders: an extracted disc directly and in DATA, a title's TMD and a content in any case, an AppleDouble
+    // file alone, a sound archive, main.dol as a folder, and nothing.
+    WriteFile(root / "disc" / "sys" / "main.dol", {});
+    WriteFile(root / "in_data" / "DATA" / "sys" / "main.dol", {});
+    WriteFile(root / "tmd" / "GAME.TMD", {});
+    WriteFile(root / "app" / "00000001.app", {});
+    WriteFile(root / "apple" / "._title.tmd", AppleDouble());
+    WriteFile(root / "sounds" / "sound.brsar", {});
+    fs::create_directories(root / "folder_dol" / "sys" / "main.dol");
+    fs::create_directories(root / "empty");
+
+    // The files: an installable WAD by its header, a WAD by its name, a TMD, a Wii disc's header, an RVZ image, a
+    // GameCube image with the magic word and an intact and a damaged one without it, and a sound archive.
+    std::vector<uint8_t> wad(0x40, 0);
+    StoreBe32(wad, 0, 0x20);
+    wad[4] = 'I';
+    wad[5] = 's';
+    std::vector<uint8_t> wii_header(0x20, 0);
+    StoreBe32(wii_header, 0x18, 0x5D1C9EA3);
+    const fs::path wad_header = folder.Write("title.bin", wad);
+    const fs::path wad_name = folder.Write("title.WAD", {});
+    const fs::path tmd = folder.Write("title.tmd", {});
+    const fs::path wii_image = folder.Write("wii.iso", wii_header);
+    const fs::path rvz = folder.Write("game.rvz", {'R', 'V', 'Z', 1, 0, 0, 0, 0});
+    const fs::path marked = folder.Write("marked.iso", GameCubeImage());
+    const fs::path unmarked = folder.Write("unmarked.iso", UnmarkedImage());
+    const fs::path damaged = folder.Write("damaged.iso", UnmarkedImage(1000));
+    const fs::path sound = folder.Write("sound.brsar", {'R', 'S', 'A', 'R', 0xFE, 0xFF, 1, 4});
+
+    XSFLIB_CHECK(disc::IsGame(root / "disc", wii) && disc::IsGame(root / "in_data", wii));
+    XSFLIB_CHECK(disc::IsGame(root / "disc", gamecube) && disc::IsGame(root / "in_data", titles));
+    XSFLIB_CHECK(disc::IsGame(root / "tmd", titles) && disc::IsGame(root / "app", titles));
+    XSFLIB_CHECK(!disc::IsGame(root / "tmd", wii) && !disc::IsGame(root / "app", wii));
+    XSFLIB_CHECK(!disc::IsGame(root / "apple", titles) && !disc::IsGame(root / "sounds", titles));
+    XSFLIB_CHECK(!disc::IsGame(root / "folder_dol", titles) && !disc::IsGame(root / "empty", titles));
+    XSFLIB_CHECK(!disc::IsGame(root / "missing", titles) && !disc::IsGame(root / "missing.iso", gamecube));
+
+    XSFLIB_CHECK(disc::IsGame(wad_header, titles) && disc::IsGame(wad_name, titles) && disc::IsGame(tmd, titles));
+    XSFLIB_CHECK(!disc::IsGame(wad_header, wii) && !disc::IsGame(wad_name, wii) && !disc::IsGame(tmd, wii));
+    XSFLIB_CHECK(disc::IsGame(wii_image, wii) && disc::IsGame(wii_image, gamecube) && disc::IsGame(rvz, titles));
+    XSFLIB_CHECK(disc::IsGame(marked, wii) && disc::IsGame(marked, gamecube));
+    XSFLIB_CHECK(disc::IsGame(unmarked, gamecube) && !disc::IsGame(unmarked, wii) && !disc::IsGame(damaged, gamecube));
+    XSFLIB_CHECK(!disc::IsGame(sound, titles) && !disc::IsGame(sound, gamecube));
+}
+
 } // namespace
 
 int main()
@@ -441,10 +508,13 @@ int main()
     TestMessages();
     TestDefaults();
     TestExtractedDisc();
-    TestUnmarkedDisc();
+    TestUnmarkedImage();
+    TestDamagedUnmarkedImages();
+    TestUnmarkedExtractedDisc();
     TestSource();
     TestReadByBlocks();
     TestFormats();
+    TestIsGame();
 
     return xsflib::testing::Summary("disc options");
 }

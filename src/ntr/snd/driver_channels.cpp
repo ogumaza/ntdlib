@@ -761,6 +761,7 @@ int Driver::Allocate(uint32_t mask, int priority, bool weak_locks_too, int owner
     channel.sustain = 127;
     SetRelease(channel, 127);
     channel.lfo.parameters = DefaultLfo();
+
     return chosen;
 }
 
@@ -791,6 +792,7 @@ int Driver::GrownChannel(int chosen)
     original_volumes_.push_back(0);
     original_pans_.push_back(0);
     registers_->Write(ChannelRegister(index, kGrownChannelTwin), 4, static_cast<uint32_t>(chosen));
+
     return index;
 }
 

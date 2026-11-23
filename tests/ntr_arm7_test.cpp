@@ -130,6 +130,7 @@ std::vector<uint8_t> Image(const std::vector<uint32_t>& program)
             spec.arm7.push_back(static_cast<uint8_t>(word >> (8 * byte)));
         }
     }
+
     return nds_files::BuildImage(spec).first;
 }
 
@@ -289,6 +290,7 @@ std::string Failure(const std::vector<uint32_t>& program)
     {
         return e.what();
     }
+
     return {};
 }
 

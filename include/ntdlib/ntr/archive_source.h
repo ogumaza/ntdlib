@@ -97,7 +97,8 @@ struct ArchiveTraits
         return std::nullopt;
     }
 
-    // The messages of StartCommands: the archive lacks the sequence, its file or its bank, or the files don't fit.
+    // The messages of StartCommands: the archive has no such sequence, or the sequence's file or bank is missing, or
+    // the files don't fit.
     static std::optional<std::string> StartSequence(ArchivePlayer& model, Set&, const ArchiveSelection& selection)
     {
         try

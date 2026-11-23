@@ -20,7 +20,7 @@ namespace ntdlib::universomo
 {
 
 // The game calls the update once a frame of the DS: 560,190 cycles of the system clock.
-constexpr uint32_t kFrameCycles = 560190;
+constexpr uint32_t kFrameCycles = ntr::kFrameCycles;
 constexpr double kTicksPerSecond = static_cast<double>(ntr::kSystemClockHz) / kFrameCycles;
 
 class Walk

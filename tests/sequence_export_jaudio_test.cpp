@@ -19,6 +19,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -32,6 +33,7 @@
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/disc/game.h"
+#include "ntdlib/jaudio/galaxy_states.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/conversion.h"
@@ -393,7 +395,7 @@ void TestOscillatorWithoutReleaseTable()
 void TestHoldsSilent()
 {
     // A decay to silence over 60 units that holds there. A release then stays silent unless its table rises. A release
-    // table that is the attack table carries on from the hold. A hold at full level isn't silent.
+    // table that is the attack table continues from the hold. A hold at full level isn't silent.
     Oscillator falls;
     falls.attack = {{0, 0, 0x7fff}, {0, 60, 0}, {14, 0, 0}};
     falls.release = {{0, 30, 0}, {15, 0, 0}};
@@ -445,8 +447,8 @@ void TestEnvelopeFit()
 
 void TestReleaseAfterDecayToSilence()
 {
-    // Two attacks that fall to silence over 3 s. One holds there and one stops. Their notes are released before then,
-    // so the release table gives their release.
+    // Two attacks that fall to silence over 3 s. One holds there and one stops. Their notes are released before then.
+    // The release table then gives their release.
     Oscillator holds;
     holds.attack = {{0, 0, 0x7fff}, {0, 1800, 0}, {14, 0, 0}};
     holds.release = {{0, 600, 0}, {15, 0, 0}};
@@ -694,9 +696,9 @@ void TestTieBelowHearing()
 
 void TestGateTickRate()
 {
-    // The first track opens track 0, then halves the timebase. Track 0's first gate note starts in that tick, so its
-    // length goes by the default tick rate: 24 ticks last as long as 12 at the new rate. The second note starts in a
-    // later tick, at the new rate.
+    // The first track opens track 0, then halves the timebase. Track 0's first gate note starts in that tick. Its
+    // length therefore goes by the default tick rate: 24 ticks last as long as 12 at the new rate. The second note
+    // starts in a later tick, at the new rate.
     Sequence s;
     s.OpenTrack(0, kChild).Timebase(24).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).Gate(60, 0x00, 100, 24).Gate(62, 0x00, 100, 24).Finish();
@@ -757,8 +759,8 @@ void TestJumpToTheNextCommand()
 
 void TestPortsAndRegisters()
 {
-    // Track 0 reads its parent's port 0, which the game writes, into register 0; if it's 0 it plays key 60, otherwise
-    // key 72.
+    // Track 0 reads its parent's port 0 into register 0. The game writes that port. if it's 0 it plays key 60,
+    // otherwise key 72.
     Sequence s;
     s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
     s.Bank(0).Program(0).Byte(0xd6).Byte(0).Byte(0); // read the first track's port 0 into register 0
@@ -1127,11 +1129,11 @@ void TestSequenceCallback()
 }
 
 // A companion (SequenceSound::companion) reads the notes with a voice of the root's child 0 and of its child 0, even
-// while the game's code mutes them, and starts sounds beside the sequence once a game frame. Track 0 opens its child 0,
-// which the mask mutes. The child writes 3 to its port 0xe, then plays key 0x27 at velocity 110 at ticks 0 and 48. The
-// companion starts the effect at the root kEffect in its frame 30, after 0.5 s: tick 48 at a tempo of 120 and a
-// timebase of 48. The effect's root sets a tempo of 60, which the MIDI file leaves out. Its child plays key 64 at once,
-// on a MIDI track of its own. A second start restarts the effect, and a stop ends it.
+// while the game's code mutes them, and starts sounds beside the sequence once a game frame. Track 0 opens its child 0.
+// The mask mutes that child. The child writes 3 to its port 0xe, then plays key 0x27 at velocity 110 at ticks 0 and 48.
+// The companion starts the effect at the root kEffect in its frame 30, after 0.5 s: tick 48 at a tempo of 120 and a
+// timebase of 48. The effect's root sets a tempo of 60. The MIDI file leaves that tempo out. Its child plays key 64 at
+// once, on a MIDI track of its own. A second start restarts the effect, and a stop ends it.
 struct CompanionLog
 {
     std::vector<std::pair<uint8_t, uint8_t>> notes;
@@ -1367,7 +1369,7 @@ void TestZoneFilters()
     Check(sfz_problem.empty(), "the SFZ files match the MIDI file: " + sfz_problem);
 }
 
-// Program 0xf3 plays the DSP's pulse of 25% duty, and needs no bank. Its cycle lasts 32 samples at 16,736 Hz: key 60
+// Program 0xf3 plays the DSP's pulse of 25% duty, and requires no bank. Its cycle lasts 32 samples at 16,736 Hz: key 60
 // plays 523 Hz. The PCM holds the cycle in 256 samples at 33,472 Hz, two octaves below, and the zone plays it two
 // octaves up. The pulse's last quarter is high, at 0x4000. Program 0xfb's noise is left out and reported.
 void TestOscillatorNotes()
@@ -1401,9 +1403,9 @@ void TestOscillatorNotes()
     Check(!game.banks.GetWave(kOscillatorWaveSystem, 11), "the noise has no PCM");
 }
 
-// An oscillator plays the same waveform at every velocity. A tie that doubles the velocity of a note on the square
-// wave therefore starts the MIDI note at the higher velocity. TestSweepAndTie checks the same for an instrument in a
-// bank. Bank 5 doesn't exist. The oscillator needs none.
+// An oscillator plays the same waveform at every velocity. A tie that doubles the velocity of a note on the square wave
+// therefore starts the MIDI note at the higher velocity. TestSweepAndTie checks the same for an instrument in a bank.
+// Bank 5 doesn't exist. The oscillator requires none.
 void TestOscillatorTie()
 {
     Sequence s;
@@ -2094,6 +2096,28 @@ void TestGameRules()
               galaxy2.start_states.at(0x01000017).tracks[0] == 0x019e &&
               galaxy2.start_states.at(0x01000045).tracks[0] == 0,
           "so do Galaxy 2's");
+    const auto arrangement = [](const GameRules& rules, uint32_t sound, std::string_view suffix) -> const Arrangement*
+    {
+        const auto found = std::find_if(rules.arrangements.begin(), rules.arrangements.end(),
+                                        [&](const Arrangement& a) { return a.sound == sound && a.suffix == suffix; });
+        return found == rules.arrangements.end() ? nullptr : &*found;
+    };
+    Check(galaxy.arrangements.size() == ntdlib::jaudio::kGalaxyStates.size() &&
+              galaxy2.arrangements.size() == ntdlib::jaudio::kGalaxy2States.size(),
+          "each of the Galaxy games' later states of its music converts as an arrangement");
+    const Arrangement* out_of_control = arrangement(galaxy, 0x0100004b, "speed_very_high");
+    Check(out_of_control && out_of_control->state.tracks[0] == 0x47fe && out_of_control->state.tracks[1] == 0xffff &&
+              out_of_control->state.tempo_ratio == 1.478f && out_of_control->state.child_pitches.size() == 15 &&
+              !out_of_control->state.child_pitches.contains(14) &&
+              out_of_control->state.child_pitches.at(0) == 1.189f && out_of_control->state.child_volumes.empty(),
+          "the Star Ball out of control plays its children at 1.478 of the tempo, all but the percussion 1.189 higher");
+    const Arrangement* blimp = arrangement(galaxy2, 0x01000008, "blimp_fruit");
+    Check(blimp && blimp->state.tracks[0] == 0x85fe && blimp->state.tempo_ratio == 1.0f &&
+              blimp->state.child_pitches.empty() && blimp->state.child_volumes == std::map<uint8_t, float>{{15, 0.4f}},
+          "a Blimp Fruit plays child 15 of Galaxy 2's piece at 0.4 of its volume");
+    Check(!arrangement(galaxy2, 0x01000023, "layer_blimp_fruit") && !arrangement(galaxy2, 0x0100000a, "speed_mid"),
+          "a state that changes only the level of the whole layer, or that plays the piece at its tempo, converts no "
+          "arrangement");
     Check(!galaxy.volume_table && galaxy2.volume_table && galaxy2.volume_table->archive == "Info/BgmParam.arc" &&
               galaxy2.volume_table->file == "BgmParam.bcsv" && galaxy2.volume_table->name_field == "SoundIdName" &&
               galaxy2.volume_table->volume_field == "Volume" && !usa.volume_table,
@@ -2209,7 +2233,7 @@ void TestLateChangeAfterTheSoundIsLeftOut()
     // Track 1 plays key 60 for 12 ticks, waits, sets its volume and finishes a tick later. At timebase 48 and tempo
     // 120, a tick takes 10.4 ms. After a wait of 900 ticks the change comes 9.4 s after the note, and it ends the
     // performance. After a wait of 1,200 ticks it comes 12.5 s after the note, more than kHoldSeconds
-    // (EndsAtLastSound). The performance then ends with the sound, and no event lies after its end. The root track
+    // (EndsAtLastSound). The performance then ends with the sound, and no event is after its end. The root track
     // closes track 1 when it finishes. It therefore waits 1,500 ticks, longer than track 1 plays.
     const auto perform = [](uint32_t blocks)
     {
@@ -2993,7 +3017,7 @@ void TestConductor()
 // Pikmin 2's later JAudio1 counts down a track's wait while an interrupt runs (SequenceSound::later_jaudio1). The first
 // track sets a routine for the tick's interrupt that only returns. It plays a note, waits 5 ticks twice and plays
 // another. Under the later library, the second note comes at tick 10. The Wind Waker's library puts the wait aside in
-// each tick, so the wait never ends.
+// each tick. The wait therefore never ends.
 void TestLaterJAudio1Interrupt()
 {
     constexpr uint32_t kRoutine = kFirstSequence + 0x20;
@@ -3016,8 +3040,8 @@ void TestLaterJAudio1Interrupt()
 
 // The later JAudio1 gives a track the current tick rate (SequenceSound::later_jaudio1). The first track opens track 0
 // and halves the timebase, in either order. Track 0's gate note of 24 ticks starts in that tick. Under the later
-// library, it lasts 24 ticks at the new rate. The Wind Waker's library keeps the default rate for it, so it lasts as
-// long as 12.
+// library, it lasts 24 ticks at the new rate. The Wind Waker's library keeps the default rate for that note. It then
+// lasts as long as 12.
 void TestLaterJAudio1TickRate()
 {
     const auto note_end = [](bool later, bool open_first)
@@ -3129,7 +3153,7 @@ void TestMixLevel()
     Check(RulesOf(std::string(40, '0')).mix_level == 1.0f, "an unknown game mixes at Super Mario Sunshine's level");
 }
 
-// Track 0 plays drum 36 of the test bank, which pans hard right, at a pan of 0.75 and a send of 0.5. JAudio1's rule
+// Track 0 plays drum 36 of the test bank at a pan of 0.75 and a send of 0.5. The drum pans hard right. JAudio1's rule
 // 13 adds the drum's pan and the track's. Rule 26 weights each by its pan power. The powers 0, 0 and 1 then leave the
 // drum's pan out. Rule 2 takes the track's value alone. Rule 26 with the default powers, 0, 1 and 1, weights the
 // track's pan and send by a half (JASystem::TChannel::calcPan and calcEffect).
@@ -3209,7 +3233,7 @@ std::vector<int> ExpressionOf(const Performance& perf, uint32_t key)
 // (SequenceSound::child_volumes). Track 0 opens children 0, 1 and 2, and child 1 again at tick 48. Each plays a note.
 // At a volume of 0, child 1 plays neither time: the volume holds when track 0 opens the child again. At 0.5, child 2
 // plays at half the level. CC11 acts squared, and 127 times the square root of a half is 90. Child 0 plays as it does
-// without the volumes. Index 16 + m reaches the root's child 1, which the sequence doesn't open.
+// without the volumes. Index 16 + m reaches the root's child 1. The sequence doesn't open that child.
 void TestChildVolumes()
 {
     constexpr uint32_t kFirst = kFirstSequence + 0x60;
@@ -3237,9 +3261,47 @@ void TestChildVolumes()
           "child 0 plays as it does without the volumes");
 }
 
-// Track 0 connects its mix line 0 to 0xffff: the DSP's automatic mixer, which plays its notes at half the level. Its
-// child 0 opens with the default lines. Its child 1, opened in mode 4, plays on track 0's channels. Track 1 connects
-// only mix line 1. Track 2 connects line 0 to 0xffff and back to the default, 0x150, before its note.
+// A game can give children of a JAudio2 sound's track 0 pitch ratios through the sound's handle
+// (SequenceSound::child_pitches). Track 0 opens children 0 and 1, and child 1 again at tick 48. At a ratio of 2, child
+// 1 plays an octave higher both times: the ratio holds when track 0 opens the child again. Child 0 plays as it does
+// without the ratios.
+void TestChildPitches()
+{
+    constexpr uint32_t kFirst = kFirstSequence + 0x60;
+    constexpr uint32_t kSecond = kFirstSequence + 0x80;
+    Sequence s;
+    s.OpenTrack(0, kChild).Timebase(48).Tempo(120).Wait(200).Finish().PadTo(kChild);
+    s.OpenTrack(0, kFirst).OpenTrack(1, kSecond).Wait(48).OpenTrack(1, kSecond).Wait(100);
+    s.Finish().PadTo(kFirst).Bank(0).Program(0).NoteOn(60, 1, 100).Wait(24).NoteOff(1).Finish();
+    s.PadTo(kSecond).Bank(0).Program(0).NoteOn(64, 1, 100).Wait(24).NoteOff(1).Finish();
+    TestGame game(files::BankV0File(0, 60), {s.Data()});
+    SequenceSound set = game.Sound(0);
+    set.child_pitches = {{1, 2.0f}};
+
+    const Performance every = Perform(game.Sound(0), game.banks, {}, kProgram);
+    const Performance some = Perform(set, game.banks, {}, kProgram);
+
+    const auto bends = [](const Performance& perf, const std::string& name)
+    {
+        std::vector<float> semitones;
+        for (const TrackEvent& e : NamedTrackEvents(perf, name, EventKind::kPitch))
+        {
+            semitones.push_back(e.semitones);
+        }
+        return semitones;
+    };
+    using Ticks = std::vector<uint32_t>;
+    const std::vector<float> raised = bends(some, "Track 0.1");
+    Check(bends(every, "Track 0.1").empty() && !raised.empty() &&
+              std::all_of(raised.begin(), raised.end(), [](float b) { return b == 12.0f; }),
+          "child 1 plays an octave higher");
+    Check(NoteTicks(some, "Track 0.1") == Ticks({0, 48}), "child 1 keeps its notes when track 0 opens it again");
+    Check(bends(some, "Track 0.0") == bends(every, "Track 0.0"), "child 0 plays as it does without the ratios");
+}
+
+// Track 0 connects its mix line 0 to 0xffff: the DSP's automatic mixer. The mixer plays the track's notes at half the
+// level. Its child 0 opens with the default lines. Its child 1, opened in mode 4, plays on track 0's channels. Track 1
+// connects only mix line 1. Track 2 connects line 0 to 0xffff and back to the default, 0x150, before its note.
 void TestJAudio1AutoMixer()
 {
     constexpr uint32_t kTrack0 = kChild;
@@ -3269,12 +3331,12 @@ void TestJAudio1AutoMixer()
     Check(ExpressionOf(perf, 67) == std::vector<int>{90}, "a child in mode 4 plays on its parent's channels");
 }
 
-// An effects sequence with slots as The Wind Waker's has them. The first track opens track 0, which holds category 0's
-// slots, and waits. That track opens slots 0, 1 and 4 and waits. A slot writes 0 to its ports 0 and 2 and reads port 0
-// each tick. Once port 0 holds 1, the slot writes 2 to ports 0 and 2 and calls the routine of the effect that port 4
-// names. On the routine's return, it writes 0 to port 2 and reads port 0 again. Effect 0 plays key 60 for 24 ticks.
-// Effect 1 plays key 64 for 48 ticks, or key 67 if port 6 holds 7. Effect 2 plays key 72 for 24 ticks of every 48, for
-// ever.
+// An effects sequence with slots as The Wind Waker's has them. The first track opens track 0 and waits. Track 0 holds
+// the slots of category 0. That track opens slots 0, 1 and 4 and waits. A slot writes 0 to its ports 0 and 2 and reads
+// port 0 each tick. Once port 0 holds 1, the slot writes 2 to ports 0 and 2 and calls the routine of the effect that
+// port 4 names. On the routine's return, it writes 0 to port 2 and reads port 0 again. Effect 0 plays key 60 for 24
+// ticks. Effect 1 plays key 64 for 48 ticks, or key 67 if port 6 holds 7. Effect 2 plays key 72 for 24 ticks of every
+// 48, for ever.
 std::vector<uint8_t> EffectsSequence()
 {
     constexpr uint32_t kSlots = kChild;
@@ -3789,10 +3851,11 @@ void TestCompressedSequences()
     }
 }
 
-// Pikmin's commands (SequenceSound::jac). The first track names itself with 0xd0 and 0xe5, which take four bytes and
-// none. 0xf3 and 0xf4 take none. Track 0 loads registers 16 and 17 with the offset of two bytes, 50 and 72. It loads
-// the second byte into register 4 through address register 0x28, which holds registers 16 and 17. It plays the byte
-// as a key. Without Pikmin's library, register 0x28 holds 0, and the track plays the collection's second byte.
+// Pikmin's commands (SequenceSound::jac). The first track names itself with 0xd0 and 0xe5. Those commands take four
+// bytes and none. 0xf3 and 0xf4 take none. Track 0 loads registers 16 and 17 with the offset of two bytes, 50 and 72.
+// It loads the second byte into register 4 through address register 0x28. That register holds registers 16 and 17. It
+// plays the byte as a key. Without Pikmin's library, register 0x28 holds 0, and the track plays the collection's second
+// byte.
 void TestJacCommands()
 {
     constexpr uint32_t kKeys = kChild + 0x40;
@@ -3993,6 +4056,23 @@ void TestPikminDiscFiles()
               wii.jac_effects->other_system == rules.jac_effects->other_system &&
               wii.jac_effects->port_effects.size() == 1 && rules.jac_effects->count == 331,
           "New Play Control! Pikmin's rules: the GameCube's, with the Wii's tables of effects");
+
+    // Five pieces play other children as an enemy comes near and in the evening. tutorial.jam's masks are 0x103c,
+    // 0x17d8, 0x8003 and 0x19c3, at 0.5.
+    const auto tutorial = rules.file_arrangements.find("tutorial.jam");
+    const auto tutorial_volume = [&](std::size_t arrangement, uint8_t child)
+    {
+        return tutorial->second[arrangement].child_volumes.at(child);
+    };
+    Check(rules.file_arrangements.size() == 5 && wii.file_arrangements.size() == 5 &&
+              tutorial != rules.file_arrangements.end() && tutorial->second.size() == 3 &&
+              tutorial->second[0].suffix == "enemy_near" && tutorial->second[1].suffix == "evening" &&
+              tutorial->second[2].suffix == "evening_enemy_near" &&
+              rules.child_volumes.at("tutorial.jam").at(2) == 0.5f && tutorial_volume(0, 3) == 0.5f &&
+              tutorial_volume(0, 2) == 0.0f && tutorial_volume(1, 15) == 0.5f && tutorial_volume(1, 2) == 0.0f &&
+              tutorial_volume(2, 0) == 0.5f && tutorial_volume(2, 2) == 0.0f &&
+              rules.file_arrangements.at("flow.jam")[0].child_volumes.at(1) == 0.55f,
+          "Pikmin's pieces with masks convert once more for each later mode");
 }
 
 // A SoundFont whose loudest zone plays above full level takes one attenuation in every zone, and the conversion records
@@ -4023,17 +4103,16 @@ void TestCutAboveFullLevel()
           "a cut of 0.4 cB, which the report would show as 0.0 dB, applies but isn't recorded");
 }
 
-// Runs the converters that RunArchiveConverterWithGames builds from `archive_converter` and `game_options` on `args`.
-// The tests make up their arguments and pass them here. On Windows, the entry point reads the process's command line in
-// place of argv (xsflib's Arguments).
+// Runs the converters that RunConverterWithGames runs for the converter of `archive_converter` and `game_options`, on
+// `args`. The tests make up their arguments and pass them here. On Windows, the entry point reads the process's command
+// line in place of argv (xsflib's Arguments).
 int RunWithGames(const std::vector<std::string>& args,
                  const ntdlib::sequence_export::ArchiveConverter<ntdlib::sar::SoundArchive>& archive_converter,
                  const GameOptions& game_options = {})
 {
     namespace frame = ntdlib::sequence_export;
     const auto archives = frame::MakeArchiveConverter(archive_converter);
-    const GameConverter games = MakeGameConverter(archives.program, archives.version_line,
-                                                  ArchiveProgramOptions(archives.option), archives.usage, game_options);
+    const GameConverter games = MakeGameConverterFor(archives, game_options);
 
     return frame::Run(args, archives, ArchiveProgramGames(args, games));
 }
@@ -4080,7 +4159,7 @@ void TestGameConverter()
     Check(unknown == "unknown option --port", "and only the options of the program's archives: " + unknown);
 
     // The converters of the two entry points run on made-up arguments. RunArchiveConverter runs the converter of
-    // archives. RunArchiveConverterWithGames adds the converter of games. An entry point runs its converters on
+    // archives. RunConverterWithGames adds the converter of games. An entry point runs its converters on
     // Arguments(argc, argv).
     const std::vector<std::string> args = {"xyz2midi", "--quiet", frame::Utf8(folder / "test.baa")};
     std::string program = "xyz2midi";
@@ -4088,7 +4167,7 @@ void TestGameConverter()
 
     const int refused = frame::Run(args, frame::MakeArchiveConverter(archives));
     const int converted = RunWithGames(args, archives);
-    const int entry_point = RunArchiveConverterWithGames(1, argv, archives);
+    const int entry_point = RunConverterWithGames(1, argv, frame::MakeArchiveConverter(archives));
     const int on_arguments = RunWithGames(frame::Arguments(1, argv), archives);
 
     Check(refused == 1 && converted == 0 && fs::exists(folder / "test_xyz2midi" / "BGM_FIELD.mid"),
@@ -4099,9 +4178,9 @@ void TestGameConverter()
     fs::remove_all(folder, ignored);
 }
 
-// The converters of RunArchiveConverterWithGames (RunWithGames) open each JAudio game with the game options that the
-// caller gives. Without them, a JAudio1 game's music converts alone. With GameOptions::jaudio1_effects, the game's
-// effects convert too. The game here has its effects sequence (file 7), one piece of music (file 3) and one effect.
+// The converters of RunConverterWithGames (RunWithGames) open each JAudio game with the game options that the caller
+// gives. Without them, a JAudio1 game's music converts alone. With GameOptions::jaudio1_effects, the game's effects
+// convert too. The game here has its effects sequence (file 7), one piece of music (file 3) and one effect.
 void TestArchiveConverterGameOptions()
 {
     namespace fs = std::filesystem;
@@ -4168,6 +4247,7 @@ int main()
     TestSequenceCallback();
     TestTempoRatio();
     TestChildVolumes();
+    TestChildPitches();
     TestConversion();
     TestTrackFilterLayers();
     TestZoneFilters();

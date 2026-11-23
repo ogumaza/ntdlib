@@ -2,10 +2,10 @@
 
 // Archive mode's model of nn::atk for one sound archive. Each frame, the model runs what the sound thread runs
 // (SoundThread::Run, 0xc18b40, around its FrameProcess, 0xc18590), then the audio renderer's frame. The model reads the
-// archive's banks and waves where they lie in the archive, as a game's sound heap holds them, and plays the archive's
-// sequence sounds and wave sounds. A stream sound plays from the bytes of its stream file, which the game keeps beside
-// the archive. Each function's comment gives the address of the routine it follows in WarioWare: Get It Together!'s
-// main.
+// archive's banks and waves where they are in the archive, as a game's sound heap holds them, and plays the archive's
+// sequence sounds and wave sounds. A stream sound plays from the bytes of its stream file. The game keeps that file
+// beside the archive. Each function's comment gives the address of the routine it follows in WarioWare: Get It
+// Together!'s main.
 
 #pragma once
 
@@ -21,6 +21,7 @@
 
 #include "ntdlib/nwsnd/archive_files.h"
 #include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nwsnd/engine_host.h"
 #include "ntdlib/nwsnd/length_hooks.h"
 #include "ntdlib/nwsnd/sound_players.h"
 #include "ntdlib/nwsnd/voice.h"
@@ -88,9 +89,9 @@ public:
     SequenceSoundPlayer* StartSequence(uint32_t index, int archive = 0);
 
     // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
-    // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks
-    // its wave sound file or the file lacks the sound. A missing wave leaves the player nothing to play: it finishes in
-    // its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
+    // nwsnd/wave_sound_player.h). Returns the player, or nullptr if there's no such wave sound, or if the archive has
+    // no wave sound file or the file doesn't hold the sound. A missing wave leaves the player nothing to play: it
+    // finishes in its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
     WaveSoundPlayer* StartWaveSound(uint32_t index);
 
     // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
@@ -98,7 +99,7 @@ public:
     // such stream sound or no track plays. Throws xsflib::FormatError for a file that sar::StreamFile::Read refuses.
     StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file);
 
-    // The same for a stream sound of `info`, which the archive needn't hold.
+    // The same for a stream sound of `info`. The archive needn't hold the sound.
     StreamSoundPlayer* StartStreamSound(const sar::SoundInfo& info, std::span<const uint8_t> file);
 
     // A frame of 5 ms: the sound thread's frame, then the renderer's frame.
@@ -150,7 +151,7 @@ public:
         return random_;
     }
 
-    // The sequences' global variables, which every player shares, from -1.
+    // The sequences' global variables. Every player shares them. They start at -1.
     std::array<int16_t, 16>& GlobalVariables()
     {
         return global_vars_;
@@ -290,8 +291,8 @@ private:
 
     std::set<std::pair<int, uint32_t>> endless_loops_;
     UserProcedureHook user_procedure_;
-    std::set<std::pair<int, int>> muted_tracks_; // each a player and a track
-    int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
+    ntdlib::nwsnd::TrackMutes muted_tracks_; // the host's mutes (MuteTrack)
+    int metered_player_ = -1;                // the player whose tracks have meters (MeterTracks)
 };
 
 // The voices at each level, the channels, the players and the starts that wait, the archive of each player, the random

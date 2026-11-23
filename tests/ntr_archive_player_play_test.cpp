@@ -110,6 +110,7 @@ std::vector<ntr::SoundOutput> PlayToEnd(const Bytes& file, const SetUp& set_up)
         player.RunFrame(out);
         frames++;
     } while (player.Busy() && frames < 1000);
+
     return out;
 }
 
@@ -233,13 +234,14 @@ std::array<int32_t, 2> OutputPeaks(std::span<const ntr::SoundOutput> samples)
         peaks[0] = std::max(peaks[0], std::abs((sample.left - 0x200) * 64));
         peaks[1] = std::max(peaks[1], std::abs((sample.right - 0x200) * 64));
     }
+
     return peaks;
 }
 
 void TestMeters()
 {
-    // A track's meter follows the output of its channels, before the cut to 10 bits. With one track, each frame's
-    // peaks lie within 64 of the output's. The meters change nothing in the output.
+    // A track's meter follows the output of its channels, before the cut to 10 bits. With one track, each frame's peaks
+    // are within 64 of the output's. The meters change nothing in the output.
     const Bytes file = ArchiveFile(kTiedNotes, 100);
     const sdat::Archive archive = sdat::Archive::Parse(file);
     ntr::ArchivePlayer player(archive);

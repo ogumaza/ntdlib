@@ -4,15 +4,18 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <span>
 #include <vector>
 
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
+
 namespace ntdlib
 {
+
+using ntdlib::detail::HasMagic;
 
 namespace
 {
@@ -75,7 +78,7 @@ void CopyBack(std::vector<uint8_t>& out, std::size_t distance, std::size_t count
 
 std::vector<uint8_t> DecodeYay0(std::span<const uint8_t> data)
 {
-    if (data.size() < kHeaderSize || std::memcmp(data.data(), "Yay0", 4) != 0)
+    if (data.size() < kHeaderSize || !HasMagic(data, "Yay0"))
     {
         throw xsflib::FormatError("not Yay0 data");
     }

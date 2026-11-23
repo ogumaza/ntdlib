@@ -148,10 +148,19 @@ std::optional<std::string> ImageFormat(std::span<const uint8_t> header);
 // Wiimm's tools extract discs in these layouts. Returns an error message on failure and nothing on success.
 //
 // Some GameCube discs that never went on sale leave the magic word out of their header. LoadGame accepts such a disc
-// when the rest of it is intact. The file system table must parse. main.dol must be a DOL whose entry point lies in
-// one of its sections. On an image, the header must place both files past the system area of the header and bi2.bin.
-// Both must end inside the image and inside a GameCube disc's capacity. A disc of the other console, or any other
-// data, is still refused.
+// when the rest of it is intact. The file system table must parse. main.dol must be a DOL whose entry point is in one
+// of its sections. On an image, the header must place both files past the system area of the header and bi2.bin. Both
+// must end inside the image and inside a GameCube disc's capacity. A disc of the other console, or any other data, is
+// still refused.
 std::optional<std::string> LoadGame(const std::filesystem::path& path, GameFiles& out, const GameOptions& options);
+
+// Whether LoadGame reads `path` as a game, by the rules that LoadGame follows. A folder counts when it holds an
+// extracted disc, directly or in a DATA folder, or with GameOptions::titles a title's TMD or contents. A file counts
+// when its first bytes start a disc image or a container (ImageFormat). For the GameCube, an image of an intact disc
+// whose header leaves out the magic word counts too. With GameOptions::titles, a WAD and a title's TMD or content file
+// count as well: LoadGame rejects each of them with a message that says what to load instead. LoadGame can still fail
+// on an input that counts, such as a damaged image or a disc of the other console. Any other input isn't a game, and a
+// program can read it as some other file, such as a sound archive.
+bool IsGame(const std::filesystem::path& path, const GameOptions& options);
 
 } // namespace ntdlib::disc

@@ -3,13 +3,12 @@
 // The channels' levels: the pans, the effects of the instruments and the oscillators, and the mixers' volumes and
 // the pitch that go to the DSP (see channel.cpp).
 
-#include "ntdlib/jac/channel.h"
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
 #include "jac/channel_internal.h"
+#include "ntdlib/jac/channel.h"
 #include "ntdlib/jaudio1/channel.h"
 #include "ntdlib/jaudio2/calc.h"
 

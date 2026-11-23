@@ -10,13 +10,14 @@
 #include <string>
 #include <utility>
 #include <vector>
+
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
+
 #include "ntdlib/arm/cpu.h"
 
 namespace arm_tests
 {
-
 
 using ntdlib::arm::Architecture;
 using ntdlib::arm::Bus;

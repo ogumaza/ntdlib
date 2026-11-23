@@ -31,9 +31,6 @@ constexpr std::size_t kLongestText = 64;
 // The text that starts at `bytes`, up to its zero byte or the end of `bytes`.
 std::string TextBeforeZero(std::span<const uint8_t> bytes);
 
-// The file name of `path` without its folders and its extension: "title" for "audio/title.sng".
-std::string Stem(const std::string& path);
-
 // The ID of the first group in `project`, a MusyX project file. A group's header starts with the offset of the next
 // group, then the group's ID in a big-endian half. Throws FormatError if the file is too short.
 uint16_t FirstGroupId(std::span<const uint8_t> project);

@@ -138,7 +138,7 @@ std::vector<uint16_t> Player::LoadBanks(const SequenceFiles& files)
     return refused;
 }
 
-bool Player::Start(const SequenceFiles& files)
+bool Player::Start(const SequenceFiles& files, const StartParameters& song_start)
 {
     if (files.effects == nullptr)
     {
@@ -146,7 +146,7 @@ bool Player::Start(const SequenceFiles& files)
         {
             throw std::invalid_argument("the files hold no song or sound effect");
         }
-        dse_.PlaySong(*files.song);
+        dse_.PlaySong(*files.song, song_start);
         dse_.Follow(dse::Driver::kSong);
         return true;
     }
@@ -372,19 +372,6 @@ void Player::Play(uint64_t end, std::vector<ntr::SoundOutput>* out, std::vector<
 uint64_t Player::Clock() const
 {
     return clock_;
-}
-
-uint64_t Player::TickClocks(int tick_microseconds)
-{
-    switch (tick_microseconds)
-    {
-    case dse::Driver::kTickMicroseconds:
-        return kTickClocks;
-    case dse::Driver::kSlowTickMicroseconds:
-        return kVideoFrameClocks;
-    default:
-        throw std::invalid_argument("DSE's driver has no tick of " + std::to_string(tick_microseconds) + " us");
-    }
 }
 
 uint64_t Player::TickClocks() const

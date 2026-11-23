@@ -12,10 +12,12 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "xsflib/binary.h"
 
+#include "common/magic.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/wave/adpcm.h"
 #include "sar/file_bytes.h"
@@ -43,12 +45,19 @@ inline constexpr std::size_t kReferenceSize = 8;
 // padding. ReadDspAdpcm and WriteDspAdpcm read and write all but the padding.
 inline constexpr std::size_t kDspAdpcmInfoSize = 46;
 
+// Whether `file` starts with the magic of a file of `kind`, such as BNK: C and `kind` on the 3DS, F and `kind` on the
+// Wii U and the Switch.
+inline bool HasFileMagic(std::span<const uint8_t> file, std::string_view kind)
+{
+    return !file.empty() && (file[0] == 'C' || file[0] == 'F') && ntdlib::detail::HasMagic(file.subspan(1), kind);
+}
+
 // The flavor of a file of `kind` (such as WAV or STM), from its magic and its byte order mark, and a reader in its byte
 // order. Throws xsflib::FormatError for another file. `name` names the file in the message.
 inline std::pair<Flavor, xsflib::Reader> OpenFile(std::span<const uint8_t> file, const char* kind,
                                                   const std::string& name)
 {
-    if (file.size() < 0x14 || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, kind, 3) != 0)
+    if (file.size() < 0x14 || !HasFileMagic(file, kind))
     {
         throw xsflib::FormatError("not a " + name + " (C" + kind + " or F" + kind + ")");
     }

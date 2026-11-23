@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -16,20 +15,25 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
+#include "ntdlib/rounding.h"
+
 namespace ntdlib::sar
 {
+
+using ntdlib::detail::HasMagic;
 
 std::vector<SarcFile> SarcFiles(std::span<const uint8_t> sarc)
 {
     std::vector<SarcFile> files;
-    if (sarc.size() < 0x14 || std::memcmp(sarc.data(), "SARC", 4) != 0)
+    if (sarc.size() < 0x14 || !HasMagic(sarc, "SARC"))
     {
         return files;
     }
 
     const xsflib::Reader r(sarc, sarc[6] == 0xFE && sarc[7] == 0xFF);
     const std::size_t sfat = r.U16(4);
-    if (sfat + 0xC > sarc.size() || std::memcmp(&sarc[sfat], "SFAT", 4) != 0)
+    if (sfat + 0xC > sarc.size() || !HasMagic(sarc.subspan(sfat), "SFAT"))
     {
         return files;
     }
@@ -39,10 +43,10 @@ std::vector<SarcFile> SarcFiles(std::span<const uint8_t> sarc)
     const std::size_t nodes = sfat + r.U16(sfat + 4);
     const std::size_t count = r.U16(sfat + 6);
 
-    // The names lie between the SFNT block's header and the data.
+    // The names are between the SFNT block's header and the data.
     std::span<const uint8_t> names;
     const std::size_t sfnt = nodes + count * 16;
-    if (sfnt + 8 <= sarc.size() && std::memcmp(&sarc[sfnt], "SFNT", 4) == 0)
+    if (sfnt + 8 <= sarc.size() && HasMagic(sarc.subspan(sfnt), "SFNT"))
     {
         const std::size_t first = sfnt + r.U16(sfnt + 4);
         const std::size_t end = static_cast<std::size_t>(std::min<uint64_t>(data, sarc.size()));
@@ -150,7 +154,7 @@ NewSarc LaidBytes(std::span<const uint8_t> sarc, const FilePlace& old, std::span
     else
     {
         const uint64_t alignment = std::min(old.start & (~old.start + 1), kMaxAlignment);
-        place = (old.last_end + alignment - 1) / alignment * alignment;
+        place = AlignUp(old.last_end, alignment);
         bytes.resize(static_cast<std::size_t>(old.end), 0);
         bytes.insert(bytes.end(), sarc.begin() + static_cast<std::ptrdiff_t>(old.end),
                      sarc.begin() + static_cast<std::ptrdiff_t>(old.last_end));

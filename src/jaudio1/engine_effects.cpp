@@ -3,8 +3,6 @@
 // The engine's effects on the effect sequence: their start, their levels in each of the game's frames, and the
 // levels that their slot tracks take (see engine.cpp).
 
-#include "ntdlib/jaudio1/engine.h"
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +12,7 @@
 #include <vector>
 
 #include "jaudio1/engine_internal.h"
+#include "ntdlib/jaudio1/engine.h"
 
 namespace ntdlib::jaudio1
 {
@@ -260,7 +259,8 @@ void Engine::EffectFrame()
         }
         SendEffectLevels(false);
 
-        // JAIBasic::getSoundOffsetNumberFromID. An effect with the ground's flag adds the ground of map 0, which is 0.
+        // JAIBasic::getSoundOffsetNumberFromID. An effect with the ground's flag adds the ground of map 0. That ground
+        // is 0.
         const uint16_t number = (format & kFormatOffset) != 0 ? e.info.offset : static_cast<uint16_t>(e.id & 0x3ff);
         m.tracks.WritePortApp(m.root, e.route | 0x30000, 0);
         m.tracks.WritePortApp(m.root, e.route | 0x60000, 0);

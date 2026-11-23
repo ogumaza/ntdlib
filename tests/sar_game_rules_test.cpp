@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // Checks RulesOf (ntdlib/sar/game_rules.h): an archive that no rule names gets none, and the rules of WarioWare: Get It
-// Together!'s Sound_Common.bfsar hold its 9 layered sounds, its two reverbs for aux bus B, its microgames' sounds and
-// the other sounds that send to bus B. WarioWare: Move It!'s Sound.bfsar keeps one reverb on bus B, under a delay on
+// Together!'s common sound archive hold its 9 layered sounds, its two reverbs for aux bus B, its microgames' sounds and
+// the other sounds that send to bus B. WarioWare: Move It!'s sound archive keeps one reverb on bus B, under a delay on
 // bus A. Clubhouse Games: 51 Worldwide Classics' main archive puts the renderer's reverb on bus B for the piano's
 // notes, and the bowling game's sub-archive keeps one there for every sound. The values come from the effect list in
-// the game's sound_settingpreset.bspp. StartsOf gives the values that Super Mario 3D World + Bowser's Fury and Super
+// the game's sound presets. StartsOf gives the values that Super Mario 3D World + Bowser's Fury and Super
 // Mario Party Jamboree write as they start some sounds.
 
 #include <algorithm>

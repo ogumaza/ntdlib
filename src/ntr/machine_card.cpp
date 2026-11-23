@@ -177,6 +177,7 @@ void Machine::StartCard()
     card_.ready = false;
     const uint64_t cycles = (card_.control & kCardSlowClock) != 0 ? kCardSlowCycles : kCardFastCycles;
     card_.ready_at = Clock() + (8 + (card_.control & kCardGap) + bytes) * cycles;
+    EventScheduled();
 }
 
 void Machine::CardReady()

@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/testing/check.h"
 
 #include "ctr_archive_waves.h"
@@ -37,6 +38,7 @@
 #include "ntdlib/ctr/snd/starting_tracks.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
+#include "ntdlib/testing/fnv1a.h"
 #include "ntdlib/testing/sar_files.h"
 
 namespace
@@ -48,6 +50,7 @@ namespace sar = ntdlib::sar;
 using ntdlib::ctr::snd::ArchiveModel;
 using ntdlib::ctr::snd::DspKind;
 using ntdlib::ctr::snd::kNoVoice;
+using seqlib::testing::Throws;
 using xsflib::testing::Check;
 
 // The frames of a second of output: 160 samples each at about 32,728 Hz.
@@ -79,7 +82,7 @@ struct ReturnChange
 // Bus 0 returns at half its volume from 1 s on, and bus 1 at a quarter from 2 s on.
 constexpr std::array<ReturnChange, 2> kLowerReturns = {{{kSecond, 0, 0.5f}, {2 * kSecond, 1, 0.25f}}};
 
-// The archive's files of the stream sounds, which lie outside the archive: a looped stream, then one that plays once.
+// The files of the archive's stream sounds, outside the archive: a looped stream, then one that plays once.
 constexpr uint32_t kFirstStreamFile = 6;
 
 // The stream sound whose track plays on the DSP's bus of two channels. In stereo, the firmware mixes that bus into no
@@ -143,7 +146,7 @@ const std::array<std::vector<uint8_t>, 2>& Streams()
 }
 
 // The wave sound file of sounds 3 to 5 (see Archive). Its waves are the constant wave, the DSP-ADPCM wave and a wave
-// that the wave archive lacks.
+// missing from the wave archive.
 files::WaveSoundFileSpec WaveSounds()
 {
     constexpr uint32_t kWarc = sar::kWaveArchiveItem << 24;
@@ -289,16 +292,13 @@ std::unique_ptr<ArchiveModel> Start(DspKind kind, std::span<const uint8_t> firmw
 // The 64-bit FNV-1a hash of `values`' bytes, low byte first.
 uint64_t Hash(std::span<const int16_t> values)
 {
-    uint64_t hash = 0xcbf29ce484222325;
+    ntdlib::testing::Fnv1a hash;
     for (const int16_t value : values)
     {
-        for (const int shift : {0, 8})
-        {
-            hash = (hash ^ ((static_cast<uint16_t>(value) >> shift) & 0xff)) * 0x100000001b3;
-        }
+        hash.Add(static_cast<uint16_t>(value), 2);
     }
 
-    return hash;
+    return hash.Value();
 }
 
 // The aux buses' callbacks of the tests. Bus A's channels come back reversed in time and halved. Bus B's come back
@@ -530,15 +530,7 @@ void TestSequenceStart(const sar::SoundArchive& archive)
     ntdlib::ctr::snd::ApplySequenceStart(*models[1]->engine, *quiet, muted);
     ntdlib::ctr::snd::ApplySequenceStart(*models[2]->engine, *silent, silenced);
 
-    bool refused = false;
-    try
-    {
-        models[0]->engine->ScheduleVariable(*quiet, 0, 1, 5);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::invalid_argument>([&] { models[0]->engine->ScheduleVariable(*quiet, 0, 1, 5); });
 
     XSFLIB_CHECK(refused);
 
@@ -559,6 +551,53 @@ void TestSequenceStart(const sar::SoundArchive& archive)
     }
 
     XSFLIB_CHECK(Sounds(out[0]) && !Sounds(out[1]) && !Sounds(out[2]) && !Sounds(out[3]));
+}
+
+// The energy of the steps from each sample to the next of the same channel, over the energy of the samples: how bright
+// a stereo output sounds.
+double Brightness(std::span<const int16_t> samples)
+{
+    double steps = 0.0;
+    double total = 0.0;
+    for (std::size_t i = 2; i < samples.size(); i++)
+    {
+        const auto sample = static_cast<double>(samples[i]);
+        const double step = sample - static_cast<double>(samples[i - 2]);
+        steps += step * step;
+        total += sample * sample;
+    }
+
+    return total > 0.0 ? steps / total : 0.0;
+}
+
+// A start's low-pass darkens the notes of sound 1: at -0.4 the output has less energy in its steps from sample to
+// sample. A start that sets no low-pass plays as a sound that no start touched.
+void TestSequenceLowPass(const sar::SoundArchive& archive)
+{
+    ntdlib::ctr::snd::SequenceStart dark;
+    dark.lpf = -0.4f;
+    std::array<std::vector<int16_t>, 3> out;
+    std::array<std::unique_ptr<ArchiveModel>, 3> models;
+    for (std::size_t i = 0; i < models.size(); i++)
+    {
+        models[i] = Start(DspKind::kModel, {}, archive, out[i]);
+    }
+
+    ntdlib::ctr::snd::SequenceSoundPlayer* const plain = models[1]->engine->StartSequence(1);
+    ntdlib::ctr::snd::SequenceSoundPlayer* const filtered = models[2]->engine->StartSequence(1);
+    XSFLIB_CHECK(models[0]->engine->StartSequence(1) != nullptr && plain != nullptr && filtered != nullptr);
+    ntdlib::ctr::snd::ApplySequenceStart(*models[1]->engine, *plain, {});
+    ntdlib::ctr::snd::ApplySequenceStart(*models[2]->engine, *filtered, dark);
+    for (int i = 0; i < 2 * kSecond; i++)
+    {
+        for (const std::unique_ptr<ArchiveModel>& model : models)
+        {
+            XSFLIB_CHECK(model->engine->RunFrame());
+        }
+    }
+
+    XSFLIB_CHECK(Sounds(out[2]) && out[1] == out[0]);
+    XSFLIB_CHECK(Brightness(out[2]) < 0.5 * Brightness(out[0]));
 }
 
 // A track's meter follows its notes. Sound 1 plays every note on track 0, and the other tracks' meters stay at 0. Track
@@ -912,6 +951,7 @@ int main()
     TestRestoreOfGrownVoices();
     TestMute(DspKind::kModel, {}, archive);
     TestSequenceStart(archive);
+    TestSequenceLowPass(archive);
     TestMeters(archive);
     TestWaveSounds(archive);
     TestStreams(archive);

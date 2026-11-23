@@ -53,7 +53,7 @@ sdat::Region MakeRegion(sdat::InstrumentType type, uint16_t wave, uint8_t seed)
             .pan = static_cast<uint8_t>(30 + seed)};
 }
 
-// Whether two banks hold the same instruments, wherever their data lies.
+// Whether two banks hold the same instruments, wherever their data is.
 bool SameInstruments(const sdat::Bank& a, const sdat::Bank& b)
 {
     if (a.instruments.size() != b.instruments.size())
@@ -246,7 +246,7 @@ void TestEncodePcm16Loop()
 
 // IMA-ADPCM. A wave without a loop starts with the decoder's state, and its loop starts at that word. A loop from
 // sample 3 of 20 moves to sample 8. Its length of 17 repeats 8 times, to 136 samples, 17 words. The header's sample is
-// the first sample's, and each decoded sample lies close to the input.
+// the first sample's, and each decoded sample is close to the input.
 void TestEncodeImaAdpcm()
 {
     std::vector<int16_t> sine(20);
@@ -398,10 +398,9 @@ std::vector<int16_t> WholeImaChannel(std::span<const int16_t> samples)
     return sdat::DecodeAdpcm(block, static_cast<uint32_t>(samples.size()));
 }
 
-// The STRM reader reads back each field that EncodeStream writes. A stream of 32,728 Hz takes a timer of
-// 16,756,991 / 32,728 / 32 = 16. A part of IMA-ADPCM starts with 4 bytes of state, so a block of 512 bytes holds
-// 1,016 samples. Two channels of 2 blocks of 512 bytes and one of 91 end on a multiple of 4 bytes after 2 bytes of
-// padding.
+// The STRM reader reads back each field that EncodeStream writes. A stream of 32,728 Hz takes a timer of 16,756,991 /
+// 32,728 / 32 = 16. A part of IMA-ADPCM starts with 4 bytes of state. A block of 512 bytes therefore holds 1,016
+// samples. Two channels of 2 blocks of 512 bytes and one of 91 end on a multiple of 4 bytes after 2 bytes of padding.
 void TestStreamLayout()
 {
     const std::vector<std::vector<int16_t>> channels = Stereo(1016 * 2 + 173);

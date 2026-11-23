@@ -12,6 +12,7 @@
 #include "ntdlib/cafe/snd/sequence.h"
 #include "ntdlib/cafe/snd/util.h"
 #include "ntdlib/cafe/snd/voice.h"
+#include "ntdlib/nwsnd/cafe_policy.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/wave/adpcm.h"

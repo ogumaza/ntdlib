@@ -3,10 +3,16 @@
 #include "ntdlib/flipper/z2_params.h"
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
+
+#include "ntdlib/jaudio/z2_states.h"
 
 namespace ntdlib::flipper::z2
 {
@@ -58,6 +64,33 @@ std::vector<uint8_t> PieceState::Bytes() const
     }
 
     return bytes;
+}
+
+std::vector<PieceState::Memory> MiniWrites(uint32_t params, uint32_t sound_id,
+                                           std::optional<std::span<const uint32_t>> waves, const PieceState* state)
+{
+    std::vector<PieceState::Memory> writes;
+    std::vector<uint8_t> sound(4);
+    xsflib::StoreBe32(sound.data(), sound_id);
+    writes.push_back({params + kSoundOffset, std::move(sound)});
+    if (waves)
+    {
+        writes.push_back({params + kWaveCountOffset, WaveList(*waves)});
+    }
+
+    if (!state)
+    {
+        return writes;
+    }
+
+    if (std::vector<uint8_t> words = state->Bytes(); !words.empty())
+    {
+        writes.push_back({params + kMutedChildrenOffset, std::move(words)});
+    }
+
+    writes.insert(writes.end(), state->memory.begin(), state->memory.end());
+
+    return writes;
 }
 
 PieceState PieceStateOf(const jaudio::MusicState& state)

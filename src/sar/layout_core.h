@@ -2,7 +2,7 @@
 
 // The cutting and joining of sar/layout.h for any kind of NintendoWare archive: the CSAR and FSAR archives of the 3DS,
 // the Wii U and the Switch (sar/layout.h), and the RSAR archives of the Wii (rsar/layout.h). Each kind reads the
-// structure of its archives by its rules: where its files lie, the fields of its tables that hold their offsets and
+// structure of its archives by its rules: where its files are, the fields of its tables that hold their offsets and
 // sizes, and the sequence sounds' starts. A Container gives the rest that differs between the kinds: the magic of its
 // sequence files, its byte order, the grammar of its bytecode, and the reader and the writer of its sequence files.
 // These functions do the rest of the work by the rules that sar/layout.h states.

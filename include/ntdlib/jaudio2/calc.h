@@ -13,7 +13,8 @@ namespace ntdlib::jaudio2
 {
 
 // AArch64's conversions of a float to a 32-bit integer (fcvtzs and fcvtzu): toward zero, saturated at the type's
-// limits, with NaN giving 0. A conversion to a narrower field keeps the low bits of the 32-bit result.
+// limits, with NaN giving 0. A conversion to a narrower field keeps the low bits of the 32-bit result. ToInt32 and
+// ToUint32 are ntdlib::ArmToInt32 and ntdlib::ArmToUint32 (ntdlib/fused.h).
 int32_t ToInt32(float value);
 uint32_t ToUint32(float value);
 
@@ -23,6 +24,11 @@ float Pow2(float x);
 
 // JASCalc::clamp01: `value` within 0 to 1. A NaN stays NaN.
 float Clamp01(float value);
+
+// The sine of `x`, for x from 0 to 2π, in double precision, without the host's library: the angle less the nearest
+// multiple of π/2, then a Taylor series for that quarter. The games fill their tables of sines from the system's sine.
+// This function stands in for it, here and in JAudio1's table.
+double Sine(double x);
 
 // JMath's table of sines: entry `index` (0 to 16383) holds the sine of index × 2π / 16384, in single precision. The
 // game fills the table at start-up from the system's sine in double precision, with 2π rounded to single precision

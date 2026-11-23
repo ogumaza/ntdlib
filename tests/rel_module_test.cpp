@@ -3,6 +3,8 @@
 // A test of the reader of modules of a GameCube game's code (ntdlib/rel_module.h) on a small synthetic module. The
 // expected values follow from the layout that the reader's header describes.
 
+#include "ntdlib/rel_module.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -10,7 +12,6 @@
 
 #include "xsflib/testing/check.h"
 
-#include "ntdlib/rel_module.h"
 #include "ntdlib/testing/big_endian_bytes.h"
 
 using BigEndianBytes = ntdlib::testing::BigEndianBytes;

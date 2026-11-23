@@ -82,7 +82,7 @@ struct VoiceBehavior
     bool reset_played_at_loop = false;
 };
 
-// The renderer's settings (nn::audio::AudioRendererParameter), and the mixing mode, which nn::audio lacks.
+// The renderer's settings (nn::audio::AudioRendererParameter), and the mixing mode. nn::audio has no mixing mode.
 struct RendererParameter
 {
     int32_t sample_rate = 48000;
@@ -216,7 +216,7 @@ public:
 // frame. The voices' last samples become 0. A voice that stops before a mixed frame has given them again leaves the
 // depop nothing. A delay or a light limiter that a call has set to start again does start again, and one that a call
 // has given new gains takes them. Once the frames mix again, a biquad's state takes a moment to settle, and the effects
-// lack the tails of what they missed. A host runs such frames to reach a place in a sound quickly.
+// don't have the tails of the skipped frames. A host runs such frames to reach a place in a sound quickly.
 class Renderer
 {
 public:

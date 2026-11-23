@@ -132,7 +132,7 @@ uint32_t BufferWords(uint32_t length, uint16_t format)
     }
 }
 
-// The firmware's check of a buffer: it has to lie in the first 0x07000000 bytes of FCRAM's addresses.
+// The firmware's check of a buffer: it has to be in the first 0x07000000 bytes of FCRAM's addresses.
 bool BufferValid(uint32_t address, uint32_t words)
 {
     const uint32_t end = address + words;

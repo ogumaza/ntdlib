@@ -5,7 +5,7 @@
 // it there. The comments give the addresses of the firmware's routines in Pokémon X's dspaudio.cdc. FirmwareModel
 // decides when each routine runs.
 //
-// In the enhanced mixing mode, the sources' structures and state lie in host memory (HostSources), in the firmware's
+// In the enhanced mixing mode, the sources' structures and state are in host memory (HostSources), in the firmware's
 // layouts. Each source in turn takes source 0's places in data memory while the firmware's routines take its
 // parameters, step it through its buffers and report on it. The enhanced renderer (firmware_enhanced.cpp) then mixes
 // the samples that the source decoded.
@@ -43,7 +43,7 @@ constexpr int kFrameSamples = 160;
 constexpr int kEnhancedFrameSamples = static_cast<int>(dsp::kEnhancedFrameSamples);
 
 // The shared structures, by their places in the list that the firmware sends through the audio pipe. Each has a copy in
-// each region: region 1's lies in bank 1.
+// each region: region 1's is in bank 1.
 constexpr std::array<uint16_t, 15> kSharedStructures = {0xbfff, 0x9e92, 0x8680, 0xa792, 0x9430, 0x8400, 0x8540, 0x9492,
                                                         0x8710, 0x8410, 0xa912, 0xaa12, 0xaad2, 0xac52, 0xac5c};
 constexpr uint16_t kFrameCounter = 0xbfff;

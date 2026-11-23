@@ -79,7 +79,7 @@ struct DecodeFromWaveBuffersArgs
 void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args);
 
 // The samples before a batch's input that the enhanced decoding keeps for each channel. The interpolator's widest
-// kernel takes 128 samples on each side of a position, and a position lies up to 5 samples behind the batch's input.
+// kernel takes 128 samples on each side of a position, and a position is up to 5 samples behind the batch's input.
 inline constexpr int kWideHistory = 132;
 
 // What the enhanced decoding takes beside the arguments: the channel's past samples, and room for a batch's input. The

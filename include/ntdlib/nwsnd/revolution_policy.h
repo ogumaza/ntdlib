@@ -25,8 +25,8 @@ namespace ntdlib::nwsnd
 {
 
 // NW4R SND on the Wii's Broadway, after Wii Sports' main.dol. NW4R SND is older than nw::snd: one LFO, no extended
-// commands, a call stack 3 deep and three effect sends. The library lacks a channel's silence, the outputs, the pan
-// range, the user's pitch, and the player's filters that override the track's filters. NW4R SND's code divides where
+// commands, a call stack 3 deep and three effect sends. The library has none of a channel's silence, the outputs, the
+// pan range, the user's pitch and the player's filters that override the track's filters. NW4R SND's code divides where
 // the 3DS's code multiplies by reciprocals. NW4R SND's builds fall into six kinds that differ in their commands
 // (SndBuild). WarioWare: Smooth Moves' build of October 2006 also differs in its clock. A sound's build comes from its
 // main.dol or its AX, and the player holds it.
@@ -109,7 +109,7 @@ struct RevolutionPolicy
     // NW4R SND's build: its banner's date, and whether it's the build of October 2006 (ntdlib's sound_build.h).
     using Build = SndBuild;
 
-    // The commands that a build lacks. Every build lacks the bank (0xB6), the LFOs' phase, curve and period (0xBD,
+    // The commands missing from a build. No build has the bank (0xB6), the LFOs' phase, curve and period (0xBD,
     // 0xBE, 0xE4), the front bypass (0xBF) and the extended LFO commands (0xF0 with 0xA0 to 0xBF and 0xE1 to 0xE6). The
     // parser reads no byte after 0xF0 with 0xA0 to 0xBF. The time prefixes (0xA3 to 0xA5), the hold (0xB1) and
     // monophony (0xB2) come in 2008 (Mario Kart Wii, 0x80096240, 0x80096b90 and 0x80096be8). The velocity range (0xB3),

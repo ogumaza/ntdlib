@@ -310,7 +310,7 @@ public:
     // game's note then doesn't start. Unheard notes (QueueDemoEvents) don't count.
     uint32_t MissingBankNotes() const;
 
-    // The steps that the model leaves out: the tracks' (Tracks::Unmodelled) and the game's code's.
+    // The steps that the model leaves out: those of the tracks (Tracks::Unmodelled) and those of the game's code.
     uint32_t Unmodelled() const;
 
     // The hook for a length analysis (as in jaudio1::Engine), with jumps at any depth. A jump back of a track: its

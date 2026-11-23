@@ -2,7 +2,8 @@
 
 // The conversion tests of what only the Switch does: nn::atk's variable shifts on AArch64, its note-offs that wait for
 // a channel's first update, the effect sends that reach the mix dry, the audio renderer's one-shot ends and
-// interpolation, and biquad types 6 to 10. sequence_export_test.cpp runs the tests that hold on the Wii U as well.
+// interpolation, and biquad types 6 to 10. The tests on synthetic archives (sequence_export_test.h) run the tests that
+// apply to the Wii U as well.
 
 #include <algorithm>
 #include <cmath>

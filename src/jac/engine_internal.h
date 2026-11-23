@@ -85,7 +85,7 @@ struct Engine::Model
     // Jaf's handles: the root's handle that Jaq_SetSeqData gave, or -1 (0x7ed748).
     std::array<int32_t, kHandles> handles{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
-    // The music's first record (0x7642d0): whether it plays, whether its child tracks still need their buffers, its
+    // The music's first record (0x7642d0): whether it plays, whether its child tracks still require their buffers, its
     // child tracks' buffers and volumes, and the root track's volume. The calls of fn_263fe0, the player's callback
     // that runs BgmFrameWork at every 8th call (0x7642b8).
     struct Bgm

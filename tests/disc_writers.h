@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-// What the GameCube and Wii disc tests share: the test game, and the writers. BuildGame builds the game's data, which
-// fills a GameCube disc or a Wii disc's game partition. The writers store an ISO image as GCZ, CISO and WDF, compress a
-// WIA or RVZ group with each method, pack RVZ's junk, encode WIA's PURGE, store a disc's raw data in WIA or RVZ groups
-// and lay out a WIA or RVZ file. The writers follow the formats' descriptions. The lists of WIA's and RVZ's methods are
-// here too.
+// What the GameCube and Wii disc tests share: the test game, and the writers. BuildGame builds the game's data. That
+// data fills a GameCube disc or the game partition of a Wii disc. The writers store an ISO image as GCZ, CISO and WDF,
+// compress a WIA or RVZ group with each method, pack RVZ's junk, encode WIA's PURGE, store a disc's raw data in WIA or
+// RVZ groups and lay out a WIA or RVZ file. The writers follow the formats' descriptions. The lists of WIA's and RVZ's
+// methods are here too.
 
 #pragma once
 
@@ -25,9 +25,10 @@
 #include <zlib.h>
 #include <zstd.h>
 
-#include "disc_files.h"
+#include "disc_helpers.h"
 #include "ntdlib/disc/compression.h"
 #include "ntdlib/disc/junk.h"
+#include "ntdlib/rounding.h"
 
 namespace disc_writers
 {
@@ -43,7 +44,7 @@ struct Junk
     std::array<uint8_t, 68> seed;
 };
 
-// How the test game lies on a console's disc: the game's ID, the console's magic word and where boot.bin holds it, the
+// Where a console's disc stores the test game: the game's ID, the console's magic word and where boot.bin holds it, the
 // shift of the offsets in boot.bin and the file system table, and the names of the sound files.
 struct GameLayout
 {
@@ -92,11 +93,11 @@ inline void BuildSystemFiles(Game& game, const GameLayout& layout)
     xsflib::StoreBe32(game.boot.data() + 0x424, Shifted(layout, kGameFst));
 
     game.bi2.assign(0x2000, 0);
-    disc_files::Fill(game.bi2, 0, game.bi2.size(), 1);
+    disc_helpers::Fill(game.bi2, 0, game.bi2.size(), 1);
 
     // The apploader: a header with its date, entry point, size and trailer size, then its code.
     game.apploader.assign(0x20 + 0x1234 + 0x100, 0);
-    disc_files::Fill(game.apploader, 0x20, game.apploader.size() - 0x20, 2);
+    disc_helpers::Fill(game.apploader, 0x20, game.apploader.size() - 0x20, 2);
     std::copy_n("2026/10/07", 10, game.apploader.begin());
     xsflib::StoreBe32(game.apploader.data() + 0x10, 0x81200000);
     xsflib::StoreBe32(game.apploader.data() + 0x14, 0x1234);
@@ -104,7 +105,7 @@ inline void BuildSystemFiles(Game& game, const GameLayout& layout)
 
     // main.dol: one text and one data section.
     game.dol.assign(0x2600, 0);
-    disc_files::Fill(game.dol, 0x100, 0x2500, 3);
+    disc_helpers::Fill(game.dol, 0x100, 0x2500, 3);
     std::fill_n(game.dol.begin(), 0x100, uint8_t{0});
     xsflib::StoreBe32(game.dol.data() + 0x00, 0x100);
     xsflib::StoreBe32(game.dol.data() + 0x48, 0x80004000);
@@ -139,7 +140,7 @@ inline std::vector<GameFile> BuildFiles(Game& game, const GameLayout& layout)
     };
     for (size_t i = 0; i < files.size(); ++i)
     {
-        disc_files::Fill(game.data, files[i].offset, files[i].size, static_cast<uint32_t>(10 + i));
+        disc_helpers::Fill(game.data, files[i].offset, files[i].size, static_cast<uint32_t>(10 + i));
         game.files[files[i].path] =
             Bytes(game.data.begin() + static_cast<std::ptrdiff_t>(files[i].offset),
                   game.data.begin() + static_cast<std::ptrdiff_t>(files[i].offset + files[i].size));
@@ -453,7 +454,7 @@ inline Bytes Pack(const Bytes& data, const std::vector<Junk>& junk)
 inline Bytes Purge(const GroupData& group)
 {
     Bytes out = group.lists;
-    out.resize((out.size() + 3) & ~size_t{3}, 0);
+    out.resize(ntdlib::AlignUp(out.size(), 4), 0);
     for (size_t offset = 0; offset < group.data.size();)
     {
         if (!group.data[offset])
@@ -502,7 +503,7 @@ struct WiaContents
 
 // Stores the disc in `iso` up to `end` as raw data in `wia`: the raw data table's one entry, from 0x80 to `end`, and a
 // group for each chunk from the disc's start. `junk` gives runs of junk by their offsets on the disc. Each group lists
-// the runs that lie inside it, for RVZ packing.
+// the runs that are inside it, for RVZ packing.
 inline void AddRawData(WiaContents& wia, const Bytes& iso, uint64_t end, const std::vector<Junk>& junk)
 {
     const uint64_t groups = (end + wia.chunk_size - 1) / wia.chunk_size;
@@ -557,7 +558,7 @@ inline StoredGroup StoreGroup(const WiaContents& wia, const GroupData& group, By
     else if (wia.method == Method::kNone)
     {
         stored.bytes = group.lists;
-        stored.bytes.resize((stored.bytes.size() + 3) & ~size_t{3}, 0);
+        stored.bytes.resize(ntdlib::AlignUp(stored.bytes.size(), 4), 0);
         stored.bytes.insert(stored.bytes.end(), body.begin(), body.end());
     }
     else
@@ -590,7 +591,7 @@ inline StoredGroups StoreGroups(const WiaContents& wia, uint64_t data_offset, By
         {
             stored = StoreGroup(wia, group, props);
             groups.data.insert(groups.data.end(), stored.bytes.begin(), stored.bytes.end());
-            groups.data.resize((groups.data.size() + 3) & ~size_t{3}, 0);
+            groups.data.resize(ntdlib::AlignUp(groups.data.size(), 4), 0);
         }
 
         Bytes entry(wia.rvz ? 12 : 8, 0);
@@ -633,7 +634,7 @@ inline Bytes WiaFile(const WiaContents& wia)
     const Bytes raw_stored = table(wia.raw_table);
     const uint64_t partition_offset = 0x48 + disc_header.size();
     const uint64_t raw_offset = partition_offset + wia.partition_table.size();
-    const uint64_t data_offset = (raw_offset + raw_stored.size() + 3) & ~uint64_t{3};
+    const uint64_t data_offset = ntdlib::AlignUp<uint64_t>(raw_offset + raw_stored.size(), 4);
     const StoredGroups stored_groups = StoreGroups(wia, data_offset, props);
     const Bytes& data = stored_groups.data;
     const Bytes& group_table = stored_groups.table;

@@ -37,7 +37,7 @@ struct DsiKeys
     std::array<uint8_t, 64> digest{};
 };
 
-// Hashes that a change leaves stale: what they are, where the first one lies in the new image and how many there are.
+// Hashes that a change leaves stale: what they are, where the first one is in the new image and how many there are.
 struct StaleHash
 {
     friend bool operator==(const StaleHash&, const StaleHash&) = default;

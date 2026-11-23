@@ -23,7 +23,9 @@
 #include "musyx/catalogue_parts.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/dol.h"
+#include "ntdlib/file_paths.h"
 #include "ntdlib/musyx/catalogue.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::musyx::detail
 {
@@ -116,7 +118,7 @@ std::vector<std::span<const uint8_t>> WadSongs(std::span<const uint8_t> wad)
     {
         const uint32_t size = xsflib::LoadBe32(sizes.data() + id * 4);
         songs.push_back(Part(wad, at, size, "a song of audio/midi.wad"));
-        at += (std::size_t{size} + 31) & ~std::size_t{31};
+        at += AlignUp(std::size_t{size}, 32);
     }
 
     return songs;
@@ -448,8 +450,8 @@ std::map<uint16_t, std::string> HeaderEffectNames(std::span<const uint8_t> heade
 // with a time and a volume of 0). It then raises the volume to the trigger's over 500 ms (sndSeqVolume at 0x8000B4B4).
 //
 // The effects follow the songs, in the order of their IDs: every effect of the effects groups that the game pushes.
-// The game starts an effect through 0x8000C4D8, which calls sndFXStartEx (0x8027300C) with the volume of a row of
-// audio/data/Sfx.bin (StarFoxEffectVolumes), a pan of 0x40 and studio 0. An effect pushes the same groups as a song.
+// The game starts an effect through 0x8000C4D8. That function calls sndFXStartEx (0x8027300C) with the volume of a row
+// of audio/data/Sfx.bin (StarFoxEffectVolumes), a pan of 0x40 and studio 0. An effect pushes the same groups as a song.
 // An effect that no row plays takes the volume and the pan of its row in its group's table of effects. An effect whose
 // rows all give a volume of 0 makes no sound. Nothing names the effects. An effect is named after its set and its ID,
 // such as "starfoxs-0420".
@@ -517,7 +519,7 @@ Catalogue ReadTales(const disc::GameFiles& game, const CatalogueTables& tables)
 
         const std::string path = dol.Text(xsflib::LoadBe32(row.data()), kLongestText, "a song's file");
         Sound sound;
-        sound.name = Stem(path);
+        sound.name = ntdlib::detail::StemOf(path);
         sound.volume = kMusicVolume;
         sound.id = id;
         sound.song_group = group;
@@ -637,7 +639,7 @@ Catalogue ReadNdDemo(const disc::GameFiles& game, const CatalogueTables& tables)
     for (std::size_t id = 0; id < paths.size(); id++)
     {
         Sound sound;
-        sound.name = Stem(paths[id]);
+        sound.name = ntdlib::detail::StemOf(paths[id]);
         sound.volume = kSongVolume;
         sound.id = static_cast<uint16_t>(id);
         sound.song_group = kSongGroup;

@@ -31,6 +31,7 @@
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/sequence_export/sfz_bank_file.h"
+#include "ntdlib/sequence_export/sfz_files.h"
 #include "ntdlib/wave/decode.h"
 #include "sequence_export/pcm.h"
 #include "sequence_export/sf2_build.h"
@@ -53,7 +54,7 @@ constexpr int kBiquadGainCurve = kLowPassCurve + 3;       // ... and gain
 // range that sfzformat.com gives them. The cutoffs move from kCutoffBase and the resonance from 0 dB. Curve values from
 // -1 to 1 then reach from 3.9 Hz to 256 kHz, and from -40 to 40 dB. Those amounts stay within the documented ranges
 // too. The widest steps of one band-pass type go below -40 dB. A track of that type takes kWideResonanceSpan. That
-// amount lies outside the documented range.
+// amount is outside the documented range.
 constexpr int kCutoffBase = kSfzBiquadBase;
 constexpr int kCutoffSpan = 9600;
 constexpr int kResonanceSpan = 40;
@@ -229,7 +230,7 @@ const SfzWave& SfzSampleSet::Get(std::pair<uint32_t, uint32_t> key, const std::f
     if (const wave::Pcm* decoded = pcm())
     {
         const seqlib::PreparedWave w =
-            seqlib::PrepareForSfz(ToSeqlib(*decoded), (decoded->sample_rate * 4 + 999) / 1000); // 4 ms
+            seqlib::PrepareForSfz(ToSeqlib(*decoded), seqlib::SfzLoopCrossfade(decoded->sample_rate));
         const std::size_t n = std::min<std::size_t>(w.channels.size(), 2);
         const std::string base = WaveFileName(key);
         for (std::size_t c = 0; c < n; c++)
@@ -357,13 +358,7 @@ SfzInstruments BuildTrackFiles(const Performance& perf, const seqlib::midi::Midi
 {
     // A file takes its MIDI track's name. The tracks of a piece of several sequences have names ("<label> Track <n>").
     // Other tracks have none, and their files are "Track <n>.sfz".
-    seqlib::sfz::TrackFileOptions options;
-    options.title = title;
-    options.program = program;
-    options.preset_names = preset_names;
-    options.presets = perf.presets.size();
-    options.level_cut_db = perf.level_cut_db;
-    options.track_names = true;
+    const seqlib::sfz::TrackFileOptions options = SfzTrackFileOptions(perf, title, preset_names, program);
     auto text = [&](int t)
     {
         return TrackAdditions(perf, t, settings, regions);

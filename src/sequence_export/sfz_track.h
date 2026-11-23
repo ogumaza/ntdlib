@@ -80,7 +80,7 @@ std::string SfzEnvelopeOpcodes(const PresetKey& key, const EnvelopeValues& env, 
                                const SfzWave& wave, const Settings& settings);
 
 // The opcodes of the low-pass `filter` in filter slot `slot` (1 or 2) of a region that plays `region`: the cutoff at
-// the region's original key, which tracks the key at 100 cents a key.
+// the region's original key. The cutoff tracks the key at 100 cents a key.
 std::string SfzResamplingOpcodes(const ResamplingFilter& filter, const ResamplingRegion& region, int slot);
 
 // A region's line up to its low-pass, for the wave's channel `channel`, the span `span` and the velocities

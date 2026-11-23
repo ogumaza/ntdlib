@@ -45,6 +45,7 @@
 #include "ntdlib/dsp/accelerator.h"
 #include "ntdlib/dsp/coef_rom.h"
 #include "ntdlib/dsp/memory.h"
+#include "ntdlib/testing/fnv1a.h"
 #include "ntdlib/types.h"
 
 namespace
@@ -255,17 +256,14 @@ private:
     std::unique_ptr<dsp::Dsp<Memory>> dsp_;
     int replay_every_ = 0;
     bool trace_ = false;
-    uint64_t hash_ = 0xcbf29ce484222325;
+    ntdlib::testing::Fnv1a hash_;
 };
 
 template <typename Memory>
 void Scenario<Memory>::Line(std::string_view line)
 {
-    for (const char c : line)
-    {
-        hash_ = (hash_ ^ static_cast<uint8_t>(c)) * 0x100000001b3;
-    }
-    hash_ = (hash_ ^ '\n') * 0x100000001b3;
+    hash_.Add(line);
+    hash_.Add("\n");
 }
 
 template <typename Memory>
@@ -535,7 +533,7 @@ uint64_t Scenario<Memory>::Finish()
     ReportDevices();
     ReportMemory();
 
-    return hash_;
+    return hash_.Value();
 }
 
 // The steps, the pc, whether the DSP halted, and the registers as reads by number return them, raw: the accumulators'
@@ -766,7 +764,7 @@ void CheckWiiU()
 {
     dsp::WiiUMemory memory(0x10000);
 
-    // DRAM runs to 0x2FFF, and the coefficient ROM lies at 0x3000 to 0x37FF.
+    // DRAM runs to 0x2FFF, and the coefficient ROM is at 0x3000 to 0x37FF.
     const std::array<uint16_t, 9> kReads = {
         0x00d8, 0x2fff, // lr $ax0.l, @0x2fff
         0x00d9, 0x1000, // lr $ax1.l, @0x1000: DRAM (the Wii has the ROM there)
@@ -831,8 +829,8 @@ void CheckWiiU()
 
 // The CPU's interrupt request (DSPCR bit 1) while `$sr.EIE` is clear. The request waits in DSPCR, and the DSP takes
 // it once EIE is set again: by an SBSET, a move to $sr or the RTI at the end of the handler. The handler counts its
-// runs in $ar1. Dolphin's model drops such a request until the CPU's next write of DSPCR, so these checks have no
-// hash from Dolphin. Super Mario Sunshine's microcode relies on the wait (see RaiseCpuInterrupt).
+// runs in $ar1. Dolphin's model drops such a request until the CPU's next write of DSPCR. These checks therefore have
+// no hash from Dolphin. Super Mario Sunshine's microcode relies on the wait (see RaiseCpuInterrupt).
 void CheckCpuInterrupt()
 {
     dsp::GameCubeMemory memory;

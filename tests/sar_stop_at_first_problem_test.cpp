@@ -19,6 +19,7 @@
 
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
 
@@ -334,7 +335,8 @@ void TestArchive(bool big_endian, const std::string& order)
 }
 
 // A group that the game keeps outside the archive. The archive lists the group with no file. Once the group file is
-// added, the files that it holds and the archive lacks can be read. The archive keeps its copies of the others.
+// added, the files that it holds and that are missing from the archive can be read. The archive keeps its copies of the
+// others.
 void TestGroupFile(bool big_endian, const std::string& order)
 {
     sar_files::ArchiveSpec spec = ArchiveSpec(big_endian);
@@ -366,11 +368,6 @@ void TestGroupFile(bool big_endian, const std::string& order)
 // velocity table of `velocities` ranges that play nothing. The bank names far more regions than it has bytes.
 std::vector<uint8_t> SharedBank(uint32_t instruments, uint32_t keys, uint32_t velocities)
 {
-    const auto align4 = [](size_t size)
-    {
-        return (size + 3) & ~size_t{3};
-    };
-
     sar_files::Bytes b(true);
     b.Add(16);
     b.Ref(0, 0x0100, b.Add(4), 0);
@@ -383,23 +380,23 @@ std::vector<uint8_t> SharedBank(uint32_t instruments, uint32_t keys, uint32_t ve
         b.Ref(table + 4 + 8 * i, 0x5900, instrument, table);
     }
 
-    const size_t key_table = b.Add(4 + align4(keys) + 8 * keys);
+    const size_t key_table = b.Add(4 + ntdlib::AlignUp<size_t>(keys, 4) + 8 * keys);
     const size_t key_region = b.Add(8);
     b.Ref(instrument, 0x6001, key_table, instrument);
     b.U32(key_table, keys);
     for (uint32_t i = 0; i < keys; ++i)
     {
         b.U8(key_table + 4 + i, static_cast<uint8_t>(i));
-        b.Ref(key_table + 4 + align4(keys) + 8 * i, 0x5901, key_region, key_table);
+        b.Ref(key_table + 4 + ntdlib::AlignUp<size_t>(keys, 4) + 8 * i, 0x5901, key_region, key_table);
     }
 
-    const size_t velocity_table = b.Add(4 + align4(velocities) + 8 * velocities);
+    const size_t velocity_table = b.Add(4 + ntdlib::AlignUp<size_t>(velocities, 4) + 8 * velocities);
     b.Ref(key_region, 0x6001, velocity_table, key_region);
     b.U32(velocity_table, velocities);
     for (uint32_t i = 0; i < velocities; ++i)
     {
         b.U8(velocity_table + 4 + i, static_cast<uint8_t>(i));
-        b.NullRef(velocity_table + 4 + align4(velocities) + 8 * i, 0x5903);
+        b.NullRef(velocity_table + 4 + ntdlib::AlignUp<size_t>(velocities, 4) + 8 * i, 0x5903);
     }
 
     return sar_files::File(true, "FBNK", 0x00010000, {{0x5800, "INFO", b.data}});

@@ -105,6 +105,7 @@ std::vector<std::string> NamesOrEmpty(const std::vector<std::optional<std::strin
     {
         plain.push_back(name.value_or(std::string()));
     }
+
     return plain;
 }
 

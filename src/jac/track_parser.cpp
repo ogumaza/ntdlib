@@ -2,14 +2,13 @@
 
 // The parser of the tracks' sequences: the calls, the commands and the main step of a track (see track.cpp).
 
-#include "ntdlib/jac/track.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
 #include "jac/track_internal.h"
+#include "ntdlib/jac/track.h"
 #include "ntdlib/jaudio1/iir_table.h"
 
 namespace ntdlib::jac
@@ -354,7 +353,7 @@ int32_t Tracks::FlowCommand(uint32_t index, uint8_t command)
         return kContinue;
 
     case kJmp:
-        // The game jumps to the second argument, which the last command with two or more left. Its one argument goes
+        // The game jumps to the second argument that the last command with two or more left. Its one argument goes
         // unused.
         JumpBack(index, a[1]);
         track.cursor = a[1];

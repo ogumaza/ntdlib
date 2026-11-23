@@ -13,7 +13,8 @@ namespace ntdlib::jaudio
 
 // A sound that reads a port that the game's code sets when it starts the sound, and the values that the game puts
 // there for it. Each value plays a variant of the sound. A piece of music can read a port that the game writes while
-// the piece plays. A ripper's driver writes the value once the piece plays.
+// the piece plays. The piece's root track clears the port in its first commands. A ripper's driver writes the value to
+// the root track after the sequence's first tick.
 struct PortEffect
 {
     uint32_t id = 0; // the sound's ID
@@ -36,8 +37,8 @@ struct PortEffect
 //   writes 1 to port 9 of JA_BGM_SEA_ENEMY, and to port 11 of JA_BGM_BATTLE_NORM, when Link hits an enemy. A list
 //   holds the values that change what the piece plays. In HD, changeBgmStatus gets 1, 2 and 9 (0x021554ac,
 //   0x0215beac, 0x02255dd0 and 0x02255df0), and changeSubBgmStatus 2 to 8 and 10 (0x02136258 to 0x02136efc). The
-//   GameCube release's actors are in the game's modules (RELs), which weren't read. The GameCube release's sequences
-//   of these six pieces, and of mboss and mboss_s, are HD's, byte for byte.
+//   GameCube release's actors are in the game's modules (RELs). Those modules weren't read. The GameCube release's
+//   sequences of these six pieces, and of mboss and mboss_s, are HD's, byte for byte.
 std::vector<PortEffect> WindWakerPortEffects();
 
 } // namespace ntdlib::jaudio

@@ -26,7 +26,7 @@ constexpr double kUnit = 2048.0; // a coefficient of 1 in the file's units
 constexpr int kMaxScale = 15;    // the largest power of 2 that a header's low nibble holds
 constexpr int kRounds = 32;      // the most rounds of the k-means method after each new pair
 
-// The energy that a frame's error counts relative to: the frame's energy, plus that of a frame whose samples all lie 2
+// The energy that a frame's error counts relative to: the frame's energy, plus that of a frame whose samples are all 2
 // from 0. A frame much quieter than that counts less.
 constexpr double kQuietEnergy = 14.0 * 4.0;
 
@@ -67,7 +67,7 @@ void AddSums(FrameSums& total, const FrameSums& sums, double weight)
     total.r22 += weight * sums.r22;
 }
 
-// Whether the decoder's prediction with `pair` is stable: both roots of z^2 - c1 z - c2 lie in the unit circle or on
+// Whether the decoder's prediction with `pair` is stable: both roots of z^2 - c1 z - c2 are in the unit circle or on
 // it. Those pairs form the triangle with corners (0, 1), (2, -1) and (-2, -1).
 bool Stable(const Pair& pair)
 {
@@ -75,7 +75,7 @@ bool Stable(const Pair& pair)
 }
 
 // The stable pair with the least squared error over `sums`. The error is a quadratic function of the pair. Its least
-// value lies where its gradient is 0, or on an edge of the triangle when that place lies outside.
+// value is where its gradient is 0, or on an edge of the triangle when that place is outside.
 Pair BestPair(const FrameSums& sums)
 {
     const double determinant = sums.r11 * sums.r22 - sums.r12 * sums.r12;

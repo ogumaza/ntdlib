@@ -6,10 +6,12 @@
 // IMA-ADPCM follow GBATEK's description of the DS's decoder. The expected layout and addresses follow the rules in
 // layout.h and heap.h, worked out by hand.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -18,6 +20,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sdat/decode.h"
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sdat/heap.h"
@@ -227,7 +230,7 @@ void TestArchiveWithoutNames()
 }
 
 // FindArchives finds each archive that reads, at the file's start or at a multiple of 4 bytes inside it. A mark that
-// starts no archive, or that lies off a multiple of 4, finds nothing.
+// starts no archive, or that is off a multiple of 4, finds nothing.
 void TestFindArchives()
 {
     const Bytes archive = files::SoundArchive(ArchiveSpec());
@@ -285,6 +288,7 @@ sdat::ArchiveModel LayoutModel()
     model.wave_archives = {sdat::WaveArchiveInfo{3, ""}};
     model.groups = {sdat::GroupInfo{{{0, 1, 0, 0}}, ""}};
     model.files = {Bytes(4, 1), Bytes(8, 2), Bytes(12, 3), Bytes(16, 4)};
+
     return model;
 }
 
@@ -294,10 +298,10 @@ void TestLayout()
     const Bytes bytes = sdat::BuildArchive(model);
     const xsflib::Reader r(bytes);
 
-    // SYMB at 0x40: its lists from 0x40 in the block, then the names from 0x80: "SEQ_A", "ARC", "S0", "S1" and
-    // "BANK", up to 0x95. The block's size counts the zeros up to 0x98. INFO follows at 0xD8, with its lists and
-    // records up to 0xA4. FAT takes 12 + 4 * 16 bytes from 0x17C, and FILE starts at 0x1C8. Its files lie on
-    // multiples of 32 from 0x1E0, and the archive ends at 0x260.
+    // SYMB at 0x40: its lists from 0x40 in the block, then the names from 0x80: "SEQ_A", "ARC", "S0", "S1" and "BANK",
+    // up to 0x95. The block's size counts the zeros up to 0x98. INFO follows at 0xD8, with its lists and records up to
+    // 0xA4. FAT takes 12 + 4 * 16 bytes from 0x17C, and FILE starts at 0x1C8. Its files are on multiples of 32 from
+    // 0x1E0, and the archive ends at 0x260.
     XSFLIB_CHECK(bytes.size() == 0x260);
     XSFLIB_CHECK(r.U32(8) == 0x260 && r.U16(12) == 0x40 && r.U16(14) == 4);
     XSFLIB_CHECK(r.U32(0x10) == 0x40 && r.U32(0x14) == 0x95);
@@ -400,8 +404,8 @@ void TestLayoutOnFourBytes()
                      .find("isn't laid out as the SDK's tools lay it out") != std::string::npos);
 }
 
-// An archive laid out on 8 or 16 bytes reads back with that alignment. A file lies on a multiple of the alignment that
-// isn't a multiple of twice the alignment, so no larger alignment fits.
+// An archive laid out on 8 or 16 bytes reads back with that alignment. A file is on a multiple of the alignment that
+// isn't a multiple of twice the alignment. No larger alignment therefore fits.
 void TestLayoutOnEightAndSixteenBytes()
 {
     for (const auto& [alignment, first] : {std::pair<uint32_t, uint32_t>{8, 0x1D8}, {16, 0x1E0}})
@@ -413,8 +417,55 @@ void TestLayoutOnEightAndSixteenBytes()
         XSFLIB_CHECK(r.U32(0x17C + 12) == first && bytes.size() % alignment == 0);
 
         const sdat::ArchiveModel read = sdat::ReadArchiveModel(bytes);
-        XSFLIB_CHECK(read.file_alignment == alignment && read.files == model.files && sdat::BuildArchive(read) == bytes);
+        XSFLIB_CHECK(read.file_alignment == alignment && read.files == model.files &&
+                     sdat::BuildArchive(read) == bytes);
     }
+}
+
+// An archive laid out with an offset for each file: each file with bytes at its offset, zeros between the files, and a
+// file without bytes on the next multiple of 32 after the file in front of it. Offsets from the tools' layout give the
+// tools' bytes. Too few offsets, or a file that starts inside the file or the header in front of it, is refused.
+void TestLayoutWithOffsets()
+{
+    sdat::ArchiveModel model = LayoutModel();
+    model.files[2].clear();
+
+    // FILE's header ends at 0x1D4. File 0 starts there, file 1 at 0x404, file 2 has no bytes and goes to 0x420, the
+    // multiple of 32 after file 1's end at 0x40C, and file 3 starts at 0x610. The archive ends at 0x620.
+    const std::vector<uint32_t> offsets = {0x1D4, 0x404, 0x999, 0x610};
+    const Bytes bytes = sdat::BuildArchive(model, offsets);
+    const xsflib::Reader r(bytes);
+    XSFLIB_CHECK(bytes.size() == 0x620 && r.U32(8) == 0x620);
+    XSFLIB_CHECK(r.U32(0x28) == 0x1C8 && r.U32(0x2C) == 0x620 - 0x1C8 && r.U32(0x1CC) == 0x620 - 0x1C8);
+    const std::vector<uint32_t> placed = {0x1D4, 0x404, 0x420, 0x610};
+    const sdat::Archive archive = sdat::Archive::Parse(bytes);
+    for (uint32_t id = 0; id < 4; id++)
+    {
+        XSFLIB_CHECK(r.U32(0x17C + 12 + 16 * id) == placed[id]);
+        const std::span<const uint8_t> file = archive.File(id);
+        XSFLIB_CHECK(Bytes(file.begin(), file.end()) == model.files[id]);
+    }
+    const auto zeros = [&bytes](std::size_t from, std::size_t to)
+    {
+        return std::all_of(bytes.begin() + static_cast<std::ptrdiff_t>(from),
+                           bytes.begin() + static_cast<std::ptrdiff_t>(to), [](uint8_t b) { return b == 0; });
+    };
+    XSFLIB_CHECK(zeros(0x1D8, 0x404) && zeros(0x40C, 0x610));
+
+    // The tools' offsets give the tools' layout.
+    const Bytes tools = sdat::BuildArchive(LayoutModel());
+    XSFLIB_CHECK(sdat::BuildArchive(LayoutModel(), std::vector<uint32_t>{0x1E0, 0x200, 0x220, 0x240}) == tools);
+
+    // Refusals.
+    const auto refused = [&model](std::vector<uint32_t> file_offsets)
+    {
+        return ErrorOf<std::invalid_argument>([&] { sdat::BuildArchive(model, file_offsets); });
+    };
+    XSFLIB_CHECK(refused({0x1D4, 0x404, 0x420}) == "the sound archive has 4 files and 3 offsets");
+    XSFLIB_CHECK(refused({0x1D0, 0x404, 0, 0x610}) ==
+                 "file 0 of the sound archive would start at 464, before the end of what is in front of it at 468");
+    XSFLIB_CHECK(refused({0x1E0, 0x1E2, 0, 0x610}) ==
+                 "file 1 of the sound archive would start at 482, before the end of what is in front of it at 484");
 }
 
 uint32_t Word(const Bytes& memory, uint32_t address)
@@ -423,7 +474,7 @@ uint32_t Word(const Bytes& memory, uint32_t address)
 }
 
 // A bank that plays waves of a wave archive that loads its waves one at a time (slot 0) and of one that loads whole
-// (slot 1). Slot 3 names a wave archive that the archive lacks. The second bank plays waves 1 and 3 of the first
+// (slot 1). Slot 3 names a wave archive that the archive doesn't have. The second bank plays waves 1 and 3 of the first
 // archive. The third and fourth banks share the first and second banks' files, with the whole wave archive in slot 0.
 files::Archive HeapSpec()
 {
@@ -444,6 +495,7 @@ files::Archive HeapSpec()
                      files::BankItem(0, {1, 0xFFFF, 0xFFFF, 0xFFFF}, "BANK_C"),
                      files::BankItem(3, {1, 0xFFFF, 0xFFFF, 0xFFFF}, "BANK_D")};
     spec.items[3] = {files::FileItem(0x01000001, "WAVE_SINGLE"), files::FileItem(2, "WAVE_WHOLE")};
+
     return spec;
 }
 
@@ -460,9 +512,9 @@ void TestHeap()
     // wave archive comes last.
     const uint32_t bank = heap.LoadBank(archive, 0);
     XSFLIB_CHECK(bank == 0x02000100);
-    const uint32_t table = (bank + static_cast<uint32_t>(archive.File(0).size()) + 31) & ~31u;
+    const uint32_t table = ntdlib::AlignUp(bank + static_cast<uint32_t>(archive.File(0).size()), 32);
     const uint32_t whole = table + 0xA0;
-    XSFLIB_CHECK(heap.End() == whole + ((archive.File(2).size() + 31) & ~std::size_t{31}));
+    XSFLIB_CHECK(heap.End() == whole + ntdlib::AlignUp(archive.File(2).size(), 32));
     XSFLIB_CHECK(Word(memory, table + 0x38) == 4);
     XSFLIB_CHECK(Word(memory, table + 0x3C) == table + 0x80 && Word(memory, table + 0x40) == 0);
     XSFLIB_CHECK(Word(memory, table + 0x44) == table + 0x60 && Word(memory, table + 0x48) == 0);
@@ -489,7 +541,7 @@ void TestHeap()
     // wave runs to the end of its file.
     const uint32_t end = heap.End();
     const uint32_t second = heap.LoadBank(archive, 1);
-    const uint32_t wave_1 = (second + static_cast<uint32_t>(archive.File(3).size()) + 31) & ~31u;
+    const uint32_t wave_1 = ntdlib::AlignUp(second + static_cast<uint32_t>(archive.File(3).size()), 32);
     XSFLIB_CHECK(second == end && Word(memory, second + 0x18) == table && Word(memory, second + 0x1C) == bank + 0x18);
     XSFLIB_CHECK(Word(memory, table + 0x18) == second + 0x18);
     XSFLIB_CHECK(Word(memory, table + 0x40) == wave_1 && Word(memory, table + 0x48) == wave_1 + 0x20);
@@ -518,7 +570,7 @@ void TestHeap()
     XSFLIB_CHECK(Word(memory, table + 0x18) == bank + 0x18 && Word(memory, second + 0x1C) == bank + 0x20);
     XSFLIB_CHECK(Word(memory, whole + 0x18) == second + 0x18);
 
-    // Files that don't fit, and a bank that the archive lacks.
+    // Files that don't fit, and a bank that the archive doesn't have.
     Bytes small(0x1000, 0);
     sdat::SoundHeap tight(small, 0x02000000, 0x02000100, 0x02000200);
     XSFLIB_CHECK(ErrorOf<std::runtime_error>([&] { tight.LoadBank(archive, 0); }) ==
@@ -547,6 +599,7 @@ int main()
     TestLayoutWithoutNames();
     TestLayoutOnFourBytes();
     TestLayoutOnEightAndSixteenBytes();
+    TestLayoutWithOffsets();
     TestHeap();
 
     return xsflib::testing::Summary("DS sound archive");

@@ -459,7 +459,7 @@ public:
     std::span<const uint8_t> WaveData(uint32_t file_id) const;
 
     // A file's contents and wave data, from the first group that holds the file and its wave data inside the archive
-    // (playback_fields). Returns nothing for a file that only an external group or file holds, or that lies past the
+    // (playback_fields). Returns nothing for a file that only an external group or file holds, or that is past the
     // end of a truncated archive.
     std::optional<rsar::FileData> File(uint32_t file_id) const;
 

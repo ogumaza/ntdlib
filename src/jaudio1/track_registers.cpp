@@ -3,8 +3,6 @@
 // The tracks' reads of their sequences, their registers (JASTrack's readReg and writeRegParam), the random numbers,
 // the conditions and the timing (see track.cpp).
 
-#include "ntdlib/jaudio1/track.h"
-
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -13,6 +11,7 @@
 
 #include "jaudio1/track_internal.h"
 #include "ntdlib/jaudio1/calc.h"
+#include "ntdlib/jaudio1/track.h"
 
 namespace ntdlib::jaudio1
 {

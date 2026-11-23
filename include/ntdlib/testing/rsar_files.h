@@ -3,7 +3,7 @@
 // Builders of small NW4R sound files for the tests: banks of both generations with instruments that exercise every way
 // that a bank selects a region, wave data and an RWAR for them, a sequence, wave sound files of both generations, an
 // archive holding a sequence sound with its sequence and bank in a group, an archive holding wave sounds with their
-// file in a group, an archive with only its tables of sounds and players, and an archive whose files lie in several
+// file in a group, an archive with only its tables of sounds and players, and an archive whose files are in several
 // groups.
 
 #pragma once
@@ -18,6 +18,7 @@
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/testing/byte_writer.h"
 
 namespace ntdlib::testing::rsar_files
@@ -775,9 +776,8 @@ using FilePlaces = std::vector<std::pair<uint32_t, uint32_t>>;
 // Each internal group holds its files, then their wave data, each at a multiple of 32 bytes. An external group's
 // offsets count from the start of its file.
 inline GroupedArchive MakeGroupedArchive(const std::vector<std::pair<Bytes, Bytes>>& files,
-                                         const std::vector<GroupFiles>& groups,
-                                         const std::vector<FilePlaces>& places, const std::vector<uint32_t>& sequences,
-                                         const std::vector<uint32_t>& banks)
+                                         const std::vector<GroupFiles>& groups, const std::vector<FilePlaces>& places,
+                                         const std::vector<uint32_t>& sequences, const std::vector<uint32_t>& banks)
 {
     GroupedArchive archive;
     Bytes& file = archive.bytes;
@@ -789,7 +789,7 @@ inline GroupedArchive MakeGroupedArchive(const std::vector<std::pair<Bytes, Byte
 
     const auto pad = [](Bytes& data)
     {
-        data.resize((data.size() + 0x1F) & ~std::size_t{0x1F}, 0);
+        data.resize(ntdlib::AlignUp(data.size(), 0x20), 0);
     };
 
     // INFO: the tables of sounds, banks, files and groups. A table holds a count, then a reference to each entry. The

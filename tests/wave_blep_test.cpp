@@ -2,8 +2,8 @@
 
 // Tests of the band-limited steps (ntdlib/wave/blep.h). The bounds are the ones that the header gives. A held level
 // comes out exactly, and the step response is half its height at the change's time, 32 samples late. The filter's
-// response, measured from the table, stays within 0.01 dB up to 0.84 of the Nyquist frequency and lies at least 77 dB
-// down from it on. A square wave keeps its harmonics, and its aliases lie at least 77 dB below its fundamental.
+// response, measured from the table, stays within 0.01 dB up to 0.84 of the Nyquist frequency and is at least 77 dB
+// down from it on. A square wave keeps its harmonics, and its aliases are at least 77 dB below its fundamental.
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/wave/blep.h"
@@ -23,6 +24,7 @@ namespace
 {
 
 using ntdlib::wave::BandLimitedSteps;
+using seqlib::testing::Throws;
 
 constexpr double kPi = 3.14159265358979323846;
 
@@ -36,7 +38,7 @@ constexpr double kRate = kClockHz * kSamples / kClocks;
 // once the output's delay has passed.
 void TestStep()
 {
-    // Both changes lie on a sample's time: sample 0 and sample 2,412.
+    // Both changes are on a sample's time: sample 0 and sample 2,412.
     BandLimitedSteps steps(kClocks, kSamples);
     std::vector<float> output(1200);
     steps.Step(0, 2.0f);
@@ -50,7 +52,7 @@ void TestStep()
     }
     Check(steps.Level() == 5.0, "the level after both changes");
 
-    // The second change lies on sample 2,412's time. Sample 2,444 holds the response there.
+    // The second change is on sample 2,412's time. Sample 2,444 holds the response there.
     std::vector<float> rest(1400);
     steps.Read(rest.data(), rest.size());
     const std::size_t middle = 2412 + 32 - 1200;
@@ -133,7 +135,7 @@ void TestResponse()
 // give mirror images.
 void TestBetweenPhases()
 {
-    // 512 clocks to a sample: clock 5,377 lies 257/512 of a sample after sample 10, and clock 5,375 255/512 after it.
+    // 512 clocks to a sample: clock 5,377 is 257/512 of a sample after sample 10, and clock 5,375 255/512 after it.
     std::vector<float> later(80);
     std::vector<float> earlier(80);
     BandLimitedSteps a(512, 1);
@@ -201,7 +203,7 @@ double Amplitude(const std::vector<float>& signal, double frequency)
     return 2.0 * std::hypot(re, im) / gain;
 }
 
-// The square's harmonics keep their amplitudes, and its aliases lie at least 77 dB below its fundamental.
+// The square's harmonics keep their amplitudes, and its aliases are at least 77 dB below its fundamental.
 void TestSquare()
 {
     const std::vector<float> framed = Square(100, false);
@@ -258,29 +260,13 @@ void TestLateStep()
     std::vector<float> output(100);
     steps.Read(output.data(), output.size());
 
-    // Sample 99's time lies at 34,587.6 clocks.
+    // Sample 99's time is at 34,587.6 clocks.
     steps.Step(34588, 1.0f);
-    bool refused = false;
-    try
-    {
-        steps.Step(34587, 1.0f);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    bool refused = Throws<std::invalid_argument>([&] { steps.Step(34587, 1.0f); });
     Check(refused, "a change before sample 99's time is refused");
     Check(steps.SamplesRead() == 100, "samples read");
 
-    refused = false;
-    try
-    {
-        static_cast<void>(BandLimitedSteps(0, kSamples));
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    refused = Throws<std::invalid_argument>([&] { static_cast<void>(BandLimitedSteps(0, kSamples)); });
     Check(refused, "a period without clocks is refused");
 }
 
@@ -292,7 +278,7 @@ void TestRestart()
     steps.Restart(500, -2.0);
     Check(steps.SamplesRead() == 500 && steps.Level() == -2.0, "the restart's sample and level");
 
-    // Sample 600's time lies at 209,624 clocks.
+    // Sample 600's time is at 209,624 clocks.
     steps.Step(209624, 1.0f);
     std::vector<float> output(200);
     steps.Read(output.data(), output.size());

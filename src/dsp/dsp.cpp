@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <span>
 
+#include "common/force_inline.h"
 #include "dsp/internal.h"
 #include "ntdlib/dsp/accumulator.h"
 
@@ -36,7 +37,7 @@ NTDLIB_FORCE_INLINE void Dsp<Memory>::StepOnce(const uint16_t* iram, const Handl
     }
 
     // IRAM starts at address 0. One test of its end finds the usual case. Word 0 is a NOP. Its handler would do
-    // nothing. The step skips the call. The boot ROM isn't present. Its routines run in boot_rom.cpp instead. Without
+    // nothing. The step skips the call. The model has no boot ROM. Its routines run in boot_rom.cpp instead. Without
     // them, a program that leaves IRAM halts the DSP. With them, every other address outside IRAM reads as 0.
     const uint16_t pc = regs_.pc;
     if (pc < Memory::kIramSize) [[likely]]

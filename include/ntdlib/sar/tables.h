@@ -74,7 +74,7 @@ Tables TablesOf(std::span<const uint8_t> archive, Flavor flavor);
 // each file's offset from the archive's start a multiple of 64 or 32 bytes. The offsets in the file table of `info`
 // change with them. The header's table of blocks and the archive's size follow the new blocks. Throws
 // xsflib::FormatError for an archive laid out another way, for an archive cut short, and for a file of `info` whose
-// location lies outside its entry or before the first file. Throws std::invalid_argument for `strings` with an archive
+// location is outside its entry or before the first file. Throws std::invalid_argument for `strings` with an archive
 // without a STRG block, for no `strings` with an archive with one, and for tables of another flavor.
 std::vector<uint8_t> WithTables(std::span<const uint8_t> archive, Flavor flavor,
                                 const std::optional<StringBlock>& strings, InfoBlock info);
@@ -101,7 +101,7 @@ ArchiveWithFile WithNewExternalFile(std::span<const uint8_t> archive, Flavor fla
 // std::invalid_argument for an archive that would pass 4 GB, and the exceptions of WithTables.
 ArchiveWithFile WithNewFile(std::span<const uint8_t> archive, Flavor flavor, std::span<const uint8_t> bytes);
 
-// A file whose bytes lie inside another file's bytes, such as a copy in a group's file that the file table names: its
+// A file whose bytes are inside another file's bytes, such as a copy in a group's file that the file table names: its
 // offset from the other file's start before and after the other file takes new bytes.
 struct InnerFile
 {
@@ -112,7 +112,7 @@ struct InnerFile
 // `archive`, an archive of `flavor`, in which file `file` of its FILE block holds `bytes`. Unless the file ends the
 // archive, zeros pad it to a multiple of 64 or 32 bytes. The files after it move by whole multiples, and the file
 // table's offsets and size follow. Another file ID that names the same bytes takes them too. A file that fields of the
-// tables lie in, such as a group's file, can take bytes this way. A file whose bytes lie inside the old bytes at an
+// tables are in, such as a group's file, can take bytes this way. A file whose bytes are inside the old bytes at an
 // offset that `inner` gives moves to the new offset, and keeps its size. Throws std::invalid_argument for a file past
 // the file table, for one that the FILE block doesn't hold, for an inner file that would run past the new bytes, and
 // for an archive that would pass 4 GB. Throws xsflib::FormatError for a file whose padding holds bytes other than
@@ -261,10 +261,10 @@ std::vector<uint8_t> WithNewWaveArchive(std::span<const uint8_t> archive, Flavor
 // holds no files and lists no items (EmptyGroupFile in ntdlib/sar/groups.h). On the 3DS, it takes the highest version
 // of the groups' files that the archive holds, or 1.0.0.0 without one. It goes after the archive's last file, as
 // WithNewFile puts a file there. The FILE block holds it up to the end of its INFX block's entries, or whole in a
-// version without INFX, and the file table gives it that size (GroupSizeInArchive). Its entry in the file table is
-// laid out as the tools lay out a group's file's: the reference to the location has type 0. The group's entry holds
-// the file, then the options with the string index after the groups' names. Each string index after it moves up by
-// one, and the STRG block's tree takes the name too. In an archive without a STRG block, the group takes the string
+// version without INFX, and the file table gives it that size (GroupSizeInArchive). Its entry in the file table is laid
+// out as the tools lay out the entry of a group's file: the reference to the location has type 0. The group's entry
+// holds the file, then the options with the string index after the groups' names. Each string index after it moves up
+// by one, and the STRG block's tree takes the name too. In an archive without a STRG block, the group takes the string
 // index all the same, as a new bank does. Throws std::invalid_argument for a name for an archive without a STRG block,
 // no name for an archive with one, a name that the block holds already, and an archive that would pass 4 GB. Throws
 // xsflib::FormatError for entries that lay out their options another way than the tools, and the exceptions of

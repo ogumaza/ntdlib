@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// The song, its bank, the main bank that holds the bank's samples and a builder of banks of sound effects, which the
-// tests of DSE's driver and of what plays on it share. dse_driver_test.cpp's data hold the commands that the driver's
-// code in Pokémon Mystery Dungeon: Explorers of Sky's ARM9 binary (North America) sent for these files.
+// The song, its bank, the main bank that contains the bank's samples, and a builder of banks of sound effects. The
+// tests of DSE's driver and of what plays on it share them. The data of the driver's tests contain the commands that
+// the driver's code in Pokémon Mystery Dungeon: Explorers of Sky's ARM9 binary (North America) sent for these files.
 
 #pragma once
 
@@ -26,7 +26,7 @@ using dse_files::HeaderStart;
 using dse_files::SequenceInfoBytes;
 using dse_files::TrackChunk;
 
-// The song bank's id, which the tracks select with events 0xA9 and 0xAA.
+// The song bank's id. The tracks select it with events 0xA9 and 0xAA.
 inline constexpr uint16_t kBankId = 0x7F00;
 
 inline Bytes Join(std::initializer_list<Bytes> parts)
@@ -173,8 +173,8 @@ inline Bytes Table(std::size_t slots, const std::vector<std::pair<std::size_t, B
     return OffsetTable(slots, AlignUp(slots * 2, 16), entries, pad);
 }
 
-// A bank's header from 0x30 on: the size of its samples, its slots of waves and programs, its key groups, its kind
-// (1 for a main bank, 2 for a bank whose waves lie in the main bank) and the size of its wavi chunk.
+// A bank's header from 0x30 on: the size of its samples, its slots of waves and programs, its key groups, its kind (1
+// for a main bank, 2 for a bank whose waves are in the main bank) and the size of its wavi chunk.
 inline void BankHeader(Builder& b, uint32_t samples, uint16_t waves, uint8_t key_groups, uint8_t kind, uint32_t wavi)
 {
     b.Append({0x00, 0xAA, 0xAA, 0xAA}).U32(0).U32(0).U32(0x10).U32(samples).U16(0).U16(waves).U16(0x80);
@@ -215,11 +215,11 @@ inline Bytes MainBankFile()
     return b.Take();
 }
 
-// The song's bank. Its waves 0 to 2 lie in the main bank. Wave 3 is the PSG at duty 3, wave 4 the noise, and wave 5 an
-// IMA-ADPCM wave that the main bank lacks. Program 0 has one split. Program 1 has two splits that overlap in keys 48 to
-// 63, in key group 1, which holds two voices of a channel. Program 2 plays the PSG below key 64 and the noise from
-// it, in key group 2, which takes voices 8 to 13 at a lower priority, with three LFOs. Program 3 plays wave 5 with a
-// release past the table of times.
+// The song's bank. Its waves 0 to 2 are in the main bank. Wave 3 is the PSG at duty 3, wave 4 the noise, and wave 5 an
+// IMA-ADPCM wave missing from the main bank. Program 0 has one split. Program 1 has two splits that overlap in keys 48
+// to 63, in key group 1. Key group 1 holds two voices of a channel. Program 2 plays the PSG below key 64 and the noise
+// from it, with three LFOs, in key group 2. Key group 2 takes voices 8 to 13 at a lower priority. Program 3 plays wave
+// 5 with a release past the table of times.
 inline Bytes BankFile()
 {
     std::vector<std::pair<std::size_t, Bytes>> waves = MainWaves();

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "ntdlib/ax/chorus_lines.h"
 #include "ntdlib/cafe/axfx/axfx.h"
 
 namespace ntdlib::cafe::axfx
@@ -60,24 +61,6 @@ public:
     void Process(const Buffers& frame, uint32_t samples, const Buffers& bus_in = {}, const Buffers& bus_out = {});
 
 private:
-    // AXFX_CHORUS_EXP_LFO: the LFO's step, depth, phase and interpolation, in 16.16 fixed point. The library also
-    // stores the table's address, and a step in samples that nothing reads.
-    struct Lfo
-    {
-        int32_t phase_add = 0;
-        int32_t depth_samp = 0;
-        uint32_t phase = 0;
-        uint32_t sign = 0;
-        uint32_t last_num = 0;
-        int32_t last_value = 0;
-        int32_t grad = 0;
-        int32_t grad_factor = 0;
-    };
-
-    // The bits of the library's `active` (see DelayExp).
-    static constexpr uint32_t kOff = 1;
-    static constexpr uint32_t kSkip = 2;
-
     // Clears the lines and sets the positions for the delay (0x0200be90).
     bool ResetLines(uint32_t rate);
 
@@ -87,19 +70,9 @@ private:
     // Frees the lines (0x0200bdcc) and turns the effect off.
     void Off();
 
-    // __CalcLFO (0x0200c450): the LFO's offset of the read position for the next sample.
-    int32_t NextLfo();
-
     Params params_;
-    std::array<std::vector<float>, kChannelCount> line_;
-    uint32_t in_pos_ = 0;
-    uint32_t out_pos_ = 0;  // 16.16
-    uint32_t last_pos_ = 0; // 16.16
-    uint32_t size_fp_ = 0;  // 16.16
-    uint32_t size_ = 0;
-    Lfo lfo_;
-    std::array<std::array<float, 4>, kChannelCount> history_{};
-    uint32_t hist_index_ = 0;
+    ntdlib::ax::axfx::ChorusLines<kChannelCount> lines_;
+    ntdlib::ax::axfx::ChorusLfo lfo_;
     uint32_t active_ = kOff;
 };
 

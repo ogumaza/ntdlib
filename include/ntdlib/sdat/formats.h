@@ -140,7 +140,7 @@ struct Region
     uint8_t pan = 64;
 };
 
-// An instrument of a bank. A record of the bank's table gives its type and where its data lies in the bank file.
+// An instrument of a bank. A record of the bank's table gives its type and where its data is in the bank file.
 struct Instrument
 {
     InstrumentType type = InstrumentType::kNone;
@@ -341,7 +341,7 @@ struct Symbols
 // A sound archive (SDAT).
 struct Archive
 {
-    // Reads an archive. Throws xsflib::FormatError when a block, a table or a file lies outside the archive.
+    // Reads an archive. Throws xsflib::FormatError when a block, a table or a file is outside the archive.
     static Archive Parse(std::span<const uint8_t> sdat);
 
     // A file's bytes. Throws xsflib::FormatError for an ID past the FAT.

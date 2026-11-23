@@ -118,9 +118,9 @@ std::vector<uint32_t> WaveGroups(const std::vector<WaveSystem>& systems, const s
 // Whether one of `groups`, each (system << 16) | group as WaveGroups gives them, holds the wave.
 bool GroupsHold(const std::vector<WaveSystem>& systems, std::span<const uint32_t> groups, WaveUse wave);
 
-// How many of `played` the chosen groups lack: waves that a group of their system holds, but none of `groups`, each
-// (system << 16) | group as WaveGroups gives them. A wave that no group holds isn't counted. The game has no samples
-// for it, and its notes are silent on the console too.
+// How many of `played` are missing from the chosen groups: waves that a group of their system holds, but none of
+// `groups`, each (system << 16) | group as WaveGroups gives them. A wave that no group holds isn't counted. The game
+// has no samples for it, and its notes are silent on the console too.
 std::size_t MissingWaves(const std::vector<WaveSystem>& systems, std::span<const uint32_t> groups,
                          std::span<const WaveUse> played);
 

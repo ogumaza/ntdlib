@@ -10,6 +10,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sdat/formats.h"
 
 namespace ntdlib::sdat
@@ -50,6 +51,7 @@ uint32_t SoundHeap::LoadFile(const Archive& archive, uint32_t id)
     const uint32_t at = Allocate(file.size());
     std::memcpy(&memory_[at - base_], file.data(), file.size());
     files_[id] = at;
+
     return at;
 }
 
@@ -121,11 +123,12 @@ uint32_t SoundHeap::Allocate(std::size_t size)
         throw HeapFullError();
     }
 
-    next_ = static_cast<uint32_t>((at + size + 31) & ~std::size_t{31});
+    next_ = static_cast<uint32_t>(AlignUp(at + size, 32));
     if (next_ > end_)
     {
         next_ = end_;
     }
+
     return at;
 }
 
@@ -146,6 +149,7 @@ uint32_t SoundHeap::LoadWaveTable(const Archive& archive, uint32_t id)
     std::memcpy(&memory_[at - base_ + header.size()], &header[kWaveTable], std::size_t{4} * count);
     std::memset(&memory_[at - base_ + kWaveTable], 0, std::size_t{4} * count);
     files_[id] = at;
+
     return at;
 }
 

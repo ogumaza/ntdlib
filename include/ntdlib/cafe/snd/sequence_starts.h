@@ -20,7 +20,7 @@ namespace ntdlib::cafe::snd
 
 // A value that a game's code gives one of a sequence's variables. Without a track, `index` numbers the variable as
 // sequence_export::PerformOptions::variables does: 0 to 15 for the sequence's variables and 16 to 31 for the global
-// ones. With a track from 0 to 15, `index` is the track's variable from 0 to 15, which the track's commands number
+// ones. With a track from 0 to 15, `index` is the track's variable from 0 to 15. The track's commands number it
 // 32 + `index`. An entry with index kNone sets nothing.
 struct SequenceVariable
 {

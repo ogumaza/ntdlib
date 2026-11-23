@@ -35,23 +35,6 @@ constexpr std::size_t kFrameBytes = 8;
 // The GameCube's DSP decodes DSP-ADPCM in its accelerator.
 constexpr wave::DspAdpcmSum kSum = wave::DspAdpcmSum::kAccelerator;
 
-// The bytes that `info`'s samples take.
-std::size_t DataSize(const SampleInfo& info)
-{
-    switch (info.format)
-    {
-    case SampleFormat::kAdpcm:
-    case SampleFormat::kAdpcmPlus:
-        return wave::DspAdpcmBytes(info.length);
-    case SampleFormat::kPcm16:
-        return std::size_t{info.length} * 2;
-    case SampleFormat::kPcm8:
-        break;
-    }
-
-    return info.length;
-}
-
 // Decodes DSP-ADPCM from sample `start` to sample `end` of `data` after a jump to `start`. The DSP then takes
 // `pred_scale` as the predictor and scale of the frame that holds `start`, and `hist1` and `hist2` as the samples
 // before it. Later frames take theirs from their first byte.
@@ -133,9 +116,25 @@ std::vector<SampleInfo> ReadSampleDirectory(std::span<const uint8_t> file)
     return samples;
 }
 
+std::size_t SampleDataSize(const SampleInfo& info)
+{
+    switch (info.format)
+    {
+    case SampleFormat::kAdpcm:
+    case SampleFormat::kAdpcmPlus:
+        return wave::DspAdpcmBytes(info.length);
+    case SampleFormat::kPcm16:
+        return std::size_t{info.length} * 2;
+    case SampleFormat::kPcm8:
+        break;
+    }
+
+    return info.length;
+}
+
 DecodedSample DecodeSample(const SampleInfo& info, std::span<const uint8_t> samples)
 {
-    const std::size_t size = DataSize(info);
+    const std::size_t size = SampleDataSize(info);
     if (info.offset > samples.size() || size > samples.size() - info.offset)
     {
         throw xsflib::FormatError("sample " + std::to_string(info.id) + " runs past the end of the samples file");

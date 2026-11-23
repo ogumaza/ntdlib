@@ -3,15 +3,9 @@
 // Tests the archive mode of rip tools (rip/archive_mode.h) with a made-up rip format, on archives built with
 // sar_files.h in a temporary folder: the search for a loose archive's group files past an entry whose type can't be
 // read, the line for a loose archive without sequences, a game's rip that goes on past an archive whose rip throws,
-// the files that a library holds, a second rip into the folder of the first, a sound's volume, the variants of a
-// sound that waits for the game's variables, the lines of --list for a game's archives, the warning for a group
-// file that isn't there, and the states that a rip plays a sound in.
-
-#ifdef _WIN32
-#include <io.h>
-#else
-#include <unistd.h>
-#endif
+// the files that a library holds, a second rip into the folder of the first, the lines of --list for a game's
+// archives, the warning for a group file that isn't there, and the states that a rip plays a sound in.
+// rip_archive_mode_tags_test.cpp tests the minis' tags.
 
 #include <algorithm>
 #include <cstddef>
@@ -20,8 +14,8 @@
 #include <filesystem>
 #include <map>
 #include <optional>
-#include <regex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -38,76 +32,17 @@
 #include "ntdlib/rip/archive_mode.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
+#include "rip_archive_mode_test_util.h"
 #include "temp_folder.h"
 
 namespace
 {
 
-namespace fs = std::filesystem;
-namespace rip = ntdlib::rip;
-namespace sar = ntdlib::sar;
-namespace sar_files = ntdlib::testing::sar_files;
-
+using namespace rip_archive_mode_tests;
 using ntdlib::testing::TempFolder;
 using xsflib::testing::Check;
 
-// A rip format for the tests: the archive and its group files as FILE chunks, and a descriptor with their paths.
-struct TestFormat
-{
-    using ProgramBuilder = xsflib::psf::StreamingProgramBuilder;
-    using FileChunk = xsflib::psf::FileChunk;
-
-    struct ArchiveDescriptor
-    {
-        std::string archive_path;
-        std::vector<std::string> group_paths;
-
-        std::vector<uint8_t> Serialize() const
-        {
-            return {};
-        }
-    };
-
-    static constexpr uint8_t kPsfVersion = 0x7F;
-};
-
-// What a rip of the test format holds: the archive, its group files and the descriptor.
-struct TestRip
-{
-    TestFormat::FileChunk archive;
-    std::vector<TestFormat::FileChunk> groups;
-    TestFormat::ArchiveDescriptor settings;
-};
-
-// The test format's tool, for the Switch's archives with kStopAtFirstProblem.
-rip::ArchiveRipTool<TestFormat, TestRip> TestTool()
-{
-    rip::ArchiveRipTool<TestFormat, TestRip> tool;
-    tool.format = "tst";
-    tool.mini_word = "minitst";
-    tool.library_extension = ".tstlib";
-    tool.mini_extension = ".minitst";
-    tool.sar_options = {sar::Flavor::kNx, {}, false, sar::Rules::kStopAtFirstProblem};
-
-    return tool;
-}
-
-// The options of a rip without the length analysis.
-xsflib::cli::RipOptions NoLengths()
-{
-    xsflib::cli::RipOptions options;
-    options.lengths = false;
-
-    return options;
-}
-
-// The description of an archive in a rip's list: none.
-std::string NoDescription(const std::vector<uint8_t>&)
-{
-    return std::string();
-}
-
-// A Switch archive with one sequence, SEQ. Its bank, file 1, is only in group GROUP_A. The group file lies outside the
+// A Switch archive with one sequence, SEQ. Its bank, file 1, is only in group GROUP_A. The group file is outside the
 // archive.
 std::vector<uint8_t> ArchiveWithGroup()
 {
@@ -132,7 +67,7 @@ std::vector<uint8_t> ArchiveWithoutGroups()
     return sar_files::Archive(false, spec);
 }
 
-// A Switch archive with one stream, STRM, and no sequences. The stream's file lies outside the archive.
+// A Switch archive with one stream, STRM, and no sequences. The stream's file is outside the archive.
 std::vector<uint8_t> ArchiveWithoutSequences()
 {
     sar_files::ArchiveSpec spec;
@@ -149,48 +84,6 @@ std::vector<uint8_t> GroupA()
     return sar_files::Group(false, {{1, sar_files::Bank(false, sar_files::BankSpec{})}});
 }
 
-// The text that `run` writes to `stream`, stdout or stderr. While `run` runs, the stream's file descriptor points at a
-// temporary file.
-template <typename Run>
-std::string OutputOf(std::FILE* stream, const Run& run)
-{
-    std::FILE* file = std::tmpfile();
-    if (file == nullptr)
-    {
-        return "no temporary file";
-    }
-
-    std::fflush(stream);
-#ifdef _WIN32
-    const int descriptor = _fileno(stream);
-    const int saved = _dup(descriptor);
-    _dup2(_fileno(file), descriptor);
-#else
-    const int descriptor = fileno(stream);
-    const int saved = dup(descriptor);
-    dup2(fileno(file), descriptor);
-#endif
-    run();
-    std::fflush(stream);
-#ifdef _WIN32
-    _dup2(saved, descriptor);
-    _close(saved);
-#else
-    dup2(saved, descriptor);
-    close(saved);
-#endif
-
-    std::string text;
-    std::rewind(file);
-    for (int c; (c = std::fgetc(file)) != EOF;)
-    {
-        text.push_back(static_cast<char>(c));
-    }
-    std::fclose(file);
-
-    return text;
-}
-
 // Writes a loose archive and its group file into `folder`, and gives the archive's path.
 fs::path WriteLooseArchive(const TempFolder& folder)
 {
@@ -201,7 +94,7 @@ fs::path WriteLooseArchive(const TempFolder& folder)
 }
 
 // Rips `input`, a loose archive in `folder`, into the folder's out folder. Gives whether the rip succeeded and SEQ
-// ripped with its bank, which only the group file holds.
+// ripped with its bank. Only the group file holds the bank.
 bool RipsWithGroup(const TempFolder& folder, const fs::path& input)
 {
     const fs::path out = folder.Path() / "out";
@@ -313,86 +206,6 @@ void TestGameRipGoesOnPastAnError()
     Check(fs::exists(folder.Path() / "whole" / "Game_whole.tstlib") &&
               fs::exists(folder.Path() / "whole" / "0000 SEQ.minitst"),
           "the next archive rips");
-}
-
-// A Switch archive with two sequences. SEQ_A's bank, file 2, is only in GROUP_A, a group file beside the archive.
-// SEQ_B's bank, file 3, has a place in the FILE block. GROUP_B, beside the archive, holds a copy of it.
-std::vector<uint8_t> ArchiveWithTwoGroups()
-{
-    sar_files::ArchiveSpec spec;
-    spec.sounds = {{.name = "SEQ_A", .file = 0, .player = 0, .banks = {0}},
-                   {.name = "SEQ_B", .file = 1, .player = 0, .banks = {1}}};
-    spec.banks = {{"BANK_A", 2}, {"BANK_B", 3}};
-    spec.players = {{"PLAYER", 1}};
-    spec.groups = {{"GROUP_A", 0xFFFFFFFF}, {"GROUP_B", 0xFFFFFFFF}};
-    spec.files = {{sar_files::Sequence(false, {0xFF}, {}), "", false},
-                  {sar_files::Sequence(false, {0x00, 0xFF}, {}), "", false},
-                  {{}, "", true},
-                  {sar_files::Bank(false, sar_files::BankSpec{}), "", false}};
-
-    return sar_files::Archive(false, spec);
-}
-
-// A group's file that holds a copy of file `file`, a bank without instruments.
-std::vector<uint8_t> GroupOf(uint32_t file)
-{
-    return sar_files::Group(false, {{file, sar_files::Bank(false, sar_files::BankSpec{})}});
-}
-
-// The files that the library at `path` holds, by their paths. Empty when the library can't be read.
-std::map<std::string, std::vector<uint8_t>> LibraryFiles(const fs::path& path)
-{
-    std::vector<uint8_t> bytes;
-    xsflib::psf::ProgramChunks chunks;
-    std::map<std::string, std::vector<uint8_t>> files;
-    if (xsflib::psf::ReadWholeFile(path.string(), bytes) && !xsflib::psf::ParsePsfChunks(bytes, chunks))
-    {
-        for (xsflib::psf::FileChunk& file : chunks.files)
-        {
-            files[file.path] = std::move(file.data);
-        }
-    }
-
-    return files;
-}
-
-// The names of `files`, in order.
-std::vector<std::string> NamesOf(const std::map<std::string, std::vector<uint8_t>>& files)
-{
-    std::vector<std::string> names;
-    for (const auto& [name, data] : files)
-    {
-        names.push_back(name);
-    }
-
-    return names;
-}
-
-// Rips the loose archive `input` with `tool` into the folder `out` beside it, with --only `only` when it isn't empty,
-// and with the length analysis when `lengths` is set. Returns the files of the library, and adds the messages to
-// `messages`.
-std::map<std::string, std::vector<uint8_t>> RipLoose(const rip::ArchiveRipTool<TestFormat, TestRip>& tool,
-                                                     const fs::path& input, const std::string& out,
-                                                     const std::string& only, std::string& messages,
-                                                     bool lengths = false)
-{
-    xsflib::cli::RipOptions options = NoLengths();
-    options.lengths = lengths;
-    if (!only.empty())
-    {
-        options.only = std::regex(only);
-        options.only_text = only;
-    }
-    const fs::path folder = input.parent_path() / out;
-    const auto rip_loose = [&]
-    {
-        xsflib::rip::FileNames names(".tstlib", ".minitst");
-        rip::RipLooseArchive(tool, input.string(), folder, options, names, TestRip{}, NoDescription);
-    };
-
-    messages += OutputOf(stderr, rip_loose);
-
-    return LibraryFiles(folder / (input.stem().string() + ".tstlib"));
 }
 
 // The reserved area of the mini at `path`, or "unreadable".
@@ -528,7 +341,7 @@ void TestLibraryKeepsSequenceData()
           "SEQ_B's files, and none of SEQ_A's");
 }
 
-// A library also keeps the files of the sounds that played_sounds names: here SEQ_A, which SEQ_B starts. With --only
+// A library also keeps the files of the sounds that played_sounds names: here SEQ_A. SEQ_B starts SEQ_A. With --only
 // SEQ_B, the library is then the same as that of both sequences.
 void TestLibraryKeepsPlayedSounds()
 {
@@ -598,7 +411,7 @@ void TestCutAfterLengthAnalysis()
     {
         for (rip::Job& job : jobs)
         {
-            job.timing = rip::EndAt(10, 5.0, 0.0);
+            job.timing = EndedAt50Ms();
             analyzed++;
         }
     };
@@ -610,223 +423,6 @@ void TestCutAfterLengthAnalysis()
     Check(NamesOf(with) == std::vector<std::string>{"GROUP_A.bfgrp", "loose.bfsar"} && with == without,
           "the library holds the cut archive and GROUP_A, as without the analysis");
     Check(messages.find("warning") == std::string::npos, "no warning: " + messages);
-}
-
-// The tag `name` of the mini at `path`. Empty when the mini can't be read or has no such tag.
-std::string MiniTag(const fs::path& path, const std::string& name)
-{
-    std::vector<uint8_t> bytes;
-    xsflib::psf::PsfFile mini;
-    if (!xsflib::psf::ReadWholeFile(path.string(), bytes) || xsflib::psf::ParsePsf(bytes, mini, false))
-    {
-        return "";
-    }
-
-    const auto tag = mini.tags.find(name);
-
-    return tag == mini.tags.end() ? "" : tag->second;
-}
-
-// The `_lib` tag of the mini at `path`. Empty when the mini can't be read or has no such tag.
-std::string LibraryTag(const fs::path& path)
-{
-    return MiniTag(path, "_lib");
-}
-
-// A tool's sound_volume gives a sound's mini its volume tag, and the length analysis the same factor. A sound at 1 has
-// no tag. The shortest decimal reads back as the same float.
-void TestSoundVolume()
-{
-    const TempFolder folder("rip_archive_mode_test");
-    const fs::path input = folder.Write("loose.bfsar", ArchiveWithTwoGroups());
-    folder.Write("GROUP_A.bfgrp", GroupOf(2));
-    folder.Write("GROUP_B.bfgrp", GroupOf(3));
-    std::string messages;
-
-    rip::ArchiveRipTool<TestFormat, TestRip> tool = TestTool();
-    tool.sound_volume = [](const TestRip&, const rip::Job& job)
-    {
-        return job.label == "SEQ_A" ? 0.71f : 1.0f;
-    };
-    std::map<std::string, float> analyzed;
-    tool.analyze_lengths =
-        [&analyzed](std::vector<rip::Job>& jobs, sar::SoundArchive, const TestFormat::ArchiveDescriptor&, unsigned)
-    {
-        for (rip::Job& job : jobs)
-        {
-            job.timing = rip::EndAt(10, 5.0, 0.0);
-            analyzed[job.label] = job.volume;
-        }
-    };
-    RipLoose(tool, input, "out", "", messages, true);
-
-    Check(analyzed == std::map<std::string, float>{{"SEQ_A", 0.71f}, {"SEQ_B", 1.0f}},
-          "the length analysis gets each sound's volume");
-    const fs::path mini_a = folder.Path() / "out" / "0000 SEQ_A.minitst";
-    const fs::path mini_b = folder.Path() / "out" / "0001 SEQ_B.minitst";
-    Check(MiniTag(mini_a, "volume") == "0.71", "a mini holds its sound's volume");
-    Check(MiniTag(mini_a, "_lib") == "loose.tstlib", "the mini still has its library");
-    Check(MiniTag(mini_b, "_lib") == "loose.tstlib", "the other mini is there");
-    Check(MiniTag(mini_b, "volume").empty(), "a sound at 1 has no volume tag");
-
-    xsflib::psf::Tags tags;
-    rip::SetRatioTag("volume", 2.37f, tags);
-    Check(tags["volume"] == "2.37", "2.37 keeps its decimal: " + tags["volume"]);
-}
-
-// A state's tempo ratio and pitch go into the tags that the tool names, as the shortest decimals that read back as the
-// same floats. A job at 1 gets neither tag, and so does every job of a tool that names no tags. The length analysis
-// gets each state's values.
-void TestTempoAndPitchTags()
-{
-    const TempFolder folder("rip_archive_mode_test");
-    const fs::path input = folder.Write("loose.bfsar", ArchiveWithTwoGroups());
-    folder.Write("GROUP_A.bfgrp", GroupOf(2));
-    folder.Write("GROUP_B.bfgrp", GroupOf(3));
-    std::string messages;
-
-    rip::ArchiveRipTool<TestFormat, TestRip> tool = TestTool();
-    tool.sound_states = [](const TestRip&, const std::vector<rip::Job>& selected)
-    {
-        std::vector<rip::Job> jobs;
-        for (const rip::Job& job : selected)
-        {
-            jobs.push_back(job);
-            if (job.label == "SEQ_A")
-            {
-                rip::Job faster = job;
-                faster.label = "SEQ_A 140 BPM";
-                faster.tempo_ratio = 140.0f / 120.0f;
-                faster.pitch = 1.122462f;
-                jobs.push_back(faster);
-                faster.label = "SEQ_A 200 BPM";
-                faster.tempo_ratio = 200.0f / 120.0f;
-                faster.pitch = 1.0f;
-                jobs.push_back(faster);
-            }
-        }
-
-        return jobs;
-    };
-    std::map<std::string, std::pair<float, float>> analyzed;
-    tool.analyze_lengths =
-        [&analyzed](std::vector<rip::Job>& jobs, sar::SoundArchive, const TestFormat::ArchiveDescriptor&, unsigned)
-    {
-        for (rip::Job& job : jobs)
-        {
-            job.timing = rip::EndAt(10, 5.0, 0.0);
-            analyzed[job.label] = {job.tempo_ratio, job.pitch};
-        }
-    };
-    rip::ArchiveRipTool<TestFormat, TestRip> without_tags = tool;
-    tool.tempo_tag = "tst_tempo";
-    tool.pitch_tag = "tst_pitch";
-    RipLoose(tool, input, "tags", "", messages, true);
-    RipLoose(without_tags, input, "none", "", messages, true);
-
-    const fs::path tags = folder.Path() / "tags";
-    Check(analyzed.at("SEQ_A 140 BPM") == std::pair(140.0f / 120.0f, 1.122462f) &&
-              analyzed.at("SEQ_A") == std::pair(1.0f, 1.0f),
-          "the length analysis gets each state's tempo ratio and pitch");
-    Check(MiniTag(tags / "0000 SEQ_A_140_BPM.minitst", "tst_tempo") == "1.1666666" &&
-              MiniTag(tags / "0000 SEQ_A_140_BPM.minitst", "tst_pitch") == "1.122462",
-          "a state's mini holds its tempo ratio and its pitch");
-    Check(MiniTag(tags / "0000 SEQ_A_200_BPM.minitst", "tst_tempo") == "1.6666666" &&
-              MiniTag(tags / "0000 SEQ_A_200_BPM.minitst", "tst_pitch").empty() &&
-              MiniTag(tags / "0000 SEQ_A_200_BPM.minitst", "_lib") == "loose.tstlib",
-          "a pitch of 1 gets no tag");
-    Check(MiniTag(tags / "0000 SEQ_A.minitst", "tst_tempo").empty() &&
-              MiniTag(tags / "0000 SEQ_A.minitst", "tst_pitch").empty() &&
-              MiniTag(tags / "0001 SEQ_B.minitst", "tst_tempo").empty() &&
-              MiniTag(tags / "0000 SEQ_A.minitst", "_lib") == "loose.tstlib",
-          "a job at 1 gets neither tag");
-    const fs::path none = folder.Path() / "none" / "0000 SEQ_A_140_BPM.minitst";
-    Check(MiniTag(none, "_lib") == "loose.tstlib" && MiniTag(none, "tst_tempo").empty() &&
-              MiniTag(none, "tst_pitch").empty(),
-          "a tool that names no tags writes none");
-}
-
-// A sound with variants is ripped once for each of them, and not without them. The length analysis gets each
-// variant's variables, and a variant that plays nothing is skipped. A variant's mini has the sound's number and its
-// label with the variables after it, in a file name's safe characters (xsflib::rip::FileNames). Its tags hold the label
-// and the variables. The library gets each sound once. With sound_tag_holds_sound_label, the tag tst_sound holds the
-// sound's label alone.
-void TestVariants()
-{
-    const TempFolder folder("rip_archive_mode_test");
-    const fs::path input = folder.Write("loose.bfsar", ArchiveWithTwoGroups());
-    folder.Write("GROUP_A.bfgrp", GroupOf(2));
-    folder.Write("GROUP_B.bfgrp", GroupOf(3));
-    std::string messages;
-
-    rip::ArchiveRipTool<TestFormat, TestRip> tool = TestTool();
-    tool.variables_tag = "tst_var";
-    tool.variants = [](const TestRip&, const rip::Job& job)
-    {
-        return job.label == "SEQ_B" ? std::vector<xsflib::psf::Variables>{{{1, 4}}, {{1, 5}}, {{1, 4}, {17, -2}}}
-                                    : std::vector<xsflib::psf::Variables>();
-    };
-
-    std::vector<std::pair<std::string, xsflib::psf::Variables>> analyzed;
-    tool.analyze_lengths =
-        [&analyzed](std::vector<rip::Job>& jobs, sar::SoundArchive, const TestFormat::ArchiveDescriptor&, unsigned)
-    {
-        for (rip::Job& job : jobs)
-        {
-            analyzed.emplace_back(job.label, job.variables);
-            job.timing = rip::EndAt(10, 5.0, 0.0);
-            job.timing->silent = job.variables == xsflib::psf::Variables{{1, 5}};
-        }
-    };
-
-    std::vector<std::vector<uint32_t>> received;
-    const auto default_library = tool.build_library;
-    tool.build_library = [&received, default_library](const TestRip& to_rip, std::span<const uint32_t> sounds,
-                                                      const xsflib::psf::Tags& tags)
-    {
-        received.emplace_back(sounds.begin(), sounds.end());
-        return default_library(to_rip, sounds, tags);
-    };
-
-    RipLoose(tool, input, "out", "", messages, true);
-
-    const fs::path out = folder.Path() / "out";
-    const fs::path both = out / "0001 SEQ_B_1_4__17_-2.minitst";
-    using Analyzed = std::vector<std::pair<std::string, xsflib::psf::Variables>>;
-    Check(analyzed == Analyzed{{"SEQ_A", {}},
-                               {"SEQ_B 1=4", {{1, 4}}},
-                               {"SEQ_B 1=5", {{1, 5}}},
-                               {"SEQ_B 1=4, 17=-2", {{1, 4}, {17, -2}}}},
-          "the analysis gets each variant with its variables");
-    Check(fs::exists(out / "0000 SEQ_A.minitst") && fs::exists(out / "0001 SEQ_B_1_4.minitst") && fs::exists(both) &&
-              !fs::exists(out / "0001 SEQ_B_1_5.minitst") && !fs::exists(out / "0001 SEQ_B.minitst"),
-          "a mini for SEQ_A and for each variant of SEQ_B that plays");
-    Check(MiniTag(both, "tst_var") == "1=4, 17=-2" && MiniTag(both, "title") == "SEQ_B 1=4, 17=-2" &&
-              MiniTag(both, "tst_sound") == "SEQ_B 1=4, 17=-2" &&
-              MiniTag(out / "0000 SEQ_A.minitst", "tst_var").empty(),
-          "a variant's mini holds its variables and its label");
-    Check(messages.find("skipped SEQ_B 1=5: it makes no sound") != std::string::npos,
-          "the variant that plays nothing is skipped: " + messages);
-    Check(received == std::vector<std::vector<uint32_t>>{{0, 1}}, "build_library gets each sound once");
-
-    tool.sound_tag_holds_sound_label = true;
-    RipLoose(tool, input, "sound_labels", "", messages, true);
-    const fs::path sound_label = folder.Path() / "sound_labels" / "0001 SEQ_B_1_4__17_-2.minitst";
-    Check(MiniTag(sound_label, "tst_sound") == "SEQ_B" && MiniTag(sound_label, "title") == "SEQ_B 1=4, 17=-2" &&
-              MiniTag(folder.Path() / "sound_labels" / "0000 SEQ_A.minitst", "tst_sound") == "SEQ_A",
-          "with sound_tag_holds_sound_label, tst_sound holds the sound's label alone");
-    tool.sound_tag_holds_sound_label = false;
-
-    // A format may write its variables in its form, in the label and in the tag.
-    tool.format_variables = [](const xsflib::psf::Variables& variables)
-    {
-        return "n" + std::to_string(variables.size());
-    };
-    analyzed.clear();
-    RipLoose(tool, input, "formatted", "", messages, true);
-    const fs::path formatted = folder.Path() / "formatted" / "0001 SEQ_B_n2.minitst";
-    Check(fs::exists(formatted) && MiniTag(formatted, "tst_var") == "n2" && MiniTag(formatted, "title") == "SEQ_B n2",
-          "a variant's label and tag take the format's form");
 }
 
 // A second rip of fewer sequences into the folder of the first keeps the first rip's library. The second rip's library
@@ -993,9 +589,44 @@ void TestLibraryDescriptor()
     XSFLIB_CHECK(alone.archive_path == "content/Sound/a.bfsar" && alone.group_paths.empty());
 }
 
+// A mini of several sounds lists their item IDs in its SND chunk, in their order. A mini of one sound is BuildMini's.
+// An empty list throws std::invalid_argument.
+void TestMiniOfSounds()
+{
+    const std::vector<uint32_t> piece = {9, 8, 7};
+    xsflib::psf::StreamingProgramBuilder expected;
+    expected.AddSounds(std::vector<uint32_t>{0x01000009, 0x01000008, 0x01000007});
+
+    const auto build_empty = []
+    {
+        rip::BuildMiniOfSounds<TestFormat>(std::vector<uint32_t>{}, "lib.psflib", {});
+    };
+
+    const std::vector<uint8_t> mini = rip::BuildMiniOfSounds<TestFormat>(piece, "lib.psflib", {});
+    const std::vector<uint8_t> one = rip::BuildMiniOfSounds<TestFormat>(std::vector<uint32_t>{5}, "lib.psflib", {});
+    const std::string empty = xsflib::testing::ErrorOf<std::invalid_argument>(build_empty);
+
+    XSFLIB_CHECK(mini == expected.WritePsf(TestFormat::kPsfVersion, {}, {{"_lib", "lib.psflib"}}));
+    XSFLIB_CHECK(one == rip::BuildMini<TestFormat>(5, "lib.psflib", {}));
+    XSFLIB_CHECK(!empty.empty());
+}
+
+// An archive that can be read loads, and one that can't gives nothing.
+void TestLoadArchiveToRip()
+{
+    const std::vector<uint8_t> archive = ArchiveWithoutGroups();
+    const std::optional<sar::SoundArchive> loaded = rip::LoadArchiveToRip(archive, "a.bfsar", TestTool().sar_options);
+    const std::optional<sar::SoundArchive> broken = rip::LoadArchiveToRip({1, 2, 3}, "b.bfsar", TestTool().sar_options);
+
+    XSFLIB_CHECK(loaded && loaded->Sounds().size() == 1 && !loaded->Truncated());
+    XSFLIB_CHECK(!broken);
+}
+
 int main()
 {
     TestLibraryDescriptor();
+    TestMiniOfSounds();
+    TestLoadArchiveToRip();
     TestLooseArchiveGroupPastBrokenLink();
     TestLooseArchiveGroupPastLockedFolders();
     TestLooseArchiveWithoutSequences();
@@ -1005,9 +636,6 @@ int main()
     TestLibraryGetsRippedSounds();
     TestCutAfterLengthAnalysis();
     TestSecondRipKeepsFirstLibrary();
-    TestSoundVolume();
-    TestTempoAndPitchTags();
-    TestVariants();
     TestWholeArchiveWhenFilesCantBeCut();
     TestListArchives();
     TestMissingGroupFileNames();

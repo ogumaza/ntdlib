@@ -92,7 +92,7 @@ void Oscillator::IncCounter(float dac_rate)
         break;
     }
 
-    // Without a table, the value stays at the full scale. A direct release needs none.
+    // Without a table, the value stays at the full scale. A direct release requires none.
     if (table.Null() && fields_.state != kDirectRelease)
     {
         fields_.phase = 1.0f;

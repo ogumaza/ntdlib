@@ -53,8 +53,8 @@ public:
     std::vector<ChordStep> Start(ChordMoment& moment, ChordRandom& random);
 
     // The timer whose event plays the next step, or nothing while the player holds or after it has ended. A wait of 3
-    // uses timer 3 only while +0x9a8 of the game's object is set, and timer 0 otherwise (0x80249db4). The caller
-    // maps it: +0x9a8 is the first byte of the rhythm's timer 3 (the rhythm is at +0x810), which the timer sets once it
+    // uses timer 3 only while +0x9a8 of the game's object is set, and timer 0 otherwise (0x80249db4). The caller maps
+    // it: +0x9a8 is the first byte of the rhythm's timer 3 (the rhythm is at +0x810). The timer sets that byte once it
     // has fired (0x80249280). See ChordRhythm::TimerThreeRunning.
     std::optional<int> Waiting() const
     {
@@ -135,8 +135,8 @@ public:
         return timer_three_;
     }
 
-    // Whether the last beat of wait 0 had a velocity of 100 or more. The timer then counts its strong beats in the
-    // word at +8 (0x802490c4), which the game reads as +0x940 of the audio manager (0x8024e060).
+    // Whether the last beat of wait 0 had a velocity of 100 or more. The timer then counts its strong beats in the word
+    // at +8 (0x802490c4). The game reads that word as +0x940 of the audio manager (0x8024e060).
     bool WaitZeroStrong() const
     {
         return wait_zero_strong_;

@@ -27,6 +27,7 @@
 #include "ntdlib/cafe/ax/render.h"
 #include "ntdlib/cafe/ax/system.h"
 #include "ntdlib/cafe/ax/voice.h"
+#include "ntdlib/testing/fnv1a.h"
 
 namespace ax_scenarios
 {
@@ -131,6 +132,211 @@ struct Scenario
     std::string text;
 };
 
+// The rate-conversion ratio of a random scenario. Ratios and weights are multiples of 1/64 and 1/16. A float holds
+// those exactly.
+inline std::string RandomRatio(Random& random)
+{
+    return std::to_string((8 + random.Below(293)) / 64.0);
+}
+
+// The step of a random envelope or mix ramp: 0 in a quarter of cases, otherwise from -`max` to `max`.
+inline int RandomDelta(Random& random, int max)
+{
+    return random.Below(4) == 0 ? 0 : random.Below(2 * max + 1) - max;
+}
+
+// A random envelope: its volume and its step.
+inline std::string RandomEnvelope(Random& random)
+{
+    const int volume = random.Below(0x10000);
+    return std::to_string(volume) + " " + std::to_string(RandomDelta(random, 64));
+}
+
+// The mix directives of voice `name`: one to four channels and buses of the TV, and in half the cases a channel of the
+// GamePad's main bus.
+inline std::string RandomMix(Random& random, const std::string& name)
+{
+    const char* const kBuses[] = {"main", "a", "b", "c"};
+    std::string line = "mix " + name + " tv 0";
+    for (int i = 1 + random.Below(4); i > 0; --i)
+    {
+        const int channel = random.Below(6);
+        const char* const bus = kBuses[random.Below(4)];
+        const int volume = random.Below(0x10000);
+        line += " ch" + std::to_string(channel) + "." + bus + "=" + std::to_string(volume) + "/" +
+                std::to_string(RandomDelta(random, 40));
+    }
+    line += "\n";
+    if (random.Below(2))
+    {
+        const int channel = random.Below(2);
+        const int volume = random.Below(0x10000);
+        line += "mix " + name + " drc 0 ch" + std::to_string(channel) + ".main=" + std::to_string(volume) + "/" +
+                std::to_string(RandomDelta(random, 40)) + "\n";
+    }
+
+    return line;
+}
+
+// Five random biquad coefficients, each after a space.
+inline std::string RandomCoefs(Random& random)
+{
+    std::string words;
+    for (int i = 0; i < 5; ++i)
+    {
+        words += " " + std::to_string(random.Below(32768) - 16384);
+    }
+
+    return words;
+}
+
+// A voice of a random scenario, and whether it converts its rate.
+struct RandomVoice
+{
+    std::string name;
+    bool src;
+};
+
+// Adds the directives of random voice `v` to `text`: its samples, its format, its rate conversion, envelope, mix and
+// filter, and the start.
+inline RandomVoice AddRandomVoice(Random& random, int v, std::string& text)
+{
+    const std::string name = "v" + std::to_string(v);
+    const uint32_t address = 0x10000000 + 0x10000 * static_cast<uint32_t>(v);
+    const std::string base = std::to_string(address);
+    const int kind = random.Below(4);
+    text += "acquire " + name + " " + std::to_string(1 + random.Below(31)) + "\n";
+
+    if (kind == 0)
+    {
+        text += MemLines(address, AdpcmData(random, 700, 11));
+        text += "offsets " + name + " adpcm " + base + " 0 2 11199 " + std::to_string(2 + random.Below(14)) + "\n";
+    }
+    else if (kind == 1)
+    {
+        const int frames = 3 + random.Below(10);
+        text += MemLines(address, AdpcmData(random, frames, 11));
+        text += "type " + name + " stream\noffsets " + name + " adpcm " + base + " 1 " +
+                std::to_string(2 + random.Below(14)) + " " + std::to_string(16 * frames - 1) + " 2\n";
+        const int coefficients = random.Below(8);
+        const int scale = random.Below(12);
+        text += "adpcmloop " + name + " " + std::to_string(coefficients << 4 | scale) + " 0 0\n";
+    }
+    else if (kind == 2)
+    {
+        const int samples = 50 + random.Below(400);
+        text += MemLines(address, Pcm8Data(random, samples));
+        const char* const looped = random.Below(2) ? " 1 " : " 0 ";
+        const int loop_start = random.Below(samples / 2);
+        text += "offsets " + name + " pcm8 " + base + looped + std::to_string(loop_start) + " " +
+                std::to_string(samples - 1) + " 0\n";
+    }
+    else
+    {
+        const int samples = 20 + random.Below(400);
+        text += MemLines(address, Pcm16Data(random, samples, 32767));
+        text += "offsets " + name + " pcm16 " + base + " 1 " + std::to_string(random.Below(samples / 2)) + " " +
+                std::to_string(samples - 1) + " 0\n";
+    }
+    if (kind < 2)
+    {
+        const int coefficients = random.Below(8);
+        const int scale = random.Below(12);
+        text += "adpcm " + name + " " + kCoefs + " 0 " + std::to_string(coefficients << 4 | scale) + " 0 0\n";
+    }
+
+    const bool src = kind != 3;
+    const char* const kTypes[] = {"linear", "4tap8k", "4tap12k", "4tap16k"};
+    text += "srctype " + name + " " + (src ? kTypes[random.Below(4)] : "none") + "\n";
+    if (src)
+    {
+        text += "srcratio " + name + " " + RandomRatio(random) + "\n";
+    }
+    text += "ve " + name + " " + RandomEnvelope(random) + "\n";
+    text += RandomMix(random, name);
+    if (random.Below(4) == 0)
+    {
+        text += "biquad " + name + " 2 0 0 0 0" + RandomCoefs(random) + "\n";
+    }
+    text += "state " + name + " play\n";
+
+    return {name, src};
+}
+
+// Adds a random segment of frames to `text`: the frames, the changes to `voices` between them or in the frame callback,
+// with or without protection, and at times a final-mix callback, the upsampler and a remix matrix.
+inline void AddRandomSegment(Random& random, bool renderer_48k, const std::vector<RandomVoice>& voices,
+                             std::string& text)
+{
+    text += "render " + std::to_string(1 + random.Below(3)) + "\n";
+    const int protect = random.Below(8); // 0: AXUserBegin, 1: AXVoiceBegin, else none
+    if (protect < 2)
+    {
+        text += protect == 0 ? "userbegin\n" : "voicebegin " + voices[0].name + "\n";
+    }
+    for (int change = random.Below(4); change > 0; --change)
+    {
+        const RandomVoice& voice = voices[static_cast<std::size_t>(random.Below(static_cast<int>(voices.size())))];
+        const int kind = random.Below(5);
+        if (kind == 2)
+        {
+            // A mix change is two directives at most. The change is made between frames.
+            text += RandomMix(random, voice.name);
+            continue;
+        }
+
+        std::string line;
+        if (kind == 0)
+        {
+            line = "ve " + voice.name + " " + RandomEnvelope(random);
+        }
+        else if (kind == 1 && voice.src)
+        {
+            line = "srcratio " + voice.name + " " + RandomRatio(random);
+        }
+        else if (kind == 3)
+        {
+            line = "state " + voice.name + (random.Below(2) ? " play" : " stop");
+        }
+        else
+        {
+            line = "biquadcoefs " + voice.name + RandomCoefs(random);
+        }
+        text += (random.Below(3) == 0 ? "@cb " : "") + line + "\n";
+    }
+    if (protect < 2)
+    {
+        text += "render 1\n" + (protect == 0 ? std::string("userend\n") : "voiceend " + voices[0].name + "\n");
+    }
+
+    if (random.Below(5) == 0)
+    {
+        if (random.Below(2))
+        {
+            text += "finalmix tv pass\n";
+        }
+        else
+        {
+            const int scale = 1 + random.Below(7);
+            text += "finalmix tv scale " + std::to_string(scale) + " " + std::to_string(random.Below(4)) + "\n";
+        }
+    }
+    if (!renderer_48k && random.Below(6) == 0)
+    {
+        const std::string stage = random.Below(2) ? "after" : "before";
+        text += "upsample tv " + stage + "\nupsample drc " + stage + "\n";
+    }
+    if (random.Below(6) == 0)
+    {
+        text += "remix tv 6 2";
+        for (int i = 0; i < 12; ++i)
+        {
+            text += " " + std::to_string(random.Below(17) / 16.0);
+        }
+        text += "\n";
+    }
+}
+
 // A random scenario within the same limits as the others. It has up to six voices at random priorities. Each voice is a
 // one-shot ADPCM voice too long to end, a looping ADPCM stream, PCM8 with rate conversion, or looping PCM16 without it.
 // The voices have random rates, envelopes, mixes and biquad filters. They change between frames and in the frame
@@ -148,196 +354,14 @@ inline Scenario RandomScenario(int number)
     std::string text = std::string("init ") + (sndcore2 ? "sndcore2" : "snd_core") + (renderer_48k ? " 48k" : "") +
                        "\ndump all off\ndump vbus main out out48 dma on\n";
 
-    // Ratios and weights are multiples of 1/64 and 1/16. A float holds those exactly.
-    const auto ratio = [&random]
-    {
-        return std::to_string((8 + random.Below(293)) / 64.0);
-    };
-
-    const auto delta = [&random](int max)
-    {
-        return random.Below(4) == 0 ? 0 : random.Below(2 * max + 1) - max;
-    };
-
-    const auto envelope = [&]
-    {
-        const int volume = random.Below(0x10000);
-        return std::to_string(volume) + " " + std::to_string(delta(64));
-    };
-
-    const auto mix = [&](const std::string& name)
-    {
-        const char* const kBuses[] = {"main", "a", "b", "c"};
-        std::string line = "mix " + name + " tv 0";
-        for (int i = 1 + random.Below(4); i > 0; --i)
-        {
-            const int channel = random.Below(6);
-            const char* const bus = kBuses[random.Below(4)];
-            const int volume = random.Below(0x10000);
-            line += " ch" + std::to_string(channel) + "." + bus + "=" + std::to_string(volume) + "/" +
-                    std::to_string(delta(40));
-        }
-        line += "\n";
-        if (random.Below(2))
-        {
-            const int channel = random.Below(2);
-            const int volume = random.Below(0x10000);
-            line += "mix " + name + " drc 0 ch" + std::to_string(channel) + ".main=" + std::to_string(volume) + "/" +
-                    std::to_string(delta(40)) + "\n";
-        }
-
-        return line;
-    };
-
-    const auto coefs = [&random]
-    {
-        std::string words;
-        for (int i = 0; i < 5; ++i)
-        {
-            words += " " + std::to_string(random.Below(32768) - 16384);
-        }
-
-        return words;
-    };
-
-    struct Made
-    {
-        std::string name;
-        bool src;
-    };
-    std::vector<Made> voices;
+    std::vector<RandomVoice> voices;
     for (int v = 0, count = 1 + random.Below(6); v < count; ++v)
     {
-        const std::string name = "v" + std::to_string(v);
-        const uint32_t address = 0x10000000 + 0x10000 * static_cast<uint32_t>(v);
-        const std::string base = std::to_string(address);
-        const int kind = random.Below(4);
-        text += "acquire " + name + " " + std::to_string(1 + random.Below(31)) + "\n";
-
-        if (kind == 0)
-        {
-            text += MemLines(address, AdpcmData(random, 700, 11));
-            text += "offsets " + name + " adpcm " + base + " 0 2 11199 " + std::to_string(2 + random.Below(14)) + "\n";
-        }
-        else if (kind == 1)
-        {
-            const int frames = 3 + random.Below(10);
-            text += MemLines(address, AdpcmData(random, frames, 11));
-            text += "type " + name + " stream\noffsets " + name + " adpcm " + base + " 1 " +
-                    std::to_string(2 + random.Below(14)) + " " + std::to_string(16 * frames - 1) + " 2\n";
-            const int coefficients = random.Below(8);
-            const int scale = random.Below(12);
-            text += "adpcmloop " + name + " " + std::to_string(coefficients << 4 | scale) + " 0 0\n";
-        }
-        else if (kind == 2)
-        {
-            const int samples = 50 + random.Below(400);
-            text += MemLines(address, Pcm8Data(random, samples));
-            const char* const looped = random.Below(2) ? " 1 " : " 0 ";
-            const int loop_start = random.Below(samples / 2);
-            text += "offsets " + name + " pcm8 " + base + looped + std::to_string(loop_start) + " " +
-                    std::to_string(samples - 1) + " 0\n";
-        }
-        else
-        {
-            const int samples = 20 + random.Below(400);
-            text += MemLines(address, Pcm16Data(random, samples, 32767));
-            text += "offsets " + name + " pcm16 " + base + " 1 " + std::to_string(random.Below(samples / 2)) + " " +
-                    std::to_string(samples - 1) + " 0\n";
-        }
-        if (kind < 2)
-        {
-            const int coefficients = random.Below(8);
-            const int scale = random.Below(12);
-            text += "adpcm " + name + " " + kCoefs + " 0 " + std::to_string(coefficients << 4 | scale) + " 0 0\n";
-        }
-
-        const bool src = kind != 3;
-        const char* const kTypes[] = {"linear", "4tap8k", "4tap12k", "4tap16k"};
-        text += "srctype " + name + " " + (src ? kTypes[random.Below(4)] : "none") + "\n";
-        if (src)
-        {
-            text += "srcratio " + name + " " + ratio() + "\n";
-        }
-        text += "ve " + name + " " + envelope() + "\n";
-        text += mix(name);
-        if (random.Below(4) == 0)
-        {
-            text += "biquad " + name + " 2 0 0 0 0" + coefs() + "\n";
-        }
-        text += "state " + name + " play\n";
-        voices.push_back({name, src});
+        voices.push_back(AddRandomVoice(random, v, text));
     }
-
     for (int segment = 1 + random.Below(4); segment > 0; --segment)
     {
-        text += "render " + std::to_string(1 + random.Below(3)) + "\n";
-        const int protect = random.Below(8); // 0: AXUserBegin, 1: AXVoiceBegin, else none
-        if (protect < 2)
-        {
-            text += protect == 0 ? "userbegin\n" : "voicebegin " + voices[0].name + "\n";
-        }
-        for (int change = random.Below(4); change > 0; --change)
-        {
-            const Made& voice = voices[static_cast<std::size_t>(random.Below(static_cast<int>(voices.size())))];
-            const int kind = random.Below(5);
-            if (kind == 2)
-            {
-                // A mix change is two directives at most. The change is made between frames.
-                text += mix(voice.name);
-                continue;
-            }
-
-            std::string line;
-            if (kind == 0)
-            {
-                line = "ve " + voice.name + " " + envelope();
-            }
-            else if (kind == 1 && voice.src)
-            {
-                line = "srcratio " + voice.name + " " + ratio();
-            }
-            else if (kind == 3)
-            {
-                line = "state " + voice.name + (random.Below(2) ? " play" : " stop");
-            }
-            else
-            {
-                line = "biquadcoefs " + voice.name + coefs();
-            }
-            text += (random.Below(3) == 0 ? "@cb " : "") + line + "\n";
-        }
-        if (protect < 2)
-        {
-            text += "render 1\n" + (protect == 0 ? std::string("userend\n") : "voiceend " + voices[0].name + "\n");
-        }
-
-        if (random.Below(5) == 0)
-        {
-            if (random.Below(2))
-            {
-                text += "finalmix tv pass\n";
-            }
-            else
-            {
-                const int scale = 1 + random.Below(7);
-                text += "finalmix tv scale " + std::to_string(scale) + " " + std::to_string(random.Below(4)) + "\n";
-            }
-        }
-        if (!renderer_48k && random.Below(6) == 0)
-        {
-            const std::string stage = random.Below(2) ? "after" : "before";
-            text += "upsample tv " + stage + "\nupsample drc " + stage + "\n";
-        }
-        if (random.Below(6) == 0)
-        {
-            text += "remix tv 6 2";
-            for (int i = 0; i < 12; ++i)
-            {
-                text += " " + std::to_string(random.Below(17) / 16.0);
-            }
-            text += "\n";
-        }
+        AddRandomSegment(random, renderer_48k, voices, text);
     }
 
     char name[16];
@@ -874,16 +898,14 @@ private:
 
 inline uint64_t Hash(const std::vector<std::string>& lines)
 {
-    uint64_t hash = 0xcbf29ce484222325ull;
+    ntdlib::testing::Fnv1a hash;
     for (const std::string& line : lines)
     {
-        for (const char c : line + "\n")
-        {
-            hash = (hash ^ static_cast<uint8_t>(c)) * 0x100000001b3ull;
-        }
+        hash.Add(line);
+        hash.Add("\n");
     }
 
-    return hash;
+    return hash.Value();
 }
 
 } // namespace ax_scenarios

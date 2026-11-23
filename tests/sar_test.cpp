@@ -18,6 +18,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/sarc.h"
@@ -307,7 +308,7 @@ std::vector<uint8_t> DirectBank(const Format& f)
 // have no velocity tables.
 std::vector<uint8_t> RangeBank(const Format& f, const std::vector<uint8_t>& upper_keys)
 {
-    const std::size_t n = upper_keys.size(), refs = 4 + ((n + 3) & ~std::size_t{3});
+    const std::size_t n = upper_keys.size(), refs = 4 + ntdlib::AlignUp(n, 4);
     Writer w = BinaryFileHeader(f, "BNK", 1);
     const std::size_t info = w.Add(8 + 16), body = info + 8;
     const std::size_t wave_table = w.Add(4);
@@ -939,9 +940,9 @@ void TestStrictRulesAddGroupFilesAsThePlayerReadsThem(Flavor flavor)
 {
     // The archive holds file 1, and only GROUP_SE's file holds file 0. The game keeps the group outside the archive.
     // The group file holds two copies of file 0, then a copy of file 1. It gives the second copy of file 0 and the copy
-    // of file 1 sizes that run past its end. The 3DS's player reads the bytes of a copy only when the archive lacks the
-    // file. It takes the first copy of file 0 and skips the others. The players of the Wii U and the Switch read every
-    // copy first, and refuse the group file.
+    // of file 1 sizes that run past its end. The 3DS's player reads the bytes of a copy only when the file is missing
+    // from the archive. It takes the first copy of file 0 and skips the others. The players of the Wii U and the Switch
+    // read every copy first, and refuse the group file.
     const Format f = FormatOf(flavor);
     std::vector<ArchiveFile> files(2);
     files[0].place = ArchiveFile::kNullLocation;
@@ -991,7 +992,8 @@ void TestUnnamedSequencesAreNamedByTheirLabels(Flavor flavor, Rules rules)
     //   BGM_A_Start comes first in the table, but the label that ends in _Begin names the sound.
     // - Sounds 1, 2 and 3 play one file. Sounds 1 and 2 start at its two labels. Sound 3 starts where it has none, and
     //   the file's first label names another sound.
-    // - Sound 4 starts where its file has no label. No other sound plays the file, so its first label names the sound.
+    // - Sound 4 starts where its file has no label. No other sound plays the file. Its first label therefore names the
+    // sound.
     // - Sound 5's file has no labels.
     // - Only a group file kept outside the archive contains sound 6's file.
     // - Sound 7's only label is _Begin.
@@ -1021,8 +1023,7 @@ void TestUnnamedSequencesAreNamedByTheirLabels(Flavor flavor, Rules rules)
     const SoundArchive with_names = SoundArchive::Load(Archive(f, files, named), options);
 
     const std::string on = " (" + NameOf(flavor) + (rules == Rules::kReadPastDamage ? "" : ", strict") + ")";
-    Check(before ==
-              std::vector<std::string>{"BGM_A", "SE_ONE", "SE_TWO", "SEQ_3", "SE_X", "SEQ_5", "SEQ_6", "SEQ_7"},
+    Check(before == std::vector<std::string>{"BGM_A", "SE_ONE", "SE_TWO", "SEQ_3", "SE_X", "SEQ_5", "SEQ_6", "SEQ_7"},
           "unnamed sequences named by their labels" + on);
     Check(SoundNames(archive)[6] == "BGM_B", "a sequence named once its group file is added" + on);
     Check(with_names.Sounds()[0].name == "SEQ_NAMED" && with_names.Sounds()[1].name == "SE_ONE",

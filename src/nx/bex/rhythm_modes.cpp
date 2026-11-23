@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -31,7 +34,7 @@ struct ModeArchive
     RhythmController controller;
 };
 
-// Super Mario Party Jamboree's controller: SQ_BGM_RC_MAIN_RHYTHM in subarc_rc_cmn, which the game starts at the rhythm
+// Super Mario Party Jamboree's controller: SQ_BGM_RC_MAIN_RHYTHM in subarc_rc_cmn. The game starts it at the rhythm
 // mode's start (RmSoundMan::StartModeMainBgm, 0x4264c4). Its drum track plays a kick on each beat, unless 29 holds one
 // of 16 numbers (KICKS_MUTE, offset 1040). Fill tracks follow 24 and 25.
 constexpr RhythmController kJamboreeController = {"SQ_BGM_RC_MAIN_RHYTHM", "subarc_rc_cmn"};

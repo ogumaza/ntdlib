@@ -165,7 +165,7 @@ inline ntdlib::sar::StreamTrackInfo StreamTrack(std::vector<uint8_t> channels)
     return track;
 }
 
-// An archive with one stream sound, STRM_NOTE, at `volume`, with `stream`'s tracks. The stream's file lies outside the
+// An archive with one stream sound, STRM_NOTE, at `volume`, with `stream`'s tracks. The stream's file is outside the
 // archive.
 inline std::vector<uint8_t> StreamArchive(bool big_endian, const ntdlib::sar::StreamSoundInfo& stream,
                                           uint8_t volume = 127)

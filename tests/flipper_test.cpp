@@ -494,6 +494,12 @@ void CheckGameSource()
               ntdlib::flipper::DriverStatus(memory, 0) == kDriverPlaying &&
               ntdlib::flipper::DriverStatus(memory, 0x81fffffe) == kDriverPlaying,
           "game source: the driver's status word, and 1 without one");
+    const ntdlib::dsp::GameCubeMemory& read_only = memory;
+    Check(ntdlib::flipper::WordAt(read_only, 0xc1700018) == kDriverFinished &&
+              ntdlib::flipper::HalfAt(memory, 0x8170001a) == kDriverFinished &&
+              ntdlib::flipper::ByteAt(memory, 0x8170001b) == kDriverFinished &&
+              !ntdlib::flipper::WordAt(memory, 0x81fffffe) && !ntdlib::flipper::ByteAt(memory, 0x81800000),
+          "game source: big-endian reads at CPU addresses, and nothing outside memory");
     Check(ntdlib::flipper::StopMessage(ntdlib::ppc::StopReason::kFault) ==
                   "the emulated program accessed memory that isn't there" &&
               ntdlib::flipper::StopMessage(ntdlib::ppc::StopReason::kIllegal) ==

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 // What the effects' models share: the games' sample rate, their runtime's conversion of a float to an unsigned integer,
-// the reverbs' range check, comb gains, allpasses and low-pass weight, the lines' steps, and the reverbs' line
-// clearing.
+// the reverbs' range check, comb gains, allpasses and low-pass weight, and the lines' steps and clearing.
 
 #pragma once
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <vector>
+
+#include "ntdlib/ax/axfx.h"
 
 namespace ntdlib::rvl::axfx
 {
@@ -34,11 +34,12 @@ inline uint32_t ToUnsigned(float value)
     return static_cast<uint32_t>(value);
 }
 
-// Whether a gain lies outside 0 to 1. A NaN gain doesn't. The games' comparisons let NaN through too.
-inline bool OutOfRange(float value)
-{
-    return value < 0.0f || value > 1.0f;
-}
+// The range test of a gain, and the clear, the release and the step of a line. The Wii U's effects use the same
+// (ax/axfx.h). A NaN gain passes the range test, as it passes the games' comparisons.
+using ntdlib::ax::axfx::Clear;
+using ntdlib::ax::axfx::Free;
+using ntdlib::ax::axfx::OutOfRange;
+using ntdlib::ax::axfx::Step;
 
 // The gain of a reverb's comb `length` samples long that decays by 60 dB in `time` seconds. The games call MSL's pow
 // (0x800c0e80 in Wii Sports, 0x804cb4dc in Smooth Moves) in double.
@@ -63,27 +64,6 @@ inline float Allpass(float& delayed, float input, float coef)
 inline float LowpassCoef(float damping)
 {
     return std::min(1.0f - damping, 0.95f);
-}
-
-// Moves a line's position on by a sample. The position wraps to 0 at the line's length.
-inline void Step(uint32_t& position, uint32_t length)
-{
-    position++;
-    if (position >= length)
-    {
-        position = 0;
-    }
-}
-
-// What the reverbs' __BzeroDelayLines and __FreeDelayLine do to each delay line.
-inline void ClearLine(std::vector<float>& line)
-{
-    std::fill(line.begin(), line.end(), 0.0f);
-}
-
-inline void ReleaseLine(std::vector<float>& line)
-{
-    line = {};
 }
 
 } // namespace ntdlib::rvl::axfx

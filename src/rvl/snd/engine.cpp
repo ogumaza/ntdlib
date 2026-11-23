@@ -9,6 +9,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -17,12 +18,23 @@
 
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/nwsnd/revolution_policy.h"
+#include "ntdlib/nwsnd/sequence.h"
+#include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rsar/formats.h"
+#include "ntdlib/rsar/stream_file.h"
 #include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/rvl/ax/render.h"
 #include "ntdlib/rvl/ax/system.h"
+#include "ntdlib/rvl/snd/arrangement.h"
+#include "ntdlib/rvl/snd/driver.h"
+#include "ntdlib/rvl/snd/effect_setup.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/rvl/snd/sequence.h"
+#include "ntdlib/rvl/snd/stream_sound.h"
+#include "ntdlib/rvl/snd/util.h"
+#include "ntdlib/rvl/snd/wave_sound.h"
 #include "ntdlib/sound_build.h"
+#include "ntdlib/types.h"
 
 namespace ntdlib::rvl::snd
 {

@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "ntdlib/dse/driver.h"
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/rom.h"
 
 namespace ntdlib::dse
@@ -41,6 +42,37 @@ struct CodeBlock
     uint32_t address = 0;
     std::span<const uint8_t> bytes;
 };
+
+// Whether `word` is a pointer that a fingerprint leaves out: an address in main memory or in the ARM9's fast code
+// memory below it (0x01FF8000 up to main memory's end), or in the 256 KiB below 0x02800000 that hold the ARM9's fast
+// data memory and the shared memory.
+constexpr bool PointsIntoMemory(uint32_t word)
+{
+    return (word >= 0x01FF8000 && word < ntr::kMainMemory + ntr::kMainMemorySize) ||
+           (word >= 0x027C0000 && word < 0x02800000);
+}
+
+// The word that a fingerprint uses in place of an ARM word that moves with the code: a branch without its offset, or
+// one fixed value for a pointer (PointsIntoMemory). Nothing for a word that doesn't move.
+constexpr std::optional<uint32_t> MaskedMovingWord(uint32_t word)
+{
+    constexpr uint32_t kPointer = 0x02AAAAAA;
+    if ((word & 0x0E000000) == 0x0A000000)
+    {
+        return word & 0xFF000000;
+    }
+    if (PointsIntoMemory(word))
+    {
+        return kPointer;
+    }
+
+    return std::nullopt;
+}
+
+// The words of the ARM function at `entry` in `block`, up to its first exit that no forward branch of the function
+// passes, at most 4,096. An exit always leaves the function: B, BX, LDM or LDR into pc, or a data-processing
+// instruction that writes pc. A forward branch counts only where its target is within 4,096 words of the entry.
+std::size_t ArmFunctionWords(const CodeBlock& block, uint32_t entry);
 
 // A table of the driver's handlers in a game's code, and the fingerprint of the code that it reaches.
 struct DriverCode

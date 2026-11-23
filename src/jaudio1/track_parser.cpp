@@ -2,8 +2,6 @@
 
 // The parser of the tracks' sequences (JASSeqParser): the commands and the channels' callbacks (see track.cpp).
 
-#include "ntdlib/jaudio1/track.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -12,6 +10,7 @@
 #include "jaudio1/track_internal.h"
 #include "ntdlib/jaudio1/calc.h"
 #include "ntdlib/jaudio1/iir_table.h"
+#include "ntdlib/jaudio1/track.h"
 
 namespace ntdlib::jaudio1
 {

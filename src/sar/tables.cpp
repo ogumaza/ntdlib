@@ -146,7 +146,7 @@ std::size_t FirstFile(std::size_t block, Flavor flavor)
 }
 
 // Adds `shift` to the offset of each file of `info` that the FILE block holds. Throws xsflib::FormatError for a file
-// whose location lies outside its entry, or before `first`, the first file's offset.
+// whose location is outside its entry, or before `first`, the first file's offset.
 void MoveFiles(InfoBlock& info, int64_t shift, uint32_t first)
 {
     const bool big_endian = info.flavor == Flavor::kCafe;
@@ -464,7 +464,7 @@ std::vector<uint8_t> WaveSoundEntry(std::span<const uint8_t> model, Flavor flavo
     return entry;
 }
 
-// Where the value of option `option`, a bit of the field of bits at `options` in `entry`, lies or would lie among the
+// Where the value of option `option`, a bit of the field of bits at `options` in `entry`, is or would be among the
 // options' values, in the byte order that `big_endian` gives.
 std::size_t OptionPlace(std::span<const uint8_t> entry, std::size_t options, uint32_t option, bool big_endian)
 {
@@ -484,7 +484,7 @@ void InsertOption(std::vector<uint8_t>& entry, std::size_t options, uint32_t opt
     Store32(entry, at, big_endian, value);
 }
 
-// Gives `entry`, a sound's entry, option `option` of the sound with `value`: the pan or the priorities. The value lies
+// Gives `entry`, a sound's entry, option `option` of the sound with `value`: the pan or the priorities. The value is
 // where the tools lay it out in an entry that holds the option. The 3D settings and the details move with the bytes
 // after the new value, and the offset of the 3D settings and the reference to the details follow them. An entry that
 // holds the option keeps it. Throws xsflib::FormatError for unknown options, and for 3D settings or details that don't
@@ -525,7 +525,7 @@ void GiveSoundOption(std::vector<uint8_t>& entry, uint32_t option, uint32_t valu
     }
 }
 
-// Gives `entry`, a sequence sound's entry, the option of its details that gives its channel priority. The value lies
+// Gives `entry`, a sequence sound's entry, the option of its details that gives its channel priority. The value is
 // where the tools lay it out in details that hold the option. The list of banks moves with the bytes after the new
 // value, and the details' reference to it follows. Details that hold the option keep it. Throws xsflib::FormatError for
 // details that the tools don't lay out so.

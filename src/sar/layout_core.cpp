@@ -12,6 +12,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/rounding.h"
@@ -36,6 +38,7 @@ using core::Location;
 using core::Source;
 using core::Start;
 using core::Structure;
+using ntdlib::detail::HasMagic;
 
 // A sequence file's commands and version, and the item at each of its sounds' starts.
 struct Decoded
@@ -247,7 +250,7 @@ std::optional<Decoded> Known(std::span<const uint8_t> bytes, const std::set<uint
     return std::nullopt;
 }
 
-// Where a copy of a file lies: in which source of a cut, the archive first, and where it starts there.
+// Where a copy of a file is: in which source of a cut, the archive first, and where it starts there.
 struct CopyAt
 {
     friend auto operator<=>(const CopyAt&, const CopyAt&) = default;
@@ -256,7 +259,7 @@ struct CopyAt
     std::size_t start = 0;
 };
 
-// The copies of a sequence file: where each lies, its size, and its sounds' starts.
+// The copies of a sequence file: where each is, its size, and its sounds' starts.
 struct Family
 {
     std::vector<CopyAt> copies; // in order, the archive's first
@@ -274,16 +277,16 @@ struct Family
 std::map<uint32_t, std::size_t> FamiliesOf(std::span<const Source> sources, const Container& container,
                                            std::vector<Family>& families)
 {
-    // The sequence files, by where they lie, and the file IDs that name each.
-    const char* magic = container.sequence_magic.data();
+    // The sequence files, by where they are, and the file IDs that name each.
+    const std::string_view magic(container.sequence_magic.data(), container.sequence_magic.size());
     std::map<std::pair<CopyAt, std::size_t>, std::set<uint32_t>> copies;
     for (std::size_t s = 0; s < sources.size(); ++s)
     {
         const std::span<const uint8_t> bytes = sources[s].bytes;
         for (const Location& file : sources[s].structure.files)
         {
-            if (file.size >= 4 && file.start <= bytes.size() && file.size <= bytes.size() - file.start &&
-                std::memcmp(bytes.data() + file.start, magic, 4) == 0)
+            if (file.start <= bytes.size() && file.size <= bytes.size() - file.start &&
+                HasMagic(bytes.subspan(file.start, file.size), magic))
             {
                 copies[{CopyAt{s, file.start}, file.size}].insert(file.file);
             }
@@ -383,7 +386,7 @@ struct Run
     uint32_t piece = 0;
 };
 
-// The copies of the families kept that lie in source `source`, in order, with each copy's padding in a source of `size`
+// The copies of the families kept that are in source `source`, in order, with each copy's padding in a source of `size`
 // bytes.
 std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t source, std::size_t alignment,
                            std::size_t size)
@@ -407,7 +410,7 @@ std::vector<Copy> CopiesOf(const std::vector<Family>& families, std::size_t sour
 }
 
 // Whether position `x`, of the kind given, falls inside `copy` or its padding, where no place can hold it. Only the end
-// of a size may lie where the padding starts.
+// of a size may be where the padding starts.
 bool FallsInside(const Copy& copy, std::size_t x, bool size)
 {
     if (x <= copy.start || x >= copy.padded)
@@ -430,7 +433,7 @@ bool PaddedWithZeros(std::span<const uint8_t> archive, std::size_t end, std::siz
                        archive.begin() + static_cast<std::ptrdiff_t>(padded), [](uint8_t byte) { return byte == 0; });
 }
 
-// Calls `leave_out` with the index of each of `copies`, in order of their starts, that a field of `structure` lies in
+// Calls `leave_out` with the index of each of `copies`, in order of their starts, that a field of `structure` is in
 // or points inside. A copy that starts further before a position than the longest copy with its padding can't reach
 // it.
 template <class LeaveOutCopy>
@@ -466,7 +469,7 @@ void ForEachInside(const Structure& structure, const std::vector<Copy>& copies, 
 }
 
 // Leaves out the families that the layout of a source keeps in the bytes: a copy whose padding isn't zeros, a field
-// that points inside a copy or lies in one, and copies that overlap. Each step covers every source before the next.
+// that points inside a copy or is in one, and copies that overlap. Each step covers every source before the next.
 // `alignments` gives each source's alignment.
 void LeaveOut(std::span<const Source> sources, std::span<const std::size_t> alignments, std::vector<Family>& families)
 {
@@ -504,13 +507,13 @@ void LeaveOut(std::span<const Source> sources, std::span<const std::size_t> alig
 
 // Adds to `copies`, the copies of the sequence files kept, each other file that becomes a run of its own, and sorts
 // them by their starts. A file does when the archive holds it whole, when zeros pad it to `alignment` or it ends the
-// archive, and when no field lies in it or points inside it. A group's fields lie in it. Each file's offset and size
+// archive, and when no field is in it or points inside it. A group's fields are in it. Each file's offset and size
 // are fields too. A field therefore points inside a file that holds another, or overlaps one. Several file IDs can name
 // one file.
 void AddRuns(std::span<const uint8_t> archive, const Structure& structure, std::size_t alignment,
              std::vector<Copy>& copies)
 {
-    // Each file once, by where it lies, but for the sequence pieces.
+    // Each file once, by where it is, but for the sequence pieces.
     std::set<std::pair<std::size_t, std::size_t>> files;
     for (const Location& file : structure.files)
     {
@@ -694,7 +697,7 @@ private:
 // xsflib::FormatError for a field that the pieces can't place.
 std::vector<Field> FieldsOf(const Structure& structure, const Pieces& placed, std::span<const Piece> pieces)
 {
-    // A field whose places lie in one run, or in runs with no sequence, file or padding between them, can't change.
+    // A field whose places are in one run, or in runs with no sequence, file or padding between them, can't change.
     std::vector<uint32_t> changing(pieces.size() + 1, 0);
     for (std::size_t i = 0; i < pieces.size(); ++i)
     {
@@ -723,7 +726,7 @@ std::vector<Field> FieldsOf(const Structure& structure, const Pieces& placed, st
     return fields;
 }
 
-// A piece that Join has laid out: where it starts, its size, and where its items lie.
+// A piece that Join has laid out: where it starts, its size, and where its items are.
 struct Laid
 {
     std::size_t start = 0;
@@ -847,7 +850,7 @@ void AddStartFields(const Structure& archive, const std::vector<Family>& familie
 }
 
 // The bytes of `pieces`, one after another, with `container`'s rules for the files of `sequences`. Appends to `laid`
-// where each piece lies. Throws std::invalid_argument for a piece that names a sequence past `sequences`, and for
+// where each piece is. Throws std::invalid_argument for a piece that names a sequence past `sequences`, and for
 // padding to a multiple of 0 bytes.
 std::vector<uint8_t> LayPieces(const Container& container, std::span<const commands::Sequence> sequences,
                                std::span<const Piece> pieces, std::vector<Laid>& laid)
@@ -898,7 +901,7 @@ std::vector<uint8_t> LayPieces(const Container& container, std::span<const comma
 void SetFields(const Container& container, std::span<const commands::Sequence> sequences, std::span<const Piece> pieces,
                std::span<const Field> fields, const std::vector<Laid>& laid, std::vector<uint8_t>& bytes)
 {
-    // Where an item of a sequence lies in the sequence's bytecode, for a place that names a sequence.
+    // Where an item of a sequence is in the sequence's bytecode, for a place that names a sequence.
     std::map<uint32_t, std::vector<uint32_t>> encoded;
     const auto item_at = [&](const Place& place) -> std::size_t
     {

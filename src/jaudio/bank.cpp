@@ -19,6 +19,7 @@
 
 #include "jaudio/bank_parse.h"
 #include "jaudio/reader.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::jaudio
 {
@@ -320,7 +321,7 @@ InstEffect ReadEffectV1(const xsflib::Reader& r, std::size_t offset)
     throw xsflib::FormatError("bank has an effect of unknown kind");
 }
 
-// Reads a version 1 oscillator at `at`. Its tables are offsets into the envelope chunk's data, which starts at
+// Reads a version 1 oscillator at `at`. Its tables are offsets into the envelope chunk's data. That data starts at
 // `envelopes`.
 Oscillator ReadOscillatorV1(const xsflib::Reader& r, std::size_t at, std::size_t envelopes)
 {
@@ -449,7 +450,7 @@ void ParseVersion1(std::span<const uint8_t> file, std::size_t size, bool big_end
         const uint32_t chunk_size = in_bank.U32(at + 4);
         chunks.try_emplace(TagAt(in_bank, at), at + 8, chunk_size);
         end = std::max<std::size_t>(end, at + 8 + chunk_size);
-        at = (at + 0xb + chunk_size) & ~std::size_t{3};
+        at = AlignUp(at + 8 + chunk_size, 4);
     }
 
     for (const char* tag : {"ENVT", "OSCT", "LIST"})

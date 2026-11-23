@@ -11,6 +11,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include "ntdlib/fused.h"
+
 namespace ntdlib::ctr_fx::vfp
 {
 namespace
@@ -68,7 +70,7 @@ float Flushed(float value)
 
 // The float nearest the exact result `value` + `error`, with ties to even. `value` is the result rounded to nearest in
 // double precision, and `error` the rounding's error, of which only the sign counts. A sum, product or quotient of two
-// floats never lies nearer a tie between two floats than a double can tell without lying on it. The double therefore
+// floats never is nearer a tie between two floats than a double can tell without being on it. The double therefore
 // rounds to the right float. An exact result below the smallest normal float flushes to a zero of its sign, before any
 // rounding. An overflow gives an infinity.
 float Nearest(double value, double error)
@@ -78,7 +80,7 @@ float Nearest(double value, double error)
         return std::numeric_limits<float>::quiet_NaN();
     }
 
-    const bool smaller = error != 0.0 && (error < 0.0) != (value < 0.0); // the exact result lies nearer zero
+    const bool smaller = error != 0.0 && (error < 0.0) != (value < 0.0); // the exact result is nearer zero
     const double magnitude = std::fabs(value);
     if (magnitude < kSmallest || (magnitude == kSmallest && smaller))
     {
@@ -197,36 +199,12 @@ float FromS32(int32_t value)
 
 uint32_t ToU32(float value)
 {
-    const float v = Flushed(value);
-    if (std::isnan(v) || v <= 0.0f)
-    {
-        return 0;
-    }
-    if (v >= 4294967296.0f)
-    {
-        return std::numeric_limits<uint32_t>::max();
-    }
-
-    return static_cast<uint32_t>(v);
+    return ntdlib::ArmToUint32(Flushed(value));
 }
 
 int32_t ToS32(float value)
 {
-    const float v = Flushed(value);
-    if (std::isnan(v))
-    {
-        return 0;
-    }
-    if (v >= 2147483648.0f)
-    {
-        return std::numeric_limits<int32_t>::max();
-    }
-    if (v <= -2147483648.0f)
-    {
-        return std::numeric_limits<int32_t>::min();
-    }
-
-    return static_cast<int32_t>(v);
+    return ntdlib::ArmToInt32(Flushed(value));
 }
 
 float PowF(float x, float y)
@@ -271,7 +249,7 @@ float PowF(float x, float y)
     const float q = Mul(Add(FromBits(kPowLinear), Mul(f, cubic)), f);
     const float fraction = Add(Add(FromBits(kPowLow[j]), Mul(FromBits(kPow[j]), q)), FromBits(kPowHigh[j]));
 
-    // Scale by 2^whole, in two steps where 2^whole lies outside the normal range. A power below the range flushes to 0,
+    // Scale by 2^whole, in two steps where 2^whole is outside the normal range. A power below the range flushes to 0,
     // and a power above it gives infinity.
     if (std::abs(whole) < 126)
     {

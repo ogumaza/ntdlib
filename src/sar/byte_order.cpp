@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <optional>
 #include <set>
 #include <span>
@@ -16,10 +15,12 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/wave/encode.h"
+#include "sar/file_parts.h"
 #include "sar/format_ids.h"
 
 namespace ntdlib::sar
@@ -41,7 +42,7 @@ using detail::kRegionOptions;
 using detail::kTableReference;
 using detail::kWaveSoundInfoBlock;
 
-// The optional parameters of a wave sound that the walk knows: its pan, pitch, filter, sends and envelope.
+// The optional parameters of a wave sound that the walk reads: its pan, pitch, filter, sends and envelope.
 // kRegionOptions gives a region's parameters. The envelope has the same bit in both.
 constexpr uint32_t kWaveSoundOptions = 0x307;
 constexpr int kSendsOption = 8;
@@ -301,7 +302,7 @@ void WalkRegionTable(Swap& swap, std::size_t at, Walk walk)
         {
             const uint32_t count = swap.U32(table);
             swap.Bytes(table + 4, count);
-            const std::size_t references = table + 4 + ((std::size_t{count} + 3) & ~std::size_t{3});
+            const std::size_t references = table + 4 + AlignUp(std::size_t{count}, 4);
             for (uint32_t i = 0; i < count; ++i)
             {
                 region(references + std::size_t{i} * 8);
@@ -496,9 +497,8 @@ bool HoldsOriginalLoopStart(Flavor flavor, uint32_t version)
 std::vector<uint8_t> WithConsole(std::span<const uint8_t> file, Flavor flavor, uint32_t version)
 {
     // The kind of file, from its magic, and its byte order. The 3DS's files are little-endian.
-    const bool letter = file.size() >= 4 && (file[0] == 'C' || file[0] == 'F');
-    const bool bank = letter && std::memcmp(file.data() + 1, "BNK", 3) == 0;
-    const bool wave_sound = letter && std::memcmp(file.data() + 1, "WSD", 3) == 0;
+    const bool bank = detail::HasFileMagic(file, "BNK");
+    const bool wave_sound = detail::HasFileMagic(file, "WSD");
     if (!bank && !wave_sound)
     {
         throw xsflib::FormatError("not a bank file (CBNK or FBNK) or a wave sound file (CWSD or FWSD)");

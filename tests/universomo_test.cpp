@@ -6,10 +6,10 @@
 // waits and without events, and the lengths of looped songs and of songs that play once.
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -22,6 +22,7 @@ namespace
 
 namespace universomo = ntdlib::universomo;
 
+using seqlib::testing::Throws;
 using universomo::Event;
 using universomo::Instrument;
 using universomo::Pattern;
@@ -88,20 +89,6 @@ Song EmptySong(uint32_t speed, uint32_t rows)
     return song;
 }
 
-bool Throws(const std::function<void()>& call)
-{
-    try
-    {
-        call();
-    }
-    catch (const xsflib::FormatError&)
-    {
-        return true;
-    }
-
-    return false;
-}
-
 void TestSong()
 {
     Song song;
@@ -133,17 +120,17 @@ void TestSongErrors()
     const auto reads = [](const Song& song)
     {
         const std::vector<uint8_t> file = SongFile(song);
-        return !Throws([&] { universomo::ReadSong(file); });
+        return !Throws<xsflib::FormatError>([&] { universomo::ReadSong(file); });
     };
 
     Check(reads(good), "the song for the errors reads");
     std::vector<uint8_t> file = SongFile(good);
     file[0] = 'X';
-    Check(Throws([&] { universomo::ReadSong(file); }), "a file without the magic is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSong(file); }), "a file without the magic is refused");
     file = SongFile(good);
     file.pop_back();
-    Check(Throws([&] { universomo::ReadSong(file); }), "a file cut short is refused");
-    Check(Throws([&] { universomo::ReadSong(std::vector<uint8_t>(10, 0)); }),
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSong(file); }), "a file cut short is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSong(std::vector<uint8_t>(10, 0)); }),
           "a file shorter than the header is refused");
 
     Song song = good;
@@ -166,10 +153,10 @@ void TestSongErrors()
 
     file = SongFile(good);
     xsflib::StoreLe32(file.data() + 0x27 + 1 + 4 + 1, 0xFFFFFFFF);
-    Check(Throws([&] { universomo::ReadSong(file); }), "an event count past the end is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSong(file); }), "an event count past the end is refused");
     file = SongFile(good);
     xsflib::StoreLe32(file.data() + 0x1B, 0x40000000);
-    Check(Throws([&] { universomo::ReadSong(file); }), "a pattern count past the end is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSong(file); }), "a pattern count past the end is refused");
 }
 
 std::vector<uint8_t> SampleRecord(uint8_t bits, uint32_t loop_start, uint32_t loop_length, uint8_t looped,
@@ -215,13 +202,13 @@ void TestBank()
 
     std::vector<uint8_t> bad = file;
     bad[13 + 12 + 4] = 12;
-    Check(Throws([&] { universomo::ReadSampleBank(bad); }), "a sample of 12 bits is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSampleBank(bad); }), "a sample of 12 bits is refused");
     bad = file;
     bad.resize(bad.size() - 1);
-    Check(Throws([&] { universomo::ReadSampleBank(bad); }), "a bank cut short is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSampleBank(bad); }), "a bank cut short is refused");
     bad = file;
     bad[0] = 'X';
-    Check(Throws([&] { universomo::ReadSampleBank(bad); }), "a file without the magic is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSampleBank(bad); }), "a file without the magic is refused");
 }
 
 void TestSoundTable()
@@ -241,7 +228,7 @@ void TestSoundTable()
     Check(sounds[1].loops && sounds[1].kind == universomo::SoundKind::kMusic, "music loops");
     Check(sounds[2].loops && sounds[2].kind == universomo::SoundKind::kLoopedEffect, "a looped sound effect");
     file.pop_back();
-    Check(Throws([&] { universomo::ReadSoundTable(file); }), "a table cut short is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::ReadSoundTable(file); }), "a table cut short is refused");
     Check(universomo::SongPath(105) == "/au105.ums", "the path of song 105");
 }
 
@@ -316,8 +303,8 @@ void TestWalkSpeed()
     Check(walk.Speed() == 6 && walk.Row() == 3, "row 2's effect sets 6 calls a row");
     Check(universomo::MeasureSong(song, false) == universomo::SongLength{1 + 3 + 3 + 6, 0},
           "the rows take the speeds that the effects set");
-    // The first pass starts at the header's speed and each later pass at the last row's, so the loop starts with the
-    // second pass. Each pass takes 18 calls.
+    // The first pass starts at the header's speed and each later pass at the speed of the last row. The loop therefore
+    // starts with the second pass. Each pass takes 18 calls.
     Check(universomo::MeasureSong(song, true) == universomo::SongLength{18, 6 + 3 + 3 + 6},
           "the loop starts with the first pass that starts at the speed that the last row leaves");
 }
@@ -332,7 +319,8 @@ void TestWalkTrackWithoutWaits()
     const universomo::SongLength length = universomo::MeasureSong(song, false);
 
     Check(length.intro == 1 + 299 * 2, "the last event's speed holds for the pattern");
-    Check(Throws([&] { universomo::MeasureSong(song, false, 100); }), "a song past the limit is refused");
+    Check(Throws<xsflib::FormatError>([&] { universomo::MeasureSong(song, false, 100); }),
+          "a song past the limit is refused");
 }
 
 } // namespace

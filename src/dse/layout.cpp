@@ -21,6 +21,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/rounding.h"
@@ -30,27 +31,25 @@ namespace ntdlib::dse
 namespace
 {
 
+using ntdlib::detail::HasMagic;
 using sar::Field;
 using sar::Padding;
 using sar::Piece;
 using sar::Place;
 using sar::SequencePiece;
 
-constexpr char kSetMagic[4] = {'D', 'S', 'E', 'T'};
+constexpr std::string_view kSetMagic = "DSET";
 constexpr uint32_t kSetHeader = 16;
 constexpr uint32_t kSetEntry = 12;
 constexpr uint32_t kFileAlignment = 16;
 
 constexpr uint32_t kFileSizeField = 8;
-constexpr uint32_t kSongTracks = 0x80;       // a song's header, its song chunk and its settings
+constexpr uint32_t kVersionField = 0x0C;
+constexpr uint32_t kSettings = 0x50;         // a song's settings, after its header and its song chunk's header
+constexpr uint32_t kOldestSettings = 0x10;   // the size of a song's settings in version 0x402
 constexpr uint32_t kEffectsChunkSize = 0x4C; // the seq chunk's size in a bank of sound effects
 constexpr uint32_t kEffectsBase = 0x50;      // what the seq chunk's table counts from
 constexpr uint32_t kEndChunk = 16;           // an eoc chunk
-
-bool HasMagic(std::span<const uint8_t> bytes, const char* magic)
-{
-    return bytes.size() >= 4 && std::memcmp(bytes.data(), magic, 4) == 0;
-}
 
 bool IsZeros(std::span<const uint8_t> bytes)
 {
@@ -96,10 +95,13 @@ struct CutFile
     std::vector<Field> fields = {};
 };
 
+// The tracks start after the settings, in both versions. A header that gives a size of 0 (version 0x402) gets no field.
 std::optional<CutFile> CutSong(const NamedFile& file)
 {
     const Song song = Song::Parse(file.bytes);
-    std::optional<SizedSequence> sized = SequenceAt(song.tracks, file.bytes, kSongTracks);
+    const SettingsPlaces places = SongSettingsPlaces(file.bytes);
+    const std::size_t tracks = places.start + places.size;
+    std::optional<SizedSequence> sized = SequenceAt(song.tracks, file.bytes, tracks);
     if (!sized)
     {
         return std::nullopt;
@@ -108,10 +110,13 @@ std::optional<CutFile> CutSong(const NamedFile& file)
     sized->sequence.labels.push_back({SequenceLabel({.path = file.path}), 0});
     CutFile cut;
     cut.sequences.push_back(std::move(sized->sequence));
-    cut.pieces.emplace_back(RunOf(file.bytes.first(kSongTracks)));
+    cut.pieces.emplace_back(RunOf(file.bytes.first(tracks)));
     cut.pieces.emplace_back(SequencePiece{});
-    cut.pieces.emplace_back(RunOf(file.bytes.subspan(kSongTracks + sized->size)));
-    cut.fields.push_back({ByteOf(0, kFileSizeField), ByteOf(0), ByteOf(3)});
+    cut.pieces.emplace_back(RunOf(file.bytes.subspan(tracks + sized->size)));
+    if (xsflib::LoadLe32(&file.bytes[kFileSizeField]) != 0)
+    {
+        cut.fields.push_back({ByteOf(0, kFileSizeField), ByteOf(0), ByteOf(3)});
+    }
 
     return cut;
 }
@@ -252,7 +257,7 @@ Layout Cut(std::span<const NamedFile> files)
 
     // The directory, with the paths.
     std::vector<uint8_t> directory(kSetHeader + kSetEntry * files.size());
-    std::memcpy(directory.data(), kSetMagic, sizeof(kSetMagic));
+    std::memcpy(directory.data(), kSetMagic.data(), kSetMagic.size());
     xsflib::StoreLe32(&directory[8], static_cast<uint32_t>(files.size()));
     for (std::size_t i = 0; i < files.size(); i++)
     {
@@ -384,7 +389,7 @@ std::vector<uint8_t> Join(std::span<const commands::Sequence> sequences, std::sp
 
 bool IsSet(std::span<const uint8_t> bytes)
 {
-    return bytes.size() >= kSetHeader && std::memcmp(bytes.data(), kSetMagic, sizeof(kSetMagic)) == 0;
+    return bytes.size() >= kSetHeader && HasMagic(bytes, kSetMagic);
 }
 
 std::vector<NamedFile> ReadSet(std::span<const uint8_t> set)
@@ -462,7 +467,7 @@ std::optional<uint32_t> TracksOffset(std::span<const uint8_t> file, std::optiona
 {
     if (!effect)
     {
-        return kSongTracks;
+        return kSettings + static_cast<uint32_t>(SequenceInfo::kSize);
     }
     if (file.size() < kEffectsBase || *effect >= xsflib::LoadLe16(&file[0x30]) ||
         kEffectsBase + 2 * std::size_t{*effect} + 2 > file.size())
@@ -477,6 +482,59 @@ std::optional<uint32_t> TracksOffset(std::span<const uint8_t> file, std::optiona
     }
 
     return kEffectsBase + uint32_t{offset} + static_cast<uint32_t>(SequenceInfo::kSize);
+}
+
+std::optional<uint32_t> TracksInFile(std::span<const uint8_t> file, std::optional<uint16_t> effect)
+{
+    if (!effect && file.size() >= Song::kHeaderSize && HasMagic(file, "smdl") &&
+        xsflib::LoadLe16(&file[kVersionField]) == kOldestVersion)
+    {
+        return kSettings + kOldestSettings;
+    }
+
+    return TracksOffset(file, effect);
+}
+
+SettingsPlaces SequenceInfoPlaces(std::size_t start)
+{
+    return {
+        .start = start, .size = SequenceInfo::kSize, .ticks = start + 2, .tracks = start + 6, .channels = start + 7};
+}
+
+SettingsPlaces SongSettingsPlaces(std::span<const uint8_t> song)
+{
+    if (!HasMagic(song, "smdl") || song.size() < Song::kHeaderSize)
+    {
+        throw xsflib::FormatError("not a DSE song");
+    }
+
+    // Version 0x402 keeps the counts in bytes 4 and 5 of its 16 bytes, and version 0x415 in bytes 6 and 7 of its 48
+    // (oldest.h and formats.h). Both give the ticks in bytes 2 and 3.
+    const uint16_t version = xsflib::LoadLe16(&song[kVersionField]);
+    SettingsPlaces places;
+    if (version == kOldestVersion)
+    {
+        places = {.start = kSettings,
+                  .size = kOldestSettings,
+                  .ticks = kSettings + 2,
+                  .tracks = kSettings + 4,
+                  .channels = kSettings + 5};
+    }
+    else if (version == kVersion)
+    {
+        places = SequenceInfoPlaces(kSettings);
+    }
+    else
+    {
+        throw xsflib::FormatError("a DSE song of another version than 0x415 or 0x402");
+    }
+
+    if (song.size() < places.start + places.size)
+    {
+        throw xsflib::FormatError("the song ends before its settings");
+    }
+
+    return places;
 }
 
 } // namespace ntdlib::dse

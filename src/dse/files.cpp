@@ -19,10 +19,12 @@
 #include "xsflib/ascii.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "gfsa.h"
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/error.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/dse/oldest.h"
 #include "ntdlib/dse/sets.h"
 
 namespace ntdlib::dse
@@ -57,7 +59,7 @@ std::optional<Kind> KindAt(std::span<const uint8_t> bytes, std::size_t at)
 
     for (const Kind& kind : kKinds)
     {
-        if (std::memcmp(&bytes[at], kind.magic, 4) == 0)
+        if (ntdlib::detail::HasMagic(bytes.subspan(at), kind.magic))
         {
             return kind;
         }
@@ -66,10 +68,21 @@ std::optional<Kind> KindAt(std::span<const uint8_t> bytes, std::size_t at)
     return std::nullopt;
 }
 
-// The size of the DSE file at `at`, when its header is one of version 0x415 and its size fits in `bytes`.
+// The size of the DSE file at `at`, when its header is one of version 0x415 or 0x402 and its size fits in `bytes`. A
+// file of version 0x402 whose header gives 0 ends with its end chunk (OldestFileSize). Some of Luminous Arc's do.
 std::optional<std::size_t> FileSizeAt(std::span<const uint8_t> bytes, std::size_t at)
 {
-    if (!KindAt(bytes, at) || xsflib::LoadLe32(&bytes[at + 4]) != 0 || xsflib::LoadLe16(&bytes[at + 0x0C]) != kVersion)
+    if (!KindAt(bytes, at) || xsflib::LoadLe32(&bytes[at + 4]) != 0)
+    {
+        return std::nullopt;
+    }
+    const uint16_t version = xsflib::LoadLe16(&bytes[at + 0x0C]);
+    if (version == kOldestVersion)
+    {
+        const std::optional<std::size_t> size = OldestFileSize(bytes.subspan(at));
+        return size && *size >= kHeaderSize ? size : std::nullopt;
+    }
+    if (version != kVersion)
     {
         return std::nullopt;
     }
@@ -83,8 +96,8 @@ std::optional<std::size_t> FileSizeAt(std::span<const uint8_t> bytes, std::size_
     return size;
 }
 
-// The place of the next DSE header of version 0x415 from `from` on, or the end of `bytes`. Each magic word starts
-// with 's'.
+// The place of the next DSE header of version 0x415 or 0x402 from `from` on, or the end of `bytes`. Each magic word
+// starts with 's'.
 std::size_t NextFile(std::span<const uint8_t> bytes, std::size_t from)
 {
     for (std::size_t at = from; at + kHeaderSize <= bytes.size(); at++)
@@ -105,8 +118,8 @@ std::size_t NextFile(std::span<const uint8_t> bytes, std::size_t from)
     return bytes.size();
 }
 
-// The name at 0x20 of the file at `at` of `bytes`, as FindFiles gives it. The field gives no encoding, so a byte
-// outside printable ASCII can't become valid UTF-8 and is replaced, like the bytes that Windows forbids in a file name.
+// The name at 0x20 of the file at `at` of `bytes`, as FindFiles gives it. The field gives no encoding. Each byte
+// outside printable ASCII is therefore replaced, and so is each byte that Windows forbids in a file name.
 std::string NameAt(std::span<const uint8_t> bytes, std::size_t at, const Kind& kind)
 {
     std::string name;
@@ -170,7 +183,7 @@ std::vector<NamedFile> FindFiles(std::span<const NamedFile> files)
         const std::span<const uint8_t> bytes = file.bytes;
         const auto starts_with = [&bytes](const Kind& kind)
         {
-            return bytes.size() >= 4 && std::memcmp(bytes.data(), kind.magic, 4) == 0;
+            return ntdlib::detail::HasMagic(bytes, kind.magic);
         };
         if (std::ranges::any_of(kKinds, starts_with))
         {
@@ -238,6 +251,17 @@ std::vector<NamedFile> Decompressed(std::span<const NamedFile> files, std::vecto
     }
 
     return result;
+}
+
+std::vector<NamedFile> FindRomFiles(const ntr::Rom& rom, std::vector<std::vector<uint8_t>>& storage)
+{
+    std::vector<NamedFile> named;
+    for (const ntr::RomFile& file : rom.Files())
+    {
+        named.push_back({file.path.empty() ? "file " + std::to_string(file.id) : file.path, rom.FileData(file.id)});
+    }
+
+    return FindFiles(Decompressed(named, storage));
 }
 
 } // namespace ntdlib::dse

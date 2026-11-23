@@ -17,8 +17,9 @@
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/wave_file.h"
 #include "ntdlib/rsar/wsd_file.h"
+#include "throws_about.h"
 
-using xsflib::testing::ErrorOf;
+using ntdlib::testing::ThrowsAbout;
 
 namespace
 {
@@ -181,14 +182,6 @@ void TestWaveBlock()
     XSFLIB_CHECK(WsdFile::Read(files.file, files.wave_data) == wsd);
 }
 
-template <class Error, class Call>
-bool Throws(Call call, const std::string& part)
-{
-    const std::string message = ErrorOf<Error>(call);
-
-    return !message.empty() && message.find(part) != std::string::npos;
-}
-
 // Write refuses other versions, and waves that WaveFile refuses. Read refuses other files and versions, wave data that
 // isn't the file's, and a file that the tools didn't lay out.
 void TestRefusals()
@@ -205,14 +198,17 @@ void TestRefusals()
     typed[0x28 + 0x14 + 1] = 1;
     const WsdFile::Files old = TwoSoundsFile(0x0102).Write();
 
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { older.Write(); }, "a version other than 1.2 and 1.3"));
-    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { bare.Write(); }, "holds 0 channels"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WsdFile::Read(files.wave_data, files.wave_data); }, "not an RWSD"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WsdFile::Read(newer, files.wave_data); }, "other than 1.2 and 1.3"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WsdFile::Read(tail, files.wave_data); }, "other bytes of the file"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WsdFile::Read(typed, files.wave_data); }, "of another kind"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WsdFile::Read(files.file, old.wave_data); }, "not an RWAR"));
-    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WsdFile::Read(old.file, {}); }, "start past the wave data"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { older.Write(); }, "a version other than 1.2 and 1.3"));
+    XSFLIB_CHECK(ThrowsAbout<std::invalid_argument>([&] { bare.Write(); }, "holds 0 channels"));
+    XSFLIB_CHECK(
+        ThrowsAbout<xsflib::FormatError>([&] { WsdFile::Read(files.wave_data, files.wave_data); }, "not an RWSD"));
+    XSFLIB_CHECK(
+        ThrowsAbout<xsflib::FormatError>([&] { WsdFile::Read(newer, files.wave_data); }, "other than 1.2 and 1.3"));
+    XSFLIB_CHECK(
+        ThrowsAbout<xsflib::FormatError>([&] { WsdFile::Read(tail, files.wave_data); }, "other bytes of the file"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WsdFile::Read(typed, files.wave_data); }, "of another kind"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WsdFile::Read(files.file, old.wave_data); }, "not an RWAR"));
+    XSFLIB_CHECK(ThrowsAbout<xsflib::FormatError>([&] { WsdFile::Read(old.file, {}); }, "start past the wave data"));
     XSFLIB_CHECK(WsdFile::Read(old.file, old.wave_data) == TwoSoundsFile(0x0102));
 }
 

@@ -63,6 +63,22 @@ std::vector<int16_t> DecodeAdpcm(std::span<const uint8_t> data, uint32_t samples
     return out;
 }
 
+std::vector<int16_t> DecodeWords(std::span<const uint8_t> data, uint32_t words, WaveEncoding encoding)
+{
+    const std::span<const uint8_t> bytes = data.first(std::min<std::size_t>(data.size(), std::size_t{words} * 4));
+    switch (encoding)
+    {
+    case WaveEncoding::kPcm8:
+        return wave::DecodePcm8(bytes, words * 4);
+    case WaveEncoding::kPcm16:
+        return wave::DecodePcm16(bytes, words * 2, false);
+    case WaveEncoding::kImaAdpcm:
+        return DecodeAdpcm(bytes, words > 0 ? (words - 1) * 8 : 0);
+    }
+
+    throw xsflib::FormatError("unknown wave encoding " + std::to_string(static_cast<int>(encoding)));
+}
+
 std::vector<int16_t> DecodeWave(const Wave& wave)
 {
     const uint32_t samples = wave.Samples();

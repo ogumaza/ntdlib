@@ -107,7 +107,7 @@ constexpr Reverb2008Words kReverbStd2008Words = {
 // setting, with the sounds of the scenes that use it.
 //
 // With presets, the bus starts without the effect. The sequences of `sounds` then pick a preset (WarioWare: Smooth
-// Moves, which reads the variables of its music): in each AX frame, a value from 1 to the number of presets in the
+// Moves reads the variables of its music for this): in each AX frame, a value from 1 to the number of presets in the
 // sequence's local variable 0, then 1, sets the preset with that number and appends the effect again, and 0 takes the
 // bus's effects away. Other values change nothing. Other sounds leave the bus without the effect.
 struct EffectSetup

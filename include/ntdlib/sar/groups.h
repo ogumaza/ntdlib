@@ -7,7 +7,7 @@
 // wave archives, each with the parts that the group loads. The archive's group table gives each group's file, and the
 // file table gives each file a list of the groups that hold it. A game keeps some groups in files beside the archive.
 // The group table gives such a group no file. ReadGroupFile reads a group's file, and GroupCopies finds where its
-// copies lie. GroupWith adds files and items to a group's file, and GroupWithCopies gives its copies new bytes.
+// copies are. GroupWith adds files and items to a group's file, and GroupWithCopies gives its copies new bytes.
 // WithGroupMembers adds files and items to a group whose file the archive holds. WithGroupLists writes the groups into
 // the files' lists. GroupOfFile finds the group of a group's file that a game keeps beside an archive. EmptyGroupFile
 // gives the file of a new group, and WithNewGroup (ntdlib/sar/tables.h) adds the group to an archive.
@@ -72,8 +72,8 @@ struct GroupContents
 };
 
 // A group's file of `flavor` without files or items, in version `version`, laid out as the tools lay a group's file
-// out. Without a version, the file takes version 1.0.0 on the Wii U and the Switch, which every game of theirs reads,
-// and 1.0.0.0 on the 3DS.
+// out. Without a version, the file takes version 1.0.0 on the Wii U and the Switch, and 1.0.0.0 on the 3DS. Every game
+// of the Wii U and the Switch reads 1.0.0.
 std::vector<uint8_t> EmptyGroupFile(Flavor flavor, std::optional<uint32_t> version = std::nullopt);
 
 // The size that an archive's file table gives `group`, a group's file of `flavor`: the end of its INFX block's
@@ -87,7 +87,7 @@ std::size_t GroupSizeInArchive(std::span<const uint8_t> group, Flavor flavor);
 // end.
 GroupContents ReadGroupFile(std::span<const uint8_t> group, Flavor flavor);
 
-// A copy that a group's file holds: the file's ID, and where the copy lies in the group's file.
+// A copy that a group's file holds: the file's ID, and where the copy is in the group's file.
 struct GroupCopy
 {
     friend bool operator==(const GroupCopy&, const GroupCopy&) = default;
@@ -103,10 +103,10 @@ std::vector<GroupCopy> GroupCopies(std::span<const uint8_t> group, Flavor flavor
 
 // `group`, a group's file of `flavor`, with `files` after its files and `items` after its items, laid out as the tools
 // lay a group's file out. A group that holds copies takes copies, and a group that links takes links. A group without
-// files takes either, but not both. INFX keeps its padding, or its lack of padding. A group's file of the 3DS without
-// INFX lists no items, and takes none. Throws std::invalid_argument for a file that the group holds already or that
-// `files` holds twice, an item that the group lists already or that `items` lists twice, and files of the other kind.
-// Throws xsflib::FormatError for a group's file laid out another way than the tools lay it out, and the exceptions of
+// files takes either, but not both. INFX stays padded or unpadded as it was. A group's file of the 3DS without INFX
+// lists no items, and takes none. Throws std::invalid_argument for a file that the group holds already or that `files`
+// holds twice, an item that the group lists already or that `items` lists twice, and files of the other kind. Throws
+// xsflib::FormatError for a group's file laid out another way than the tools lay it out, and the exceptions of
 // ReadGroupFile. GroupWith(group, flavor, {}, {}) gives every other group's file back byte for byte.
 std::vector<uint8_t> GroupWith(std::span<const uint8_t> group, Flavor flavor, std::span<const GroupMember> files,
                                std::span<const GroupItem> items);

@@ -763,7 +763,7 @@ void Tracks::PortCommand(uint32_t index, uint32_t command, const Args& a)
     {
     case 0xd0:
         {
-            // readPort: the port's value from the game, which clears its flag.
+            // readPort: the port's value from the game. The read clears the port's flag.
             uint32_t value = 0;
             if (a[0] < track.ports.size())
             {

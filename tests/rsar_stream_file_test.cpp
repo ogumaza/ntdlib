@@ -2,8 +2,8 @@
 
 // Tests of the reader of the Wii's stream files (ntdlib/rsar/stream_file.h), on files of ntdlib/testing/rsar_streams.h.
 // A stereo stream with one track lays HEAD out as the tools lay it out: the settings at 0x60 and the tracks' table at
-// 0x94. With an extended track, the channels' table lies at 0xAC, and the DSP-ADPCM infos at 0xC8 and 0x100. With a
-// simple track, they lie at 0xA4, 0xC0 and 0xF8. HEAD takes 0x100 bytes either way. The other offsets and sizes follow
+// 0x94. With an extended track, the channels' table is at 0xAC, and the DSP-ADPCM infos at 0xC8 and 0x100. With a
+// simple track, they are at 0xA4, 0xC0 and 0xF8. HEAD takes 0x100 bytes either way. The other offsets and sizes follow
 // from the layout that the header describes. The encoder's decoding of each channel gives the samples that the
 // decoder has to give, and the encoder's input gives ADPC's entries. An archive that ntdlib's model lays out names
 // files beside it. The streams go to the later consoles with their blocks, and the later consoles' streams to the Wii.

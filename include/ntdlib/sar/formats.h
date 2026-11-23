@@ -146,6 +146,31 @@ inline SoundArchiveKind SoundArchiveKindOf(std::string_view head)
     return SoundArchiveKind::kOther;
 }
 
+// How a tool's message names a sound archive of `kind`, with its console and format: "a 3DS sound archive (CSAR)".
+// Empty for kOther. A tool names another console's archive with it when it refuses the archive.
+constexpr std::string_view SoundArchiveKindName(SoundArchiveKind kind)
+{
+    switch (kind)
+    {
+    case SoundArchiveKind::kSdat:
+        return "a DS sound archive (SDAT)";
+    case SoundArchiveKind::kRsar:
+        return "a Wii sound archive (RSAR)";
+    case SoundArchiveKind::kCsar:
+        return "a 3DS sound archive (CSAR)";
+    case SoundArchiveKind::kFsarBig:
+        return "a Wii U sound archive (big-endian FSAR)";
+    case SoundArchiveKind::kFsarLittle:
+        return "a Switch sound archive (little-endian FSAR)";
+    case SoundArchiveKind::kFsarUnknown:
+        return "a Wii U or Switch sound archive (FSAR)";
+    case SoundArchiveKind::kOther:
+        break;
+    }
+
+    return {};
+}
+
 // The rules that the readers follow. kReadPastDamage reads on past damage and reports it. kStopAtFirstProblem stops at
 // the first problem. Its messages depend on the flavor: the 3DS's messages for kCtr, and the messages of the Wii U and
 // the Switch for kCafe and kNx.
@@ -587,12 +612,12 @@ public:
         return external_groups_;
     }
 
-    // Adds an external group's file (see ExternalGroups). The files it holds that the archive lacks can be read with
-    // FileData afterwards. Throws FormatError if `bytes` isn't a group file. With kStopAtFirstProblem, it reads the
-    // file as the console's player does. The 3DS's player reads each item's file ID first. It reads an item's bytes
-    // only when the archive lacks that file. The players of the Wii U and the Switch read the group file's whole table
-    // first. `group` gives the group's label in ExternalGroups where the caller knows it, such as from the name of the
-    // file beside the archive (GroupFileGroups).
+    // Adds an external group's file (see ExternalGroups). The files it holds that are missing from the archive can be
+    // read with FileData afterwards. Throws FormatError if `bytes` isn't a group file. With kStopAtFirstProblem, it
+    // reads the file as the console's player does. The 3DS's player reads each item's file ID first. It reads an item's
+    // bytes only when that file is missing from the archive. The players of the Wii U and the Switch read the group
+    // file's whole table first. `group` gives the group's label in ExternalGroups where the caller has it, such as
+    // from the name of the file beside the archive (GroupFileGroups).
     //
     // If the group file contains the sequence file of a sequence sound without a name, the sound is then named after
     // a label in that file (see Load).
@@ -636,7 +661,7 @@ public:
         return file_id < files_.size() && files_[file_id].missing;
     }
 
-    // True if the archive is shorter than the size in its header. With kStopAtFirstProblem, also if a file lies past
+    // True if the archive is shorter than the size in its header. With kStopAtFirstProblem, also if a file is past
     // the archive's end.
     bool Truncated() const
     {
@@ -664,7 +689,7 @@ private:
         uint32_t size = 0;
         uint32_t source = 0;   // 0 for the archive, n for the nth group file added
         bool internal = false; // stored in the FILE block, directly or in a group, or in a group file added
-        bool missing = false;  // lies past the end of the archive
+        bool missing = false;  // is past the end of the archive
         bool grouped = false;  // no location in the file table; may be stored in groups
         std::string external_path;
     };
@@ -700,8 +725,8 @@ private:
     void ReadGroupsStrictly(const xsflib::Reader& r, const std::map<uint16_t, std::size_t>& tables,
                             const std::map<uint32_t, std::string>& names);
 
-    // Names each sequence sound in unnamed_sequences_ after a label in its sequence file (see Load), if the archive or a
-    // group file contains that file. Removes each such sound from the list.
+    // Names each sequence sound in unnamed_sequences_ after a label in its sequence file (see Load), if the archive or
+    // a group file contains that file. Removes each such sound from the list.
     void NameSequencesFromLabels();
 
     Options options_;
@@ -720,7 +745,7 @@ private:
     uint32_t version_ = 0;
     bool truncated_ = false;
     bool names_damaged_ = false;
-    bool groups_cut_ = false; // some groups lie past the end of the archive
+    bool groups_cut_ = false; // some groups are past the end of the archive
     std::vector<std::string> group_errors_;
 };
 

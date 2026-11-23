@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 #include "ntdlib/fused.h"
+#include "ntdlib/rvl/axfx/axfx.h"
 #include "ntdlib/rvl/axfx/util.h"
 
 namespace ntdlib::rvl::axfx
@@ -132,10 +135,7 @@ bool Delay::InitParams()
 void Delay::FreeLines()
 {
     active_ |= kStopped;
-    for (std::vector<int32_t>& line : line_)
-    {
-        line = std::vector<int32_t>();
-    }
+    Free(line_);
 }
 
 uint32_t DelayExp::GetMemSize(const Params& params)
@@ -296,10 +296,7 @@ bool DelayExp::InitParams()
 void DelayExp::FreeLines()
 {
     active_ |= kStopped;
-    for (std::vector<int32_t>& line : line_)
-    {
-        line = std::vector<int32_t>();
-    }
+    Free(line_);
 }
 
 } // namespace ntdlib::rvl::axfx

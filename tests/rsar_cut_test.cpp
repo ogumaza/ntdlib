@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Tests the copies of an RSAR that keep only the data that some sounds play (rsar/cut.h), on archives whose files lie
+// Tests the copies of an RSAR that keep only the data that some sounds play (rsar/cut.h), on archives whose files are
 // in several groups: the copy that a model reads, the copy for the game's code, and the list of a sound's missing data.
 
 #include <algorithm>
@@ -15,6 +15,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/rsar/cut.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
@@ -45,7 +46,7 @@ void TestKeepSequenceData()
 {
     // Sound 0 plays file 0 with bank 0 (file 2). Sound 1 plays file 1 with bank 1 (file 3). Both internal groups hold
     // files 0 and 2. File 0's first place is in group 1, and file 2's in group 0. File 3's first place is in group 2,
-    // which lies outside the archive.
+    // outside the archive.
     const std::vector<std::pair<Bytes, Bytes>> files = {
         {MakeSequence({0xFF}), {}},
         {MakeSequence({60, 127, 24, 0xFF}), {}},
@@ -57,19 +58,13 @@ void TestKeepSequenceData()
                            {{{1, 0}, {0, 1}}, {{0, 0}}, {{0, 2}, {1, 1}}, {{2, 0}, {1, 2}}}, {0, 1}, {2, 3});
     const SoundArchive archive = SoundArchive::Load(grouped.bytes, kOptions);
 
-    // A size rounded up to a multiple of 32 bytes.
-    const auto padded = [](std::size_t size)
-    {
-        return (size + 0x1F) & ~std::size_t{0x1F};
-    };
-
     // The size of a copy that holds `kept` once each, at multiples of 32 bytes after the FILE block's header.
     const auto size_holding = [&](const std::vector<uint32_t>& kept)
     {
         std::size_t size = grouped.file_block + 0x20;
         for (const uint32_t f : kept)
         {
-            size += padded(files[f].first.size()) + padded(files[f].second.size());
+            size += ntdlib::AlignUp(files[f].first.size(), 0x20) + ntdlib::AlignUp(files[f].second.size(), 0x20);
         }
 
         return size;
@@ -135,9 +130,10 @@ void TestKeepSequenceData()
                       xsflib::LoadBe32(&shared.bytes[shared.items[0][1] + 0xC]));
     const SoundArchive shared_archive = SoundArchive::Load(shared.bytes, kOptions);
     const Bytes shared_cut = rsar::KeepSequenceData(shared_archive, {0, 1}, kOptions);
-    Check(shared_cut.size() == shared.file_block + 0x20 + padded(files[0].first.size()) +
-                                   padded(files[2].first.size()) + padded(files[3].first.size()) +
-                                   padded(files[2].second.size()),
+    Check(shared_cut.size() == shared.file_block + 0x20 + ntdlib::AlignUp(files[0].first.size(), 0x20) +
+                                   ntdlib::AlignUp(files[2].first.size(), 0x20) +
+                                   ntdlib::AlignUp(files[3].first.size(), 0x20) +
+                                   ntdlib::AlignUp(files[2].second.size(), 0x20),
           "banks that share a wave archive share one copy of it");
 
     // A FILE block that starts before the groups' entries.
@@ -163,7 +159,7 @@ void TestKeepSequenceData()
           "a copy that would read differently from the archive is refused");
 }
 
-// Tests the copy of an archive for the game's code, which loads some of its groups (KeepGroups).
+// Tests the copy of an archive for game code that loads some of its groups (KeepGroups).
 void TestKeepGroups()
 {
     // Group 0 holds files 0 and 2, group 1 files 1 and 3, and group 2 all four. The game loads groups 0 and 1.
@@ -247,19 +243,24 @@ void TestKeepGroups()
     Check(after.size() == trailing.size() && marked(after.end() - 32, 32), "the bytes after the FILE block are kept");
 }
 
-// Tests the list of the data that a sound requires and the archive doesn't contain (MissingData).
-void TestMissingData()
+// An archive whose sounds miss data. Sound 0 plays file 0 with bank 0 (file 2), both in the archive. Sound 1 plays file
+// 1 with bank 1 (file 1). Only the external group holds bank 1. Sound 2 names a bank that the archive doesn't list.
+Bytes ArchiveWithMissingData()
 {
-    // Sound 0 plays file 0 with bank 0 (file 2), both in the archive. Sound 1 plays file 1 with bank 1 (file 1), which
-    // only the external group holds. Sound 2 names a bank that the archive doesn't list.
     const std::vector<std::pair<Bytes, Bytes>> files = {
         {MakeSequence({0xFF}), {}},
         {MakeSequence({60, 127, 24, 0xFF}), {}},
         {MakeNewBank(), MakeRwar()},
     };
-    const GroupedArchive grouped = MakeGroupedArchive(files, {{true, {0, 2}}, {false, {1}}},
-                                                      {{{0, 0}}, {{1, 0}}, {{0, 1}}}, {0, 1, 0}, {2, 1});
-    const SoundArchive archive = SoundArchive::Load(grouped.bytes, kOptions);
+
+    return MakeGroupedArchive(files, {{true, {0, 2}}, {false, {1}}}, {{{0, 0}}, {{1, 0}}, {{0, 1}}}, {0, 1, 0}, {2, 1})
+        .bytes;
+}
+
+// Tests the list of the data that a sound requires and the archive doesn't contain (MissingData).
+void TestMissingData()
+{
+    const SoundArchive archive = SoundArchive::Load(ArchiveWithMissingData(), kOptions);
 
     Check(rsar::MissingData(archive, 0).empty(), "a sound with its data misses nothing");
     Check(rsar::MissingData(archive, 1) == std::vector<std::string>{"its sequence data", "bank BANK_1"},
@@ -267,6 +268,28 @@ void TestMissingData()
     Check(rsar::MissingData(archive, 2) == std::vector<std::string>{"its bank"}, "a sound with no bank misses it");
     Check(rsar::MissingData(archive, 3) == std::vector<std::string>{"the sound itself"},
           "a sound past the table is missing");
+}
+
+// Tests the step that takes a rip's jobs with missing data out (SkipIncomplete): a job of one sequence, and a piece of
+// two whose second sequence's data is missing.
+void TestSkipIncomplete()
+{
+    const SoundArchive archive = SoundArchive::Load(ArchiveWithMissingData(), kOptions);
+    struct Job
+    {
+        std::string label;
+        std::vector<uint32_t> sounds;
+    };
+    std::vector<Job> jobs = {{"whole", {0}}, {"outside", {1}}, {"piece", {0, 1}}, {"no bank", {2}}};
+    const auto sounds = [](const Job& job)
+    {
+        return job.sounds;
+    };
+
+    const std::size_t skipped = rsar::SkipIncomplete(jobs, archive, sounds);
+
+    Check(skipped == 3, "every job with a sequence whose data is missing is taken out");
+    Check(jobs.size() == 1 && jobs[0].label == "whole", "the job whose data is all there stays");
 }
 
 } // namespace
@@ -278,6 +301,7 @@ int main()
         TestKeepSequenceData();
         TestKeepGroups();
         TestMissingData();
+        TestSkipIncomplete();
     };
 
     return xsflib::testing::RunTest("rsar_cut", tests);

@@ -22,6 +22,7 @@
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/cafe/snd/nintendo_land_effects.h"
 #include "ntdlib/cafe/snd/util.h"
+#include "ntdlib/nwsnd/cafe_policy.h"
 #include "ntdlib/nwsnd/console.h"
 
 namespace ntdlib::cafe::snd

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "ntdlib/ax/ax.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/system.h"
 

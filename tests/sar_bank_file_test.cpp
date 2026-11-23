@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -26,6 +27,7 @@ namespace
 using ntdlib::sar::BankFile;
 using ntdlib::sar::Flavor;
 using ntdlib::sar::VelocityRegion;
+using seqlib::testing::Throws;
 using xsflib::testing::ErrorOf;
 
 constexpr Flavor kFlavors[] = {Flavor::kCtr, Flavor::kCafe, Flavor::kNx};
@@ -48,13 +50,6 @@ uint32_t Load32(const std::vector<uint8_t>& bytes, std::size_t at, Flavor flavor
 uint16_t Load16(const std::vector<uint8_t>& bytes, std::size_t at, Flavor flavor)
 {
     return flavor == Flavor::kCafe ? xsflib::LoadBe16(&bytes[at]) : xsflib::LoadLe16(&bytes[at]);
-}
-
-// Whether `call` throws an exception of type E.
-template <typename E, typename Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<E>(call).empty();
 }
 
 // A velocity region over `first` to `last` that plays wave `wave` at key `key`.

@@ -43,7 +43,7 @@ public:
 
     // Loads bank `bank` of `archive` with its wave archives, and returns the bank's address. A slot that names no wave
     // archive of `archive` stays empty. The SDK's load of the bank fails there instead. Throws xsflib::FormatError when
-    // the bank can't be read or a wave lies outside its file, and HeapFullError when the files don't fit.
+    // the bank can't be read or a wave is outside its file, and HeapFullError when the files don't fit.
     uint32_t LoadBank(const Archive& archive, uint32_t bank);
 
     // The address after the last byte that the heap holds.

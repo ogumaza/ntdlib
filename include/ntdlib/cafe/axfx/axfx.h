@@ -41,4 +41,9 @@ using Buffers = std::array<int32_t*, kChannelCount>;
 constexpr uint32_t kRate32k = 32000;
 constexpr uint32_t kRate48k = 48000;
 
+// The bits of an effect's `active` in the library. kOff: the effect is off. Init sets it, and a successful Init clears
+// it. kSkip: the next Process leaves its frame as it is and clears the bit.
+constexpr uint32_t kOff = 1;
+constexpr uint32_t kSkip = 2;
+
 } // namespace ntdlib::cafe::axfx

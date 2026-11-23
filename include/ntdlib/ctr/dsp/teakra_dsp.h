@@ -65,7 +65,7 @@ public:
     explicit TeakraDsp(Fcram& fcram, const UpstreamTeakra& upstream = {}); // `fcram` outlives the object
     ~TeakraDsp() override;
 
-    // Waits for data in reply register `reg` (0 to 2) and reads it, which empties the register.
+    // Waits for data in reply register `reg` (0 to 2) and reads it. The read empties the register.
     uint16_t ReadReply(uint32_t reg);
 
     // Returns true if reply register `reg` (0 to 2) holds data. Doesn't run the DSP.

@@ -48,7 +48,7 @@ constexpr double kHighestBandShare = 0.4;
 constexpr int kShareSteps = 100;
 constexpr int kMostShareSteps = 98;
 
-// The smallest change that a band can hear, in dB.
+// The smallest audible change of a band, in dB.
 constexpr double kHeardDb = 0.3;
 
 using Complex = std::complex<double>;

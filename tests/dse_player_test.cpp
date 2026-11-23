@@ -43,7 +43,7 @@ std::span<const uint8_t> At(const dse::Player& player, uint32_t address, std::si
     return player.MainMemory().subspan(address - dse::Player::kMainMemory, size);
 }
 
-// A bank that holds its samples keeps them at the first free place. The waves of a bank that lie in the main bank go
+// A bank that holds its samples keeps them at the first free place. The waves of a bank that are in the main bank go
 // after them, in the order of the bank's slots, each with (its loop's start + its loop's length) * 4 bytes from its
 // place in the main bank's samples.
 void TestSamples()
@@ -243,9 +243,9 @@ void TestTicks()
 }
 
 // A host's release of a held note gives the samples of a note whose length runs out in the same tick, in both builds.
-// The note starts in the song's tick 0, in the driver's tick 2. A note of 24 ticks ends in the song's tick 24, which
-// runs in the driver's first tick d with 480,000 d > 500,000 * 25: tick 27. The host therefore releases the held note
-// after the driver's tick 26. In both songs, a pause of 256 ticks keeps the track going past the release's end.
+// The note starts in the song's tick 0, in the driver's tick 2. A note of 24 ticks ends in the song's tick 24. That
+// tick runs in the driver's first tick d with 480,000 d > 500,000 * 25: tick 27. The host therefore releases the held
+// note after the driver's tick 26. In both songs, a pause of 256 ticks keeps the track going past the release's end.
 void TestRelease()
 {
     const auto song = [](const dse_song_files::Bytes& note)

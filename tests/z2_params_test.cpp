@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -181,6 +183,26 @@ int main()
     Check(WaveList({}) == std::vector<uint8_t>{0, 0, 0, 0}, "an empty wave list");
     const std::vector<uint32_t> kTooMany(65, 0);
     Check(ErrorOf([&] { WaveList(kTooMany); }) == "a sound names 65 waves, more than 64", "too many waves");
+
+    // A mini's writes: the sound, the wave list, the state's words, then the state's writes to memory. Without waves
+    // there's no list, and without a state neither of the last two. A state without words gives only its writes.
+    constexpr uint32_t kParams = 0x8170001c;
+    using Memory = z2::PieceState::Memory;
+    z2::PieceState state;
+    state.muted_children = 0x5;
+    state.memory.push_back({0x80001000, {1, 2}});
+    const std::vector<Memory> writes = z2::MiniWrites(kParams, 0x0100003f, kWaves, &state);
+    Check(writes.size() == 4 && writes[0] == Memory{kParams, {1, 0, 0, 0x3f}} &&
+              writes[1] == Memory{kParams + z2::kWaveCountOffset, WaveList(kWaves)} &&
+              writes[2] == Memory{kParams + z2::kMutedChildrenOffset, {0, 0, 0, 5}} && writes[3] == state.memory[0],
+          "a mini's writes, in order");
+    Check(z2::MiniWrites(kParams, 1, std::nullopt, nullptr) == std::vector<Memory>{{kParams, {0, 0, 0, 1}}},
+          "a mini without waves or a state writes only the sound");
+    z2::PieceState only_memory;
+    only_memory.memory = state.memory;
+    const std::vector<Memory> without_words = z2::MiniWrites(kParams, 1, std::span<const uint32_t>(), &only_memory);
+    Check(without_words.size() == 3 && without_words[1].data == WaveList({}) && without_words[2] == state.memory[0],
+          "an empty wave list, and a state without words");
 
     return xsflib::testing::Summary("z2 params");
 }

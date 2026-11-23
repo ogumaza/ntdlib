@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Checks of a conversion's output for tests: a sequence's SFZ instruments, a sequence's conversion, and every sequence
-// of an archive. The MIDI files and SoundFonts are checked with seqlib's readers.
+// Checks of a conversion's output for tests: a sequence's SFZ instruments, a sequence's conversion, every sequence of
+// an archive, and the order of a track's reverb sends. The MIDI files and SoundFonts are checked with seqlib's readers.
 
 #pragma once
 
@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/midi/performance.h"
 #include "seqlib/midi/reader.h"
 #include "seqlib/read_error.h"
 #include "seqlib/sf2/reader.h"
@@ -113,24 +114,52 @@ std::string SfzProblem(const Instruments& sfz, const std::vector<std::string>& t
     return "";
 }
 
-// Checks sequence `name`'s conversion: its MIDI file (seqlib::midi::Problems), its SoundFont (seqlib::sf2::Check), its
-// SFZ files (SfzProblem), and its frames. A tick's events go no later than the tick, and no earlier than the frame of
-// the tick before. Reports each problem on stderr. Returns the number of failed checks. `Conversion` is
-// sequence_export's Conversion, or another type with the same fields.
+// The first problem of each file of a conversion, or an empty string where the file has none.
+struct FileProblems
+{
+    std::string midi;
+    std::string sf2;
+    std::string sfz;
+};
+
+// Checks the files of a conversion: its MIDI file (seqlib::midi::Problems), its SoundFont (seqlib::sf2::Check) and its
+// SFZ files (SfzProblem). The SFZ files are checked only when the MIDI file has no problem: their check reads its
+// tracks' names. `Instruments` is as for SfzProblem.
+template <typename Instruments>
+FileProblems ProblemsOfFiles(const std::vector<uint8_t>& midi, const std::vector<uint8_t>& sf2, const Instruments& sfz)
+{
+    FileProblems problems;
+    const std::vector<std::string> midi_problems = seqlib::midi::Problems(midi);
+    const std::vector<std::string> sf2_problems = seqlib::sf2::Check(sf2);
+    if (!midi_problems.empty())
+    {
+        problems.midi = midi_problems[0];
+    }
+    if (!sf2_problems.empty())
+    {
+        problems.sf2 = sf2_problems[0];
+    }
+    if (midi_problems.empty())
+    {
+        problems.sfz = SfzProblem(sfz, seqlib::midi::TrackNames(seqlib::midi::Read(midi)));
+    }
+
+    return problems;
+}
+
+// Checks sequence `name`'s conversion: its files (ProblemsOfFiles) and its frames. A tick's events go no later than the
+// tick, and no earlier than the frame of the tick before. Reports each problem on stderr. Returns the number of failed
+// checks. `Conversion` is sequence_export's Conversion, or another type with the same fields.
 template <typename Conversion>
 int CheckConversion(const Conversion& c, const std::string& name)
 {
     int failures = 0;
-    const std::vector<std::string> midi_problems = seqlib::midi::Problems(c.midi);
-    const std::vector<std::string> sf2_problems = seqlib::sf2::Check(c.sf2);
-    const std::string sfz_problem =
-        midi_problems.empty() ? SfzProblem(c.sfz, seqlib::midi::TrackNames(seqlib::midi::Read(c.midi))) : "";
-    if (!midi_problems.empty() || !sf2_problems.empty() || !sfz_problem.empty())
+    const FileProblems problems = ProblemsOfFiles(c.midi, c.sf2, c.sfz);
+    if (!problems.midi.empty() || !problems.sf2.empty() || !problems.sfz.empty())
     {
-        std::fprintf(stderr, "%s: midi %s, sf2 %s, sfz %s\n", name.c_str(),
-                     midi_problems.empty() ? "ok" : midi_problems[0].c_str(),
-                     sf2_problems.empty() ? "ok" : sf2_problems[0].c_str(),
-                     sfz_problem.empty() ? "ok" : sfz_problem.c_str());
+        std::fprintf(
+            stderr, "%s: midi %s, sf2 %s, sfz %s\n", name.c_str(), problems.midi.empty() ? "ok" : problems.midi.c_str(),
+            problems.sf2.empty() ? "ok" : problems.sf2.c_str(), problems.sfz.empty() ? "ok" : problems.sfz.c_str());
         failures++;
     }
 
@@ -148,6 +177,25 @@ int CheckConversion(const Conversion& c, const std::string& name)
     return failures;
 }
 
+// Whether every part of `events` has a reverb send before its first note-on, in the order of the events.
+inline bool ReverbBeforeNotes(const std::vector<seqlib::midi::TrackEvent>& events)
+{
+    std::set<uint8_t> sent;
+    for (const seqlib::midi::TrackEvent& e : events)
+    {
+        if (e.kind == seqlib::midi::EventKind::kReverb)
+        {
+            sent.insert(e.part);
+        }
+        else if (e.kind == seqlib::midi::EventKind::kNoteOn && !sent.contains(e.part))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 namespace sequence_export_check_detail
 {
 
@@ -155,7 +203,9 @@ namespace sequence_export_check_detail
 template <typename Archive>
 int CheckEverySequence(const Archive& archive, const sequence_export::Settings& settings, const std::string& program)
 {
-    int failures = 0, sequences = 0, looping = 0;
+    int failures = 0;
+    int sequences = 0;
+    int looping = 0;
     for (uint32_t i = 0; i < archive.Sounds().size(); i++)
     {
         const auto& s = archive.Sounds()[i];

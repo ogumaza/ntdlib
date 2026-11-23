@@ -45,7 +45,7 @@ constexpr uint32_t kRowsPerQuarter = 4;
 
 const LoopRules kLoopRules{{}, false};
 
-// The rules that compare two passes without their bends. A vibrato's position carries over from pass to pass and never
+// The rules that compare two passes without their bends. A vibrato's position continues from pass to pass and never
 // resets at a note. Where a pass's vibratos don't add up to whole turns, every pass bends otherwise than the one
 // before, and no pass plays as the next one does.
 const LoopRules kWithoutBends{{}, false, {EventKind::kPitch}};
@@ -136,8 +136,7 @@ public:
         {
             EndNote(t, tick_);
         }
-        seqlib::midi::ClampNoteOffs(out_, end_tick);
-        seqlib::midi::CutAt(out_, end_tick);
+        seqlib::midi::EndPassAt(out_, end_tick);
         out_.end_tick = end_tick;
         out_.seconds = end_tick / uv::kTicksPerSecond;
         for (const auto& [what, count] : recorder_.Approximations())
@@ -187,9 +186,13 @@ private:
 
         const double semitones = SemitonesOf(c.timer);
         const int key = std::clamp(60 + static_cast<int>(std::lround(semitones)), 0, 127);
+
+        // The driver has no reverb send. CC91 is 0: a synth that follows General MIDI 2 gives a channel without CC91 a
+        // send of 40.
         recorder_.SendSetting(out_, output, tick_, EventKind::kVolume, 127);
         recorder_.SendSetting(out_, output, tick_, EventKind::kPan, PanController(c.pan));
         recorder_.SendSetting(out_, output, tick_, EventKind::kExpression, ExpressionOf(c.volume, c.divider, c.pan));
+        recorder_.SendSetting(out_, output, tick_, EventKind::kReverb, 0);
         recorder_.SendPitch(out_, output, tick_, static_cast<float>(semitones - (key - 60)));
         recorder_.SendPreset(out_, output, tick_, seqlib::midi::PresetIndex(out_.presets, c.sample));
 

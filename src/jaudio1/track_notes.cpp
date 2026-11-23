@@ -3,13 +3,12 @@
 // The tracks' oscillators and notes: the oscillators' set-up, the notes that the banks start, the gates and the
 // jumps back, and the parser's commands of a note on and a note off (see track.cpp).
 
-#include "ntdlib/jaudio1/track.h"
-
 #include <cstddef>
 #include <cstdint>
 
 #include "jaudio1/track_internal.h"
 #include "ntdlib/jaudio1/calc.h"
+#include "ntdlib/jaudio1/track.h"
 
 namespace ntdlib::jaudio1
 {

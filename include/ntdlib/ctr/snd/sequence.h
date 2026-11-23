@@ -82,10 +82,10 @@ void ApplyVariables(Engine& engine, SequenceSoundPlayer& player, std::span<const
 // Starts `player` as `start` gives, as a game does through the sound's handle. It sets the variables of frame 0 and
 // schedules the later ones (Engine::ScheduleVariable). With a seed, it sets the engine's random generator. It quiets
 // the muted tracks in the mode that keeps their channels sounding (SEQ_MUTE_NO_STOP), and the silenced tracks at once.
-// It gives the other tracks their volumes (the player's SetTrackVolume). It sets the tempo ratio, the pitch and the
-// player's sends on the aux buses. Call it after the sequence's start and before its first tick. Neither kind of
-// quieted track then starts a note that sounds. The silenced tracks' notes take their voices. The start's banks go to
-// Engine::StartSequence. The caller applies the start's volume to the output.
+// It gives the other tracks their volumes (the player's SetTrackVolume). It sets the tempo ratio, the pitch, the
+// low-pass and the player's sends on the aux buses. Call it after the sequence's start and before its first tick.
+// Neither kind of quieted track then starts a note that sounds. The silenced tracks' notes take their voices. The
+// start's banks go to Engine::StartSequence. The caller applies the start's volume to the output.
 void ApplySequenceStart(Engine& engine, SequenceSoundPlayer& player, const SequenceStart& start);
 
 } // namespace ntdlib::ctr::snd

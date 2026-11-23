@@ -199,8 +199,8 @@ inline constexpr std::array kTwilightPrincessStates{
 
     // Z2BGM_VS_GANON_04: statuses 4 to 6 leave out some of children 12 to 15. Status 3 plays every child. The sequence
     // reads its 1, 2 and 3 on port 9. The boss's demo_camera (module d_a_b_gnd) writes all six. The section of status 1
-    // asks the game for status 7 (synccpu 0x1007), which leaves out children 12 to 15. The sections of 2 and 3 ask for
-    // status 8 (0x1008), which plays them.
+    // asks the game for status 7 (synccpu 0x1007). Status 7 leaves out children 12 to 15. The sections of 2 and 3 ask
+    // for status 8 (0x1008). Status 8 plays them.
     LaterState(0x01000088, "_status4", {{0xc000, 0.0f}}, 4),
     LaterState(0x01000088, "_status5", {{0x3000, 0.0f}}, 5),
     LaterState(0x01000088, "_status6", {{0xf000, 0.0f}}, 6),
@@ -257,8 +257,8 @@ inline constexpr std::array kTwilightPrincessStates{
 
     // The fights below change only on port 9. A boss's module writes the status as the fight goes on, through
     // changeBgmStatus or changeSubBgmStatus. The sequence reads the port, waits for its next bar and jumps to the
-    // section of that status. A state writes the status after the first frame, so it plays that section after the first
-    // bar.
+    // section of that status. A state writes the status after the first frame. The piece then plays that section after
+    // the first bar.
     // A status that a piece's sequence reads but no module writes isn't a state. Z2BGM_IB_MBOSS has the sequence of
     // Z2BGM_MAGNE_GORON, and its actor (d_a_e_th) writes no status.
     //
@@ -309,12 +309,12 @@ inline constexpr std::array kTwilightPrincessStates{
     LaterState(0x0100006c, "_status1", {}, 1),
     LaterState(0x010000a8, "_status1", {}, 1),
 
-    // Z2BGM_HARAGIGANT_BTL02: mBattle2_spinner_damage_check (d_a_b_ds) writes 2. executeBattle2Damage writes 1, which
-    // plays what the start plays.
+    // Z2BGM_HARAGIGANT_BTL02: mBattle2_spinner_damage_check (d_a_b_ds) writes 2. executeBattle2Damage writes 1. Status
+    // 1 plays what the start plays.
     LaterState(0x0100008c, "_status2", {}, 2),
 
-    // Z2BGM_DRAGON_BTL02: week_hit_check (d_a_b_dr) writes 2. executeWeekHit writes 1, which plays what the
-    // start plays.
+    // Z2BGM_DRAGON_BTL02: week_hit_check (d_a_b_dr) writes 2. executeWeekHit writes 1. Status 1 plays what the start
+    // plays.
     LaterState(0x01000090, "_status2", {}, 2),
 
     // Z2BGM_GOMA_BTL01: b_gm_drop writes 1 as the boss lands, and 2 as it climbs back or takes a hit (d_a_b_gm).
@@ -428,13 +428,13 @@ static_assert(kTwilightPrincessHdStates.back().sound != 0 && kTwilightPrincessHd
 // (stage ZP_007) takes the room as its status, and Z2BGM_HOLY_FOREST (ZP_038) takes 0. sceneBgmStart sets the volumes
 // through setChildTrackVolume (0x80159e00). In rooms 1 and 2 of ZP_007, the snow ruins' music plays without children 0
 // to 4. In the stage's other rooms, it plays without children 8 to 13, as in Twilight Princess. ZP_038 plays the game's
-// version of the grove's music, which differs from Twilight Princess's, without children 4 to 6. No other stage's music
-// gets a state as it starts. The boss d_a_b_tn (stage ZP_037) starts Z2BGM_TN_MBOSS and writes 1 to it through
+// version of the grove's music without children 4 to 6. That version differs from Twilight Princess's. No other stage's
+// music gets a state as it starts. The boss d_a_b_tn (stage ZP_037) starts Z2BGM_TN_MBOSS and writes 1 to it through
 // changeSubBgmStatus (0x80157cf0) as the fight goes on, as in Twilight Princess.
 //
 // Twilight Princess's other states don't arise from the scenes. The field code (fieldBgmFramework, 0x8015b618) runs
 // only in scenes 0x47 and 0x48, and sceneBgmStart's other special cases test scenes 0x2b to 0x41. Those are places in
-// Twilight Princess's list of stages. The game's list ends at 40. No stage places the boss d_a_b_ds, which writes
+// Twilight Princess's list of stages. The game's list ends at 40. No stage places the boss d_a_b_ds. That boss writes
 // statuses 1 and 2 through 0x80166234.
 inline constexpr std::array kCrossbowTrainingStates{
     State(0x01000037, "", {{0x3f00, 0.0f}}),

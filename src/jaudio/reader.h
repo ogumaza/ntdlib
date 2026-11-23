@@ -20,7 +20,7 @@
 namespace ntdlib::jaudio::detail
 {
 
-// A string's offset has to lie inside the data.
+// A string's offset has to be inside the data.
 inline constexpr xsflib::ReaderOptions kReaderOptions{.check_string_offset = true};
 
 // The widths of an offset: 32 bits, or 64 in a file whose offsets are widened.

@@ -6,11 +6,8 @@
 
 #include "ntdlib/jaudio1/sequence_walk.h"
 
-#include <array>
-#include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
 
 #include "jaudio1/track_internal.h"
 
@@ -29,35 +26,7 @@ constexpr uint16_t kAny = nj::InstrumentUse::kAny;
 constexpr uint32_t kRegBank = 0x20;
 constexpr uint32_t kRegProgram = 0x21;
 
-// A command's arguments as the walk reads them: each value, and whether it came from a register.
-struct Args
-{
-    std::array<uint32_t, 8> values{};
-    std::array<bool, 8> from_register{};
-
-    uint32_t operator[](std::size_t i) const
-    {
-        return values[i];
-    }
-
-    bool Known(std::size_t i) const
-    {
-        return !from_register[i];
-    }
-};
-
-std::string Hex(uint32_t value)
-{
-    static constexpr char kDigits[] = "0123456789abcdef";
-    std::string text;
-    do
-    {
-        text.insert(text.begin(), kDigits[value & 15]);
-        value >>= 4;
-    } while (value != 0);
-
-    return "0x" + text;
-}
+using Args = nj::SequenceWalk::Args;
 
 // The decoder of JAudio1's commands for one path.
 class Step
@@ -93,7 +62,7 @@ private:
 
     void Stop(uint32_t command, const char* what)
     {
-        walk_.Stop(what + std::string(" at ") + Hex(at_) + " (command " + Hex(command) + ")");
+        walk_.Stop(at_, command, what);
     }
 
     nj::SequenceWalk& walk_;
@@ -259,8 +228,7 @@ void Step::WriteRegParam(uint32_t command)
         break;
     }
 
-    // Operations 2 and 3 store nothing. Operation 0 stores its operand. Any other stores a value that the walk doesn't
-    // know.
+    // Operations 2 and 3 store nothing. Operation 0 stores its operand. Any other stores a value unknown to the walk.
     if (operation != 2 && operation != 3)
     {
         Store(target, operation == 0 && known, operand);
@@ -331,34 +299,7 @@ void Step::Process(uint32_t command, uint32_t register_mask)
     }
 
     const ArgSpec& spec = kArgs[command - 0xc0];
-    Args args;
-    uint32_t types = spec.types | register_mask;
-    for (uint32_t i = 0; i < spec.count; i++)
-    {
-        switch (types & 3)
-        {
-        case 0:
-            args.values[i] = walk_.U8(path_.cursor);
-            path_.cursor += 1;
-            break;
-
-        case 1:
-            args.values[i] = walk_.U16(path_.cursor);
-            path_.cursor += 2;
-            break;
-
-        case 2:
-            args.values[i] = walk_.U24(path_.cursor);
-            path_.cursor += 3;
-            break;
-
-        default:
-            args.from_register[i] = true;
-            path_.cursor += 1;
-            break;
-        }
-        types = (types >> 2) & 0x3fff;
-    }
+    const Args args = walk_.ReadArgs(path_, spec.count, spec.types | register_mask);
 
     if (((kNullCommands >> (command - 0xc0)) & 1) != 0)
     {

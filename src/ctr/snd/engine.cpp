@@ -275,14 +275,7 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& bank_items, int bank_index,
 
 void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus)
 {
-    const auto forward = [&](auto& owner)
-    {
-        if constexpr (requires { owner.ChannelEvent(*this, track, channel); })
-        {
-            owner.ChannelEvent(*this, track, channel);
-        }
-    };
-    std::visit(forward, players_[player]);
+    ntdlib::nwsnd::ForwardChannelEvent(*this, players_, player, track, channel);
 }
 
 void Engine::VoiceEvent(int player, int channel, VoiceCallbackStatus status)
@@ -332,39 +325,20 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index, const std::optional<s
 
 WaveSoundPlayer* Engine::StartWaveSound(uint32_t index)
 {
-    if (index >= archive_.Sounds().size())
-    {
-        return nullptr;
-    }
-
-    const ntdlib::sar::SoundInfo& info = archive_.Sounds()[index];
-    if (info.type != ntdlib::sar::SoundType::kWaveSound)
-    {
-        return nullptr;
-    }
-
-    const auto file = archive_.FileData(info.file_id);
-    if (file.empty())
-    {
-        return nullptr;
-    }
-
-    const ntdlib::sar::WaveSoundFile wsd = ntdlib::sar::WaveSoundFile::Parse(file, kSarOptions);
-    if (info.wave_sound_index >= wsd.sounds.size())
-    {
-        return nullptr;
-    }
-
     // The wave of the sound's first note, as WaveFileReader reads it.
-    const ntdlib::sar::WaveSoundFile::WaveSound& sound = wsd.sounds[info.wave_sound_index];
-    std::optional<WaveInfo> wave;
-    if (!sound.notes.empty() && sound.notes[0].wave_id_index < wsd.waves.size())
+    const auto start = [&](const ntdlib::sar::SoundInfo& info, const ntdlib::sar::WaveSoundFile::WaveSound& sound,
+                           const ntdlib::sar::WaveId* id)
     {
-        const ntdlib::sar::WaveId& id = wsd.waves[sound.notes[0].wave_id_index];
-        wave = GetWave(id.wave_archive_item, id.index);
-    }
+        std::optional<WaveInfo> wave;
+        if (id != nullptr)
+        {
+            wave = GetWave(id->wave_archive_item, id->index);
+        }
 
-    return StartNow<WaveSoundPlayer>(info, sound, wave);
+        return StartNow<WaveSoundPlayer>(info, sound, wave);
+    };
+
+    return ntdlib::nwsnd::StartWaveSound(archive_, index, kSarOptions, start);
 }
 
 StreamSoundPlayer* Engine::StartStreamSound(uint32_t index, std::span<const uint8_t> file, uint16_t tracks)
@@ -409,7 +383,7 @@ StreamSoundPlayer* Engine::StartStreamSound(const ntdlib::sar::SoundInfo& info, 
 
 void Engine::FrameProcess()
 {
-    // SoundThread::FrameProcess (0x1666d0, which falls through to the frame's work at 0x16674c): player updates,
+    // SoundThread::FrameProcess (0x1666d0, falling through to the frame's work at 0x16674c): player updates,
     // channel updates, the per-frame random advance, then voice updates.
     players_.ForEach([this](auto& player) { player.Update(*this); });
 
@@ -456,24 +430,17 @@ void Engine::ScheduleVariable(const SequenceSoundPlayer& player, int index, int1
 
 bool Engine::IsBusy() const
 {
-    return players_.AnyPlaying() || channels_.ActiveCount() > 0;
+    return ntdlib::nwsnd::IsBusy(players_, channels_);
 }
 
 void Engine::MuteTrack(int player, int track, bool mute)
 {
-    if (mute)
-    {
-        muted_tracks_.insert({player, track});
-    }
-    else
-    {
-        muted_tracks_.erase({player, track});
-    }
+    muted_tracks_.Set(player, track, mute);
 }
 
 bool Engine::IsTrackMuted(int player, int track) const
 {
-    return muted_tracks_.contains({player, track});
+    return muted_tracks_.Contains(player, track);
 }
 
 void Engine::MeterTracks(int player)

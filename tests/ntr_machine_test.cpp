@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
@@ -32,6 +33,7 @@ using ntdlib::ntr::BackupMemory;
 using ntdlib::ntr::Machine;
 using ntdlib::ntr::Rom;
 using ntdlib::ntr::SoundOutput;
+using seqlib::testing::Throws;
 
 constexpr uint32_t kData = 0x02200000;
 constexpr uint32_t kReplies = 0x02200200;
@@ -274,6 +276,7 @@ std::vector<uint8_t> Bytes(const std::vector<uint32_t>& words, std::span<const u
     {
         xsflib::AppendLe16(bytes, half);
     }
+
     return bytes;
 }
 
@@ -282,6 +285,7 @@ std::vector<uint8_t> Image(std::vector<uint8_t> arm9, std::vector<uint8_t> arm7)
     nds_files::Image spec;
     spec.arm9 = std::move(arm9);
     spec.arm7 = std::move(arm7);
+
     return nds_files::BuildImage(spec).first;
 }
 
@@ -321,7 +325,7 @@ std::vector<uint8_t> MemoryBytes(Machine& machine, uint32_t address, std::size_t
 
 void TestProgram()
 {
-    // The ARM9 binary fills 0x8000 bytes. The ARM7 binary then lies past the card's secure area.
+    // The ARM9 binary fills 0x8000 bytes. The ARM7 binary then is past the card's secure area.
     std::vector<uint8_t> arm9 = Bytes(kArm9Program);
     arm9.resize(0x8000, 0);
     const std::vector<uint8_t> image = Image(arm9, Bytes(kArm7Program));
@@ -467,6 +471,7 @@ std::vector<uint8_t> RunBackupScript(const BackupMemory& backup, std::vector<uin
     {
         *contents = std::vector<uint8_t>(machine.Backup().begin(), machine.Backup().end());
     }
+
     return MemoryBytes(machine, kData, answers);
 }
 
@@ -547,15 +552,7 @@ void TestBackupMemories()
          {BackupMemory{.address_bytes = 1, .size = 0x2000}, BackupMemory{.address_bytes = 2, .size = 0x3000},
           BackupMemory{.address_bytes = 2, .size = 0x20000}, BackupMemory{.address_bytes = 4, .size = 0x40000}})
     {
-        bool refused = false;
-        try
-        {
-            Machine machine(rom, backup);
-        }
-        catch (const std::invalid_argument&)
-        {
-            refused = true;
-        }
+        const bool refused = Throws<std::invalid_argument>([&] { Machine machine(rom, backup); });
         XSFLIB_CHECK(refused);
     }
 }
@@ -612,5 +609,6 @@ int main()
     TestPartialImage();
     TestBackupMemories();
     TestArm7Devices();
+
     return xsflib::testing::Summary("DS machine");
 }

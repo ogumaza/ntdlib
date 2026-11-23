@@ -214,8 +214,8 @@ std::size_t AppendGroupItems(Out& out, const GroupContents& contents, bool padde
     return infx;
 }
 
-// Where each copy of the group's file `old` lies in `grown`, the group's file with more members: the copies keep their
-// order, so the copy at an entry of `old` lies at the same entry of `grown`.
+// Where each copy of the group's file `old` is in `grown`, the group's file with more members: the copies keep their
+// order. The copy at an entry of `old` is therefore at the same entry of `grown`.
 std::vector<InnerFile> MovedCopies(std::span<const uint8_t> old, std::span<const uint8_t> grown, Flavor flavor)
 {
     const bool big_endian = flavor == Flavor::kCafe;

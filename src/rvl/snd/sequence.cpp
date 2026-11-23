@@ -2,6 +2,7 @@
 
 #include "ntdlib/rvl/snd/sequence.h"
 
+#include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
 #include "ntdlib/rvl/snd/engine.h"
 

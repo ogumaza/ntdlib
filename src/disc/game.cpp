@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <ios>
 #include <map>
 #include <memory>
 #include <optional>
@@ -55,7 +57,7 @@ using detail::kSector;
 using detail::kSectorData;
 using detail::LoadTitle;
 using detail::ReadHostFile;
-using detail::RejectTitleFile;
+using detail::TitleFileMessage;
 
 constexpr uint64_t kHashes = 0x400; // the hashes at the start of a sector
 
@@ -133,7 +135,7 @@ void CheckConsole(const uint8_t* header, const GameOptions& options, const std::
 }
 
 // Whether a GameCube disc's file system table and main.dol are intact: the table parses, and main.dol is a DOL whose
-// entry point lies in one of its sections.
+// entry point is in one of its sections.
 bool SystemFilesIntact(std::span<const uint8_t> fst, std::span<const uint8_t> dol)
 {
     try
@@ -605,6 +607,49 @@ void LoadFolder(const fs::path& root, GameFiles& out, const GameOptions& options
     }
 }
 
+// The layouts of a folder that LoadGame reads.
+enum class FolderLayout
+{
+    kDisc,       // an extracted disc: sys/main.dol and files/
+    kDiscInData, // an extracted disc in a DATA folder
+    kTitle,      // a title's TMD and contents (GameOptions::titles)
+    kNone,
+};
+
+// The layout of the game in `folder`. A title's folder counts only with GameOptions::titles.
+FolderLayout LayoutOf(const fs::path& folder, const GameOptions& options)
+{
+    std::error_code error;
+    if (fs::is_regular_file(folder / "sys" / "main.dol", error))
+    {
+        return FolderLayout::kDisc;
+    }
+    if (fs::is_regular_file(folder / "DATA" / "sys" / "main.dol", error))
+    {
+        return FolderLayout::kDiscInData;
+    }
+    if (options.titles && HoldsTitle(folder))
+    {
+        return FolderLayout::kTitle;
+    }
+
+    return FolderLayout::kNone;
+}
+
+// Whether the file at `path` is a GameCube disc image whose header leaves out the magic word but is otherwise intact
+// (IntactWithoutMagic). A file that can't be opened gives false.
+bool IsUnmarkedGameCubeImage(const fs::path& path, const GameOptions& options)
+{
+    try
+    {
+        return IntactWithoutMagic(*OpenImage(path, Console::kGameCube, options.image));
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+}
+
 } // namespace
 
 std::string GameFiles::GameId() const
@@ -720,30 +765,39 @@ std::optional<std::string> LoadGame(const std::filesystem::path& path, GameFiles
         std::error_code error;
         if (fs::is_directory(path, error))
         {
-            // Without GameOptions::titles, a folder without sys/main.dol has to hold the disc in DATA.
-            const fs::path data = path / "DATA";
-            if (fs::is_regular_file(path / "sys" / "main.dol", error))
+            switch (LayoutOf(path, options))
             {
+            case FolderLayout::kDisc:
                 LoadFolder(path, out, options);
-            }
-            else if (!options.titles || fs::is_regular_file(data / "sys" / "main.dol", error))
-            {
-                LoadFolder(data, out, options);
-            }
-            else if (HoldsTitle(path))
-            {
+                break;
+
+            case FolderLayout::kDiscInData:
+                LoadFolder(path / "DATA", out, options);
+                break;
+
+            case FolderLayout::kTitle:
                 LoadTitle(path, out, options);
-            }
-            else
-            {
-                throw Error(kNoGame);
+                break;
+
+            case FolderLayout::kNone:
+                // Without GameOptions::titles, LoadFolder reads the folder as a disc in DATA and says what's missing.
+                if (options.titles)
+                {
+                    throw Error(kNoGame);
+                }
+
+                LoadFolder(path / "DATA", out, options);
+                break;
             }
         }
         else
         {
             if (options.titles)
             {
-                RejectTitleFile(path, options);
+                if (const std::optional<std::string> message = TitleFileMessage(path, options))
+                {
+                    throw Error(*message);
+                }
             }
 
             LoadImage(path, out, options);
@@ -755,6 +809,30 @@ std::optional<std::string> LoadGame(const std::filesystem::path& path, GameFiles
     }
 
     return std::nullopt;
+}
+
+bool IsGame(const std::filesystem::path& path, const GameOptions& options)
+{
+    std::error_code error;
+    if (fs::is_directory(path, error))
+    {
+        return LayoutOf(path, options) != FolderLayout::kNone;
+    }
+    if (options.titles && TitleFileMessage(path, options))
+    {
+        return true;
+    }
+
+    // A disc image shows in its first 0x20 bytes, except a GameCube disc without the magic word.
+    uint8_t head[0x20] = {};
+    std::ifstream file(path, std::ios::binary);
+    file.read(reinterpret_cast<char*>(head), sizeof(head));
+    if (ImageFormat({head, static_cast<size_t>(file.gcount())}))
+    {
+        return true;
+    }
+
+    return options.console == Console::kGameCube && IsUnmarkedGameCubeImage(path, options);
 }
 
 } // namespace ntdlib::disc

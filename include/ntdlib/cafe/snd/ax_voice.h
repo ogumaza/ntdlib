@@ -228,7 +228,7 @@ public:
     // Frees the AX voice and the AxVoice (Free, 0x02298C54).
     void Free(AxVoice& voice);
 
-    // The AxVoice at `index`, which is the index of the AX voice it wraps.
+    // The AxVoice at `index`: the index of the AX voice that it wraps.
     AxVoice& At(int index)
     {
         return voices_[static_cast<std::size_t>(index)];

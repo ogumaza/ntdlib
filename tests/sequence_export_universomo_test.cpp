@@ -17,6 +17,7 @@
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/sequence_export/universomo/convert.h"
 #include "ntdlib/testing/nds_files.h"
+#include "ntdlib/testing/sequence_export_check.h"
 #include "ntdlib/testing/universomo_files.h"
 #include "ntdlib/universomo/formats.h"
 
@@ -83,6 +84,11 @@ void TestNoteOnce()
     XSFLIB_CHECK(!expression.empty() && expression[0].tick == 0 && expression[0].value == 107);
     XSFLIB_CHECK(pan.size() == 1 && pan[0].value == 77);
     XSFLIB_CHECK(EventsOf(perf, EventKind::kPitch).empty());
+
+    // The driver has no reverb send: CC91 0 before the note.
+    const std::vector<TrackEvent> reverb = EventsOf(perf, EventKind::kReverb);
+    XSFLIB_CHECK(reverb.size() == 1 && reverb[0].tick == 0 && reverb[0].value == 0);
+    XSFLIB_CHECK(ntdlib::testing::ReverbBeforeNotes(perf.tracks[0]));
     XSFLIB_CHECK(perf.presets == std::vector<uint8_t>{0});
     XSFLIB_CHECK(perf.end_tick == 12 && !perf.loop);
 }
@@ -120,7 +126,7 @@ void TestLoop()
     XSFLIB_CHECK(EventsOf(perf, EventKind::kNoteOn).size() == 2);
 }
 
-// A vibrato's position carries over from pass to pass. A vibrato of speed 3 and depth 4 on the note's row moves it 6 a
+// A vibrato's position continues from pass to pass. A vibrato of speed 3 and depth 4 on the note's row moves it 6 a
 // pass. Each note then starts with another bend: 15/64 of a semitone in the first pass (position 0), 13/64 in the
 // second (6) and 6/64 in the third (12). No pass repeats exactly. The loop marks the first pass. It matches the next
 // but for its bends, and the report counts the approximation.
@@ -140,8 +146,8 @@ void TestVibratoPhaseLoop()
 }
 
 // A note that sounds across the loop's end. The intro's order starts a looped sample, and the restart order's pattern
-// has no note. The first pass after the wrap (ticks 8 to 12) plays as the next one does, so the markers loop it. The
-// note sounds from tick 0 into every later pass, and the report counts it once.
+// has no note. The first pass after the wrap (ticks 8 to 12) plays as the next one does. The markers therefore loop it.
+// The note sounds from tick 0 into every later pass, and the report counts it once.
 void TestNoteAcrossLoop()
 {
     uv::Song song = SongOf(2, 2, {{.value = 0x50, .note = 48, .instrument = 2, .rows = 2}});
@@ -174,27 +180,22 @@ void TestFiles()
 }
 
 // FindSongs finds the songs beside the bank, whatever the case of their names, and in their numbers' order. The table
-// gives the loop flags. A song that can't be read gives a warning. In Beat City's US image, song 105 is named after the
-// title screen. Files in other folders and other names don't count.
+// gives the loop flags. A song that can't be read gives a warning. A song's name is "au" and its number. Files in other
+// folders and other names don't count.
 void TestFindSongs()
 {
     namespace nds_files = ntdlib::testing::nds_files;
     nds_files::Image spec;
     spec.game_code = "BEYE";
-    spec.files = {{"AU105.UMS", SongFile()},      {"au0.ums", SongFile()}, {"au7.ums", Bytes(8, 0)},
-                  {"samplebank.usb", BankFile()}, {"AUDIO", TableFile()},  {"data/au3.ums", SongFile()},
-                  {"au.ums", SongFile()}};
+    spec.files = {{"AU105.UMS", SongFile()},      {"au0.ums", SongFile()},  {"au7.ums", Bytes(8, 0)},
+                  {"samplebank.usb", BankFile()}, {"AUDIO", TableFile()},   {"data/au3.ums", SongFile()},
+                  {"au.ums", SongFile()},         {"au84.ums", SongFile()}, {"au108.ums", SongFile()}};
     const Bytes image = nds_files::BuildImage(spec).first;
-    nds_files::Image other = spec;
-    other.game_code = "BEYP";
-    const Bytes other_image = nds_files::BuildImage(other).first;
     std::vector<std::string> warnings;
-    std::vector<std::string> other_warnings;
 
     const std::vector<conv::SongSet> sets = conv::FindSongs(ntdlib::ntr::Rom::Parse(image), warnings);
-    const std::vector<conv::SongSet> other_sets = conv::FindSongs(ntdlib::ntr::Rom::Parse(other_image), other_warnings);
 
-    const bool found = sets.size() == 1 && sets[0].songs.size() == 2;
+    const bool found = sets.size() == 1 && sets[0].songs.size() == 4;
     XSFLIB_CHECK(found && warnings.size() == 1);
     if (!found)
     {
@@ -203,9 +204,9 @@ void TestFindSongs()
 
     XSFLIB_CHECK(sets[0].folder.empty() && sets[0].bank.samples.size() == 1);
     XSFLIB_CHECK(sets[0].songs[0].number == 0 && sets[0].songs[0].name == "au0" && !sets[0].songs[0].loop);
-    XSFLIB_CHECK(sets[0].songs[1].number == 105 && sets[0].songs[1].name == "au105_title_screen" &&
-                 sets[0].songs[1].loop);
-    XSFLIB_CHECK(other_sets.size() == 1 && other_sets[0].songs.size() == 2 && other_sets[0].songs[1].name == "au105");
+    XSFLIB_CHECK(sets[0].songs[1].number == 84 && sets[0].songs[1].name == "au84");
+    XSFLIB_CHECK(sets[0].songs[2].number == 105 && sets[0].songs[2].name == "au105" && sets[0].songs[2].loop);
+    XSFLIB_CHECK(sets[0].songs[3].number == 108 && sets[0].songs[3].name == "au108");
 }
 
 } // namespace

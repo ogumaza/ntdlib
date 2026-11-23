@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -42,13 +44,13 @@ bool IsTrackSetting(EventKind kind)
 std::map<SettingKey, TrackEvent> SettingsAt(const seqlib::midi::Performance& perf, uint32_t tick)
 {
     // Each part starts at its key's pitch without an event. The recorder sends a part no pitch of 0 before it has sent
-    // the part another pitch (seqlib::midi::TrackOutput::pitch).
+    // the part another pitch (seqlib::midi::TrackOutput::pitch). The pitch names its part for LoopRules::same_pitch.
     std::map<SettingKey, TrackEvent> settings;
     for (int t = 0; t < 16; t++)
     {
         for (uint8_t part = 0; part < 16; part++)
         {
-            settings[{t, part, EventKind::kPitch}] = TrackEvent{0, EventKind::kPitch};
+            settings[{t, part, EventKind::kPitch}] = TrackEvent{.kind = EventKind::kPitch, .part = part};
         }
         for (const TrackEvent& e : perf.tracks[t])
         {
@@ -145,9 +147,9 @@ TrackPasses PassesOfTrack(const seqlib::midi::Performance& perf, std::size_t tra
     // Each part starts at its key's pitch without an event (seqlib::midi::TrackOutput::pitch, as in SettingsAt). A
     // track's first part also starts with the settings of `rules.seeded` at 0, without events (the SFZ filters that
     // MidiRecorder's constructor seeds in midi_recorder.cpp).
-    for (std::map<EventKind, TrackEvent>& part : settings)
+    for (uint8_t part = 0; part < settings.size(); part++)
     {
-        part[EventKind::kPitch] = TrackEvent{0, EventKind::kPitch};
+        settings[part][EventKind::kPitch] = TrackEvent{.kind = EventKind::kPitch, .part = part};
     }
     for (const EventKind kind : rules.seeded)
     {
@@ -243,13 +245,32 @@ double BpmAt(const seqlib::midi::Performance& perf, uint32_t tick, uint32_t sinc
     return bpm;
 }
 
+// Whether a repeat's setting `repeat` on track `t` plays as the next pass's setting `played` does: the same value, or
+// pitches that the rules take as the same (LoopRules::same_pitch).
+bool RepeatsSetting(int t, const TrackEvent& repeat, const TrackEvent& played, const LoopRules& rules)
+{
+    if (repeat.kind == EventKind::kPitch && repeat.semitones != played.semitones)
+    {
+        return rules.same_pitch && rules.same_pitch(t, repeat, played);
+    }
+
+    return SameSetting(repeat, played);
+}
+
 // Whether the notes of track `t` in the pass from `start` to `end` repeat as the game's next pass plays them, at
 // tempo `repeat_bpm` (RepeatsAsTheGame).
 bool TrackRepeats(const seqlib::midi::Performance& perf, int t, uint32_t start, uint32_t end, const LoopRules& rules,
                   const PassStart& at_start, const PassStart& next, double repeat_bpm)
 {
     const auto track = static_cast<std::size_t>(t);
-    const TrackPasses passes = PassesOfTrack(perf, track, start, end, rules);
+    TrackPasses passes = PassesOfTrack(perf, track, start, end, rules);
+    if (rules.unstarted)
+    {
+        // A loop strike's twin strikes in the next pass, at `end` plus its offset, and a game strike's twin in the
+        // loop, at `start` plus its offset.
+        std::erase_if(passes.loop, [&](const Strike& s) { return rules.unstarted(t, end + s.offset, s.key); });
+        std::erase_if(passes.game, [&](const Strike& s) { return rules.unstarted(t, start + s.offset, s.key); });
+    }
     if (passes.loop.size() != passes.game.size())
     {
         return false;
@@ -282,6 +303,10 @@ bool TrackRepeats(const seqlib::midi::Performance& perf, int t, uint32_t start, 
         {
             return false;
         }
+        if (rules.plays_alike && !rules.plays_alike(t, start + a.offset, end + b.offset))
+        {
+            return false;
+        }
 
         std::set<EventKind> kinds;
         const std::map<EventKind, TrackEvent>& kept = passes.at_end[a.part];
@@ -303,7 +328,7 @@ bool TrackRepeats(const seqlib::midi::Performance& perf, int t, uint32_t start, 
                 sent_before != a.settings.end() ? &sent_before->second : repeat_value(a.part, kind);
             const auto played = b.settings.find(kind);
             if ((repeat == nullptr) != (played == b.settings.end()) ||
-                (repeat && !SameSetting(*repeat, played->second)))
+                (repeat && !RepeatsSetting(t, *repeat, played->second, rules)))
             {
                 return false;
             }
@@ -390,6 +415,41 @@ void InsertAtLoopStart(std::vector<TrackEvent>& events, const TrackEvent& at_sta
     events.insert(at, e);
 }
 
+// A note that a track strikes in a pass: its offset from the pass's start, its key and velocity, and how long it lasts
+// in ticks, if it ends in the performance (LengthsRepeat).
+struct HeldNote
+{
+    uint32_t offset = 0;
+    uint8_t key = 0;
+    uint8_t velocity = 0;
+    std::optional<double> length;
+};
+
+// The notes that `events` strike from tick `start` up to `end`, in order of offset, key and velocity, and otherwise in
+// the order struck.
+std::vector<HeldNote> HeldNotes(const std::vector<TrackEvent>& events, uint32_t start, uint32_t end)
+{
+    std::vector<HeldNote> notes;
+    std::map<uint32_t, std::pair<std::size_t, double>> sounding; // by note ID: the note's index and its strike
+    for (const TrackEvent& e : events)
+    {
+        if (e.kind == EventKind::kNoteOn && e.tick >= start && e.tick < end)
+        {
+            sounding[e.note] = {notes.size(), e.tick + e.after};
+            notes.push_back({e.tick - start, e.key, e.value, std::nullopt});
+        }
+        else if (const auto held = sounding.find(e.note); e.kind == EventKind::kNoteOff && held != sounding.end())
+        {
+            notes[held->second.first].length = e.tick + e.after - held->second.second;
+            sounding.erase(held);
+        }
+    }
+
+    std::ranges::stable_sort(notes, {}, [](const HeldNote& n) { return std::tuple(n.offset, n.key, n.velocity); });
+
+    return notes;
+}
+
 } // namespace
 
 bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<PartSwitch>& part_switches,
@@ -409,6 +469,35 @@ bool RepeatsAsTheGame(const seqlib::midi::Performance& perf, const std::vector<P
     return true;
 }
 
+bool LengthsRepeat(const seqlib::midi::Performance& perf, uint32_t start, uint32_t end, double tolerance)
+{
+    for (const std::vector<TrackEvent>& events : perf.tracks)
+    {
+        const std::vector<HeldNote> pass = HeldNotes(events, start, end);
+        const std::vector<HeldNote> next = HeldNotes(events, end, end + (end - start));
+        if (pass.size() != next.size())
+        {
+            return false;
+        }
+
+        for (std::size_t k = 0; k < pass.size(); k++)
+        {
+            const HeldNote& a = pass[k];
+            const HeldNote& b = next[k];
+            if (a.offset != b.offset || a.key != b.key || a.velocity != b.velocity)
+            {
+                return false;
+            }
+            if (a.length && b.length && std::abs(*a.length - *b.length) > tolerance)
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartSwitch>& part_switches,
                         const PassStart& next_pass, const LoopRules& rules)
 {
@@ -422,18 +511,27 @@ void RestoreAtLoopStart(seqlib::midi::Performance& perf, const std::vector<PartS
     for (const auto& [key, at_start] : at_loop_start.settings)
     {
         // The game gives the setting back its value at the loop's start. Only the part that the track's new notes go to
-        // counts. A track sends every setting again when it moves to another part (Switch).
+        // counts. A track sends every setting again when it moves to another part (Switch). An answer of
+        // `rules.restores` decides in place of both tests, on any part.
         const auto [t, part, kind] = key;
         const auto track = static_cast<std::size_t>(t);
-        if (part != at_loop_start.parts[track])
+        const std::optional<bool> answer = rules.restores ? rules.restores(t, part, kind) : std::nullopt;
+        if (answer == false)
         {
             continue;
         }
-
-        const auto next = next_pass.settings.find({t, next_pass.parts[track], kind});
-        if (next == next_pass.settings.end() || !SameSetting(next->second, at_start))
+        if (!answer)
         {
-            continue;
+            if (part != at_loop_start.parts[track])
+            {
+                continue;
+            }
+
+            const auto next = next_pass.settings.find({t, next_pass.parts[track], kind});
+            if (next == next_pass.settings.end() || !SameSetting(next->second, at_start))
+            {
+                continue;
+            }
         }
 
         // It isn't sent at the loop's start, and the loop ends with another value. A MIDI player may take the loop
@@ -454,13 +552,20 @@ MainLoopPasses::MainLoopPasses(std::vector<LoopChoice> replay) : replay_(std::mo
 {
 }
 
+MainLoopPasses::MainLoopPasses(LoopReplay replay) : replay_(std::move(replay.choices)), check_last_(replay.check_last)
+{
+}
+
 void MainLoopPasses::Restart(PerformanceBase& out, const std::optional<std::pair<int, uint32_t>>& owner)
 {
     out.DropLoop();
     owner_ = owner;
     passes_.clear();
     marked_ = 0;
+    span_ = 1;
     extended_ = false;
+    toward_.reset();
+    heading_.reset();
 }
 
 void MainLoopPasses::CountPass(PerformanceBase& out, const std::pair<int, uint32_t>& loop, uint32_t start, uint32_t end)
@@ -494,6 +599,47 @@ void SetLevelCut(PerformanceBase& performance, double applied)
                       performance.level_cut_db);
         performance.approximations[what] = seqlib::midi::NoteCount(performance);
     }
+}
+
+std::size_t WholeSpan(uint32_t pass, const std::vector<uint32_t>& lengths)
+{
+    if (pass == 0)
+    {
+        return 0;
+    }
+
+    // The multiple stops growing past kMostWholeSpan passes. For loops under 2^26 ticks, it stays within 64 bits.
+    uint64_t whole = pass;
+    for (const uint32_t length : lengths)
+    {
+        if (length == 0)
+        {
+            return 0;
+        }
+        whole = std::lcm(whole, uint64_t{length});
+        if (whole / pass > kMostWholeSpan)
+        {
+            return kMostWholeSpan + 1;
+        }
+    }
+
+    return static_cast<std::size_t>(whole / pass);
+}
+
+void ListWholePeriod(PerformanceBase& out, std::size_t whole_span)
+{
+    char what[160];
+    if (whole_span > kMostWholeSpan)
+    {
+        std::snprintf(what, sizeof(what), "tracks loop at other lengths (their loops line up after over %zu passes)",
+                      kMostWholeSpan);
+    }
+    else
+    {
+        std::snprintf(what, sizeof(what), "tracks loop at other lengths (their loops line up every %zu passes)",
+                      whole_span);
+    }
+    out.approximations[what] = seqlib::midi::NoteCount(out);
 }
 
 namespace

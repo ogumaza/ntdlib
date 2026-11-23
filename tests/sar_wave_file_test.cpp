@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -23,6 +24,7 @@
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/testing/sar_files.h"
 
+using seqlib::testing::Throws;
 using xsflib::testing::ErrorOf;
 
 namespace
@@ -216,12 +218,6 @@ void TestOtherLayout(Flavor flavor)
     XSFLIB_CHECK(rewritten.channels[1].data.size() >= 24 && rewritten.channels[1].data[23] == 0x90);
 }
 
-template <class Error, class Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
-}
-
 // Whether WaveFile::Read refuses `bytes` with a message that holds `part`.
 bool Refuses(const std::vector<uint8_t>& bytes, const std::string& part)
 {
@@ -371,7 +367,7 @@ void TestWaveTable(Flavor flavor)
 }
 
 // WithWaveArchives and WaveTable refuse another file, a file of another console, and a table of waves past the file's
-// end: here the last wave's index lies past it.
+// end: here the last wave's index is past it.
 void TestWaveArchiveRefusals()
 {
     sar_files::BankSpec spec;

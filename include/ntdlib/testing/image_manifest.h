@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <ios>
 #include <map>
 #include <sstream>
@@ -149,9 +150,14 @@ inline void CheckGameAgainstManifest(const std::string& name, const std::filesys
     CheckFilesAgainstManifest(name, game, manifest);
 }
 
+// A check of a game's image against the manifest of its folder (see RunImageTest), with the image's path.
+using ImageCheck = std::function<void(const std::filesystem::path& image, const ImageManifest& manifest)>;
+
 // An image test's main, with the arguments <game folder> <roms folder>: checks the folder, then the image in the roms
-// folder when it's there. Returns the exit code.
-inline int RunImageTest(int argc, char** argv, const disc::GameOptions& options)
+// folder when it's there. The image's check is CheckGameAgainstManifest with `options`, or `check_image` if given, such
+// as a check that LoadGame refuses the image, or a check of a program that a ripper opens from the disc. Returns the
+// exit code.
+inline int RunImageTest(int argc, char** argv, const disc::GameOptions& options, const ImageCheck& check_image = {})
 {
     if (argc != 3)
     {
@@ -166,13 +172,17 @@ inline int RunImageTest(int argc, char** argv, const disc::GameOptions& options)
 
     std::error_code error;
     const std::filesystem::path image = std::filesystem::path(argv[2]) / manifest.source;
-    if (std::filesystem::is_regular_file(image, error))
+    if (!std::filesystem::is_regular_file(image, error))
     {
-        CheckGameAgainstManifest(manifest.source, image, manifest, options);
+        std::printf("%s isn't here. Only the folder was checked.\n", manifest.source.c_str());
+    }
+    else if (check_image)
+    {
+        check_image(image, manifest);
     }
     else
     {
-        std::printf("%s isn't here. Only the folder was checked.\n", manifest.source.c_str());
+        CheckGameAgainstManifest(manifest.source, image, manifest, options);
     }
 
     if (xsflib::testing::failures)

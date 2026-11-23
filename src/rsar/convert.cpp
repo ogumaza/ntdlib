@@ -54,7 +54,7 @@ bool LittleEndian(sar::Flavor flavor)
 }
 
 // The region that NW4R SND plays for a note of `key` at `velocity` on `program` of `bank`, or null where it plays
-// nothing. A region whose wave lies past the bank's waves plays nothing either (Bank::NoteOn).
+// nothing. A region whose wave is past the bank's waves plays nothing either (Bank::NoteOn).
 const Region* Played(const Bank& bank, uint32_t program, int key, int velocity)
 {
     const Region* region = bank.Find(program, key, velocity);

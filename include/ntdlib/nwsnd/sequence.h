@@ -917,8 +917,8 @@ public:
 
     // Mutes each allocated track whose bit is set in `track_flags`, bit 0 for track 0, in `mode` (SeqTrack::SetMute): 0
     // plays the track again, 1 skips its notes from the next one on, 2 also releases its channels, and 3 also stops
-    // them at once. A game sets it through the sound's handle (SequenceSoundHandle::SetTrackMute). Set it after Start,
-    // which allocates the tracks. Before the first tick, each mode keeps every note of the track from starting.
+    // them at once. A game sets it through the sound's handle (SequenceSoundHandle::SetTrackMute). Set it after Start.
+    // Start allocates the tracks. Before the first tick, each mode keeps every note of the track from starting.
     void SetTrackMute(Engine& engine, uint32_t track_flags, int mode)
     {
         for (int i = 0; i < kTrackCount; ++i)

@@ -72,6 +72,9 @@ constexpr Row kRows[] = {
     // Ni no Kuni: Shikkoku no Madoushi, the later build: 0x0204EDFC(settings, 0, 8) at 0x02049F3C sets byte 0x11 to 0.
     // No code in the game loads a song, and the game never plays the six songs that its files hold.
     {"B2K", "", kTick},
+    // Luminous Arc, the oldest build: the sound's start (0x02095524) gives DSE's start-up (0x020BF3E8) the settings
+    // with byte 0x0C = 4. The start-up sets up an alarm of 10 ms.
+    {"ANI", "", kTick},
 };
 
 } // namespace

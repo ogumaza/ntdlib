@@ -13,8 +13,8 @@ namespace ntdlib::jaudio2
 namespace
 {
 
-// The emulation's switches (Dsp::kGalaxyFlags) that this model follows. With kFlagAutoMixer16, which the Galaxy games
-// leave off, the auto mixer's gains are over 65536, and its sends take the volume twice.
+// The emulation's switches (Dsp::kGalaxyFlags) that this model follows. The Galaxy games leave kFlagAutoMixer16 off.
+// With it, the auto mixer's gains are over 65536, and its sends take the volume twice.
 constexpr uint32_t kFlagAutoMixer = 1u << 6;  // a channel can mix by the auto mixer
 constexpr uint32_t kFlagMatrix = 1u << 3;     // the surround buses are matrixed into the FX lines and the output
 constexpr uint32_t kFlagFastPaths = 1u << 12; // the decoders' paths for AFC that this model follows

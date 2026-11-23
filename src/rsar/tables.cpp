@@ -15,12 +15,15 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "ntdlib/rsar/reference.h"
 
 namespace ntdlib::rsar
 {
 namespace
 {
+
+using ntdlib::detail::HasMagic;
 
 // An entry of a table of the INFO block: its place in the archive, and the data type of its reference.
 struct Entry
@@ -29,7 +32,7 @@ struct Entry
     uint8_t data_type = 0;
 };
 
-// The entries of the table whose reference lies at `table_ref`. `base` is where the INFO block's references count
+// The entries of the table whose reference is at `table_ref`. `base` is where the INFO block's references count
 // from. Throws xsflib::FormatError for a table that isn't there, or that runs past the end.
 std::vector<Entry> EntriesOf(const xsflib::Reader& r, std::size_t base, std::size_t table_ref, const char* name)
 {
@@ -51,10 +54,10 @@ std::vector<Entry> EntriesOf(const xsflib::Reader& r, std::size_t base, std::siz
     return entries;
 }
 
-// Whether `magic` lies at `offset`. Throws xsflib::FormatError when the bytes run past the end.
+// Whether `magic` is at `offset`. Throws xsflib::FormatError when the bytes run past the end.
 bool MagicAt(const xsflib::Reader& r, std::size_t offset, const char* magic)
 {
-    return std::memcmp(r.Sub(offset, 4).data(), magic, 4) == 0;
+    return HasMagic(r.Sub(offset, 4), magic);
 }
 
 // Where the INFO block's references count from in `archive`. Throws xsflib::FormatError for a file that isn't an

@@ -61,7 +61,7 @@ struct DspAdpcmState
 // The state of a decoder at sample `at` of a channel of DSP-ADPCM, when it plays `data` from the start. `hist1` and
 // `hist2` are the two samples before the first, and `sum` gives how the decoder adds up. A wave keeps this state for
 // the start of its loop. A decoder that goes back to the loop's start with it plays the loop's samples again as in the
-// first pass. Throws std::invalid_argument for a sample whose frame lies past the end of `data`.
+// first pass. Throws std::invalid_argument for a sample whose frame is past the end of `data`.
 DspAdpcmState DspAdpcmStateAt(std::span<const uint8_t> data, uint32_t at, std::span<const int16_t, 16> coefs,
                               int16_t hist1, int16_t hist2, DspAdpcmSum sum);
 

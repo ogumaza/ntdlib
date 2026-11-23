@@ -95,7 +95,7 @@ struct BankConversion
 // becomes preset p % 128 in bank p / 128 of a SoundFont, and an SFZ file by itself (BuildBankSfz). Each instrument
 // plays as a track plays it with its starting settings: without envelope overrides or a filter, at the centre, with an
 // LFO whose depth CC1 sets. `program` is the name that goes in the SoundFonts' ISFT and comments and in the SFZ files.
-// Throws std::out_of_range when the archive lacks the bank.
+// Throws std::out_of_range when the archive has no such bank.
 BankConversion ConvertBank(const sar::SoundArchive& archive, std::size_t bank, const Settings& settings,
                            const std::string& program);
 

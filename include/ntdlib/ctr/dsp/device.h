@@ -103,10 +103,10 @@ public:
     }
 
     // Only the model of the firmware (FirmwareModel) has the enhanced mixing mode. The device then mixes more sources
-    // than the firmware's kSources, and the sources' structures lie outside DSP RAM.
+    // than the firmware's kSources, and the sources' structures are outside DSP RAM.
     // SourceCount gives the device's sources, and MaxSources the most that GrowSources can give it. A new source starts
     // as the firmware's sources start. SourceStructure gives the bytes of structure `structure` in region `region` for
-    // every source, in the firmware's layout, or nullptr where the structure lies in DSP RAM. A structure is a place in
+    // every source, in the firmware's layout, or nullptr where the structure is in DSP RAM. A structure is a place in
     // the list of addresses that the firmware sends: 1 for the sources' parameters, 2 for their reports and 3 for their
     // ADPCM coefficients. The bytes move when the device grows. None of this may be called during a DSP run.
     virtual int SourceCount() const
@@ -128,7 +128,7 @@ public:
         return nullptr;
     }
 
-    // In the enhanced mode, the aux buses' samples of region `region` lie outside DSP RAM too: bus A's front left,
+    // In the enhanced mode, the aux buses' samples of region `region` are outside DSP RAM too: bus A's front left,
     // front right, rear left and rear right channels of kEnhancedFrameSamples samples, and then bus B's. The firmware's
     // mixing keeps them in DSP RAM, in frames of kSamplesPerFrame, and gives nullptr here. The same rules hold as for
     // SourceStructure.

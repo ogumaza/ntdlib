@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -31,7 +32,7 @@ namespace
 using ntdlib::sar::Flavor;
 using ntdlib::sar::StreamFile;
 using ntdlib::sar::WaveEncoding;
-using xsflib::testing::ErrorOf;
+using seqlib::testing::Throws;
 
 constexpr Flavor kFlavors[] = {Flavor::kCtr, Flavor::kCafe, Flavor::kNx};
 
@@ -191,7 +192,7 @@ void TestTracks(Flavor flavor)
     XSFLIB_CHECK(r.U32(0x5C) == r.U32(0x54) + 4 + 2 * 8 && r.U32(0x48 + r.U32(0x54) + 8) == 4 + 2 * 8 + 4 + 3 * 8);
 
     stream.tracks->back().channels = {3};
-    XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { stream.Write(); }).empty());
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { stream.Write(); }));
 }
 
 // The 16-bit sample at sample `index` of a channel's bytes, little-endian.
@@ -302,13 +303,6 @@ void TestCtrOldest()
     const StreamFile looped = ntdlib::sar::MakeStream(Flavor::kCtr, 0x02000000, WaveEncoding::kPcm16, 32000, input, 0);
     XSFLIB_CHECK(looped.samples_past_end == 128 && looped.uncounted_samples == 0);
     XSFLIB_CHECK(StreamFile::Read(looped.Write()).Write() == looped.Write());
-}
-
-// Whether `make` throws an exception of type E.
-template <typename E, typename Make>
-bool Throws(Make make)
-{
-    return !ErrorOf<E>(make).empty();
 }
 
 // A stream of the Wii U becomes the Switch's stream of the same samples, and the Switch's the Wii U's: 16-bit PCM

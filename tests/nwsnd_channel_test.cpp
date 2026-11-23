@@ -15,39 +15,24 @@
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/testing/nwsnd_stand_ins.h"
 
 namespace
 {
 
 class TestEngine;
 
+using StandIns =
+    ntdlib::testing::nwsnd_stand_ins::PolicyParts<uint32_t, 32000, ntdlib::nwsnd::CafePolicy::kFxSendCount>;
+
 // The Wii U's steps, with the policy's frame (see the definition of UpdateChannel below).
-struct FramePolicy : ntdlib::nwsnd::CafePolicy
+struct FramePolicy : ntdlib::nwsnd::CafePolicy, StandIns
 {
     using Engine = TestEngine;
 
-    struct WaveInfo
-    {
-        uint32_t format = 0;
-        uint32_t sample_rate = 32000;
-        bool loop = false;
-    };
-
-    struct Outputs
-    {
-        float volume = 1.0f;
-        uint32_t mix_mode = 0;
-        float pan = 0.0f;
-        float span = 0.0f;
-        float main_send = 0.0f;
-        std::array<float, 3> fx_send{};
-    };
-
-    template <typename Function, typename... Each>
-    static void ForEachOutput(const Function& function, Each&... outputs)
-    {
-        function(outputs...);
-    }
+    using WaveInfo = StandIns::WaveInfo;
+    using Outputs = StandIns::Outputs;
+    using StandIns::ForEachOutput;
 
     static void UpdateChannel(ntdlib::nwsnd::Channel<FramePolicy>& channel, Engine& engine, bool periodic);
 };

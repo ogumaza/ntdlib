@@ -2,14 +2,14 @@
 
 // A band-limited interpolator of a channel's samples: the windowed sinc of a high-quality sample-rate converter. The
 // kernel is a sinc under a Kaiser window with a beta of 8. Up to a step of 1, where the output runs as fast as the
-// input or faster, an output takes the 32 inputs on each side of its position, and the cutoff lies at 0.92 of the
-// input's Nyquist frequency. The response then stays within 0.01 dB of full level up to 0.84 of that frequency, and
-// lies at least 77 dB down from it on. A step above 1 lowers the cutoff to 0.92 of the output's Nyquist frequency. The
-// step is rounded up to an eighth of an octave, and the window widens with it, up to 128 inputs on each side for steps
-// of 4 and more. Beyond a step of 4, the cutoff falls further, to keep the window's transition band below the output's
-// Nyquist frequency. At every step up to 8, the response lies at least 77 dB down above the output's Nyquist frequency.
-// Steps above 8 take the kernel of 8. Each kernel lies in a table of 256 phases for each input sample. An output
-// interpolates linearly between the two phases on each side of its position.
+// input or faster, an output takes the 32 inputs on each side of its position, and the cutoff is at 0.92 of the input's
+// Nyquist frequency. The response then stays within 0.01 dB of full level up to 0.84 of that frequency, and is at least
+// 77 dB down from it on. A step above 1 lowers the cutoff to 0.92 of the output's Nyquist frequency. The step is
+// rounded up to an eighth of an octave, and the window widens with it, up to 128 inputs on each side for steps of 4 and
+// more. Beyond a step of 4, the cutoff falls further, to keep the window's transition band below the output's Nyquist
+// frequency. At every step up to 8, the response is at least 77 dB down above the output's Nyquist frequency. Steps
+// above 8 take the kernel of 8. Each kernel is in a table of 256 phases for each input sample. An output interpolates
+// linearly between the two phases on each side of its position.
 //
 // Every platform gives the same outputs. The tables come from a fixed sequence of operations in double precision,
 // without library math: the sine from its Taylor series, and the window's Bessel function from its power series. Each

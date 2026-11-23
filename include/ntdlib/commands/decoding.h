@@ -236,6 +236,29 @@ std::set<uint32_t> Starts(std::size_t size, std::span<const Label> labels, std::
     return starts;
 }
 
+// Adds the target of every command in `found` to `cuts`: each target starts an item.
+inline void AddTargets(const Found& found, std::set<uint32_t>& cuts)
+{
+    for (const auto& [at, read] : found.reads)
+    {
+        if (HasTarget(read.command.kind))
+        {
+            cuts.insert(read.command.target);
+        }
+    }
+}
+
+// Whether a cut falls inside a command of `data`. The decoder then keeps the whole bytecode as data.
+inline bool AnyCutInside(std::span<const uint8_t> data, const Found& found, const std::set<uint32_t>& cuts)
+{
+    const auto inside = [&](uint32_t cut)
+    {
+        return cut < data.size() && found.cover[cut] == Cover::kInside;
+    };
+
+    return std::any_of(cuts.begin(), cuts.end(), inside);
+}
+
 // The items of `data` in the order of their bytes, from the commands in `found`. Data splits at `cuts`. Gives the item
 // at each offset where one starts, and at the end. Without commands, the items are the whole bytecode as data, split at
 // `cuts`. A target becomes the index of the item at the offset that `offset_of(target)` gives. A target without an

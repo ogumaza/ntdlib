@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -45,7 +44,7 @@ constexpr uint64_t kMemorySize = kDataMemoryOffset;
 constexpr unsigned kWaitSlice = 16384;
 constexpr uint64_t kWaitLimit = 134'055'928;
 
-// Register 2 carries the pipe notifications both ways, the stop request to the firmware and the firmware's answers.
+// Register 2 passes the pipe notifications both ways, the stop request to the firmware and the firmware's answers.
 constexpr uint8_t kPipeRegister = 2;
 constexpr uint16_t kStopRequest = 0x8000;
 
@@ -65,12 +64,12 @@ constexpr uint32_t kEntryRead = 4;
 constexpr uint32_t kEntryWrite = 6;
 constexpr uint32_t kEntryNumber = 8;
 
-// A ring position is a byte offset in bits 0-14 and a lap bit, which flips each time the offset goes back to 0.
+// A ring position is a byte offset in bits 0-14 and a lap bit. The lap bit flips each time the offset goes back to 0.
 constexpr uint16_t kOffsetMask = 0x7FFF;
 constexpr uint16_t kLapBit = 0x8000;
 
-// The table address, the ring addresses and the offsets are at most 16 bits wide, so every table entry and ring byte
-// they can name is inside DSP RAM.
+// The table address, the ring addresses and the offsets are at most 16 bits wide. Every table entry and ring byte that
+// they can name is therefore inside DSP RAM.
 static_assert(DataOffset(0xFFFF) + 2 * kPipeCount * kPipeEntrySize <= kRamSize);
 static_assert(DataOffset(0xFFFF) + kOffsetMask < kRamSize);
 
@@ -85,8 +84,7 @@ struct Segment
 // Checks a DSP1 image. Returns the segments to copy into DSP RAM, in table order, and throws if the image is broken.
 std::vector<Segment> ReadSegments(std::span<const uint8_t> image)
 {
-    if (image.size() < Dsp1Image::kHeaderSize ||
-        std::memcmp(image.data() + Dsp1Image::kMagicOffset, Dsp1Image::kMagic.data(), Dsp1Image::kMagic.size()) != 0)
+    if (!IsDsp1Image(image))
     {
         throw std::runtime_error("DSP: the firmware isn't a DSP1 image");
     }
@@ -452,8 +450,9 @@ void TeakraDsp::ProgramWritten()
 
 void TeakraDsp::Run(uint64_t cycles)
 {
-    // Teakra takes an unsigned count, so a longer run takes more than one call. While a notification waits for command
-    // register 2, the DSP runs in short slices, so that it goes out soon after the firmware empties the register.
+    // Teakra takes an unsigned count. A longer run therefore takes more than one call. While a notification waits for
+    // command register 2, the DSP runs in short slices. The notification then goes out soon after the firmware empties
+    // the register.
     for (uint64_t left = cycles; running_ && left > 0;)
     {
         const uint64_t most = deferred_notification_ ? kWaitSlice : std::numeric_limits<unsigned>::max();
@@ -627,14 +626,14 @@ void TeakraDsp::OnPipeNotification()
         throw std::runtime_error("DSP: the firmware notified pipe " + std::to_string(pipe) + ", which doesn't exist");
     }
 
-    // The firmware has read from an ARM11-to-DSP ring, which needs no answer.
+    // The firmware has read from an ARM11-to-DSP ring. Such a read requires no answer.
     if (number % 2 == kArmToDsp)
     {
         return;
     }
 
-    // The system drains the debug pipe itself and throws its contents away. This runs inside Teakra, which can't be run
-    // again from here to wait for command register 2 to empty, so if the register still holds a command, the
+    // The system drains the debug pipe itself and throws its contents away. This code runs inside Teakra. Teakra can't
+    // be run again from here to wait for command register 2 to empty. If the register still contains a command, the
     // notification that tells the firmware waits in deferred_notification_ until the firmware has read it.
     if (pipe == static_cast<unsigned>(Pipe::kDebug))
     {

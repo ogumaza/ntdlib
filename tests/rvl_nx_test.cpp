@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/dsp/memory.h"
@@ -38,6 +39,7 @@
 #include "ntdlib/rvl/snd/util.h"
 #include "ntdlib/sound_build.h"
 #include "ntdlib/testing/rsar_files.h"
+#include "ntdlib/types.h"
 
 namespace
 {
@@ -46,6 +48,7 @@ using namespace ntdlib;
 namespace ax = ntdlib::rvl::ax;
 namespace audio = ntdlib::nx::audio;
 using ntdlib::rvl::nx::Layer;
+using seqlib::testing::Throws;
 using xsflib::testing::Check;
 
 constexpr std::size_t kChannels = 6;
@@ -242,15 +245,7 @@ void CheckSnapshot()
     Check(first == second, "a restored snapshot plays the same frames");
 
     Fixture other;
-    bool refused = false;
-    try
-    {
-        other.layer.Restore(layer);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::invalid_argument>([&] { other.layer.Restore(layer); });
 
     Check(refused, "a snapshot of another layer is refused");
 }
@@ -260,15 +255,7 @@ void CheckStream()
     Fixture fixture;
     ax::Voice* voice = fixture.ax.AcquireVoice(16, nullptr);
     voice->pb.type = static_cast<uint16_t>(ax::VoiceType::kStream);
-    bool refused = false;
-    try
-    {
-        voice->SetState(ax::VoiceState::kRun);
-    }
-    catch (const std::logic_error&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::logic_error>([&] { voice->SetState(ax::VoiceState::kRun); });
 
     Check(refused, "a stream voice is refused");
 }

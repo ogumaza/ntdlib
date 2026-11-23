@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <span>
 #include <vector>
 
@@ -34,5 +35,12 @@ struct Nso
 // The segments of the NSO `file`, each decompressed. A segment whose flag of a hash is set must match that hash. Throws
 // FormatError if `file` isn't an NSO, if it's damaged, or if a segment doesn't match its hash.
 Nso ReadNso(std::span<const uint8_t> file);
+
+// The entries of the dynamic section of the module `nso`, by tag, such as DT_RELA (7) and DT_RELASZ (8). The word at
+// address 4 of the text segment is the address of the module's MOD0 header. The header starts with "MOD0", and its
+// word at 4 is the dynamic section's address, counted from the header. Each entry of the section takes 16 bytes: the
+// tag, then the value. The entry with tag 0 (DT_NULL) ends the section. A tag that the section lists twice keeps its
+// first value. Throws FormatError if the module has no MOD0 header, or if the section runs past the end of a segment.
+std::map<int64_t, uint64_t> DynamicEntries(const Nso& nso);
 
 } // namespace ntdlib::nx

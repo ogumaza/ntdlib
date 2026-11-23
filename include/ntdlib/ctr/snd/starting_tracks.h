@@ -54,9 +54,9 @@ constexpr std::array<float, kSequenceTracks> kFullTrackVolumes = {1.0f, 1.0f, 1.
                                                                   1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 
 // How a game starts a sequence: the tracks that it quiets, bit N for track N, the volumes that it gives the other
-// tracks, the variables that it sets, the state of the random generator, the tempo, pitch and volume that it sets, the
-// banks that it gives the sequence, and the sends and the effect that it gives the sequence on the aux buses. A track
-// in neither mask plays at its usual volume times its entry in `track_volumes`.
+// tracks, the variables that it sets, the state of the random generator, the tempo, pitch, volume and low-pass that it
+// sets, the banks that it gives the sequence, and the sends and the effect that it gives the sequence on the aux buses.
+// A track in neither mask plays at its usual volume times its entry in `track_volumes`.
 struct SequenceStart
 {
     friend bool operator==(const SequenceStart&, const SequenceStart&) = default;
@@ -97,9 +97,16 @@ struct SequenceStart
     // the sequence plays.
     float volume = 1.0f;
 
+    // The low-pass that the game sets (SoundHandle::SetLpfFreq), from -1 to 0. In StreetPass Mii Plaza's update
+    // v14.6.0, BasicSound::SetLpfFreq (0x33C80C) stores it, BasicSound's update adds it to the sound's other low-passes
+    // (0x33C970 to 0x33C9A4) and sends the sum to the sequence's player (0x33CA44). The driver adds the player's
+    // low-pass to each track's low-pass, and a voice's cutoff comes from 1 plus the sum. 0 leaves the filter as the
+    // tracks set it.
+    float lpf = 0.0f;
+
     // The banks that the game gives the sequence's four bank slots in place of the archive's, as item IDs: nw::snd's
-    // SeqSoundInfo, which a StartInfo with flag 0x10 holds. The four replace all of the archive's slots, and kNoBank
-    // leaves a slot empty. Without a value, the archive's banks hold.
+    // SeqSoundInfo in a StartInfo with flag 0x10. The four replace all of the archive's slots, and kNoBank leaves a
+    // slot empty. Without a value, the archive's banks hold.
     std::optional<std::array<uint32_t, 4>> banks = std::nullopt;
 
     // The sends on aux buses A and B that the game gives the sound: what the sound's handle (BasicSound::SetFxSend) and
@@ -114,10 +121,10 @@ struct SequenceStart
 };
 
 // How a known game starts sequence sound `sound`: the tracks that it quiets, the tracks' volumes, the variables that it
-// sets, the random generator's state, the tempo, pitch and volume, the banks, and the sends and the effect on the aux
-// buses. A player gives the sequence the banks as it starts it. It applies the masks, the tracks' volumes, the
-// variables of frame 0, the tempo ratio, the pitch, the volume and the sends after the sequence's start and before its
-// first tick.
+// sets, the random generator's state, the tempo, pitch, volume and low-pass, the banks, and the sends and the effect on
+// the aux buses. A player gives the sequence the banks as it starts it. It applies the masks, the tracks' volumes, the
+// variables of frame 0, the tempo ratio, the pitch, the volume, the low-pass and the sends after the sequence's start
+// and before its first tick.
 SequenceStart StartingSequenceTracks(std::string_view archive_sha1, std::string_view sound);
 
 // Another state of a sequence that a known game's code moves the sequence to as the game goes on. A rip writes the

@@ -52,6 +52,9 @@ struct Arrangement
     // The driver's commands that the game's code sends once it has started the sequence (PerformOptions::commands).
     // They follow the commands of the game's settings. Where both set a value, the arrangement's takes effect.
     ntdlib::ntr::snd::CommandList commands;
+
+    // The commands that the game's code sends once the sequence has run some ticks (PerformOptions::tick_commands).
+    std::vector<ntdlib::ntr::TickCommands> tick_commands = {};
 };
 
 // A conversion of an archive: a sequence of ArchiveInput::sequences as the game's settings start it, or in one of its

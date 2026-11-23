@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // Checks Teakra's SaveState and LoadState. Save a DSP part-way through a program, then run to the end. Restore the
-// saved state and memory to both the original DSP and a new one without the JIT, which the original uses where the host
-// supports it. Both must reproduce the original run's registers, memory, component registers and audio output. Programs
-// are random (see ctr_teakra_programs.h), or idle in a loop while randomly configured timers, audio ports, command
-// registers and DMA raise interrupts.
+// saved state and memory to both the original DSP and a new one without the JIT. The original uses the JIT where the
+// host supports it. Both must reproduce the original run's registers, memory, component registers and audio output.
+// Programs are random (see ctr_teakra_programs.h), or idle in a loop while randomly configured timers, audio ports,
+// command registers and DMA raise interrupts.
 //
 // usage: ntdlib_ctr_teakra_state_test [trials [first seed]]
 
@@ -77,8 +77,8 @@ bool Compare(uint64_t seed, const char* what, const Outcome& expected, const Out
         same = false;
     }
 
-    // After an exception the interpreter's pc is the one it had when RunOrdinary began, which differs with the JIT, so
-    // it isn't compared then (as in ctr_teakra_jit_test).
+    // After an exception the interpreter's pc is the one it had when RunOrdinary began. That pc differs with the JIT.
+    // The check then leaves it out (as in ctr_teakra_jit_test).
     const RegisterState layout;
     const std::size_t pc_offset =
         reinterpret_cast<std::uintptr_t>(&layout.pc) - reinterpret_cast<std::uintptr_t>(&layout);
@@ -223,7 +223,7 @@ void SetUpComponents(Teakra::Teakra& dsp, std::mt19937_64& rng)
         const uint16_t mode = static_cast<uint16_t>(rng() % 3); // single, auto restart or free running
         const uint16_t update = chance(50) ? 1 : 0;
         const uint16_t pause = chance(10) ? 1 : 0;
-        // The scale (bits 0-1) stays 0, which Teakra requires; bit 10 loads the start value.
+        // The scale (bits 0-1) stays 0, as Teakra requires. Bit 10 loads the start value.
         dsp.MMIOWrite(static_cast<uint16_t>(0x20 + t * 0x10),
                       static_cast<uint16_t>((mode << 2) | (pause << 8) | (update << 9) | (1 << 10)));
     }
@@ -273,8 +273,8 @@ void SetUpComponents(Teakra::Teakra& dsp, std::mt19937_64& rng)
     }
 }
 
-int threw_before = 0; // trials whose run threw before the save, which test nothing
-int threw_after = 0;  // trials whose run threw after it, which are compared up to the exception
+int threw_before = 0; // trials whose run threw before the save: they test nothing
+int threw_after = 0;  // trials whose run threw after it: compared up to the exception
 
 // One trial. Returns false, after a report, if a loaded DSP ran differently.
 bool Trial(uint64_t seed, bool idle)
@@ -312,7 +312,7 @@ bool Trial(uint64_t seed, bool idle)
 
     SetUpComponents(*first, rng);
 
-    // An idle program and its handlers are valid code, so it mustn't throw. A random program may.
+    // An idle program and its handlers are valid code. It mustn't throw. A random program may.
     const uint32_t before = 1 + static_cast<uint32_t>(rng() % (cycles - 1));
     const uint32_t after = cycles - before;
     if (const std::string threw = RunCatching(*first, before); !threw.empty())

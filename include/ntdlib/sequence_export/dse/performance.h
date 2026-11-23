@@ -17,6 +17,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <vector>
 
 #include "seqlib/midi/performance.h"
@@ -47,6 +48,9 @@ struct PresetKey
     ntdlib::dse::EnvelopeValues envelope = {}; // the channel's override of the splits' envelopes
     std::array<ntdlib::dse::LfoValues, 4> lfos = {};
     int8_t lfo_level = 0; // the level of the LFOs of type 3 (0xBE)
+
+    // The build whose rules the zones and the LFOs follow (PresetZones, PresetLfos).
+    ntdlib::dse::Build build = ntdlib::dse::Build::kLater;
 };
 
 // A note that the driver never started, for an editor: it found no voice, or its program plays nothing at its key and
@@ -91,6 +95,7 @@ struct NoteVoices
 struct Performance : PerformanceBase
 {
     std::vector<PresetKey> presets;
+    std::vector<std::set<uint8_t>> preset_keys; // the keys that each preset's notes play, by the preset's index
 
     std::vector<std::vector<Stretch>> stretches;
     std::vector<NoteCommand> note_commands;
@@ -115,6 +120,15 @@ struct PerformOptions
     // the times of the driver's ticks, and with them the MIDI tempo, the lengths and the envelopes. A converter reads
     // it from the game's profile (dse::TickOf).
     int tick_microseconds = ntdlib::dse::Driver::kTickMicroseconds;
+
+    // How the game starts a song, such as the level of one of its states (ntdlib::dse::StartOf). A sound effect starts
+    // with the defaults.
+    ntdlib::dse::StartParameters song_start = {};
+
+    // Whether the files are for a mixer that pans linearly, as the sound unit of the DS does, rather than for SoundFont
+    // and SFZ players. CC10 then contains the pan of the driver, and CC11 contains no level of the pan (linear_pan.h).
+    // ConvertSequence writes the pans of the splits into the zones with no level of the pan. It builds no SFZ files.
+    bool linear_pans = false;
 };
 
 // Plays the song or the sound effect of `files` and records it. Throws std::invalid_argument for files with neither.

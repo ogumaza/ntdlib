@@ -17,6 +17,11 @@ inline constexpr double kMinLoopSeconds = 10.0;
 // Longest performance, in seconds of music.
 inline constexpr double kMaxSeconds = 900.0;
 
+// Longest that the DS performer's probe plays on to test a pass (PlayOn), in seconds of music. The test of a pass
+// requires the pass after it, and a pass can be over half of kMaxSeconds long. A probe that stops before the end of
+// the pass under test fails the test. The file keeps kMaxSeconds.
+inline constexpr double kProbeSeconds = 3600.0;
+
 // Maximum duration after a held sound stops changing. This covers tracks waiting on endless looping notes. In the
 // NintendoWare performer, it also covers held notes after a sequence's timing has stopped (Performer::PlayOutStopped).
 inline constexpr double kHoldSeconds = 10.0;

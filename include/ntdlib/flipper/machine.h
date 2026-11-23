@@ -91,7 +91,7 @@ inline constexpr uint32_t kWiiBusClockHz = 243'000'000;
 struct BootInfo
 {
     uint32_t offset_unit = 1;  // the header gives the file system table's offset and size in units of this many bytes
-    uint32_t arena_top = 0;    // the top of the OS's arena. The file system table lies at least 64 KiB above it
+    uint32_t arena_top = 0;    // the top of the OS's arena. The file system table is at least 64 KiB above it
     uint32_t console_type = 0; // what the SDK's OSGetConsoleType returns
     uint32_t bus_clock = 0;
     uint32_t cpu_clock = 0;

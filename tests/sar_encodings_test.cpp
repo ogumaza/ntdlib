@@ -9,11 +9,12 @@
 #include <array>
 #include <optional>
 
+#include "xsflib/testing/check.h"
+
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/encodings.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/formats.h"
-#include "xsflib/testing/check.h"
 
 namespace
 {

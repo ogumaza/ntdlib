@@ -17,6 +17,18 @@
 // burst of code takes no time. The ARM9's clock runs at twice the system's. A burst of the ARM9 that runs for more than
 // kSlice of its cycles passes its cycles' time. So does a burst that polls: one that reads a register that changes with
 // time kPollReads times. The BIOS's WaitByLoop passes its time too, and so do halts that a masked IRQ ends at once.
+//
+// An image that runs only on a DSi (RunsInDsiMode) boots in DSi mode, as the DSi's launcher leaves a game that it
+// starts from the card (GBATEK's "DSi BIOS RAM"): 16 MiB of main memory with the firmware's area at 0x02FFF000, the
+// header's 0x1000 bytes at 0x02FFC000 and 0x02FFE000 and its first 0x160 at 0x02FFFA80 and 0x02FFFE00, the ARM9i and
+// ARM7i binaries at their addresses, the system settings at 0x02000400, the new shared WRAM mapped as the header's
+// settings ask, SCFG_EXT9 0x8307F100, and SCFG_EXT7 open with the game's setting at 0x0380FFC4 and 0x02FFFDF0. The
+// card answers its reads as on a DS, from the whole image. The DSi's registers are mapped (ntr/dsi_io.h), the ARM9's
+// NDMA moves words, and the BIOS has the SHA-1 calls. The ARM9's clock runs at four times the system's once SCFG_CLK's
+// bit 0 is set. A burst of the ARM9 ends at the machine's next event (a timer, the display or the card), or after
+// kSlice cycles, and passes its cycles' time. A burst that sets up an earlier event, such as a card read, ends at once.
+// A game's threads that wait for the card's data then see it arrive as the events come. Nothing touches the NAND,
+// SD/MMC, AES, the DSP or the cameras.
 
 #pragma once
 
@@ -38,6 +50,8 @@
 namespace ntdlib::ntr
 {
 
+class DsiIo;
+class Ndma;
 class SpiMemory;
 
 // A cartridge's backup memory, by the bytes of its addresses: 1 for an EEPROM of 512 bytes, 2 for a larger EEPROM or a
@@ -95,6 +109,9 @@ public:
 
     // The system's clock, in cycles of the ARM7's clock since the boot.
     uint64_t Clock() const;
+
+    // Whether the machine runs in DSi mode.
+    bool DsiMode() const;
 
     // Runs the machine until the clock reaches `until` or the ARM9 reaches its stop address (arm::Cpu's
     // SetStopAddress), and appends the sound unit's output samples to `out`. Returns whether the ARM9 reached the stop
@@ -162,7 +179,11 @@ private:
     void WriteCard(uint32_t address, int size, uint32_t value) override;
 
     void Boot(const Rom& rom);
+    void BootDsi(const Rom& rom);
     void LoadArm9(const Rom& rom);
+
+    // The main memory's address of the byte `from_end` bytes before its end, where the firmware's area is.
+    uint32_t FromEnd(uint32_t from_end);
 
     uint32_t ReadIo(uint32_t address, int size);
     void WriteIo(uint32_t address, int size, uint32_t value);
@@ -176,7 +197,13 @@ private:
     bool Swi(arm::Cpu& cpu, uint32_t comment);
     void Fail(std::string message);
 
-    // The clock, the events and the interrupts.
+    // The clock, the events and the interrupts. Arm9Cycles gives the ARM9's cycles for each of the system's, and
+    // BurstCycles the length of the ARM9's next burst.
+    uint64_t Arm9Cycles() const;
+    uint64_t BurstCycles() const;
+
+    // DSi mode: ends the ARM9's burst when a change in it brings the next event before the burst's end.
+    void EventScheduled();
     void Pass(uint64_t until, bool to_arm7_change, std::vector<SoundOutput>& out);
     uint64_t NextEvent() const;
     void Events();
@@ -221,6 +248,8 @@ private:
     std::vector<uint8_t> oam_;
     std::array<std::vector<uint8_t>, 5> vram_;
     std::array<uint8_t, 0x2000> io_ = {}; // the registers that the machine stores without a meaning
+    std::unique_ptr<Ndma> ndma_;          // DSi mode's NDMA, or nullptr
+    std::unique_ptr<DsiIo> dsi_io_;       // DSi mode's registers from 0x04004000, or nullptr
     MachineCounts counts_;
     std::string error_;
 
@@ -228,8 +257,9 @@ private:
     uint64_t wait_cycles_ = 0; // the ARM9's cycles in WaitByLoop, whose time is to pass
     uint64_t spin_cycles_ = 0; // the ARM9's cycles in halts that the IRQ line ended at once, whose time is to pass
     bool arm9_running_ = false;
-    int polls_ = 0;       // the burst's reads of registers that change with time
-    bool polled_ = false; // the burst ended as it polled
+    uint64_t burst_end_ = 0; // the clock at which the ARM9's burst ends
+    int polls_ = 0;          // the burst's reads of registers that change with time
+    bool polled_ = false;    // the burst ended as it polled
     bool irq_line_ = false;
     bool arm7_changed_ = false; // the ARM7 changed the IPC since the last run of the ARM7
 

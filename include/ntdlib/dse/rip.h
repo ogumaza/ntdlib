@@ -46,21 +46,21 @@ bool IsMusic(const SequenceRef& sequence);
 // nothing, and a bank that can't be read gives no sound effects.
 std::vector<Job> SelectSequences(std::span<const NamedFile> files, const std::regex& only, bool bgm);
 
-// What `sequence` requires that `files` don't hold: its file, the song's wave bank, the banks of the effect's list,
-// and the main bank of a bank whose waves lie in one. Empty when nothing is missing.
+// What `sequence` requires that `files` don't hold: its file, the song's wave bank, the banks of the effect's list, and
+// the main bank of a bank whose waves are in one. Empty when nothing is missing.
 std::vector<std::string> MissingData(std::span<const NamedFile> files, const SequenceRef& sequence);
 
 // The files that a library of the sequences `sequences` holds: indices into `files`, in their order. They are each
 // sequence's song or bank of sound effects, and the banks and the main bank that it plays (FindSequenceSet). Each
 // sequence is found again among the kept files, and must play the same files. Nothing when the kept files give a
-// sequence other files, or when one of `sequences` lacks data (MissingData). The library then holds every file.
+// sequence other files, or when one of `sequences` has no data (MissingData). The library then holds every file.
 std::optional<std::vector<std::size_t>> KeepSequenceData(std::span<const NamedFile> files,
                                                          std::span<const SequenceRef> sequences);
 
 // The number that a mini gives a sequence of the library's files `files`. Bits 16 to 31 give the place of the
 // sequence's file among the files' paths in sorted order. For a sound effect, bits 0 to 15 give its slot plus 1, and
-// for a song 0. Throws std::out_of_range when the files lack the sequence's file, or for a number that its bits can't
-// hold.
+// for a song 0. Throws std::out_of_range when the sequence's file is missing from the files, or for a number that its
+// bits can't hold.
 uint32_t SoundId(std::span<const NamedFile> files, const SequenceRef& sequence);
 SequenceRef SequenceOf(std::span<const NamedFile> files, uint32_t sound_id);
 

@@ -15,6 +15,7 @@
 
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/near.h"
 
 #include "ntdlib/nx/audio/dsp.h"
 #include "ntdlib/nx/audio/renderer.h"
@@ -94,9 +95,9 @@ std::vector<int16_t> Constant(int count)
 
 void TestSine()
 {
-    // A sine of 1 kHz at 32 kHz, at an amplitude of 10000, plays at a ratio of 21845 / 32768. Output n then lies at
+    // A sine of 1 kHz at 32 kHz, at an amplitude of 10000, plays at a ratio of 21845 / 32768. Output n then is at
     // input position n * 21845 / 32768 less 3 samples at medium quality, 5 at high quality and 4 at low quality. Once
-    // the kernel has passed the start, each output lies within 3 of the sine there: the interpolator's error, at least
+    // the kernel has passed the start, each output is within 3 of the sine there: the interpolator's error, at least
     // 75 dB down, and the rounding of the input to whole samples.
     std::vector<int16_t> wave;
     for (int k = 0; k < 32000; ++k)
@@ -135,7 +136,7 @@ void TestLevel()
     {
         worst = std::max(worst, std::fabs(left[n] - 10000.0));
     }
-    Check(worst <= 0.2, "the level lies " + std::to_string(worst) + " from 10000");
+    Check(worst <= 0.2, "the level is " + std::to_string(worst) + " from 10000");
     XSFLIB_CHECK(rounded[0] == 10000 && rounded[2 * (kFrame - 1)] == 10000 && rounded[1] == 0);
 }
 
@@ -153,20 +154,18 @@ void TestMute()
     const std::vector<double> rising = voice.Left(1);
     const std::vector<double> unmuted = voice.Left(1);
 
-    const auto near = [](double sample, double expected)
-    {
-        return std::fabs(sample - expected) <= 0.2;
-    };
-    XSFLIB_CHECK(near(falling[0], 10000.0) && near(falling[120], 5000.0) && near(falling[239], 10000.0 / 240.0));
+    XSFLIB_CHECK(Near(falling[0], 10000.0, 0.2) && Near(falling[120], 5000.0, 0.2) &&
+                 Near(falling[239], 10000.0 / 240.0, 0.2));
     XSFLIB_CHECK(std::all_of(muted.begin(), muted.end(), [](double s) { return s == 0.0; }));
-    XSFLIB_CHECK(rising[0] == 0.0 && near(rising[1], 10000.0 / 240.0) && near(rising[239], 10000.0 * 239.0 / 240.0));
-    XSFLIB_CHECK(near(unmuted[0], 10000.0) && near(unmuted[239], 10000.0));
+    XSFLIB_CHECK(rising[0] == 0.0 && Near(rising[1], 10000.0 / 240.0, 0.2) &&
+                 Near(rising[239], 10000.0 * 239.0 / 240.0, 0.2));
+    XSFLIB_CHECK(Near(unmuted[0], 10000.0, 0.2) && Near(unmuted[239], 10000.0, 0.2));
 }
 
 void TestStop()
 {
     // A voice that stops leaves its last product, 10000, to the depop. Each sample, the depop multiplies by
-    // 31529 / 32768 and adds to the buffer. At the end of the third frame it lies below 2^-16 and becomes 0.
+    // 31529 / 32768 and adds to the buffer. At the end of the third frame it is below 2^-16 and becomes 0.
     EnhancedVoice voice(Constant(kFrame * 8), 48000, audio::SrcQuality::kMedium);
     voice.Left(2);
     voice.renderer.SetVoicePlayState(voice.voice, audio::PlayState::kStopped);
@@ -181,7 +180,7 @@ void TestStop()
         const double expected = 10000.0 * std::pow(decay, static_cast<double>(t + 1));
         worst = std::max(worst, std::fabs(fading[t] - expected) / expected);
     }
-    Check(worst <= 1e-4, "the depop lies " + std::to_string(worst) + " of its value from the decay");
+    Check(worst <= 1e-4, "the depop is " + std::to_string(worst) + " of its value from the decay");
     XSFLIB_CHECK(std::all_of(after.begin(), after.end(), [](double s) { return s == 0.0; }));
 }
 
@@ -217,7 +216,7 @@ void TestSnapshot()
 
     XSFLIB_CHECK(first_slot == 1 && again_slot == 1);
     XSFLIB_CHECK(again == first);
-    XSFLIB_CHECK(alone != first && std::fabs(alone[kFrame * 2] - 10000.0) <= 0.2);
+    XSFLIB_CHECK(alone != first && Near(alone[kFrame * 2], 10000.0, 0.2));
 }
 
 } // namespace

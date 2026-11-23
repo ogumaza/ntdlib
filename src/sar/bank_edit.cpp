@@ -6,7 +6,6 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <optional>
 #include <set>
@@ -20,6 +19,7 @@
 
 #include "ntdlib/sar/formats.h"
 #include "sar/file_bytes.h"
+#include "sar/file_parts.h"
 #include "sar/format_ids.h"
 
 namespace ntdlib::sar
@@ -71,7 +71,7 @@ struct BankPlaces
 // body.
 BankPlaces Open(std::span<const uint8_t> file, Flavor flavor)
 {
-    if (file.size() < 6 || (file[0] != 'C' && file[0] != 'F') || std::memcmp(file.data() + 1, "BNK", 3) != 0 ||
+    if (file.size() < 6 || !detail::HasFileMagic(file, "BNK") ||
         !((file[4] == 0xFF && file[5] == 0xFE) || (file[4] == 0xFE && file[5] == 0xFF)))
     {
         throw xsflib::FormatError("not a bank file (CBNK or FBNK)");
@@ -422,7 +422,7 @@ private:
     }
 
     // Lays out the region table that the reference at `owner` gives, and each region that it names. The reference's
-    // copy lies at `owner_place`.
+    // copy is at `owner_place`.
     void Table(const BankPlaces& from, std::size_t owner, std::size_t owner_place,
                std::size_t (Layout::*region)(const BankPlaces&, std::size_t))
     {
@@ -484,7 +484,7 @@ struct Insertion
     std::vector<uint8_t> bytes;
 };
 
-// Where a place of the bank lies after the insertions: past every insertion at or before it.
+// Where a place of the bank is after the insertions: past every insertion at or before it.
 std::size_t Moved(const std::vector<Insertion>& insertions, std::size_t at)
 {
     std::size_t place = at;
@@ -565,7 +565,7 @@ std::vector<uint8_t> WithInstruments(std::span<const uint8_t> bank, Flavor flavo
     }
 
     // What goes in: the new waves after the table of waves, the new entries after the table of instruments, and the
-    // copies after the last instrument. Each place lies inside INFO's body.
+    // copies after the last instrument. Each place is inside INFO's body.
     const xsflib::Reader& r = target.r;
     const uint32_t count = r.U32(target.instruments);
     const uint32_t new_count = std::max(count, programs.rbegin()->first + 1);

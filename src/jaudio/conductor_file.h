@@ -88,7 +88,7 @@ inline ConductorModuleValues ConductorModuleAt(const xsflib::Reader& r, std::siz
 }
 
 // The values of the track at `at`, without its modules. The name ends at its first zero byte. With
-// `check_whole_name`, all 8 bytes of the name have to lie inside the file before the name is read. Without it, the
+// `check_whole_name`, all 8 bytes of the name have to be inside the file before the name is read. Without it, the
 // reads stop at the zero byte. The two give different offsets in the message for a file that ends inside a name.
 inline ConductorTrackValues ConductorTrackAt(const xsflib::Reader& r, std::size_t at, bool check_whole_name)
 {

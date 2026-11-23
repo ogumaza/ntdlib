@@ -2,7 +2,7 @@
 
 // The arguments of JAudio2's sequence commands, 0xA0 to 0xFF: Four Swords Adventures' command table at 0x80491e54. The
 // entry for 0xE7 comes from Twilight Princess's table (0x803c5e80 in the game's main.dol). Commands below 0xA0 are
-// notes, notes' ends and register prefixes, which the table leaves out.
+// notes, notes' ends and register prefixes. The table leaves them out.
 
 #pragma once
 

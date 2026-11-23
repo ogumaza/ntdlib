@@ -24,6 +24,8 @@
 #include "disc/image_parts.h"
 #include "ntdlib/disc/error.h"
 #include "ntdlib/disc/source.h"
+#include "ntdlib/rounding.h"
+#include "ntdlib/zero_padded.h"
 
 namespace ntdlib::disc
 {
@@ -56,10 +58,8 @@ std::vector<fs::path> Pieces(const fs::path& path, Console console)
     {
         const auto continuation = [&](int index)
         {
-            std::string number = std::to_string(index);
-            number.insert(0, std::max<size_t>(number.size(), static_cast<size_t>(digits)) - number.size(), '0');
             fs::path piece = path;
-            piece += "." + number;
+            piece += "." + ZeroPadded(static_cast<uint32_t>(index), static_cast<std::size_t>(digits));
 
             return piece;
         };
@@ -137,7 +137,7 @@ public:
         // A disc's info has room for every block of a dual-layer disc. The info for each slot takes a whole number of
         // sectors.
         const uint64_t blocks_per_disc = kWiiSectorsPerDisc / (block_size_ / kSector);
-        const uint64_t info_size = (0x100 + blocks_per_disc * 2 + sector_size - 1) / sector_size * sector_size;
+        const uint64_t info_size = AlignUp(0x100 + blocks_per_disc * 2, sector_size);
         const auto slot = std::find_if(slots.begin(), slots.end(), [](uint8_t used) { return used != 0; });
         if (slot == slots.end())
         {

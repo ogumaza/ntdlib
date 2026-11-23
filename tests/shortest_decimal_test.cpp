@@ -42,8 +42,9 @@ void TestNineDigits()
 
 void TestTies()
 {
-    // 1048576.25f is 2^20 + 2^-2. Floats near 2^20 are 2^-3 apart, so a text reads back as this float within 0.0625 of
-    // it. 1048576.2 and 1048576.3 are both 0.05 away. Of two texts equally near, the one with the even last digit wins.
+    // 1048576.25f is 2^20 + 2^-2. Floats near 2^20 are 2^-3 apart. A text therefore reads back as this float within
+    // 0.0625 of it. 1048576.2 and 1048576.3 are both 0.05 away. Of two texts equally near, the one with the even last
+    // digit wins.
     Check(ShortestDecimal(1048576.25f) == "1048576.2", "a tie goes to the even digit");
 }
 
@@ -65,7 +66,7 @@ void TestWholeNumbers()
 
 void TestSmallest()
 {
-    // 2^-149 is 1.401e-45. The floats beside it are 0 and 2.803e-45, so a text reads back within 0.7e-45 of it.
+    // 2^-149 is 1.401e-45. The floats beside it are 0 and 2.803e-45. A text therefore reads back within 0.7e-45 of it.
     // 1e-45 is 0.401e-45 away.
     Check(ShortestDecimal(0x1p-149f) == "0.000000000000000000000000000000000000000000001", "the smallest float");
 }
@@ -78,7 +79,7 @@ void TestInfinities()
 
 void TestNans()
 {
-    // The texts of Microsoft's printf for infinities and NaNs, which std::to_chars uses: "nan" for a quiet NaN,
+    // The texts of Microsoft's printf for infinities and NaNs, as std::to_chars gives them: "nan" for a quiet NaN,
     // "nan(snan)" for a signalling one (quiet bit clear), and "nan(ind)" for the indefinite NaN that x86 makes (the
     // sign and the quiet bit alone), each with a minus sign for a set sign bit.
     Check(ShortestDecimal(std::bit_cast<float>(uint32_t{0x7fc00000})) == "nan", "a quiet NaN");

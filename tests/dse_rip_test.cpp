@@ -25,6 +25,7 @@
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/rip.h"
 #include "ntdlib/dse/sets.h"
+#include "ntdlib/testing/dse_files.h"
 #include "ntdlib/testing/dse_song_files.h"
 
 namespace
@@ -65,31 +66,24 @@ Bytes EffectsFile()
 }
 
 // The game's files, in the order of its file system.
-struct Game
+struct Game : ntdlib::testing::dse_files::NamedFiles
 {
-    std::vector<dse::NamedFile> Files() const
+    Game()
+        : NamedFiles({
+              {"SOUND/BGM/bgm.swd", dse_song_files::MainBankFile()},
+              {"SOUND/BGM/bgm0001.smd", dse_song_files::SongFile()},
+              {"SOUND/BGM/bgm0001.swd", dse_song_files::BankFile()},
+              {"SOUND/BGM/bgm0002.smd", dse_song_files::SongFile()},
+              {"SOUND/BGM/bgm0002.swd", dse_song_files::BankFile()},
+              {"SOUND/BGM/bgm0003.smd", dse_song_files::SongFile()},
+              {"SOUND/ME/me.swd", dse_song_files::BankFile()},
+              {"SOUND/ME/me0000.smd", dse_song_files::SongFile()},
+              {"SOUND/ME/me0001.smd", dse_song_files::SongFile()},
+              {"SOUND/ME/me0001.swd", BankWithId(kJingleBankId)},
+              {"SOUND/SE/fx.sed", EffectsFile()},
+          })
     {
-        std::vector<dse::NamedFile> files;
-        for (const auto& [path, data] : bytes)
-        {
-            files.push_back({path, data});
-        }
-        return files;
     }
-
-    std::vector<std::pair<std::string, Bytes>> bytes = {
-        {"SOUND/BGM/bgm.swd", dse_song_files::MainBankFile()},
-        {"SOUND/BGM/bgm0001.smd", dse_song_files::SongFile()},
-        {"SOUND/BGM/bgm0001.swd", dse_song_files::BankFile()},
-        {"SOUND/BGM/bgm0002.smd", dse_song_files::SongFile()},
-        {"SOUND/BGM/bgm0002.swd", dse_song_files::BankFile()},
-        {"SOUND/BGM/bgm0003.smd", dse_song_files::SongFile()},
-        {"SOUND/ME/me.swd", dse_song_files::BankFile()},
-        {"SOUND/ME/me0000.smd", dse_song_files::SongFile()},
-        {"SOUND/ME/me0001.smd", dse_song_files::SongFile()},
-        {"SOUND/ME/me0001.swd", BankWithId(kJingleBankId)},
-        {"SOUND/SE/fx.sed", EffectsFile()},
-    };
 };
 
 std::vector<std::string> Labels(const std::vector<rip::Job>& jobs)
@@ -126,7 +120,7 @@ void TestLabels()
 void TestSelection()
 {
     const Game game;
-    const std::vector<dse::NamedFile> files = game.Files();
+    const std::vector<dse::NamedFile> files = game.files;
     XSFLIB_CHECK(
         Labels(rip::SelectSequences(files, std::regex(""), false)) ==
         (std::vector<std::string>{"bgm0001", "bgm0002", "bgm0003", "me0000", "me0001", "fx_000", "fx_001", "fx_003"}));
@@ -140,7 +134,7 @@ void TestSelection()
 void TestMissingData()
 {
     const Game game;
-    std::vector<dse::NamedFile> files = game.Files();
+    std::vector<dse::NamedFile> files = game.files;
     XSFLIB_CHECK(rip::MissingData(files, {"SOUND/BGM/bgm0001.smd"}).empty());
     XSFLIB_CHECK(rip::MissingData(files, {"SOUND/ME/me0000.smd"}).empty());
     XSFLIB_CHECK(rip::MissingData(files, {"SOUND/SE/fx.sed", 0}).empty());
@@ -165,7 +159,7 @@ void TestMissingData()
 void TestKeepSequenceData()
 {
     const Game game;
-    const std::vector<dse::NamedFile> files = game.Files();
+    const std::vector<dse::NamedFile> files = game.files;
     XSFLIB_CHECK(PathsOf(files, rip::KeepSequenceData(files, std::vector<SequenceRef>{{"SOUND/BGM/bgm0002.smd"}})) ==
                  (std::vector<std::string>{"SOUND/BGM/bgm.swd", "SOUND/BGM/bgm0002.smd", "SOUND/BGM/bgm0002.swd"}));
     const std::vector<SequenceRef> song_and_effect = {{"SOUND/BGM/bgm0002.smd"}, {"SOUND/SE/fx.sed", 0}};
@@ -179,11 +173,11 @@ void TestKeepSequenceData()
 }
 
 // Kept files that give a sequence other banks. Sound effect 3 keeps me0001.swd without its jingle. me0000 then finds
-// two banks in its folder that no song shares a name with, and no bank. A sequence that lacks data gives nothing too.
+// two banks in its folder that no song shares a name with, and no bank. A sequence without data gives nothing too.
 void TestKeepRefusals()
 {
     const Game game;
-    const std::vector<dse::NamedFile> files = game.Files();
+    const std::vector<dse::NamedFile> files = game.files;
     const std::vector<SequenceRef> both_jingles = {{"SOUND/ME/me0000.smd"}, {"SOUND/ME/me0001.smd"}};
     XSFLIB_CHECK(PathsOf(files, rip::KeepSequenceData(files, both_jingles)) ==
                  (std::vector<std::string>{"SOUND/BGM/bgm.swd", "SOUND/ME/me.swd", "SOUND/ME/me0000.smd",
@@ -199,7 +193,7 @@ void TestKeepRefusals()
 void TestSoundIds()
 {
     const Game game;
-    const std::vector<dse::NamedFile> files = game.Files();
+    const std::vector<dse::NamedFile> files = game.files;
     XSFLIB_CHECK(rip::SoundId(files, {"SOUND/BGM/bgm0001.smd"}) == 0x10000u);
     XSFLIB_CHECK(rip::SoundId(files, {"SOUND/SE/fx.sed", 1}) == 0xA0002u);
     XSFLIB_CHECK(rip::SequenceOf(files, 0xA0002u) == (SequenceRef{"SOUND/SE/fx.sed", 1}));
@@ -228,25 +222,8 @@ struct TestFormat
 };
 
 // A test program's set: the files of a library, and the sound that its mini names.
-struct TestSet
+struct TestSet : ntdlib::testing::dse_files::FileSet
 {
-    std::vector<uint8_t>* File(const std::string& path)
-    {
-        const auto file = files.find(path);
-        return file != files.end() ? &file->second : nullptr;
-    }
-
-    std::vector<dse::NamedFile> Named() const
-    {
-        std::vector<dse::NamedFile> named;
-        for (const auto& [path, bytes] : files)
-        {
-            named.push_back({path, bytes});
-        }
-        return named;
-    }
-
-    std::map<std::string, std::vector<uint8_t>> files;
     uint32_t sound = 0;
 };
 
@@ -288,7 +265,7 @@ std::vector<int16_t> Play(TestSet& set, int frames)
 void TestLibraryAndMini()
 {
     const Game game;
-    const std::vector<dse::NamedFile> files = game.Files();
+    const std::vector<dse::NamedFile> files = game.files;
     const std::vector<SequenceRef> sequences = {{"SOUND/BGM/bgm0002.smd"}, {"SOUND/SE/fx.sed", 0}};
     const std::vector<std::size_t> kept = rip::KeepSequenceData(files, sequences).value_or(std::vector<std::size_t>{});
     const Bytes library = rip::BuildLibrary<TestFormat>(files, kept, TestDescriptor{.build = 1}, {{"title", "a game"}});
@@ -299,9 +276,9 @@ void TestLibraryAndMini()
     XSFLIB_CHECK(chunks.files.size() == kept.size() && !chunks.sound);
 
     TestSet whole;
-    for (const auto& [path, bytes] : game.bytes)
+    for (std::size_t i = 0; i < game.bytes.size(); i++)
     {
-        whole.files[path] = bytes;
+        whole.files[game.paths[i]] = game.bytes[i];
     }
     TestSet cut;
     std::vector<dse::NamedFile> library_files;

@@ -14,10 +14,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/rsar/reference.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
+
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/rsar/reference.h"
 
 namespace ntdlib::rsar
 {
@@ -117,9 +118,9 @@ std::vector<GroupEntries> FindGroupEntries(const xsflib::Reader& r)
     return groups;
 }
 
-// True if `entries` hold each of `groups` and its items, and lie before the FILE block at `file_block`.
-bool EntriesBeforeFiles(const std::vector<GroupEntries>& entries,
-                        const std::vector<SoundArchive::Group>& groups, std::size_t file_block)
+// True if `entries` hold each of `groups` and its items, and are before the FILE block at `file_block`.
+bool EntriesBeforeFiles(const std::vector<GroupEntries>& entries, const std::vector<SoundArchive::Group>& groups,
+                        std::size_t file_block)
 {
     if (entries.size() != groups.size())
     {
@@ -206,7 +207,7 @@ std::vector<std::vector<bool>> ItemsRead(const SoundArchive& archive, const std:
     return read;
 }
 
-// Where a group's kept items lie in the copy that KeepSequenceData makes: the group's files, then their wave data.
+// Where a group's kept items are in the copy that KeepSequenceData makes: the group's files, then their wave data.
 struct GroupPlace
 {
     std::size_t offset = 0, size = 0, wave_data_offset = 0, wave_data_size = 0;
@@ -216,8 +217,8 @@ struct GroupPlace
 // Appends each group's kept items to `copy`: their files, then their wave data, each at a multiple of 32 bytes. Items
 // of a group that hold the same bytes share one copy of them. Banks often share a wave archive. A group outside the
 // archive keeps its place.
-std::vector<GroupPlace> AppendKeptItems(const SoundArchive& archive,
-                                        const std::vector<std::vector<bool>>& kept, std::vector<uint8_t>& copy)
+std::vector<GroupPlace> AppendKeptItems(const SoundArchive& archive, const std::vector<std::vector<bool>>& kept,
+                                        std::vector<uint8_t>& copy)
 {
     // The offsets and sizes of a group's bytes that the copy holds, and where each copy starts from the group's offset.
     using Copies = std::map<std::pair<uint64_t, uint32_t>, std::size_t>;
@@ -334,7 +335,7 @@ std::vector<uint8_t> KeepSequenceData(const SoundArchive& archive, const std::ve
                                       const ReadOptions& options)
 {
     // The copy keeps the archive up to its files: the header, the SYMB and INFO blocks and the FILE block's header. The
-    // groups' entries must lie there.
+    // groups' entries must be there.
     const std::span<const uint8_t> all = archive.Bytes();
     const xsflib::Reader r(all, true);
     const std::size_t file_block = r.U32(RsarLayout::kFileBlock);

@@ -18,6 +18,7 @@
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/pb.h"

@@ -191,7 +191,7 @@ std::vector<std::size_t> EntriesOf(const xsflib::Reader& r, const std::map<uint1
     return entries;
 }
 
-// Where the value of option `bit` lies among the options at `at`: a word of flags, then a 32-bit value for each flag
+// Where the value of option `bit` is among the options at `at`: a word of flags, then a 32-bit value for each flag
 // that is set, in the order of the bits. Nothing when the flag isn't set.
 std::optional<std::size_t> OptionAt(const xsflib::Reader& r, std::size_t at, int bit)
 {
@@ -212,7 +212,7 @@ void ReadGroup(const xsflib::Reader& r, std::size_t group, const char* magic, St
         throw xsflib::FormatError("a group that isn't a group file");
     }
 
-    // INFO lists each file's ID, and where it lies in the group's FILE block.
+    // INFO lists each file's ID, and where it is in the group's FILE block.
     const std::map<uint16_t, std::size_t> blocks = ReadBlocks(r, group, structure.distances);
     const std::size_t items = BlockOf(blocks, kGroupInfoBlock) + 8;
     const std::size_t body = BlockOf(blocks, kGroupFileBlock) + 8;
@@ -295,7 +295,7 @@ Structure ReadStructure(std::span<const uint8_t> archive, Flavor flavor)
         }
     }
 
-    // Each group whose file the archive holds whole. A group that an archive cut short lacks in part moves whole.
+    // Each group whose file the archive holds whole. A group that an archive cut short holds only in part moves whole.
     const char* magic = flavor == Flavor::kCtr ? "CGRP" : "FGRP";
     std::set<std::size_t> groups;
     for (const std::size_t group : EntriesOf(r, tables, kGroupTable))
@@ -641,7 +641,7 @@ void WriteTableValues(std::span<uint8_t> archive, Flavor flavor, std::span<const
     std::vector<Distance> distances;
     const std::map<uint16_t, std::size_t> tables = TablesOf(r, BlockOf(ReadBlocks(r, 0, distances), kInfoBlock) + 8);
 
-    // The bits of `value` under `mask` replace those of the 32-bit value at `at`. The read checks that it lies within
+    // The bits of `value` under `mask` replace those of the 32-bit value at `at`. The read checks that it is within
     // the archive.
     const auto put = [&](std::size_t at, uint32_t value, uint32_t mask)
     {

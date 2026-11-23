@@ -357,9 +357,9 @@ private:
     // True if every open track waits for ever and none of their settings moves.
     bool Steady() const;
 
-    // The time to end at if the main loop, which started at tick `start`, holds a sound unchanged: its pass is longer
-    // than kHoldSeconds, nothing has changed for longer than that, and every sounding note is an endless one that its
-    // track hasn't released. The performance ends kHoldSeconds after the last change.
+    // The time to end at if the main loop from tick `start` holds a sound unchanged: its pass is longer than
+    // kHoldSeconds, nothing has changed for longer than that, and every sounding note is an endless one that its track
+    // hasn't released. The performance ends kHoldSeconds after the last change.
     std::optional<double> HeldSoundEnd(uint32_t start) const;
 
     // How a pass that starts at `tick` starts.
@@ -407,8 +407,8 @@ private:
     void StartEffect();
 
     // --- The companion (SequenceSound::companion) ---
-    // A sound that the companion plays: its sequence, its first track, and the state of its ticks, which follow its
-    // tempo. While its tracks run, its tempo and timebase stand in for the sequence's (InVoice).
+    // A sound that the companion plays: its sequence, its first track, and the state of its ticks. The ticks follow the
+    // sound's tempo. While its tracks run, its tempo and timebase stand in for the sequence's (InVoice).
     struct CompanionVoice
     {
         const SequenceSound* sound = nullptr;

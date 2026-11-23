@@ -29,6 +29,11 @@ uint32_t Machine::ReadIo(uint32_t address, int size)
         return ReadCard(address, size);
     }
 
+    if (dsi_io_ != nullptr && DsiIo::Contains(address))
+    {
+        return dsi_io_->Read(address, size);
+    }
+
     const uint32_t offset = address - kIo;
     if (offset >= kIoSize)
     {
@@ -36,13 +41,11 @@ uint32_t Machine::ReadIo(uint32_t address, int size)
         return 0;
     }
 
-    if (size == 4)
+    const auto read16 = [this](uint32_t at)
     {
-        return ReadIo16(offset) | static_cast<uint32_t>(ReadIo16(offset + 2)) << 16;
-    }
-
-    const uint16_t half = ReadIo16(offset & ~1u);
-    return size == 2 ? half : (half >> (8 * (offset & 1))) & 0xFF;
+        return ReadIo16(at);
+    };
+    return ReadIoBySize(offset, size, read16);
 }
 
 void Machine::WriteIo(uint32_t address, int size, uint32_t value)
@@ -73,6 +76,12 @@ void Machine::WriteIo(uint32_t address, int size, uint32_t value)
         return;
     }
 
+    if (dsi_io_ != nullptr && DsiIo::Contains(address))
+    {
+        dsi_io_->Write(address, size, value);
+        return;
+    }
+
     const uint32_t offset = address - kIo;
     if (offset >= kIoSize)
     {
@@ -80,29 +89,18 @@ void Machine::WriteIo(uint32_t address, int size, uint32_t value)
         return;
     }
 
-    if (size == 4)
+    const auto write16 = [this](uint32_t at, uint16_t half, uint16_t mask)
     {
-        WriteIo16(offset, static_cast<uint16_t>(value), 0xFFFF);
-        WriteIo16(offset + 2, static_cast<uint16_t>(value >> 16), 0xFFFF);
-    }
-    else if (size == 2)
-    {
-        WriteIo16(offset, static_cast<uint16_t>(value), 0xFFFF);
-    }
-    else
-    {
-        const int shift = 8 * static_cast<int>(offset & 1);
-        WriteIo16(offset & ~1u, static_cast<uint16_t>((value & 0xFF) << shift), static_cast<uint16_t>(0xFF << shift));
-    }
+        WriteIo16(at, half, mask);
+    };
+    WriteIoBySize(offset, size, value, write16);
 }
 
 uint16_t Machine::ReadIo16(uint32_t offset)
 {
     if (offset >= kDmaStart && offset < kDmaEnd)
     {
-        // Only the control half reads back.
-        const Dma& dma = dmas_[(offset - kDmaStart) / 12];
-        return (offset - kDmaStart) % 12 == 10 ? static_cast<uint16_t>(dma.control >> 16) : 0;
+        return ReadDmaRegister(dmas_, offset);
     }
     if (offset >= kDmaEnd && offset < kDmaFillEnd)
     {
@@ -139,20 +137,15 @@ uint16_t Machine::ReadIo16(uint32_t offset)
     case kIpcFifoControl:
         Poll();
         return FifoControl();
-    case kIme:
-        return ime_;
-    case kIme + 2:
-        return 0;
-    case kIe:
-        return static_cast<uint16_t>(ie_);
-    case kIe + 2:
-        return static_cast<uint16_t>(ie_ >> 16);
     case kIf:
-        Poll();
-        return static_cast<uint16_t>(if_);
     case kIf + 2:
         Poll();
-        return static_cast<uint16_t>(if_ >> 16);
+        [[fallthrough]];
+    case kIme:
+    case kIme + 2:
+    case kIe:
+    case kIe + 2:
+        return ReadInterruptRegister(offset, ime_, ie_, if_);
     case kWramControl - 1:
         return static_cast<uint16_t>(io_[kWramControl - 1] | wram_control_ << 8);
     case kGxStatus:
@@ -179,46 +172,21 @@ void Machine::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
 {
     const auto merge = [value, mask](uint16_t old)
     {
-        return static_cast<uint16_t>((old & ~mask) | (value & mask));
+        return Merge16(old, value, mask);
     };
 
     if (offset >= kDmaStart && offset < kDmaEnd)
     {
-        const std::size_t channel = (offset - kDmaStart) / 12;
-        Dma& dma = dmas_[channel];
-        const uint32_t field = (offset - kDmaStart) % 12;
-
-        const auto merge32 = [&merge](uint32_t old, bool high)
+        if (const std::optional<uint32_t> control = WriteDmaRegister(dmas_, offset, value, mask))
         {
-            const int shift = high ? 16 : 0;
-            return (old & ~(0xFFFFu << shift)) | static_cast<uint32_t>(merge(static_cast<uint16_t>(old >> shift)))
-                                                     << shift;
-        };
-
-        if (field < 4)
-        {
-            dma.source = merge32(dma.source, field == 2);
-        }
-        else if (field < 8)
-        {
-            dma.destination = merge32(dma.destination, field == 6);
-        }
-        else if (field == 8)
-        {
-            dma.control = merge32(dma.control, false);
-        }
-        else
-        {
-            WriteDmaControl(static_cast<int>(channel), merge32(dma.control, true));
+            WriteDmaControl(DmaChannelOf(offset), *control);
         }
         return;
     }
     if (offset >= kDmaEnd && offset < kDmaFillEnd)
     {
         Dma& dma = dmas_[(offset - kDmaEnd) / 4];
-        const int shift = offset % 4 == 0 ? 0 : 16;
-        dma.fill = (dma.fill & ~(0xFFFFu << shift)) |
-                   static_cast<uint32_t>(merge(static_cast<uint16_t>(dma.fill >> shift))) << shift;
+        dma.fill = MergeHalf(dma.fill, offset % 4 == 0 ? 0 : 16, value, mask);
         return;
     }
     if (offset >= kTimerStart && offset < kTimerEnd)
@@ -231,6 +199,7 @@ void Machine::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
         else
         {
             timers_.SetControl(timer, merge(timers_.Control(timer)), Clock());
+            EventScheduled();
         }
         return;
     }
@@ -255,6 +224,7 @@ void Machine::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
     case kDispstat:
         dispstat_ = static_cast<uint16_t>(merge(dispstat_) & kDispstatWritable);
         ScheduleDisplay();
+        EventScheduled();
         return;
     case kIpcSync:
         ipcsync_ = static_cast<uint16_t>(merge(ipcsync_) & (kSyncOutput | kSyncIrqEnable));
@@ -267,30 +237,16 @@ void Machine::WriteIo16(uint32_t offset, uint16_t value, uint16_t mask)
         WriteFifoControl(static_cast<uint16_t>(value & mask));
         return;
     case kIme:
-        ime_ = static_cast<uint16_t>(merge(ime_) & 1);
-        UpdateIrq();
-        return;
     case kIe:
     case kIe + 2:
-        {
-            const int shift = offset == kIe ? 0 : 16;
-            ie_ = (ie_ & ~(0xFFFFu << shift)) | static_cast<uint32_t>(merge(static_cast<uint16_t>(ie_ >> shift)))
-                                                    << shift;
-            UpdateIrq();
-            return;
-        }
     case kIf:
     case kIf + 2:
+        if ((WriteInterruptRegister(offset, value, mask, ime_, ie_, if_) & irq::kVblank) != 0)
         {
-            const uint32_t acks = static_cast<uint32_t>(value & mask) << (offset == kIf ? 0 : 16);
-            if ((acks & if_ & irq::kVblank) != 0)
-            {
-                counts_.vblank_acks++;
-            }
-            if_ &= ~acks;
-            UpdateIrq();
-            return;
+            counts_.vblank_acks++;
         }
+        UpdateIrq();
+        return;
     case kWramControl - 1:
         Store16(offset, value, mask & 0x00FF);
         if ((mask & 0xFF00) != 0)
@@ -336,8 +292,7 @@ uint16_t Machine::Stored(uint32_t offset) const
 
 void Machine::Store16(uint32_t offset, uint16_t value, uint16_t mask)
 {
-    const uint16_t merged = static_cast<uint16_t>((Stored(offset) & ~mask) | (value & mask));
-    xsflib::StoreLe16(&io_[offset], merged);
+    xsflib::StoreLe16(&io_[offset], Merge16(Stored(offset), value, mask));
 }
 
 void Machine::Unknown(uint32_t address, int size, bool write)

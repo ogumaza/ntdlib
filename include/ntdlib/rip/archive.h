@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <ranges>
 #include <regex>
 #include <span>
 #include <string>
@@ -28,7 +29,9 @@
 #include "xsflib/files.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/rip/length.h"
+#include "xsflib/rip/tool.h"
 
+#include "ntdlib/file_paths.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/game_rules.h"
 #include "ntdlib/sar/sarc.h"
@@ -123,12 +126,46 @@ struct Job
     float pitch = 1.0f;
 };
 
+// The jobs that rip each job of `selected` in each of its states, in order. `states_of(job)` gives the job's states, a
+// range of objects with a `name`, the state that the game starts the sound in first. A job without states stays as it
+// is. Each state gets a copy of the job, under the job's label, a space and the state's name, or under the job's label
+// alone for a state without a name. `apply(state, copy)` then sets the state's values in the copy.
+template <typename StatesOf, typename Apply>
+std::vector<Job> WithStates(const std::vector<Job>& selected, const StatesOf& states_of, const Apply& apply)
+{
+    std::vector<Job> jobs;
+    for (const Job& job : selected)
+    {
+        const auto states = states_of(job);
+        if (std::ranges::empty(states))
+        {
+            jobs.push_back(job);
+            continue;
+        }
+
+        for (const auto& state : states)
+        {
+            Job in_state = job;
+            if (!state.name.empty())
+            {
+                in_state.label += " ";
+                in_state.label += state.name;
+            }
+
+            apply(state, in_state);
+            jobs.push_back(std::move(in_state));
+        }
+    }
+
+    return jobs;
+}
+
 // The sequence sounds whose labels match `only`, and with `bgm` only those that are music (IsMusic). Streams and wave
 // sounds aren't ripped.
 std::vector<Job> SelectSounds(const sar::SoundArchive& archive, const std::regex& only, bool bgm);
 
-// Reports that no sound matched --only (`only_text`, empty if it wasn't given) or --bgm. Returns the exit code, 1.
-int NoSoundMatches(const std::string& only_text, bool bgm);
+// Reports that no sound matched --only or --bgm, and returns the exit code (xsflib/rip/tool.h).
+using xsflib::rip::NoSoundMatches;
 
 // The sounds that a rip leaves out: those whose data isn't all there, and those that make no sound.
 struct Skipped
@@ -144,21 +181,22 @@ struct Skipped
 std::vector<Job> SkipIncomplete(const sar::SoundArchive& archive, std::vector<Job> jobs, const sar::Options& options,
                                 Skipped& skipped);
 
-// The jobs whose sounds the length analysis found to sound. The analysis finds the other sequences that never sound.
-// Some play no notes, and some play their notes at a volume of 0. Reports each sound that it leaves out, and counts it
-// in `skipped`.
-std::vector<Job> SkipSilent(std::vector<Job> jobs, Skipped& skipped);
+// Loads the sound archive `bytes` of a rip, read from `path`, with the archive reader's `options`. Prints an error and
+// returns nothing when the archive can't be read. Warns that a truncated archive's sounds whose data is past its end
+// are skipped.
+std::optional<sar::SoundArchive> LoadArchiveToRip(const std::vector<uint8_t>& bytes, const std::string& path,
+                                                  const sar::Options& options);
 
 // Whether a file holds a group, by the group file's name (ntdlib/sar/formats.h).
 using sar::IsGroupFileName;
 
 // The group files that the archive's external groups name, found with `find`. If `find` finds fewer group files than
 // the archive keeps outside it, every group file of the archive in the SARC archives that `list_sarcs` lists is added
-// too, in that order (see SoundArchive::MatchesGroupFile). `read_sarc` reads a SARC. A group file from a SARC is kept at the SARC's path, a
-// slash and the file's name in the SARC. A file without a name is kept under its index among the files that SarcFiles
-// gives. A group that isn't found is reported. If a SARC held a group file of the archive, no group is reported. A
-// group file doesn't say which group it is. An archive that can't be read with `options` gives none: the rip reports
-// it.
+// too, in that order (see SoundArchive::MatchesGroupFile). `read_sarc` reads a SARC. A group file from a SARC is kept
+// at the SARC's path, a slash and the file's name in the SARC. A file without a name is kept under its index among the
+// files that SarcFiles gives. A group that isn't found is reported. If a SARC held a group file of the archive, no
+// group is reported. A group file doesn't say which group it is. An archive that can't be read with `options` gives
+// none: the rip reports it.
 template <typename FileChunk>
 std::vector<FileChunk> FindGroups(
     const std::vector<uint8_t>& archive_bytes,
@@ -240,8 +278,7 @@ std::optional<FileChunk> FindGroupFile(const Paths& paths, const Read& read, con
 {
     for (const std::string& path : paths)
     {
-        const std::size_t slash = path.rfind('/');
-        if (!IsGroupFileName(slash == std::string::npos ? path : path.substr(slash + 1), name, flavor))
+        if (!IsGroupFileName(ntdlib::detail::FileNameOf(path), name, flavor))
         {
             continue;
         }
@@ -291,13 +328,13 @@ std::optional<FileChunk> FindGroupFileIn(const std::filesystem::path& folder, co
     return std::nullopt;
 }
 
-// The SARC archives among the files at `paths` that lie in the folder of the sound archive at `archive_path`, not in
-// a folder below it, in the order of their paths' UTF-8 bytes. A SARC archive's path ends in ".sarc". A game can keep
+// The SARC archives among the files at `paths` that are in the folder of the sound archive at `archive_path`, not in a
+// folder below it, in the order of their paths' UTF-8 bytes. A SARC archive's path ends in ".sarc". A game can keep
 // group files in them under other names (FindGroups).
 template <typename Paths>
 std::vector<std::string> SarcsBeside(const Paths& paths, const std::string& archive_path)
 {
-    const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
+    const std::string folder = ntdlib::detail::FolderOf(archive_path);
     std::vector<std::string> sarcs;
     for (const std::string& path : paths)
     {
@@ -327,10 +364,10 @@ struct LibraryArchive
 // group's file is read from the first group's file that holds it, in the archive or beside it.
 //
 // The library's archive keeps those files, and the group files in the archive that hold the copies that the models
-// read. It drops every other file. The header, the STRG block and the INFO block keep their places and their bytes,
-// but for three things: the archive's size, the FILE block's size and the places that the file table gives. The FILE
-// block holds the kept bytes in the archive's order, laid out as NintendoWare's tools lay out a FILE block
-// (ntdlib/sar/tables.h). A file whose bytes lie inside the kept bytes keeps its place there. A dropped file has no
+// read. It drops every other file. The header, the STRG block and the INFO block keep their places and their bytes, but
+// for three things: the archive's size, the FILE block's size and the places that the file table gives. The FILE block
+// holds the kept bytes in the archive's order, laid out as NintendoWare's tools lay out a FILE block
+// (ntdlib/sar/tables.h). A file whose bytes are inside the kept bytes keeps its place there. A dropped file has no
 // place. The tools write the place of a file that only groups hold the same way. The library keeps the group files
 // beside the archive that hold the copies that the models read, in their order.
 //
@@ -354,7 +391,7 @@ std::optional<LibraryArchive> KeepSequenceData(const sar::SoundArchive& archive,
 // The cut group files come in the order of `library.group_files`. Each kept file is read back from the library's
 // archive with them, and compared with the file in `archive`. Nothing when the two differ, when a bank can't be read,
 // when one of `sounds` isn't a sequence sound of the archive, when a copy that the models read isn't an item's copy, or
-// when a group file's blocks don't lie as the tools lay them out: the INFO block and any other before the FILE block,
+// when a group file's blocks don't sit as the tools lay them out: the INFO block and any other before the FILE block,
 // and the rest after it. The library then holds the whole group files.
 std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::SoundArchive& archive,
                                                                  const LibraryArchive& library,
@@ -432,6 +469,26 @@ std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, xsfl
 {
     typename Format::ProgramBuilder program;
     program.AddSound(kSoundItem << 24 | index);
+    tags["_lib"] = lib_name;
+
+    return program.WritePsf(Format::kPsfVersion, reserved, tags);
+}
+
+// A mini that plays the sounds at `indices` together, in that order, from the library `lib_name`: a `SND ` chunk with a
+// list. `reserved` is as BuildMini's. A list of one sound gives BuildMini's mini of that sound. Throws
+// std::invalid_argument for an empty list.
+template <typename Format>
+std::vector<uint8_t> BuildMiniOfSounds(std::span<const uint32_t> indices, const std::string& lib_name,
+                                       xsflib::psf::Tags tags, const std::vector<uint8_t>& reserved = {})
+{
+    std::vector<uint32_t> ids;
+    for (const uint32_t index : indices)
+    {
+        ids.push_back(kSoundItem << 24 | index);
+    }
+
+    typename Format::ProgramBuilder program;
+    program.AddSounds(ids);
     tags["_lib"] = lib_name;
 
     return program.WritePsf(Format::kPsfVersion, reserved, tags);

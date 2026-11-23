@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/jaudio/game.h"
@@ -19,18 +18,29 @@
 namespace ntdlib::sequence_export::jaudio
 {
 
-// Runs the command line of `archive_converter` with `argc` and `argv` as RunArchiveConverter does, with JAudio games
-// among the inputs (ArchiveProgramGames). A game takes the program's options. Of those beyond the frame's, only
-// --voices applies to its sequences (ArchiveProgramOptions). `game_options` says which sounds of each game to list,
-// and whether the games run on the Wii U. Returns the exit status for main() to return.
+// The converter of the JAudio games among the inputs of the archive converter `archives`. It takes the name, the
+// version line and the usage of `archives`. A game takes the program's options. Of those beyond the frame's, only
+// --voices applies to its sequences (ArchiveProgramOptions). `game_options` says which sounds of each game to list, and
+// whether the games run on the Wii U.
 template <typename Archive>
-int RunArchiveConverterWithGames(int argc, char** argv, const ArchiveConverter<Archive>& archive_converter,
-                                 const GameOptions& game_options = {})
+GameConverter MakeGameConverterFor(
+    const Converter<sequence_export::PerformOptions, Archive, sequence_export::Conversion>& archives,
+    const GameOptions& game_options = {})
 {
-    const Converter<sequence_export::PerformOptions, Archive, sequence_export::Conversion> archives =
-        MakeArchiveConverter(archive_converter);
-    const GameConverter games = MakeGameConverter(archives.program, archives.version_line,
-                                                  ArchiveProgramOptions(archives.option), archives.usage, game_options);
+    return MakeGameConverter(archives.program, archives.version_line, ArchiveProgramOptions(archives.option),
+                             archives.usage, game_options);
+}
+
+// Runs the command line `argc` and `argv` through the archive converter `archives`, as RunMain and Run do, with the
+// JAudio games among the inputs (ArchiveProgramGames). The games convert with MakeGameConverterFor. Returns the exit
+// status for main() to return.
+template <typename Archive>
+int RunConverterWithGames(
+    int argc, char** argv,
+    const Converter<sequence_export::PerformOptions, Archive, sequence_export::Conversion>& archives,
+    const GameOptions& game_options = {})
+{
+    const GameConverter games = MakeGameConverterFor(archives, game_options);
     const auto run = [&archives, &games](const std::vector<std::string>& args)
     {
         return Run(args, archives, ArchiveProgramGames(args, games));

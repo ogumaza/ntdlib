@@ -38,6 +38,7 @@
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/testing/dse_files.h"
 #include "ntdlib/testing/dse_song_files.h"
+#include "ntdlib/testing/fnv1a.h"
 
 namespace
 {
@@ -66,12 +67,12 @@ constexpr uint16_t kEffectsId = 1;
 
 // The sound effects. Slot 0 is empty. Effect 1 ends. Effect 2 plays two tracks for ever. Effect 3 plays for ever, two
 // instances at most. Effect 4 plays for ever, one instance at most, and refuses another. Effects 5 and 6 are of group
-// 1, which plays one instance at most: effect 5 stops the oldest, and effect 6 refuses itself. Effects 7 and 8 play for
-// ever at priorities 8 and 15. Effect 9 has five tracks, more than a sequence of the pool holds. Effect 10 plays the
-// PSG and the noise for ever. Effect 11 plays notes with a change of tempo and ends. Effects 12 and 13 play for ever in
-// group 2, which plays three instances at most for effect 12 and one for effect 13. Each stops the oldest. Effect 14's
-// settings give two tracks, and it has one. Effect 15 ends, and any number of its instances play. With 16 slots, the
-// table fills its 32 bytes, and the slot past it holds the first effect's settings.
+// 1. Group 1 plays one instance at most: effect 5 stops the oldest, and effect 6 refuses itself. Effects 7 and 8 play
+// for ever at priorities 8 and 15. Effect 9 has five tracks, more than a sequence of the pool holds. Effect 10 plays
+// the PSG and the noise for ever. Effect 11 plays notes with a change of tempo and ends. Effects 12 and 13 play for
+// ever in group 2. Group 2 plays three instances at most for effect 12 and one for effect 13. Each stops the oldest.
+// Effect 14's settings give two tracks, and it has one. Effect 15 ends, and any number of its instances play. With 16
+// slots, the table fills its 32 bytes, and the slot past it holds the first effect's settings.
 std::vector<std::optional<Effect>> Effects()
 {
     const Bytes select = {0xA9, 0x7F, 0xAA, 0x00};
@@ -163,29 +164,6 @@ std::vector<Bytes> EarlierTracks()
     return tracks;
 }
 
-// FNV-1a over the bytes of `value`.
-void Mix(uint64_t& hash, uint32_t value)
-{
-    for (int i = 0; i < 4; i++)
-    {
-        hash = (hash ^ ((value >> (8 * i)) & 0xFF)) * 0x100000001B3;
-    }
-}
-
-// The hash of a tick's commands within its block: the tick's number, then each command's id and arguments.
-void MixTick(uint64_t& hash, int tick, const snd::CommandList& list)
-{
-    Mix(hash, static_cast<uint32_t>(tick));
-    for (const snd::Command& command : list)
-    {
-        Mix(hash, static_cast<uint32_t>(command.id));
-        for (const uint32_t arg : command.args)
-        {
-            Mix(hash, arg);
-        }
-    }
-}
-
 void TestFilesRead()
 {
     const dse::Song song = dse::Song::Parse(SongFile());
@@ -235,7 +213,7 @@ void CheckBlocks(dse::Driver& driver, const uint64_t (&hashes)[kBlocks], const S
     uint16_t now = 0;
     for (std::size_t block = 0; block < kBlocks; block++)
     {
-        uint64_t hash = 0xCBF29CE484222325;
+        ntdlib::testing::Fnv1a hash;
         for (int i = 0; i < block_ticks; i++)
         {
             const int tick = static_cast<int>(block) * block_ticks + i;
@@ -244,11 +222,12 @@ void CheckBlocks(dse::Driver& driver, const uint64_t (&hashes)[kBlocks], const S
                 now = status[change++].status;
             }
             act(tick);
-            MixTick(hash, i, driver.Tick(now));
+            dse_files::MixTick(hash, i, driver.Tick(now));
         }
         const std::size_t first = block * static_cast<std::size_t>(block_ticks);
-        if (!xsflib::testing::Check(hash == hashes[block], "the commands of ticks " + std::to_string(first) + " to " +
-                                                               std::to_string(first + block_ticks - 1)))
+        if (!xsflib::testing::Check(
+                hash.Value() == hashes[block],
+                "the commands of ticks " + std::to_string(first) + " to " + std::to_string(first + block_ticks - 1)))
         {
             break;
         }

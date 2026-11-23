@@ -91,8 +91,7 @@ struct SongInput
 // The songs of a cartridge image that holds Universomo's files: each song file in the folder that holds the sample
 // bank's file, in the order of their numbers, with the bank. The folder's table of sounds gives which songs loop.
 // Without the table every song loops. A song that can't be read gives a line in `warnings` and is left out,
-// and so is a bank that can't be read. In Beat City's US image (game code BEYE), song 105 is the title screen's music,
-// and its name says so.
+// and so is a bank that can't be read. A song's name is "au" and its number, such as "au105".
 struct SongSet
 {
     std::string folder; // the bank's folder in the image's file system, with its last '/', or empty

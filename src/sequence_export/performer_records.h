@@ -376,7 +376,7 @@ struct PartControllers
     int sfz_biquad = 0;
 };
 
-// Sends the controllers `c` through `send`, which takes a controller's value and its kind, with CC11 at `expression`.
+// Sends the controllers `c`, with CC11 at `expression`, through `send(value, kind)`.
 template <typename Send>
 void SendControllers(const PartControllers& c, int expression, const Send& send)
 {

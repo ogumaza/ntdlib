@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
@@ -20,7 +21,7 @@
 #include "ntdlib/sar/wave_sound_edit.h"
 #include "ntdlib/testing/sar_files.h"
 
-using xsflib::testing::ErrorOf;
+using seqlib::testing::Throws;
 
 namespace
 {
@@ -33,12 +34,6 @@ using ntdlib::sar::WaveSoundPlaces;
 using ntdlib::sar::WaveSoundValuePlaces;
 using ntdlib::sar::WithWaveSoundValues;
 using ntdlib::sar::WithWaveSoundWave;
-
-template <typename Error, typename Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
-}
 
 WaveSoundFile Read(std::span<const uint8_t> file, Flavor flavor)
 {

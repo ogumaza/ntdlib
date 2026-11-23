@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <span>
 #include <string_view>
 
 namespace ntdlib::ctr::dsp
@@ -80,5 +82,13 @@ struct Dsp1Image
     static constexpr std::size_t kSegmentSizeOffset = 8;
     static constexpr std::size_t kSegmentTypeOffset = 15;
 };
+
+// Whether `image` is long enough for a DSP1 header and holds "DSP1" where the header has it. A rip tool tells a
+// firmware file from other files by this test. The loader then checks the segments.
+inline bool IsDsp1Image(std::span<const uint8_t> image)
+{
+    return image.size() >= Dsp1Image::kHeaderSize &&
+           std::memcmp(image.data() + Dsp1Image::kMagicOffset, Dsp1Image::kMagic.data(), Dsp1Image::kMagic.size()) == 0;
+}
 
 } // namespace ntdlib::ctr::dsp

@@ -7,8 +7,8 @@
 //
 // An object asks for its record once a game frame (0x80256fcc). The first ask starts the record through startChordSe
 // (0x8024c4c8) once the chords are in. Later asks keep the player alive (0x8024c6c0): it stays busy after its last
-// step, so the record plays once. The objects that start their effects once (0x80256f48) start them again only when
-// neither a player nor the effect plays (0x8024cba4). The record's last step ends neither.
+// step. The record therefore plays once. The objects that start their effects once (0x80256f48) start them again only
+// when neither a player nor the effect plays (0x8024cba4). The record's last step ends neither.
 
 #pragma once
 
@@ -54,7 +54,7 @@ public:
     // outlive the layer. Throws FormatError for a record that the database doesn't hold.
     ChordLayer(std::span<const uint8_t> data, ChordFile chords, uint32_t stage, std::span<const uint32_t> records);
 
-    // A note with a voice above 0 of the piece's track 0 or of its child 0, which the rhythm's parser reads
+    // A note with a voice above 0 of the piece's track 0 or of its child 0. The rhythm's parser reads these notes
     // (0x80247194).
     void Note(uint8_t key, uint8_t velocity)
     {

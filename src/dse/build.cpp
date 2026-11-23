@@ -14,6 +14,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "ntdlib/arm/branch.h"
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/ntr/code.h"
 #include "ntdlib/ntr/rom.h"
@@ -37,13 +38,12 @@ constexpr std::size_t kMaxFunctionWords = 4096;
 constexpr std::size_t kMaxFunctions = 4096;
 constexpr uint32_t kUnknownFunction = 0xFFFFFFFF;
 constexpr uint32_t kFunctionStart = 0xF0F0F0F0;
-constexpr uint32_t kPointer = 0x02AAAAAA;
 
 constexpr uint64_t kFnvOffset = 0xCBF29CE484222325;
 constexpr uint64_t kFnvPrime = 0x100000001B3;
 
 // A build that the model covers: the fingerprint of the code that its table reaches, and the hash of its sequencer,
-// channels and voices. They lie from `core_before` bytes before the lowest handler to `core_after` bytes after it.
+// channels and voices. They run from `core_before` bytes before the lowest handler to `core_after` bytes after it.
 struct KnownBuild
 {
     Build build;
@@ -68,14 +68,14 @@ struct KnownBuild
 //
 // Luminous Arc 3: Eyes (Japan, NTR-BLUJ-JPN) runs the later build with code that differs more: the table at 0x0211A104
 // and the lowest handler at 0x0205EEB8. Its handlers of codes 0x98, 0x99 and 0xF8 differ from Sky's, and its linker put
-// the driver's functions in another order. Its core is the stretch from the driver's thread (0x0205E3B0) to 0x02062FC4,
-// which holds Sky's functions from 0x02070E0C to 0x020756E8 in their order, with 206 words more. Inazuma Eleven 2:
-// Fire (Japan, revision 1, NTR-BEEJ-JPN-rev1) has the same fingerprint, and a core of the same order with 22 words
-// more than Luminous Arc 3's: the table at 0x020A9098, the lowest handler at 0x0208F2AC and the core from 0x0208E7A4
-// to 0x02093410. Professor Layton and the Last Specter (North America, NTR-BLFE-USA) runs the code of the same order in
-// its overlay 0, with another fingerprint: the table at 0x020580F4, the lowest handler at 0x02048134 and the core from
-// 0x020475B4 to 0x0204C214. Its handlers differ from Sky's in the same codes, and in 33 more by immediate values only,
-// such as offsets of the driver's fields.
+// the driver's functions in another order. Its core is the stretch from the driver's thread (0x0205E3B0) to 0x02062FC4.
+// The stretch contains Sky's functions from 0x02070E0C to 0x020756E8 in their order, with 206 words more. Inazuma
+// Eleven 2: Fire (Japan, revision 1, NTR-BEEJ-JPN-rev1) has the same fingerprint, and a core of the same order with 22
+// words more than Luminous Arc 3's: the table at 0x020A9098, the lowest handler at 0x0208F2AC and the core from
+// 0x0208E7A4 to 0x02093410. Professor Layton and the Last Specter (North America, NTR-BLFE-USA) runs the code of the
+// same order in its overlay 0, with another fingerprint: the table at 0x020580F4, the lowest handler at 0x02048134 and
+// the core from 0x020475B4 to 0x0204C214. Its handlers differ from Sky's in the same codes, and in 33 more by immediate
+// values only, such as offsets of the driver's fields.
 //
 // Inazuma Eleven (Japan, revision 1, NTR-YEEJ-JPN-rev1) runs the later build too: the table at 0x020B3F84, the lowest
 // handler at 0x02028334 and the core from 0x02026BDC to 0x0202C420. The core starts with Sky's function at 0x02070180
@@ -114,6 +114,10 @@ struct KnownBuild
 // the lowest handler at 0x0205700C and the core from the driver's thread (0x02056728) to 0x0205AB24. No code in the
 // game loads a song. The game's code therefore never plays the six songs that its files hold, and no song reaches the
 // extra function. The entry gives the songs the later build. Inazuma Eleven 3 runs that build with the same code.
+//
+// Luminous Arc (North America, NTR-ANIE-USA) runs the oldest build: the table at 0x021123B4, the lowest handler at
+// 0x020C2FE8 and the core from the tick's timer (0x020C2904, Time's 0x02062898) to 0x020C5850. The oldest build reads
+// files of version 0x402.
 constexpr KnownBuild kKnownBuilds[] = {
     {Build::kEarlier, 0xFA24810A485132CC, 0x02062F74 - 0x02061800, 0x02066C00 - 0x02062F74, 0x6245F20133110B42},
     {Build::kLater, 0x2917D1BCB634EBA2, 0x0207191C - 0x02070180, 0x02075828 - 0x0207191C, 0x9BF34F55901478B4},
@@ -130,6 +134,7 @@ constexpr KnownBuild kKnownBuilds[] = {
     {Build::kLater, 0xAA764B7A1EFA29E3, 0x0207ACF4 - 0x0207A410, 0x0207E7D0 - 0x0207ACF4, 0x7245A0085BCBF2AF},
     {Build::kLater, 0x87EDF33C59A3E6FB, 0x020956B8 - 0x02095004, 0x0209802A - 0x020956B8, 0xA5F6935219DFBD23},
     {Build::kLater, 0xAA764B7A1EFA29E3, 0x0205700C - 0x02056728, 0x0205AB24 - 0x0205700C, 0x3362B07803346A7A},
+    {Build::kOldest, 0x86B637E1A3E33CC9, 0x020C2FE8 - 0x020C2904, 0x020C5850 - 0x020C2FE8, 0xD38A11D030FD0B3B},
 };
 
 uint32_t WordAt(const CodeBlock& block, uint32_t address)
@@ -142,7 +147,7 @@ bool Holds(const CodeBlock& block, uint32_t address)
     return address % 4 == 0 && address >= block.address && address - block.address < block.bytes.size() / 4 * 4;
 }
 
-// A Thumb function's address has bit 0 set. Its halfwords lie from the address without that bit.
+// A Thumb function's address has bit 0 set. Its halfwords start at the address without that bit.
 bool HoldsThumb(const CodeBlock& block, uint32_t address)
 {
     const uint32_t start = address & ~1u;
@@ -207,23 +212,6 @@ bool IsThumbExit(uint16_t half)
            (half & 0xFF87) == 0x4687;
 }
 
-// B or BL, and where it goes.
-bool IsBranch(uint32_t word)
-{
-    return (word & 0x0E000000) == 0x0A000000 && word >> 28 != 0xF;
-}
-
-bool IsLink(uint32_t word)
-{
-    return (word & 0x01000000) != 0;
-}
-
-uint32_t BranchTarget(uint32_t address, uint32_t word)
-{
-    const int32_t offset = static_cast<int32_t>(word << 8) >> 6;
-    return address + 8 + static_cast<uint32_t>(offset);
-}
-
 // LDR Rd, [PC, #offset]: a load from a literal pool. Gives the pool word's address.
 std::optional<uint32_t> LiteralAddress(uint32_t address, uint32_t word)
 {
@@ -270,16 +258,7 @@ void MixInto(uint64_t& hash, uint32_t value)
 // or the ARM9's fast memory.
 uint32_t Masked(uint32_t word)
 {
-    if ((word & 0x0E000000) == 0x0A000000)
-    {
-        return word & 0xFF000000;
-    }
-    if ((word >= 0x01FF8000 && word < 0x02400000) || (word >= 0x027C0000 && word < 0x02800000))
-    {
-        return kPointer;
-    }
-
-    return word;
+    return MaskedMovingWord(word).value_or(word);
 }
 
 // The fingerprint of the code that a table of handlers reaches. The functions are numbered in the order that the walk
@@ -354,32 +333,6 @@ private:
         return found->second;
     }
 
-    // The function's words, up to the first exit that no forward branch of the function passes.
-    std::size_t Length(const CodeBlock& block, uint32_t entry) const
-    {
-        uint32_t farthest = entry;
-        std::size_t words = 0;
-        for (uint32_t address = entry; words < kMaxFunctionWords && Holds(block, address); address += 4)
-        {
-            const uint32_t word = WordAt(block, address);
-            words++;
-            if (IsBranch(word) && !IsLink(word))
-            {
-                const uint32_t target = BranchTarget(address, word);
-                if (target > address && target - entry < 4 * kMaxFunctionWords)
-                {
-                    farthest = std::max(farthest, target);
-                }
-            }
-            if (address >= farthest && IsExit(word))
-            {
-                break;
-            }
-        }
-
-        return words;
-    }
-
     void Walk(std::size_t index, uint32_t entry)
     {
         if ((entry & 1) != 0)
@@ -389,7 +342,7 @@ private:
         }
 
         const CodeBlock& block = code_[index];
-        const std::size_t words = Length(block, entry);
+        const std::size_t words = ArmFunctionWords(block, entry);
         const uint32_t end = entry + 4 * static_cast<uint32_t>(words);
         Mix(kFunctionStart);
         Mix(static_cast<uint32_t>(words));
@@ -399,10 +352,10 @@ private:
         {
             const uint32_t word = WordAt(block, address);
             Mix(Masked(word));
-            if (IsBranch(word))
+            if (arm::IsBranch(word))
             {
-                const uint32_t target = BranchTarget(address, word);
-                if (IsLink(word) || target < entry || target >= end)
+                const uint32_t target = arm::BranchTarget(address, word);
+                if (arm::IsLink(word) || target < entry || target >= end)
                 {
                     Mix(Id(index, target));
                 }
@@ -578,6 +531,31 @@ bool IsTable(const CodeBlock& block, uint32_t table)
 
 } // namespace
 
+std::size_t ArmFunctionWords(const CodeBlock& block, uint32_t entry)
+{
+    uint32_t farthest = entry;
+    std::size_t words = 0;
+    for (uint32_t address = entry; words < kMaxFunctionWords && Holds(block, address); address += 4)
+    {
+        const uint32_t word = WordAt(block, address);
+        words++;
+        if (arm::IsBranch(word) && !arm::IsLink(word))
+        {
+            const uint32_t target = arm::BranchTarget(address, word);
+            if (target > address && target - entry < 4 * kMaxFunctionWords)
+            {
+                farthest = std::max(farthest, target);
+            }
+        }
+        if (address >= farthest && IsExit(word))
+        {
+            break;
+        }
+    }
+
+    return words;
+}
+
 std::vector<DriverCode> FindDriverCode(std::span<const CodeBlock> code)
 {
     std::vector<DriverCode> found;
@@ -662,6 +640,8 @@ const char* NameOf(Build build)
         return "middle";
     case Build::kLateMiddle:
         return "late middle";
+    case Build::kOldest:
+        return "oldest";
     case Build::kLater:
         break;
     }

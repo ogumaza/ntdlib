@@ -266,7 +266,7 @@ void TestBss()
     Check(levels.Count() == 0, "a table in .bss adds no records");
 }
 
-// A symbol table whose names lie in a section without bytes in the file, such as .bss, gives no symbols.
+// A symbol table whose names are in a section without bytes in the file, such as .bss, gives no symbols.
 void TestNamesInBss()
 {
     std::vector<uint8_t> bytes = SoundSheet(kGetItTogether, {{"s_VoiceDataTable", {{"BGM_A", "", 0.5f}}}});

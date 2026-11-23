@@ -10,15 +10,18 @@
 #include <optional>
 #include <utility>
 
+#include "ntdlib/ax/ax.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/system.h"
 #include "ntdlib/rvl/ax/voice.h"
 #include "ntdlib/rvl/snd/driver.h"
 #include "ntdlib/rvl/snd/engine.h"
 #include "ntdlib/rvl/snd/util.h"
+#include "ntdlib/types.h"
 #include "ntdlib/wave/adpcm.h"
-
 #include "rvl/snd/held_gain.h"
 
 namespace ntdlib::rvl::snd

@@ -97,7 +97,7 @@ std::size_t SettingsOf(const xsflib::Reader& r, const Places& places, std::size_
     return at + ReadRef(r, at).offset;
 }
 
-// Where the value of option `bit` lies in the settings at `settings`, or 0 without the option.
+// Where the value of option `bit` is in the settings at `settings`, or 0 without the option.
 std::size_t ValueOf(const xsflib::Reader& r, std::size_t settings, int bit)
 {
     const uint32_t bits = r.U32(settings);

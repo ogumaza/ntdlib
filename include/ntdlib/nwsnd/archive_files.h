@@ -54,8 +54,8 @@ public:
     {
     }
 
-    // The bank of item `bank_item`. Null if the item isn't one of the archive's banks, or if the archive lacks the
-    // bank's file.
+    // The bank of item `bank_item`. Null if the item isn't one of the archive's banks, or if the bank's file is missing
+    // from the archive.
     const sar::Bank* Bank(uint32_t bank_item)
     {
         if (const auto it = banks_.find(bank_item); it != banks_.end())

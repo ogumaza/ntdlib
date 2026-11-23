@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Builders of DOL files for tests: a section in a DOL's header, and a main.dol that holds AX's microcode, for the
-// detection of the Wii's sound builds (ntdlib/sound_build.h).
+// Builders of DOL files for tests: a section in a DOL's header, a DOL of one data section, and a main.dol that contains
+// AX's microcode, for the detection of the Wii's sound builds (ntdlib/sound_build.h).
 
 #pragma once
 
@@ -27,6 +27,17 @@ inline void SetDolSection(std::span<uint8_t> dol, int index, uint32_t offset, ui
     xsflib::StoreBe32(&dol[at], offset);
     xsflib::StoreBe32(&dol[0x48 + at], address);
     xsflib::StoreBe32(&dol[0x90 + at], size);
+}
+
+// A DOL whose first data section contains `data` at the load address `address`.
+inline std::vector<uint8_t> DolWithData(uint32_t address, const std::vector<uint8_t>& data)
+{
+    constexpr std::size_t kHeader = 0x100;
+    std::vector<uint8_t> dol(kHeader);
+    SetDolSection(dol, 7, static_cast<uint32_t>(kHeader), address, static_cast<uint32_t>(data.size()));
+    dol.insert(dol.end(), data.begin(), data.end());
+
+    return dol;
 }
 
 // A DOL with AX's microcode in its first data section, at 0x80004000: two NOPs and seven jumps to 0x0Fxx, then a DMA of

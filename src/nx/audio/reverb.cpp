@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "nx/audio/arithmetic.h"

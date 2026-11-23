@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "ntdlib/ax/chorus_lines.h"
 #include "ntdlib/rvl/axfx/axfx.h"
 
 namespace ntdlib::rvl::axfx
@@ -70,20 +71,6 @@ public:
     void Process(AuxFrame& frame, const AuxFrame* bus_in, AuxFrame* bus_out);
 
 private:
-    // AXFX_CHORUS_EXP_LFO: the LFO's step, depth, phase and interpolation, in 16.16 fixed point. The game also stores
-    // the table's address, and a step in samples (stepSamp) that nothing reads.
-    struct Lfo
-    {
-        int32_t phase_add = 0;
-        int32_t depth_samp = 0;
-        uint32_t phase = 0;
-        uint32_t sign = 0;
-        uint32_t last_num = 0;
-        int32_t last_value = 0;
-        int32_t grad = 0;
-        int32_t grad_factor = 0;
-    };
-
     // Init's and Settings' common steps: the positions, then __InitParams (0x8010a6c4; October 2006, 0x80034818;
     // February 2009, 0x802e06d0). Frees the lines if __InitParams fails.
     bool Start();
@@ -104,15 +91,8 @@ private:
 
     Build build_;
     Params params_;
-    std::array<std::vector<float>, kChannelCount> line_;
-    uint32_t in_pos_ = 0;
-    uint32_t out_pos_ = 0;
-    uint32_t last_pos_ = 0;
-    uint32_t size_fp_ = 0;
-    uint32_t size_ = 0;
-    Lfo lfo_;
-    std::array<std::array<float, 4>, kChannelCount> history_{};
-    uint32_t hist_index_ = 0;
+    ntdlib::ax::axfx::ChorusLines<kChannelCount> lines_;
+    ntdlib::ax::axfx::ChorusLfo lfo_;
 
     // AXFX_CHORUS_EXP's `active` field (see kStopped). Init, Settings and Shutdown set kStopped. The Init of February
     // 2009 clears kSkipFrame too. A successful Init clears kStopped. A successful Settings clears it and sets

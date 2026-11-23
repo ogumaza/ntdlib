@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "ntdlib/testing/fnv1a.h"
+
 namespace ntdlib::wave::synthetic
 {
 
@@ -128,16 +130,10 @@ inline std::vector<StepCase> StepCases(uint64_t seed, std::size_t count)
 }
 
 // FNV-1a over 64 bits: a fingerprint of many decoders' outputs.
-class Hash
+class Hash : public ntdlib::testing::Fnv1a
 {
 public:
-    void Add(uint64_t value, int bytes)
-    {
-        for (int i = 0; i < bytes; i++)
-        {
-            value_ = (value_ ^ ((value >> (8 * i)) & 0xff)) * 0x100000001b3;
-        }
-    }
+    using Fnv1a::Add;
 
     // Adds a decoder's output: its length, then each sample.
     void Add(const std::vector<int16_t>& samples)
@@ -148,14 +144,6 @@ public:
             Add(static_cast<uint16_t>(s), 2);
         }
     }
-
-    uint64_t Value() const
-    {
-        return value_;
-    }
-
-private:
-    uint64_t value_ = 0xcbf29ce484222325;
 };
 
 } // namespace ntdlib::wave::synthetic

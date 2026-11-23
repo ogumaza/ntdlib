@@ -9,11 +9,33 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <string>
 
+#include "xsflib/text.h"
+
+#include "dsi_bios.h"
 #include "ntdlib/arm/cpu.h"
+#include "ntdlib/ntr/arm7.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::ntr::bios
 {
+
+// The SWIs that both CPUs' BIOSes have, by number.
+enum Swi : uint32_t
+{
+    kWaitByLoop = 0x03,
+    kIntrWait = 0x04,
+    kVBlankIntrWait = 0x05,
+    kHalt = 0x06,
+    kDiv = 0x09,
+    kCpuSet = 0x0B,
+    kCpuFastSet = 0x0C,
+    kSqrt = 0x0D,
+    kGetCrc16 = 0x0E,
+    kIsDebugger = 0x0F,
+};
 
 // Div: r0 / r1. Sets the quotient in r0, the remainder in r1 and the quotient's magnitude in r3. Returns false, and
 // changes nothing, for a division by 0 and for the most negative number by -1.
@@ -46,7 +68,7 @@ void CpuSet(arm::Cpu& cpu, bool fast, const Load& load, const Store& store)
     uint32_t count = control & 0x1FFFFF;
     if (fast)
     {
-        count = (count + 7) & ~7u;
+        count = AlignUp(count, 8);
     }
 
     uint32_t source = cpu.Reg(0) & ~static_cast<uint32_t>(size - 1);
@@ -105,6 +127,56 @@ void GetCrc16(arm::Cpu& cpu, const Load& load)
     }
     cpu.SetReg(0, crc & 0xFFFF);
     cpu.SetReg(3, last);
+}
+
+// SWI `number`, where both CPUs make it the same way: IntrWait, VBlankIntrWait, Div, CpuSet, CpuFastSet, Sqrt, GetCrc16
+// and IsDebugger, and in DSi mode (`dsi`) the SHA-1 calls. `fail(message)` reports a call that the model can't make.
+// Returns nothing for another SWI. Otherwise it returns what a handler of SWIs returns: false for IntrWait and
+// VBlankIntrWait, which the BIOS's code runs, and true for the rest.
+template <typename Load, typename Store, typename Fail>
+std::optional<bool> SharedCall(arm::Cpu& cpu, uint32_t number, bool dsi, const Load& load, const Store& store,
+                               const Fail& fail)
+{
+    switch (number)
+    {
+    case kIntrWait:
+        return false;
+    case kVBlankIntrWait:
+        cpu.SetReg(0, 1);
+        cpu.SetReg(1, irq::kVblank);
+        return false;
+    case kDiv:
+        if (!Div(cpu))
+        {
+            fail("Div with " + xsflib::Hex(cpu.Reg(0), 8, true) + " / " + xsflib::Hex(cpu.Reg(1), 8, true));
+        }
+        return true;
+    case kCpuSet:
+    case kCpuFastSet:
+        CpuSet(cpu, number == kCpuFastSet, load, store);
+        return true;
+    case kSqrt:
+        Sqrt(cpu);
+        return true;
+    case kGetCrc16:
+        GetCrc16(cpu, load);
+        return true;
+    case kIsDebugger:
+        cpu.SetReg(0, 0);
+        return true;
+    default:
+        if (dsi && number >= kSha1First && number <= kSha1Last)
+        {
+            const std::string error = Sha1Call(cpu, number, load, store);
+            if (!error.empty())
+            {
+                fail(error);
+            }
+            return true;
+        }
+
+        return std::nullopt;
+    }
 }
 
 } // namespace ntdlib::ntr::bios

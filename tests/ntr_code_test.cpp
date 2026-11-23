@@ -64,7 +64,8 @@ void TestUncompressBackward()
     XSFLIB_CHECK(ntr::UncompressBackward(Compressed()) == Decompressed());
 }
 
-// A footer that gives more than the data, a reference above the output, and data shorter than a footer.
+// A footer that gives more than the data, a reference above the output, a footer that asks for one byte more than
+// kMaxUncompressedBytes, and data shorter than a footer.
 void TestDamagedData()
 {
     Bytes too_long = Compressed();
@@ -72,10 +73,15 @@ void TestDamagedData()
     Bytes too_far = Compressed();
     too_far[4] = 0xFF;
     too_far[5] = 0xCF;
+    Bytes too_large = Compressed();
+    const std::size_t growth = ntr::kMaxUncompressedBytes - too_large.size() + 1;
+    xsflib::StoreLe32(&too_large[too_large.size() - 4], static_cast<uint32_t>(growth));
 
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { ntr::UncompressBackward(too_long); }) ==
                  "the compressed binary is damaged");
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { ntr::UncompressBackward(too_far); }) ==
+                 "the compressed binary is damaged");
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { ntr::UncompressBackward(too_large); }) ==
                  "the compressed binary is damaged");
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { ntr::UncompressBackward(Bytes(4, 0)); }) ==
                  "the compressed binary is damaged");
@@ -168,7 +174,8 @@ void TestUncompressedArm9()
     XSFLIB_CHECK(ntr::UncompressedArm9(ntr::Rom::Parse(plain_image)) == plain.arm9);
 }
 
-// Entry code that loads the word at 0x14 of the parameters and calls the decompressor, which returns at once for 0.
+// Entry code that loads the word at 0x14 of the parameters and calls the decompressor. The decompressor returns at once
+// for 0.
 Bytes StartupCode(uint32_t branch_to_exit)
 {
     const uint32_t words[] = {
@@ -209,7 +216,7 @@ void TestFindStartupDecompressor()
     XSFLIB_CHECK(!ntr::FindStartupDecompressor(code, 0x02000020));
 }
 
-// An overlay whose flags mark it compressed, and the same overlay with damaged data, which is left out.
+// An overlay whose flags mark it compressed, and the same overlay with damaged data. The damaged overlay is left out.
 void TestOverlays()
 {
     nds_files::Image spec;
@@ -232,7 +239,7 @@ void TestOverlays()
     XSFLIB_CHECK(without.size() == 1);
 }
 
-// An overlay's bytes come from the compressed size in its flags, which leaves out padding after the compressed part.
+// An overlay's bytes come from the compressed size in its flags. The size leaves out padding after the compressed part.
 // Cleared flags load the file as it is.
 void TestOverlayFlags()
 {

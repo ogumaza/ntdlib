@@ -90,7 +90,8 @@ void LeavePoll(Feeder& feeder, uint32_t track)
 
 void TestLoop()
 {
-    // A note and a wait, then the jump back to the note.
+    // A note and a wait, then the jump back to the note. Each event takes 32 frames: a pass of 96 frames runs from the
+    // first jump back to the second.
     LoopFinder finder(kRoot, kRate);
     Feeder feeder(finder);
     std::vector<Verdict> verdicts;
@@ -103,6 +104,7 @@ void TestLoop()
     }
 
     XSFLIB_CHECK(verdicts == (std::vector{Verdict::kNone, Verdict::kLoops}));
+    XSFLIB_CHECK(finder.PassFrames() == 96);
 }
 
 void TestLoopAroundPoll()
@@ -129,6 +131,7 @@ void TestLoopAroundPoll()
 
     XSFLIB_CHECK(polls == std::vector(6, Verdict::kNone));
     XSFLIB_CHECK(loops == (std::vector{Verdict::kNone, Verdict::kLoops}));
+    XSFLIB_CHECK(finder.PassFrames() == 17 * 32);
 }
 
 void TestPollBetweenPasses()
@@ -155,6 +158,7 @@ void TestPollBetweenPasses()
 
     XSFLIB_CHECK(polls == std::vector(2, Verdict::kNone));
     XSFLIB_CHECK(loops == (std::vector{Verdict::kNone, Verdict::kNone, Verdict::kLoops}));
+    XSFLIB_CHECK(finder.PassFrames() == 96);
 }
 
 void TestPollHolds()
@@ -366,12 +370,14 @@ void TestJAudio1Commands()
 }
 
 // A track that plays a note, waits and finishes, and then starts again from its first command. With
-// restarts_as_passes, each start after a finish ends a pass of the whole track. The third start ends the second pass.
+// restarts_as_passes, each start after a finish ends a pass of the whole track. The third start ends the second pass,
+// 96 frames after the second start.
 // Without the option, the track never loops. Nor does a finished track that runs other commands: another track in the
 // same place.
 void TestRestartAsPass()
 {
-    const auto restarts = [](bool restarts_as_passes)
+    uint64_t pass_frames = 0;
+    const auto restarts = [&pass_frames](bool restarts_as_passes)
     {
         LoopFinder finder(kRoot, kRate, ChangesSound, false, restarts_as_passes);
         Feeder feeder(finder);
@@ -383,11 +389,15 @@ void TestRestartAsPass()
             feeder.Command(kRoot, 0x16, kFinishCommand);
         }
 
+        pass_frames = finder.PassFrames();
+
         return verdicts;
     };
 
     XSFLIB_CHECK(restarts(true) == (std::vector{Verdict::kNone, Verdict::kNone, Verdict::kLoops}));
+    XSFLIB_CHECK(pass_frames == 96);
     XSFLIB_CHECK(restarts(false) == std::vector(3, Verdict::kNone));
+    XSFLIB_CHECK(pass_frames == 0);
 
     LoopFinder finder(kRoot, kRate, ChangesSound, false, true);
     Feeder feeder(finder);

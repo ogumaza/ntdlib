@@ -144,7 +144,7 @@ static_assert(offsetof(SourceReport, position) == 4);
 static_assert(offsetof(SourceReport, current_buffer) == 8);
 
 // The firmware's delay on an aux bus, as nn::snd's DSP delay writes it (Luigi's Mansion of 2018, code.bin 0x26c2cc).
-// MixerParams holds one for each bus. The delay line lies in FCRAM.
+// MixerParams holds one for each bus. The delay line is in FCRAM.
 struct FirmwareDelayParams
 {
     uint16_t dirty;  // bit 0: enable; bit 1: buffer; bit 2: the fields from channels to damping_b
@@ -163,7 +163,7 @@ static_assert(offsetof(FirmwareDelayParams, buffer) == 0x08);
 static_assert(offsetof(FirmwareDelayParams, frames) == 0x0C);
 
 // The firmware's reverb on an aux bus. nn::snd's DSP reverb writes this record (StreetPass Mii Plaza's update v14.6.0,
-// code.bin 0x2eeda8 and 0x161848). MixerParams holds one for each bus. The five lines lie in FCRAM, one after another.
+// code.bin 0x2eeda8 and 0x161848). MixerParams holds one for each bus. The five lines are in FCRAM, one after another.
 struct FirmwareReverbParams
 {
     uint16_t dirty;  // bit 0: enable; bit 1: lines; bit 2: channels and the fields from frames on

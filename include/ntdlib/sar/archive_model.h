@@ -86,7 +86,7 @@ enum class StreamFields
     kPrefetch
 };
 
-// A stream sound's extension: three 32-bit values, which NintendoWare's sound library takes as the type of the stream
+// A stream sound's extension: three 32-bit values. NintendoWare's sound library takes them as the type of the stream
 // and the frames where its loop starts and ends. The extension follows the rest of the details.
 struct StreamExtension
 {
@@ -165,8 +165,8 @@ struct BankModel
     std::vector<uint32_t> wave_archives = {}; // item IDs
 };
 
-// A wave archive: its file, whether the game loads its waves one at a time, and the count of its waves, which the
-// tools give with that choice.
+// A wave archive: its file, whether the game loads its waves one at a time, and the count of its waves. The tools give
+// the count with that choice.
 struct WaveArchiveModel
 {
     friend bool operator==(const WaveArchiveModel&, const WaveArchiveModel&) = default;
@@ -219,7 +219,7 @@ struct PlayerSettings
     uint8_t sequence_sound_countdown = 0;
 };
 
-// Where a file's bytes lie: in the FILE block, in a copy that a group's file in the FILE block holds, in the group
+// Where a file's bytes are: in the FILE block, in a copy that a group's file in the FILE block holds, in the group
 // files beside the archive only, or in a file beside the archive.
 enum class FilePlace
 {
@@ -273,13 +273,13 @@ struct ArchiveModel
 // The model of `archive`, an archive of `flavor` that NintendoWare's tools laid out. BuildArchive gives `archive` back
 // byte for byte from it. Throws xsflib::FormatError for bytes that aren't an archive of the console, for options and
 // fields that the model doesn't hold, and for an archive laid out another way, such as an archive without names or a
-// 3DS archive with a sound or a file whose layout in the archive's version the model doesn't know.
+// 3DS archive with a sound or a file whose layout in the archive's version the model doesn't support.
 ArchiveModel ReadArchiveModel(std::span<const uint8_t> archive, Flavor flavor);
 
 // The archive of `model`, laid out as NintendoWare's tools lay an archive out. Throws std::invalid_argument for a sound
 // of an unknown kind, fields after a stream sound's sends in a version before 2.1.0, a stream sound's extension without
 // a reference to it, a 3DS stream sound's options, tracks or extension in a version without them, a 3DS stream sound,
-// wave sound or file without a place in a version whose layout the model doesn't know, a file of kCopy whose group's
+// wave sound or file without a place in a version whose layout the model doesn't support, a file of kCopy whose group's
 // file the FILE block doesn't hold or doesn't hold a copy of the file in, player settings of the Switch
 // (`advanced_wave_sounds` or `sequence_sound_countdown`) in an archive of another console, an archive past 4 GB, and
 // the names that StringBlock::Write refuses, such as two names alike.

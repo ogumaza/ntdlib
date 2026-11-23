@@ -217,9 +217,9 @@ void TestARegionWhoseNotesMoveKeepsItsKeys()
 }
 
 // A track's fixed filter at 13000 cents (14.9 kHz) keeps the lower cutoff. The 12 kHz set's low-pass for a 32 kHz wave
-// at original key 60 is 0.3899 of the rate: 6691 cents at key 0, so 12991 at key 63 and 13091 at key 64. The 8 kHz
-// set's is 0.2518 of the rate: 5934 cents at key 0, so 12934 at key 70 and 13034 at key 71. A preset whose filter
-// changes during notes takes no low-pass. Both keep the span at the rate limit, from key 97.
+// at original key 60 is 0.3899 of the rate: 6691 cents at key 0, 12991 at key 63 and 13091 at key 64. The 8 kHz set's
+// is 0.2518 of the rate: 5934 cents at key 0, 12934 at key 70 and 13034 at key 71. A preset whose filter changes during
+// notes takes no low-pass. Both keep the span at the rate limit, from key 97.
 void TestZonesKeepTheLowerCutoff()
 {
     const Settings settings = CafeSettings();
@@ -401,7 +401,7 @@ std::string RegionLine(const std::string& text, std::pair<int, int> keys)
 }
 
 // The zones that a region of keys 0 to 127 splits into at the console's pitch limits, with the zones `between` between
-// the keys `limits` and the zones at the limits around them, which have no cutoff.
+// the keys `limits` and the zones at the limits around them. The zones at the limits have no cutoff.
 std::vector<ZoneCutoff> WithLimitZones(const std::vector<ZoneCutoff>& between, std::pair<int, int> limits)
 {
     std::vector<ZoneCutoff> zones;

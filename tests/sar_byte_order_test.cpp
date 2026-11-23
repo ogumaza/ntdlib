@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -21,7 +22,7 @@
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/testing/sar_files.h"
 
-using xsflib::testing::ErrorOf;
+using seqlib::testing::Throws;
 
 namespace
 {
@@ -43,12 +44,6 @@ constexpr uint32_t kWaveSoundVersion = 0x00010100;
 constexpr uint32_t kCtrBankVersion = 0x01000100;
 constexpr uint32_t kCtrWaveSoundVersion = 0x01000000;
 
-template <typename Error, typename Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
-}
-
 ntdlib::sar::Options Options(Flavor flavor)
 {
     ntdlib::sar::Options options;
@@ -67,7 +62,7 @@ sar_files::Region PlainRegion(uint32_t wave)
     return region;
 }
 
-// A region with every parameter that the walk knows.
+// A region with every parameter that the walk reads.
 sar_files::Region FullRegion(uint32_t wave)
 {
     sar_files::Region region;
@@ -229,7 +224,7 @@ void Store(std::vector<uint8_t>& file, Flavor flavor, std::size_t at, uint32_t v
     flavor == Flavor::kCafe ? xsflib::StoreBe32(&file[at], value) : xsflib::StoreLe32(&file[at], value);
 }
 
-// Where INFO's body starts and the block ends, and where the table of key regions of instrument `instrument` lies.
+// Where INFO's body starts and the block ends, and where the table of key regions of instrument `instrument` is.
 // INFO's references count from the body's start, and a table's references from the table's start.
 struct Places
 {
@@ -253,8 +248,7 @@ Places PlacesOf(const std::vector<uint8_t>& file, Flavor flavor, std::size_t ins
 // Two key regions can share their table of velocity regions. The walk writes the shared fields again, unchanged.
 void TestSharedVelocityTable()
 {
-    // The second key region names the first key region's table. Its own table and region, at the end of INFO, become
-    // zeros.
+    // The second key region names the first key region's table. Its table and region, at the end of INFO, become zeros.
     const auto shared = [](Flavor flavor)
     {
         sar_files::VelocityTable first;
@@ -344,7 +338,7 @@ void TestConsoles()
     XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithOtherByteOrder(bank(Flavor::kCtr), kBankVersion); }));
 }
 
-// What the walk refuses: a 3DS file, another kind of file, an option that it doesn't know, a byte that no structure
+// What the walk refuses: a 3DS file, another kind of file, an option that it doesn't support, a byte that no structure
 // holds, and structures that overlap.
 void TestRefusals()
 {

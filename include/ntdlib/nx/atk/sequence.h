@@ -13,6 +13,7 @@
 
 #include "ntdlib/nwsnd/archive_files.h"
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/nx_policy.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nx/atk/channel.h"
 #include "ntdlib/nx/atk/hardware.h"

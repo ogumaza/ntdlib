@@ -177,9 +177,9 @@ Rom Rom::Read(std::span<const uint8_t> image, bool partial)
     h.header_size = r.U32(0x84);
     if (h.unit_code & 2)
     {
-        // The extended header holds each DSi binary's ROM offset, a word, its RAM address and its size.
-        // A trimmed image may end before a DSi binary. The header then has no entry for it. The rest of the image
-        // parses as before.
+        // The extended header holds each DSi binary's ROM offset, a word, its RAM address and its size. A trimmed
+        // image may end before a DSi binary. The header then has no entry for it. The rest of the image parses as
+        // before.
         const Binary arm9i = ReadBinary(r, 0x1C0);
         const Binary arm7i = ReadBinary(r, 0x1D0);
         if (Fits(r, arm9i.rom_offset, arm9i.size))

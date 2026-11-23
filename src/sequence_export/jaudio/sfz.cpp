@@ -11,15 +11,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "seqlib/sfz/opcodes.h"
 #include "seqlib/sfz/text.h"
 #include "seqlib/sfz/track_file.h"
-#include "seqlib/wav.h"
 
 #include "ntdlib/sequence_export/jaudio/convert.h"
 #include "ntdlib/sequence_export/jaudio/envelope.h"
@@ -33,7 +30,6 @@ namespace ntdlib::sequence_export::jaudio
 namespace
 {
 
-using seqlib::WavFile;
 using seqlib::sfz::Number;
 
 // Write a region's opcodes: its sample, keys and velocities, tuning, level, pan, envelope, loop and filter, as `layer`
@@ -52,10 +48,7 @@ std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, const 
 
     const SfzEnvelope e = ConvertEnvelopeForSfz(z.envelope);
     const double volume = ZoneVolumeDb(z) + e.peak_db + gain_db + 20.0 * std::log10(layer.gain);
-    if (std::abs(volume) >= 0.005)
-    {
-        s += " volume=" + Number(volume, 2);
-    }
+    s += seqlib::sfz::VolumeOpcode(volume);
 
     // The game's pan law is sfizz's: a quarter turn's cosine and sine.
     const double pan = std::clamp((z.pan - 0.5) * 200.0, -100.0, 100.0);
@@ -101,73 +94,33 @@ std::string VibratoOpcodes(const PresetKey& key)
 
 } // namespace
 
-const SfzSamples::Wave& SfzSamples::Get(const std::string& name, const std::function<const Pcm*()>& pcm)
-{
-    if (const auto it = waves_.find(name); it != waves_.end())
-    {
-        return it->second;
-    }
-
-    Wave wave;
-    if (const Pcm* decoded = pcm())
-    {
-        const auto crossfade = static_cast<uint32_t>((decoded->sample_rate * 4.0f + 999.0f) / 1000.0f); // 4 ms
-        const PreparedWave w = PrepareForSfz(*decoded, crossfade);
-        wave.name = name + ".wav";
-        files_.push_back({wave.name, WavFile(w.channels[0], static_cast<uint32_t>(std::lround(decoded->sample_rate)))});
-        wave.loop = w.loop;
-        if (w.loop)
-        {
-            wave.loop_start = w.loop_start;
-            wave.loop_end = w.loop_end - 1;
-        }
-    }
-
-    return waves_.emplace(name, std::move(wave)).first->second;
-}
-
 SfzInstruments BuildSfz(const Performance& perf, const MidiReport& midi, BankSet& banks, const std::string& title,
                         const std::vector<std::string>& preset_names, const std::string& program)
 {
-    // Each file is named after its MIDI track.
-    seqlib::sfz::TrackFileOptions options;
-    options.title = title;
-    options.program = program;
-    options.preset_names = preset_names;
-    options.presets = perf.presets.size();
-    options.level_cut_db = perf.level_cut_db;
-    options.track_names = true;
-
-    // Each preset adds its vibrato and a group of its zones.
+    // Each file is named after its MIDI track. Each preset adds its vibrato and a group of its zones.
     SfzSamples samples;
-    SfzInstruments out;
-    auto text = [&](int)
+    const auto preset = [&](uint32_t p)
     {
-        seqlib::sfz::TrackText added;
-        added.preset = [&](uint32_t p)
+        const PresetKey& key = perf.presets[p];
+        std::string s = VibratoOpcodes(key) + "<group>\n";
+        const std::vector<FilterLayer>& layers = perf.sfz_filter_layers.at(key.track_filter);
+        for (const PresetZone& z : ZonesOf(p, perf, banks))
         {
-            const PresetKey& key = perf.presets[p];
-            std::string s = VibratoOpcodes(key) + "<group>\n";
-            const std::vector<FilterLayer>& layers = perf.sfz_filter_layers.at(key.track_filter);
-            for (const PresetZone& z : ZonesOf(p, perf, banks))
+            const SfzSamples::Wave& wave = samples.Get(WaveName(z.wave_system, z.wave_id),
+                                                       [&] { return banks.GetWave(z.wave_system, z.wave_id); });
+            if (!wave.name.empty())
             {
-                const SfzSamples::Wave& wave = samples.Get(WaveName(z.wave_system, z.wave_id),
-                                                           [&] { return banks.GetWave(z.wave_system, z.wave_id); });
-                if (!wave.name.empty())
+                for (const FilterLayer& layer : layers)
                 {
-                    for (const FilterLayer& layer : layers)
-                    {
-                        s += RegionLine(z, wave, layer, perf.level_cut_db);
-                    }
+                    s += RegionLine(z, wave, layer, perf.level_cut_db);
                 }
             }
+        }
 
-            return s;
-        };
-
-        return added;
+        return s;
     };
-    out.files = seqlib::sfz::TrackFiles(perf, midi, options, text);
+    SfzInstruments out;
+    out.files = ntdlib::sequence_export::SfzPresetFiles(perf, midi, title, preset_names, program, preset);
     out.samples = samples.Take();
 
     return out;

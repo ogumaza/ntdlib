@@ -3,6 +3,7 @@
 // Tests of the model of the DS's sound driver (ntdlib/ntr/snd/driver.h), on a sequence, a bank and a wave archive laid
 // out in main memory as the ARM9 lays them out. The expected values follow the driver's rules, worked out by hand.
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -336,6 +337,173 @@ void TestReleaseGivesWay()
     }
 }
 
+// A command that sets up channel 5 to play PCM: IMA-ADPCM from 0x02345678, looped from word 0xABCD for 0x123456 words,
+// at volume 0x65 with divider 2, timer 0x1234 and pan 0x40. Every bit that the driver doesn't read is set.
+snd::Command PcmSetup()
+{
+    return {snd::CommandId::kSetUpPcmChannel,
+            {0x1234u << 16 | 0xFFF5, 0xFA345678, 1u << 31 | 0x65u << 24 | 2u << 22 | 0x123456,
+             0xF0000000 | 1u << 26 | 2u << 24 | 1u << 23 | 0x40u << 16 | 0xABCD}};
+}
+
+// A command that sets up PSG channel 8: duty 5, volume 0x65 with divider 2, timer 0x1234 and pan 0x40. Every bit that
+// the driver doesn't read is set. The driver reads the duty's whole word.
+snd::Command PsgSetup()
+{
+    return {snd::CommandId::kSetUpPsgChannel,
+            {0xFFFFFFF8, 0xFFFFFC80 | 2u << 8 | 0x65, 0xFF000080 | 0x1234u << 8 | 0x40, 5}};
+}
+
+// A command that sets up noise channel 14: volume 0x65 with divider 2, timer 0x1234 and pan 0x40. Every bit that the
+// driver doesn't read is set.
+snd::Command NoiseSetup()
+{
+    return {snd::CommandId::kSetUpNoiseChannel,
+            {0xFFFFFFFE, 0xFFFFFC80 | 2u << 8 | 0x65, 0xFF000080 | 0x1234u << 8 | 0x40, 0xFFFFFFFF}};
+}
+
+// The writes of the driver to the registers of `channel`.
+std::vector<Write> ChannelWrites(const Driver& driver, int channel)
+{
+    const uint32_t first = 0x04000400 + 0x10 * static_cast<uint32_t>(channel);
+    std::vector<Write> writes;
+    for (const Write& write : driver.registers.writes)
+    {
+        if (write.address >= first && write.address < first + 0x10)
+        {
+            writes.push_back(write);
+        }
+    }
+
+    return writes;
+}
+
+// The fields of the commands that the driver decodes: a channel's set-up, and the player that a command addresses. A
+// track's parameter gives the player in the low 24 bits of its first argument.
+void TestCommandFields()
+{
+    const snd::Command noise = {snd::CommandId::kSetUpNoiseChannel, {0x123400FE, 0x7F, 0, 0}};
+    const snd::Command start = {snd::CommandId::kStartSequence, {0x13, kSequence, 0, kBank}};
+    const snd::Command track = {snd::CommandId::kTrackParameter, {2u << 24 | 0x14, 1, snd::kTrackFaderOffset, 0}};
+
+    const snd::PcmChannelSetup setup = snd::ReadPcmChannelSetup(PcmSetup());
+    const snd::PsgChannelSetup psg = snd::ReadPsgChannelSetup(PsgSetup());
+    const snd::NoiseChannelSetup noise_setup = snd::ReadNoiseChannelSetup(NoiseSetup());
+
+    XSFLIB_CHECK(setup.channel == 5 && setup.data == 0x02345678 && setup.format == 2 && setup.loop == 1);
+    XSFLIB_CHECK(setup.loop_start == 0xABCD && setup.loop_length == 0x123456);
+    XSFLIB_CHECK(setup.volume == 0x65 && setup.divider == 2 && setup.timer == 0x1234 && setup.pan == 0x40);
+    XSFLIB_CHECK(psg == (snd::PsgChannelSetup{
+                            .channel = 8, .duty = 5, .volume = 0x65, .divider = 2, .timer = 0x1234, .pan = 0x40}));
+    XSFLIB_CHECK(noise_setup ==
+                 (snd::NoiseChannelSetup{.channel = 14, .volume = 0x65, .divider = 2, .timer = 0x1234, .pan = 0x40}));
+    XSFLIB_CHECK(snd::SetUpChannel(noise) == 14);
+    XSFLIB_CHECK(snd::PlayerOf(start) == 3);
+    XSFLIB_CHECK(snd::PlayerOf(track) == 4);
+}
+
+// The commands that set up a channel read back as the set-ups that made them, with every field at its largest. The
+// set-ups of Mario Kart DS's output effect give the words that the game's code sent (ntr_archive_player_test's
+// TestOutputEffectCommands).
+void TestSetUpCommandsRoundTrip()
+{
+    const snd::PcmChannelSetup pcm = {.channel = 15,
+                                      .data = 0x07FFFFFF,
+                                      .format = 3,
+                                      .loop = 3,
+                                      .loop_start = 0xFFFF,
+                                      .loop_length = 0x3FFFFF,
+                                      .volume = 0x7F,
+                                      .divider = 3,
+                                      .timer = 0xFFFF,
+                                      .pan = 0x7F};
+    const snd::PsgChannelSetup psg = {
+        .channel = 14, .duty = 7, .volume = 0x7F, .divider = 3, .timer = 0xFFFF, .pan = 0x7F};
+    const snd::NoiseChannelSetup noise = {.channel = 13, .volume = 0x7F, .divider = 3, .timer = 0xFFFF, .pan = 0x7F};
+    const snd::PcmChannelSetup left = {
+        .channel = 1, .data = 0x021DA420, .format = 1, .loop = 1, .loop_length = 0x200, .volume = 0x7F, .timer = 0x200};
+    snd::PcmChannelSetup right = left;
+    right.channel = 3;
+    right.data = 0x021DAC20;
+    right.pan = 0x7F;
+
+    const snd::Command pcm_command = snd::CommandOf(pcm);
+    const snd::Command psg_command = snd::CommandOf(psg);
+    const snd::Command noise_command = snd::CommandOf(noise);
+
+    XSFLIB_CHECK(pcm_command.id == snd::CommandId::kSetUpPcmChannel && snd::ReadPcmChannelSetup(pcm_command) == pcm);
+    XSFLIB_CHECK(psg_command.id == snd::CommandId::kSetUpPsgChannel && snd::ReadPsgChannelSetup(psg_command) == psg);
+    XSFLIB_CHECK(noise_command.id == snd::CommandId::kSetUpNoiseChannel &&
+                 snd::ReadNoiseChannelSetup(noise_command) == noise);
+    XSFLIB_CHECK(snd::CommandOf(left) ==
+                 (snd::Command{snd::CommandId::kSetUpPcmChannel, {0x02000001, 0x021DA420, 0x7F000200, 0x05000000}}));
+    XSFLIB_CHECK(snd::CommandOf(right) ==
+                 (snd::Command{snd::CommandId::kSetUpPcmChannel, {0x02000003, 0x021DAC20, 0x7F000200, 0x057F0000}}));
+}
+
+// The commands keep every bit of a field too wide for its bits, or of a negative one, ORed into the bits above. DSE's
+// voices send the words of a sample's header whole that way.
+void TestCommandOfKeepsWideFields()
+{
+    const snd::PcmChannelSetup pcm = {.channel = 0x31,
+                                      .data = 0x12345678,
+                                      .loop = -1,
+                                      .loop_start = 0x12345678,
+                                      .loop_length = 0x400000,
+                                      .volume = 0x80,
+                                      .timer = 0x1234,
+                                      .pan = 0xC0};
+    const snd::PsgChannelSetup psg = {
+        .channel = 0x21, .duty = 0x1FF, .volume = 0x80, .divider = 7, .timer = 0x123456, .pan = 0x1C0};
+    const snd::NoiseChannelSetup noise = {
+        .channel = 0x21, .volume = 0x80, .divider = 7, .timer = 0x123456, .pan = 0x1C0};
+
+    const snd::Command pcm_command = snd::CommandOf(pcm);
+    const snd::Command psg_command = snd::CommandOf(psg);
+    const snd::Command noise_command = snd::CommandOf(noise);
+
+    XSFLIB_CHECK(pcm_command.args == (std::array<uint32_t, 4>{0x12340031, 0x12345678, 0x80400000, 0xFEF45678}));
+    XSFLIB_CHECK(psg_command.args == (std::array<uint32_t, 4>{0x21, 0x780, 0x123457C0, 0x1FF}));
+    XSFLIB_CHECK(noise_command.args == (std::array<uint32_t, 4>{0x21, 0x780, 0x123457C0, 0}));
+}
+
+// The driver writes a PCM set-up into the channel's registers: SOUNDxCNT, the timer, the loop's start, its length and
+// the source address.
+void TestPcmSetup()
+{
+    Driver driver({0xFF});
+    driver.registers.writes.clear();
+    constexpr uint32_t kChannel5 = 0x04000450;
+
+    driver.Frame({{PcmSetup()}});
+
+    const std::vector<Write> expected = {{kChannel5, 4, 2u << 29 | 1u << 27 | 0x40u << 16 | 2u << 8 | 0x65},
+                                         {kChannel5 + 0x8, 2, 0x10000 - 0x1234},
+                                         {kChannel5 + 0xA, 2, 0xABCD},
+                                         {kChannel5 + 0xC, 4, 0x123456},
+                                         {kChannel5 + 0x4, 4, 0x02345678}};
+    XSFLIB_CHECK(ChannelWrites(driver, 5) == expected);
+}
+
+// The driver writes a PSG set-up and a noise set-up into their channels' registers: SOUNDxCNT, with format 3, then the
+// timer.
+void TestPsgAndNoiseSetup()
+{
+    Driver driver({0xFF});
+    driver.registers.writes.clear();
+    constexpr uint32_t kChannel8 = 0x04000480;
+    constexpr uint32_t kChannel14 = 0x040004E0;
+
+    driver.Frame({{PsgSetup(), NoiseSetup()}});
+
+    const std::vector<Write> psg = {{kChannel8, 4, 3u << 29 | 5u << 24 | 0x40u << 16 | 2u << 8 | 0x65},
+                                    {kChannel8 + 0x8, 2, 0x10000 - 0x1234}};
+    const std::vector<Write> noise = {{kChannel14, 4, 3u << 29 | 0x40u << 16 | 2u << 8 | 0x65},
+                                      {kChannel14 + 0x8, 2, 0x10000 - 0x1234}};
+    XSFLIB_CHECK(ChannelWrites(driver, 8) == psg);
+    XSFLIB_CHECK(ChannelWrites(driver, 14) == noise);
+}
+
 } // namespace
 
 int main()
@@ -348,6 +516,11 @@ int main()
     TestRandom();
     TestGrownChannels();
     TestReleaseGivesWay();
+    TestCommandFields();
+    TestSetUpCommandsRoundTrip();
+    TestCommandOfKeepsWideFields();
+    TestPcmSetup();
+    TestPsgAndNoiseSetup();
 
     return xsflib::testing::Summary("DS sound driver");
 }

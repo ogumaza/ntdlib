@@ -169,8 +169,9 @@ void SoundFontBuilder::Add(uint32_t index, const PresetKey& key, const std::stri
     sf2::AddInstrumentPreset(sf_, index, name, std::move(inst));
 }
 
-// Builds the MIDI file, the SoundFont and the SFZ files of `performance`, which plays the banks in `banks`. `title`
-// names the files. `source` says in the SoundFont's comment what the performance plays, such as "sequence <label>".
+// Builds the MIDI file, the SoundFont and the SFZ files of `performance`. The performance plays the banks in `banks`.
+// `title` names the files. `source` says in the SoundFont's comment what the performance plays, such as "sequence
+// <label>".
 Conversion ConvertPerformance(Performance performance, BankSet& banks, const std::string& title,
                               const std::string& source, const Settings& settings, const std::string& program)
 {

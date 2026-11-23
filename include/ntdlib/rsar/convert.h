@@ -126,13 +126,13 @@ StreamFile WiiStreamOf(const sar::StreamFile& stream);
 WaveFile WiiWaveOf(const sar::WaveFile& wave);
 
 // `bank`, a bank file of the 3DS, the Wii U or the Switch, as a bank of the Wii of `version` with `waves`. Entry i of
-// `waves` gives the wave of entry i of the bank's table of waves. An entry without a wave stands for a wave that the
-// archive lacks, such as an entry of the 3DS that names wave 0xFFFFFFFF. The bank leaves it out, and its regions take
-// the wave index -1: NW4R SND plays nothing there. Each instrument keeps its key regions and velocity regions, laid out
-// as the tools lay a bank out (BankFile::FromInstruments). A region takes the velocity region's wave, original key,
-// volume and pan, its pitch as the tune, its envelope, its note-off type and its key group. NW4R SND's voices
+// `waves` gives the wave of entry i of the bank's table of waves. An entry without a wave stands for a wave missing
+// from the archive, such as an entry of the 3DS that names wave 0xFFFFFFFF. The bank leaves it out, and its regions
+// take the wave index -1: NW4R SND plays nothing there. Each instrument keeps its key regions and velocity regions,
+// laid out as the tools lay a bank out (BankFile::FromInstruments). A region takes the velocity region's wave, original
+// key, volume and pan, its pitch as the tune, its envelope, its note-off type and its key group. NW4R SND's voices
 // interpolate with the 4-tap filters, and the bank holds no interpolation. Throws std::invalid_argument for a region
-// whose wave lies past `waves`, and the exceptions of BankFile::FromInstruments.
+// whose wave is past `waves`, and the exceptions of BankFile::FromInstruments.
 BankFile WiiBankOf(const sar::BankFile& bank, uint16_t version, const std::vector<std::optional<WaveFile>>& waves);
 
 // `archive`, a wave archive file of the 3DS, the Wii U or the Switch, as a wave archive of the Wii (RWAR): each of its
@@ -142,13 +142,13 @@ WaveArchiveFile WiiWaveArchiveOf(const sar::WaveArchiveFile& archive);
 
 // `file`, a wave sound file of the 3DS, the Wii U or the Switch as the reader reads it, as a wave sound file of the Wii
 // of `version` with `waves`. Entry i of `waves` gives the wave of entry i of the file's table of waves, as for
-// WiiBankOf. An entry without a wave stands for a wave that the archive lacks. The file leaves it out, and the notes
+// WiiBankOf. An entry without a wave stands for a wave missing from the archive. The file leaves it out, and the notes
 // that name it take the wave index -1: NW4R SND plays nothing there. Each wave sound keeps its pitch, its pan, its
 // surround pan, its sends and its tracks of note events. The later consoles' libraries play a wave sound's first note
 // with the wave sound's envelope, and NW4R SND with the note's. The first note therefore takes the wave sound's
-// envelope. Each other note keeps its envelope. Every note keeps its key, its volume, its pan and its pitch, which
-// neither console reads. The Wii's wave sounds hold no filters. Builds of NW4R SND before March 2008 read no hold.
-// Throws std::invalid_argument for a note whose wave lies past `waves`.
+// envelope. Each other note keeps its envelope. Every note keeps its key, its volume, its pan and its pitch. Neither
+// console reads them. The Wii's wave sounds hold no filters. Builds of NW4R SND before March 2008 read no hold. Throws
+// std::invalid_argument for a note whose wave is past `waves`.
 WsdFile WiiWsdOf(const sar::WaveSoundFile& file, uint16_t version, const std::vector<std::optional<WaveFile>>& waves);
 
 } // namespace ntdlib::rsar

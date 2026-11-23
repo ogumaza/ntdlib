@@ -309,7 +309,7 @@ void DspInterface<Memory>::Advance(uint64_t now)
 template <typename Memory>
 void DspInterface<Memory>::SendAiBlock()
 {
-    // 32 bytes from the current address while the DMA is on, or silence while it's off or the bytes lie outside memory.
+    // 32 bytes from the current address while the DMA is on, or silence while it's off or the bytes are outside memory.
     static constexpr std::array<uint8_t, 32> kSilence{};
     const bool enabled = (ai_control_ & kAiEnable) != 0;
     const uint8_t* block = enabled ? memory_.At(ai_current_, 32) : nullptr;

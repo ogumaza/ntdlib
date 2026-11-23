@@ -132,7 +132,7 @@ private:
     ReverbParam setup_; // the parameters that laid the buffers out
     std::size_t channel_count_ = 2;
 
-    // The buffers of each channel lie one after another: the early reflection, the pre-delay, the two comb filters
+    // The buffers of each channel are one after another: the early reflection, the pre-delay, the two comb filters
     // and the all-pass filter.
     std::vector<int32_t> memory_;
     std::array<std::size_t, 4> early_{};

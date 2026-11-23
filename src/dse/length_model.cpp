@@ -10,18 +10,22 @@
 
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/player.h"
+#include "ntdlib/first_sample.h"
 #include "ntdlib/ntr/sound.h"
 
 namespace ntdlib::dse
 {
 
-xsflib::rip::LengthRules LengthRules()
+xsflib::rip::LengthRules LengthRules(int tick_microseconds)
 {
     constexpr double kSilentMs = 180000.0;
+    constexpr double kIdleMs = 100.0;
+    const double tick_ms = TickMs(tick_microseconds);
     xsflib::rip::LengthRules rules;
-    rules.frame_ms = kTickMs;
-    rules.max_frames = static_cast<uint64_t>(rules.max_ms / kTickMs);
-    rules.silent_frames = static_cast<uint64_t>(kSilentMs / kTickMs);
+    rules.frame_ms = tick_ms;
+    rules.max_frames = static_cast<uint64_t>(rules.max_ms / tick_ms);
+    rules.silent_frames = static_cast<uint64_t>(kSilentMs / tick_ms);
+    rules.idle_frames = static_cast<uint64_t>(kIdleMs / tick_ms);
     return rules;
 }
 
@@ -77,6 +81,11 @@ uint64_t LengthModel::Frames() const
 bool LengthModel::Sounded() const
 {
     return xsflib::rip::Audible(output_);
+}
+
+std::optional<double> LengthModel::FirstSampleMs() const
+{
+    return ntdlib::FirstSampleMs(output_, 1000.0 / ntr::kOutputRate);
 }
 
 bool LengthModel::Ringing() const
@@ -185,16 +194,20 @@ int LengthModel::MainTrack() const
     return -1;
 }
 
-std::optional<xsflib::rip::Timing> MeasureSequence(const SequenceFiles& files, Build build)
+std::optional<xsflib::rip::Timing> MeasureSequence(const SequenceFiles& files, Build build, xsflib::rip::Limit limit,
+                                                   const StartParameters& song_start, int tick_microseconds)
 {
-    Player player({.build = build});
+    Player player({.build = build, .tick_microseconds = tick_microseconds});
     player.LoadBanks(files);
-    if (!player.Start(files))
+    if (!player.Start(files, song_start))
     {
         return std::nullopt;
     }
     LengthModel model(player);
-    return xsflib::rip::MeasureLength(model, LengthRules());
+    const xsflib::rip::LengthRules tick_rules = LengthRules(tick_microseconds);
+    const xsflib::rip::LengthRules rules =
+        limit == xsflib::rip::Limit::kLong ? xsflib::rip::WithLongLimit(tick_rules) : tick_rules;
+    return xsflib::rip::MeasureLength(model, rules);
 }
 
 } // namespace ntdlib::dse

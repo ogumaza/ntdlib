@@ -39,7 +39,7 @@ struct Track
 };
 
 // A stream: each channel's samples before the tools encode them, all of the same length. A loop runs from its start to
-// the end of the samples. DSP-ADPCM's entries of ADPC lie `history_interval` samples apart.
+// the end of the samples. DSP-ADPCM's entries of ADPC are `history_interval` samples apart.
 struct StreamSpec
 {
     rsar::WaveEncoding encoding = rsar::WaveEncoding::kDspAdpcm;

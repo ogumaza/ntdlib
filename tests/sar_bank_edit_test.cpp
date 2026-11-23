@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -35,7 +36,7 @@ namespace sar_tools = ntdlib::testing::sar_tools;
 using ntdlib::sar::Flavor;
 using ntdlib::sar::InstrumentCopy;
 using ntdlib::sar::WithInstruments;
-using xsflib::testing::ErrorOf;
+using seqlib::testing::Throws;
 
 constexpr Flavor kFlavors[] = {Flavor::kCtr, Flavor::kCafe, Flavor::kNx};
 
@@ -56,13 +57,6 @@ ntdlib::sar::Options StrictOptions(Flavor flavor)
 std::vector<uint8_t> With(std::span<const uint8_t> bank, Flavor flavor, const std::vector<InstrumentCopy>& copies)
 {
     return WithInstruments(bank, flavor, copies);
-}
-
-// Whether `call` throws an exception of type E.
-template <typename E, typename Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<E>(call).empty();
 }
 
 uint32_t Load32(const std::vector<uint8_t>& bytes, std::size_t at, Flavor flavor)
@@ -334,7 +328,7 @@ void TestSameBank(Flavor flavor)
     XSFLIB_CHECK(envelope_gap == sar_tools::Bank(flavor, envelope_gap_spec, {0, 2, 1}));
 }
 
-// A bank of one instrument, Direct(Full(0)), whose structures lie out of the tools' order, with the tables of waves and
+// A bank of one instrument, Direct(Full(0)), whose structures are out of the tools' order, with the tables of waves and
 // of instruments among them. The region, the envelope's bytes, the key region and the table of waves come first. The
 // reference to the envelope, the velocity table, the key table and the table of instruments follow, then the
 // instrument. Each offset of the instrument then crosses the end of a table. WithInstruments puts new bytes there.
@@ -418,7 +412,7 @@ void TestOtherLayout(Flavor flavor)
 }
 
 // A key region that two keys name goes in once. Both keys of the copy name it. Here the source's second key names the
-// first key's region, and the region that it named before lies unused.
+// first key's region, and the region that it named before is unused.
 void TestSharedKeyRegion(Flavor flavor)
 {
     sar_files::VelocityTable a;
@@ -467,7 +461,7 @@ void TestEmptyReferences(Flavor flavor)
     XSFLIB_CHECK(Describe(bank, flavor, 4) == Describe(source, flavor, 0));
 }
 
-// An index table whose last key lies before its first holds no references. Its instrument plays nothing.
+// An index table whose last key is before its first holds no references. Its instrument plays nothing.
 void TestEmptyIndexTable(Flavor flavor)
 {
     std::vector<uint8_t> source = sar_tools::Bank(flavor, SourceSpec());

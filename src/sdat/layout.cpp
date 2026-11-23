@@ -8,15 +8,16 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
 
+#include "common/le_writer.h"
 #include "ntdlib/rounding.h"
 #include "ntdlib/sdat/formats.h"
-#include "sdat/writer.h"
 
 namespace ntdlib::sdat
 {
@@ -31,7 +32,7 @@ constexpr uint32_t kMostFileAlignment = 32;
 constexpr uint32_t kLeastFileAlignment = 4;
 constexpr uint16_t kByteOrderMark = 0xFEFF;
 
-using detail::Writer;
+using Writer = ntdlib::detail::LeWriter;
 
 // A list of the SYMB or INFO block: a count, then a reference to each item. Returns where the references start.
 std::size_t List(Writer& w, std::size_t count, std::size_t reference_size)
@@ -39,6 +40,7 @@ std::size_t List(Writer& w, std::size_t count, std::size_t reference_size)
     w.U32(static_cast<uint32_t>(count));
     const std::size_t references = w.Size();
     w.PadTo(references + count * reference_size);
+
     return references;
 }
 
@@ -105,6 +107,7 @@ std::size_t WriteSymbols(Writer& w, const Symbols& symbols)
     const std::size_t size = w.Size() - start;
     w.PadTo(AlignUp(w.Size(), 4));
     w.Put32(start + 4, w.Size() - start);
+
     return size;
 }
 
@@ -242,7 +245,12 @@ ArchiveModel ReadArchiveModel(std::span<const uint8_t> sdat)
     return model;
 }
 
-std::vector<uint8_t> BuildArchive(const ArchiveModel& model)
+namespace
+{
+
+// Lays an archive out from `model`, each file with bytes at its offset of `file_offsets` when there are offsets, and
+// each file on the next multiple of the alignment when there aren't (BuildArchive).
+std::vector<uint8_t> LayOut(const ArchiveModel& model, std::optional<std::span<const uint32_t>> file_offsets)
 {
     Writer w;
     w.Magic("SDAT");
@@ -285,7 +293,19 @@ std::vector<uint8_t> BuildArchive(const ArchiveModel& model)
     w.U32(static_cast<uint32_t>(model.files.size()));
     for (std::size_t id = 0; id < model.files.size(); id++)
     {
-        w.PadTo(AlignUp(w.Size(), model.file_alignment));
+        const std::size_t end = w.Size();
+        std::size_t start = AlignUp(end, model.file_alignment);
+        if (file_offsets && !model.files[id].empty())
+        {
+            start = (*file_offsets)[id];
+            if (start < end)
+            {
+                throw std::invalid_argument("file " + std::to_string(id) + " of the sound archive would start at " +
+                                            std::to_string(start) + ", before the end of what is in front of it at " +
+                                            std::to_string(end));
+            }
+        }
+        w.PadTo(start);
         w.Put32(entries + 16 * id, w.Size());
         w.Put32(entries + 16 * id + 4, model.files[id].size());
         w.Bytes(model.files[id]);
@@ -295,7 +315,26 @@ std::vector<uint8_t> BuildArchive(const ArchiveModel& model)
     block(3, files, w.Size() - files);
 
     w.Put32(8, w.Size());
+
     return w.Take();
+}
+
+} // namespace
+
+std::vector<uint8_t> BuildArchive(const ArchiveModel& model)
+{
+    return LayOut(model, std::nullopt);
+}
+
+std::vector<uint8_t> BuildArchive(const ArchiveModel& model, std::span<const uint32_t> file_offsets)
+{
+    if (file_offsets.size() != model.files.size())
+    {
+        throw std::invalid_argument("the sound archive has " + std::to_string(model.files.size()) + " files and " +
+                                    std::to_string(file_offsets.size()) + " offsets");
+    }
+
+    return LayOut(model, file_offsets);
 }
 
 } // namespace ntdlib::sdat

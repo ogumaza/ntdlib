@@ -69,6 +69,24 @@ public:
         std::array<uint32_t, kStackSize> stack{};
     };
 
+    // A command's arguments as a decoder reads them: each value, and whether it came from a register. A value from a
+    // register is unknown.
+    struct Args
+    {
+        uint32_t operator[](std::size_t i) const
+        {
+            return values[i];
+        }
+
+        bool Known(std::size_t i) const
+        {
+            return !from_register[i];
+        }
+
+        std::array<uint32_t, 16> values{};
+        std::array<bool, 16> from_register{};
+    };
+
     // A walk from `start` in `data`. A test may give a lower limit.
     SequenceWalk(std::span<const uint8_t> data, const Path& start, std::size_t limit = kLimit);
 
@@ -110,8 +128,15 @@ public:
     void Return(Path path, bool at_depth_0_goes_on);
     void LoopEnd(Path path);
 
+    // Reads up to 16 of `count` arguments at the path's cursor, and moves the cursor past them. `types` gives each
+    // argument's width in 2 bits, from the low bits: 0 a byte, 1 16 bits, 2 24 bits, 3 a register's number in a byte.
+    Args ReadArgs(Path& path, uint32_t count, uint32_t types) const;
+
     // Ends the walk as incomplete: `reason` says what it can't follow.
     void Stop(const std::string& reason);
+
+    // Ends the walk as incomplete at command `command`, at offset `at`: `what` says what the walk can't follow.
+    void Stop(uint32_t at, uint32_t command, const char* what);
 
     // The walk's result.
     SequenceInstruments Finish();

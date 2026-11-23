@@ -33,7 +33,7 @@ constexpr std::size_t kArm9OverlayTableField = 0x50;
 constexpr std::size_t kOverlayEntryBytes = 32;
 constexpr std::size_t kOverlayFlagsField = 28;
 
-// The module parameters' last two words, where they lie in the parameters, and the parameters' size.
+// The module parameters' last two words, where they are in the parameters, and the parameters' size.
 constexpr uint8_t kModuleParamsMagic[] = {0x21, 0x06, 0xC0, 0xDE, 0xDE, 0xC0, 0x06, 0x21};
 constexpr std::size_t kMagicInParams = 0x1C;
 constexpr std::size_t kParamsBytes = 0x24;
@@ -111,7 +111,8 @@ std::vector<uint8_t> UncompressBackward(std::span<const uint8_t> data)
     const std::size_t compressed = lengths & kCompressedSizeMask;
     const std::size_t footer = lengths >> 24;
     const std::size_t growth = xsflib::LoadLe32(&data[end - 4]);
-    if (footer < kFooterBytes || footer > compressed || compressed > end)
+    if (footer < kFooterBytes || footer > compressed || compressed > end || end > kMaxUncompressedBytes ||
+        growth > kMaxUncompressedBytes - end)
     {
         Damaged();
     }

@@ -36,18 +36,14 @@ namespace
 constexpr uint32_t kSoundBias = 0x04000504;
 constexpr uint32_t kSoundBiasMiddle = 0x200;
 
-// The captures' control registers, both of whose busy bits a 16-bit read gives, and the channels and the captures of
-// the SDK's reverb and output effect.
-constexpr uint32_t kCaptureControl = 0x04000508;
-constexpr uint32_t kCapturesBusy = 0x8080;
-constexpr uint32_t kReverbChannels = 0xA;
+// The captures of the SDK's reverb and output effect. kReverbChannels gives their channels.
 constexpr uint32_t kReverbCaptures = 3;
 
 // The arguments of SND_SetupChannelPcm and SND_SetupCapture in the driver's commands.
 constexpr int32_t kTimerClock = 0xFFB0FF;
-constexpr uint32_t kLoopForEver = 1;
-constexpr uint32_t kMaximumVolume = 127;
-constexpr uint32_t kMaximumPan = 127;
+constexpr int kLoopForEver = 1;
+constexpr int kMaximumVolume = 127;
+constexpr int kMaximumPan = 127;
 
 // The output effect's alarm: the first that the sound library of the SDK allocates. The output selector's settings:
 // channel 1 on the left and channel 3 on the right, neither in the mixer. The surround decay that the games' setter
@@ -108,6 +104,7 @@ EffectLayout LayoutOf(const OutputEffect& effect)
     const uint32_t sample_ticks = layout.timer / 32;
     layout.period = samples / interval * sample_ticks;
     layout.first = layout.period + sample_ticks * (effect.pcm8 ? 32 : 16);
+
     return layout;
 }
 
@@ -190,11 +187,6 @@ void Mono(std::span<int16_t> left, std::span<int16_t> right)
     std::copy(left.begin(), left.end(), right.begin());
 }
 
-// The places of a player's channel priority and volume, for the command that writes a player's field.
-constexpr uint32_t kPlayerChannelPriority = 4;
-constexpr uint32_t kPlayerVolume = 6;
-constexpr uint32_t kAllTracks = 0xFFFF;
-
 // A volume's level in the SDK's player: the sum of the levels of the sound handle's volume, the sequence's volume,
 // the player's volume and the fader. A new sequence has 127 for all of them but its volume, whose level adds 0. The
 // table of levels is the driver's kDecibel. A volume above 127 reads past the end of the ARM9's table, from data that
@@ -228,33 +220,47 @@ const Info& Record(const std::vector<std::optional<Info>>& records, uint32_t ind
     {
         throw xsflib::FormatError(std::string("the archive has no ") + kind + " " + std::to_string(index));
     }
+
     return *records[index];
+}
+
+// The commands that lock the channels of the reverb or the output effect and set up its two channels and two captures.
+// Each pair plays and captures one half of `buffer`, `half` bytes each: channel 1 and capture 0 the left, channel 3 and
+// capture 1 the right.
+snd::CommandList CaptureCommands(uint32_t buffer, uint32_t half, int timer, int volume, bool pcm8)
+{
+    const uint32_t words = half / 4;
+
+    // The channels' format is 0 for PCM8 and 1 for PCM16. The captures' is 1 for PCM8 and 0 for PCM16.
+    const int format = pcm8 ? 0 : 1;
+    const uint32_t format_bit = pcm8 ? 1 : 0;
+    snd::CommandList list = {{snd::CommandId::kLockChannels, {kReverbChannels, 0, 0, 0}}};
+    for (uint32_t capture = 0; capture < 2; capture++)
+    {
+        const uint32_t address = buffer + capture * half;
+        list.push_back(snd::CommandOf(snd::PcmChannelSetup{.channel = static_cast<int>(capture) * 2 + 1,
+                                                           .data = address,
+                                                           .format = format,
+                                                           .loop = kLoopForEver,
+                                                           .loop_length = static_cast<int>(words),
+                                                           .volume = volume,
+                                                           .timer = timer,
+                                                           .pan = static_cast<int>(capture) * kMaximumPan}));
+        list.push_back(
+            {snd::CommandId::kSetUpCapture, {address, words, capture << 31 | format_bit << 30 | 1u << 29, 0}});
+    }
+
+    return list;
 }
 
 } // namespace
 
 snd::CommandList ReverbCommands(const Reverb& reverb, uint32_t buffer)
 {
-    const uint32_t half = reverb.size / 2;
-    const uint32_t words = half / 4;
-    const auto timer = static_cast<uint32_t>(kTimerClock / reverb.sample_rate);
-    // The channels' format is 0 for PCM8 and 1 for PCM16. The captures' is 1 for PCM8 and 0 for PCM16.
-    const uint32_t format = reverb.pcm8 ? 0 : 1;
-    const uint32_t format_bit = reverb.pcm8 ? 1 : 0;
-    const auto volume = static_cast<uint32_t>(reverb.volume);
-    snd::CommandList list = {{snd::CommandId::kLockChannels, {kReverbChannels, 0, 0, 0}}};
-    for (uint32_t capture = 0; capture < 2; capture++)
-    {
-        const uint32_t channel = capture * 2 + 1;
-        const uint32_t address = buffer + capture * half;
-        const uint32_t pan = capture * kMaximumPan;
-        list.push_back(
-            {snd::CommandId::kSetUpPcmChannel,
-             {channel | timer << 16, address, words | volume << 24, format << 24 | kLoopForEver << 26 | pan << 16}});
-        list.push_back(
-            {snd::CommandId::kSetUpCapture, {address, words, capture << 31 | format_bit << 30 | 1u << 29, 0}});
-    }
+    snd::CommandList list =
+        CaptureCommands(buffer, reverb.size / 2, kTimerClock / reverb.sample_rate, reverb.volume, reverb.pcm8);
     list.push_back({snd::CommandId::kStartTimer, {kReverbChannels, kReverbCaptures, 0, 0}});
+
     return list;
 }
 
@@ -290,33 +296,27 @@ snd::CommandList OutputModeCommands(OutputMode from, OutputMode to)
     {
         return {{snd::CommandId::kSurroundDecay, {kSurroundDecay, 0, 0, 0}}};
     }
+
     return {};
 }
 
 snd::CommandList OutputEffectCommands(const OutputEffect& effect, uint32_t buffer, uint8_t alarm_id)
 {
     const EffectLayout layout = LayoutOf(effect);
-    const uint32_t words = layout.half / 4;
-
-    // The channels' format is 0 for PCM8 and 1 for PCM16. The captures' is 1 for PCM8 and 0 for PCM16.
-    const uint32_t format = effect.pcm8 ? 0 : 1;
-    const uint32_t format_bit = effect.pcm8 ? 1 : 0;
-    snd::CommandList list = {{snd::CommandId::kLockChannels, {kReverbChannels, 0, 0, 0}}};
-    for (uint32_t capture = 0; capture < 2; capture++)
-    {
-        const uint32_t channel = capture * 2 + 1;
-        const uint32_t address = buffer + capture * layout.half;
-        const uint32_t pan = capture * kMaximumPan;
-        list.push_back({snd::CommandId::kSetUpPcmChannel,
-                        {channel | layout.timer << 16, address, words | kMaximumVolume << 24,
-                         format << 24 | kLoopForEver << 26 | pan << 16}});
-        list.push_back(
-            {snd::CommandId::kSetUpCapture, {address, words, capture << 31 | format_bit << 30 | 1u << 29, 0}});
-    }
+    snd::CommandList list =
+        CaptureCommands(buffer, layout.half, static_cast<int>(layout.timer), kMaximumVolume, effect.pcm8);
     list.push_back({snd::CommandId::kSetUpAlarm, {kEffectAlarm, layout.first, layout.period, alarm_id}});
     list.push_back({snd::CommandId::kOutputSelector, kEffectOutputs});
     list.push_back({snd::CommandId::kStartTimer, {kReverbChannels, kReverbCaptures, 1u << kEffectAlarm, 0}});
+
     return list;
+}
+
+snd::CommandList ChannelLockCommands(const ChannelLock& lock)
+{
+    // NNS_SndLockChannel and NNS_SndUnlockChannel send no flags: a full lock, not a weak one.
+    const snd::CommandId id = lock.unlock ? snd::CommandId::kUnlockChannels : snd::CommandId::kLockChannels;
+    return {{id, {lock.channels, 0, 0, 0}}};
 }
 
 snd::CommandList StartCommands(sdat::SoundHeap& heap, const sdat::Archive& archive, const SequenceRef& sequence,
@@ -371,20 +371,22 @@ snd::CommandList StartCommands(sdat::SoundHeap& heap, const sdat::Archive& archi
     }
     if (player_channels != 0)
     {
-        list.push_back({snd::CommandId::kAllocatableChannels, {id, kAllTracks, player_channels, 0}});
+        list.push_back({snd::CommandId::kAllocatableChannels, {id, snd::kAllTracks, player_channels, 0}});
     }
-    list.push_back({snd::CommandId::kPlayerParameter, {id, kPlayerChannelPriority, channel_priority, 1}});
+    list.push_back({snd::CommandId::kPlayerParameter, {id, snd::kPlayerPriorityOffset, channel_priority, 1}});
     const snd::CommandList set = VariableCommands(settings.variables, player);
     list.insert(list.end(), set.begin(), set.end());
     if (const int32_t level = SequenceLevel(volume); level != 0)
     {
-        list.push_back({snd::CommandId::kPlayerParameter, {id, kPlayerVolume, static_cast<uint32_t>(level), 2}});
+        list.push_back(
+            {snd::CommandId::kPlayerParameter, {id, snd::kPlayerFaderOffset, static_cast<uint32_t>(level), 2}});
     }
     list.push_back({snd::CommandId::kStartPreparedSequence, {id, 0, 0, 0}});
     for (const TrackChannels& tracks : settings.track_channels)
     {
         list.push_back({snd::CommandId::kAllocatableChannels, {id, tracks.tracks, tracks.channels, 0}});
     }
+
     return list;
 }
 
@@ -472,6 +474,7 @@ snd::CommandList VariableCommands(const Variables& variables, int player)
             list.push_back({snd::CommandId::kGlobalVariable, {i, static_cast<uint16_t>(*variables.global[i]), 0, 0}});
         }
     }
+
     return list;
 }
 
@@ -486,6 +489,7 @@ uint32_t ArchivePlayer::UnitRegisters::Read(uint32_t address, int size)
     {
         player_.on_sound_access({address, size, value, false});
     }
+
     return value;
 }
 
@@ -565,7 +569,7 @@ void ArchivePlayer::Start(const SequenceRef& sequence, const GameSettings& setti
         }
 
         // NNS_SndCaptureStartReverb stops a reverb that runs, as NNSi_SndCaptureStop does, and clears the buffer.
-        if (unit_.Read(kCaptureControl, 2) & kCapturesBusy)
+        if (unit_.CapturesRun())
         {
             list.push_back({snd::CommandId::kStopTimer, {kReverbChannels, kReverbCaptures, 0, 0}});
             list.push_back({snd::CommandId::kUnlockChannels, {kReverbChannels, 0, 0, 0}});
@@ -586,7 +590,7 @@ void ArchivePlayer::Start(const SequenceRef& sequence, const GameSettings& setti
             throw std::invalid_argument("an output effect's buffer of " + std::to_string(effect.size) +
                                         " bytes doesn't fit the player");
         }
-        if (!effect_ && (unit_.Read(kCaptureControl, 2) & kCapturesBusy))
+        if (!effect_ && unit_.CapturesRun())
         {
             throw std::invalid_argument("a reverb runs: the SDK starts no output effect");
         }
@@ -735,7 +739,7 @@ void ArchivePlayer::Play(std::vector<SoundOutput>* out, std::vector<float>* enha
             if (command.id == snd::CommandId::kSetUpPcmChannel || command.id == snd::CommandId::kSetUpPsgChannel ||
                 command.id == snd::CommandId::kSetUpNoiseChannel)
             {
-                channel_tracks_[command.args[0] & 0xF] = -1;
+                channel_tracks_[static_cast<std::size_t>(snd::SetUpChannel(command))] = -1;
             }
         }
     }
@@ -814,6 +818,7 @@ bool ArchivePlayer::IsTrackMuted(int player, int track) const
 {
     CheckPlayer(player);
     CheckTrack(track);
+
     return (muted_[static_cast<std::size_t>(player)] & (1u << track)) != 0;
 }
 
@@ -829,6 +834,7 @@ void ArchivePlayer::MeterTracks(int player)
 std::array<int32_t, 2> ArchivePlayer::TrackPeaks(int track) const
 {
     CheckTrack(track);
+
     return peaks_[static_cast<std::size_t>(track)];
 }
 
@@ -845,9 +851,11 @@ bool ArchivePlayer::Busy() const
             return true;
         }
     }
+    // The reverb and the output effect play the capture buffer on channels 1 and 3 for as long as the captures run.
+    const bool captures = unit_.CapturesRun();
     for (int channel = 0; channel < unit_.ChannelCount(); channel++)
     {
-        if (effect_ && (channel == 1 || channel == 3))
+        if (captures && (channel == 1 || channel == 3))
         {
             continue;
         }
@@ -856,6 +864,7 @@ bool ArchivePlayer::Busy() const
             return true;
         }
     }
+
     return effect_ && (effect_->sounded || EffectSounds());
 }
 
@@ -912,6 +921,7 @@ ArchivePlayer::Snapshot ArchivePlayer::Save(const Snapshot* previous) const
     snapshot.output_mode_ = output_mode_;
     snapshot.history_ = history_;
     snapshot.alarm_ids_ = alarm_ids_;
+
     return snapshot;
 }
 

@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -24,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
 #include "ntdlib/sdat/formats.h"
@@ -140,6 +142,23 @@ struct TrackChannels
     uint16_t channels = 0;
 };
 
+// Channels that a game's code locks while a sequence plays (NNS_SndLockChannel), such as those of a stream that it
+// prepares, or unlocks (NNS_SndUnlockChannel), as a stream's stop does. The driver takes the change before its frame
+// `frame`, counted from the sequence's start: frame 0 is the first frame after ArchivePlayer::Start. A lock stops the
+// notes on the channels and keeps the sequence off them. A lock in frame 0 holds the channels from the start, as a
+// stream that plays as the sequence starts does.
+struct ChannelLock
+{
+    friend bool operator==(const ChannelLock&, const ChannelLock&) = default;
+
+    uint64_t frame = 0;
+    uint16_t channels = 0;
+    bool unlock = false;
+};
+
+// The driver's command of a lock or an unlock.
+snd::CommandList ChannelLockCommands(const ChannelLock& lock);
+
 // What a game's code sets as it starts a sequence: the values of the variables, the channels that the archive's
 // players give their sequences' tracks, other channels for some tracks, and the capture units' reverb or output effect.
 // A game's profile gives them. The default plays the sequence as the archive gives it.
@@ -161,6 +180,91 @@ struct GameSettings
     std::optional<OutputEffect> effect = {};
 };
 
+// Lists of the driver's commands that a game's code sends once a sequence has run `tick` ticks (the player's tick
+// counter that NNS_SndPlayerGetTick reads), such as the steps of a fade. The game's code runs once in each of its
+// frames. Such a frame lasts `video_frames` frames of the screen (kFrameCycles system clocks each). The first such
+// frame starts together with the sequence. The first of those frames that reads a count of `tick` or more starts the
+// lists. Each of its later frames sends the next list. The driver takes each list before its next frame. The commands
+// address the driver's player 0.
+struct TickCommands
+{
+    friend bool operator==(const TickCommands&, const TickCommands&) = default;
+
+    uint32_t tick = 0;
+    uint32_t video_frames = 1;
+    std::vector<snd::CommandList> frames = {};
+};
+
+// How far the lists of a host's TickCommands have been sent. Before each of the driver's frames, the host calls
+// SendDue. A frame of the game's code reads the count of the ticks that the sequence's player has run
+// (NNS_SndPlayerGetTick) and sends its list as it starts. The game's code takes no time. The driver takes the list
+// before its next frame.
+class TickListProgress
+{
+public:
+    TickListProgress() = default;
+
+    // Progress for `lists` TickCommands, none of them sent.
+    explicit TickListProgress(std::size_t lists) : progress_(lists)
+    {
+    }
+
+    // Sends with `send` each list of `tick_commands` whose frame of the game's code starts by `now`, the system clocks
+    // of the driver's frames run so far. Those frames read `ticks`. Returns whether any TickCommands sent its last
+    // list.
+    template <typename Send>
+    bool SendDue(std::span<const TickCommands> tick_commands, uint64_t now, uint32_t ticks, Send&& send)
+    {
+        bool finished = false;
+        for (std::size_t i = 0; i < tick_commands.size(); i++)
+        {
+            const TickCommands& commands = tick_commands[i];
+            Progress& progress = progress_[i];
+            const uint64_t frame_clocks = uint64_t{std::max(commands.video_frames, 1u)} * kFrameCycles;
+            for (; progress.sent < commands.frames.size() && progress.game_frame * frame_clocks <= now;
+                 progress.game_frame++)
+            {
+                if (!progress.started)
+                {
+                    progress.started = ticks >= commands.tick;
+                    continue;
+                }
+
+                send(commands.frames[progress.sent]);
+                progress.sent++;
+                finished = finished || progress.sent == commands.frames.size();
+            }
+        }
+
+        return finished;
+    }
+
+    // Whether every list of `tick_commands` has been sent.
+    bool Done(std::span<const TickCommands> tick_commands) const
+    {
+        for (std::size_t i = 0; i < tick_commands.size(); i++)
+        {
+            if (progress_[i].sent != tick_commands[i].frames.size())
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+private:
+    // The game's frame that comes next, whether a frame has read a count of the tick, and the lists sent.
+    struct Progress
+    {
+        uint64_t game_frame = 0;
+        bool started = false;
+        std::size_t sent = 0;
+    };
+
+    std::vector<Progress> progress_;
+};
+
 // Loads into `heap` what `sequence` of `archive` requires, and returns the commands that start it on the driver's
 // player `player`. The SDK's sound archive player does the same in NNS_SndArcPlayerStartSeq and
 // NNS_SndArcPlayerStartSeqArc, and in the NNS_SndMain that follows.
@@ -170,9 +274,8 @@ struct GameSettings
 // when the player names some, and set its channel priority. `settings` can give the archive's players other channels.
 // Then the commands set the variables, set the player's volume to the sequence's when that isn't 127, and start the
 // sequence. The track channels of `settings` come last. The reverb and the output effect aren't among the commands:
-// ReverbCommands and OutputEffectCommands give them.
-// Throws xsflib::FormatError when the archive lacks the sequence, its file or its bank, and std::runtime_error when the
-// files don't fit in the heap.
+// ReverbCommands and OutputEffectCommands give them. Throws xsflib::FormatError when the archive has no such sequence,
+// or the sequence's file or bank is missing, and std::runtime_error when the files don't fit in the heap.
 snd::CommandList StartCommands(sdat::SoundHeap& heap, const sdat::Archive& archive, const SequenceRef& sequence,
                                const GameSettings& settings = {}, int player = 0);
 
@@ -190,11 +293,29 @@ std::string Label(const sdat::Archive& archive, const SequenceRef& sequence);
 // gives none.
 std::vector<SequenceRef> Sequences(const sdat::Archive& archive);
 
+// The first of the archive's sequences (Sequences) whose label (Label) is `label`, or nothing.
+inline std::optional<SequenceRef> FindSequence(const sdat::Archive& archive, const std::string& label)
+{
+    for (const SequenceRef& sequence : Sequences(archive))
+    {
+        if (Label(archive, sequence) == label)
+        {
+            return sequence;
+        }
+    }
+
+    return std::nullopt;
+}
+
+// The channels that the SDK's capture reverb and output effect play their buffers on: 1 and 3. ReverbCommands locks
+// them for the reverb.
+constexpr uint32_t kReverbChannels = 1u << 1 | 1u << 3;
+
 struct ArchivePlayerOptions
 {
     snd::Build build = {};
 
-    // Where the driver's frames lie: the system clock of the frame that takes the shared work, and the frames before
+    // Where the driver's frames are: the system clock of the frame that takes the shared work, and the frames before
     // it, each of which steps the driver's random numbers. A player that lines up with the game's driver takes the
     // driver's values. One that stands alone takes 0 for both.
     uint64_t clock = 0;
@@ -214,8 +335,8 @@ class ArchivePlayer
 {
 public:
     // Where the player keeps the ARM9's data in main memory: the shared work, then the files.
-    static constexpr uint32_t kMainMemory = 0x02000000;
-    static constexpr uint32_t kMainMemorySize = 0x400000;
+    static constexpr uint32_t kMainMemory = ntr::kMainMemory;
+    static constexpr uint32_t kMainMemorySize = ntr::kMainMemorySize;
     static constexpr uint32_t kSharedWork = 0x02001000;
     static constexpr uint32_t kReverbBuffer = 0x02002000;
     static constexpr uint32_t kFiles = 0x02010000;
@@ -260,9 +381,10 @@ public:
     // quickly.
     void RunFrame();
 
-    // Whether commands wait for the next frame, a sequence plays or a channel sounds. The channels of a running output
-    // effect play for as long as the effect runs. They count only while the effect's buffer or history holds a value
-    // other than 0, or held one as the last frame started: until the last sound has passed through the effect.
+    // Whether commands wait for the next frame, a sequence plays or a channel sounds. While the captures run, the
+    // reverb or the output effect plays the capture buffer on channels 1 and 3. Those channels don't count then. The
+    // output effect counts only while its buffer or history holds a value other than 0, or held one as the last frame
+    // started: until the last sound has passed through the effect.
     bool Busy() const;
 
     // The system clock of the last frame.

@@ -93,7 +93,7 @@ struct StreamFile
     // The file's bytes, in the layout of `version`. Throws std::invalid_argument for a version of another layout than
     // those above, an IMA-ADPCM stream, a DSP-ADPCM channel without its info, a PCM channel with one, channels whose
     // samples or history don't fit the settings, more uncounted samples than the last block holds, and a track that
-    // plays a channel that the stream lacks.
+    // plays a channel missing from the stream.
     std::vector<uint8_t> Write() const;
 
     // The bytes of each channel's piece of every block but the last.

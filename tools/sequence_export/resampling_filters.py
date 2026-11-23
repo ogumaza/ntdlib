@@ -10,7 +10,7 @@ coefficient ROM (include/ntdlib/dsp/coef_rom.h): 128 phases of 4 taps each, at 0
 0x1400 (16 kHz). The Switch's audio renderer holds the same three sets. The 3DS's DSP has three polyphase kernels. Their
 responses below were measured on the DSP's model: a wave of stepped sines at a sample rate of 32728 Hz, played at rates
 on each side of 1 and 4/3. Each tone was measured at its output frequency and compared with the same tone at a rate of
-exactly 1, which plays unfiltered.
+exactly 1. A rate of exactly 1 plays unfiltered.
 
 A filter's response is fixed in cycles per wave sample (nu). The script averages each set's 128 phases into the
 response at the tone's frequency. The synths lose highs too: FluidSynth and sfizz interpolate with a Catmull-Rom spline

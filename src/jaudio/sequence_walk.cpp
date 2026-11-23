@@ -5,12 +5,13 @@
 
 #include "ntdlib/jaudio/sequence_walk.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <utility>
+
+#include "xsflib/text.h"
 
 #include "ntdlib/jaudio/sequence_commands.h"
 
@@ -149,6 +150,44 @@ void SequenceWalk::Stop(const std::string& reason)
     }
 }
 
+void SequenceWalk::Stop(uint32_t at, uint32_t command, const char* what)
+{
+    Stop(what + std::string(" at ") + xsflib::Hex(at) + " (command " + xsflib::Hex(command) + ")");
+}
+
+SequenceWalk::Args SequenceWalk::ReadArgs(Path& path, uint32_t count, uint32_t types) const
+{
+    Args args;
+    for (uint32_t i = 0; i < count && i < args.values.size(); i++)
+    {
+        switch (types & 3)
+        {
+        case 0:
+            args.values[i] = U8(path.cursor);
+            path.cursor += 1;
+            break;
+
+        case 1:
+            args.values[i] = U16(path.cursor);
+            path.cursor += 2;
+            break;
+
+        case 2:
+            args.values[i] = U24(path.cursor);
+            path.cursor += 3;
+            break;
+
+        default:
+            args.from_register[i] = true;
+            path.cursor += 1;
+            break;
+        }
+        types >>= 2;
+    }
+
+    return args;
+}
+
 SequenceInstruments SequenceWalk::Finish()
 {
     result_.commands.assign(commands_.begin(), commands_.end());
@@ -165,36 +204,7 @@ constexpr uint16_t kAny = InstrumentUse::kAny;
 constexpr uint32_t kRegBank = 0x67;
 constexpr uint32_t kRegProgram = 0x68;
 
-// A command's arguments as the walk reads them: each value, and whether it came from a register. A value from a
-// register is unknown.
-struct Args
-{
-    std::array<uint32_t, 16> values{};
-    std::array<bool, 16> from_register{};
-
-    uint32_t operator[](std::size_t i) const
-    {
-        return values[i];
-    }
-
-    bool Known(std::size_t i) const
-    {
-        return !from_register[i];
-    }
-};
-
-std::string Hex(uint32_t value)
-{
-    static constexpr char kDigits[] = "0123456789abcdef";
-    std::string text;
-    do
-    {
-        text.insert(text.begin(), kDigits[value & 15]);
-        value >>= 4;
-    } while (value != 0);
-
-    return "0x" + text;
-}
+using Args = SequenceWalk::Args;
 
 // The decoder of JAudio2's commands for one path.
 class Jaudio2Step
@@ -231,7 +241,7 @@ private:
 
     void Stop(uint32_t command, const char* what)
     {
-        walk_.Stop(what + std::string(" at ") + Hex(at_) + " (command " + Hex(command) + ")");
+        walk_.Stop(at_, command, what);
     }
 
     SequenceWalk& walk_;
@@ -308,34 +318,7 @@ void Jaudio2Step::Command(uint32_t command, uint32_t register_mask)
 
     const SequenceCommand info =
         command >= kFirstSequenceCommand ? kSequenceCommands[command - kFirstSequenceCommand] : SequenceCommand{};
-    Args args;
-    uint32_t widths = info.types | register_mask;
-    for (uint32_t i = 0; i < info.count && i < args.values.size(); i++)
-    {
-        switch (widths & 3)
-        {
-        case 0:
-            args.values[i] = walk_.U8(path_.cursor);
-            path_.cursor += 1;
-            break;
-
-        case 1:
-            args.values[i] = walk_.U16(path_.cursor);
-            path_.cursor += 2;
-            break;
-
-        case 2:
-            args.values[i] = walk_.U24(path_.cursor);
-            path_.cursor += 3;
-            break;
-
-        default:
-            args.from_register[i] = true;
-            path_.cursor += 1;
-            break;
-        }
-        widths >>= 2;
-    }
+    const Args args = walk_.ReadArgs(path_, info.count, info.types | register_mask);
 
     Execute(command, args);
 }

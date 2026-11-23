@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <span>
 #include <string>
@@ -12,6 +11,7 @@
 
 #include "xsflib/binary.h"
 
+#include "common/magic.h"
 #include "jaudio/barc_parse.h"
 #include "ntdlib/jaudio/rarc.h"
 
@@ -19,6 +19,8 @@ namespace ntdlib::jaudio
 {
 namespace
 {
+
+using ntdlib::detail::HasMagic;
 
 // An entry: the sequence's name in up to 14 bytes, the sequence whose data it shares, two words, then the sequence's
 // offset and size.
@@ -44,8 +46,8 @@ detail::BarcLayout LayoutOf(bool big_endian)
 
 } // namespace
 
-std::vector<ArchiveFile> detail::ParseBarc(const xsflib::Reader& r, std::size_t at, BarcLayout layout,
-                                           std::span<const uint8_t> archive, const std::string& what)
+std::vector<BarcEntry> detail::ParseBarcEntries(const xsflib::Reader& r, std::size_t at, BarcLayout layout,
+                                                const std::string& what)
 {
     r.Sub(at, layout.entries_at);
     const uint32_t count = r.U32(at + layout.count_at);
@@ -54,20 +56,36 @@ std::vector<ArchiveFile> detail::ParseBarc(const xsflib::Reader& r, std::size_t 
         throw xsflib::FormatError(what + " is damaged");
     }
 
-    std::vector<ArchiveFile> files;
+    std::vector<BarcEntry> entries;
     for (uint32_t number = 0; number < count; number++)
     {
         const std::size_t entry = at + layout.entries_at + std::size_t{number} * kEntrySize;
         r.Sub(entry, kEntrySize);
-        const uint32_t offset = r.U32(entry + kOffset);
-        const uint32_t size = r.U32(entry + kSize);
-        if (offset > archive.size() || size > archive.size() - offset)
+        entries.push_back({.name = r.CString(entry, kNameSize),
+                           .shares = r.U16(entry + kShares),
+                           .offset = r.U32(entry + kOffset),
+                           .size = r.U32(entry + kSize)});
+    }
+
+    return entries;
+}
+
+std::vector<ArchiveFile> detail::ParseBarc(const xsflib::Reader& r, std::size_t at, BarcLayout layout,
+                                           std::span<const uint8_t> archive, const std::string& what)
+{
+    const std::vector<BarcEntry> entries = ParseBarcEntries(r, at, layout, what);
+    const auto count = static_cast<uint32_t>(entries.size());
+    std::vector<ArchiveFile> files;
+    for (uint32_t number = 0; number < count; number++)
+    {
+        const BarcEntry& entry = entries[number];
+        if (entry.offset > archive.size() || entry.size > archive.size() - entry.offset)
         {
             throw xsflib::FormatError(what + " names a sequence outside the sequence archive");
         }
 
         files.push_back(
-            {static_cast<uint16_t>(number), r.CString(entry, kNameSize), archive.subspan(offset, size), std::nullopt});
+            {static_cast<uint16_t>(number), entry.name, archive.subspan(entry.offset, entry.size), std::nullopt});
     }
 
     // Each sequence's chain of shares, to the sequence that shares no other sequence's data. A chain ends at a sequence
@@ -90,7 +108,7 @@ std::vector<ArchiveFile> detail::ParseBarc(const xsflib::Reader& r, std::size_t 
             on_chain[current] = true;
             chain.push_back(current);
 
-            const uint16_t shares = r.U16(at + layout.entries_at + std::size_t{current} * kEntrySize + kShares);
+            const uint16_t shares = entries[current].shares;
             if (shares == kSharesNone)
             {
                 sources[current] = current;
@@ -124,12 +142,19 @@ std::vector<ArchiveFile> ReadBarcSequenceFiles(std::span<const uint8_t> index, s
     return detail::ParseBarc(r, 0, LayoutOf(big_endian), archive, "the sequence index");
 }
 
+std::vector<BarcEntry> ReadBarcEntries(std::span<const uint8_t> index, bool big_endian)
+{
+    const xsflib::Reader r(index, big_endian, kBarcReaderOptions);
+
+    return detail::ParseBarcEntries(r, 0, LayoutOf(big_endian), "the sequence index");
+}
+
 std::optional<std::size_t> FindBarc(std::span<const uint8_t> data, bool big_endian)
 {
     const detail::BarcLayout layout = LayoutOf(big_endian);
     for (std::size_t at = 0; at + layout.entries_at <= data.size(); at += 4)
     {
-        if (std::memcmp(data.data() + at, "BARC", 4) != 0)
+        if (!HasMagic(data.subspan(at), "BARC"))
         {
             continue;
         }

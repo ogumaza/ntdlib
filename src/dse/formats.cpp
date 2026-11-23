@@ -16,10 +16,15 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/le_writer.h"
+#include "common/magic.h"
+#include "ntdlib/dse/oldest.h"
 #include "ntdlib/rounding.h"
 
 namespace ntdlib::dse
 {
+
+using ntdlib::detail::HasMagic;
 
 namespace
 {
@@ -33,8 +38,8 @@ constexpr std::array<uint8_t, 16> kSongChunk = {'s',  'o',  'n',  'g',  0x00, 0x
                                                 0x10, 0xFF, 0x00, 0x00, 0xB0, 0xFF, 0xFF, 0xFF};
 
 // The arguments of the commands from 0x90 on, by the code less 0x90. -1 marks a code that the driver takes as invalid.
-// The lengths are those that the driver's handler of each command reads. The table of the handlers lies at 0x020B0B90
-// in the ARM9 of Explorers of Sky's North American release.
+// The lengths are those that the driver's handler of each command reads. The table of the handlers is at 0x020B0B90 in
+// the ARM9 of Explorers of Sky's North American release.
 constexpr std::array<int8_t, 0x70> kCommandArguments = {
     0, 1,  1,  2,  3,  1,  -1, -1, 0,  0,  -1, -1, 1,  0,  0,  -1, // 0x90
     1, 1,  -1, -1, 1,  1,  -1, -1, 2,  1,  1,  1,  1,  -1, -1, 3,  // 0xA0
@@ -57,7 +62,7 @@ std::array<uint8_t, N> Take(const xsflib::Reader& r, std::size_t at)
 uint32_t ChunkSize(const xsflib::Reader& r, std::size_t at, const char* label, const std::array<uint8_t, 8>& kind)
 {
     const std::span<const uint8_t> head = r.Sub(at, 16);
-    if (std::memcmp(head.data(), label, 4) != 0)
+    if (!HasMagic(head, label))
     {
         throw xsflib::FormatError(std::string("the file has no ") + label + " chunk where one belongs");
     }
@@ -72,7 +77,7 @@ uint32_t ChunkSize(const xsflib::Reader& r, std::size_t at, const char* label, c
 // Checks the magic word and the version, and gives the file's size.
 void CheckHeader(const xsflib::Reader& r, const char* magic)
 {
-    if (std::memcmp(r.Sub(0, 4).data(), magic, 4) != 0)
+    if (!HasMagic(r.Sub(0, 4), magic))
     {
         throw xsflib::FormatError(std::string("not a DSE ") + magic + " file");
     }
@@ -88,7 +93,7 @@ void CheckHeader(const xsflib::Reader& r, const char* magic)
 bool IsSecondLayout(const xsflib::Reader& r)
 {
     constexpr std::size_t kTable = 0x40;
-    if (r.Size() < kTable + 4 || std::memcmp(r.Sub(kTable, 4).data(), "seq ", 4) == 0)
+    if (r.Size() < kTable + 4 || HasMagic(r.Sub(kTable, 4), "seq "))
     {
         return false;
     }
@@ -113,7 +118,7 @@ bool IsSecondLayout(const xsflib::Reader& r)
             return false;
         }
         const std::span<const uint8_t> label = r.Sub(chunk, 4);
-        return std::memcmp(label.data(), "trk ", 4) == 0 || std::memcmp(label.data(), "eoc ", 4) == 0;
+        return HasMagic(label, "trk ") || HasMagic(label, "eoc ");
     }
 
     return r.Size() == AlignUp(table_end, 16);
@@ -180,66 +185,7 @@ Track ReadTrack(const xsflib::Reader& r, std::size_t at, std::size_t& next)
     return track;
 }
 
-// Bytes that grow as they're written.
-class Writer
-{
-public:
-    std::size_t Size() const
-    {
-        return bytes_.size();
-    }
-
-    void U8(uint8_t value)
-    {
-        bytes_.push_back(value);
-    }
-
-    void U16(uint16_t value)
-    {
-        U8(static_cast<uint8_t>(value));
-        U8(static_cast<uint8_t>(value >> 8));
-    }
-
-    void U32(uint32_t value)
-    {
-        U16(static_cast<uint16_t>(value));
-        U16(static_cast<uint16_t>(value >> 16));
-    }
-
-    void Bytes(std::span<const uint8_t> data)
-    {
-        bytes_.insert(bytes_.end(), data.begin(), data.end());
-    }
-
-    // Pads to a multiple of `alignment` with `filler`'s bytes while they last, then with `value`.
-    void Pad(std::size_t alignment, std::span<const uint8_t> filler, uint8_t value)
-    {
-        const std::size_t count = AlignUp(bytes_.size(), alignment) - bytes_.size();
-        for (std::size_t i = 0; i < count; i++)
-        {
-            U8(i < filler.size() && filler.size() == count ? filler[i] : value);
-        }
-    }
-
-    void Put16(std::size_t at, uint32_t value)
-    {
-        xsflib::StoreLe16(&bytes_[at], static_cast<uint16_t>(value));
-    }
-
-    void Put32(std::size_t at, uint32_t value)
-    {
-        Put16(at, value);
-        Put16(at + 2, value >> 16);
-    }
-
-    std::vector<uint8_t> Take()
-    {
-        return std::move(bytes_);
-    }
-
-private:
-    std::vector<uint8_t> bytes_;
-};
+using Writer = ntdlib::detail::LeWriter;
 
 // Writes a chunk's header, and gives the place of its size.
 std::size_t ChunkHeader(Writer& w, const char* label, const std::array<uint8_t, 8>& kind)
@@ -265,7 +211,7 @@ void WriteTrack(Writer& w, const Track& track)
     }
     w.Bytes(track.unread);
 
-    // A last event that lies in the padding stays there while the chunk's size leaves room for it before the next
+    // A last event that is in the padding stays there while the chunk's size leaves room for it before the next
     // multiple of 4.
     std::size_t size = w.Size() - start;
     if (track.end_in_padding && track.unread.empty() && size % 4 != 1)
@@ -302,7 +248,7 @@ std::vector<uint16_t> ReadOffsets(const xsflib::Reader& r, std::size_t base, std
 std::vector<Track> ReadTracks(const xsflib::Reader& r, std::size_t& at)
 {
     std::vector<Track> tracks;
-    while (at + 4 <= r.Size() && std::memcmp(r.Sub(at, 4).data(), "trk ", 4) == 0)
+    while (at + 4 <= r.Size() && HasMagic(r.Sub(at, 4), "trk "))
     {
         tracks.push_back(ReadTrack(r, at, at));
     }
@@ -424,6 +370,10 @@ void SequenceInfo::SetChannelCount(uint8_t count)
 
 Song Song::Parse(std::span<const uint8_t> file)
 {
+    if (IsOldestVersion(file))
+    {
+        return Parse(Upgraded(file));
+    }
     const xsflib::Reader r(file);
     CheckHeader(r, "smdl");
 
@@ -552,6 +502,10 @@ std::vector<uint8_t> Program::Bytes() const
 
 WaveBank WaveBank::Parse(std::span<const uint8_t> file)
 {
+    if (IsOldestVersion(file))
+    {
+        return Parse(Upgraded(file));
+    }
     const xsflib::Reader r(file);
     CheckHeader(r, "swdl");
 
@@ -580,7 +534,7 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
     }
     at = AlignUp(end, 16);
 
-    if (std::memcmp(r.Sub(at, 4).data(), "prgi", 4) == 0)
+    if (HasMagic(r.Sub(at, 4), "prgi"))
     {
         Instruments instruments;
         const uint32_t prgi_size = ChunkSize(r, at, "prgi", kBankChunk);
@@ -635,7 +589,7 @@ WaveBank WaveBank::Parse(std::span<const uint8_t> file)
         bank.instruments = std::move(instruments);
     }
 
-    if (std::memcmp(r.Sub(at, 4).data(), "pcmd", 4) == 0)
+    if (HasMagic(r.Sub(at, 4), "pcmd"))
     {
         const uint32_t pcmd_size = ChunkSize(r, at, "pcmd", kBankChunk);
         const std::span<const uint8_t> samples = r.Sub(at + 16, pcmd_size);

@@ -5,9 +5,11 @@
 // from the frame that starts the sequence. A frame's commands sound two frames later. The expected frames are worked
 // out by hand from the sequences.
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "xsflib/binary.h"
@@ -51,6 +53,7 @@ Bytes ArchiveFile(const Bytes& sequence, const files::Region& region = {}, const
     spec.items[3] = {files::FileItem(2, "WAVE")};
     spec.items[4] = {files::PlayerItem(1, 0, 0, "PLAYER_0"), files::PlayerItem(1, 0x0FF0, 0, "PLAYER_1")};
     spec.files = {files::Sequence(sequence), files::Bank({{.type = 1, .region = region}}), files::WaveArchive({wave})};
+
     return files::SoundArchive(spec);
 }
 
@@ -68,7 +71,7 @@ bool operator==(const Timing& a, const Timing& b)
 
 Timing LoopFrom(uint64_t frame)
 {
-    return LoopAt(frame, ntr::kFrameMs, 10000.0);
+    return LoopAt(frame, ntr::kFrameMs, 7000.0);
 }
 
 // Plays `sequence` for `frames` frames while the driver follows lengths, with `variables`, and gives `check` the driver
@@ -99,26 +102,173 @@ void TestRules()
     XSFLIB_CHECK(rules.loop_offset == 2 && rules.sound_offset == 2 && rules.steady_offset == 2);
 }
 
-// A note of 48 ticks, a wait of 48 and the end. The sequence ends where its note's release falls silent, with the tail.
+// A note of 48 ticks, a wait of 48 and the end. The sequence ends where its note's release falls silent.
 void TestEnd()
 {
     const std::optional<Timing> timing = Measure({0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF});
     XSFLIB_CHECK(timing && !timing->silent && timing->fade_ms == 0);
-    XSFLIB_CHECK(timing && timing->length_ms > 1000 && timing->length_ms < 1100);
+    XSFLIB_CHECK(timing && timing->length_ms > 500 && timing->length_ms < 600);
 }
 
-// A sequence without notes is silent, and takes the tail alone.
+// A sequence without notes is silent, with a length of 0 and no first sound.
 void TestSilent()
 {
     const std::optional<Timing> timing = Measure({0x80, 0x30, 0xFF});
-    XSFLIB_CHECK(timing && timing->silent && timing->length_ms == 500 && timing->fade_ms == 0);
+    XSFLIB_CHECK(timing && timing->silent && timing->length_ms == 0 && timing->fade_ms == 0);
+    XSFLIB_CHECK(timing && !timing->first_sample_ms && !timing->first_sound_ms);
 }
 
-// The jump back loops each 96 ticks: at frames 192 and 384. The fade starts two frames after the second loop.
+// The first sample that isn't 0 of the same player's output, played frame by frame, is the timing's first sample,
+// rounded to the millisecond. The output runs at kOutputRate. The first sound over -72 dB starts with a frame, at or
+// before the first sample's frame ends.
+void TestFirstSample()
+{
+    const Bytes sequence = {0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF};
+    const Bytes file = ArchiveFile(sequence);
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+    ntr::ArchivePlayer player(archive);
+    player.Start({0});
+    std::optional<double> first_ms;
+    std::vector<ntr::SoundOutput> samples;
+    std::vector<int16_t> output;
+    for (uint64_t frame = 0; frame < 100 && !first_ms; frame++)
+    {
+        samples.clear();
+        output.clear();
+        player.RunFrame(samples);
+        ntr::AppendPcm16(samples, output);
+        for (std::size_t i = 0; i < output.size() && !first_ms; i++)
+        {
+            if (output[i] != 0)
+            {
+                first_ms =
+                    static_cast<double>(frame) * ntr::kFrameMs + static_cast<double>(i / 2) * 1000.0 / ntr::kOutputRate;
+            }
+        }
+    }
+
+    const std::optional<Timing> timing = ntr::MeasureSequence(archive, {0});
+
+    XSFLIB_CHECK(first_ms && *first_ms > 0.0);
+    XSFLIB_CHECK(first_ms && timing && timing->first_sample_ms == static_cast<long long>(*first_ms + 0.5));
+    XSFLIB_CHECK(first_ms && timing && timing->first_sound_ms &&
+                 static_cast<double>(*timing->first_sound_ms) < *first_ms + ntr::kFrameMs);
+}
+
+// The jump back loops each 96 ticks: at frames 192 and 384. The fade starts two frames after the second loop. A pass
+// is 192 frames, 1,000 ms, and the two passes start 11 ms after the start, at the end of 386 frames less 2,000 ms.
 void TestLoop()
 {
     const std::optional<Timing> timing = Measure({0x3C, 0x7F, 0x30, 0x80, 0x30, 0x94, 0x00, 0x00, 0x00});
     XSFLIB_CHECK(timing && *timing == LoopFrom(386));
+    XSFLIB_CHECK(timing && timing->loop == (xsflib::rip::LoopPass{.start_ms = 11, .length_ms = 1000}));
+}
+
+// The commands after the start set the tempo's ratio to 512, twice the sequence's tempo: the jump back loops each 96
+// ticks at frames 96 and 192, and a pass is 96 frames, 500 ms. The same commands addressed to player 1 change nothing.
+void TestCommandsAfterStart()
+{
+    const Bytes file = ArchiveFile({0x3C, 0x7F, 0x30, 0x80, 0x30, 0x94, 0x00, 0x00, 0x00});
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+    const auto ratio = [](uint32_t player)
+    {
+        return snd::CommandList{{.id = snd::CommandId::kPlayerParameter, .args = {player, 0x1A, 512, 2}}};
+    };
+
+    const std::optional<Timing> faster =
+        ntr::MeasureSequence(archive, {0}, {}, {}, {}, xsflib::rip::Limit::kDefault, ratio(0));
+    const std::optional<Timing> other =
+        ntr::MeasureSequence(archive, {0}, {}, {}, {}, xsflib::rip::Limit::kDefault, ratio(1));
+
+    XSFLIB_CHECK(faster && *faster == LoopFrom(194));
+    XSFLIB_CHECK(faster && faster->loop && faster->loop->length_ms == 500);
+    XSFLIB_CHECK(other && *other == LoopFrom(386));
+}
+
+// A list of the game's code at tick 0 sets the tempo's ratio to 512 in the game's first frame after the start. The
+// game's frames last one frame of the screen, 3.2 of the driver's frames: the frame that starts the sequence reads the
+// count, and the next sends the list before the driver's frame 4. The driver has run ticks 0 and 1 by then, in frames 0
+// and 2, and runs a tick in each frame from frame 4: tick 192, the second loop, comes in frame 194, two frames after
+// the commands at the start make it come. A list for a tick that never comes holds the fade back to the limit.
+void TestTickCommands()
+{
+    const Bytes file = ArchiveFile({0x3C, 0x7F, 0x30, 0x80, 0x30, 0x94, 0x00, 0x00, 0x00});
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+    const snd::CommandList faster = {{.id = snd::CommandId::kPlayerParameter, .args = {0, 0x1A, 512, 2}}};
+    const auto measure = [&archive](const std::vector<ntr::TickCommands>& tick_commands)
+    {
+        return ntr::MeasureSequence(archive, {0}, {}, {}, {}, xsflib::rip::Limit::kDefault, {}, tick_commands);
+    };
+
+    const std::optional<Timing> later = measure({{.tick = 0, .frames = {faster}}});
+    const std::optional<Timing> never = measure({{.tick = 100000, .frames = {faster}}});
+
+    XSFLIB_CHECK(later && *later == LoopFrom(196));
+    XSFLIB_CHECK(later && later->loop && later->loop->length_ms == 500);
+    XSFLIB_CHECK(never && never->at_limit && !never->loop);
+}
+
+// The game's frames last two frames of the screen: 1,120,380 system clocks, 6.42 of the driver's frames of 174,592.
+// Game frame g sends its list before the first driver frame d with g * 1,120,380 <= d * 174,592. With a tick of 0, game
+// frame 0 reads the count, and game frames 1, 2 and 3 send their lists before driver frames 7, 13 and 20. With a tick
+// of 3 and a tick in each second driver frame, game frame 0 reads 0 ticks, and game frame 1, before driver frame 7,
+// reads 4: game frames 2, 3 and 4 send before driver frames 13, 20 and 26. The SendDue that sends the last list returns
+// true, and Done holds from then on.
+void TestTickListProgress()
+{
+    const auto ratio = [](uint32_t value)
+    {
+        return snd::CommandList{{.id = snd::CommandId::kPlayerParameter, .args = {0, 0x1A, value, 2}}};
+    };
+    const auto check = [&ratio](uint32_t tick, const std::vector<uint64_t>& expected)
+    {
+        const std::vector<ntr::TickCommands> lists = {
+            {.tick = tick, .video_frames = 2, .frames = {ratio(300), ratio(400), ratio(500)}}};
+        ntr::TickListProgress progress(lists.size());
+        std::vector<uint64_t> sent;
+        std::vector<uint64_t> finished;
+        bool done_in_time = true;
+        for (uint64_t frame = 0; frame < 40; frame++)
+        {
+            const auto ticks = static_cast<uint32_t>((frame + 1) / 2);
+            const auto send = [&sent, frame](const snd::CommandList&)
+            {
+                sent.push_back(frame);
+            };
+            if (progress.SendDue(lists, frame * snd::kFrameClocks, ticks, send))
+            {
+                finished.push_back(frame);
+            }
+            done_in_time = done_in_time && progress.Done(lists) == (frame >= expected.back());
+        }
+
+        XSFLIB_CHECK(sent == expected);
+        XSFLIB_CHECK(finished == std::vector<uint64_t>{expected.back()});
+        XSFLIB_CHECK(done_in_time);
+    };
+
+    check(0, {7, 13, 20});
+    check(3, {13, 20, 26});
+}
+
+// The search for the main loop starts again after the last list. The jump back loops at ticks 96 and 192, in driver
+// frames 192 and 384, and the list still to come holds the fade back. A list for tick 200 comes in game frame 126 of
+// one frame of the screen each, before driver frame 405: game frame 125, before driver frame 402, reads 201 ticks. The
+// driver runs tick 202 in frame 404 and takes the list after the tick of frame 405. Frame 405 has no tick. From frame
+// 406 a tick runs in each frame: tick 203 in frame 406. The loops at ticks 288 and 384 therefore come in frames 491 and
+// 587. The fade starts two frames after the second, and a pass is 96 frames, 500 ms. The loops before the list don't
+// count.
+void TestLoopSearchAfterLastList()
+{
+    const Bytes file = ArchiveFile({0x3C, 0x7F, 0x30, 0x80, 0x30, 0x94, 0x00, 0x00, 0x00});
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+    const snd::CommandList faster = {{.id = snd::CommandId::kPlayerParameter, .args = {0, 0x1A, 512, 2}}};
+
+    const std::optional<Timing> timing = ntr::MeasureSequence(archive, {0}, {}, {}, {}, xsflib::rip::Limit::kDefault,
+                                                              {}, {{.tick = 200, .frames = {faster}}});
+
+    XSFLIB_CHECK(timing && *timing == LoopFrom(589));
+    XSFLIB_CHECK(timing && timing->loop && timing->loop->length_ms == 500);
 }
 
 // Track 0 loops each 96 ticks, and track 1 each 144. Track 0's second loop comes at frame 384, but the fade waits for
@@ -161,7 +311,7 @@ void TestTrackOpenedAgain()
 void TestHeldNote()
 {
     const std::optional<Timing> timing = Measure({0x3C, 0x7F, 0x00, 0xFF});
-    XSFLIB_CHECK(timing && !timing->silent && timing->fade_ms == 10000);
+    XSFLIB_CHECK(timing && !timing->silent && timing->fade_ms == 7000 && !timing->loop);
     XSFLIB_CHECK(timing && timing->length_ms > 0 && timing->length_ms < 100);
 }
 
@@ -193,6 +343,121 @@ void TestCountedLoopPastTheLimit()
         player.RunFrame();
     }
     XSFLIB_CHECK(player.Driver().OutermostCountedLoops(0) == (std::set<snd::LoopPlace>{{0, 0, 2}}));
+}
+
+// A loop of 704 s without counted loops: 44 calls of a part of 16 notes of 48 ticks, each followed by a wait of 48
+// ticks, then a jump back. The pass takes 67,584 ticks, and the jumps back come at frames 135,168 and 270,336. The
+// first measure reaches the limit of 600 s with no loop found: the limit's length, the fade and `at_limit`. With the
+// long limit, the second measure finds two passes: the fade starts two frames after frame 270,336.
+void TestLongLimit()
+{
+    Bytes sequence;
+    constexpr uint8_t kPart = 44 * 4 + 4;
+    for (int i = 0; i < 44; i++)
+    {
+        sequence.insert(sequence.end(), {0x95, kPart, 0x00, 0x00}); // call the part
+    }
+
+    sequence.insert(sequence.end(), {0x94, 0x00, 0x00, 0x00}); // back to 0
+    for (int i = 0; i < 16; i++)
+    {
+        sequence.insert(sequence.end(), {0x3C, 0x7F, 0x30, 0x80, 0x30}); // a note and a wait of 48 ticks
+    }
+
+    sequence.push_back(0xFD); // return
+    const Bytes file = ArchiveFile(sequence);
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+
+    const std::optional<Timing> first = ntr::MeasureSequence(archive, {0});
+    const std::optional<Timing> long_limit = ntr::MeasureSequence(archive, {0}, {}, {}, {}, xsflib::rip::Limit::kLong);
+
+    XSFLIB_CHECK(first && *first == (Timing{.length_ms = 600000, .fade_ms = 7000}) && first->at_limit);
+    XSFLIB_CHECK(long_limit && *long_limit == LoopFrom(270338) && !long_limit->at_limit);
+}
+
+// The counted loops past the limit get the same verdict with the long limit: the second measure makes the outer loop
+// endless whatever the limit.
+void TestCountedLoopWithLongLimit()
+{
+    const Bytes file = ArchiveFile({0xD4, 0x03, 0xD4, 0xFF, 0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFC, 0xFC, 0xFF});
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+
+    const std::optional<Timing> timing = ntr::MeasureSequence(archive, {0}, {}, {}, {}, xsflib::rip::Limit::kLong);
+
+    XSFLIB_CHECK(timing && *timing == LoopFrom(97922));
+}
+
+// The reverb of the capture units rings after a sequence's last note: a sequence that ends with the reverb running ends
+// at its output's last frame with sound, a frame of the reverb's echo. The reverb is the one that Blue
+// Rescue Team runs: 0x900 bytes of PCM16 at 16,000 Hz, at a volume of 45.
+void TestReverbRings()
+{
+    const Bytes sequence = {0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF};
+    const Bytes file = ArchiveFile(sequence);
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+    const ntr::GameSettings settings = {.reverb = ntr::Reverb{.size = 0x900, .sample_rate = 16000, .volume = 45}};
+
+    // The last frame with sound in the output of the same player, played for 10 s.
+    ntr::ArchivePlayer player(archive);
+    player.Start({0}, settings);
+    uint64_t last_sound = 0;
+    std::vector<ntr::SoundOutput> samples;
+    std::vector<int16_t> output;
+    for (uint64_t frame = 0; frame < 1920; frame++)
+    {
+        samples.clear();
+        output.clear();
+        player.RunFrame(samples);
+        ntr::AppendPcm16(samples, output);
+        if (xsflib::rip::Audible(output))
+        {
+            last_sound = frame;
+        }
+    }
+
+    const std::optional<Timing> dry = ntr::MeasureSequence(archive, {0});
+    const std::optional<Timing> wet = ntr::MeasureSequence(archive, {0}, settings);
+
+    XSFLIB_CHECK(dry && wet && wet->length_ms > dry->length_ms);
+    XSFLIB_CHECK(wet && *wet == xsflib::rip::EndAt(last_sound + 1, ntr::kFrameMs));
+}
+
+// The length of `sequence` with `settings`.
+std::optional<Timing> MeasureWith(const Bytes& sequence, const ntr::GameSettings& settings)
+{
+    const Bytes file = ArchiveFile(sequence);
+    const sdat::Archive archive = sdat::Archive::Parse(file);
+    return ntr::MeasureSequence(archive, {0}, settings);
+}
+
+// While the capture units run, channels 1 and 3 play the capture buffer in a loop. A sequence that is stuck after its
+// last note still ends where its echo dies away, as one that ends with fin does. A note held from the first frame still
+// loops.
+void TestStuckWithCaptures()
+{
+    const ntr::GameSettings reverb = {.reverb = ntr::Reverb{.size = 0x900, .sample_rate = 16000, .volume = 45}};
+    const ntr::GameSettings effect = {.effect = ntr::OutputEffect{}};
+    const Bytes fin = {0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF};
+    const Bytes poll = {0x3C, 0x7F, 0x30, 0x80, 0x30, 0x80,
+                        0x01, 0x94, 0x05, 0x00, 0x00}; // a wait of a tick, back to 5
+    const Bytes poll_at_once = {0x3C, 0x7F, 0x30, 0x80, 0x01, 0x94, 0x03, 0x00, 0x00};
+    const Bytes wait_for_ever = {0x3C, 0x7F, 0x30, 0x80, 0x30, 0xA1, 0x80, 0x00, 0xFF}; // a wait of variable 0, at -1
+    for (const ntr::GameSettings& settings : {reverb, effect})
+    {
+        const std::optional<Timing> ended = MeasureWith(fin, settings);
+        XSFLIB_CHECK(ended && ended->fade_ms == 0);
+        const auto ends_the_same = [&ended, &settings](const Bytes& sequence)
+        {
+            const std::optional<Timing> timing = MeasureWith(sequence, settings);
+            return ended && timing && *timing == *ended;
+        };
+        XSFLIB_CHECK(ends_the_same(poll));
+        XSFLIB_CHECK(ends_the_same(poll_at_once));
+        XSFLIB_CHECK(ends_the_same(wait_for_ever));
+    }
+
+    const std::optional<Timing> held = MeasureWith({0x3C, 0x7F, 0x00, 0xFF}, effect);
+    XSFLIB_CHECK(held && held->fade_ms == 7000);
 }
 
 // A pass that draws a random number isn't still, even when the number changes nothing: the sequence doesn't settle. A
@@ -244,6 +509,7 @@ Bytes LeavesLoop(const Bytes& after)
                                         0x00, // 0x22: variable 0 takes 1
                                         0xFF, // 0x26
                                     });
+
     return sequence;
 }
 
@@ -379,7 +645,7 @@ void TestSilentNotes()
                     XSFLIB_CHECK(driver.IsTrackIdle(0, 0) && !driver.IsTrackIdle(0, 1));
                 });
 
-    // A note at velocity 1 and volume 100 lies at -76.3 dB. Its passes are idle, and the sequence has no loop.
+    // A note at velocity 1 and volume 100 is at -76.3 dB. Its passes are idle, and the sequence has no loop.
     const Bytes faint = {
         0xC1, 0x64,             // 0: the volume takes 100
         0x3C, 0x01, 0x18,       // 2: a note of 24 ticks at velocity 1
@@ -401,7 +667,7 @@ void TestSilentNotes()
                     XSFLIB_CHECK(driver.IsStuck(0) && driver.ActiveChannels() > 0 && silent);
                 });
 
-    // The same note at velocity 2 and volume 127 lies at -72.1 dB, and sounds. Each pass is a loop.
+    // The same note at velocity 2 and volume 127 is at -72.1 dB, and sounds. Each pass is a loop.
     const Bytes quiet = {
         0x3C, 0x02, 0x18,       // 0: a note of 24 ticks at velocity 2
         0x94, 0x00, 0x00, 0x00, // 3: back to 0
@@ -436,7 +702,7 @@ void TestSilentNotes()
     };
     const std::vector<int> each_pass = {0, 0, 0, 0};
 
-    // Velocity 1 at volume 126 lies at -72.2 dB - 0.1 dB = -72.3 dB, the level of a volume of 0.
+    // Velocity 1 at volume 126 is at -72.2 dB - 0.1 dB = -72.3 dB, the level of a volume of 0.
     XSFLIB_CHECK(loops_after({0xC1, 0x7E}, 0x3C, 0x01).empty());
     XSFLIB_CHECK(loops_after({0xC1, 0x7F}, 0x3C, 0x01) == each_pass);
 
@@ -491,6 +757,7 @@ Bytes HoldsNote(const Bytes& track0)
                                         0,
                                         0, // back to the volume of 100
                                     });
+
     return sequence;
 }
 
@@ -612,11 +879,20 @@ int main()
     TestRules();
     TestEnd();
     TestSilent();
+    TestFirstSample();
     TestLoop();
+    TestCommandsAfterStart();
+    TestTickCommands();
+    TestTickListProgress();
+    TestLoopSearchAfterLastList();
     TestTracksOfOtherLengths();
     TestTrackOpenedAgain();
     TestHeldNote();
     TestCountedLoopPastTheLimit();
+    TestLongLimit();
+    TestCountedLoopWithLongLimit();
+    TestReverbRings();
+    TestStuckWithCaptures();
     TestRandomDraws();
     TestAfterTheLastPass();
     TestVariableReads();

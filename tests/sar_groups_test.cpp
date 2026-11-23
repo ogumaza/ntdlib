@@ -117,7 +117,7 @@ std::vector<uint8_t> Bytes(std::span<const uint8_t> bytes)
 }
 
 // ReadGroupFile gives each file with its copy, or as a link, and each item with the parts that the group loads.
-// GroupCopies gives where each copy lies: on a multiple of 64 bytes on the Switch, and of 32 bytes on the other
+// GroupCopies gives where each copy is: on a multiple of 64 bytes on the Switch, and of 32 bytes on the other
 // consoles. A link has no copy.
 void TestRead(Flavor flavor, uint32_t version = kCtrFirst)
 {
@@ -278,7 +278,7 @@ void TestGroupWithCopies(Flavor flavor, uint32_t version = kCtrFirst)
 
 // An archive with a sequence file, a bank's file, a wave archive's file, a group's file that holds a copy of the bank
 // file, a group's file that links to it, a file that only a group holds, and a stream outside the archive. Group 2
-// lies beside the archive. The files' lists name the groups that hold them. `version` is the version of the groups'
+// is beside the archive. The files' lists name the groups that hold them. `version` is the version of the groups'
 // files on the 3DS.
 sar_files::ArchiveSpec MembersSpec(Flavor flavor, uint32_t version = kCtrFirst)
 {
@@ -413,7 +413,7 @@ void TestMembers(Flavor flavor, uint32_t version = kCtrFirst)
 }
 
 // Some archives give a file no bytes of its own: the file table names the copy in a group's file. When the group
-// takes files, its copies move, and such a file moves with its copy. A file whose bytes lie elsewhere in the group's
+// takes files, its copies move, and such a file moves with its copy. A file whose bytes are elsewhere in the group's
 // file keeps the group as it is.
 void TestMembersNamedInGroups(Flavor flavor, uint32_t version = kCtrFirst)
 {

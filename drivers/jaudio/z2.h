@@ -35,19 +35,7 @@
 #ifndef NTDLIB_DRIVERS_JAUDIO_Z2_H
 #define NTDLIB_DRIVERS_JAUDIO_Z2_H
 
-typedef unsigned int u32;
-typedef int s32;
-
-/* Values of the status word. They're macros because an enumerator can't hold 0x80000000 before C23. */
-#define Z2_STATUS_PLAYING 1u
-#define Z2_STATUS_FINISHED 2u
-#define Z2_STATUS_ERROR 0x80000000u /* | step number */
-
-/* The frames that the driver waits for the audio set-up and for the wave groups before it gives up. */
-#define Z2_SETUP_FRAMES 600u
-
-/* The most wave groups that a block lists. */
-#define Z2_MAX_WAVES 64u
+#include "guest.h"
 
 /* The most first-scene groups that a profile lists. */
 #define Z2_MAX_FIRST_SCENE_WAVES 4u
@@ -83,11 +71,11 @@ typedef int s32;
    Each mini file patches the sound and its wave groups. */
 struct Z2Params
 {
-    u32 sound_id;            /* the JAudio sound ID to play */
-    u32 sound;               /* the sound's JAISoundHandle (written by the game): its JAISound while it plays, then 0 */
-    u32 wave_count;          /* the wave groups to load */
-    u32 waves[Z2_MAX_WAVES]; /* each the wave bank in the high half and the group in the low half */
-    u32 frame_retraces;      /* video retraces between the audio process's calls */
+    u32 sound_id;         /* the JAudio sound ID to play */
+    u32 sound;            /* the sound's JAISoundHandle (written by the game): its JAISound while it plays, then 0 */
+    u32 wave_count;       /* the wave groups to load */
+    u32 waves[MAX_WAVES]; /* each the wave bank in the high half and the group in the low half */
+    u32 frame_retraces;   /* video retraces between the audio process's calls */
     /* the sizes that the game's start-up gives */
     u32 max_heaps; /* the root heap's maximum of standard heaps */
     u32 system_heap_size;
@@ -165,13 +153,6 @@ struct Z2Params
     u32 section_statuses;
 };
 
-typedef u32 (*z2_fn0)(void);
-typedef u32 (*z2_fn1)(u32);
-typedef u32 (*z2_fn2)(u32, u32);
-typedef u32 (*z2_fn3)(u32, u32, u32);
-typedef u32 (*z2_fn4)(u32, u32, u32, u32);
-typedef u32 (*z2_fn5)(u32, u32, u32, u32, u32);
-
 /* Calls setChildTrackVolume at `fn` for the music manager, the handle, the child and the time of the move in r3 to r6,
    with the volume, the pan and the surround at `f` in f1 to f3, as the game's code passes floats. The driver is built
    without floating point. A float that it passed would go in a general register. */
@@ -200,15 +181,10 @@ static void z2_wait_frame(volatile struct Z2Params* p);
 static void z2_create_aram(volatile struct Z2Params* p);
 static void z2_set_aram_buffer(volatile struct Z2Params* p, u32 system_heap);
 
-static u32 z2_word(u32 address)
-{
-    return *(volatile u32*)address;
-}
-
 /* Stops the driver at `step`: the status word reports it, and the driver waits for ever. */
 __attribute__((noreturn)) static void z2_fail(volatile struct Z2Params* p, volatile u32* status, u32 step)
 {
-    *status = Z2_STATUS_ERROR | step;
+    *status = STATUS_ERROR | step;
     for (;;)
     {
         z2_wait_frame(p);
@@ -224,24 +200,24 @@ static void z2_write_section_statuses(volatile struct Z2Params* p)
         return;
     }
 
-    const u32 section = ((z2_fn4)p->get_port_data)(0, (u32)&p->sound, Z2_SECTION_PORT, 0xffffffffu) & 0xffff;
+    const u32 section = ((fn4)p->get_port_data)(0, (u32)&p->sound, Z2_SECTION_PORT, 0xffffffffu) & 0xffff;
     for (u32 shift = 0; shift < 32; shift += 16)
     {
         const u32 entry = (p->section_statuses >> shift) & 0xffff;
         if ((entry & 0xff) != 0 && (entry >> 8) == section)
         {
-            ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, entry & 0xff, 0xffffffffu);
+            ((fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, entry & 0xff, 0xffffffffu);
         }
     }
 }
 
 static int z2_waves_loaded(volatile struct Z2Params* p)
 {
-    for (u32 i = 0; i < p->wave_count && i < Z2_MAX_WAVES; i++)
+    for (u32 i = 0; i < p->wave_count && i < MAX_WAVES; i++)
     {
         const u32 bank = p->waves[i] >> 16;
         const u32 group = p->waves[i] & 0xffff;
-        if ((s32)((z2_fn3)p->wave_status)(0, group, bank) != Z2_WAVE_LOADED)
+        if ((s32)((fn3)p->wave_status)(0, group, bank) != Z2_WAVE_LOADED)
         {
             return 0;
         }
@@ -252,11 +228,11 @@ static int z2_waves_loaded(volatile struct Z2Params* p)
 /* Whether a listed wave group has the status `wave_status`. */
 static int z2_any_wave(volatile struct Z2Params* p, s32 wave_status)
 {
-    for (u32 i = 0; i < p->wave_count && i < Z2_MAX_WAVES; i++)
+    for (u32 i = 0; i < p->wave_count && i < MAX_WAVES; i++)
     {
         const u32 bank = p->waves[i] >> 16;
         const u32 group = p->waves[i] & 0xffff;
-        if ((s32)((z2_fn3)p->wave_status)(0, group, bank) == wave_status)
+        if ((s32)((fn3)p->wave_status)(0, group, bank) == wave_status)
         {
             return 1;
         }
@@ -267,7 +243,7 @@ static int z2_any_wave(volatile struct Z2Params* p, s32 wave_status)
 /* Whether the block's list of wave groups holds `wave`. */
 static int z2_lists_wave(volatile struct Z2Params* p, u32 wave)
 {
-    for (u32 i = 0; i < p->wave_count && i < Z2_MAX_WAVES; i++)
+    for (u32 i = 0; i < p->wave_count && i < MAX_WAVES; i++)
     {
         if (p->waves[i] == wave)
         {
@@ -280,11 +256,11 @@ static int z2_lists_wave(volatile struct Z2Params* p, u32 wave)
 /* Loads the listed wave groups as the scene manager loads them. */
 static void z2_load_waves(volatile struct Z2Params* p)
 {
-    for (u32 i = 0; i < p->wave_count && i < Z2_MAX_WAVES; i++)
+    for (u32 i = 0; i < p->wave_count && i < MAX_WAVES; i++)
     {
         const u32 bank = p->waves[i] >> 16;
         const u32 group = p->waves[i] & 0xffff;
-        ((z2_fn2)(bank == 1 ? p->load_bgm_wave : p->load_se_wave))(0, group);
+        ((fn2)(bank == 1 ? p->load_bgm_wave : p->load_se_wave))(0, group);
     }
 }
 
@@ -302,9 +278,9 @@ static void z2_erase_loaded(volatile struct Z2Params* p, volatile u32* waves, u3
         const u32 bank = waves[i] >> 16;
         const u32 group = waves[i] & 0xffff;
         const u32 erase = z2_erase_fn(p, bank);
-        if (erase && (s32)((z2_fn3)p->wave_status)(0, group, bank) == Z2_WAVE_LOADED)
+        if (erase && (s32)((fn3)p->wave_status)(0, group, bank) == Z2_WAVE_LOADED)
         {
-            ((z2_fn2)erase)(0, group);
+            ((fn2)erase)(0, group);
         }
     }
 }
@@ -315,42 +291,42 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
     z2_init_machine(p);
 
     /* JSystem's framework: the root heap, the system heap and the ARAM manager. */
-    const u32 root = ((z2_fn2)p->create_root_heap)(p->max_heaps, 0);
-    if (!root || !((z2_fn3)p->create_exp_heap)(p->system_heap_size, root, 0))
+    const u32 root = ((fn2)p->create_root_heap)(p->max_heaps, 0);
+    if (!root || !((fn3)p->create_exp_heap)(p->system_heap_size, root, 0))
     {
         z2_fail(p, status, 2);
     }
-    const u32 system = z2_word(p->system_heap);
+    const u32 system = word(p->system_heap);
     z2_create_aram(p);
 
     /* The game's machine: the heaps that its disc thread and audio set-up use, then the ARAM transfer buffer. The zelda
        heap becomes the current heap. */
-    const u32 command = ((z2_fn2)p->create_command_heap)(p->command_heap_size, root);
-    const u32 archive_parent = p->archive_heap_parent ? z2_word(p->archive_heap_parent) : root;
-    const u32 archive = ((z2_fn2)p->create_archive_heap)(p->archive_heap_size, archive_parent);
-    const u32 assert_heap = ((z2_fn1)p->create_assert_heap)(root);
-    const s32 free = (s32)((z2_fn1)p->get_free_size)(system) - (s32)p->zelda_heap_margin;
-    const u32 zelda = free > 0 ? ((z2_fn2)p->create_zelda_heap)((u32)free, system) : 0;
+    const u32 command = ((fn2)p->create_command_heap)(p->command_heap_size, root);
+    const u32 archive_parent = p->archive_heap_parent ? word(p->archive_heap_parent) : root;
+    const u32 archive = ((fn2)p->create_archive_heap)(p->archive_heap_size, archive_parent);
+    const u32 assert_heap = ((fn1)p->create_assert_heap)(root);
+    const s32 free = (s32)((fn1)p->get_free_size)(system) - (s32)p->zelda_heap_margin;
+    const u32 zelda = free > 0 ? ((fn2)p->create_zelda_heap)((u32)free, system) : 0;
     if (!command || !archive || !assert_heap || !zelda)
     {
         z2_fail(p, status, 3);
     }
-    ((z2_fn1)p->become_current_heap)(zelda);
+    ((fn1)p->become_current_heap)(zelda);
     z2_set_aram_buffer(p, system);
 
     /* The thread switch manager, the main thread's JKRThread, and the game's disc thread. The disc thread's priority
        number is 2 less than that of the main thread: the disc thread runs first. */
-    ((z2_fn1)p->create_thread_switch)(0);
-    const u32 thread = ((z2_fn1)p->alloc)(Z2_THREAD_SIZE);
+    ((fn1)p->create_thread_switch)(0);
+    const u32 thread = ((fn1)p->alloc)(Z2_THREAD_SIZE);
     if (thread)
     {
-        ((z2_fn3)p->thread_ctor)(thread, ((z2_fn0)p->get_current_thread)(), 0);
+        ((fn3)p->thread_ctor)(thread, ((fn0)p->get_current_thread)(), 0);
     }
-    const u32 priority = ((z2_fn1)p->get_thread_priority)(((z2_fn0)p->get_current_thread)());
-    ((z2_fn1)p->create_disc_thread)(priority - 2);
+    const u32 priority = ((fn1)p->get_thread_priority)(((fn0)p->get_current_thread)());
+    ((fn1)p->create_disc_thread)(priority - 2);
 
     /* The game's audio heap, then its audio set-up once a frame until it's done. */
-    const u32 audio_heap = ((z2_fn3)p->create_solid_heap)(p->audio_heap_size, zelda, 0);
+    const u32 audio_heap = ((fn3)p->create_solid_heap)(p->audio_heap_size, zelda, 0);
     if (!audio_heap)
     {
         z2_fail(p, status, 4);
@@ -359,8 +335,8 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
     u32 frames = 0;
     while (!*(volatile unsigned char*)p->init_flag)
     {
-        ((z2_fn0)p->audio_setup)();
-        if (++frames > Z2_SETUP_FRAMES)
+        ((fn0)p->audio_setup)();
+        if (++frames > SETUP_FRAMES)
         {
             z2_fail(p, status, 5);
         }
@@ -374,7 +350,7 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
         const u32 erase = z2_erase_fn(p, p->first_scene_waves[i] >> 16);
         if (erase && !z2_lists_wave(p, p->first_scene_waves[i]))
         {
-            ((z2_fn2)erase)(0, p->first_scene_waves[i] & 0xffff);
+            ((fn2)erase)(0, p->first_scene_waves[i] & 0xffff);
         }
     }
 
@@ -386,42 +362,42 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
            other start-up groups, then loads the sound's groups again. */
         for (frames = 0; z2_any_wave(p, Z2_WAVE_LOADING); frames++)
         {
-            if (frames > Z2_SETUP_FRAMES)
+            if (frames > SETUP_FRAMES)
             {
                 z2_fail(p, status, 6);
             }
-            ((z2_fn1)p->audio_frame)(p->audio_manager);
+            ((fn1)p->audio_frame)(p->audio_manager);
             z2_wait_frame(p);
         }
-        z2_erase_loaded(p, p->waves, p->wave_count < Z2_MAX_WAVES ? p->wave_count : Z2_MAX_WAVES);
+        z2_erase_loaded(p, p->waves, p->wave_count < MAX_WAVES ? p->wave_count : MAX_WAVES);
         z2_erase_loaded(p, p->room_waves,
                         p->room_wave_count < Z2_MAX_ROOM_WAVES ? p->room_wave_count : Z2_MAX_ROOM_WAVES);
         z2_load_waves(p);
     }
     for (frames = 0; !z2_waves_loaded(p); frames++)
     {
-        if (frames > Z2_SETUP_FRAMES)
+        if (frames > SETUP_FRAMES)
         {
             z2_fail(p, status, 6);
         }
-        ((z2_fn1)p->audio_frame)(p->audio_manager);
+        ((fn1)p->audio_frame)(p->audio_manager);
         z2_wait_frame(p);
     }
 
     /* The sound. A JAISoundID passes by reference. */
     const u32 id = p->sound_id;
-    if (!(((z2_fn4)p->start_sound)(p->audio_manager, (u32)&id, (u32)&p->sound, 0) & 0xff))
+    if (!(((fn4)p->start_sound)(p->audio_manager, (u32)&id, (u32)&p->sound, 0) & 0xff))
     {
         z2_fail(p, status, 7);
     }
-    *status = Z2_STATUS_PLAYING;
+    *status = STATUS_PLAYING;
 
     /* The piece's state. The children of track 0 that the game's bgmStart mutes as the piece starts, as bgmStart
        mutes them: at once, with the pan and the surround left as they are. Then the children that the state plays at
        a volume between 0 and 1, the same way. A scene's start calls changeBgmStatus right after bgmStart. */
     if (p->music_manager && p->set_child_volume)
     {
-        const u32 music = z2_word(p->music_manager);
+        const u32 music = word(p->music_manager);
         for (u32 child = 0; child < 32; child++)
         {
             if (p->muted_children & (1u << child))
@@ -445,21 +421,21 @@ __attribute__((noreturn)) static void z2_main(volatile struct Z2Params* p, volat
     const u32 later = p->music_status & Z2_MUSIC_STATUS_LATER;
     if (p->set_port_data && (p->music_status & Z2_MUSIC_STATUS_SET) && !later)
     {
-        ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff, 0xffffffffu);
+        ((fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff, 0xffffffffu);
     }
 
     for (frames = 0;; frames++)
     {
         z2_write_section_statuses(p);
-        ((z2_fn1)p->audio_frame)(p->audio_manager);
+        ((fn1)p->audio_frame)(p->audio_manager);
         if (frames == Z2_LATER_FRAMES && later && p->set_port_data && (p->music_status & Z2_MUSIC_STATUS_SET) &&
             p->sound != 0)
         {
-            ((z2_fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff, 0xffffffffu);
+            ((fn5)p->set_port_data)(0, (u32)&p->sound, Z2_MUSIC_STATUS_PORT, p->music_status & 0xffff, 0xffffffffu);
         }
-        if (*status == Z2_STATUS_PLAYING && p->sound == 0)
+        if (*status == STATUS_PLAYING && p->sound == 0)
         {
-            *status = Z2_STATUS_FINISHED;
+            *status = STATUS_FINISHED;
         }
         z2_wait_frame(p);
     }

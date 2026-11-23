@@ -113,8 +113,8 @@ struct Song
     std::vector<Instrument> instruments;
 };
 
-// A sample of the bank: signed 8-bit or signed 16-bit little-endian PCM, which the DS's channels play directly. The
-// loop's start and length are in bytes.
+// A sample of the bank: signed 8-bit or signed 16-bit little-endian PCM. The DS's channels play it directly. The loop's
+// start and length are in bytes.
 struct Sample
 {
     friend bool operator==(const Sample&, const Sample&) = default;

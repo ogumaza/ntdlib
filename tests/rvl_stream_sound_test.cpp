@@ -24,7 +24,8 @@
 #include <type_traits>
 #include <vector>
 
-#include "xsflib/bytes.h"
+#include "seqlib/testing/check.h"
+#include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/rsar/archive_model.h"
@@ -32,6 +33,9 @@
 #include "ntdlib/rsar/stream_file.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/voice.h"
+#include "ntdlib/rvl/snd/arrangement.h"
+#include "ntdlib/rvl/snd/driver.h"
+#include "ntdlib/rvl/snd/effect_setup.h"
 #include "ntdlib/rvl/snd/engine.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/rvl/snd/stream_sound.h"
@@ -46,6 +50,7 @@ using namespace ntdlib;
 namespace snd = ntdlib::rvl::snd;
 namespace ax = ntdlib::rvl::ax;
 namespace streams = ntdlib::testing::rsar_streams;
+using seqlib::testing::Throws;
 using xsflib::testing::Check;
 
 // The build of 2007 that Wii Sports links, and the build of 2008 that Mario Kart Wii links.
@@ -74,7 +79,7 @@ struct EntrySpec
     uint16_t tracks = 1;
 };
 
-// An archive of a stream sound and a sequence sound with a bank. The stream sound's file lies beside the archive.
+// An archive of a stream sound and a sequence sound with a bank. The stream sound's file is beside the archive.
 struct TestArchive
 {
     explicit TestArchive(const EntrySpec& entry) : bytes(Build(entry)), archive(Load(bytes))
@@ -272,7 +277,7 @@ void CheckTracksOf2008()
     Check(second.mix.l != 0 && second.mix.r != 0 && centred.mix.l != 0 && centred.mix.r != 0, "the tracks' pans");
 }
 
-// The sounds that don't start: one whose entry allocates no track, one whose stream lacks a track that the entry
+// The sounds that don't start: one whose entry allocates no track, one whose stream has no track that the entry
 // allocates, one whose track plays a channel that the entry doesn't allocate, and before version 1.4 one whose bits of
 // channels have a gap. A count of 0 keeps all of the stream's channels. A sequence sound doesn't start as a stream.
 void CheckRefusals()
@@ -290,8 +295,9 @@ void CheckRefusals()
     };
 
     Check(!starts({.tracks = 0}, k2008), "a sound without tracks doesn't start");
-    Check(!starts({.channels = 3, .tracks = 7}, k2008), "a sound whose stream lacks a track doesn't start");
-    Check(!starts({.channels = 2, .tracks = 3}, k2008), "a track of a channel that the sound lacks doesn't start");
+    Check(!starts({.channels = 3, .tracks = 7}, k2008), "a sound whose stream has no such track doesn't start");
+    Check(!starts({.channels = 2, .tracks = 3}, k2008),
+          "a track of a channel that the sound doesn't have doesn't start");
     Check(starts({.channels = 3, .tracks = 3}, k2008) && starts({.channels = 0, .tracks = 3}, k2008),
           "the sounds of three channels start");
     Check(!starts({.version = 0x0103, .channels = 5, .tracks = 3}, k2008) &&
@@ -303,16 +309,9 @@ void CheckRefusals()
     auto model = std::make_unique<snd::ArchiveModel>();
     model->StartWithRenderer(test.archive);
     Check(model->engine->StartStreamSound(1, file) == nullptr, "a sequence sound doesn't start as a stream");
-    Check(model->engine->StartStreamSound(2, file) == nullptr, "a sound that the archive lacks doesn't start");
-    bool refused = false;
-    try
-    {
-        model->engine->StartStreamSound(0, std::vector<uint8_t>(64, 0));
-    }
-    catch (const xsflib::FormatError&)
-    {
-        refused = true;
-    }
+    Check(model->engine->StartStreamSound(2, file) == nullptr, "a sound that the archive doesn't have doesn't start");
+    const bool refused =
+        Throws<xsflib::FormatError>([&] { model->engine->StartStreamSound(0, std::vector<uint8_t>(64, 0)); });
     Check(refused, "a file that isn't a stream is refused");
 }
 
@@ -429,15 +428,7 @@ void CheckSnapshots()
 
     Check(first == second && player->IsActive(), "a restore gives the same output again");
     model->engine->StartStreamSound(0, file);
-    bool refused = false;
-    try
-    {
-        model->Restore(snapshot);
-    }
-    catch (const std::runtime_error&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::runtime_error>([&] { model->Restore(snapshot); });
 
     Check(refused, "a restore after another start is refused");
 }
@@ -525,8 +516,8 @@ void CheckTrackVolumes()
               every.PbOf(1, 0).ve.current_volume != 0,
           "the other track keeps its volume (" + std::to_string(kept) + ")");
 
-    // Later volumes: 0.5 for the second track, then 2 for the first track and a track that the stream lacks. The first
-    // track's volume of 100 over 127 shows the clamp: unclamped, its voice would play louder.
+    // Later volumes: 0.5 for the second track, then 2 for the first track and a track that the stream doesn't have. The
+    // first track's volume of 100 over 127 shows the clamp: unclamped, its voice would play louder.
     silenced.player->SetTrackVolume(0x2, 0.5f);
     silenced.Run(2);
     const int half = silenced.PbOf(1, 0).ve.current_volume;

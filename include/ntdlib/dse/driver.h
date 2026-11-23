@@ -167,7 +167,15 @@ struct VoiceView
     uint8_t level = 0;      // the envelope's level, from 0 to 127
     int16_t key_bend = 0;   // the key bend (0xD7) over the voice's range, in 256ths of a semitone
     int16_t jitter = 0;     // the note's random change of pitch (0xD6), in 256ths of a semitone
+    int16_t tuning = 0;     // the split's change of the key's pitch, in 256ths of a semitone
     int8_t wave = 0;        // the wave's index in the bank
+    uint8_t format = 0;     // the wave's byte 0x13 (VoiceTimer)
+    uint32_t rate = 0;      // the wave's sample rate, at byte 0x20
+    // The volume that the voice's last update gave its hardware channel, from 0 to 127 (0x02074194). The update divides
+    // the product of the channel's volume, the note's volume and the level by 8032, squares the quotient and divides
+    // the square by 512. A quotient under 23 gives 0, and the voice is silent. A voice that the driver hasn't updated
+    // since its note took it gives the volume of its envelope's starting level.
+    uint8_t volume = 0;
     // The ticks in which the envelope releases to 0: the rest of its release, or a whole release from `level`. The
     // level falls in a straight line. Empty for a release that never ends, and for a voice without an envelope.
     std::optional<int32_t> release_ticks;
@@ -203,13 +211,23 @@ struct SequenceHooks
 // tick to tick. Each voice of a marked channel therefore updates on every tick. A key bend marks the pitch of the
 // channel too. The late middle build is the middle build with the list of notes and the program changes of the later
 // build: a program change clears the bend range. A sequence ends a fade-out as in the later build, but never silences
-// its voices. BuildOf (ntdlib/dse/build.h) tells a game's build.
+// its voices.
+//
+// The oldest build is the earlier build with other rules in its start, its LFOs, its envelopes and its writer. Luminous
+// Arc's driver is of that build, and reads files of version 0x402. A song's start keeps the global volume of the
+// synth's reset and makes no second reset of the channels. A freed voice gets no stop. A program takes only LFOs of
+// type 1 or 3 whose output is the pitch, the volume or the pan. An LFO waits a whole phase before its first, and its
+// output replaces the last LFO's in place of adding to it. Waveforms 2 and 3 turn at every phase, and waveform 3 makes
+// each phase after the first twice as long. Waveform 5 is waveform 4, and waveform 7 subtracts the whole amplitude. A
+// split's envelope multiplier of 16 or more plays as 1. The writer sends no pan: a voice's pan changes only when the
+// voice starts. BuildOf (ntdlib/dse/build.h) finds a game's build.
 enum class Build
 {
     kLater,
     kEarlier,
     kMiddle,
     kLateMiddle,
+    kOldest,
 };
 
 class Driver
@@ -253,13 +271,13 @@ public:
     std::optional<uint16_t> AddEffects(const SoundEffects& effects);
 
     // Starts sound effect `index` of the bank of sound effects `bank` on a sequence of the pool (0x0206EDFC), and
-    // returns whether it starts. The driver refuses an effect that the bank lacks, and one with more tracks than a
+    // returns whether it starts. The driver refuses an effect missing from the bank, and one with more tracks than a
     // sequence of the pool. Byte 0x1C of an effect's settings gives the most instances of the effect that may play at
     // once, or of the effects of its group where byte 0x1A gives one. 0 allows any number. When that many play, the
     // start stops the oldest of them, or refuses the effect where byte 0x18 has bit 0 set. With flag 0x40 of
     // `parameters`, the start stops the effects of `handle` in place of that check, or refuses the effect while one
-    // plays where bit 0 is set. The effect then takes a sequence that doesn't play, else the oldest of those whose
-    // byte 0x1B of the settings is at least the effect's, and stops it. The driver refuses the effect when none is.
+    // plays where bit 0 is set. The effect then takes a sequence that doesn't play, else the oldest of those whose byte
+    // 0x1B of the settings is at least the effect's, and stops it. The driver refuses the effect when none is.
     bool PlayEffect(uint16_t bank, uint16_t index, const StartParameters& parameters = {}, uint16_t handle = 0);
 
     // Stops the song (0x0206DA9C). A stop of `ms` milliseconds other than 0 fades the song out over that time while its
@@ -330,8 +348,8 @@ int32_t VoiceTimer(uint16_t pitch, uint8_t format);
 std::vector<uint8_t> EnvelopeLevels(const EnvelopeValues& values, int tick_microseconds, int ticks,
                                     std::optional<int> release = {});
 
-// The LFOs that program `program` of `bank` gives a channel that selects it (0x02073BC8), for a converter. Each is off
-// for a program that the bank lacks.
-std::array<LfoValues, 4> ProgramLfos(const WaveBank& bank, uint16_t program);
+// The LFOs that program `program` of `bank` gives a channel that selects it in `build` (0x02073BC8), for a converter.
+// Each is off for a program missing from the bank.
+std::array<LfoValues, 4> ProgramLfos(const WaveBank& bank, uint16_t program, Build build = Build::kLater);
 
 } // namespace ntdlib::dse

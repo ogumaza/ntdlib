@@ -93,7 +93,7 @@ void Performer::OnJumpBack(int t, uint32_t target)
         return;
     }
 
-    // An effect's passes count only while its slot plays it. The other slots and the slot's own polling don't count.
+    // An effect's passes count only while its slot plays it. The other slots and the polling of this slot don't count.
     if (sound_.effect && (!InEffect(t) || !EffectTaken() || EffectFree()))
     {
         return;
@@ -514,7 +514,7 @@ void Performer::DecideLoop()
         held_sound_end_ = HeldSoundEnd(pending.start);
 
         // A conductor draws its last modules' phrases at random without end (ConductorDone). No pass plays as the next
-        // one does, so the file has no loop.
+        // one does. The file then has no loop.
         if (sound_.conductor)
         {
             out_.DropLoop();
@@ -549,8 +549,7 @@ void Performer::EndPerformance(bool finished)
     if (!finished && end_tick)
     {
         // A note that started before the end keeps its note-off. The cut drops a note-off that came later.
-        seqlib::midi::ClampNoteOffs(out_, *end_tick);
-        const std::set<uint32_t> late = seqlib::midi::CutAt(out_, *end_tick);
+        const std::set<uint32_t> late = seqlib::midi::EndPassAt(out_, *end_tick);
         for (Channel& ch : channels_)
         {
             if (late.contains(ch.midi_id))
@@ -629,9 +628,7 @@ void Performer::SetFinishedLength()
     if (EndsAtLastSound(sound_end_, TickSeconds(last_event)))
     {
         const uint32_t end = SecondsToTick(sound_end_);
-        seqlib::midi::ClampNoteOffs(out_, end);
-        seqlib::midi::CutAt(out_, end);
-        std::erase_if(out_.tempo, [end](const Performance::Tempo& t) { return t.tick > end; });
+        seqlib::midi::EndAt(out_, end);
         last_event = std::min(last_event, end);
     }
     out_.seconds = std::max(sound_end_, TickSeconds(last_event));

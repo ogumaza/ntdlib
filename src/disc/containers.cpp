@@ -27,6 +27,7 @@
 #include "ntdlib/disc/image.h"
 #include "ntdlib/disc/junk.h"
 #include "ntdlib/disc/source.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::disc
 {
@@ -450,7 +451,7 @@ std::vector<uint8_t> WiaImage::Table(uint64_t offset, uint32_t stored_size, size
 void WiaImage::Purge(std::span<const uint8_t> stored, size_t exception_lists, std::span<uint8_t> out)
 {
     size_t position = SkipExceptionLists(stored, exception_lists);
-    position = (position + 3) & ~size_t{3};
+    position = AlignUp(position, 4);
     if (stored.size() < 20)
     {
         throw Error("a PURGE group is truncated");
@@ -543,7 +544,7 @@ void WiaImage::DecodeGroup(const GroupEntry& group, size_t exception_lists, uint
     size_t position = SkipExceptionLists(body, exception_lists);
     if (!group.compressed && exception_lists)
     {
-        position = (position + 3) & ~size_t{3};
+        position = AlignUp(position, 4);
     }
 
     const std::span<const uint8_t> data = std::span(body).subspan(std::min(position, body.size()));

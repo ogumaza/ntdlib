@@ -26,8 +26,8 @@ struct OutputReceiver
 
 struct HardwareSettings
 {
-    // The output mode nn::atk mixes for (+0xe0), which WarioWare sets to stereo (0xced314), and the mode of the end
-    // user's output (+0xe4).
+    // The output mode that nn::atk mixes for (+0xe0), and the mode of the end user's output (+0xe4). WarioWare sets the
+    // first to stereo (0xced314).
     OutputMode output_mode = OutputMode::kStereo;
     OutputMode end_user_output_mode = OutputMode::kSurround;
 

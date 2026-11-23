@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -46,6 +47,17 @@ int LowPassStep(int low_pass)
 {
     const int index = nwsnd::LpfFreqIndex<Policy>(static_cast<float>(low_pass - 0x40) * 0.015625f + 1.0f);
     return nwsnd::tables::kLpfFreq[index] < 16000 ? index : -1;
+}
+
+// The 0xd8 argument whose low-pass step is the step of the track's low-pass `lpf` (see LowPassArgument).
+template <typename Policy>
+int StepArgument(float lpf)
+{
+    const int below = static_cast<int>(std::floor(lpf * 64.0f)) + 0x40;
+    const int step = nwsnd::LpfFreqIndex<Policy>(lpf + 1.0f);
+    const int below_step = nwsnd::LpfFreqIndex<Policy>(static_cast<float>(below - 0x40) * 0.015625f + 1.0f);
+
+    return below_step == step ? below : below + 1;
 }
 
 // A track's filters on the console of `Policy`.
@@ -124,6 +136,21 @@ const FilterTables& RevolutionFilters(const SndBuild& build)
     }();
 
     return kTables;
+}
+
+int LowPassArgument(float track_lpf, float sound_lpf, const Settings& settings)
+{
+    switch (settings.engine)
+    {
+    case Engine::kRevolution:
+        return static_cast<int32_t>(track_lpf * 64.0f) + 0x40;
+    case Engine::kCtr:
+        return StepArgument<nwsnd::CtrPolicy>(track_lpf + sound_lpf);
+    case Engine::kCafe:
+        return StepArgument<nwsnd::CafePolicy>(track_lpf + sound_lpf);
+    default:
+        return StepArgument<nwsnd::NxPolicy>(track_lpf + sound_lpf);
+    }
 }
 
 uint8_t SfzLowPassValue(int low_pass)

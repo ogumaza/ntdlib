@@ -37,14 +37,14 @@ using ntdlib::sdat::Join;
 using ntdlib::sdat::Layout;
 using xsflib::testing::ErrorOf;
 
-// A sequence of one track that plays a note and ends: 7 bytes, which the file pads with 1 zero.
+// A sequence of one track that plays a note and ends: 7 bytes. The file pads them with 1 zero.
 const Bytes kNote = {
     0xFE, 0x01, 0x00, // allocate track 0
     0x3C, 0x7F, 0x30, // note
     0xFF,             // end
 };
 
-// A sequence of one track that loops: 12 bytes, which the file pads with none.
+// A sequence of one track that loops: 12 bytes. The file adds no padding.
 const Bytes kLoop = {
     0xFE, 0x01, 0x00,       // 0x00: allocate track 0
     0xC0, 0x40,             // 0x03: pan 64
@@ -308,7 +308,7 @@ void TestReplaceFile()
     XSFLIB_CHECK(std::ranges::equal(exact_after.File(1), Bytes(0x46, 0x22)));
     XSFLIB_CHECK(std::ranges::equal(exact_after.File(2), exact_before.File(2)));
 
-    // Refusals: a file that the archive lacks, a sequence file, and a file that another file's entry overlaps.
+    // Refusals: a file that the archive doesn't have, a sequence file, and a file that another file's entry overlaps.
     const auto refusal = [&](const Layout& of, uint32_t file)
     {
         return ErrorOf<std::invalid_argument>(
@@ -349,7 +349,7 @@ void TestReadSequenceFile()
 void TestFileBlockHeader()
 {
     // The FILE block moves up to 12 bytes before the first file, as in a game's archive: its magic word, its size and
-    // the number of files. The first file then lies right after those bytes, and becomes a sequence piece.
+    // the number of files. The first file then is right after those bytes, and becomes a sequence piece.
     files::Archive spec = Spec(kNote, kLoop);
     Bytes archive = files::SoundArchive(spec);
     const uint32_t old_block = xsflib::LoadLe32(&archive[0x28]);

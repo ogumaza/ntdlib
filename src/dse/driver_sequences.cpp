@@ -4,7 +4,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <list>
 #include <map>
 #include <memory>
@@ -18,6 +17,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/text.h"
 
+#include "common/magic.h"
 #include "driver_state.h"
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
@@ -26,6 +26,8 @@
 
 namespace ntdlib::dse
 {
+
+using ntdlib::detail::HasMagic;
 
 uint8_t Driver::State::Byte(Sequence& sequence, TrackState& track, uint32_t at)
 {
@@ -43,7 +45,11 @@ void Driver::State::RestartSequence(Sequence& sequence)
 {
     ResetSynth(sequence.synth);
     ResetChannels(sequence.synth, 0, sequence.id);
-    SelectGlobalVolume(sequence.synth, sequence.global_volume_index, 0);
+    // The oldest build keeps the index of the reset (0x020C3F04 in Luminous Arc's ARM9 binary).
+    if (build != Build::kOldest)
+    {
+        SelectGlobalVolume(sequence.synth, sequence.global_volume_index, 0);
+    }
     sequence.status = {};
     sequence.looped = 0;
     sequence.unknown9 = 1;
@@ -309,11 +315,11 @@ bool Driver::State::LoadSequence(Sequence& sequence, std::size_t info)
         {
             throw std::runtime_error("a sequence's chunks run past the end of its file");
         }
-        if (std::memcmp(bytes.data() + at, "eoc ", 4) == 0)
+        if (HasMagic(std::span(bytes).subspan(at), "eoc "))
         {
             return true;
         }
-        if (std::memcmp(bytes.data() + at, "trk ", 4) == 0)
+        if (HasMagic(std::span(bytes).subspan(at), "trk "))
         {
             if (slot >= sequence.tracks.size())
             {
@@ -626,7 +632,7 @@ void Driver::State::StepSequence(Sequence& sequence)
     {
         return;
     }
-    if (build != Build::kEarlier && sequence.delay != 0)
+    if (!Earlier() && sequence.delay != 0)
     {
         if (sequence.delay > 0)
         {
@@ -634,7 +640,7 @@ void Driver::State::StepSequence(Sequence& sequence)
         }
         return;
     }
-    if (build == Build::kEarlier || build == Build::kMiddle)
+    if (Earlier() || build == Build::kMiddle)
     {
         if (sequence.status[3] == 1 && sequence.volume.current == 0)
         {
@@ -643,7 +649,7 @@ void Driver::State::StepSequence(Sequence& sequence)
         }
     }
     sequence.driver_ticks++;
-    if (sequence.fades != 0 || build == Build::kEarlier)
+    if (sequence.fades != 0 || Earlier())
     {
         StepFades(sequence);
     }

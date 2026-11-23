@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <vector>
 
 #include "seqlib/midi/performance.h"
@@ -93,11 +94,11 @@ struct UnstartedNote
 // there. A performance that stops at the end of a pass leaves out the stretches that begin in the end's tick: they
 // belong to the next pass.
 //
-// Each MIDI note's place on the driver's channels lies at the note's ID less 1 too. A note that finds every channel
-// that its track may take playing takes the channel of the lowest priority, when its priority is as high. The note
-// there then ends, sooner than its length when its length hasn't run out. Otherwise it gets no channel, and the
-// performance lists it among the notes that the driver never started, in the order of their ticks. So does a note whose
-// program plays nothing at its key. The MIDI file holds none of those.
+// Each MIDI note's place on the driver's channels is at the note's ID less 1 too. A note that finds every channel that
+// its track may take playing takes the channel of the lowest priority, when its priority is as high. The note there
+// then ends, sooner than its length when its length hasn't run out. Otherwise it gets no channel, and the performance
+// lists it among the notes that the driver never started, in the order of their ticks. So does a note whose program
+// plays nothing at its key. The MIDI file holds none of those.
 //
 // Each track's changes of its volume and pan come in the order of their ticks, with each setting's value at the end of
 // its tick. The volume runs from 0 to 127, and the pan from -64 for the left to 63 for the right. A track starts at
@@ -105,7 +106,8 @@ struct UnstartedNote
 struct Performance : PerformanceBase
 {
     std::vector<PresetKey> presets;
-    uint16_t bank = 0; // the sequence's bank in the archive
+    std::vector<std::set<uint8_t>> preset_keys; // the keys that each preset's notes play, by the preset's index
+    uint16_t bank = 0;                          // the sequence's bank in the archive
 
     std::array<std::vector<Stretch>, 16> stretches;
     std::vector<NoteCommand> note_commands;
@@ -135,8 +137,8 @@ struct PerformOptions
 
     // The channels that the archive's players give their sequences' tracks, by the player's number, the channels of
     // some tracks, and the capture units' reverb, where a game's code sets them as the sequence starts
-    // (ntdlib::ntr::GameSettings). With a reverb, each part's CC91 holds the reverb's volume. A synth's reverb stands
-    // in for the DS's echo.
+    // (ntdlib::ntr::GameSettings). With a reverb, each part's CC91 holds the reverb's volume. Without one, CC91 is 0.
+    // A synth's reverb stands in for the DS's echo.
     std::map<uint32_t, uint16_t> player_channels = {};
     std::vector<ntdlib::ntr::TrackChannels> track_channels = {};
     std::optional<ntdlib::ntr::Reverb> reverb = {};
@@ -145,6 +147,17 @@ struct PerformOptions
     // mutes, pitch and pan, or the tempo's ratio. The driver runs them in the sequence's first frame, after its start.
     // The sequence plays on the driver's player 0.
     ntdlib::ntr::snd::CommandList commands = {};
+
+    // The driver's commands that a game's code sends once the sequence has run some ticks, one list in each frame of
+    // the game's code (ntdlib::ntr::TickCommands). The game's frames count from the start, at frame 0 of the driver.
+    // The driver runs each list before the first of its frames that starts at or after the game's frame. The search for
+    // the main loop starts again after the last list, as after a change of a variable.
+    std::vector<ntdlib::ntr::TickCommands> tick_commands = {};
+
+    // The channels that a game's code locks while the sequence plays, such as those of a stream that it prepares
+    // (ntdlib::ntr::ChannelLock). The driver takes each lock before the lock's frame. The performance plays on past the
+    // last lock, and the search for the main loop starts again after it, as after a change of a variable.
+    std::vector<ntdlib::ntr::ChannelLock> channel_locks = {};
 
     // The build of the driver (snd::Build).
     ntdlib::ntr::snd::Build build = ntdlib::ntr::snd::kDefaultBuild;
@@ -158,8 +171,8 @@ struct PerformOptions
 using ntdlib::sequence_export::PanGain;
 using ntdlib::sequence_export::PanPosition;
 
-// Plays `sequence` of `archive` and records it. Throws xsflib::FormatError when the archive lacks the sequence, its
-// file or its bank, and snd::Hang when a track hangs the driver.
+// Plays `sequence` of `archive` and records it. Throws xsflib::FormatError when the sequence, its file or its bank is
+// missing from the archive, and snd::Hang when a track hangs the driver.
 Performance Perform(const sdat::Archive& archive, const ntdlib::ntr::SequenceRef& sequence,
                     const PerformOptions& options = {});
 

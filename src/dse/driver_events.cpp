@@ -205,7 +205,7 @@ void Driver::State::RunEvent(Sequence& sequence, TrackState& track, uint8_t code
                 loop.count = static_cast<uint8_t>(count);
                 // The earlier build keeps the octave of the repeat's end (0x02063098 in Explorers of Time's ARM9
                 // binary).
-                if (build != Build::kEarlier)
+                if (!Earlier())
                 {
                     track.octave = loop.octave;
                 }

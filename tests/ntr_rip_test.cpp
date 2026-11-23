@@ -117,6 +117,7 @@ std::vector<std::string> Labels(const std::vector<rip::Job>& jobs)
     {
         labels.push_back(job.label);
     }
+
     return labels;
 }
 
@@ -163,6 +164,45 @@ void TestMusic()
         const Bytes bytes = sdat::BuildArchive(model);
         const sdat::Archive archive = sdat::Archive::Parse(bytes);
         XSFLIB_CHECK(rip::IsMusic(archive, {1}) == (std::string(name) != "PLAYER_BGM_SE"));
+    }
+}
+
+// Whether sequence 1 is music when its player, player 1, is named `name`.
+bool PlaysMusicAs(const std::string& name)
+{
+    sdat::ArchiveModel model = Model();
+    model.symbols->names[4][1] = name;
+    const Bytes bytes = sdat::BuildArchive(model);
+    const sdat::Archive archive = sdat::Archive::Parse(bytes);
+    return rip::IsMusic(archive, {1});
+}
+
+// A DS game's players with the word FIELD, ME or JINGLE play music in every game, with any digits at the word's end.
+// A word SE, SFX, VOICE or PV makes such a player one of effects. ME counts only as a word of its own: MEMO, MENU and
+// GAME aren't ME.
+void TestFieldMeAndJinglePlayers()
+{
+    for (const char* name : {"PLAYER_FIELD", "PLAYER_ME", "PLAYER_JINGLE", "Player_Me2"})
+    {
+        XSFLIB_CHECK(PlaysMusicAs(name));
+    }
+
+    for (const char* name : {"SE_FIELD", "PLAYER_SE_ME", "PLAYER_ME_SFX", "PLAYER_FIELD_VOICE", "PLAYER_JINGLE_PV",
+                             "PLAYER_MEMO", "PLAYER_MENU", "PLAYER_GAME"})
+    {
+        XSFLIB_CHECK(!PlaysMusicAs(name));
+    }
+
+    // Every game's selection takes them, with or without a game code.
+    sdat::ArchiveModel model = Model();
+    model.symbols->names[4][1] = "PLAYER_FIELD";
+    model.symbols->names[4][2] = "PLAYER_ME";
+    const Bytes bytes = sdat::BuildArchive(model);
+    const sdat::Archive archive = sdat::Archive::Parse(bytes);
+    const std::vector<std::string> music = {"BGM_FIELD", "SEQ_1", "SE_JUMP", "SE_OK", "SE_SYSTEM_1"};
+    for (const char* game_code : {"", "IPKE", "ADAE", "APHE"})
+    {
+        XSFLIB_CHECK(Labels(rip::SelectSequences(archive, std::regex(""), true, game_code)) == music);
     }
 }
 
@@ -228,6 +268,7 @@ std::vector<ntr::SoundOutput> Play(const sdat::Archive& archive, const SequenceR
     {
         player.RunFrame(out);
     }
+
     return out;
 }
 
@@ -279,7 +320,7 @@ void TestKeepSequenceData()
         }
     }
 
-    // A sequence that lacks data, and an archive laid out otherwise: here, a file moved off its multiple of 32.
+    // A sequence whose data is missing, and an archive laid out otherwise: here, a file moved off its multiple of 32.
     const std::vector<SequenceRef> lacking = {{0}, {5}};
     XSFLIB_CHECK(!rip::KeepSequenceData(test.archive, lacking));
     Bytes moved = test.bytes;
@@ -371,6 +412,7 @@ int main()
 {
     TestLabels();
     TestMusic();
+    TestFieldMeAndJinglePlayers();
     TestSelection();
     TestMissingData();
     TestKeepSequenceData();

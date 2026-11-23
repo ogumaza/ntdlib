@@ -3,7 +3,13 @@
 #include "ntdlib/nx/bex/user_procedures.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 #include <string>
+#include <variant>
+#include <vector>
 
 #include "xsflib/binary.h"
 
@@ -163,7 +169,7 @@ void UserProcedures::DrawJamboree(int bank, ProcedureVariables& variables)
 
 void UserProcedures::ReadTable(ProcedureVariables& variables)
 {
-    // An unloaded table changes nothing. The tables lie one after another, 128 entries each. An entry past the end of
+    // An unloaded table changes nothing. The tables follow one another, 128 entries each. An entry past the end of
     // its table reads the next table, and the model leaves an entry past the last table's end alone.
     const int16_t table = At(variables, kTableIndex);
     int16_t& entry = At(variables, kTableEntry);

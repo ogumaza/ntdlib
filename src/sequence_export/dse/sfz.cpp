@@ -3,24 +3,22 @@
 // DSE's SFZ files (see convert.h).
 //
 // Each track's file has a <master> for each preset, selected by loprog and hiprog, and above 128 presets by bank select
-// (CC0). The regions match the SoundFont's zones, each with the preset's LFOs. The sound unit plays the waves without
-// interpolation. The regions therefore take sample_quality=0.
+// (CC0). The regions match the SoundFont's zones, each with the preset's LFOs. Every key takes the tuning at which the
+// voice's timer plays it (TunedZones). The sound unit plays the waves without interpolation. The regions therefore
+// take sample_quality=0.
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "seqlib/loop.h"
 #include "seqlib/sfz/opcodes.h"
 #include "seqlib/sfz/text.h"
 #include "seqlib/sfz/track_file.h"
-#include "seqlib/wav.h"
 
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
@@ -29,6 +27,7 @@
 #include "ntdlib/sequence_export/dse/performance.h"
 #include "ntdlib/sequence_export/linear_pan.h"
 #include "ntdlib/sequence_export/sfz_bank_file.h"
+#include "ntdlib/sequence_export/sfz_files.h"
 
 namespace ntdlib::sequence_export::dse
 {
@@ -40,58 +39,14 @@ using seqlib::sfz::Number;
 // The bend range of a bank's SFZ files, in semitones: SoundFont's and MIDI's default.
 constexpr int kStartingBendRange = 2;
 
-// The samples of a sequence's SFZ files: a WAV file for each wave, made once, on first use.
-class SfzSamples
+// The samples of a sequence's SFZ files, by the waves' names in the SFZ files (BankSet::SfzWaveName).
+using SfzSamples = ntdlib::sequence_export::SfzSamples<Pcm>;
+
+// The sample of wave `wave` of bank `bank`.
+const SfzSamples::Wave& SampleOf(SfzSamples& samples, BankSet& banks, uint16_t bank, uint16_t wave)
 {
-public:
-    // A sample's file name, rate and loop. SFZ's loop end is the loop's last sample. A wave that can't be read has no
-    // name.
-    struct Wave
-    {
-        std::string name;
-        uint32_t rate = 0;
-        bool loop = false;
-        uint32_t loop_start = 0;
-        uint32_t loop_end = 0;
-    };
-
-    const Wave& Get(BankSet& banks, uint16_t bank, uint16_t wave)
-    {
-        const auto key = std::pair{bank, wave};
-        if (const auto it = waves_.find(key); it != waves_.end())
-        {
-            return it->second;
-        }
-
-        Wave out;
-        if (const Pcm* pcm = banks.Wave(bank, wave))
-        {
-            const uint32_t crossfade = (pcm->sample_rate * 4 + 999) / 1000; // 4 ms
-            const seqlib::PreparedWave prepared = seqlib::PrepareForSfz(*pcm, crossfade);
-            out.name = banks.SfzWaveName(bank, wave) + ".wav";
-            out.rate = pcm->sample_rate;
-            files_.push_back({out.name, seqlib::WavFile(prepared.channels[0], pcm->sample_rate)});
-            out.loop = prepared.loop;
-            if (prepared.loop)
-            {
-                out.loop_start = prepared.loop_start;
-                out.loop_end = prepared.loop_end - 1;
-            }
-        }
-
-        return waves_.emplace(key, std::move(out)).first->second;
-    }
-
-    // Takes the WAV files made. The collection is left empty.
-    std::vector<seqlib::sfz::Sample> Take()
-    {
-        return std::move(files_);
-    }
-
-private:
-    std::map<std::pair<uint16_t, uint16_t>, Wave> waves_;
-    std::vector<seqlib::sfz::Sample> files_;
-};
+    return samples.Get(banks.SfzWaveName(bank, wave), [&] { return banks.Wave(bank, wave); });
+}
 
 // SFZ's waveform for the driver's: a triangle for the triangles and the random waveforms, a square for the squares,
 // and a saw up or down for the saws (sfzformat.com's lfoN_wave).
@@ -152,10 +107,11 @@ std::string LfoOpcodes(const PresetZone& z, const std::vector<LfoShape>& shapes)
 // A region's opcodes: its sample, keys, velocities, tuning, level, pan, envelope, loop and LFOs. `gain_db` adds to its
 // volume. A range of velocities from 0 starts at lovel=1: a velocity of 0 is a note-off. The driver's ticks take
 // `tick_microseconds`.
-std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double gain_db,
+std::string RegionLine(const TunedZone& tuned, const SfzSamples::Wave& wave, double gain_db,
                        const std::vector<LfoShape>& shapes, int tick_microseconds)
 {
-    const ZoneTuning tuning = TuningOf(z, wave.rate);
+    const PresetZone& z = tuned.zone;
+    const ZoneTuning& tuning = tuned.tuning;
     std::string s =
         "<region> sample=" + wave.name + " lokey=" + std::to_string(z.low_key) + " hikey=" + std::to_string(z.high_key);
     if (z.low_velocity > 1 || z.high_velocity < 127)
@@ -177,10 +133,7 @@ std::string RegionLine(const PresetZone& z, const SfzSamples::Wave& wave, double
 
     const double level = ZoneLevel(z);
     const double volume = level > 0.0 ? 20.0 * std::log10(level) + gain_db : -144.0;
-    if (std::abs(volume) >= 0.005)
-    {
-        s += " volume=" + Number(volume, 2);
-    }
+    s += seqlib::sfz::VolumeOpcode(volume);
 
     const double pan = std::clamp(100.0 * PanPosition(z.pan), -100.0, 100.0);
     if (std::abs(pan) >= 0.05)
@@ -209,53 +162,43 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
                                   const std::string& title, const std::vector<std::string>& preset_names,
                                   const std::string& program)
 {
-    seqlib::sfz::TrackFileOptions options;
-    options.title = title;
-    options.program = program;
-    options.preset_names = preset_names;
-    options.presets = perf.presets.size();
-    options.level_cut_db = perf.level_cut_db;
-    options.track_names = true;
-
     // Each preset adds a group of its zones.
     SfzSamples samples;
-    seqlib::sfz::Instruments out;
-    const auto text = [&](int)
+    const auto preset = [&](uint32_t p)
     {
-        seqlib::sfz::TrackText added;
-        added.preset = [&](uint32_t p)
+        const PresetKey& key = perf.presets[p];
+        std::string s = "<group>\n";
+        const ntdlib::dse::WaveBank* bank = banks.Bank(key.bank);
+        if (bank == nullptr)
         {
-            const PresetKey& key = perf.presets[p];
-            std::string s = "<group>\n";
-            const ntdlib::dse::WaveBank* bank = banks.Bank(key.bank);
-            if (bank == nullptr)
-            {
-                return s;
-            }
+            return s;
+        }
 
-            const std::vector<LfoShape> shapes = PresetLfos(key, perf.tick_microseconds);
-            for (const PresetZone& z : PresetZones(*bank, key))
+        const std::vector<LfoShape> shapes = PresetLfos(key, perf.tick_microseconds);
+        for (const PresetZone& z : PresetZones(*bank, key))
+        {
+            const SfzSamples::Wave& wave = SampleOf(samples, banks, key.bank, z.wave);
+            if (!wave.name.empty())
             {
-                const SfzSamples::Wave& wave = samples.Get(banks, key.bank, z.wave);
-                if (!wave.name.empty())
+                for (const TunedZone& tuned : TunedZones(z, wave.rate))
                 {
-                    s += RegionLine(z, wave, perf.level_cut_db, shapes, perf.tick_microseconds);
+                    s += RegionLine(tuned, wave, perf.level_cut_db, shapes, perf.tick_microseconds);
                 }
             }
+        }
 
-            return s;
-        };
-
-        return added;
+        return s;
     };
-    out.files = seqlib::sfz::TrackFiles(perf, midi, options, text);
+    seqlib::sfz::Instruments out;
+    out.files = ntdlib::sequence_export::SfzPresetFiles(perf, midi, title, preset_names, program, preset);
     out.samples = samples.Take();
 
     return out;
 }
 
 seqlib::sfz::Instruments BuildBankSfz(std::span<const uint32_t> programs, BankSet& banks, uint16_t id,
-                                      int tick_microseconds, const std::string& title, const std::string& program)
+                                      int tick_microseconds, const std::string& title, const std::string& program,
+                                      ntdlib::dse::Build build)
 {
     SfzSamples samples;
     seqlib::sfz::Instruments out;
@@ -265,14 +208,18 @@ seqlib::sfz::Instruments BuildBankSfz(std::span<const uint32_t> programs, BankSe
         std::string s = SfzBankFileStart("Program " + std::to_string(p), title, program, kStartingBendRange);
         s += "\n<group>\n";
         const auto number = static_cast<uint16_t>(p);
-        const PresetKey key{.bank = id, .program = number, .lfos = ntdlib::dse::ProgramLfos(*bank, number)};
+        const PresetKey key{
+            .bank = id, .program = number, .lfos = ntdlib::dse::ProgramLfos(*bank, number, build), .build = build};
         const std::vector<LfoShape> shapes = PresetLfos(key, tick_microseconds);
         for (const PresetZone& z : PresetZones(*bank, key))
         {
-            const SfzSamples::Wave& wave = samples.Get(banks, id, z.wave);
+            const SfzSamples::Wave& wave = SampleOf(samples, banks, id, z.wave);
             if (!wave.name.empty())
             {
-                s += RegionLine(z, wave, 0.0, shapes, tick_microseconds);
+                for (const TunedZone& tuned : TunedZones(z, wave.rate))
+                {
+                    s += RegionLine(tuned, wave, 0.0, shapes, tick_microseconds);
+                }
             }
         }
 

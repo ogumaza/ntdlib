@@ -281,9 +281,9 @@ uint16_t Performer::ConductorBeat()
 
 uint16_t Performer::ConductorLength(int t, std::size_t number, bool in_order)
 {
-    // A length for the round: the next of the module's list, or one at random, or the followed track's last. No code
-    // of the game makes a melody arrangement (PSAutoBgm::MeloArr_RandomAvoid has no constructor), so the bit that
-    // would skip a phrase (OnCycle::avoidCheck, 0x8033ba98) stays clear.
+    // A length for the round: the next of the module's list, or one at random, or the followed track's last. No code of
+    // the game makes a melody arrangement (PSAutoBgm::MeloArr_RandomAvoid has no constructor). The bit that would skip
+    // a phrase (OnCycle::avoidCheck, 0x8033ba98) therefore stays clear.
     const ConductorTrack& track = sound_.conductor->tracks[number];
     ConductorTrackState& state = conductor_tracks_[number];
     ConductorModuleState& m = state.modules[state.module];

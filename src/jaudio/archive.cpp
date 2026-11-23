@@ -106,7 +106,7 @@ void WalkCommands(const xsflib::Reader& r, const BaaOptions& options, const Visi
 }
 
 // The block that a command's start and end arguments at `at` give. Throws FormatError for one that ends before it
-// starts or lies past the end of the archive.
+// starts or is past the end of the archive.
 std::span<const uint8_t> Block(const xsflib::Reader& r, std::size_t at)
 {
     const uint32_t start = r.U32(at), end = r.U32(at + 4);
@@ -126,7 +126,7 @@ std::span<const uint8_t> ToEnd(const xsflib::Reader& r, uint32_t start)
 }
 
 // The data of the wave system at `offset` in the archive that `r` reads. With tables_reach_end, it runs to the end of
-// the archive. Otherwise the wave system's 8-byte header gives its size. The header has to lie inside the archive.
+// the archive. Otherwise the wave system's 8-byte header gives its size. The header has to be inside the archive.
 std::span<const uint8_t> WaveSystemData(const xsflib::Reader& r, uint32_t offset, const BaaOptions& options)
 {
     if (options.tables_reach_end)

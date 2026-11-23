@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ntdlib/nx/audio/dsp.h"
+#include "ntdlib/nx/audio/voice.h"
 
 namespace ntdlib::nx::audio
 {

@@ -52,8 +52,8 @@ constexpr WaveEncoding EncodingOf(rsar::WaveEncoding encoding)
 namespace ntdlib::sdat
 {
 
-// The DS's encoding of `encoding`, an encoding of the later consoles. Nothing for DSP-ADPCM, which the DS doesn't play,
-// and for a value outside the enum.
+// The DS's encoding of `encoding`, an encoding of the later consoles. Nothing for DSP-ADPCM and for a value outside the
+// enum. The DS doesn't play DSP-ADPCM.
 constexpr std::optional<WaveEncoding> EncodingOf(sar::WaveEncoding encoding)
 {
     switch (encoding)
@@ -76,8 +76,8 @@ constexpr std::optional<WaveEncoding> EncodingOf(sar::WaveEncoding encoding)
 namespace ntdlib::rsar
 {
 
-// The Wii's encoding of `encoding`, an encoding of the later consoles. Nothing for IMA-ADPCM, which the Wii doesn't
-// play, and for a value outside the enum.
+// The Wii's encoding of `encoding`, an encoding of the later consoles. Nothing for IMA-ADPCM and for a value outside
+// the enum. The Wii doesn't play IMA-ADPCM.
 constexpr std::optional<WaveEncoding> EncodingOf(sar::WaveEncoding encoding)
 {
     switch (encoding)

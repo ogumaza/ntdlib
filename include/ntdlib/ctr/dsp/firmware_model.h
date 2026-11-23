@@ -9,8 +9,8 @@
 // firmware does. The arithmetic follows Teak's: 40-bit accumulators, products shifted by the product shift mode, and
 // saturation where the firmware turns it on. The wave data comes from FCRAM as the firmware's DMA reads it.
 //
-// The firmware runs its audio thread from interrupts: the output's FIFO, which asks for 8 more samples each time it
-// runs empty, and a semaphore from the ARM11. The model runs the output's FIFO cycle for cycle. It does each step of
+// The firmware runs its audio thread from interrupts: the output's FIFO and a semaphore from the ARM11. The FIFO asks
+// for 8 more samples each time it runs empty. The model runs the output's FIFO cycle for cycle. It does each step of
 // the thread's work at once, at the time that the firmware starts the step on Teakra. On Teakra, each step takes time:
 // a frame's mix takes up to about 340,000 cycles, more with more voices. The model's interrupt that ends a frame comes
 // up to about 20,000 cycles from Teakra's. nn::snd reads the same words all the same, and each sample comes out of the
@@ -19,13 +19,13 @@
 // The model covers what nn::snd drives through DspLink: the start-up handshake, the frames, every source's formats,
 // interpolations, filters and mixes, the aux buses, the mono and stereo output modes, the clipping modes and the master
 // volume. It differs from the firmware in these places:
-// - The surround mode of the output (mode 2) mixes the output as in stereo. The mixer's dirty bit 30, which loads the
-//   surround's preset filters from the firmware's program memory, does nothing.
-// - A source in the fourth encoding, which the firmware never comes back from, stays silent.
+// - The surround mode of the output (mode 2) mixes the output as in stereo. The mixer's dirty bit 30 does nothing. In
+//   the firmware, it loads the surround's preset filters from program memory.
+// - A source in the fourth encoding stays silent. The firmware never comes back from that encoding.
 // - The firmware's stop and sleep commands, its fade of the output and its built-in effects of the aux buses aren't
-//   modelled. The mixer's dirty bits 10 to 13, which set up those effects, do nothing.
-// - The model has only the audio pipe. The debug pipe (0) and the binary pipe (3), which takes the codec's requests,
-//   carry nothing.
+//   modelled. The mixer's dirty bits 10 to 13 set up those effects, and do nothing here.
+// - The model has only the audio pipe. The debug pipe (0) and the binary pipe (3) pass nothing. The binary pipe takes
+//   the codec's requests.
 // - A frame whose mix runs into the next frame's refill, and a poll that runs for more than a few frames, take only
 //   about the firmware's times.
 //
@@ -36,11 +36,11 @@
 // reports and its times. It lifts the limits of the firmware's mixing:
 //
 // - The model mixes up to kEnhancedSources sources. It starts with the firmware's 24, and GrowSources adds more. The
-//   sources' parameters, reports and ADPCM coefficients lie outside DSP RAM (SourceStructure).
+//   sources' parameters, reports and ADPCM coefficients are outside DSP RAM (SourceStructure).
 // - The output runs at 48 kHz: 235 stereo samples in each frame of the firmware's 160, about 48,070 Hz. The frame sink
 //   gets each frame as the model mixes it. The firmware's output then stays silent: the sample sink gets zeros.
 // - A source's samples come from the firmware's decoders, in the firmware's steps through its buffers. Each output
-//   comes from the band-limited interpolator (wave::SincKernel). It lies where the firmware's resampler would take an
+//   comes from the band-limited interpolator (wave::SincKernel). It is where the firmware's resampler would take an
 //   output: between the third and second samples before the frame's first new sample, moved on by the source's phase
 //   and rate. The interpolator's later inputs come from a copy of the source. A source that stops gives zeros after its
 //   end.
@@ -55,8 +55,8 @@
 // - The aux buses mix in floating point too, in frames of 235 samples. The ARM11 gets each region's buses outside DSP
 //   RAM (AuxStructure), as 32-bit samples on the scale of the firmware's sums: each one rounded to the nearest integer,
 //   halves away from zero. The buses that the ARM11 gives back join the main bus at the return volume two frames after
-//   their mix, as in the firmware. A bus's bypass changes nothing. It matters only to the surround mode, which mixes
-//   as stereo here.
+//   their mix, as in the firmware. A bus's bypass changes nothing. It matters only to the surround mode, and that
+//   mode mixes as stereo here.
 // - The declick of the sources that stop isn't mixed. nn::snd's archive mode turns it off. A two-channel source stays
 //   silent. The firmware's mono and stereo outputs leave it out too.
 //
@@ -109,8 +109,8 @@ public:
     uint8_t* SourceStructure(int structure, int region) override;
     int32_t* AuxStructure(int region) override;
 
-    // Starts the model of the firmware. The image isn't used: the model needs none. Does nothing if the model already
-    // runs.
+    // Starts the model of the firmware. The image isn't used: the model requires none. Does nothing if the model
+    // already runs.
     void LoadComponent(std::span<const uint8_t> image) override;
 
     uint8_t* Ram() override;

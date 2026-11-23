@@ -13,6 +13,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -64,6 +65,18 @@ std::string Duration(double seconds)
     std::snprintf(buf, sizeof(buf), "%d:%04.1f", m, s);
 
     return buf;
+}
+
+std::string OutputOnlyHelp(std::string_view input, std::string_view example)
+{
+    std::string text = "  --output DIR   write to DIR (one ";
+    text += input;
+    text += " only)\n";
+    text += "  --only REGEX   convert matching sequence names (for example --only ";
+    text += example;
+    text += ")\n";
+
+    return text;
 }
 
 int RunMain(int argc, char** argv, const std::function<int(const std::vector<std::string>&)>& run)

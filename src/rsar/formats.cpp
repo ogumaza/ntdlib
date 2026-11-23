@@ -19,6 +19,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/utf8.h"
 
+#include "ntdlib/rounding.h"
 #include "ntdlib/rsar/reference.h"
 #include "rsar/wave_infos.h"
 
@@ -546,7 +547,7 @@ TableShape ReadTableShape(const xsflib::Reader& r, std::size_t at, bool range)
             shape.keys.push_back(r.U8(at + 1 + i));
         }
 
-        shape.refs = at + ((shape.entries + 1 + 3) & ~std::size_t{3});
+        shape.refs = at + AlignUp(shape.entries + 1, 4);
     }
     else
     {
@@ -560,8 +561,8 @@ TableShape ReadTableShape(const xsflib::Reader& r, std::size_t at, bool range)
     return shape;
 }
 
-// Where each wave info of a version 1.1 bank lies: its WAVE block holds a reference to each, from the table's start.
-// Nothing for a later bank, which has no WAVE block: its wave data is an RWAR. `file_size` is the bank's size. Throws
+// Where each wave info of a version 1.1 bank is: its WAVE block holds a reference to each, from the table's start.
+// Nothing for a later bank: it has no WAVE block, and its wave data is an RWAR. `file_size` is the bank's size. Throws
 // xsflib::FormatError for a table of more waves than the bank has bytes, with short messages.
 std::optional<std::vector<std::size_t>> WaveInfoPlaces(const xsflib::Reader& r, std::size_t file_size,
                                                        const ReadOptions& options)
@@ -632,7 +633,7 @@ WaveSoundFile::Note ReadNote(const xsflib::Reader& r, std::size_t at, uint16_t v
     return note;
 }
 
-// Where each wave info of the WAVE block at `wave` lies, in a file of `version` whose notes play waves up to
+// Where each wave info of the WAVE block at `wave` is, in a file of `version` whose notes play waves up to
 // `highest_wave`. The block holds an offset to each wave info from the block's start (ReadWaveParam, 0x8004f51c). From
 // version 1.1, a count comes first. Version 1.0's offsets follow the block's header. The notes then give how many there
 // are. `file_size` is the file's size. Throws xsflib::FormatError for a table of more waves than the file has bytes,

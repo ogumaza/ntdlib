@@ -8,6 +8,8 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <vector>
 
 #include "ntdlib/flipper/wave_list.h"
@@ -150,6 +152,12 @@ struct PieceState
 
     bool operator==(const PieceState&) const = default;
 };
+
+// The writes of a rip's mini file to the Z2 start-up's parameters at the cached address `params`, in this order: the
+// sound's JAudio ID, the wave list of `waves` unless `waves` is nothing, the state's words (PieceState::Bytes) if
+// `state` has any, and the state's writes to the game's memory. A null `state` gives neither of the last two.
+std::vector<PieceState::Memory> MiniWrites(uint32_t params, uint32_t sound_id,
+                                           std::optional<std::span<const uint32_t>> waves, const PieceState* state);
 
 // The state of a piece that a table of states gives (jaudio/z2_states.h): a child at a volume of 0 is muted, a child at
 // another volume below 1 is partial, and the state's statuses go to port 9.

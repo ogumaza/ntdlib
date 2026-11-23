@@ -40,7 +40,7 @@ struct ArchiveModel
     std::vector<std::optional<StreamInfo>> streams;
     std::vector<std::vector<uint8_t>> files; // by ID
 
-    // The multiple of bytes from the archive's start that each file and the archive's end lie on: 32, 16, 8 or 4. The
+    // The multiple of bytes from the archive's start that each file and the archive's end are on: 32, 16, 8 or 4. The
     // SDK's tools use 32. Some games' archives use 4.
     uint32_t file_alignment = 32;
 };
@@ -52,5 +52,13 @@ ArchiveModel ReadArchiveModel(std::span<const uint8_t> sdat);
 
 // Lays an archive out from its model.
 std::vector<uint8_t> BuildArchive(const ArchiveModel& model);
+
+// Lays an archive out from its model with each file that has bytes at its offset of `file_offsets`, one an ID, from the
+// archive's start. The bytes between the files are zeros. A file without bytes gets the offset that BuildArchive(model)
+// would give it after the file in front of it. The archive ends on a multiple of `model.file_alignment`. Throws
+// std::invalid_argument when `file_offsets` doesn't hold one offset a file, or when a file with bytes would start
+// before the end of what is in front of it: the file before it, or the FILE block's header. ReadArchiveModel refuses
+// such an archive when its files don't sit as the SDK's tools lay them out.
+std::vector<uint8_t> BuildArchive(const ArchiveModel& model, std::span<const uint32_t> file_offsets);
 
 } // namespace ntdlib::sdat

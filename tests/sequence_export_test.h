@@ -5,7 +5,8 @@
 // bank, the events of a performance that the tests compare, and a view of the MIDI files.
 //
 // A test reads the current console through `console`. RunOn sets it while it runs a console's tests.
-// sequence_export_test.cpp lists each test once, with the consoles that it holds on.
+// sequence_export_test.cpp and the tests named sequence_export_<topic>_test.cpp list each test once, with the consoles
+// that it applies to. The tests on the Wii are in sequence_export_revolution*_test.cpp.
 
 #pragma once
 
@@ -32,7 +33,6 @@
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
 #include "seqlib/wav.h"
-#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/sar/decode.h"
@@ -243,7 +243,7 @@ inline std::string Sf2Problem(const std::vector<uint8_t>& d)
 }
 
 // An instrument zone of a SoundFont that plays a sample: its keys, its initialFilterFc generator, and the source and
-// amount of its modulator to initialFilterFc. -1 for a generator or a modulator that the zone lacks.
+// amount of its modulator to initialFilterFc. -1 where the zone has no such generator or modulator.
 struct ZoneCutoff
 {
     bool operator==(const ZoneCutoff&) const = default;
@@ -276,15 +276,12 @@ inline std::vector<ZoneCutoff> ZoneCutoffs(const std::vector<uint8_t>& d)
             zone.cutoff = static_cast<int16_t>(cutoff->second);
         }
 
-        // The zone's modulators run from its bag's modulator index to the next bag's.
-        const uint16_t end = xsflib::LoadLe16(v.Record("ibag", 4, z + 1) + 2);
-        for (uint16_t m = xsflib::LoadLe16(v.Record("ibag", 4, z) + 2); m < end; m++)
+        for (const seqlib::sf2::Modulator& mod : v.ZoneModulators(z))
         {
-            const uint8_t* mod = v.Record("imod", 10, m);
-            if (xsflib::LoadLe16(mod + 2) == seqlib::sf2::kInitialFilterFc)
+            if (mod.dest == seqlib::sf2::kInitialFilterFc)
             {
-                zone.source = xsflib::LoadLe16(mod);
-                zone.amount = static_cast<int16_t>(xsflib::LoadLe16(mod + 4));
+                zone.source = mod.source;
+                zone.amount = mod.amount;
             }
         }
         zones.push_back(zone);

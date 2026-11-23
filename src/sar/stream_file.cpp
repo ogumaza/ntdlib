@@ -183,9 +183,9 @@ std::size_t PiecesSize(const StreamFile& stream)
                        : std::size_t{blocks - 1} * stream.BlockSize() + LastPieceSize(stream) + stream.OverflowSize();
 }
 
-// The samples past the end that the last block holds, from its size. The 3DS's tools encode 128 after a loop, so a
-// count of 128 comes first when it gives the size. Otherwise the fewest that give it. Throws xsflib::FormatError for a
-// size that no count gives.
+// The samples past the end that the last block holds, from its size. The 3DS's tools encode 128 after a loop. A count
+// of 128 therefore comes first when it gives the size. Otherwise the fewest that give it. Throws xsflib::FormatError
+// for a size that no count gives.
 uint32_t PastEndOfSize(WaveEncoding encoding, uint32_t last_samples, uint32_t room, uint32_t size)
 {
     if (kCtrPastLoopEnd <= room && StreamBytes(encoding, last_samples + kCtrPastLoopEnd) == size)
@@ -203,8 +203,8 @@ uint32_t PastEndOfSize(WaveEncoding encoding, uint32_t last_samples, uint32_t ro
     throw xsflib::FormatError("a stream whose blocks don't add up to its samples");
 }
 
-// The samples in a piece of `size` bytes after a full last block that holds `in_block` samples past the end. The
-// 3DS's tools encode 128 past the end in all, so the rest of them come first when they fill the piece. Otherwise the
+// The samples in a piece of `size` bytes after a full last block that holds `in_block` samples past the end. The 3DS's
+// tools encode 128 past the end in all. The rest of them therefore come first when they fill the piece. Otherwise the
 // fewest that fill it. Returns nothing for a size that no count fills.
 std::optional<uint32_t> OverflowOfSize(WaveEncoding encoding, uint32_t in_block, std::size_t size)
 {

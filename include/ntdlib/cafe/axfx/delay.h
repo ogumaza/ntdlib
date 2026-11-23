@@ -76,11 +76,6 @@ public:
     }
 
 private:
-    // The bits of the library's `active`: kOff while the effect is off. Init sets it, and a successful Init clears it.
-    // kSkip: the next Process leaves its frame as it is and clears the bit.
-    static constexpr uint32_t kOff = 1;
-    static constexpr uint32_t kSkip = 2;
-
     // __InitParams (0x02010b90).
     bool InitParams(uint32_t rate);
 

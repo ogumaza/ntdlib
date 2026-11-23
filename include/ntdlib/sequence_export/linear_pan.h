@@ -9,6 +9,10 @@
 // quieter: at the centre, 0.707 times as loud. A note's level takes the gain of its track's pan in CC11, and the gain
 // of its zone's pan against the centre's in the zone. A note at the centre then plays at 0.707. PanController gives
 // CC10's value for the pan's position.
+//
+// Files for a mixer that pans linearly by itself keep the pans as they are. CC10 contains the pan. The pan generator of
+// a zone contains the position that a CC10 of the same value gives (LinearPanPosition). Neither contains a level of the
+// pan.
 
 #pragma once
 
@@ -31,10 +35,26 @@ inline uint8_t PanController(int pan)
     return static_cast<uint8_t>(std::clamp<long>(std::lround(64.0 + 64.0 * PanPosition(pan)), 0, 127));
 }
 
+// The position, from -1 for full left to 1 for full right, that CC10 gives a value of `pan` by MIDI's RP-036: 0 and 1
+// at full left, 64 at the centre, and an even step of 1/63 between 1 and 127.
+inline double LinearPanPosition(int pan)
+{
+    return (std::clamp(pan, 1, 127) - 64) / 63.0;
+}
+
 inline double PanGain(int pan)
 {
     const int right = pan >= 127 ? 128 : std::clamp(pan, 0, 127);
     return std::hypot(right, 128 - right) / 128.0;
+}
+
+// The attenuation in centibels that every zone of a SoundFont takes: 30.1 cB, the gain of a side against the centre. A
+// zone panned fully to one side then plays at full level. A SoundFont zone can't amplify its sample, and a zone's pan
+// raises its level by up to that gain. One reference for every SoundFont keeps the balance between the files of a game,
+// whatever pans their zones have. The SoundFonts then play 3.0 dB under the game.
+inline double PanCut()
+{
+    return 200.0 * std::log10(PanGain(0) / PanGain(64));
 }
 
 } // namespace ntdlib::sequence_export

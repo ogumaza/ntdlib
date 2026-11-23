@@ -21,7 +21,8 @@ namespace ntdlib::sequence_export::ntr
 
 // Copies what `profile` sets before the sequence starts into `perform`: the channels of the archive's players and of
 // some tracks, the reverb, and the variables. The profile's commands follow those that `perform` contains. A variable
-// that `perform` sets already keeps its value: the command line's --var, then an arrangement's.
+// that `perform` sets already keeps its value: the command line's --var, then an arrangement's. The profile's locks of
+// channels follow those that `perform` contains.
 void ApplyProfile(const ntdlib::ntr::GameProfile& profile, PerformOptions& perform);
 
 // The other states of the sequence in `profile`, as arrangements in the same order.

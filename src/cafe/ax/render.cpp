@@ -311,7 +311,7 @@ using EnhancedFrame = std::array<float, kEnhancedSamples>;
 // The most samples that an enhanced frame reads: a ratio of 8 for each output.
 constexpr int kEnhancedMostReads = 8 * kEnhancedSamples;
 
-// Where each output of an enhanced frame lies among the voice's samples: after `reads[i]` of the frame's samples,
+// Where each output of an enhanced frame is among the voice's samples: after `reads[i]` of the frame's samples,
 // `behind` samples behind the newest, and `fractions[i]` 65536ths of the way to the next. `step` is the samples that an
 // output moves by, for the interpolator's kernel.
 struct Places
@@ -712,7 +712,7 @@ void RenderVoiceEnhanced(Pb& pb, EnhancedVoice& voice, const Memory& memory, Flo
         voice.history[i] = static_cast<int16_t>(input[static_cast<std::size_t>(reads) + i]);
     }
 
-    // Each output at its place. The kernel's first input lies half - 1 samples before the output's left neighbour.
+    // Each output at its place. The kernel's first input is half - 1 samples before the output's left neighbour.
     EnhancedFrame x{};
     for (std::size_t i = 0; i < x.size(); ++i)
     {

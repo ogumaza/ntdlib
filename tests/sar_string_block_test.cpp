@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
@@ -20,6 +21,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/string_block.h"
 
+using seqlib::testing::Throws;
 using xsflib::testing::ErrorOf;
 
 namespace
@@ -121,12 +123,6 @@ StringBlock Block(Flavor flavor, std::vector<ItemName> names)
     block.names = std::move(names);
 
     return block;
-}
-
-template <class Error, class Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
 }
 
 // Bit `index` of `name`, as the header describes it.

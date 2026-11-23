@@ -183,6 +183,11 @@ bool VoicesOption(const std::string& option, OptionReader& reader, Perform& perf
 template <typename Perform>
 using OptionHandler = std::function<bool(const std::string& option, OptionReader& reader, Perform& perform)>;
 
+// The help lines of --output and --only. ParseOptions reads both options for every program. `input` names what the
+// program converts, such as "archive", and `example` is a pattern for --only, such as "BGM". Each line ends with a
+// newline.
+std::string OutputOnlyHelp(std::string_view input, std::string_view example);
+
 // The help lines of --loops. ParseOptions reads --loops for every program. Each line ends with a newline.
 inline constexpr std::string_view kLoopsHelp =
     "  --loops N      repeat the main loop N times (default 1)\n"
@@ -272,13 +277,24 @@ std::vector<Sequence> MatchingSequences(std::vector<Sequence> sequences, const s
 // the names are indented.
 void ListSequences(const std::string& name, const std::vector<Sequence>& selected, bool several);
 
+// Thrown by a conversion for a sequence that the input alone can't convert, such as a sound that plays the instruments
+// of whichever scene the game has loaded. ConvertAll lists the sequence as not converted, and it doesn't count as a
+// failure.
+class NotConverted : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
 // Converts the selected sequences to `out_dir` and reports each result unless `quiet` is set. `convert` converts a
-// sequence by its index. The SFZ files' shared samples go in sfz/<samples_folder>. Returns the failure count.
+// sequence by its index. The SFZ files' shared samples go in sfz/<samples_folder>. A sequence whose conversion throws
+// NotConverted is listed on the standard error, quiet or not. Returns the failure count.
 template <typename Conversion>
 int ConvertAll(const std::vector<Sequence>& selected, const std::filesystem::path& out_dir, bool quiet,
                const std::string& samples_folder, const std::function<Conversion(std::size_t index)>& convert)
 {
     int failed = 0;
+    int not_converted = 0;
     std::set<std::string> used_names = {samples_folder}; // lowercase names for collision checks on Windows and macOS
     std::set<std::string> samples_written;
     const std::filesystem::path sfz_dir = out_dir / "sfz";
@@ -327,6 +343,11 @@ int ConvertAll(const std::vector<Sequence>& selected, const std::filesystem::pat
                 PrintConversion(name, c);
             }
         }
+        catch (const NotConverted& e)
+        {
+            not_converted++;
+            std::fprintf(stderr, "  %s: not converted: %s\n", name.c_str(), e.what());
+        }
         catch (const std::exception& e)
         {
             failed++;
@@ -337,7 +358,16 @@ int ConvertAll(const std::vector<Sequence>& selected, const std::filesystem::pat
     if (!quiet)
     {
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        std::printf("done: %zu converted, %d failed, %.1f s\n", selected.size() - failed, failed, secs);
+        const std::size_t converted = selected.size() - static_cast<std::size_t>(failed + not_converted);
+        if (not_converted == 0)
+        {
+            std::printf("done: %zu converted, %d failed, %.1f s\n", converted, failed, secs);
+        }
+        else
+        {
+            std::printf("done: %zu converted, %d not converted, %d failed, %.1f s\n", converted, not_converted, failed,
+                        secs);
+        }
     }
 
     return failed;

@@ -294,7 +294,7 @@ void AddRogueLeaderEffects(Catalogue& catalogue, const RogueBanks& banks, const 
 } // namespace
 
 // Star Wars Rogue Squadron II: Rogue Leader's sounds. main.dol is a loader. It holds the OS, MusyX and the game, a
-// second DOL at `embedded_dol`. Rogue2/data.dat packs audio/data (PackedFile), which holds the sound in banks
+// second DOL at `embedded_dol`. Rogue2/data.dat packs audio/data (PackedFile). That folder holds the sound in banks
 // (ReadRogueBanks).
 //
 // The game's music hall lists its songs at `songs` in main.dol, in `song_count` entries of 16 bytes: the song's ID and

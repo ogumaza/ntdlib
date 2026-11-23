@@ -159,6 +159,12 @@ std::vector<SoundState> StatesOf(const ArchiveRules& rules, std::string_view lab
 // the first entry of ArchiveRules::starts that matches the label. None for any other sound.
 std::span<const VariableValues> StartsOf(const ArchiveRules& rules, std::string_view label);
 
+// The latest start that a tool tries for a sound whose sequence draws a number and that sounds neither at -1 nor in a
+// state of StartsOf, in sound frames after the sound's start. nn::atk steps its random numbers once a frame (5 ms). A
+// later start therefore gives another draw. A branch that one draw in ten takes would have to be missed 400 times in a
+// row.
+constexpr uint32_t kStartDelays = 400;
+
 // The rules of the sound archive `archive`. None for an archive that no rule names.
 const ArchiveRules& RulesOf(std::span<const uint8_t> archive);
 

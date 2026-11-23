@@ -56,7 +56,7 @@ int32_t SaturatingSub(int32_t a, int32_t b)
     return Saturate(int64_t{a} - b);
 }
 
-// A byte or a 16-bit sample of a wave buffer, or 0 beyond it. Nintendo's code reads whatever lies there; the renderer
+// A byte or a 16-bit sample of a wave buffer, or 0 beyond it. Nintendo's code reads whatever is there; the renderer
 // has checked the range against the buffer's size before.
 uint8_t ByteAt(std::span<const uint8_t> buffer, int64_t index)
 {

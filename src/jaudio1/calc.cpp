@@ -4,7 +4,6 @@
 
 #include <array>
 #include <bit>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -55,52 +54,6 @@ constexpr std::array<uint32_t, 64> kFractionPitchBits = {
 };
 // clang-format on
 
-// The sine and cosine of `y`, for |y| up to π/4, from their Taylor series in double precision, nested from the
-// highest term. The series' error lies far below a double's precision.
-double SinSeries(double y)
-{
-    const double y2 = y * y;
-    double sum = 1.0;
-    for (int n = 21; n >= 3; n -= 2)
-    {
-        sum = 1.0 - y2 * sum / (static_cast<double>(n) * static_cast<double>(n - 1));
-    }
-
-    return y * sum;
-}
-
-double CosSeries(double y)
-{
-    const double y2 = y * y;
-    double sum = 1.0;
-    for (int n = 22; n >= 2; n -= 2)
-    {
-        sum = 1.0 - y2 * sum / (static_cast<double>(n) * static_cast<double>(n - 1));
-    }
-
-    return sum;
-}
-
-// The sine of `x`, for x from 0 to 2π, in double precision, by the quarter of the turn that holds it.
-double Sine(double x)
-{
-    constexpr double kHalfPiHigh = 1.5707963267341256e+00; // π/2 to 33 bits
-    constexpr double kHalfPiLow = 6.0771005065061922e-11;  // the rest of π/2
-    const double quarters = std::floor(x / (kHalfPiHigh + kHalfPiLow) + 0.5);
-    const double y = (x - quarters * kHalfPiHigh) - quarters * kHalfPiLow;
-    switch (static_cast<int>(quarters) & 3)
-    {
-    case 0:
-        return SinSeries(y);
-    case 1:
-        return CosSeries(y);
-    case 2:
-        return -SinSeries(y);
-    default:
-        return -CosSeries(y);
-    }
-}
-
 const std::array<float, kSinTableSize>& SinTable()
 {
     static const std::array<float, kSinTableSize> kTable = []
@@ -110,7 +63,8 @@ const std::array<float, kSinTableSize>& SinTable()
         std::array<float, kSinTableSize> table{};
         for (std::size_t i = 0; i < table.size(); i++)
         {
-            table[i] = static_cast<float>(Sine(static_cast<double>(i) * kTurn / static_cast<double>(kSinTableSize)));
+            table[i] =
+                static_cast<float>(jaudio2::Sine(static_cast<double>(i) * kTurn / static_cast<double>(kSinTableSize)));
         }
 
         return table;

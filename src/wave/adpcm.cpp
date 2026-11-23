@@ -19,8 +19,8 @@ namespace
 constexpr std::size_t kDspAdpcmFrameBytes = 8;
 constexpr std::size_t kDspAdpcmFrameSamples = 14;
 
-// AFC: 16 samples in each 9-byte frame, after a byte that holds the scale and the predictor. The 2-bit form packs the
-// 16 samples in 4 bytes, so its frames are 5 bytes.
+// AFC: 16 samples in each 9-byte frame, after a byte that contains the scale and the predictor. The 2-bit form packs
+// the 16 samples in 4 bytes. Its frames are 5 bytes.
 constexpr std::size_t kAfcFrameBytes = 9;
 constexpr std::size_t kAfc2FrameBytes = 5;
 constexpr uint32_t kAfcFrameSamples = 16;

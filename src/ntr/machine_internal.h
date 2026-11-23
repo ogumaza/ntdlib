@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-// Definitions that the parts of the DS machine share (machine.cpp, machine_card.cpp and machine_io.cpp): the memory
-// map, the BIOS, the calls and the registers. The three files build as one translation unit. The definitions therefore
-// keep internal linkage. Only those files include this header.
+// Definitions that the parts of the DS machine share (machine.cpp, machine_units.cpp, machine_card.cpp and
+// machine_io.cpp): the memory map, the BIOS, the calls and the registers. The four files build as one translation
+// unit. The definitions therefore keep internal linkage. Only those files include this header.
 
 #pragma once
-
-#include "ntdlib/ntr/machine.h"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -26,9 +25,14 @@
 #include "xsflib/text.h"
 
 #include "bios.h"
+#include "dsi_bios.h"
+#include "dsi_io.h"
 #include "io.h"
+#include "ndma.h"
+#include "new_wram.h"
 #include "ntdlib/arm/cpu.h"
 #include "ntdlib/ntr/arm7.h"
+#include "ntdlib/ntr/machine.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/sound.h"
 #include "ntdlib/ntr/timers.h"
@@ -39,7 +43,6 @@ namespace ntdlib::ntr
 namespace
 {
 
-constexpr uint32_t kMainBase = 0x02000000;
 constexpr uint32_t kBiosBase = 0xFFFF0000;
 constexpr uint32_t kBiosSize = 0x8000;
 constexpr uint32_t kSmallMemory = 0x1000; // the palettes and the OAM: 2 KiB each, kept in a page each
@@ -50,12 +53,34 @@ constexpr std::array<uint32_t, 5> kVramSizes = {0x80000, 0x20000, 0x40000, 0x200
 
 // The area at main memory's end that the firmware fills before it starts a game: the card's chip ID twice, the CRCs of
 // the header and the secure area that the firmware checked, and the ARM7 BIOS's CRC, each at 0x027FF800 and copied
-// from 0x027FFC00. The boot indicator gives a boot from the card, and the user's settings follow.
-constexpr uint32_t kBootArea = 0x027FF800;
-constexpr uint32_t kBootAreaCopy = 0x027FFC00;
-constexpr uint32_t kBootIndicator = 0x027FFC40;
-constexpr uint32_t kUserSettings = 0x027FFC80;
+// from 0x027FFC00. The boot indicator gives a boot from the card, and the user's settings follow. The places count from
+// main memory's end: in DSi mode they are at 0x02FFF800 and on.
+constexpr uint32_t kBootArea = 0x800;
+constexpr uint32_t kBootAreaCopy = 0x400;
+constexpr uint32_t kBootIndicator = 0x3C0;
+constexpr uint32_t kUserSettings = 0x380;
 constexpr uint16_t kArm7BiosCrc = 0x5835;
+
+// DSi mode: where the launcher leaves the header (GBATEK's "DSi BIOS RAM"), counted from main memory's end: the whole
+// header for the card in the slot at 0x02FFC000 and for the game at 0x02FFE000, and its first 0x160 bytes at
+// 0x02FFFA80. The game's SCFG_EXT7 setting waits at 0x02FFFDF0, and 0x02FFFDFC points to the system settings. The
+// launcher copies them to 0x02000400 from the console's TWLCFG file. The firmware's user settings give their values
+// here.
+constexpr uint32_t kDsiCardHeader = 0x4000;
+constexpr uint32_t kDsiHeader = 0x2000;
+constexpr uint32_t kDsiShortHeader = 0x580;
+constexpr uint32_t kDsiHeaderSize = 0x1000;
+constexpr uint32_t kDsiShortHeaderSize = 0x160;
+constexpr uint32_t kDsiExtendedCopy = 0x210;
+constexpr uint32_t kDsiSettingsPointer = 0x204;
+constexpr uint32_t kDsiSettings = 0x02000400;
+
+// DSi mode: SCFG_EXT9 as the launcher leaves it, SCFG_EXT7's value from the launcher, and the bits of SCFG_EXT7 that
+// the header's 0x1B8 gives (GBATEK's "DSi Control Registers (SCFG)").
+constexpr uint32_t kDsiArm9Extended = 0x8307F100;
+constexpr uint32_t kDsiArm7Extended = 0x93FFFB06;
+constexpr uint32_t kDsiExtendedFromHeader = 0x80040407;
+constexpr std::size_t kHeaderExtended = 0x1B8;
 
 // The secure area's first 8 bytes in a decrypted image, and what the firmware writes in their place.
 constexpr std::array<uint8_t, 8> kSecureAreaId = {'e', 'n', 'c', 'r', 'y', 'O', 'b', 'j'};
@@ -134,19 +159,9 @@ constexpr uint32_t kFaultSwi = 0xFE;
 constexpr std::array<const char*, 6> kFaults = {"a reset",      "an undefined instruction", "a prefetch abort",
                                                 "a data abort", "the reserved vector",      "an FIQ"};
 
-// The BIOS's SWIs, by number.
+// The BIOS's other SWIs, by number (bios::Swi lists the rest).
 enum Swi : uint32_t
 {
-    kWaitByLoop = 0x03,
-    kIntrWait = 0x04,
-    kVBlankIntrWait = 0x05,
-    kHalt = 0x06,
-    kDiv = 0x09,
-    kCpuSet = 0x0B,
-    kCpuFastSet = 0x0C,
-    kSqrt = 0x0D,
-    kGetCrc16 = 0x0E,
-    kIsDebugger = 0x0F,
     kBitUnPack = 0x10,
     kLz77Uncompress = 0x11, // the version that reads and writes bytes
     kRlUncompress = 0x14,   // the same
@@ -164,8 +179,6 @@ enum Io : uint32_t
     kVcount = 0x006,
     kCaptureControl = 0x064, // DISPCAPCNT
     kGraphicsAEnd = 0x070,
-    kDmaStart = 0x0B0,
-    kDmaEnd = 0x0E0,
     kDmaFillEnd = 0x0F0,
     kTimerStart = 0x100,
     kTimerEnd = 0x110,
@@ -181,9 +194,6 @@ enum Io : uint32_t
     kCardSeeds = 0x1B0,
     kCardEnd = 0x1BC,
     kExternalMemory = 0x204,
-    kIme = 0x208,
-    kIe = 0x210,
-    kIf = 0x214,
     kVramControl = 0x240, // VRAMCNT_A to _G, then WRAMCNT at 0x247, then VRAMCNT_H and _I
     kWramControl = 0x247,
     kVramControlEnd = 0x24A,

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -15,6 +16,7 @@
 
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/rom_writer.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::ntr
 {
@@ -57,7 +59,7 @@ public:
     // Puts `data` on the next multiple of 0x200 bytes, and returns its offset.
     uint32_t Place(std::span<const uint8_t> data)
     {
-        out_.resize((out_.size() + kAlignment - 1) / kAlignment * kAlignment, kFill);
+        out_.resize(AlignUp(out_.size(), kAlignment), kFill);
         const auto at = static_cast<uint32_t>(out_.size());
         out_.insert(out_.end(), data.begin(), data.end());
 
@@ -125,6 +127,65 @@ std::vector<uint32_t> KeptInOrder(const Rom& rom, const CompactParts& parts)
     return ids;
 }
 
+// The image of a game that runs only on a DSi, in its layout.
+std::vector<uint8_t> WriteDsiImage(const Rom& rom, const CompactParts& parts, const std::vector<uint32_t>& kept)
+{
+    const RomHeader& header = rom.Header();
+    if (parts.arm9.size() > header.arm9.size)
+    {
+        throw std::invalid_argument("the new ARM9 binary is larger than the image's");
+    }
+
+    std::vector<uint8_t> out(rom.Image().begin(), rom.Image().end());
+    std::ranges::copy(parts.arm9, out.begin() + header.arm9.rom_offset);
+
+    // Each file's bytes outside the sectors of the kept files become zeros. The kept files then get their bytes.
+    const DigestSectors sectors = DigestSectorsOf(rom);
+    std::vector<std::pair<uint32_t, uint32_t>> kept_sectors;
+    for (const uint32_t id : kept)
+    {
+        kept_sectors.push_back(sectors.Around(rom.Files()[id].start, rom.Files()[id].end));
+    }
+    std::ranges::sort(kept_sectors);
+    const auto zero = [&out](uint32_t first, uint32_t end)
+    {
+        std::fill(out.begin() + first, out.begin() + end, uint8_t{0});
+    };
+    for (const RomFile& file : rom.Files())
+    {
+        uint32_t next = file.start;
+        for (const auto& [first, end] : kept_sectors)
+        {
+            if (first >= file.end)
+            {
+                break;
+            }
+            if (end > next)
+            {
+                zero(next, std::max(next, first));
+                next = end;
+            }
+        }
+        if (next < file.end)
+        {
+            zero(next, file.end);
+        }
+    }
+
+    for (const uint32_t id : kept)
+    {
+        const RomFile& file = rom.Files()[id];
+        const std::vector<uint8_t>& bytes = parts.files.at(id);
+        if (bytes.size() != file.end - file.start)
+        {
+            throw std::invalid_argument("file " + std::to_string(id) + " changes its size in a DSi image");
+        }
+        std::ranges::copy(bytes, out.begin() + file.start);
+    }
+
+    return out;
+}
+
 void SetCapacity(std::vector<uint8_t>& out)
 {
     uint8_t capacity = 0;
@@ -132,10 +193,37 @@ void SetCapacity(std::vector<uint8_t>& out)
     {
         capacity++;
     }
+
     out[kCapacityField] = capacity;
 }
 
 } // namespace
+
+std::pair<uint32_t, uint32_t> DigestSectors::Around(uint32_t first, uint32_t end) const
+{
+    if (size == 0 || first < start || end <= first)
+    {
+        return {first, end};
+    }
+
+    const uint64_t from = start + uint64_t{first - start} / size * size;
+    const uint64_t to = start + AlignUp(uint64_t{end} - start, size);
+    return {static_cast<uint32_t>(from),
+            static_cast<uint32_t>(std::min<uint64_t>(to, std::numeric_limits<uint32_t>::max()))};
+}
+
+DigestSectors DigestSectorsOf(const Rom& rom)
+{
+    constexpr std::size_t kStartField = 0x1E0;
+    constexpr std::size_t kSizeField = 0x200;
+    const std::span<const uint8_t> image = rom.Image();
+    if (rom.Header().unit_code == static_cast<uint8_t>(UnitCode::kDs) || image.size() < kSizeField + 4)
+    {
+        return {};
+    }
+
+    return {.start = xsflib::LoadLe32(&image[kStartField]), .size = xsflib::LoadLe32(&image[kSizeField])};
+}
 
 std::vector<uint8_t> WriteCompactImage(const Rom& rom, const CompactParts& parts)
 {
@@ -144,7 +232,7 @@ std::vector<uint8_t> WriteCompactImage(const Rom& rom, const CompactParts& parts
         throw std::invalid_argument("the image is partial");
     }
     const RomHeader& header = rom.Header();
-    if (header.unit_code != static_cast<uint8_t>(UnitCode::kDs))
+    if (header.unit_code != static_cast<uint8_t>(UnitCode::kDs) && !RunsInDsiMode(header))
     {
         throw std::invalid_argument("the image is for the DSi");
     }
@@ -153,6 +241,10 @@ std::vector<uint8_t> WriteCompactImage(const Rom& rom, const CompactParts& parts
         throw std::invalid_argument("the ARM9 binary lies inside the header");
     }
     const std::vector<uint32_t> kept = KeptInOrder(rom, parts);
+    if (RunsInDsiMode(header))
+    {
+        return WriteDsiImage(rom, parts, kept);
+    }
 
     // The header and the space up to the ARM9 binary, the binary and its footer.
     const std::span<const uint8_t> image = rom.Image();

@@ -20,9 +20,11 @@
 
 #include "driver_shared.h"
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/ntr/snd/tables.h"
 #include "ntdlib/ntr/sound.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::ntr::snd
 {
@@ -30,14 +32,10 @@ namespace ntdlib::ntr::snd
 namespace
 {
 
-constexpr uint32_t kMainMemoryEnd = 0x03000000;
-
 constexpr uint32_t kMasterVolumeRegister = 0x04000500;
 
 // The places in the shared work (SNDSharedWork).
 constexpr uint32_t kFinishedCommandTag = 0x0;
-
-constexpr uint32_t kChannelStatus = 0x8;
 
 constexpr uint32_t kCaptureStatus = 0xA;
 
@@ -84,7 +82,7 @@ Build BuildOf(std::span<const uint8_t> arm7)
     }
 
     const auto at = static_cast<std::size_t>(sine - arm7.begin());
-    const std::size_t squares = (at + std::size(tables::kLfoSine) + 3) & ~std::size_t{3};
+    const std::size_t squares = AlignUp(at + std::size(tables::kLfoSine), 4);
     const std::size_t after = squares + 2 * std::size(tables::kDecibelSquare);
     if (after + std::size(tables::kVolumeShift) > arm7.size())
     {
@@ -95,6 +93,7 @@ Build BuildOf(std::span<const uint8_t> arm7)
     build.zero_level = static_cast<int16_t>(xsflib::LoadLe16(&arm7[squares]));
     build.decibel_table = !std::equal(std::begin(tables::kVolumeShift), std::end(tables::kVolumeShift),
                                       arm7.begin() + static_cast<std::ptrdiff_t>(after));
+
     return build;
 }
 
@@ -111,7 +110,7 @@ void InitSharedWork(std::span<uint8_t> work)
 Driver::Driver(std::span<uint8_t> main_memory, Registers& registers, Build build)
     : main_memory_(main_memory), registers_(&registers), build_(build)
 {
-    // The tables lie one after another in the driver's binary. Values past the end of one read the next.
+    // The tables are one after another in the driver's binary. Values past the end of one read the next.
     for (int i = 0; i < 128; i++)
     {
         const int16_t level = i == 0 ? build.zero_level : tables::kDecibelSquare[i];
@@ -208,7 +207,7 @@ const Player& Driver::GetPlayer(int player) const
 
 uint8_t Driver::Read8(uint32_t address) const
 {
-    if (address < kMainMemory || address >= kMainMemoryEnd || main_memory_.empty())
+    if (address < kMainMemory || address >= kMainMemoryAreaEnd || main_memory_.empty())
     {
         return 0;
     }
@@ -228,7 +227,7 @@ uint32_t Driver::Read32(uint32_t address) const
 
 void Driver::Write8(uint32_t address, uint8_t value)
 {
-    if (address >= kMainMemory && address < kMainMemoryEnd && !main_memory_.empty())
+    if (address >= kMainMemory && address < kMainMemoryAreaEnd && !main_memory_.empty())
     {
         main_memory_[(address - kMainMemory) % main_memory_.size()] = value;
     }
@@ -255,43 +254,38 @@ uint16_t Driver::ReadU16(Track& track)
 void Driver::Run(const Command& command)
 {
     const std::array<uint32_t, 4>& a = command.args;
-    const auto player = [&a]
-    {
-        return static_cast<int>(a[0] % kPlayerCount);
-    };
     switch (command.id)
     {
     case CommandId::kStartSequence:
-        PrepareSequence(player(), a[1], a[2], a[3]);
-        players_[static_cast<std::size_t>(player())].prepared = true;
+        PrepareSequence(PlayerOf(command), a[1], a[2], a[3]);
+        players_[static_cast<std::size_t>(PlayerOf(command))].prepared = true;
         break;
     case CommandId::kStopSequence:
-        StopSequence(player());
+        StopSequence(PlayerOf(command));
         break;
     case CommandId::kPrepareSequence:
-        PrepareSequence(player(), a[1], a[2], a[3]);
+        PrepareSequence(PlayerOf(command), a[1], a[2], a[3]);
         break;
     case CommandId::kStartPreparedSequence:
-        players_[static_cast<std::size_t>(player())].prepared = true;
+        players_[static_cast<std::size_t>(PlayerOf(command))].prepared = true;
         break;
     case CommandId::kPauseSequence:
-        PauseSequence(player(), a[1]);
+        PauseSequence(PlayerOf(command), a[1]);
         break;
     case CommandId::kSkipSequence:
-        SkipSequence(player(), a[1]);
+        SkipSequence(PlayerOf(command), a[1]);
         break;
     case CommandId::kPlayerParameter:
-        SetPlayerParameter(player(), a[1], a[2], static_cast<int>(a[3]));
+        SetPlayerParameter(PlayerOf(command), a[1], a[2], static_cast<int>(a[3]));
         break;
     case CommandId::kTrackParameter:
-        SetTrackParameter(static_cast<int>((a[0] & 0xFFFFFF) % kPlayerCount), a[1], a[2], a[3],
-                          static_cast<uint8_t>(a[0] >> 24));
+        SetTrackParameter(PlayerOf(command), a[1], a[2], a[3], static_cast<uint8_t>(a[0] >> kTrackParameterSizeShift));
         break;
     case CommandId::kMuteTrack:
-        SetTrackMute(player(), a[1], static_cast<int>(a[2]));
+        SetTrackMute(PlayerOf(command), a[1], static_cast<int>(a[2]));
         break;
     case CommandId::kAllocatableChannels:
-        SetAllocatableChannels(player(), a[1], a[2]);
+        SetAllocatableChannels(PlayerOf(command), a[1], a[2]);
         break;
     case CommandId::kPlayerLocalVariable:
         if (shared_work_ != 0)
@@ -312,22 +306,24 @@ void Driver::Run(const Command& command)
         StopTimer(a[0], a[1], static_cast<int>(a[3]));
         break;
     case CommandId::kSetUpPcmChannel:
-        SetUpPcmChannel(static_cast<int>(a[0] & 0xF), a[1] & 0x7FFFFFF, static_cast<int>((a[3] >> 24) & 0x3),
-                        static_cast<int>((a[3] >> 26) & 0x3), static_cast<int>(a[3] & 0xFFFF),
-                        static_cast<int>(a[2] & 0x3FFFFF), static_cast<int>((a[2] >> 24) & 0x7F),
-                        static_cast<int>((a[2] >> 22) & 0x3), static_cast<int>((a[0] >> 16) & 0xFFFF),
-                        static_cast<int>((a[3] >> 16) & 0x7F));
-        break;
+        {
+            const PcmChannelSetup setup = ReadPcmChannelSetup(command);
+            SetUpPcmChannel(setup.channel, setup.data, setup.format, setup.loop, setup.loop_start, setup.loop_length,
+                            setup.volume, setup.divider, setup.timer, setup.pan);
+            break;
+        }
     case CommandId::kSetUpPsgChannel:
-        SetUpPsgChannel(static_cast<int>(a[0] & 0xF), static_cast<int>(a[3]), static_cast<int>(a[1] & 0x7F),
-                        static_cast<int>((a[1] >> 8) & 0x3), static_cast<int>((a[2] >> 8) & 0xFFFF),
-                        static_cast<int>(a[2] & 0x7F));
-        break;
+        {
+            const PsgChannelSetup setup = ReadPsgChannelSetup(command);
+            SetUpPsgChannel(setup.channel, setup.duty, setup.volume, setup.divider, setup.timer, setup.pan);
+            break;
+        }
     case CommandId::kSetUpNoiseChannel:
-        SetUpNoiseChannel(static_cast<int>(a[0] & 0xF), static_cast<int>(a[1] & 0x7F),
-                          static_cast<int>((a[1] >> 8) & 0x3), static_cast<int>((a[2] >> 8) & 0xFFFF),
-                          static_cast<int>(a[2] & 0x7F));
-        break;
+        {
+            const NoiseChannelSetup setup = ReadNoiseChannelSetup(command);
+            SetUpNoiseChannel(setup.channel, setup.volume, setup.divider, setup.timer, setup.pan);
+            break;
+        }
     case CommandId::kSetUpCapture:
         SetUpCapture(static_cast<int>((a[2] >> 31) & 1), static_cast<int>((a[2] >> 30) & 1), a[0],
                      static_cast<int>(a[1]), ((a[2] >> 29) & 1) != 0, static_cast<int>((a[2] >> 28) & 1),

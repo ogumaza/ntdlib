@@ -119,7 +119,7 @@ uint8_t VariableLengthBytes(uint32_t value)
 }
 
 // The command at `at` of `data` as the driver reads it in a track. The bytes past the end of `data` read as 0, and
-// `next` then lies past the end.
+// `next` is then past the end.
 PlayedCommand ReadInTrack(std::span<const uint8_t> data, uint32_t at)
 {
     const auto byte_at = [data](uint32_t address)
@@ -141,6 +141,7 @@ Command AllocationAt(std::span<const uint8_t> data, uint32_t at)
     Command command;
     command.kind = Kind::kAllocateTracks;
     command.value.value = xsflib::LoadLe16(&data[at + 1]);
+
     return command;
 }
 
@@ -187,7 +188,7 @@ uint8_t CodeOf(const Command& command)
     return *code;
 }
 
-// Appends the bytes of `command`, whose target lies at byte offset `target`. Its values are the console's.
+// Appends the bytes of `command`, whose target is at byte offset `target`. Its values are the console's.
 void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t target)
 {
     if (command.kind == Kind::kData)
@@ -322,7 +323,7 @@ bool HoldsVariableLength(const Command& command)
            detail::WidthOf(CodeOf(command)) == Width::kVariableLength;
 }
 
-// Whether the driver reads the bytes from `start` to the end of `bytes` as `command`, whose target lies at byte offset
+// Whether the driver reads the bytes from `start` to the end of `bytes` as `command`, whose target is at byte offset
 // `target`. The command's values are the console's. An allocation of tracks reads as it does at a sequence's entry.
 bool ReadsBack(std::span<const uint8_t> bytes, uint32_t start, const Command& command, uint32_t target)
 {
@@ -527,18 +528,8 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
         FollowOrphans(data, starts, found);
         cuts.insert(starts.begin(), starts.end());
     }
-    for (const auto& [at, read] : found.reads)
-    {
-        if (commands::HasTarget(read.command.kind))
-        {
-            cuts.insert(read.command.target);
-        }
-    }
-    const auto inside = [&](uint32_t cut)
-    {
-        return cut < data.size() && found.cover[cut] == Cover::kInside;
-    };
-    opaque = opaque || std::any_of(cuts.begin(), cuts.end(), inside);
+    commands::detail::AddTargets(found, cuts);
+    opaque = opaque || commands::detail::AnyCutInside(data, found, cuts);
 
     // A track that jumps to an entry's allocation of tracks reads its bytes as other commands.
     for (const auto& [at, read] : found.reads)

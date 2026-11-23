@@ -3,17 +3,42 @@
 #include "ntdlib/sequence_export/arrangements.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sound_pieces.h"
 
 namespace ntdlib::sequence_export
 {
+
+namespace
+{
+
+// ConvertSoundOrPiece for an archive of either format.
+template <typename Archive>
+Conversion ConvertSoundOrPieceOf(const Archive& archive, const ArrangedSound& at, std::span<const SoundPiece> pieces,
+                                 const PerformOptions& options, const Settings& settings, const std::string& program)
+{
+    const SoundPiece* piece = at.arrangement ? nullptr : PieceStartingAt(pieces, at.sound);
+    if (piece)
+    {
+        return ConvertTogether(archive, piece->sounds, piece->name, options, settings, program);
+    }
+
+    return ConvertSequence(archive, static_cast<uint32_t>(at.sound), options, settings, program);
+}
+
+} // namespace
 
 std::vector<Sequence> WithArrangements(const std::vector<Sequence>& sequences, std::size_t sounds,
                                        const ArrangementsOf& arrangements_of, bool picked_with_sequence)
@@ -67,6 +92,20 @@ void SetUpArrangement(const ArrangedSound& at, const ArrangementsOf& arrangement
     {
         arrangements[*at.arrangement].set_up(options);
     }
+}
+
+Conversion ConvertSoundOrPiece(const sar::SoundArchive& archive, const ArrangedSound& at,
+                               std::span<const SoundPiece> pieces, const PerformOptions& options,
+                               const Settings& settings, const std::string& program)
+{
+    return ConvertSoundOrPieceOf(archive, at, pieces, options, settings, program);
+}
+
+Conversion ConvertSoundOrPiece(const rsar::SoundArchive& archive, const ArrangedSound& at,
+                               std::span<const SoundPiece> pieces, const PerformOptions& options,
+                               const Settings& settings, const std::string& program)
+{
+    return ConvertSoundOrPieceOf(archive, at, pieces, options, settings, program);
 }
 
 } // namespace ntdlib::sequence_export

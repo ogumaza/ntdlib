@@ -20,6 +20,7 @@
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/testing/nwsnd_stand_ins.h"
 
 using xsflib::testing::Check;
 
@@ -76,7 +77,7 @@ void TestArithmetic()
 
 void TestBuilds()
 {
-    // Every build lacks the bank, the LFOs' extras and the front bypass. 0xF0 0xE0 is the game's procedure.
+    // No build has the bank, the LFOs' extras or the front bypass. 0xF0 0xE0 is the game's procedure.
     for (const Wii::Build& build : {kOctober2006, kJune2007, kMarch2008, kJune2008})
     {
         XSFLIB_CHECK(!Wii::HasCommand(build, 0xB6) && !Wii::HasCommand(build, 0xBD) && !Wii::HasCommand(build, 0xE4));
@@ -277,35 +278,17 @@ void TestRatios()
 
 class ChannelTestEngine;
 
+using StandIns = ntdlib::testing::nwsnd_stand_ins::PolicyParts<int, 32000, Wii::kFxSendCount>;
+
 // A policy with stand-ins for the engine, the waves and the outputs, for the Wii's channel frame.
-struct ChannelTestPolicy : Wii
+struct ChannelTestPolicy : Wii, StandIns
 {
     using Console = Wii;
     using Engine = ChannelTestEngine;
 
-    struct WaveInfo
-    {
-        int format = 0;
-        uint32_t sample_rate = 32000;
-        bool loop = false;
-    };
-
-    // The track's main out volume, pan, surround pan and sends.
-    struct Outputs
-    {
-        float volume = 1.0f;
-        uint32_t mix_mode = 0;
-        float pan = 0.0f;
-        float span = 0.0f;
-        float main_send = 0.0f;
-        std::array<float, Wii::kFxSendCount> fx_send{};
-    };
-
-    template <typename Function, typename... Each>
-    static void ForEachOutput(const Function& function, Each&... outputs)
-    {
-        function(outputs...);
-    }
+    using WaveInfo = StandIns::WaveInfo;
+    using Outputs = StandIns::Outputs;
+    using StandIns::ForEachOutput;
 };
 
 using Channel = ntdlib::nwsnd::Channel<ChannelTestPolicy>;

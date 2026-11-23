@@ -20,21 +20,21 @@
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
 
-#include "disc_files.h"
+#include "disc_helpers.h"
 #include "disc_writers.h"
 #include "ntdlib/disc/compression.h"
 #include "ntdlib/disc/containers.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/testing/disc_files.h"
 #include "ntdlib/testing/image_manifest.h"
 #include "temp_folder.h"
 
 namespace
 {
 
-using disc_files::CheckFiles;
-using disc_files::CheckRefused;
-using disc_files::WriteFile;
+using disc_helpers::CheckFiles;
+using disc_helpers::CheckRefused;
 using disc_writers::AddRawData;
 using disc_writers::BuildGame;
 using disc_writers::Bytes;
@@ -48,6 +48,8 @@ using disc_writers::Wdf;
 using disc_writers::WiaContents;
 using disc_writers::WiaFile;
 using ntdlib::disc::Method;
+using ntdlib::testing::WriteFile;
+using ntdlib::testing::disc_files::WriteSystemFiles;
 using xsflib::testing::Check;
 using xsflib::testing::failures;
 namespace fs = std::filesystem;
@@ -66,7 +68,7 @@ const GameLayout kLayout = {
     .sub_sound_file = "b.aw",
 };
 
-// The test disc: the test game, which fills the whole disc.
+// The test disc: the test game fills the whole disc.
 struct TestDisc : Game
 {
     // The disc as an ISO image, with NKit's header if `nkit`.
@@ -184,11 +186,7 @@ void TestExtractedDiscs(const fs::path& dir, const TestDisc& disc)
 {
     for (const fs::path& root : {dir / "extracted" / "DATA", dir / "disc"})
     {
-        WriteFile(root / "sys" / "boot.bin", disc.boot);
-        WriteFile(root / "sys" / "bi2.bin", disc.bi2);
-        WriteFile(root / "sys" / "apploader.img", disc.apploader);
-        WriteFile(root / "sys" / "main.dol", disc.dol);
-        WriteFile(root / "sys" / "fst.bin", disc.fst);
+        WriteSystemFiles(root, {disc.boot, disc.bi2, disc.apploader, disc.dol, disc.fst});
         for (const auto& [path, data] : disc.files)
         {
             WriteFile(root / "files" / fs::path(std::u8string(path.begin(), path.end())), data);
@@ -231,6 +229,17 @@ void TestImageManifest(const fs::path& dir, const TestDisc& disc)
     std::string roms = dir.string();
     char* arguments[] = {const_cast<char*>("image_test"), folder.data(), roms.data()};
     Check(ntdlib::testing::RunImageTest(3, arguments, kOptions) == 0, "image manifest: the folder and the image match");
+
+    // A check of the image that the test gives replaces the check against the manifest.
+    std::vector<std::string> checked;
+    const auto check_image = [&checked](const fs::path& image, const ntdlib::testing::ImageManifest& m)
+    {
+        checked.push_back(image.filename().string() + " " + m.source);
+    };
+    Check(ntdlib::testing::RunImageTest(3, arguments, kOptions, check_image) == 0 &&
+              checked == std::vector<std::string>{"game.iso game.iso"},
+          "image manifest: a test's check of the image takes the image and the manifest");
+
     ntdlib::testing::ImageManifest wrong = manifest;
     wrong.hashes.begin()->second.assign(40, '0');
     const int failures_before = failures;
@@ -269,14 +278,13 @@ void TestReadImageManifest(const fs::path& dir)
           "manifest reader: the hashes by path");
 }
 
-// Checks an extracted disc that lacks a system file: without its main.dol, and with a folder in its place. A folder in
+// Checks an extracted disc that has no system file: without its main.dol, and with a folder in its place. A folder in
 // place of a system file that may be missing reads as no file.
 void TestBrokenExtractedDisc(const fs::path& dir, const TestDisc& disc)
 {
     const fs::path broken = dir / "broken";
     fs::remove_all(broken); // an earlier run into the same folder left its main.dol
-    WriteFile(broken / "sys" / "boot.bin", disc.boot);
-    WriteFile(broken / "sys" / "fst.bin", disc.fst);
+    WriteSystemFiles(broken, {.boot = disc.boot, .fst = disc.fst});
     const std::string kLacking = "must contain sys/boot.bin, sys/main.dol and sys/fst.bin";
     CheckRefused("extracted disc without main.dol", broken, kLacking, kOptions);
     fs::create_directories(broken / "sys" / "main.dol");

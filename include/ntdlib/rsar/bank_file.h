@@ -37,7 +37,7 @@ struct BankFile
     static constexpr uint8_t kRegion = 1;
     static constexpr uint8_t kRangeTable = 2;
     static constexpr uint8_t kIndexTable = 3;
-    static constexpr uint8_t kOtherNode = 4; // names a node of any kind, which NW4R SND doesn't play
+    static constexpr uint8_t kOtherNode = 4; // names a node of any kind; NW4R SND doesn't play it
 
     // A reference of the tree: its data type, and the node that it names, an index into `nodes`.
     struct Reference
@@ -104,11 +104,11 @@ struct BankFile
     static BankFile Read(std::span<const uint8_t> file, std::span<const uint8_t> wave_data);
 
     // The bank's file and its wave data, laid out as the tools lay a bank out. Read gives the bank back. Throws
-    // std::invalid_argument for a version other than 1.1 and 1.2, a reference to a node that `nodes` lacks or of a data
-    // type that doesn't match the node's kind, nodes out of the order of the layout, a node that no reference names, a
-    // node of a kind that only references of data type 4 reach, a range table whose keys don't match its entries, an
-    // index table whose keys run backwards or don't match its entries, a tree deeper than 256 nodes, and the exceptions
-    // of WaveFile::Write.
+    // std::invalid_argument for a version other than 1.1 and 1.2, a reference to a node missing from `nodes` or of a
+    // data type that doesn't match the node's kind, nodes out of the order of the layout, a node that no reference
+    // names, a node of a kind that only references of data type 4 reach, a range table whose keys don't match its
+    // entries, an index table whose keys run backwards or don't match its entries, a tree deeper than 256 nodes, and
+    // the exceptions of WaveFile::Write.
     Files Write() const;
 
     // The instruments as NW4R SND plays them, by program (Bank::Find): each run of keys and velocities that a region

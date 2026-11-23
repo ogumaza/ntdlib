@@ -50,8 +50,8 @@ struct Scale
 // The console's value `value` in its unit.
 Fixed ToUnit(int64_t value, const Scale& scale);
 
-// The console's value nearest `unit`. Of two values at the same distance, the one whose unit lies further from zero.
-// The value that gave `unit` comes back.
+// The console's value nearest `unit`. Of two values at the same distance, the one whose unit is further from zero. The
+// value that gave `unit` comes back.
 int64_t FromUnit(Fixed unit, const Scale& scale);
 
 // The unit of the value of a command of `kind`, or nothing for a kind without a value. A note's value is its length,

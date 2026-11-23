@@ -16,7 +16,6 @@
 #include <utility>
 #include <vector>
 
-#include "seqlib/loop.h"
 #include "seqlib/midi/performance.h"
 #include "seqlib/sf2/soundfont.h"
 
@@ -228,11 +227,10 @@ class SoundFontParts
 {
 public:
     // The sample ids of the wave that `key` names, "w0_12" for key {0, 12}. On first use, `pcm` gives the decoded wave,
-    // or nullptr for one that can't be read. `adjust`, if given, changes the prepared samples. The samples take root
-    // key `root_key`, from the first region that plays the wave. No ids means that the wave can't be read.
+    // or nullptr for one that can't be read. The samples take root key `root_key`, from the first region that plays the
+    // wave. No ids means that the wave can't be read.
     const std::vector<uint16_t>& Samples(std::pair<uint32_t, uint32_t> key, uint8_t root_key,
-                                         const std::function<const wave::Pcm*()>& pcm,
-                                         const std::function<void(seqlib::PreparedWave&)>& adjust = {});
+                                         const std::function<const wave::Pcm*()>& pcm);
 
     // Copies preset `index` to bank 128 for MIDI channel 10, at its program number. Warns if another preset already
     // holds that place.

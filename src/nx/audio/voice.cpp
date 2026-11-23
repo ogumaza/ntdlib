@@ -309,7 +309,7 @@ void DecodeFromWaveBuffersEnhanced(const DecodeFromWaveBuffersArgs& args, const 
         return;
     }
 
-    // The kernel for the step. An output's left neighbour lies `behind` samples behind the batch's input, and the
+    // The kernel for the step. An output's left neighbour is `behind` samples behind the batch's input, and the
     // kernel's window starts half - 1 samples before it. The last output of a batch takes up to `ahead` samples after
     // the batch's input. Without outputs, the batch takes none.
     const wave::SincKernel& kernel = wave::SincKernel::ForStep(static_cast<double>(ratio) / 32768.0);

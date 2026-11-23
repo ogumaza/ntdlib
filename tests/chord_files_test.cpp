@@ -11,33 +11,19 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/jaudio/jungle_beat_states.h"
 
 using namespace ntdlib::jaudio;
+using seqlib::testing::Throws;
 
 namespace
 {
 
 constexpr uint8_t kNone = kChordNone;
-
-// Whether `read` throws FormatError.
-template <typename Read>
-bool ThrowsFormatError(Read read)
-{
-    try
-    {
-        read();
-    }
-    catch (const xsflib::FormatError&)
-    {
-        return true;
-    }
-
-    return false;
-}
 
 // Builds a big-endian file.
 class Bytes
@@ -149,10 +135,10 @@ void TestChordFile()
     XSFLIB_CHECK(!plain.chords[0].scale);
     XSFLIB_CHECK(FitToScale(plain.chords[0], 61, false) == kNone);
 
-    XSFLIB_CHECK(ThrowsFormatError([&] { ReadChordFile(MakeChordFile("CITX")); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ReadChordFile(MakeChordFile("CITX")); }));
     std::vector<uint8_t> cut = MakeChordFile("CITS");
     cut.resize(0x30);
-    XSFLIB_CHECK(ThrowsFormatError([&] { ReadChordFile(cut); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ReadChordFile(cut); }));
 }
 
 Chord MakeChord(uint8_t root, ChordKind kind)
@@ -402,10 +388,10 @@ void TestDatabase()
 
     std::vector<uint8_t> bad = MakeDatabase();
     bad[7] = 'X';
-    XSFLIB_CHECK(ThrowsFormatError([&] { ReadChordDatabase(bad); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ReadChordDatabase(bad); }));
     bad = MakeDatabase();
     bad[0x1b] = 0xf0; // the steps' offset past the end
-    XSFLIB_CHECK(ThrowsFormatError([&] { ReadChordDatabase(bad); }));
+    XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { ReadChordDatabase(bad); }));
 }
 
 void TestJungleBeatChordFiles()

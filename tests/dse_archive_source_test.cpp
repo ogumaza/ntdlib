@@ -19,6 +19,7 @@
 #include "ntdlib/dse/player.h"
 #include "ntdlib/dse/sets.h"
 #include "ntdlib/ntr/sound.h"
+#include "ntdlib/testing/dse_files.h"
 #include "ntdlib/testing/dse_song_files.h"
 
 namespace
@@ -35,25 +36,8 @@ constexpr const char* kEffects = "SOUND/SE/fx.sed";
 constexpr uint16_t kEffectsId = 0x0101;
 
 // A test program's set: its files by path, and the sequence that it plays.
-struct TestSet
+struct TestSet : ntdlib::testing::dse_files::FileSet
 {
-    std::vector<uint8_t>* File(const std::string& path)
-    {
-        const auto file = files.find(path);
-        return file != files.end() ? &file->second : nullptr;
-    }
-
-    std::vector<dse::NamedFile> Named() const
-    {
-        std::vector<dse::NamedFile> named;
-        for (const auto& [path, bytes] : files)
-        {
-            named.push_back({path, bytes});
-        }
-        return named;
-    }
-
-    std::map<std::string, std::vector<uint8_t>> files;
     dse::SequenceRef sequence;
     std::optional<std::string> also_load; // a bank that the selection also loads
 };
@@ -81,7 +65,7 @@ struct TestProgram
 
 using Source = xsflib::player::ArchiveSource<dse::ArchiveTraits<TestProgram>>;
 
-// One effect: a note of the song's bank's program 0 for 24 ticks, a wait of 24 ticks and the end.
+// One effect: a note of program 0 of the song's bank for 24 ticks, a wait of 24 ticks and the end.
 Bytes EffectsFile()
 {
     const Bytes track = dse_song_files::Join({{0, 0, 0, 0, 0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xE0, 0x7F, 0xA0, 0x04},
@@ -203,7 +187,7 @@ void TestSnapshot()
     XSFLIB_CHECK(!first.empty() && again == first);
 }
 
-// A sequence that the files lack, a selection of a file that the set lacks, and a sound effect that the driver
+// A sequence missing from the files, a selection of a file missing from the set, and a sound effect that the driver
 // refuses: its five tracks don't fit in a sequence of the pool.
 void TestRefusals()
 {

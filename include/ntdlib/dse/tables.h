@@ -240,7 +240,7 @@ inline constexpr uint8_t kPanCurve[128] = {
     112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127,
 };
 
-// The times of an envelope's stages, which the stage's multiplier scales, at 0x020B0F50.
+// The times of an envelope's stages, at 0x020B0F50. The multiplier of a stage scales its time.
 inline constexpr uint16_t kEnvelopeTimes[128] = {
         0,     1,     2,     3,     4,     5,     6,     7,     8,     9,    10,    11,
        12,    13,    14,    15,    16,    17,    18,    19,    20,    21,    22,    23,

@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <optional>
 #include <span>
@@ -13,11 +12,14 @@
 
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "ntdlib/disc/cx.h"
 #include "ntdlib/disc/error.h"
 
 namespace ntdlib::dse
 {
+
+using ntdlib::detail::HasMagic;
 
 namespace
 {
@@ -135,7 +137,7 @@ std::optional<std::vector<uint8_t>> DecompressLevel5(std::span<const uint8_t> da
 
 std::optional<std::vector<GfsaMember>> GfsaMembers(std::span<const uint8_t> archive)
 {
-    if (archive.size() < kHeaderSize || std::memcmp(archive.data(), "GFSA", 4) != 0)
+    if (archive.size() < kHeaderSize || !HasMagic(archive, "GFSA"))
     {
         return std::nullopt;
     }

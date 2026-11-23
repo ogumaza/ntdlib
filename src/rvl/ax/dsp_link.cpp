@@ -6,6 +6,7 @@
 #include <span>
 
 #include "ntdlib/dsp/dsp.h"
+#include "ntdlib/dsp/memory.h"
 
 namespace ntdlib::rvl::ax
 {

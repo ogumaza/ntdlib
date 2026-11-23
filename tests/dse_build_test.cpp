@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -20,7 +21,7 @@ namespace dse = ntdlib::dse;
 constexpr uint32_t kReturn = 0xE12FFF1E; // bx lr
 constexpr std::size_t kHandlers = 112;
 
-// What a made-up driver's code holds, so that a test can change one part.
+// The parts of a made-up driver's code. A test can change one of them.
 struct Driver
 {
     uint32_t constant = 0x00001234; // a word in the literal pool of the called function
@@ -155,6 +156,65 @@ void TestUnknownBuild()
     XSFLIB_CHECK(dse::FindDriverCode(no_table).empty());
 }
 
+// The pointers that a fingerprint leaves out: from 0x01FF8000 up to main memory's end, and from 0x027C0000 up to
+// 0x02800000. The words next to each end aren't pointers.
+void TestPointsIntoMemory()
+{
+    XSFLIB_CHECK(!dse::PointsIntoMemory(0x01FF7FFF));
+    XSFLIB_CHECK(dse::PointsIntoMemory(0x01FF8000));
+    XSFLIB_CHECK(dse::PointsIntoMemory(0x02000000));
+    XSFLIB_CHECK(dse::PointsIntoMemory(0x023FFFFF));
+    XSFLIB_CHECK(!dse::PointsIntoMemory(0x02400000));
+    XSFLIB_CHECK(!dse::PointsIntoMemory(0x027BFFFF));
+    XSFLIB_CHECK(dse::PointsIntoMemory(0x027C0000));
+    XSFLIB_CHECK(dse::PointsIntoMemory(0x027FFFFF));
+    XSFLIB_CHECK(!dse::PointsIntoMemory(0x02800000));
+    XSFLIB_CHECK(!dse::PointsIntoMemory(0));
+}
+
+// A branch (bits 25 to 27 of 101, under any condition) keeps only its top byte, and a pointer becomes 0x02AAAAAA. Any
+// other word gives nothing, 0x02AAAAAA itself included: it is between the two ranges of pointers.
+void TestMaskedMovingWord()
+{
+    XSFLIB_CHECK(dse::MaskedMovingWord(0xEB001234) == 0xEB000000);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0x0AFFFFFF) == 0x0A000000);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0xFBFFFFFE) == 0xFB000000);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0x020A7FAC) == 0x02AAAAAA);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0x027C0000) == 0x02AAAAAA);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0xE3A00001) == std::nullopt);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0x02400000) == std::nullopt);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0x02AAAAAA) == std::nullopt);
+    XSFLIB_CHECK(dse::MaskedMovingWord(0) == std::nullopt);
+}
+
+// The words of `code` as a block at 0x02000000.
+std::vector<uint8_t> Bytes(const std::vector<uint32_t>& code)
+{
+    std::vector<uint8_t> bytes(4 * code.size());
+    for (std::size_t i = 0; i < code.size(); i++)
+    {
+        xsflib::StoreLe32(&bytes[4 * i], code[i]);
+    }
+
+    return bytes;
+}
+
+// A function ends at its first unconditional exit that no forward branch passes: LDR into pc, a data-processing write
+// to pc, or BX. A conditional BX doesn't end it, and a forward branch past 4,096 words doesn't extend it.
+void TestArmFunctionWords()
+{
+    constexpr uint32_t kBase = 0x02000000;
+    const std::vector<uint8_t> passed = Bytes({0xE3500000, 0x0A000001, kReturn, 0xE3A00001, 0xE49DF004, 0xE1A00000});
+    const std::vector<uint8_t> moved = Bytes({0xE3A00001, 0xE1A0F00E, 0xE1A00000});
+    const std::vector<uint8_t> conditional = Bytes({0x112FFF1E, kReturn, 0xE1A00000});
+    const std::vector<uint8_t> far = Bytes({0x0A001388, kReturn, 0xE1A00000});
+
+    XSFLIB_CHECK(dse::ArmFunctionWords({kBase, passed}, kBase) == 5);
+    XSFLIB_CHECK(dse::ArmFunctionWords({kBase, moved}, kBase) == 2);
+    XSFLIB_CHECK(dse::ArmFunctionWords({kBase, conditional}, kBase) == 2);
+    XSFLIB_CHECK(dse::ArmFunctionWords({kBase, far}, kBase) == 2);
+}
+
 } // namespace
 
 int main()
@@ -163,6 +223,9 @@ int main()
     TestFingerprintMovesWithTheCode();
     TestFingerprintSeesChangedCode();
     TestUnknownBuild();
+    TestPointsIntoMemory();
+    TestMaskedMovingWord();
+    TestArmFunctionWords();
 
     return xsflib::testing::Summary("DSE build");
 }

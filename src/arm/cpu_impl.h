@@ -15,6 +15,7 @@
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/arm/alu.h"
 #include "ntdlib/arm/cpu.h"
 #include "ntdlib/arm/shifter.h"
 
@@ -141,48 +142,11 @@ inline void StoreHost(uint8_t* p, int size, uint32_t value)
     }
 }
 
-// a + b + carry_in, with the adder's carry and signed overflow. A subtraction a - b adds ~b with a carry in of 1.
-inline uint32_t AddWithCarry(uint32_t a, uint32_t b, uint32_t carry_in, uint32_t& carry, uint32_t& overflow)
-{
-    const uint64_t sum = static_cast<uint64_t>(a) + b + carry_in;
-    const uint32_t result = static_cast<uint32_t>(sum);
-    carry = static_cast<uint32_t>(sum >> 32);
-    overflow = ((a ^ result) & (b ^ result)) >> 31;
-
-    return result;
-}
-
 // Rotates a word that an unaligned LDR or SWP read: the byte at the address goes to the low byte.
 inline uint32_t RotateLoaded(uint32_t word, uint32_t address)
 {
     return std::rotr(word, static_cast<int>((address & 3) * 8));
 }
-
-// Whether condition `cond` (0 to 14) passes, by bit (NZCV flags) of each entry.
-constexpr std::array<uint16_t, 16> ConditionTable()
-{
-    std::array<uint16_t, 16> table{};
-    for (uint32_t cond = 0; cond < 16; ++cond)
-    {
-        for (uint32_t flags = 0; flags < 16; ++flags)
-        {
-            const bool n = (flags & 8) != 0;
-            const bool z = (flags & 4) != 0;
-            const bool c = (flags & 2) != 0;
-            const bool v = (flags & 1) != 0;
-            const bool passes[16] = {z,       !z,     c,      !c,           n,           !n,   v,    !v, c && !z,
-                                     !c || z, n == v, n != v, !z && n == v, z || n != v, true, false};
-            if (passes[cond])
-            {
-                table[cond] = static_cast<uint16_t>(table[cond] | (1u << flags));
-            }
-        }
-    }
-
-    return table;
-}
-
-inline constexpr std::array<uint16_t, 16> kConditions = ConditionTable();
 
 // The interpreter's state. The members are public: the handlers in arm.cpp and thumb.cpp work on the registers and the
 // flags directly.
@@ -323,7 +287,7 @@ inline uint32_t Core::Carry() const
 
 inline bool Core::ConditionPassed(uint32_t cond) const
 {
-    return ((kConditions[cond] >> (cpsr_ >> 28)) & 1) != 0;
+    return arm::ConditionPassed(cond, cpsr_ >> 28);
 }
 
 inline void Core::SetNz(uint32_t result)

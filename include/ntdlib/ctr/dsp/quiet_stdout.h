@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Teakra prints unmodelled MMIO accesses to stdout. Tools that want a clean stdout call SilenceStdout() and write their
-// own output to stderr (or files).
+// output to stderr (or files).
 
 #pragma once
 

@@ -13,6 +13,7 @@
 #include <optional>
 
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rvl/axfx/util.h"
 #include "ntdlib/sound_build.h"

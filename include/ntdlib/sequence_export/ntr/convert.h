@@ -3,11 +3,12 @@
 // The conversion of a sequence of a DS sound archive (SDAT) to MIDI, a SoundFont and SFZ files. The performer
 // (performance.h) plays the sequence on the driver's model. Each preset of the performance is a program of the
 // sequence's bank, with the track's envelope and LFO. It becomes a SoundFont instrument and preset, and a <master> of
-// the SFZ files, with a zone for each of the program's regions (instruments.h). A bank's instruments convert to
+// the SFZ files, with zones for each of the program's regions (instruments.h). A bank's instruments convert to
 // SoundFonts and SFZ files by themselves too (ConvertBank). They take the same zones and regions.
 //
 // The LFO's depth goes by CC1. A pitch LFO is SoundFont's vibrato LFO, and a volume LFO its modulation LFO. Both are
-// triangles in SoundFont. The DS's LFO is a sine, and so is SFZ's. A pan LFO is SFZ's alone.
+// triangles in SoundFont. The DS's LFO is a sine, and so is SFZ's. SoundFont has no LFO that moves the pan. On a part
+// that plays one note at a time, CC10 follows a pan LFO (the performer). Elsewhere a pan LFO is SFZ's alone.
 
 #pragma once
 
@@ -43,8 +44,8 @@ struct Conversion
 };
 
 // Plays `sequence` of `archive` and builds its files. `name` is the sequence's name in the files, and `program` the
-// name that their comments give the program, such as "xyz2midi". Throws xsflib::FormatError when the archive lacks the
-// sequence, its file or its bank, and ntdlib::ntr::snd::Hang when a track hangs the driver.
+// name that their comments give the program, such as "xyz2midi". Throws xsflib::FormatError when the sequence, its file
+// or its bank is missing from the archive, and ntdlib::ntr::snd::Hang when a track hangs the driver.
 Conversion ConvertSequence(const sdat::Archive& archive, const ntdlib::ntr::SequenceRef& sequence,
                            const std::string& name, const PerformOptions& options, const std::string& program);
 
@@ -77,9 +78,9 @@ seqlib::sfz::Instruments BuildSfz(const Performance& perf, const seqlib::midi::M
 // each once. Each program p that plays something becomes preset p % 128 in bank p / 128 of a SoundFont, and an SFZ file
 // by itself (BuildBankSfz). It plays as a track plays it with its starting settings: with the envelopes of its regions,
 // at the centre, and with an LFO whose depth CC1 sets. A program that plays nothing gets no preset and no file, and a
-// warning, in the order given. A zone above full level makes every zone of the SoundFonts quieter. A sequence's
-// conversion does the same. A warning says so. `program` is the name that goes in the SoundFonts' ISFT and comments and
-// in the SFZ files. Throws xsflib::FormatError when the archive lacks the bank.
+// warning, in the order given. Every zone of the SoundFonts takes the cut of a zone panned fully to one side (PanCut),
+// as a sequence's zones do. `program` is the name that goes in the SoundFonts' ISFT and comments and in the SFZ files.
+// Throws xsflib::FormatError when the bank is missing from the archive.
 ntdlib::sequence_export::BankConversion ConvertBank(const sdat::Archive& archive, uint16_t bank,
                                                     std::span<const uint32_t> programs,
                                                     const ntdlib::ntr::snd::Build& build, const std::string& program);

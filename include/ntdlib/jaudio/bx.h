@@ -31,7 +31,7 @@ std::vector<WaveSystem> ReadBxWaveSystems(std::span<const uint8_t> bx);
 // A velocity region names the wave system of its wave in the high half of its wave id (0x273570). The value 0xffff
 // names the system at the bank's place in the table. Another value names the first system in the table whose header
 // gives that number. The game maps the numbers up to 0xff (0x272de0). Bank::wave_system holds the place of the system
-// that the bank's waves name. A bank whose waves name more than one system, or a system that the file lacks, is left
+// that the bank's waves name. A bank whose waves name more than one system, or a system missing from the file, is left
 // out, and so is a bank that can't be read. `warnings` gets a message for each. Throws FormatError if the file is
 // damaged.
 std::vector<Bank> ReadBxBanks(std::span<const uint8_t> bx, std::vector<std::string>& warnings);

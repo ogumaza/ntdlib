@@ -4,14 +4,13 @@
 // sound plays its first note's wave once, with the wave sound's pitch, pan, surround pan and sends, and with the
 // volume, the channel priority and the release priority fix of its entry. The note's key, volume, pan and pitch stay
 // unread. The builds from March 2008 take the note's hold. The build of October 2006 starts the main send at 1 and sets
-// no release priority fix. A wave sound that lacks its note or its wave ends in its first update. A wave that doesn't
+// no release priority fix. A wave sound without its note or its wave ends in its first update. A wave that doesn't
 // loop ends the sound in the frame after its voice ends, and a wave that loops plays on. A snapshot keeps the wave
 // sound's player. The expected values are the ones that NW4R SND's WsdPlayer and WsdFileReader give in the code of Wii
 // Sports, Mario Kart Wii and WarioWare: Smooth Moves (see wave_sound.h). Skyward Sword HD's mix for Dolby Pro Logic II
 // (CalcMix) matches the stereo mix in front for a pan between the sides. A pan beyond a side moves part of the voice to
 // the rear. A voice at the rear plays at half its pan.
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -23,13 +22,15 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/testing/check.h"
 
-#include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/nwsnd/util.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/snd/driver.h"
+#include "ntdlib/rvl/snd/effect_setup.h"
 #include "ntdlib/rvl/snd/engine.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/rvl/snd/wave_sound.h"
@@ -44,6 +45,7 @@ using namespace ntdlib::testing::rsar_files;
 namespace ax = ntdlib::rvl::ax;
 namespace snd = ntdlib::rvl::snd;
 using VoiceParam = ntdlib::nwsnd::RevolutionPolicy::ChannelVoiceParam;
+using seqlib::testing::Throws;
 using xsflib::testing::Check;
 
 // The builds: Wii Sports' of 2007, Mario Kart Wii's of 2008 and the build of October 2006.
@@ -307,7 +309,8 @@ void CheckEnds()
     Check(looped.callback_frames.empty() && looped.finished_frame < 0, "a wave that loops plays on");
 }
 
-// A wave sound that the file lacks, a note that the wave sound lacks, and a wave that the file lacks each give a player
+// A wave sound that the file doesn't hold, a note that the wave sound doesn't hold, and a wave that the file doesn't
+// hold each give a player
 // that ends in its first update.
 void CheckMissing()
 {
@@ -324,7 +327,7 @@ void CheckMissing()
 
     auto model = std::make_unique<snd::ArchiveModel>();
     model->StartWithRenderer(test.archive);
-    Check(model->engine->StartWaveSound(3) == nullptr, "a sound that the archive lacks doesn't start");
+    Check(model->engine->StartWaveSound(3) == nullptr, "a sound that the archive doesn't have doesn't start");
 
     const Bytes sequence_bytes = MakeArchive(MakeSequence({0xFF}), 0, 1);
     const rsar::SoundArchive sequences = rsar::SoundArchive::Load(sequence_bytes, snd::kRsarOptions);
@@ -365,15 +368,7 @@ void CheckSnapshots()
 
     Check(first == second && player->IsFinished(), "a restore gives the same output again");
     model->engine->StartWaveSound(0);
-    bool refused = false;
-    try
-    {
-        model->Restore(snapshot);
-    }
-    catch (const std::runtime_error&)
-    {
-        refused = true;
-    }
+    const bool refused = Throws<std::runtime_error>([&] { model->Restore(snapshot); });
 
     Check(refused, "a restore after another start is refused");
 }

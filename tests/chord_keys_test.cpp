@@ -145,7 +145,7 @@ void TestMoveToTone()
     block.mode = 0x84;
     XSFLIB_CHECK(Key(block, 62) == 64);
 
-    // Below D, C. Both are 2 semitones away for nibble 3, which then takes the tone above and plays mode 1.
+    // Below D, C. Both are 2 semitones away for nibble 3. The nibble then takes the tone above and plays mode 1.
     block.mode = 0x82;
     XSFLIB_CHECK(Key(block, 62) == 60);
     block.mode = 0x83;
@@ -261,8 +261,8 @@ void TestBlocks()
     const ChordMoment moment{.chord = &chord};
     ChordRandom random;
 
-    // Block 1 lies above the range and falls by an octave. Block 2 lies below it and sends the part back to block 0,
-    // which then plays in the same step. Block 3 is silent: the key stays, and the step gives 0.
+    // Block 1 is above the range and falls by an octave. Block 2 is below it and sends the part back to block 0.
+    // Block 0 then plays in the same step. Block 3 is silent: the key stays, and the step gives 0.
     TestPart part({{.value = 60, .next = 0xfe},
                    {.value = 74, .next = 0xfe},
                    {.value = 40, .below = 0, .next = 3},
@@ -319,7 +319,7 @@ void TestRanges()
 
 void TestSharedKey()
 {
-    // Each key above 0 goes to the shared key, which the next part reads.
+    // Each key above 0 goes to the shared key. The next part reads that key.
     const Chord chord = CMajor();
     std::vector<uint8_t> data = MakeDatabase({{.value = 64}});
     const ChordDatabase database = ReadChordDatabase(data);

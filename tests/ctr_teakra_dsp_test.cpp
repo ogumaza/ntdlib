@@ -5,8 +5,8 @@
 // interrupts, and starting and stopping the firmware.
 //
 // Each firmware's machine code comes after its source in Teak assembly. To assemble a source again, take "// " off the
-// start of its lines, from "segment" on, and run it through Teakra's makedsp1, which puts the code at offset 0x300 of
-// the DSP1 image it writes.
+// start of its lines, from "segment" on, and run it through Teakra's makedsp1. makedsp1 puts the code at offset 0x300
+// of the DSP1 image it writes.
 
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +33,7 @@ namespace
 using ntdlib::ctr::Fcram;
 using ntdlib::ctr::dsp::DataOffset;
 using ntdlib::ctr::dsp::Interrupt;
+using ntdlib::ctr::dsp::IsDsp1Image;
 using ntdlib::ctr::dsp::Pipe;
 using ntdlib::ctr::dsp::TeakraDsp;
 
@@ -173,8 +174,8 @@ constexpr uint32_t kEndFirmwareAddress = 0x1FFF9;
 static_assert(2 * kEndFirmwareAddress + sizeof(kEndFirmware) == 0x40000);
 
 // Returns a DSP1 image that loads `program` into program memory at word address `address`: a header with the magic, the
-// flags and one segment record, then the code. The glue doesn't check the signature or the segment's SHA-256, so
-// they're left as zeros.
+// flags and one segment record, then the code. The glue doesn't check the signature or the segment's SHA-256. They stay
+// zeros.
 std::vector<uint8_t> MakeImage(std::span<const uint16_t> program, uint8_t flags = 0, uint32_t address = 0)
 {
     std::vector<uint8_t> image(kHeaderSize + program.size() * 2);
@@ -198,7 +199,7 @@ std::vector<uint8_t> MakeImage(std::span<const uint16_t> program, uint8_t flags 
     return image;
 }
 
-// Returns true if `f` throws a std::runtime_error with one of the glue's messages, which start with "DSP: ".
+// Returns true if `f` throws a std::runtime_error with one of the glue's messages. Those messages start with "DSP: ".
 bool ThrowsDspError(const std::function<void()>& f)
 {
     return ErrorOf(f).starts_with("DSP: ");
@@ -245,8 +246,8 @@ uint16_t WritePosition(TeakraDsp& dsp, unsigned number)
     return xsflib::LoadLe16(Entry(dsp, number) + 6);
 }
 
-// Numbers the entries of a started firmware's pipe table, as a real firmware would. The table is all zeros otherwise,
-// since the start clears DSP RAM.
+// Numbers the entries of a started firmware's pipe table, as a real firmware would. Otherwise the table is all zeros.
+// The start clears DSP RAM.
 void NumberEntries(TeakraDsp& dsp)
 {
     for (unsigned number = 0; number < 32; number++)
@@ -285,17 +286,19 @@ void TestImages()
     Fcram fcram(1 << 20);
     TeakraDsp dsp(fcram);
 
-    // A mark in DSP RAM, which a start would clear.
+    // A mark in DSP RAM. A start would clear it.
     dsp.Ram()[0x100] = 0xAB;
 
-    // An image too short for its header, and one with the wrong magic.
+    // An image too short for its header, and one with the wrong magic. IsDsp1Image takes neither.
     std::vector<uint8_t> image(good.data(), good.data() + kHeaderSize - 1);
 
+    XSFLIB_CHECK(IsDsp1Image(good) && !IsDsp1Image(image));
     XSFLIB_CHECK(ThrowsDspError([&] { dsp.LoadComponent(image); }));
 
     image = good;
     image[0x103] = 'X';
 
+    XSFLIB_CHECK(!IsDsp1Image(image));
     XSFLIB_CHECK(ThrowsDspError([&] { dsp.LoadComponent(image); }));
 
     // More than 10 segments.
@@ -330,8 +333,8 @@ void TestImages()
     XSFLIB_CHECK(dsp.Ram()[0x100] == 0xAB);
     XSFLIB_CHECK(dsp.Cycles() == 0);
 
-    // Records 1 and 2 are empty program segments, which are fine, and record 3 has an unknown memory type and nonsense
-    // in every field, so it's skipped. The firmware then starts within one wait slice.
+    // Records 1 and 2 are empty program segments. Those are fine. Record 3 has an unknown memory type and nonsense in
+    // every field, and the glue skips it. The firmware then starts within one wait slice.
     image = good;
     image[0x10E] = 4;
     uint8_t* record = image.data() + 0x120 + 3 * 0x30;
@@ -372,7 +375,7 @@ void TestWithoutFirmware()
     XSFLIB_CHECK(ThrowsDspError([&] { dsp.ReadPipe(Pipe::kAudio, 1); }));
     XSFLIB_CHECK(ThrowsDspError([&] { dsp.WritePipe(Pipe::kAudio, kByte); }));
 
-    // Reading or writing nothing does nothing, so it needs no firmware.
+    // Reading or writing nothing does nothing. It requires no firmware.
     XSFLIB_CHECK(ErrorOf([&] { XSFLIB_CHECK(dsp.ReadPipe(Pipe::kAudio, 0).empty()); }).empty());
     XSFLIB_CHECK(ErrorOf([&] { dsp.WritePipe(Pipe::kAudio, {}); }).empty());
 
@@ -391,7 +394,7 @@ void TestPipeRings()
     StartNotifyFirmware(dsp);
 
     // The DSP-to-ARM11 ring (entry 4): 8 bytes at data word 0x2000, with the read position at 6 and the write position
-    // at 2 on the next lap, so 4 bytes are waiting.
+    // at 2 on the next lap. 4 bytes are waiting.
     SetEntry(dsp, 4, 0x2000, 8, 6, 0x8002);
     uint8_t* from_dsp = dsp.Ram() + DataOffset(0x2000);
     for (int i = 0; i < 8; i++)
@@ -419,7 +422,7 @@ void TestPipeRings()
     XSFLIB_CHECK(dsp.PipeReadable(Pipe::kAudio) == 8);
 
     // The ARM11-to-DSP ring (entry 5): 8 bytes at data word 0x2100, with the read position at 3 and the write position
-    // at 1 on the next lap, so there's room for 2 bytes.
+    // at 1 on the next lap. There's room for 2 bytes.
     SetEntry(dsp, 5, 0x2100, 8, 3, 0x8001);
     uint8_t* to_dsp = dsp.Ram() + DataOffset(0x2100);
     const uint8_t kTwo[2] = {0xA0, 0xA1};
@@ -448,8 +451,8 @@ void TestPipeRings()
     XSFLIB_CHECK(dsp.ReadPipe(Pipe::kAudio, 1).size() == 1);
 
     // Each read and write that moved a position sent the entry's number on command register 2. The DSP doesn't run in
-    // between, so each send after the first found the last one unread and waited one slice for the firmware to read it.
-    // The firmware has read the last write's 5 by now.
+    // between. Each send after the first therefore found the last one unread and waited one slice for the firmware to
+    // read it. The firmware has read the last write's 5 by now.
     XSFLIB_CHECK(dsp.Cycles() == 5 * kWaitSlice);
     XSFLIB_CHECK(Word(dsp, kCommandWord) == 5);
 }
@@ -528,8 +531,8 @@ void TestNotifications()
     XSFLIB_CHECK((interrupts == Interrupts{{Interrupt::kPipe, Pipe::kBinary}}));
     XSFLIB_CHECK(!dsp.ReplyReady(2));
 
-    // An entry of an ARM11-to-DSP ring (an odd number) raises nothing. Only the ARM11 side clears the DSP's semaphore,
-    // so the pipe bit stays set from now on, and any change of the semaphore completes a notification.
+    // An entry of an ARM11-to-DSP ring (an odd number) raises nothing. Only the ARM11 side clears the DSP's semaphore.
+    // The pipe bit therefore stays set from now on. Any change of the semaphore then completes a notification.
     interrupts.clear();
 
     Fire(dsp, 2, 5, 0x0001);
@@ -537,8 +540,8 @@ void TestNotifications()
     XSFLIB_CHECK(interrupts.empty());
     XSFLIB_CHECK(!dsp.ReplyReady(2));
 
-    // The debug pipe (entry 0) is drained and its bytes dropped, with no interrupt. The drain tells the firmware, so
-    // command register 2 goes from the 5 of a write to pipe 2 to the debug entry's 0.
+    // The debug pipe (entry 0) is drained and its bytes dropped, with no interrupt. The drain tells the firmware.
+    // Command register 2 therefore goes from the 5 of a write to pipe 2 to the debug entry's 0.
     SetEntry(dsp, 0, 0x2200, 16, 2, 5);
     SetEntry(dsp, 5, 0x2300, 16, 0, 0);
     const uint8_t kByte[1] = {0xC0};
@@ -584,8 +587,8 @@ void TestNotifications()
     XSFLIB_CHECK(dsp.ReplyReady(1));
     XSFLIB_CHECK(dsp.ReadReply(1) == 0x55);
 
-    // The handler can replace itself while it runs. The glue calls a copy of it, so the captures of the old handler
-    // (here a long string, which std::function keeps on the heap) last until it returns.
+    // The handler can replace itself while it runs. The glue calls a copy of it. The captures of the old handler
+    // therefore last until it returns. Here the capture is a long string, and std::function keeps it on the heap.
     std::string seen;
     const std::string kText(1000, 'x');
 
@@ -621,7 +624,8 @@ void TestDebugPipeWhileCommandWaits()
     }
 
     // Three bytes of debug output wait in entry 0's ring. Entry 5 is the ring from the ARM11 side to pipe 2, and a
-    // write to it leaves its number, 5, in command register 2, which the firmware answers with the debug notification.
+    // write to it leaves its number, 5, in command register 2. The firmware answers that number with the debug
+    // notification.
     SetEntry(dsp, 0, 0x2200, 16, 2, 5);
     SetEntry(dsp, 5, 0x2300, 16, 0, 0);
     const uint8_t kByte[1] = {0xC0};
@@ -671,7 +675,7 @@ void TestUnload()
     XSFLIB_CHECK(dsp.Cycles() == before + 100000);
 
     // Leave the reply half of a notification pending. The next unload takes that unread data in reply register 2 as the
-    // firmware's answer, so it runs nothing.
+    // firmware's answer and runs nothing.
     StartNotifyFirmware(dsp);
     Fire(dsp, 2, 4, 0);
     XSFLIB_CHECK(interrupts.empty());
@@ -682,7 +686,7 @@ void TestUnload()
     XSFLIB_CHECK(dsp.Cycles() == before);
 
     // After another start, the semaphore half alone completes the pending notification. Reply register 2 still holds
-    // 0x1000 from the start, which names pipe 0x800, so that's an error.
+    // 0x1000 from the start. That value names pipe 0x800 and is an error.
     StartNotifyFirmware(dsp);
 
     XSFLIB_CHECK(ThrowsDspError([&] { Fire(dsp, -1, 0, 0x8000); }));
@@ -711,7 +715,7 @@ void TestStartTimeouts()
         XSFLIB_CHECK(ThrowsDspError([&] { dsp.LoadComponent(MakeImage(c.program, c.flags)); }));
         XSFLIB_CHECK(dsp.Cycles() == kWaitLimitCycles);
 
-        // The firmware never counted as running, so Run only counts the cycles.
+        // The firmware never counted as running. Run therefore only counts the cycles.
         dsp.Run(1000);
         XSFLIB_CHECK(dsp.Cycles() == kWaitLimitCycles + 1000);
     }

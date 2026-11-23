@@ -43,8 +43,8 @@ constexpr uint32_t kCfgReset = 1u << 29;          // 0x18eecc
 constexpr uint32_t kCfgEmbeddedBuffer = 1u << 30; // 0x1932f0
 
 // 1/32728 (code.bin 0x1863b0, 0x3800280d): the DSP output rate used to turn pitch into a rate multiplier. With these
-// exact bits, a 32728 Hz wave at unison gets a rate of exactly 1.0, which the firmware's polyphase interpolator passes
-// through unfiltered. A rounded decimal literal would give 1.0000007, and audibly duller treble.
+// exact bits, a 32728 Hz wave at unison gets a rate of exactly 1.0. The firmware's polyphase interpolator passes that
+// rate through unfiltered. A rounded decimal literal would give 1.0000007, and audibly duller treble.
 const float kInvDspRate = std::bit_cast<float>(0x3800280du);
 
 // Polyphase sub-mode threshold (code.bin 0x1863b8).
@@ -68,8 +68,7 @@ constexpr uint32_t kBusCycles = 2200;
 void Voice::Reset()
 {
     // 0x191404 -> 0x1934b0. The VoiceImpl keeps its sync counter and its pending dirty bits (notably 0x8000 from the
-    // Stop that freed it), which is what lets the next ApplySyncCount resynchronise the DSP's status reports with this
-    // voice.
+    // Stop that freed it). They let the next ApplySyncCount resynchronise the DSP's status reports with this voice.
     state_ = VoiceState::kPause;
     enabled_on_dsp_ = false;
     format_flags_ = static_cast<uint16_t>((format_flags_ & ~0x7fu) | 5u); // mono PCM16

@@ -364,7 +364,7 @@ void Delay::Process(const Channels& channels, std::size_t samples)
         throw std::invalid_argument("a frame of another length");
     }
 
-    // The frame's place in each line. After a shorter delay, a place past the new length still lies in the line.
+    // The frame's place in each line. After a shorter delay, a place past the new length still is in the line.
     const std::size_t at = std::size_t{frame_index_} * samples;
     for (std::size_t c = 0; c < channel_count_; c++)
     {

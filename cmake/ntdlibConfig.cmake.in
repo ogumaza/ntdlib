@@ -11,9 +11,9 @@ include(CMakeFindDependencyMacro)
 set(NTDLIB_DISC @NTDLIB_DISC@)
 set(NTDLIB_SEQUENCE_EXPORT @NTDLIB_SEQUENCE_EXPORT@)
 
-find_dependency(xsflib 1.10)
+find_dependency(xsflib 1.12)
 if (NTDLIB_SEQUENCE_EXPORT)
-    find_dependency(seqlib 1.4)
+    find_dependency(seqlib 1.5)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/ntdlibTargets.cmake)

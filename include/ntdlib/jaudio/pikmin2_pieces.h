@@ -106,8 +106,8 @@ inline constexpr auto kPikmin2Pieces = []
     constexpr uint8_t kFindWaves = Pikmin2Piece::kFindWaves;
     constexpr Pikmin2Piece::SoundInfo kAreaInfo = Pikmin2Piece::kAreaInfo;
 
-    // The sound information of the pieces that don't take initMainBgm's: initBossBgm's, initAdditionalBgm's and the
-    // key's music's.
+    // The sound information that initBossBgm, initAdditionalBgm and the key's music give their pieces, in place of
+    // initMainBgm's.
     constexpr Pikmin2Piece::SoundInfo kBossInfo = {0, 127u << 24 | 2u << 16, 0x3f800000, 40u << 24};
     constexpr Pikmin2Piece::SoundInfo kExtraInfo = {0, 127u << 24 | 1u << 16, 0x3f800000, 50u << 24};
     constexpr Pikmin2Piece::SoundInfo kKeyInfo = {0x1f00, 127u << 24 | 4u << 16, 0x3f800000, 35u << 24};

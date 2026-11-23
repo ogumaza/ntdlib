@@ -522,7 +522,7 @@ void FirmwareModel::RunTo(uint64_t end)
     s.time = end;
 }
 
-// The FIFO sends a stereo sample. A word that it lacks goes out as 0. The pop that empties it starts the refill, once
+// The FIFO sends a stereo sample. A missing word goes out as 0. The pop that empties it starts the refill, once
 // the firmware has set its handler. Teakra doesn't pass on a sample without a word either.
 void FirmwareModel::Emit(uint64_t time)
 {

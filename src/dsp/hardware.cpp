@@ -295,7 +295,7 @@ template <typename Memory>
 uint8_t* Dsp<Memory>::MainMemoryRange(uint32_t address, uint32_t size)
 {
     // The address is masked to 30 bits. On the Wii U, a register gives its top three bits instead. The whole range must
-    // lie in main memory: in MEM1, or in MEM2 on the Wii. Otherwise the result is nullptr.
+    // be in main memory: in MEM1, or in MEM2 on the Wii. Otherwise the result is nullptr.
     if constexpr (Memory::kAddressExtensions)
     {
         return memory_->At((uint32_t{hardware_[kDmaExtension]} & 7) << 29 | (address & 0x1fffffff),

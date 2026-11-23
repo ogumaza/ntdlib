@@ -708,7 +708,7 @@ uint32_t CodeOf(const Command& command)
     return *code;
 }
 
-// Appends the bytes of `command`, whose target lies at byte offset `target`.
+// Appends the bytes of `command`, whose target is at byte offset `target`.
 void AppendCommand(std::vector<uint8_t>& out, const Command& command, uint32_t target, const Grammar& grammar)
 {
     if (command.kind == Kind::kData)
@@ -828,7 +828,7 @@ bool HoldsVariableLength(const Command& command, const Grammar& grammar)
     return command.value.source == Source::kValue && WidthOf(CodeOf(command), grammar) == Width::kVariableLength;
 }
 
-// Whether the player reads the bytes from `start` to the end of `bytes` as `command`, whose target lies at byte offset
+// Whether the player reads the bytes from `start` to the end of `bytes` as `command`, whose target is at byte offset
 // `target`. The command's values are the console's.
 bool ReadsBack(std::span<const uint8_t> bytes, std::size_t start, const Command& command, uint32_t target,
                const Grammar& grammar)
@@ -897,18 +897,8 @@ Decoded DecodeSequence(std::span<const uint8_t> data, std::span<const LabelOffse
     bool opaque =
         !commands::detail::Follow(data, std::vector<uint32_t>(cuts.begin(), cuts.end()), found, read_at, falls_through);
 
-    for (const auto& [at, read] : found.reads)
-    {
-        if (commands::HasTarget(read.command.kind))
-        {
-            cuts.insert(read.command.target);
-        }
-    }
-    const auto inside = [&](uint32_t cut)
-    {
-        return cut < data.size() && found.cover[cut] == Cover::kInside;
-    };
-    opaque = opaque || std::any_of(cuts.begin(), cuts.end(), inside);
+    commands::detail::AddTargets(found, cuts);
+    opaque = opaque || commands::detail::AnyCutInside(data, found, cuts);
 
     // Each target is a byte offset of the bytecode.
     Decoded decoded;

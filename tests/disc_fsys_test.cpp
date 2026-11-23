@@ -80,7 +80,7 @@ void TestCopies()
     const Bytes again = Lzss(6, Join({0x07}, {Text("abc"), Copy(kFirstPlace, 3)}));
     // A byte, then a copy that starts at it. Each byte that the copy writes is the next byte that it reads.
     const Bytes repeat = Lzss(7, Join({0x01}, {Text("x"), Copy(kFirstPlace, 6)}));
-    // A copy from the window's first bytes, which start as zeros, then a byte.
+    // A copy from the first bytes of the window (zeros at the start), then a byte.
     const Bytes zeros = Lzss(6, Join({0x02}, {Copy(0, 5), Text("z")}));
     // Twenty bytes. The 19th and the 20th go to places 0 and 1 of the window. The copy reads the 17th to the 20th, from
     // place 0xffe on, across the window's end.

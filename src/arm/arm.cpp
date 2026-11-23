@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "arm/cpu_impl.h"
+#include "ntdlib/arm/branch.h"
 
 namespace ntdlib::arm::detail
 {
@@ -40,12 +41,6 @@ bool Bit(uint32_t op, int bit)
     return ((op >> bit) & 1) != 0;
 }
 
-// An 8-bit immediate rotated right by twice the 4-bit rotation above it.
-uint32_t RotatedImmediate(uint32_t op)
-{
-    return std::rotr(op & 0xFF, static_cast<int>((op >> 7) & 0x1E));
-}
-
 void UndefinedInstruction(Core& core, uint32_t /*op*/)
 {
     core.Undefined();
@@ -73,7 +68,7 @@ void DataProcessing(Core& core, uint32_t op)
     if constexpr (kForm == Operand2::kImmediate)
     {
         first = core.regs_[Rn(op)];
-        second = RotatedImmediate(op);
+        second = ExpandImmediate(op);
         if ((op & 0xF00) != 0)
         {
             carry = second >> 31;
@@ -203,7 +198,7 @@ void MoveFromPsr(Core& core, uint32_t op)
 template <bool kSpsr, bool kImmediate>
 void MoveToPsr(Core& core, uint32_t op)
 {
-    const uint32_t value = kImmediate ? RotatedImmediate(op) : core.regs_[Rm(op)];
+    const uint32_t value = kImmediate ? ExpandImmediate(op) : core.regs_[Rm(op)];
     uint32_t mask = 0;
     for (int field = 0; field < 4; ++field)
     {
@@ -264,13 +259,14 @@ void CountLeadingZeros(Core& core, uint32_t op)
 // Limits a sum to the signed 32-bit range, and sets the Q flag when it had to.
 uint32_t Saturate(Core& core, int64_t value)
 {
-    if (value > INT32_MAX || value < INT32_MIN)
+    bool saturated = false;
+    const int32_t result = SignedSaturate(value, 32, saturated);
+    if (saturated)
     {
         core.cpsr_ |= psr::kQ;
-        return value > INT32_MAX ? 0x7FFFFFFF : 0x80000000;
     }
 
-    return static_cast<uint32_t>(value);
+    return static_cast<uint32_t>(result);
 }
 
 // ARMv5TE: QADD, QSUB, QDADD and QDSUB. The doubling saturates by itself before the sum.
@@ -305,11 +301,6 @@ void BreakpointInstruction(Core& core, uint32_t /*op*/)
     core.Breakpoint();
 }
 
-int32_t Half(uint32_t value, bool top)
-{
-    return static_cast<int16_t>(top ? value >> 16 : value);
-}
-
 // ARMv5TE: SMLAxy, SMLAWy, SMULWy, SMLALxy and SMULxy. Only the 32-bit accumulations set the Q flag, and none of
 // them stops at the limits.
 void SignedHalfwordMultiply(Core& core, uint32_t op)
@@ -323,13 +314,13 @@ void SignedHalfwordMultiply(Core& core, uint32_t op)
     const int rd = Rn(op);
     const int rn = Rd(op);
     const uint32_t m = core.regs_[Rm(op)];
-    const int32_t s = Half(core.regs_[Rs(op)], Bit(op, 6));
+    const int32_t s = SignedHalf(core.regs_[Rs(op)], Bit(op, 6));
     const bool x = Bit(op, 5);
     switch ((op >> 21) & 3)
     {
     case 0:
         {
-            const int64_t sum = static_cast<int64_t>(Half(m, x) * s) + static_cast<int32_t>(core.regs_[rn]);
+            const int64_t sum = static_cast<int64_t>(SignedHalf(m, x) * s) + static_cast<int32_t>(core.regs_[rn]);
             Saturate(core, sum);
             core.regs_[rd] = static_cast<uint32_t>(sum);
             break;
@@ -353,14 +344,14 @@ void SignedHalfwordMultiply(Core& core, uint32_t op)
     case 2:
         {
             const uint64_t accumulator = (static_cast<uint64_t>(core.regs_[rd]) << 32) | core.regs_[rn];
-            const uint64_t sum = accumulator + static_cast<uint64_t>(static_cast<int64_t>(Half(m, x) * s));
+            const uint64_t sum = accumulator + static_cast<uint64_t>(static_cast<int64_t>(SignedHalf(m, x) * s));
             core.regs_[rn] = static_cast<uint32_t>(sum);
             core.regs_[rd] = static_cast<uint32_t>(sum >> 32);
             break;
         }
 
     default:
-        core.regs_[rd] = static_cast<uint32_t>(Half(m, x) * s);
+        core.regs_[rd] = static_cast<uint32_t>(SignedHalf(m, x) * s);
         break;
     }
 }
@@ -696,7 +687,7 @@ void BlockTransfer(Core& core, uint32_t op)
 template <bool kLink>
 void Branch(Core& core, uint32_t op)
 {
-    const uint32_t offset = static_cast<uint32_t>(static_cast<int32_t>(op << 8) >> 6);
+    const auto offset = static_cast<uint32_t>(BranchOffset(op));
     if constexpr (kLink)
     {
         core.regs_[14] = core.regs_[15] - 4;
@@ -934,10 +925,10 @@ void RunUnconditional(Core& core, uint32_t op)
         return;
     }
 
-    // BLX with an immediate: bit 24 adds a halfword to the target, and the target runs in Thumb state.
-    if ((op & 0x0E000000) == 0x0A000000)
+    // BLX with an immediate: the target runs in Thumb state.
+    if (IsBlxImmediate(op))
     {
-        const uint32_t offset = static_cast<uint32_t>(static_cast<int32_t>(op << 8) >> 6) | ((op >> 23) & 2);
+        const auto offset = static_cast<uint32_t>(BlxOffset(op));
         core.regs_[14] = core.regs_[15] - 4;
         core.BranchExchange((core.regs_[15] + offset) | 1);
         return;

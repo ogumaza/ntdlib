@@ -7,7 +7,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <ostream>
 #include <span>
 #include <string>
 #include <vector>
@@ -16,7 +15,6 @@
 #include "xsflib/sha256.h"
 #include "xsflib/testing/check.h"
 
-#include "ntdlib/cafe/axfx/axfx.h"
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/cafe/snd/nintendo_land_effects.h"
 

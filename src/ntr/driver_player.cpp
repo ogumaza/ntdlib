@@ -11,6 +11,7 @@
 #include "xsflib/bytes.h"
 
 #include "ntdlib/ntr/arm7.h"
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
@@ -21,16 +22,15 @@ namespace ntdlib::ntr
 namespace
 {
 
-constexpr uint32_t kMainMemory = 0x02000000;
-
-// The ARM7's part of main memory starts at its binary's address when the binary lies in main memory. Otherwise the
-// ARM7 keeps its data from 0x02380000 on.
+// The ARM7's part of main memory starts at its binary's address when the binary is in main memory. Otherwise the ARM7
+// keeps its data from 0x02380000 on.
 constexpr uint32_t kArm7MainMemory = 0x02380000;
 
-// The IPC's tags that the start-up and the player use, and the word of the ARM7's tags whose handlers are set.
+// The IPC's tags that the start-up and the player use, and the word of the ARM7's tags whose handlers are set, in
+// bytes from the end of main memory (0x027FFF8C).
 constexpr uint32_t kTagSound = 7;
 constexpr uint32_t kTagCartridgeSlot = 13;
-constexpr uint32_t kArm7ReadyTags = 0x027FFF8C;
+constexpr uint32_t kArm7ReadyTags = 0x074;
 
 // The ARM9's message to the ARM7's GBA slot library at start-up: subcommand 1, with the address of a copy of the slot's
 // header in units of 32 bytes from main memory's start. The ARM7 checks the logo in it. The player gives it a header of
@@ -48,6 +48,18 @@ constexpr uint64_t kStartLimit = 2 * kSystemClockHz;
 // OS's ticks later. A tick is 64 cycles.
 constexpr uint64_t kFirstFrameDelay = 0x10000 * 64;
 
+// `rom`, unless it runs only on a DSi. Arm7System alone doesn't start a DSi's ARM7 binary: KQ9E's jumps to 0 from
+// 0x037C0008 within 0.12 s, with or without its ARM7i binary in memory.
+const Rom& DsRom(const Rom& rom)
+{
+    if (RunsInDsiMode(rom.Header()))
+    {
+        throw std::runtime_error("the driver player can't run a game that runs only on a DSi");
+    }
+
+    return rom;
+}
+
 uint32_t PxiWord(uint32_t tag, uint32_t data)
 {
     return tag | data << 6;
@@ -56,7 +68,7 @@ uint32_t PxiWord(uint32_t tag, uint32_t data)
 } // namespace
 
 DriverPlayer::DriverPlayer(const Rom& rom)
-    : system_(rom),
+    : system_(DsRom(rom)),
       files_end_(rom.Header().arm7.ram_address >> 24 == 0x02 ? std::min(rom.Header().arm7.ram_address, kArm7MainMemory)
                                                              : kArm7MainMemory)
 {
@@ -70,8 +82,7 @@ DriverPlayer::DriverPlayer(const Rom& rom)
     const auto ready = [this]
     {
         const std::span<const uint8_t> memory = system_.MainMemory();
-        const uint32_t at = (kArm7ReadyTags - kMainMemory) & static_cast<uint32_t>(memory.size() - 1);
-        return xsflib::LoadLe32(&memory[at]);
+        return xsflib::LoadLe32(&memory[memory.size() - kArm7ReadyTags]);
     };
     std::vector<SoundOutput> out;
     bool slot_answered = false;
@@ -185,6 +196,7 @@ DriverFrame DriverPlayer::NextFrame(std::vector<SoundOutput>& out)
     clocks_.clear();
     next_frame_ += snd::kFrameClocks;
     frames_++;
+
     return frame;
 }
 

@@ -31,10 +31,13 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
 
@@ -74,19 +77,30 @@ class Player
 {
 public:
     // Where the player keeps the ARM9's data in main memory: the shared work, then the banks' samples.
-    static constexpr uint32_t kMainMemory = 0x02000000;
-    static constexpr uint32_t kMainMemorySize = 0x400000;
+    static constexpr uint32_t kMainMemory = ntr::kMainMemory;
+    static constexpr uint32_t kMainMemorySize = ntr::kMainMemorySize;
     static constexpr uint32_t kSharedWork = 0x02001000;
     static constexpr uint32_t kSamples = 0x02010000;
 
     // The time between DSE's ticks, in system clocks: the alarm's period for the tick of 10 ms, and a video frame (263
     // lines of 355 dots, 6 system clocks each) for the tick of 16.715 ms.
     static constexpr uint64_t kTickClocks = 5236 * 64;
-    static constexpr uint64_t kVideoFrameClocks = 263 * 355 * 6;
+    static constexpr uint64_t kVideoFrameClocks = ntr::kFrameCycles;
 
     // The time between DSE's ticks for a tick of `tick_microseconds`, as PlayerOptions gives it. Throws
     // std::invalid_argument for a tick that the driver's settings can't give.
-    static uint64_t TickClocks(int tick_microseconds);
+    static constexpr uint64_t TickClocks(int tick_microseconds)
+    {
+        switch (tick_microseconds)
+        {
+        case Driver::kTickMicroseconds:
+            return kTickClocks;
+        case Driver::kSlowTickMicroseconds:
+            return kVideoFrameClocks;
+        default:
+            throw std::invalid_argument("DSE's driver has no tick of " + std::to_string(tick_microseconds) + " us");
+        }
+    }
 
     // The tracks of the followed sequence that a host can mute and meter.
     static constexpr int kHostTracks = 32;
@@ -114,8 +128,9 @@ public:
 
     // Starts the song of `files`, or its sound effect, and follows its sequence (Driver::Follow). A player that plays
     // no sound effect gives one the first sequence of the pool. Returns false when DSE refuses the sound effect. A
-    // start of a song stops the song that plays. Throws std::invalid_argument for files with neither.
-    bool Start(const SequenceFiles& files);
+    // start of a song stops the song that plays. A song starts with `song_start` (Driver::PlaySong), such as a game's
+    // level (game_starts.h). Throws std::invalid_argument for files with neither.
+    bool Start(const SequenceFiles& files, const StartParameters& song_start = {});
 
     // DSE's driver, to play and stop songs and sound effects, and for a performer's hooks and views.
     dse::Driver& Driver();
@@ -255,5 +270,12 @@ private:
     // The samples of the last snapshot, while no load has changed them.
     mutable std::shared_ptr<const std::vector<uint8_t>> saved_samples_;
 };
+
+// The milliseconds between DSE's ticks for a tick of `tick_microseconds` (Player::TickClocks). Throws
+// std::invalid_argument for a tick that the driver's settings can't give.
+constexpr double TickMs(int tick_microseconds)
+{
+    return 1000.0 * static_cast<double>(Player::TickClocks(tick_microseconds)) / ntr::kSystemClockHz;
+}
 
 } // namespace ntdlib::dse

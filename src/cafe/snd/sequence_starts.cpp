@@ -72,7 +72,7 @@ constexpr std::array<SequenceArrangement, 3> kLiftSpeeds = {
     {{"_0_20", {Var(0, 20)}}, {"_0_100", {Var(0, 100)}}, {"_0_200", {Var(0, 200)}}}};
 constexpr std::array<SequenceArrangement, 2> kSpinAttack = {{{"_0_4", {Var(0, 4)}}, {"_2_-2", {Var(2, -2)}}}};
 
-// Animal Crossing: amiibo Festival (USA), bbq.rpx. Each scene starts with resetScene (0x020F13A8), which sets every
+// Animal Crossing: amiibo Festival (USA), bbq.rpx. Each scene starts with resetScene (0x020F13A8). It sets every
 // global variable to -1 (0x020F1574 to 0x020F158C). The scene's entry in content/sound/common/settingpreset.bin then
 // sets some. The game's reader of that file (0x0210D320) calls writeGlobalVariable, the game's only caller. Its op 0x35
 // adds a track's variable for one sequence (addLocalVariableSet, 0x0210D37C). setLocalVariableSet writes it once the
@@ -318,7 +318,7 @@ constexpr std::array<Sound, 6> kNewSuperMarioBrosUSounds = {{
 // In the archive, SEQ_SE_NMG431_TARU_HIT_TARU draws a transpose from 0 to 2 that differs from the last one and keeps it
 // in global variable 28. SEQ_SE_NMG431_TARU_HIT_TARU_RM plays at that transpose and sets no variable. The hits on wood
 // do the same with globals 25 and 27. The copies get an arrangement at the lowest transpose. 64 sequences check that
-// the variable lies in a range, 0 to 127 for all but one, and map it onto their volume, pitch bend or tempo. Outside
+// the variable is in a range, 0 to 127 for all but one, and map it onto their volume, pitch bend or tempo. Outside
 // the range, as at -1, each plays its defaults. No value in the range plays those. Each starts at -1 and gets
 // arrangements at the least value that sounds, the middle and the top. The game's code computes the value as it plays.
 // The game's code for those values hasn't been read, apart from the two balls of npg001.rpl's dice (0 to 127,

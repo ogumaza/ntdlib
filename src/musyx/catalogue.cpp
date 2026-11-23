@@ -23,6 +23,7 @@
 #include "ntdlib/disc/game.h"
 #include "ntdlib/dol.h"
 #include "ntdlib/musyx/project.h"
+#include "ntdlib/zero_padded.h"
 
 namespace ntdlib::musyx
 {
@@ -42,12 +43,6 @@ std::span<const uint8_t> Part(std::span<const uint8_t> data, std::size_t offset,
 std::string TextBeforeZero(std::span<const uint8_t> bytes)
 {
     return std::string(bytes.begin(), std::find(bytes.begin(), bytes.end(), uint8_t{0}));
-}
-
-std::string Stem(const std::string& path)
-{
-    const std::string file = path.substr(path.find_last_of('/') + 1);
-    return file.substr(0, file.find_last_of('.'));
 }
 
 uint16_t FirstGroupId(std::span<const uint8_t> project)
@@ -171,9 +166,8 @@ Catalogue ReadCatalogue(CatalogueLayout layout, const disc::GameFiles& game, con
 std::string EffectName(const std::string& prefix, uint16_t id)
 {
     constexpr std::size_t kDigits = 4;
-    const std::string number = std::to_string(id);
 
-    return prefix + "-" + std::string(kDigits - std::min(number.size(), kDigits), '0') + number;
+    return prefix + "-" + ZeroPadded(id, kDigits);
 }
 
 std::vector<TableSound> ReadSoundTable(std::span<const uint8_t> module, const std::string& name, uint32_t sounds,

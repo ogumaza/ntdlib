@@ -3,14 +3,13 @@
 // The levels of JAudio1's tracks (see track.cpp): the timed levels' steps, the updates of the levels, filters and tempo
 // that the tracks give their channels.
 
-#include "ntdlib/jaudio1/track.h"
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
 #include "jaudio1/track_internal.h"
 #include "ntdlib/jaudio1/calc.h"
+#include "ntdlib/jaudio1/track.h"
 
 namespace ntdlib::jaudio1
 {
@@ -192,8 +191,8 @@ void StoreLevels(Track& track, const ChannelUpdater* from, uint32_t flags, const
 
 void Tracks::UpdateTimedParam(Track& track)
 {
-    // The timed part of mainProc: each level that moves takes a step. A level's flag asks for an update, except for
-    // the oscillators' 5 settings from index 6, which go straight into the track's settings. Index 11, the second
+    // The timed part of mainProc: each level that moves takes a step. A level's flag asks for an update, except for the
+    // oscillators' 5 settings from index 6. Those settings go straight into the track's settings. Index 11, the second
     // oscillator's vertex, sets its flag and changes nothing.
     for (std::size_t i = 0; i < track.timed.size(); i++)
     {

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// The values of the tables of a sound archive of the Wii (RSAR) that an editor changes in place. Each lies at a fixed
+// The values of the tables of a sound archive of the Wii (RSAR) that an editor changes in place. Each is at a fixed
 // place in its entry of the INFO block, where SoundArchive reads it (ntdlib/rsar/formats.h). A sound's entry holds its
-// player at 8 bytes in, its volume at 0x14 and its player priority at 0x15. From version 1.1 on, its kind lies at 0x16.
-// From version 1.2 on, its pan mode and pan curve lie at 0x28 and 0x29. A reference at 0x18 leads to its details. A
+// player at 8 bytes in, its volume at 0x14 and its player priority at 0x15. From version 1.1 on, its kind is at 0x16.
+// From version 1.2 on, its pan mode and pan curve are at 0x28 and 0x29. A reference at 0x18 leads to its details. A
 // sequence sound's details hold its start, its bank's index in the bank table and the tracks that it allocates, a word
 // each. Its channel priority follows, and from version 1.3 on its release priority fix. A player's entry holds the
 // number of sounds that it plays at once at 4 bytes in. A new value takes the place of the old one, and nothing moves.
@@ -36,8 +36,8 @@ void WriteTableValues(std::span<uint8_t> archive, std::span<const SoundInfo> sou
                       std::span<const PlayerInfo> players);
 
 // Writes the size of each file of `sizes`, a file's ID and its size, into the file's entry in `archive`. Each file has
-// to lie beside the archive. Throws xsflib::FormatError if the file table can't be read, and std::invalid_argument for
-// a file that the table lacks or that doesn't lie beside the archive.
+// to be beside the archive. Throws xsflib::FormatError if the file table can't be read, and std::invalid_argument for
+// a file that the table doesn't list or that isn't beside the archive.
 void WriteExternalFileSizes(std::span<uint8_t> archive, std::span<const std::pair<uint32_t, uint32_t>> sizes);
 
 } // namespace ntdlib::rsar

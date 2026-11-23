@@ -7,6 +7,7 @@
 
 #include "xsflib/bytes.h"
 
+#include "ntdlib/rounding.h"
 #include "ntr_archive_player_test_util.h"
 
 namespace ntr_archive_player_tests
@@ -28,7 +29,7 @@ void TestStartCommands()
     Bytes memory(0x40000, 0);
     sdat::SoundHeap heap(memory, 0x02000000, 0x02010000, 0x02040000);
     const uint32_t bank = 0x02010000;
-    const uint32_t sequence = Align32(Align32(bank + size(2)) + size(3));
+    const uint32_t sequence = ntdlib::AlignUp(ntdlib::AlignUp(bank + size(2), 32) + size(3), 32);
     XSFLIB_CHECK(ntr::StartCommands(heap, archive, {0}) ==
                  (snd::CommandList{{snd::CommandId::kPrepareSequence, {0, sequence + 0x1C, 0, bank}},
                                    {snd::CommandId::kAllocatableChannels, {0, 0xFFFF, 0x0FF0, 0}},
@@ -41,7 +42,7 @@ void TestStartCommands()
     Bytes other(0x40000, 0);
     sdat::SoundHeap other_heap(other, 0x02000000, 0x02010000, 0x02040000);
     const uint32_t sequences = 0x02010000;
-    const uint32_t other_bank = Align32(sequences + size(1));
+    const uint32_t other_bank = ntdlib::AlignUp(sequences + size(1), 32);
     const uint32_t data = sequences + sdat::SequenceArchive::Parse(archive.File(1)).data_offset;
     ntr::Variables variables;
     variables.local[3] = 5;

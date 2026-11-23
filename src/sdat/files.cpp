@@ -14,12 +14,12 @@
 
 #include "xsflib/bytes.h"
 
+#include "common/le_writer.h"
 #include "ntdlib/ntr/sound.h"
 #include "ntdlib/rounding.h"
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/wave/encode_ima.h"
 #include "ntdlib/wave/pcm.h"
-#include "sdat/writer.h"
 
 namespace ntdlib::sdat
 {
@@ -27,7 +27,7 @@ namespace ntdlib::sdat
 namespace
 {
 
-using detail::Writer;
+using Writer = ntdlib::detail::LeWriter;
 
 constexpr uint16_t kByteOrderMark = 0xFEFF;
 constexpr uint16_t kVersion = 0x0100;
@@ -514,7 +514,7 @@ std::vector<uint8_t> EncodeStream(std::span<const std::vector<int16_t>> channels
     uint32_t start = 0;
     if (loop_start)
     {
-        start = (*loop_start + block_samples - 1) / block_samples * block_samples;
+        start = AlignUp(*loop_start, block_samples);
         total = start + (length - *loop_start);
     }
     if (total > std::numeric_limits<uint32_t>::max())

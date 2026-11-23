@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "ntdlib/jaudio/rarc.h"
@@ -25,10 +26,24 @@ namespace ntdlib::jaudio
 // RARC's files: each sequence's number in the index as its id, its name, its data in `archive`, and the number of the
 // sequence whose data the game reads (ArchiveFile::data_id). The names are cut to 13 characters, with or without their
 // extension. A little-endian index has the layout of the Switch's release of Pikmin. Throws FormatError if the index
-// is damaged, if a sequence lies outside `archive`, or if a sequence's chain of shared data loops or names a sequence
+// is damaged, if a sequence is outside `archive`, or if a sequence's chain of shared data loops or names a sequence
 // past the index's end.
 std::vector<ArchiveFile> ReadBarcSequenceFiles(std::span<const uint8_t> index, std::span<const uint8_t> archive,
                                                bool big_endian = true);
+
+// An entry of a sequence index: the sequence's name, in up to 14 bytes, the number of the sequence whose data it shares
+// (0xffff for none), and the sequence's offset and size in the file of sequences.
+struct BarcEntry
+{
+    std::string name;
+    uint16_t shares = 0xffff;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+};
+
+// The entries of the sequence index at the start of `index`, in their order, read without the file of sequences. A
+// little-endian index has the layout of the Switch's release of Pikmin. Throws FormatError if the index is damaged.
+std::vector<BarcEntry> ReadBarcEntries(std::span<const uint8_t> index, bool big_endian = true);
 
 // The offset of the first sequence index in `data`, such as a game's executable: a "BARC" on a 4-byte boundary whose
 // count of sequences, in the byte order that `big_endian` gives, is at most 0x10000 and whose entries fit in `data`.

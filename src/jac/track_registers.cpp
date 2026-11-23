@@ -3,12 +3,11 @@
 // The tracks' reads of their sequences, their registers, the conditions, the timing, the ports and the outer
 // parameters (see track.cpp).
 
-#include "ntdlib/jac/track.h"
-
 #include <cstddef>
 #include <cstdint>
 
 #include "jac/track_internal.h"
+#include "ntdlib/jac/track.h"
 #include "ntdlib/jaudio1/calc.h"
 
 namespace ntdlib::jac
@@ -953,7 +952,7 @@ void Tracks::OffExtSwitchD(uint32_t outer, uint16_t switches)
 
 uint32_t Tracks::SequenceOuter(const Sequence* sequence, uint32_t offset)
 {
-    // Cmd_EXTSet's buffer lies in the sequence's data. The game reads its levels from the data's bytes until the code
+    // Cmd_EXTSet's buffer is in the sequence's data. The game reads its levels from the data's bytes until the code
     // above the sequences sets them. The model starts them at 0.
     const auto [entry, added] = sequence_outer_.try_emplace({sequence, offset}, 0);
     if (added)

@@ -4,13 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "xsflib/binary.h"
 
+#include "common/magic.h"
 #include "ntdlib/rsar/formats.h"
 #include "rsar/file_blocks.h"
 #include "sar/file_bytes.h"
@@ -27,13 +27,14 @@ using detail::CloseFile;
 using detail::Header;
 using detail::kHeaderSize;
 using detail::OpenBlock;
+using ntdlib::detail::HasMagic;
 using sar::detail::Out;
 
 } // namespace
 
 SequenceFile SequenceFile::Read(std::span<const uint8_t> file)
 {
-    if (file.size() < kHeaderSize || std::memcmp(file.data(), "RSEQ", 4) != 0)
+    if (file.size() < kHeaderSize || !HasMagic(file, "RSEQ"))
     {
         throw xsflib::FormatError("not a sequence file of the Wii (RSEQ)");
     }

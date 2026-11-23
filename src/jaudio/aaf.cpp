@@ -474,6 +474,17 @@ std::vector<Bank> ReadAafBanks(std::span<const uint8_t> aaf, std::vector<std::st
     return banks;
 }
 
+std::vector<AafBankBlock> AafBankBlocks(std::span<const uint8_t> aaf)
+{
+    std::vector<AafBankBlock> blocks;
+    for (const ListedBlock& block : FindBlocks(AafReader(aaf)).banks)
+    {
+        blocks.push_back({block.offset, block.value});
+    }
+
+    return blocks;
+}
+
 std::vector<std::string> AafWaveArchiveNames(std::span<const uint8_t> aaf)
 {
     return ArchiveNames(aaf, false);
@@ -508,6 +519,17 @@ std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn, bool big_endia
     }
 
     return sounds;
+}
+
+std::map<uint32_t, std::string> ReadAsnNames(std::span<const uint8_t> asn, bool big_endian)
+{
+    std::map<uint32_t, std::string> names;
+    for (AsnSound& sound : ReadAsnSounds(asn, big_endian))
+    {
+        names.try_emplace(AsnNameKey(sound.id), std::move(sound.name));
+    }
+
+    return names;
 }
 
 } // namespace ntdlib::jaudio

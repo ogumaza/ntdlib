@@ -4,9 +4,9 @@
 // game's level, the tracking of the key, the keys that each preset plays, and the choice between the fitted low-pass
 // and the resampling low-pass (AddZoneLowPass).
 //
-// The expected cutoffs come from the filters' exact responses to a sine. AX's one-pole is a0 / (1 - b0 z^-1), with
-// a0 and b0 from AXGetLpfCoefs or AXComputeLpfCoefs. FluidSynth's low-pass is the cookbook two-pole at 44.1 kHz with
-// Q = 10^(-3.01 / 20). The cutoff at which the two-pole passes as much of a sine at f as the one-pole at fc lies near
+// The expected cutoffs come from the filters' exact responses to a sine. AX's one-pole is a0 / (1 - b0 z^-1), with a0
+// and b0 from AXGetLpfCoefs or AXComputeLpfCoefs. FluidSynth's low-pass is the cookbook two-pole at 44.1 kHz with
+// Q = 10^(-3.01 / 20). The cutoff at which the two-pole passes as much of a sine at f as the one-pole at fc is near
 // sqrt(fc f).
 
 #include <algorithm>
@@ -158,8 +158,8 @@ void TestFitTracksTheKeyWhereOneCutoffMisses()
     XSFLIB_CHECK(worst < 0.5);
 }
 
-// A sine at 100 Hz lies far below AX's 7025 Hz (argument 50). No cutoff in FluidSynth's range moves its level by
-// 0.01 dB in 100 cents. The zone keeps the preset's cutoff.
+// A sine at 100 Hz is far below AX's 7025 Hz (argument 50). No cutoff in FluidSynth's range moves its level by 0.01 dB
+// in 100 cents. The zone keeps the preset's cutoff.
 void TestFitLeavesAWaveThatTheCutoffDoesntMove()
 {
     const WaveSpectrum spectrum = MeasureSpectrum(Sine(100.0, 3200));

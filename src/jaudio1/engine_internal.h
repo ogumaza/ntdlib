@@ -68,7 +68,7 @@ constexpr float kSurroundCenter = 30.0f;
 constexpr uint32_t kDistanceTime = 5;
 
 // A level that moves to a target over a number of the game's frames (JAInter::MoveParaSet). A level that takes its
-// value at once keeps a move in progress: the move then carries it away again until the move's end.
+// value at once keeps a move in progress: the move then changes it again until the move's end.
 struct MoveLevel
 {
     float value = 1.0f;

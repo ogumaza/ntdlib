@@ -16,6 +16,7 @@
 
 #include "ntdlib/jaudio/bank.h"
 #include "ntdlib/jaudio/calc.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::jaudio2
 {
@@ -39,7 +40,7 @@ struct Chunk
 
 Chunk FindChunk(const xsflib::Reader& r, uint32_t bank_size, uint32_t tag)
 {
-    for (std::size_t at = 0x20; at < bank_size; at = (at + r.U32(at + 4) + 0xb) & ~std::size_t{3})
+    for (std::size_t at = 0x20; at < bank_size; at = AlignUp(at + 8 + r.U32(at + 4), 4))
     {
         if (r.U32(at) == tag)
         {

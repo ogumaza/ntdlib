@@ -17,6 +17,7 @@
 #include "xsflib/bytes.h"
 
 #include "jaudio/reader.h"
+#include "ntdlib/rounding.h"
 
 namespace ntdlib::jaudio
 {
@@ -275,7 +276,7 @@ std::size_t MissingWaves(const std::vector<WaveSystem>& systems, std::span<const
         return false;
     };
 
-    // Whether the chosen groups lack a wave that a group holds.
+    // Whether a wave that a group holds is missing from the chosen groups.
     const auto lacking = [&](WaveUse wave)
     {
         return in_a_group(wave) && !GroupsHold(systems, groups, wave);
@@ -309,7 +310,7 @@ WaveArchiveLayout LayOutWaveArchives(const std::map<std::string, std::size_t>& s
         if (size != 0)
         {
             layout.addresses[name] = layout.end;
-            layout.end = (layout.end + static_cast<uint32_t>(size) + 31) & ~31u;
+            layout.end = AlignUp(layout.end + static_cast<uint32_t>(size), 32);
         }
     }
 

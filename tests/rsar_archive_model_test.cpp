@@ -48,7 +48,7 @@ Bytes Counting(std::size_t size, uint8_t first)
 }
 
 // A model with a sound of each kind, two banks, two players and a group. File 0 is a sequence file, files 1 and 2
-// are banks with wave data, file 3 is a wave sound file, and file 4 lies beside the archive. The group holds the
+// are banks with wave data, file 3 is a wave sound file, and file 4 is beside the archive. The group holds the
 // sequence file and the first bank. The last group holds the others.
 ArchiveModel Model()
 {

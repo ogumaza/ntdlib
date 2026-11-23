@@ -70,7 +70,7 @@ void TestInflate()
     XSFLIB_CHECK(!ZlibDecompress(kDictionary, sizeof kDictionary, out, err) &&
                  err == "zlib preset dictionaries aren't supported");
 
-    // A last block of type 3, which DEFLATE doesn't define: the bits 1, then 11.
+    // A last block of type 3 (DEFLATE defines no such type): the bits 1, then 11.
     static const uint8_t kType3[] = {0x78, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00};
     XSFLIB_CHECK(!ZlibDecompress(kType3, sizeof kType3, out, err) && err == "invalid DEFLATE block type");
 

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/near.h"
 
 #include "ntdlib/cafe/ax/memory.h"
 #include "ntdlib/cafe/ax/pb.h"
@@ -130,17 +131,12 @@ std::vector<int16_t> Constant(int count)
     return std::vector<int16_t>(static_cast<std::size_t>(count), 10000);
 }
 
-bool Near(double sample, double expected)
-{
-    return std::fabs(sample - expected) <= 0.2;
-}
-
 void TestSine()
 {
-    // The sine plays at a ratio of 2/3, which AX holds as 43690 65536ths. After output n, the voice has stepped
-    // (n + 1) * 43690 / 65536 samples from the place before its first. The 4-tap filters' outputs lie 2 samples behind
-    // the newest, and linear interpolation's 3. Without a conversion, output n lies at 2n / 3. Once the kernel has
-    // passed the start, each output lies within 3 of the sine there: the interpolator's error, at least 75 dB down,
+    // The sine plays at a ratio of 2/3. AX holds the ratio as 43690 65536ths. After output n, the voice has stepped
+    // (n + 1) * 43690 / 65536 samples from the place before its first. The 4-tap filters' outputs are 2 samples behind
+    // the newest, and linear interpolation's 3. Without a conversion, output n is at 2n / 3. Once the kernel has
+    // passed the start, each output is within 3 of the sine there: the interpolator's error, at least 75 dB down,
     // and the rounding of the input to whole samples.
     const std::vector<int16_t> wave = Sine();
     const std::pair<uint32_t, int> kTypes[] = {{4, 2}, {1, 3}, {0, -1}};
@@ -179,7 +175,7 @@ void TestLevel()
     {
         worst = std::max(worst, std::fabs(left[n] - 10000.0));
     }
-    Check(worst <= 0.2, "the level lies " + std::to_string(worst) + " from 10000");
+    Check(worst <= 0.2, "the level is " + std::to_string(worst) + " from 10000");
     XSFLIB_CHECK(rounded[0] == 10000 && rounded[2 * (kFrame - 1)] == 10000 && rounded[1] == 0);
 }
 
@@ -198,10 +194,10 @@ void TestRamps()
     const std::vector<double> mix = bench.Left(1);
     const std::vector<double> quarter = bench.Left(1);
 
-    XSFLIB_CHECK(Near(envelope[0], 10000.0) && Near(envelope[72], 7500.0) &&
-                 Near(envelope[143], 10000.0 * (1.0 - 0.5 * 143.0 / 144.0)));
-    XSFLIB_CHECK(Near(after[0], 5000.0) && Near(after[143], 5000.0));
-    XSFLIB_CHECK(Near(mix[0], 5000.0) && Near(mix[72], 3750.0) && Near(quarter[0], 2500.0));
+    XSFLIB_CHECK(Near(envelope[0], 10000.0, 0.2) && Near(envelope[72], 7500.0, 0.2) &&
+                 Near(envelope[143], 10000.0 * (1.0 - 0.5 * 143.0 / 144.0), 0.2));
+    XSFLIB_CHECK(Near(after[0], 5000.0, 0.2) && Near(after[143], 5000.0, 0.2));
+    XSFLIB_CHECK(Near(mix[0], 5000.0, 0.2) && Near(mix[72], 3750.0, 0.2) && Near(quarter[0], 2500.0, 0.2));
 }
 
 void TestStart()
@@ -216,9 +212,9 @@ void TestStart()
     bench.system_.SetVoiceState(*bench.voice_, ax::VoiceState::kRun);
     const std::vector<double> again = bench.Left(1);
 
-    XSFLIB_CHECK(Near(first[100], 5000.0) && Near(first[400], 5000.0));
+    XSFLIB_CHECK(Near(first[100], 5000.0, 0.2) && Near(first[400], 5000.0, 0.2));
     XSFLIB_CHECK(std::all_of(first.begin() + 4 * kFrame, first.end(), [](double s) { return s == 0.0; }));
-    XSFLIB_CHECK(Near(again[100], 5000.0));
+    XSFLIB_CHECK(Near(again[100], 5000.0, 0.2));
 }
 
 void TestAux()
@@ -226,7 +222,7 @@ void TestAux()
     // The sine goes to aux bus A alone. The callback takes 96 samples at 32 kHz and gives them back as they are. Two
     // frames after the voice, the return reaches the main bus: output n holds the sine at the place of output
     // n - 288, within 3, after two passes through the interpolator. The first frame is silent. Only the interpolators'
-    // ringing ahead of the sine comes before the return. The return's peak lies below the sine's, where the outputs
+    // ringing ahead of the sine comes before the return. The return's peak is below the sine's, where the outputs
     // miss its crest.
     Bench bench(Sine());
     bench.SetMix(*bench.voice_, 1, ax::kUnityVolume);
@@ -293,7 +289,7 @@ void TestSnapshot()
 
     XSFLIB_CHECK(first_index == 6 && again_index == 6);
     XSFLIB_CHECK(again == first);
-    XSFLIB_CHECK(alone != first && Near(alone[2 * kFrame], 10000.0));
+    XSFLIB_CHECK(alone != first && Near(alone[2 * kFrame], 10000.0, 0.2));
     XSFLIB_CHECK(bench.system_.Voices()[5].renderer.state == ax::VoiceState::kStop);
 }
 

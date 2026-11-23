@@ -16,7 +16,10 @@
 #include <span>
 #include <vector>
 
+#include "xsflib/bytes.h"
+
 #include "ntdlib/ntr/arm7.h"
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
@@ -41,7 +44,8 @@ public:
 
     // Boots `rom`'s ARM7 binary until its sound driver waits for commands, and gives the driver the shared work. The
     // first frame of the driver that takes it is past at the return. Throws std::runtime_error when the binary doesn't
-    // start its driver within 2 seconds.
+    // start its driver within 2 seconds, and for a game that runs only on a DSi (RunsInDsiMode): such an ARM7 binary
+    // doesn't start on Arm7System alone.
     explicit DriverPlayer(const Rom& rom);
 
     Arm7System& System();
@@ -62,6 +66,17 @@ public:
 
     // The system clock of the driver's last frame.
     uint64_t Clock() const;
+
+    // Whether, after the driver's last frame, player 0 plays or one of `channels` sounds: bit 0 of the shared work's
+    // player status, and the channel status.
+    bool Playing(uint32_t channels)
+    {
+        const std::span<const uint8_t> memory = system_.MainMemory();
+        constexpr uint32_t kWork = kSharedWork - kMainMemory;
+
+        return (xsflib::LoadLe32(&memory[kWork + snd::kPlayerStatus]) & 1) != 0 ||
+               (xsflib::LoadLe16(&memory[kWork + snd::kChannelStatus]) & channels) != 0;
+    }
 
 private:
     Arm7System system_;

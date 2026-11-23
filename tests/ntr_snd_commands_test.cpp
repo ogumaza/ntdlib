@@ -60,7 +60,7 @@ void TestPlayedCommands()
     XSFLIB_CHECK(played.command.kind == Kind::kNote && played.command.key == 0x3C && played.command.velocity == 0x7F);
     XSFLIB_CHECK(IsArgument(played.command.value, Source::kValue, 0x30) && played.code == 0x3C && played.next == 3);
 
-    // An if prefix, then a random prefix: a note whose length lies from 1 to 5.
+    // An if prefix, then a random prefix: a note whose length is from 1 to 5.
     played = Played({0xA2, 0xA0, 0x3C, 0x7F, 0x01, 0x00, 0x05, 0x00});
     XSFLIB_CHECK(played.command.conditional && played.command.kind == Kind::kNote);
     XSFLIB_CHECK(IsArgument(played.command.value, Source::kRandom, 1, 5) && played.next == 8);

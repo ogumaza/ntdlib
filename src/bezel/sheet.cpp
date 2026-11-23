@@ -92,7 +92,7 @@ std::vector<Sheet::Target> Sheet::ReadSymbols(const std::vector<uint8_t>& data, 
             continue;
         }
 
-        // The names lie in the section that the table links to. A section without bytes in the file holds none.
+        // The names are in the section that the table links to. A section without bytes in the file holds none.
         const Section& strings = sections_[h.link];
         for (uint64_t at = h.offset; at + 24 <= h.offset + h.size; at += 24)
         {

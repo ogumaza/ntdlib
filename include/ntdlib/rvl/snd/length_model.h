@@ -6,7 +6,8 @@
 // frame on, as the analysis's rules take them (nwsnd::LengthRulesFor). An open of a track keeps the track's wait
 // (SeqTrack::Open, 0x8003ffcc). A measure that reaches the limit inside counted loops runs again with each track's
 // outermost counted loop endless. With an effect on an aux bus, the effects ring until a second has passed without a
-// sound louder than ±8, as on the Wii U (cafe::snd::Engine::EffectsRinging).
+// sound louder than ±8, as on the Wii U (cafe::snd::Engine::EffectsRinging). ArrangedLengthConsole also measures a
+// model started without the DSP, and a sound of which only some tracks play.
 
 #pragma once
 
@@ -20,6 +21,7 @@
 
 #include "xsflib/rip/length.h"
 
+#include "ntdlib/first_sample.h"
 #include "ntdlib/nwsnd/length_model.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/snd/engine.h"
@@ -94,6 +96,58 @@ struct LengthConsole
 
 private:
     static constexpr int kRingingFrames = 334; // a second of frames
+};
+
+// Archive mode's model for a length analysis that may run without the DSP and that may play only some tracks. A model
+// started with ArchiveModel::StartWithoutDsp sets `without_dsp`. Its frames then mix nothing. A frame has sound if any
+// channel plays, and the first frame in which a note plays counts from its start. `tracks` gives the tracks that play,
+// a bit for each, as the start's Arrangement gives them. The other tracks play at a volume of 0 and don't hold a loop's
+// fade back.
+struct ArrangedLengthModel : LengthArchiveModel
+{
+    bool without_dsp = false; // whether the model was started without the DSP
+    uint32_t tracks = ~0u;    // the tracks that play, a bit for each
+};
+
+// The Wii's part of the length analysis for ArrangedLengthModel. With the DSP, a frame runs, sounds and gives its first
+// sample as in LengthConsole.
+struct ArrangedLengthConsole : LengthConsole
+{
+    using Model = ArrangedLengthModel;
+
+    // Returns false if the microcode stopped responding.
+    static bool RunFrame(Model& model)
+    {
+        if (!model.without_dsp)
+        {
+            return LengthConsole::RunFrame(model);
+        }
+
+        model.RunFrameWithoutDsp();
+
+        return true;
+    }
+
+    static bool Sounded(const Model& model)
+    {
+        return model.without_dsp ? model.engine->Channels().ActiveCount() > 0 : xsflib::rip::Audible(model.output);
+    }
+
+    // A pair of samples lasts 1/32 ms at the output's 32 kHz.
+    static std::optional<double> FirstSampleMs(const Model& model)
+    {
+        if (model.without_dsp)
+        {
+            return Sounded(model) ? std::optional<double>(0.0) : std::nullopt;
+        }
+
+        return ntdlib::FirstSampleMs(model.output, 1000.0 / ax::kSampleRate);
+    }
+
+    static uint32_t Tracks(const Model& model)
+    {
+        return model.tracks;
+    }
 };
 
 } // namespace ntdlib::rvl::snd

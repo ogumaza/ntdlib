@@ -190,7 +190,7 @@ void TestGuesses()
     XSFLIB_CHECK(strayed.size() == 2 && IsData(strayed[1], {0x89, 0x07, 0x00, 0x00, 0x12, 0x34, 0x56}));
 }
 
-// Sounds that start where no label lies.
+// Sounds that start where no label is.
 void TestEntries()
 {
     const std::vector<uint8_t> kBytes = {
@@ -290,7 +290,7 @@ void TestOneCommand()
         0x3C, 0x7F, 0x30,             // note 60, velocity 127, 48 ticks
         0xA2, 0xFF,                   // if: end
         0x89, 0x00, 0x00, 0x00,       // jump to 0
-        0xC1,                         // a volume whose value lies past the end
+        0xC1,                         // a volume whose value is past the end
     };
     const auto jump = ntdlib::nwsnd::DecodeCommand(kBytes, 0, kSwitch);
     XSFLIB_CHECK(jump && jump->size == 5 && jump->command.kind == Kind::kJump && jump->command.conditional);

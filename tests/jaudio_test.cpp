@@ -108,7 +108,7 @@ void TestWaveGroups()
     Check(jaudio::GroupArchives({three, seven}, groups) == std::vector<std::string>{"a.aw", "c.aw", "e.aw"},
           "the chosen groups' AW files");
 
-    // The waves that the chosen groups lack. Wave 3:9 is in no group, and system 9 doesn't exist. Neither counts.
+    // The waves missing from the chosen groups. Wave 3:9 is in no group, and system 9 doesn't exist. Neither counts.
     const std::vector<jaudio::WaveUse> kPlayed = {{3, 1}, {3, 4}, {3, 5}, {3, 9}, {7, 1}, {9, 1}};
     const std::vector<uint32_t> kFirst = {3 << 16 | 0};
     Check(jaudio::MissingWaves({three, seven}, kFirst, kPlayed) == 3, "the waves that group a lacks");
@@ -399,7 +399,7 @@ void TestSequenceBlocksAndBaac()
           "each archive's wave system names its wave archive");
     Check(archive.Warnings().empty(), "the archive reads without warnings");
 
-    // The second archive's offset, 4, lies before the first's. The first archive then ends before it starts.
+    // The second archive's offset, 4, is before the first's. The first archive then ends before it starts.
     std::vector<uint8_t> data = a.Data();
     for (std::size_t i = 0; i < 4; i++)
     {
@@ -530,21 +530,6 @@ void TestRarc()
           "DecodeIfYaz0 decodes Yaz0 data into its vector");
 }
 
-// A sequence table: the count, zeros up to 0x20, then each sequence's offset and size, then the sequences.
-std::vector<uint8_t> SequenceTable(const std::vector<std::string>& sequences)
-{
-    std::vector<uint8_t> table(0x20 + sequences.size() * 8);
-    xsflib::StoreBe32(table.data(), static_cast<uint32_t>(sequences.size()));
-    for (std::size_t i = 0; i < sequences.size(); i++)
-    {
-        xsflib::StoreBe32(table.data() + 0x20 + i * 8, static_cast<uint32_t>(table.size()));
-        xsflib::StoreBe32(table.data() + 0x24 + i * 8, static_cast<uint32_t>(sequences[i].size()));
-        table.insert(table.end(), sequences[i].begin(), sequences[i].end());
-    }
-
-    return table;
-}
-
 // The text that `data` holds.
 std::string Text(std::span<const uint8_t> data)
 {
@@ -558,7 +543,7 @@ void TestRepackSequenceTable()
     const std::string kField = "the field sequence from the table, longer than 32 bytes";
     const std::vector<uint8_t> rarc =
         files::RarcFile({{2, "se.bms", {'o', 'l', 'd'}}, {0, "field.bms", {'o', 'l', 'd'}}, {1, "b.bms", {'b'}}});
-    const std::vector<uint8_t> table = SequenceTable({kField, "boss", "se"});
+    const std::vector<uint8_t> table = files::SequenceTable({kField, "boss", "se"});
     const std::vector<uint8_t> out = jaudio::RepackSequenceTable(rarc, table);
     const std::vector<jaudio::ArchiveFile> read = jaudio::ReadRarc(out);
     Check(read.size() == 3 && read[0].id == 2 && read[0].name == "se.bms" && Text(read[0].data) == "se" &&
@@ -583,7 +568,7 @@ void TestRepackSequenceTable()
     Check(jaudio::RepackSequenceTable(files::LiteralYaz0(rarc), table) == out, "a Yaz0 archive is decoded first");
 
     // A file whose id is past the table's end, and a table cut short, are rejected.
-    Check(ErrorOf([&] { jaudio::RepackSequenceTable(rarc, SequenceTable({kField, "boss"})); }) ==
+    Check(ErrorOf([&] { jaudio::RepackSequenceTable(rarc, files::SequenceTable({kField, "boss"})); }) ==
               "the sequence table has no sequence for file 2 of the sequence archive",
           "a file past the table's end");
     Check(!ErrorOf([&] { jaudio::RepackSequenceTable(rarc, std::span(table).first(table.size() - 1)); }).empty(),
@@ -593,7 +578,7 @@ void TestRepackSequenceTable()
 // ReadSequenceTable: each sequence of the table, by its index, without a name. An empty entry is left out.
 void TestReadSequenceTable()
 {
-    const std::vector<uint8_t> table = SequenceTable({"field", "", "boss"});
+    const std::vector<uint8_t> table = files::SequenceTable({"field", "", "boss"});
 
     const std::vector<jaudio::ArchiveFile> files = jaudio::ReadSequenceTable(table);
 
@@ -766,7 +751,7 @@ void TestStrictRules()
     Check(counted.size() == 3 && counted[0].name == "SE_A" && counted[1].name.empty() && counted[2].name == "BGM_FIELD",
           "a sound past the name table's count has no name");
 
-    // At most 0x100 sections: a count of 0x101 whose last slot lies at the end of the data.
+    // At most 0x100 sections: a count of 0x101 whose last slot is at the end of the data.
     files::Bytes t;
     t.Tag("BST ").U32(0).U32(0).U32(0x30);    // the root at 0x30
     t.U32(1).U32(0x18);                       // 0x10: a section of one group, at 0x18
@@ -1402,8 +1387,8 @@ void TestBankFile()
     Check(from_le == DescribeBankFile(be), "the little-endian file gives what the big-endian file gives: " + from_le);
 }
 
-// A bank whose waves name a system that the file lacks, or more than one system, is left out with a warning. The first
-// system that gives a number takes it. The numbers above 0xff name no system.
+// A bank whose waves name a system missing from the file, or more than one system, is left out with a warning. The
+// first system that gives a number takes it. The numbers above 0xff name no system.
 void TestBankFileRefusals()
 {
     const auto system = [](uint32_t number)
@@ -1440,7 +1425,7 @@ void TestBankFileRefusals()
               warnings[3].ends_with(": bank plays the waves of more than one wave system"),
           "a warning for each bank that is left out");
 
-    // A header whose table of wave systems lies past the end of the file.
+    // A header whose table of wave systems is past the end of the file.
     std::vector<uint8_t> cut(16);
     cut[3] = 0x10;
     cut[7] = 1;
@@ -1449,7 +1434,7 @@ void TestBankFileRefusals()
           "a file cut short");
 }
 
-// Three sequences, and where they lie in a file of sequences of 0x100 bytes.
+// Three sequences, and where they are in a file of sequences of 0x100 bytes.
 const std::vector<files::AafSequenceSpec> kSequences = {
     {"se.bms", 0, 0x40}, {"field.com", 0x40, 0x80}, {"VeryLongNameOfAPiece.com", 0xc0, 0x40}};
 
@@ -1495,6 +1480,37 @@ void TestSequenceIndex()
     Check(refusal(std::span(be).first(be.size() - 1), 0x100) == "the sequence index is damaged", "an index cut short");
 }
 
+// ReadBarcEntries gives each entry's name, share, offset and size without the file of sequences, in either layout. They
+// are the sequences that TestSequenceIndex reads with the file.
+void TestBarcEntries()
+{
+    const auto describe = [](const std::vector<jaudio::BarcEntry>& entries)
+    {
+        std::string text;
+        for (const jaudio::BarcEntry& entry : entries)
+        {
+            text += entry.name + " " + std::to_string(entry.shares) + " " + std::to_string(entry.offset) + " " +
+                    std::to_string(entry.size) + "\n";
+        }
+
+        return text;
+    };
+
+    const std::string kEntryList = "se.bms 65535 0 64\nfield.com 65535 64 128\nVeryLongNameO 65535 192 64\n";
+    const std::vector<uint8_t> be = files::BarcFile(kSequences);
+    const std::vector<uint8_t> le = files::BarcFile(kSequences, "test.arc", false, 8);
+    Check(describe(jaudio::ReadBarcEntries(be)) == kEntryList, "the entries of a big-endian index");
+    Check(describe(jaudio::ReadBarcEntries(le, false)) == kEntryList, "the entries of a little-endian index");
+
+    std::vector<uint8_t> not_index = be;
+    not_index[0] = 'X';
+    Check(ErrorOf([&] { jaudio::ReadBarcEntries(not_index); }) == "the sequence index is damaged",
+          "the entries of an index without its tag");
+    Check(ErrorOf([&] { jaudio::ReadBarcEntries(std::span(be).first(be.size() - 1)); }) ==
+              "the sequence index is damaged",
+          "the entries of an index cut short");
+}
+
 // Sets the sequence whose data entry `number` of a sequence index shares: the 16 bits after the entry's name.
 void SetShare(std::vector<uint8_t>& index, std::size_t entries_at, bool big_endian, uint16_t number, uint16_t shares)
 {
@@ -1503,10 +1519,10 @@ void SetShare(std::vector<uint8_t>& index, std::size_t entries_at, bool big_endi
     index[at + 1] = static_cast<uint8_t>(big_endian ? shares : shares >> 8);
 }
 
-// An entry can share the data of another sequence, which can share the data of another. The game reads the data of the
-// chain's last sequence, the one that shares no other sequence's data (0x27a8a0 in the main of the Switch's release of
-// Pikmin). Each sequence's data_id gives that sequence. The sequence keeps the data that its entry gives. A chain that
-// loops, or that names a sequence past the index's end, is refused.
+// An entry can share the data of another sequence. That sequence can share the data of a third. The game reads the data
+// of the chain's last sequence, the one that shares no other sequence's data (0x27a8a0 in the main of the Switch's
+// release of Pikmin). Each sequence's data_id gives that sequence. The sequence keeps the data that its entry gives. A
+// chain that loops, or that names a sequence past the index's end, is refused.
 void TestSharedSequences()
 {
     const std::vector<uint8_t> file(0x100);
@@ -1613,6 +1629,7 @@ int main()
     TestBankFileRefusals();
     TestSequenceIndex();
     TestSharedSequences();
+    TestBarcEntries();
     TestFindBarc();
 
     return xsflib::testing::Summary("jaudio");

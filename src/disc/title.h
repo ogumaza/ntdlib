@@ -9,6 +9,8 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
+#include <string>
 
 #include "ntdlib/disc/game.h"
 
@@ -21,8 +23,8 @@ bool HoldsTitle(const std::filesystem::path& folder);
 // Loads the title in `folder` as a game's files (see GameOptions::titles). Throws Error.
 void LoadTitle(const std::filesystem::path& folder, GameFiles& out, const GameOptions& options);
 
-// Throws Error, with a message that says what to load instead, if the file at `path` is a WAD, or a title's TMD or one
-// of its contents.
-void RejectTitleFile(const std::filesystem::path& path, const GameOptions& options);
+// The message, which says what to load instead, for a file at `path` that is a WAD or a title's TMD or one of its
+// contents. Nothing for any other file.
+std::optional<std::string> TitleFileMessage(const std::filesystem::path& path, const GameOptions& options);
 
 } // namespace ntdlib::disc::detail

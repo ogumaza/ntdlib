@@ -24,13 +24,9 @@ namespace
 constexpr std::size_t kHeaderSize = 0x30;
 constexpr std::size_t kSectionEntrySize = 8;
 constexpr std::size_t kImportSize = 8;
-constexpr std::size_t kRelocationSize = 8;
 
-// The types of relocation that the reader follows.
+// The type of relocation that writes the address of its target into a word.
 constexpr uint8_t kAddress32 = 1;
-constexpr uint8_t kNothing = 201;
-constexpr uint8_t kSectionStart = 202;
-constexpr uint8_t kEnd = 203;
 
 } // namespace
 
@@ -125,49 +121,26 @@ std::vector<std::pair<uint16_t, std::size_t>> RelModule::TablePointers(std::size
 
 void RelModule::ReadRelocations(std::size_t at)
 {
-    const xsflib::Reader r(file_, true);
-    std::size_t section = sections_.size();
-    std::size_t offset = 0;
-    for (;; at += kRelocationSize)
+    const auto visit = [this](const RelRelocation& relocation)
     {
-        const std::span<const uint8_t> relocation = r.Sub(at, kRelocationSize);
-        const uint8_t type = relocation[2];
-        const uint8_t target = relocation[3];
-        if (type == kEnd)
+        if (relocation.target_section >= sections_.size())
         {
-            break;
-        }
-
-        if (type == kSectionStart)
-        {
-            section = target;
-            offset = 0;
-            continue;
-        }
-
-        offset += xsflib::LoadBe16(relocation.data());
-        if (type == kNothing)
-        {
-            continue;
-        }
-
-        if (target >= sections_.size())
-        {
-            throw xsflib::FormatError(name_ + " has a relocation into section " + std::to_string(target) +
-                                      ", past its sections");
+            throw xsflib::FormatError(name_ + " has a relocation into section " +
+                                      std::to_string(relocation.target_section) + ", past its sections");
         }
 
         // Every target starts an object. A word that the relocation sets points at its target.
-        const uint32_t addend = xsflib::LoadBe32(relocation.data() + 4);
-        Section& into = sections_[target];
-        into.targets.insert(addend);
-        const bool in_file = section < sections_.size() && sections_[section].offset != 0 &&
-                             offset + 4 <= sections_[section].size && into.offset != 0 && addend < into.size;
-        if (type == kAddress32 && in_file)
+        Section& into = sections_[relocation.target_section];
+        into.targets.insert(relocation.addend);
+        const bool in_file = relocation.section < sections_.size() && sections_[relocation.section].offset != 0 &&
+                             std::size_t{relocation.offset} + 4 <= sections_[relocation.section].size &&
+                             into.offset != 0 && relocation.addend < into.size;
+        if (relocation.type == kAddress32 && in_file)
         {
-            pointers_[sections_[section].offset + offset] = into.offset + addend;
+            pointers_[sections_[relocation.section].offset + relocation.offset] = into.offset + relocation.addend;
         }
-    }
+    };
+    ForEachRelocation(file_, at, visit);
 }
 
 } // namespace ntdlib

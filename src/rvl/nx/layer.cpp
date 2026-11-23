@@ -13,7 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/ax/ax.h"
+#include "ntdlib/dsp/memory.h"
+#include "ntdlib/nx/audio/dsp.h"
+#include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/rvl/ax/system.h"
+#include "ntdlib/rvl/ax/voice.h"
 #include "ntdlib/wave/adpcm.h"
 
 namespace ntdlib::rvl::nx

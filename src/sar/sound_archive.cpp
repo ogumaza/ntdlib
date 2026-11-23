@@ -21,6 +21,7 @@
 #include "xsflib/text.h"
 #include "xsflib/utf8.h"
 
+#include "common/magic.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/reference.h"
 #include "sar/reading.h"
@@ -37,6 +38,7 @@ using detail::OpenFile;
 using detail::OptionParams;
 using detail::ReadSends;
 using detail::RequiredBlock;
+using ntdlib::detail::HasMagic;
 
 // The positions of the STRG block's two parts at `strg_off`: its string table and its Patricia tree.
 std::pair<std::size_t, std::size_t> StringParts(const xsflib::Reader& r, std::size_t strg_off)
@@ -60,7 +62,7 @@ std::pair<std::size_t, std::size_t> StringParts(const xsflib::Reader& r, std::si
 }
 
 // Reads the STRG block at `strg_off`, of length `strg_size`: a string table and a Patricia tree mapping names to item
-// IDs. The strings lie in the block, and each names one item. So neither the strings nor the names can add up to more
+// IDs. The strings are in the block, and each names one item. So neither the strings nor the names can add up to more
 // than the block. A crafted table could otherwise point every entry at one long string and take memory without limit.
 // kReadPastDamage makes each string printable, and also bounds the strings by the archive's size. Its caller takes a
 // throw for damaged names and shows no message.
@@ -522,7 +524,7 @@ std::vector<std::tuple<uint32_t, uint64_t, uint32_t>> GroupItems(const xsflib::R
 }
 
 // The files that group file `file` embeds, read as kStopAtFirstProblem reads them on the Wii U and the Switch: each
-// one's file ID, and its bytes within the group file. An item whose bytes lie past the group file's end throws.
+// one's file ID, and its bytes within the group file. An item whose bytes are past the group file's end throws.
 // MatchesGroupFile reads a 3DS group file this way too. ReadTablesStrictly and AddGroupFile walk the 3DS's group files
 // as its player does (WalkCtrGroup).
 std::vector<std::pair<uint32_t, std::span<const uint8_t>>> GroupItemsStrictly(std::span<const uint8_t> file,
@@ -554,7 +556,7 @@ std::vector<std::pair<uint32_t, std::span<const uint8_t>>> GroupItemsStrictly(st
 
 // Walks group file `file` as the 3DS's player does with kStopAtFirstProblem. It reads each item's file ID first. For an
 // item whose copy the group file holds, it reads the copy's bytes only when `wants` takes the file ID, and passes the
-// ID and the bytes to `take`. A copy whose bytes lie past the group file's end throws.
+// ID and the bytes to `take`. A copy whose bytes are past the group file's end throws.
 template <typename Wants, typename Take>
 void WalkCtrGroup(std::span<const uint8_t> file, const Options& options, const Wants& wants, const Take& take)
 {
@@ -857,7 +859,7 @@ void SoundArchive::ReadGroup(const std::string& name, const FileEntry& group,
 
 void SoundArchive::ReadTablesStrictly(const xsflib::Reader& r)
 {
-    // On the 3DS, the message names the block that the archive lacks. On the Wii U and the Switch, both blocks are
+    // On the 3DS, the message names the block missing from the archive. On the Wii U and the Switch, both blocks are
     // checked at once.
     const bool ctr = options_.flavor == Flavor::kCtr;
     const Blocks blocks = BlockTable(r);
@@ -957,7 +959,7 @@ void SoundArchive::ReadFilesStrictly(const xsflib::Reader& r, const std::map<uin
                 }
                 else
                 {
-                    truncated_ = true; // the file lies past the end of a truncated archive
+                    truncated_ = true; // the file is past the end of a truncated archive
                 }
             }
         }
@@ -998,8 +1000,8 @@ void SoundArchive::ReadGroupsStrictly(const xsflib::Reader& r, const std::map<ui
         }
     };
 
-    // The 3DS's player reads each item's file ID first, and the bytes of the copies of the files that the archive
-    // lacks.
+    // The 3DS's player reads each item's file ID first, and the bytes of the copies of the files missing
+    // from the archive.
     const auto take_ctr_copies = [&](std::span<const uint8_t> group)
     {
         const auto lacks = [&](uint32_t file_id)
@@ -1039,11 +1041,11 @@ void SoundArchive::ReadGroupsStrictly(const xsflib::Reader& r, const std::map<ui
 
 void SoundArchive::AddGroupFile(std::vector<uint8_t> bytes, std::string group)
 {
-    // kStopAtFirstProblem takes a group file's copy of every file that the archive lacks.
+    // kStopAtFirstProblem takes a group file's copy of every file missing from the archive.
     if (options_.rules == Rules::kStopAtFirstProblem)
     {
         // Moving a vector keeps its buffer. Afterwards, the items' spans point into the archive's copy of the file. On
-        // the 3DS, the first copy of a file that the archive lacks is the only one whose bytes are read.
+        // the 3DS, the first copy of a file missing from the archive is the only one whose bytes are read.
         std::vector<std::pair<uint32_t, std::span<const uint8_t>>> items;
         if (options_.flavor == Flavor::kCtr)
         {
@@ -1191,7 +1193,7 @@ bool SoundArchive::MatchesGroupFile(std::span<const uint8_t> bytes) const
             continue;
         }
 
-        if (data.size() < 4 || std::memcmp(data.data(), kind->second.data(), 4) != 0)
+        if (!HasMagic(data, kind->second))
         {
             return false;
         }

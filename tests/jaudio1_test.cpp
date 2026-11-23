@@ -5,17 +5,15 @@
 // sequence can play (SoundFiles::WaveArchivesOf). At a DSP rate of 48,000 Hz, a
 // point's time counts in steps of the oscillator.
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <span>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "xsflib/testing/check.h"
 
+#include "jaudio_engine_checks.h"
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio1/engine.h"
 #include "ntdlib/jaudio1/oscillator.h"
@@ -27,6 +25,9 @@ namespace
 {
 
 namespace j1 = ntdlib::jaudio1;
+namespace checks = ntdlib::testing::jaudio_engine_checks;
+
+using checks::Run;
 
 constexpr float kDacRate = 48000.0f;
 
@@ -177,20 +178,6 @@ std::vector<uint8_t> SnapshotSequence()
     return s.Data();
 }
 
-// The output of `count` sub-frames.
-std::vector<int16_t> Run(j1::Engine& engine, int count)
-{
-    std::vector<int16_t> output;
-    for (int i = 0; i < count; i++)
-    {
-        engine.RunSubframe();
-        const std::span<const int16_t> subframe = engine.Output();
-        output.insert(output.end(), subframe.begin(), subframe.end());
-    }
-
-    return output;
-}
-
 // A snapshot taken in the middle of a piece, with notes sounding and a level moving, and restored after more
 // sub-frames, gives from there the output of a run without the restore, sample for sample. A snapshot of another engine
 // or of an earlier start can't be restored.
@@ -206,25 +193,11 @@ void TestSnapshots()
 
     constexpr int kBefore = 157;
     constexpr int kAfter = 900;
-    j1::Engine straight(game, {});
-    XSFLIB_CHECK(!straight.Start(7, {}));
-    const std::vector<int16_t> head = Run(straight, kBefore);
-    const std::vector<int16_t> tail = Run(straight, kAfter);
-    XSFLIB_CHECK(std::any_of(tail.begin(), tail.end(), [](int16_t sample) { return sample != 0; }));
-
-    j1::Engine engine(game, {});
-    XSFLIB_CHECK(engine.Save().model == nullptr);
-    XSFLIB_CHECK(!engine.Start(7, {}));
-    XSFLIB_CHECK(Run(engine, kBefore) == head);
-    const j1::Engine::Snapshot snapshot = engine.Save();
-    XSFLIB_CHECK(engine.ActiveChannels() > 0);
-    XSFLIB_CHECK(Run(engine, kAfter) == tail);
-    engine.Restore(snapshot);
-    XSFLIB_CHECK(Run(engine, kAfter) == tail);
-
-    // A second restore of the same snapshot gives the same output again.
-    engine.Restore(snapshot);
-    XSFLIB_CHECK(Run(engine, kAfter) == tail);
+    const auto start_sound = [](j1::Engine& engine)
+    {
+        return engine.Start(7, {});
+    };
+    const auto [head, tail] = checks::CheckSnapshots<j1::Engine>(game, start_sound, kBefore, kAfter);
 
     // A snapshot from before the first sub-frame holds no outer parameters of EXTSet. Restoring it, running past the
     // EXTSet again and then restoring the later snapshot gives the same output as the straight run. A restore that
@@ -240,14 +213,6 @@ void TestSnapshots()
     XSFLIB_CHECK(Run(seeking, kAfter) == tail);
     seeking.Restore(middle);
     XSFLIB_CHECK(Run(seeking, kAfter) == tail);
-
-    const auto restore = [&snapshot](j1::Engine& e)
-    {
-        return ErrorOf<std::logic_error>([&] { e.Restore(snapshot); });
-    };
-    XSFLIB_CHECK(!restore(straight).empty());
-    XSFLIB_CHECK(!engine.Start(7, {}));
-    XSFLIB_CHECK(!restore(engine).empty());
 }
 
 // The cursors of the tracks (Cursor), two frames into the snapshot sequence: each track waits after its first wait

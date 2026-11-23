@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// The helpers that the disc tests share: a pseudorandom fill, big-endian stores into a buffer, the writing of a file,
-// text as bytes, an empty AppleDouble file, and checks of what LoadGame loads and rejects. The header includes no
-// compression library. The tests that link only ntdlib::disc use it too.
+// The helpers that the disc tests share: a pseudorandom fill, big-endian stores into a buffer, text as bytes, an empty
+// AppleDouble file, and checks of what LoadGame loads and rejects. The tests write files with WriteFile of
+// ntdlib/testing/write_file.h. The header includes no compression library. The tests that link only ntdlib::disc use it
+// too.
 
 #pragma once
 
@@ -11,17 +12,15 @@
 #include <filesystem>
 #include <map>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "xsflib/bytes.h"
-#include "xsflib/files.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/disc/game.h"
 
-namespace disc_files
+namespace disc_helpers
 {
 
 namespace fs = std::filesystem;
@@ -50,17 +49,6 @@ inline void StoreBe32(Bytes& data, size_t at, uint32_t value)
 inline void StoreBe64(Bytes& data, size_t at, uint64_t value)
 {
     xsflib::StoreBe64(data.data() + at, value);
-}
-
-// Writes `data` to the file at `path`, and makes the file's folder first. Throws std::runtime_error when the file
-// can't be written.
-inline void WriteFile(const fs::path& path, const Bytes& data)
-{
-    fs::create_directories(path.parent_path());
-    if (const std::optional<std::string> error = xsflib::WriteFile(path, data))
-    {
-        throw std::runtime_error(*error);
-    }
 }
 
 inline Bytes Text(const std::string& text)
@@ -106,4 +94,4 @@ inline void CheckRefused(const std::string& name, const fs::path& path, const st
                            name + ": rejected with \"" + words + "\", got \"" + error.value_or("success") + "\"");
 }
 
-} // namespace disc_files
+} // namespace disc_helpers

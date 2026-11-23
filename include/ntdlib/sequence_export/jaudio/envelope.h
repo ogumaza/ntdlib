@@ -71,7 +71,7 @@ public:
     }
 
     // Whether the oscillator holds at a value of 0 that no release can raise. A direct release stays at 0, and so does
-    // a release table whose points lie at 0. A volume oscillator in that state silences its note until the note ends.
+    // a release table whose points are at 0. A volume oscillator in that state silences its note until the note ends.
     bool HoldsSilent() const;
 
 private:
@@ -120,7 +120,9 @@ EnvelopeCurve TraceEnvelope(const std::vector<const Oscillator*>& volume_oscilla
 // brings the envelope's peak to full level.
 struct Sf2Envelope
 {
-    int delay = -12000, attack = -12000, hold = -12000, decay = -12000, sustain = 0, release = -12000;
+    int delay = seqlib::sf2::kShortestTimecents, attack = seqlib::sf2::kShortestTimecents,
+        hold = seqlib::sf2::kShortestTimecents, decay = seqlib::sf2::kShortestTimecents, sustain = 0,
+        release = seqlib::sf2::kShortestTimecents;
     double peak_db = 0.0; // the envelope's highest level
 };
 

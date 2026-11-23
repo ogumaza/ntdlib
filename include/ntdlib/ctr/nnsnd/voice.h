@@ -137,7 +137,7 @@ public:
         return wave_head_;
     }
 
-    // nn::snd's internals, which SoundSystem calls every frame.
+    // nn::snd's internals. SoundSystem calls them every frame.
     void ApplyPendingState(DspLink& link); // the DSP side of SetState: 0x18edc4 and 0x18eecc
     void UpdateParameters(DspLink& link);  // 0x186134
     void UpdateWaveBuffers(DspLink& link); // 0x18f678

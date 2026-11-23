@@ -114,7 +114,7 @@ void TestBytes()
 
 void TestSilence()
 {
-    // The smallest step adds 7 / 8, rounded down to 0, so silence comes back exactly.
+    // The smallest step adds 7 / 8, rounded down to 0. Silence therefore comes back exactly.
     const std::vector<int16_t> silence(1001, 0);
     const ImaAdpcmChannel channel = EncodeImaAdpcm(silence, 0);
     XSFLIB_CHECK(channel.start == ImaAdpcmState{});

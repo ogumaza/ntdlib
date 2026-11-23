@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -91,7 +93,7 @@ std::optional<std::vector<uint8_t>> AafEffectSlotCounts(std::span<const uint8_t>
 // for each sequence: the name in up to 14 bytes, the number of the sequence whose data it shares (0xffff for none), two
 // words that the reader skips, then the sequence's offset and size in the archive. The names are cut to 13 characters,
 // with or without their extension. Returns nothing if the AAF has no sequence index. Throws FormatError if the archive
-// or its index is damaged, if a sequence lies outside `archive`, or if a sequence's chain of shared data loops or names
+// or its index is damaged, if a sequence is outside `archive`, or if a sequence's chain of shared data loops or names
 // a sequence past the index's end.
 std::optional<std::vector<ArchiveFile>> ReadAafSequenceFiles(std::span<const uint8_t> aaf,
                                                              std::span<const uint8_t> archive);
@@ -112,6 +114,17 @@ std::vector<WaveSystem> ReadAafWaveSystems(std::span<const uint8_t> aaf);
 // Bank::number holds that number. A bank that can't be read is left out, and `warnings` gets a message for it. Throws
 // FormatError if the archive is damaged.
 std::vector<Bank> ReadAafBanks(std::span<const uint8_t> aaf, std::vector<std::string>& warnings);
+
+// A block of the AAF's bank list: the bank's offset in the archive, and the wave system that the block's value gives.
+struct AafBankBlock
+{
+    std::size_t offset = 0;
+    uint32_t wave_system = 0;
+};
+
+// The blocks of the AAF's bank list, in the list's order, without reading the banks. JASBankMgr::registBankBNK
+// registers each bank at its place in the list. Throws FormatError if the archive is damaged.
+std::vector<AafBankBlock> AafBankBlocks(std::span<const uint8_t> aaf);
 
 // The file names of the wave archives that the AAF's wave systems name, each once, in the order that the systems give
 // them. Throws FormatError if the archive or a wave system is damaged.
@@ -136,11 +149,15 @@ struct AsnSound
 // is too short for its sounds.
 std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn, bool big_endian = true);
 
-// The key under which a name file names a sound: an effect's ID without bits 10 and 11, which set how long the game
-// plays the effect. Any other ID is the key itself.
+// The key under which a name file names a sound: an effect's ID without bits 10 and 11. Those bits set how long the
+// game plays the effect. Any other ID is the key itself.
 constexpr uint32_t AsnNameKey(uint32_t id)
 {
     return (id & kAafTypeMask) == kAafEffect ? id & ~(kAafToEnd | kAafToEnd >> 1) : id;
 }
+
+// The names of a name file's sounds (ReadAsnSounds), by the AsnNameKey of each sound's ID. Where two sounds have the
+// same key, the first one's name counts. Throws FormatError if the file is too short for its sounds.
+std::map<uint32_t, std::string> ReadAsnNames(std::span<const uint8_t> asn, bool big_endian = true);
 
 } // namespace ntdlib::jaudio

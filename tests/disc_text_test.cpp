@@ -15,9 +15,10 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
-#include "disc_files.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/disc/image.h"
+#include "ntdlib/rounding.h"
+#include "ntdlib/testing/disc_files.h"
 #include "temp_folder.h"
 
 namespace fs = std::filesystem;
@@ -29,7 +30,9 @@ namespace
 {
 
 using Bytes = std::vector<uint8_t>;
-using disc_files::WriteFile;
+using ntdlib::testing::disc_files::kPartition;
+using ntdlib::testing::disc_files::WriteGamePartition;
+using ntdlib::testing::disc_files::WriteSystemFiles;
 
 // How the tests load games: as a program named xyz that reads plain images of each console.
 const disc::GameOptions kGameCube{disc::Console::kGameCube, "xyz"};
@@ -41,10 +44,8 @@ constexpr uint32_t kDol = 0x2500;
 constexpr uint32_t kFst = 0x2800;
 constexpr uint32_t kFiles = 0x3000;
 
-// The parts of a Wii disc around its game partition.
-constexpr uint32_t kPartitionTable = 0x40000;
+// The parts of a Wii disc around its game partition (kPartition).
 constexpr uint32_t kRegionSetting = 0x4E000;
-constexpr uint32_t kPartition = 0x50000;
 constexpr uint32_t kPartitionData = 0x70000;
 
 // The two bytes of HIRAGANA LETTER A in Shift-JIS (0x82A0), and what they decode to: U+3042 as Shift-JIS, and U+201A
@@ -109,7 +110,7 @@ Bytes FileTable(int shift)
     }
 
     table.insert(table.end(), names.begin(), names.end());
-    table.resize((table.size() + 3) & ~size_t{3}, 0);
+    table.resize(ntdlib::AlignUp(table.size(), 4), 0);
 
     return table;
 }
@@ -155,16 +156,9 @@ Bytes WiiImage(const std::string& id, const std::string& title, uint32_t region,
     image[0x60] = 1; // no hashes
     image[0x61] = 1; // no encryption
 
-    // The partition table's one group, with the game partition. Its header gives the TMD's size and offset, and the
-    // data's offset and size, all but the size divided by 4.
-    xsflib::StoreBe32(image.data() + kPartitionTable, 1);
-    xsflib::StoreBe32(image.data() + kPartitionTable + 4, (kPartitionTable + 0x20) >> 2);
-    xsflib::StoreBe32(image.data() + kPartitionTable + 0x20, kPartition >> 2);
+    // The partition table, the game partition's header with a TMD of 0x40 bytes, and the region field.
+    WriteGamePartition(image, 0x40, kPartitionData - kPartition, data.size());
     xsflib::StoreBe32(image.data() + kRegionSetting, region);
-    xsflib::StoreBe32(image.data() + kPartition + 0x2A4, 0x40);
-    xsflib::StoreBe32(image.data() + kPartition + 0x2A8, 0x2C0 >> 2);
-    xsflib::StoreBe32(image.data() + kPartition + 0x2B8, (kPartitionData - kPartition) >> 2);
-    xsflib::StoreBe32(image.data() + kPartition + 0x2BC, static_cast<uint32_t>(data.size() >> 2));
     std::copy(data.begin(), data.end(), image.begin() + kPartitionData);
 
     return image;
@@ -176,13 +170,10 @@ void WriteExtractedDisc(const fs::path& root, disc::Console console, const std::
                         std::optional<uint32_t> bi2_region)
 {
     const Bytes data = GameData(console, id, title, bi2_region.value_or(0));
-    WriteFile(root / "sys" / "boot.bin", Bytes(data.begin(), data.begin() + kBi2));
-    WriteFile(root / "sys" / "main.dol", Bytes(0x100, 0));
-    WriteFile(root / "sys" / "fst.bin", FileTable(console == disc::Console::kWii ? 2 : 0));
-    if (bi2_region)
-    {
-        WriteFile(root / "sys" / "bi2.bin", Bytes(data.begin() + kBi2, data.begin() + kBi2 + 0x2000));
-    }
+    WriteSystemFiles(root, {.boot = Bytes(data.begin(), data.begin() + kBi2),
+                            .bi2 = bi2_region ? Bytes(data.begin() + kBi2, data.begin() + kBi2 + 0x2000) : Bytes(),
+                            .dol = Bytes(0x100, 0),
+                            .fst = FileTable(console == disc::Console::kWii ? 2 : 0)});
 }
 
 // The game that LoadGame reads from `path`, or nothing after a failed check.

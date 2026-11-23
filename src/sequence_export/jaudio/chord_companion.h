@@ -24,14 +24,14 @@ struct ChordLayerData
 {
     std::vector<uint8_t> database;                  // ChordSeDataBase.csd
     std::vector<uint8_t> archive;                   // JaiChord.arc
-    std::vector<ntdlib::jaudio::ArchiveFile> files; // the archive's files, which point into `archive`
+    std::vector<ntdlib::jaudio::ArchiveFile> files; // the archive's files, pointing into `archive`
     std::map<uint32_t, SequenceSound> sounds;       // the chord effects, by sound ID
 };
 
 class ChordCompanion : public Companion
 {
 public:
-    // The companion of `layer`. Throws FormatError if the piece has no chord file or the database lacks a record.
+    // The companion of `layer`. Throws FormatError if the piece has no chord file or the database has no record for it.
     ChordCompanion(std::shared_ptr<const ChordLayerData> data, const ntdlib::jaudio::JungleBeatChordLayer& layer);
 
     std::unique_ptr<Companion> Clone() const override;

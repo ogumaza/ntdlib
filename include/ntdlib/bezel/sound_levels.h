@@ -63,7 +63,7 @@ bool IsSoundSheet(std::string_view name);
 // that can't be read as a sheet adds no record.
 SoundLevels ReadSoundLevels(const std::filesystem::path& folder);
 
-// The folder of the sound sheets that belong to the sound archive at `archive`. An archive and the sheets lie in
+// The folder of the sound sheets that belong to the sound archive at `archive`. An archive and the sheets are in
 // different Bezel Engine archives of the game. Once those are unpacked, the search looks for Data/SheetBin in the
 // archive's folder and in each of the three folders above it, and in the folders directly below each of them. Returns
 // the first that holds a sound sheet.

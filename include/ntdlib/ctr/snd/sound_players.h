@@ -39,7 +39,7 @@ namespace ntdlib::ctr::snd
 
 class Engine;
 
-// What the game gives a player through the sound's handle (BasicSoundPlayer's parameters, which 0x31f1a0 sets). The
+// What the game gives a player through the sound's handle (BasicSoundPlayer's parameters, set by 0x31f1a0). The
 // model keeps their starting values, with the sound's volume, pan mode and curve from the archive.
 struct PlayerParameters
 {

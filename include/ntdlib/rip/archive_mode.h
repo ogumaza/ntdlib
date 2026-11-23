@@ -23,10 +23,12 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/cli/length_analysis.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/files.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/rip/file_names.h"
+#include "xsflib/rip/length_tags.h"
 #include "xsflib/rip/tool.h"
 
 #include "ntdlib/rip/archive.h"
@@ -59,7 +61,9 @@ struct ArchiveRipTool
     sar::Options sar_options;
 
     // Works out the timings of `jobs` by playing them with `settings` on the format's model, on `threads` threads. A
-    // job's volume scales what the analysis counts as sound. The player scales the output by the mini's volume tag.
+    // job's volume scales what the analysis counts as sound. The player scales the output by the mini's volume tag. The
+    // minis' length tags count from the first sample that isn't 0 (xsflib::rip::LengthFrom::kFirstSound). A timing
+    // that sounds requires `first_sample_ms`: the rip stops at a mini without one.
     std::function<void(std::vector<Job>& jobs, sar::SoundArchive archive, const Settings& settings, unsigned threads)>
         analyze_lengths;
 
@@ -257,21 +261,10 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
                const xsflib::cli::RipOptions& o, std::size_t& matched)
 {
     const std::string& path = to_rip.archive.path;
-    std::optional<sar::SoundArchive> archive;
-    try
+    std::optional<sar::SoundArchive> archive = LoadArchiveToRip(to_rip.archive.data, path, tool.sar_options);
+    if (!archive)
     {
-        archive = sar::SoundArchive::Load(to_rip.archive.data, tool.sar_options);
-    }
-    catch (const std::exception& e)
-    {
-        std::fprintf(stderr, "error: %s: %s\n", path.c_str(), e.what());
         return -1;
-    }
-
-    if (archive->Truncated())
-    {
-        std::fprintf(stderr, "warning: %s is truncated: sounds whose data lies past its end are skipped\n",
-                     path.c_str());
     }
 
     AddGroupFiles(tool, to_rip, *archive);
@@ -307,7 +300,7 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
     {
         tool.analyze_lengths(complete, std::move(*archive), to_rip.settings, o.jobs);
         archive.reset();
-        complete = SkipSilent(std::move(complete), skipped);
+        skipped.silent += xsflib::cli::SkipSilent(complete);
     }
 
     const std::string skipped_text =
@@ -369,7 +362,8 @@ int RipArchive(const ArchiveRipTool<Format, Rip>& tool, const std::filesystem::p
 
         return BuildMini<Format>(job.index, lib_name, std::move(tags), tool.mini_reserved(to_rip, job));
     };
-    const int count = xsflib::cli::WriteMinis(out_dir, names, complete, common, tool.format + "_sound", build_mini);
+    const int count = xsflib::cli::WriteMinis(out_dir, names, complete, common, xsflib::rip::LengthFrom::kFirstSound,
+                                              tool.format + "_sound", build_mini);
     if (count >= 0)
     {
         std::fprintf(stderr, "%s: %d %s files%s\n", path.c_str(), count, tool.mini_word.c_str(), skipped_text.c_str());

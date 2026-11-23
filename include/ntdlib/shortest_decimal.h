@@ -213,8 +213,9 @@ inline std::string ShortestFraction(uint32_t mantissa, int exponent, bool power_
 // The shortest decimal that reads back as the same float, in every locale: 1.3f gives "1.3". Of the shortest, it's the
 // one nearest the float. A whole number gives all its digits. The text has no exponent. Infinities give "inf", a
 // signalling NaN "nan(snan)" and a quiet NaN "nan", each with a minus sign when the sign bit is set. The default NaN
-// of the x86 instructions (only the sign and the quiet bit set) gives "-nan(ind)". The text is std::to_chars's with
-// std::chars_format::fixed, which macOS has only from 13.3 on. It's 48 characters at most, and never empty.
+// of the x86 instructions (only the sign and the quiet bit set) gives "-nan(ind)". The text is the one that
+// std::to_chars gives with std::chars_format::fixed. macOS has that overload only from 13.3 on. The text is 48
+// characters at most, and never empty.
 inline std::string ShortestDecimal(float value)
 {
     const auto bits = std::bit_cast<uint32_t>(value);

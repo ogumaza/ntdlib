@@ -10,8 +10,13 @@
 #include <utility>
 
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/revolution_policy.h"
 #include "ntdlib/nwsnd/sound_values.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/ax/pb.h"
+#include "ntdlib/rvl/snd/driver.h"
 #include "ntdlib/rvl/snd/engine.h"
+#include "ntdlib/rvl/snd/util.h"
 
 namespace ntdlib::rvl::snd
 {

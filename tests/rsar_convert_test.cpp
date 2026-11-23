@@ -361,8 +361,8 @@ void TestWiiWaves()
 }
 
 // Whether `back`, a bank of the Wii, plays the region of `bank` at every key and velocity of each program, with the
-// values that a build of 2008 reads. The later consoles' banks hold no surround pan. With `missing`, `back` lacks that
-// wave of `bank`: its regions play nothing, and the later waves move down by one.
+// values that a build of 2008 reads. The later consoles' banks hold no surround pan. With `missing`, `back` has no copy
+// of that wave of `bank`: its regions play nothing, and the later waves move down by one.
 bool PlaysTheSame(const Bank& bank, const Bank& back, std::optional<int32_t> missing = std::nullopt)
 {
     if (back.InstrumentCount() != bank.InstrumentCount() ||
@@ -431,7 +431,7 @@ bool PlaysWave(const Bank& bank, int32_t index)
 }
 
 // A bank of the Wii that goes to a later console and comes back plays as it did, with its waves' samples. Without its
-// first wave, the bank plays nothing where that wave played. A region whose wave lies past the waves can't go to the
+// first wave, the bank plays nothing where that wave played. A region whose wave is past the waves can't go to the
 // Wii.
 void TestWiiBank()
 {
@@ -500,8 +500,8 @@ void TestWiiWaveArchive()
 
 // A wave sound file of each later console goes to the Wii in versions 1.2 and 1.3. Each wave sound keeps its pitch,
 // pan, surround pan, sends and tracks. The 3DS's reader reads no send to bus C. A wave sound's first note takes the
-// wave sound's envelope, as the Wii plays a note's, and the other notes keep theirs. A wave that the archive lacks
-// leaves the notes that name it without a wave, and the later waves move down by one. A note whose wave lies past the
+// wave sound's envelope, as the Wii plays a note's, and the other notes keep theirs. A wave missing from the archive
+// leaves the notes that name it without a wave, and the later waves move down by one. A note whose wave is past the
 // waves can't go.
 void TestWiiWaveSounds()
 {

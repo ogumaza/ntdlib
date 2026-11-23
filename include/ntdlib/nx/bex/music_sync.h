@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// Bezel Engine's music sync on the Switch: the marker system of its sound library (libbexsound), which follows the
-// beat and the chords of a stream as the stream plays, and the user procedures through which sequences read them.
+// Bezel Engine's music sync on the Switch: the marker system of its sound library (libbexsound), and the user
+// procedures through which sequences read the markers. The marker system follows the beat and the chords of a stream
+// as the stream plays.
 // Each function's comment gives the address of the routine it follows in Super Mario Party Jamboree's main.
 //
 // A stream file can hold regions and markers beside its samples (sar/stream_file.h), in the blocks REGN and MRKR. A
@@ -87,7 +88,7 @@ struct RegionOrder
     std::size_t loop = 0;
 };
 
-// Throws xsflib::FormatError for a sequence or a region that the setting or the cues lack, or a setting without a
+// Throws xsflib::FormatError for a sequence or a region that the setting or the cues don't have, or a setting without a
 // sequence.
 RegionOrder PlayOrder(const StreamCues& cues, const std::vector<RegionSequence>& sequences);
 
@@ -149,7 +150,7 @@ struct SyncedPiece
     std::span<const SyncedStream> streams;
 };
 
-// The synced pieces of the sound archive `archive`, which a table recognizes by the archive's size and SHA-1. None for
+// The synced pieces of the sound archive `archive`. A table recognizes the archive by its size and SHA-1. None for
 // any other archive.
 std::span<const SyncedPiece> SyncedPieces(std::span<const uint8_t> archive);
 
@@ -163,9 +164,9 @@ struct SyncedPlay
 };
 
 // The play of `piece` over the stream file `stream` with the jump setting `jump_setting`. The game updates the sync
-// once in each of its frames, 60 a second. bex::sound::SoundModule's set-up (fn_bd884) registers its update fn_bfa3c,
-// which reaches fn_cb18c through fn_fb730, for phase 22 of the engine's frame (fn_984a78). The game's boot.nbinit fixes
-// the frame rate at 60 (FixedFrameRate_Fps60). The game sets a temporary rate of 0 or 1 only (fn_383aa0), and
+// once in each of its frames, 60 a second. bex::sound::SoundModule's set-up (fn_bd884) registers its update fn_bfa3c
+// for phase 22 of the engine's frame (fn_984a78). fn_bfa3c reaches fn_cb18c through fn_fb730. The game's boot.nbinit
+// fixes the frame rate at 60 (FixedFrameRate_Fps60). The game sets a temporary rate of 0 or 1 only (fn_383aa0), and
 // bex::MainModule::GetTimePerFrame gives 1/60 s for both. A frame of the game takes the stream on by a 60th of its
 // sample rate. The writes that it makes reach the sequence from the first frame of 5 ms that starts at or after it. The
 // writes go on for `extra` frames of 5 ms past the pass and the loop, while the stream's loop plays again. Throws

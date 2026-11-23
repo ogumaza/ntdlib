@@ -23,14 +23,13 @@
 #include "xsflib/text.h"
 
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/ntr/main_memory.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/snd/tables.h"
 #include "ntdlib/ntr/sound.h"
 namespace ntdlib::ntr::snd
 {
-
-constexpr uint32_t kMainMemory = 0x02000000;
 
 // The sound unit's registers.
 constexpr uint32_t kChannelRegisters = 0x04000400;

@@ -12,6 +12,8 @@
 #include <variant>
 #include <vector>
 
+#include "ntdlib/rounding.h"
+
 namespace ntdlib::jac
 {
 
@@ -24,11 +26,6 @@ constexpr uint32_t kPlaces = 0x100;
 // The deepest chain of scenes that the model follows through their dependencies. The game's search and close follow a
 // chain without limit, and a cycle never ends there.
 constexpr uint32_t kMaxDepth = 64;
-
-constexpr uint32_t Align32(uint32_t size)
-{
-    return (size + 0x1f) & ~0x1fu;
-}
 
 jaudio2::WaveInfo WaveInfoOf(const ntdlib::jaudio::WaveInfo& wave)
 {
@@ -104,7 +101,7 @@ bool Aram::Alloc(uint32_t heap, uint32_t size)
         return false;
     }
 
-    const uint32_t aligned = Align32(size);
+    const uint32_t aligned = AlignUp(size, 32);
     if (mother.size - mother.used >= aligned)
     {
         // At the end of what the mother heap has given. The heap becomes the mother heap's last child.
@@ -640,7 +637,7 @@ void Banks::UpdateWave(WaveSystemState& system, WaveHandle& handle, uint32_t arc
     if (start != 0)
     {
         const WaveRecord& r = a.records[record];
-        aram_.SelfAlloc(handle.heap, a.heap, Align32(r.size), start + r.offset);
+        aram_.SelfAlloc(handle.heap, a.heap, AlignUp(r.size, 32), start + r.offset);
     }
 }
 
@@ -721,7 +718,7 @@ bool Banks::LoadAram(const std::string& name, uint32_t offset, uint32_t size, ui
     const uint64_t copied = std::min({uint64_t{bytes}, available, room});
     std::copy_n(file->begin() + static_cast<std::ptrdiff_t>(offset), copied,
                 memory_.Bytes().begin() + static_cast<std::ptrdiff_t>(destination));
-    status = Align32(bytes);
+    status = AlignUp(bytes, 32);
 
     return true;
 }

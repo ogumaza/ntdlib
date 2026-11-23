@@ -2,10 +2,12 @@
 
 // The conversion tests of what only the 3DS does: legatos that leave out the region's volume, one-shot ends at the
 // DSP's positions, the random generator's 17 steps before a sound starts, effect sends that reach nothing, and the
-// DSP's interpolation in SFZ. sequence_export_test.cpp runs the tests that hold on other consoles as well. The
-// recording engine's voice layer for the 3DS ends a one-shot at the same frame, and drops the voice with the lowest
-// priority from a full pool. On the core, a legato leaves the channel's envelope where it is. With the game's voices, a
-// new note takes the voice of the oldest note of the lowest priority. A note that every voice outranks plays nothing.
+// DSP's interpolation in SFZ. The tests on synthetic archives (sequence_export_test.h) run the tests that apply to
+// other consoles as well. The recording engine's voice layer for the 3DS ends a one-shot at the same frame, and drops
+// the voice with the lowest priority from a full pool. On the core, a legato leaves the channel's envelope where it is.
+// With the game's voices, a new note takes the voice of the oldest note of the lowest priority. A note that every voice
+// outranks plays nothing. A sound's low-pass adds to the tracks' and converts at the game's step. A track's 0xd8 adds
+// to the sound's low-pass.
 
 #include <algorithm>
 #include <cstddef>
@@ -22,9 +24,11 @@
 
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/recording_engine.h"
+#include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/testing/sar_files.h"
 #include "sequence_export_test.h"
@@ -394,13 +398,73 @@ int NoteLevel(const Performance& p)
 void TestHandleVolumeMultipliesTheSoundsVolume()
 {
     // A volume of 0.25 from the sound's handle quarters the channel's amplitude, as a sound's volume of 32 from the
-    // archive would. The MIDI file's level is the square root of the amplitude, so the note's CC7 times CC11 halves.
+    // archive would. The MIDI file's level is the square root of the amplitude. The note's CC7 times CC11 halves.
     const std::vector<uint8_t> kNote = {0x3c, 0x64, 0x30, 0xff};
     const Performance full = PerformOnBank(kNote, OneRegionFbnk({{0x05000000, 0}}));
     const Performance quarter = PerformOnBank(kNote, OneRegionFbnk({{0x05000000, 0}}), 1, {.volume = 0.25f});
 
     const double ratio = static_cast<double>(NoteLevel(quarter)) / NoteLevel(full);
     XSFLIB_CHECK(ratio > 0.49 && ratio < 0.51);
+}
+
+void TestSoundLowPassTakesTheGamesStep()
+{
+    // The player adds the sound's low-pass to the track's, and the voice adds 1. A sound's -0.4 on a track's 0 gives
+    // 0.6, step 13 (1600 Hz). Argument 38 gives 0.59375, step 13. Argument 39, the sum rounded toward zero, gives
+    // 0.609375, step 14 (2000 Hz).
+    const Settings& settings = console->settings;
+    XSFLIB_CHECK(LowPassArgument(0.0f, -0.4f, settings) == 38);
+    XSFLIB_CHECK(ToSoundFont(TrackFilters(38, 0, 0, settings), settings).low_pass_hz == 1600);
+
+    // A sound's -0.395 gives 0.605, step 14. Argument 38 gives step 13, and 39 gives step 14.
+    XSFLIB_CHECK(LowPassArgument(0.0f, -0.395f, settings) == 39);
+
+    // A track's low-pass alone keeps its argument: 0xd8 argument 48 and 80.
+    XSFLIB_CHECK(LowPassArgument(-0.25f, 0.0f, settings) == 48 && LowPassArgument(0.25f, 0.0f, settings) == 80);
+
+    // The Wii's conversion ignores the sound's low-pass.
+    Settings wii = settings;
+    wii.engine = Engine::kRevolution;
+    XSFLIB_CHECK(LowPassArgument(-0.25f, -0.4f, wii) == 48);
+}
+
+void TestSoundLowPassPlaysAsTheTracks()
+{
+    // A sound's low-pass of -0.4 converts as the track's low-pass of argument 38 (TestSoundLowPassTakesTheGamesStep):
+    // the preset's fitted cutoff of step 13 in the SoundFont, and CC103 at 64 - 38 for the SFZ files.
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
+    const std::vector<uint8_t> wave = Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true);
+    const SoundArchive plain = OneSequenceArchive({0x3c, 0x64, 0x30, 0xff}, bank, wave);
+    const SoundArchive filtered = OneSequenceArchive({0xd8, 38, 0x3c, 0x64, 0x30, 0xff}, bank, wave);
+
+    const Conversion sound = ConvertSequence(plain, 0, {.lpf = -0.4f});
+    const Conversion track = ConvertSequence(filtered, 0);
+    const Conversion open = ConvertSequence(plain, 0);
+
+    XSFLIB_CHECK(sound.sf2 == track.sf2 && sound.midi == track.midi);
+    XSFLIB_CHECK(sound.sf2 != open.sf2 && sound.midi != open.midi);
+    XSFLIB_CHECK(sound.performance.presets.size() == 1 && sound.performance.presets[0].filter.low_pass_hz == 1600);
+    XSFLIB_CHECK(
+        sound.performance.approximations.contains("low-pass filter (one-pole in the game, two-pole in the SoundFont)"));
+}
+
+void TestTrackLowPassAddsToTheSounds()
+{
+    // A 0xd8 command adds to the sound's low-pass and doesn't replace it. With the sound's -0.4, arguments 48 and 127
+    // convert as arguments 38, 22 and 101 without it. A filter that changes between notes goes out as a controller. The
+    // MIDI files then show a difference that the SoundFonts can miss.
+    const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
+    const std::vector<uint8_t> wave = Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true);
+    const SoundArchive sound_archive = OneSequenceArchive(
+        {0x3c, 0x64, 0x30, 0xd8, 48, 0x3c, 0x64, 0x30, 0xd8, 127, 0x3c, 0x64, 0x30, 0xff}, bank, wave);
+    const SoundArchive track_archive = OneSequenceArchive(
+        {0xd8, 38, 0x3c, 0x64, 0x30, 0xd8, 22, 0x3c, 0x64, 0x30, 0xd8, 101, 0x3c, 0x64, 0x30, 0xff}, bank, wave);
+
+    const Conversion sound = ConvertSequence(sound_archive, 0, {.lpf = -0.4f});
+    const Conversion track = ConvertSequence(track_archive, 0);
+
+    XSFLIB_CHECK(sound.sf2 == track.sf2);
+    XSFLIB_CHECK(sound.midi == track.midi);
 }
 
 // An archive whose sequence lists `first_bank` in slot 0. Bank 0x03000000 plays its region at volume 127 and bank
@@ -444,6 +508,9 @@ const Test kTests[] = {
     TestEffectSendsReachNothing,
     TestSfzRegionFollowsTheDspsInterpolation,
     TestHandleVolumeMultipliesTheSoundsVolume,
+    TestSoundLowPassTakesTheGamesStep,
+    TestSoundLowPassPlaysAsTheTracks,
+    TestTrackLowPassAddsToTheSounds,
     TestStartBanksReplaceTheArchives,
 };
 

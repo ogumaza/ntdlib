@@ -8,7 +8,7 @@
 // A song holds a song chunk with the song's settings, then a track chunk for each track and an end chunk (eoc). Each
 // track chunk ends on a multiple of 4 bytes, padded with 0x98. A track holds a preamble of 4 bytes (its number, its
 // channel and two zeros), then its events. A wave bank holds its waves' parameters (wavi), its programs (prgi), its key
-// groups (kgrp), its samples (pcmd) and an end chunk (eod), each on a multiple of 16 bytes. A bank's waves can lie in
+// groups (kgrp), its samples (pcmd) and an end chunk (eod), each on a multiple of 16 bytes. A bank's waves can be in
 // another bank, the main bank. A bank of sound effects holds its sequences (seq), two tables (mcrl and bnkl) and an end
 // chunk. Some games' banks of sound effects have a second layout. The reader doesn't read it (UnsupportedLayout).
 //
@@ -32,6 +32,9 @@ namespace ntdlib::dse
 {
 
 constexpr uint16_t kVersion = 0x0415;
+
+// The version of Luminous Arc's files.
+constexpr uint16_t kOldestVersion = 0x0402;
 
 // A file of a layout that the readers recognise but don't read. A bank of sound effects of the second layout holds no
 // chunk around its sequences, and no mcrl, bnkl or eod chunk. The table of its sequences' offsets follows the header

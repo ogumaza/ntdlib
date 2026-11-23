@@ -19,7 +19,7 @@
 namespace ntdlib::ntr
 {
 
-// Where a binary lies in the image and where the console loads it.
+// Where a binary is in the image and where the console loads it.
 struct Binary
 {
     friend bool operator==(const Binary&, const Binary&) = default;
@@ -65,6 +65,12 @@ struct RomHeader
     std::optional<Binary> arm7i;
 };
 
+// Whether a DS machine runs the image in DSi mode: the image runs only on a DSi.
+inline bool RunsInDsiMode(const RomHeader& header)
+{
+    return header.unit_code == static_cast<uint8_t>(UnitCode::kDsiOnly);
+}
+
 // An overlay: a part of a binary that the game loads at run time. Each one is a file of the file system.
 struct Overlay
 {
@@ -95,8 +101,8 @@ public:
     // Reads a whole image, such as a dump of a cartridge. Throws xsflib::FormatError when the header, the FNT or the
     // FAT doesn't fit in the image, or when the bytes of a file don't. A cut-down image is an error here.
     static Rom Parse(std::span<const uint8_t> image);
-    // A Rom keeps a view of the image, so the image must outlive it. A temporary vector would be gone at the end of the
-    // call.
+    // A Rom keeps a view of the image. The image must therefore outlive it. A temporary vector would be gone at the end
+    // of the call.
     static Rom Parse(std::vector<uint8_t>&& image) = delete;
 
     // Reads a partial image, such as the image of a 2SF set: a game image cut down to the data that the music uses. The

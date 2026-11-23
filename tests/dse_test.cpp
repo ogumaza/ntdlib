@@ -18,6 +18,7 @@
 
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/dse/game_starts.h"
 #include "ntdlib/dse/ticks.h"
 #include "ntdlib/testing/dse_files.h"
 
@@ -36,7 +37,7 @@ using dse_files::SequenceInfoBytes;
 using dse_files::TrackChunk;
 
 // A song with two tracks. Track 0 sets the tempo, plays a note with a length of one byte, pauses, ends, and holds two
-// bytes after its end. Track 1 sets its volume, and its chunk's size leaves out its end, which lies in the padding.
+// bytes after its end. Track 1 sets its volume, and its chunk's size leaves out its end. The end is in the padding.
 Bytes SongFile()
 {
     Builder b;
@@ -113,8 +114,8 @@ void TestSongRefusals()
     file[0] = 'x';
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { dse::Song::Parse(file); }) == "not a DSE smdl file");
 
-    // Track 1 sets its volume, then starts a wait of 16 bits in its last byte. Its 8 bytes are a multiple of 4, so it
-    // has no padding, and the wait's second byte lies past the chunk.
+    // Track 1 sets its volume, then starts a wait of 16 bits in its last byte. Its 8 bytes are a multiple of 4. The
+    // track therefore has no padding, and the wait's second byte is past the chunk.
     file = SongFile();
     Builder b;
     b.Append(Bytes(file.begin(), file.begin() + 0xA0));
@@ -124,8 +125,8 @@ void TestSongRefusals()
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { dse::Song::Parse(endless); }) == "a track has no end");
 }
 
-// A track can fill its chunk without an end. Track 1 sets its volume twice in 8 bytes, a multiple of 4, so it has no
-// padding. The song reads, and comes back byte for byte.
+// A track can fill its chunk without an end. Track 1 sets its volume twice in 8 bytes, a multiple of 4. The track
+// therefore has no padding. The song reads, and comes back byte for byte.
 void TestTrackFillsItsChunk()
 {
     const Bytes file = SongFile();
@@ -373,12 +374,135 @@ void TestTicks()
     const dse::GameTick london = dse::TickOf("BLFE", "ll/common/ll_common.darc/");
     const dse::GameTick other = dse::TickOf("BLFE", "lt4/wav/");
     const dse::GameTick sky = dse::TickOf("C2SP", "SOUND/BGM/");
-    const dse::GameTick unknown = dse::TickOf("ANIE", "BGM/");
+    const dse::GameTick unknown = dse::TickOf("AMHE", "BGM/");
     XSFLIB_CHECK(main.listed && main.tick_microseconds == dse::Driver::kSlowTickMicroseconds);
     XSFLIB_CHECK(london.listed && london.tick_microseconds == dse::Driver::kTickMicroseconds);
     XSFLIB_CHECK(other.listed && !other.tick_microseconds);
     XSFLIB_CHECK(sky.listed && sky.tick_microseconds == dse::Driver::kTickMicroseconds);
     XSFLIB_CHECK(!unknown.listed && !unknown.tick_microseconds);
+}
+
+// The levels at which the games start their songs. In Explorers of Sky (North America), bgm0086 starts at 180 first,
+// with a state at full level, bgm0089 starts at 200 alone, and bgm0084 has no row: its levels below full are of one
+// scene each. A song without a row, another region and a sound effect's bank start at full level. Explorers of Time and
+// of Darkness share their rows, without Sky's second state of bgm0086. Fuurai no Shiren DS 2 starts LOW_TONE at 220
+// first and BOOM2 at full level first. Professor Layton and the Diabolical Box starts every song at full level. DSE's
+// start takes the volume level × 127 >> 8: 200 gives 99, 180 gives 89, 240 gives 119, 235 gives 116, 220 gives 109 and
+// 256 gives the default 127.
+void TestSongStates()
+{
+    const std::vector<dse::SongState> one = {dse::SongState{}};
+    const dse::StartParameters defaults;
+
+    const std::vector<dse::SongState> peace = dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0086.smd");
+    const std::vector<dse::SongState> intro = dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0089.smd");
+    const std::vector<dse::SongState> waterfall = dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0125.smd");
+    const std::vector<dse::SongState> restored = dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0084.smd");
+    const std::vector<dse::SongState> plain = dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0001.smd");
+    const std::vector<dse::SongState> europe = dse::SongStatesOf("C2SP", "SOUND/BGM/bgm0086.smd");
+    const std::vector<dse::SongState> effects = dse::SongStatesOf("C2SE", "SOUND/SYSTEM/se_sys.sed");
+    const std::vector<dse::SongState> time = dse::SongStatesOf("YFTE", "SOUND/BGM/bgm0086.smd");
+    const std::vector<dse::SongState> darkness = dse::SongStatesOf("YFYE", "SOUND/BGM/bgm0086.smd");
+    const std::vector<dse::SongState> time_waves = dse::SongStatesOf("YFTE", "SOUND/BGM/bgm0181.smd");
+    const std::vector<dse::SongState> half_code = dse::SongStatesOf("YFT", "SOUND/BGM/bgm0086.smd");
+    const std::vector<dse::SongState> two_codes = dse::SongStatesOf("YFTE YFYE", "SOUND/BGM/bgm0086.smd");
+    const std::vector<dse::SongState> low_tone = dse::SongStatesOf("YWFJ", "mid/SND_BGM_M_LOW_TONE.SMD");
+    const std::vector<dse::SongState> boom = dse::SongStatesOf("YWFJ", "mid/SND_BGM_M_BOOM2.SMD");
+    const std::vector<dse::SongState> castle = dse::SongStatesOf("YWFJ", "mid/SND_BGM_M_CASTLE.SMD");
+    const std::vector<dse::SongState> long_ateka = dse::SongStatesOf("YWFJ", "mid/SND_BGM_M_ATEKA2_L.SMD");
+    const std::vector<dse::SongState> ougon = dse::SongStatesOf("YWFJ", "mid/SND_BGM_M_OUGON.SMD");
+    const std::vector<dse::SongState> layton = dse::SongStatesOf("YLTE", "data_lt2/sound/BG_012.SMD");
+    const std::vector<dse::SongState> arc = dse::SongStatesOf("ANIE", "data/Snd.iear/04TITLE.SMD");
+    const std::vector<dse::SongState> arc_other_game = dse::SongStatesOf("YL2E", "data/Snd.iear/04TITLE.SMD");
+    const std::vector<dse::SongState> arc_below = dse::SongStatesOf("ANIE", "data/Snd.iear/sub/04TITLE.SMD");
+    const std::vector<dse::SongState> arc_beside = dse::SongStatesOf("ANIE", "data/Snd.iear2/04TITLE.SMD");
+
+    const dse::StartParameters full = dse::StartOf(dse::SongState{});
+    const dse::StartParameters lower = dse::StartOf(intro.front());
+    const dse::StartParameters peace_start = dse::StartOf(peace.front());
+    const dse::StartParameters castle_start = dse::StartOf(castle.front());
+    const dse::StartParameters ateka_start = dse::StartOf(long_ateka.front());
+    const dse::StartParameters boom_start = dse::StartOf(boom.back());
+    const dse::StartParameters arc_start = dse::StartOf(arc.front());
+
+    XSFLIB_CHECK((peace == std::vector<dse::SongState>{{"", 180}, {"_LEVEL256", dse::kFullLevel}}));
+    XSFLIB_CHECK((intro == std::vector<dse::SongState>{{"", 200}}));
+    XSFLIB_CHECK((waterfall == std::vector<dse::SongState>{{"", dse::kFullLevel}, {"_LEVEL190", 190}}));
+    XSFLIB_CHECK(restored == one && plain == one && europe == one && effects == one);
+    XSFLIB_CHECK((time == std::vector<dse::SongState>{{"", 180}}) && darkness == time);
+    XSFLIB_CHECK(time_waves == one && half_code == one && two_codes == one);
+    XSFLIB_CHECK((low_tone == std::vector<dse::SongState>{{"", 220}, {"_LEVEL256", dse::kFullLevel}}));
+    XSFLIB_CHECK((boom == std::vector<dse::SongState>{{"", dse::kFullLevel}, {"_LEVEL220", 220}}));
+    XSFLIB_CHECK((castle == std::vector<dse::SongState>{{"", 240}}) && ougon == one && layton == one);
+    XSFLIB_CHECK(full.flags == defaults.flags && full.volume == 127 && full.volume_ms == 0 &&
+                 full.tempo == defaults.tempo && full.pan == defaults.pan);
+    XSFLIB_CHECK(lower.flags == defaults.flags && lower.volume == 99 && lower.volume_ms == 0);
+    XSFLIB_CHECK(peace_start.volume == 89 && castle_start.volume == 119 && ateka_start.volume == 116 &&
+                 boom_start.volume == 109);
+    // A folder's row: every song directly in data/Snd.iear, in Luminous Arc alone, at the game's volume of 100.
+    XSFLIB_CHECK((arc == std::vector<dse::SongState>{{"", 202}}) && arc_start.volume == 100);
+    XSFLIB_CHECK(arc_other_game == one && arc_below == one && arc_beside == one);
+}
+
+// Every song that the games start below full level or in several states, with its states. The levels are the starts in
+// the games' scripts, counted once for each scene. Explorers of Darkness gives each of Time's rows. Songs that the rule
+// leaves out have one state at full level: Explorers of Sky's bgm0100 (128 in 10 of 57 scenes) and bgm0114 (one scene
+// at each level below full), Time's bgm0084 (one scene at each level), and Darkness's bgm0182 and bgm0189. Only Sky's
+// scripts start those two below full level. Luminous Arc's row covers every song of its folder, with the level that
+// gives the game's volume of 100.
+void TestEveryRow()
+{
+    struct Expected
+    {
+        std::string_view game_code;
+        std::string_view path;
+        std::vector<dse::SongState> states;
+    };
+    const std::vector<dse::SongState> one = {dse::SongState{}};
+    const std::vector<Expected> rows = {
+        {"C2SE", "SOUND/BGM/bgm0086.smd", {{"", 180}, {"_LEVEL256", 256}}},
+        {"C2SE", "SOUND/BGM/bgm0087.smd", {{"", 200}}},
+        {"C2SE", "SOUND/BGM/bgm0089.smd", {{"", 200}}},
+        {"C2SE", "SOUND/BGM/bgm0102.smd", {{"", 180}}},
+        {"C2SE", "SOUND/BGM/bgm0121.smd", {{"", 192}}},
+        {"C2SE", "SOUND/BGM/bgm0125.smd", {{"", 256}, {"_LEVEL190", 190}}},
+        {"C2SE", "SOUND/BGM/bgm0127.smd", {{"", 128}}},
+        {"C2SE", "SOUND/BGM/bgm0181.smd", {{"", 256}, {"_LEVEL190", 190}}},
+        {"C2SE", "SOUND/BGM/bgm0182.smd", {{"", 190}}},
+        {"C2SE", "SOUND/BGM/bgm0189.smd", {{"", 190}}},
+        {"YFTE", "SOUND/BGM/bgm0086.smd", {{"", 180}}},
+        {"YFTE", "SOUND/BGM/bgm0087.smd", {{"", 200}}},
+        {"YFTE", "SOUND/BGM/bgm0089.smd", {{"", 200}}},
+        {"YFTE", "SOUND/BGM/bgm0102.smd", {{"", 180}}},
+        {"YFTE", "SOUND/BGM/bgm0121.smd", {{"", 192}}},
+        {"YFTE", "SOUND/BGM/bgm0125.smd", {{"", 256}, {"_LEVEL190", 190}}},
+        {"YFTE", "SOUND/BGM/bgm0127.smd", {{"", 128}}},
+        {"YWFJ", "mid/SND_BGM_M_ATEKA2.SMD", {{"", 240}}},
+        {"YWFJ", "mid/SND_BGM_M_ATEKA2_L.SMD", {{"", 235}}},
+        {"YWFJ", "mid/SND_BGM_M_ATEKA2_S.SMD", {{"", 240}}},
+        {"YWFJ", "mid/SND_BGM_M_BOOM2.SMD", {{"", 256}, {"_LEVEL220", 220}}},
+        {"YWFJ", "mid/SND_BGM_M_CASTLE.SMD", {{"", 240}}},
+        {"YWFJ", "mid/SND_BGM_M_CASTLE_S.SMD", {{"", 240}}},
+        {"YWFJ", "mid/SND_BGM_M_G_BOSS.SMD", {{"", 256}, {"_LEVEL240", 240}}},
+        {"YWFJ", "mid/SND_BGM_M_LOW_TONE.SMD", {{"", 220}, {"_LEVEL256", 256}}},
+        {"YWFJ", "mid/SND_BGM_M_OPENING_CASTLE.SMD", {{"", 240}}},
+        {"ANIE", "data/Snd.iear/04TITLE.SMD", {{"", 202}}},
+    };
+
+    for (const Expected& row : rows)
+    {
+        XSFLIB_CHECK(dse::SongStatesOf(row.game_code, row.path) == row.states);
+        if (row.game_code == "YFTE")
+        {
+            XSFLIB_CHECK(dse::SongStatesOf("YFYE", row.path) == row.states);
+        }
+    }
+
+    XSFLIB_CHECK(dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0100.smd") == one);
+    XSFLIB_CHECK(dse::SongStatesOf("C2SE", "SOUND/BGM/bgm0114.smd") == one);
+    XSFLIB_CHECK(dse::SongStatesOf("YFTE", "SOUND/BGM/bgm0084.smd") == one);
+    XSFLIB_CHECK(dse::SongStatesOf("YFYE", "SOUND/BGM/bgm0182.smd") == one);
+    XSFLIB_CHECK(dse::SongStatesOf("YFYE", "SOUND/BGM/bgm0189.smd") == one);
 }
 
 // Each setter of a sequence's settings writes its value where SequenceInfoBytes holds it, and leaves the other bytes.
@@ -509,6 +633,8 @@ int main()
     TestSoundEffects();
     TestSoundEffectsSecondLayout();
     TestTicks();
+    TestSongStates();
+    TestEveryRow();
     TestSequenceInfoSetters();
     TestWaveInfoSetters();
     TestSplitView();

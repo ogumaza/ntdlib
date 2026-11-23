@@ -27,7 +27,7 @@ uint32_t Bits(float value)
     return std::bit_cast<uint32_t>(value);
 }
 
-// Whether `result` is the float nearest the exact value `exact`, with ties to even. `exact` lies in the range of the
+// Whether `result` is the float nearest the exact value `exact`, with ties to even. `exact` is in the range of the
 // normal floats. The floats on either side of it and their distances from it are exact in double precision.
 bool NearestFrom(float result, double exact)
 {
@@ -70,7 +70,7 @@ void TestProducts()
     }
     XSFLIB_CHECK(wrong == 0);
 
-    // 3 · (1 + 2^-23) lies halfway between two floats. The tie goes to the even one, the higher.
+    // 3 · (1 + 2^-23) is halfway between two floats. The tie goes to the even one, the higher.
     XSFLIB_CHECK(Bits(vfp::Mul(3.0f, std::nextafter(1.0f, 2.0f))) == 0x40400002u);
     XSFLIB_CHECK(Bits(vfp::Mul(-3.0f, std::nextafter(1.0f, 2.0f))) == 0xc0400002u);
 
@@ -90,7 +90,7 @@ void TestProducts()
 
 void TestSums()
 {
-    // Sums of floats whose exponents lie within 20 of each other: a double holds them exactly.
+    // Sums of floats whose exponents are within 20 of each other: a double holds them exactly.
     std::mt19937 random(2);
     int wrong = 0;
     for (int i = 0; i < 100000; i++)
@@ -110,7 +110,7 @@ void TestSums()
     }
     XSFLIB_CHECK(wrong == 0);
 
-    // Ties go to the even float: 1 + 2^-24 to 1, and (1 + 2^-23) + 2^-24 to 1 + 2^-22. 1 - 2^-25 lies halfway between
+    // Ties go to the even float: 1 + 2^-24 to 1, and (1 + 2^-23) + 2^-24 to 1 + 2^-22. 1 - 2^-25 is halfway between
     // 1 and the float below it, and goes to 1. A sum just past a tie goes to the far float.
     const float half_step = std::ldexp(1.0f, -24);
     XSFLIB_CHECK(Bits(vfp::Add(1.0f, half_step)) == 0x3f800000u);
@@ -140,7 +140,7 @@ void TestQuotients()
         const float b = RandomFloat(random);
         const float q = vfp::Div(a, b);
 
-        // The quotient lies between the midpoints of q with the floats on either side of it. A midpoint holds 25
+        // The quotient is between the midpoints of q with the floats on either side of it. A midpoint holds 25
         // significant bits, and its product with b is exact in double precision. On a tie, q is even.
         const double magnitude = std::fabs(static_cast<double>(q));
         const double up = (magnitude + std::nextafter(std::fabs(q), INFINITY)) / 2.0;
@@ -165,7 +165,7 @@ void TestQuotients()
 
 void TestConversions()
 {
-    // To nearest: 16,777,219 and 16,777,221 lie halfway between floats, and both go to the even one, 16,777,220.
+    // To nearest: 16,777,219 and 16,777,221 are halfway between floats, and both go to the even one, 16,777,220.
     // 2^32 - 1 goes to 2^32.
     XSFLIB_CHECK(vfp::FromU32(16777219) == 16777220.0f);
     XSFLIB_CHECK(vfp::FromU32(16777221) == 16777220.0f);
@@ -217,7 +217,7 @@ void TestPower()
     XSFLIB_CHECK(vfp::PowF(4.0f, -0.5f) == 0.5f);
 
     // The special values, a power below the normal floats and one above them. A y next to 0 counts as -2^-64: its
-    // power lies just below 1, and rounds to 1. A denormal y counts as 0.
+    // power is just below 1, and rounds to 1. A denormal y counts as 0.
     XSFLIB_CHECK(vfp::PowF(10.0f, 0.0f) == 1.0f);
     XSFLIB_CHECK(vfp::PowF(10.0f, -0.0f) == 1.0f);
     XSFLIB_CHECK(vfp::PowF(10.0f, -INFINITY) == 0.0f);

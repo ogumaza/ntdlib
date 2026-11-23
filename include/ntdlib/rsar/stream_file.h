@@ -22,7 +22,7 @@
 // before that, for each channel in turn, big-endian. The tools count the entries as if the interval were in bytes of a
 // channel's samples: for each block, its bytes divided by the interval and rounded up. Most streams give a block's
 // samples as the interval. Each block then has one entry, for its start. Some give 1,024. The entries then stop part
-// of the way through a stream, and only every 14th lies at a block's start. Zeros pad ADPC to 32 bytes. NW4R SND reads
+// of the way through a stream, and only every 14th is at a block's start. Zeros pad ADPC to 32 bytes. NW4R SND reads
 // entry `block` for a stream that starts at block `block`, whatever the interval (StrmFileLoader::ReadAdpcBlockData,
 // main.dol 0x80048614). A stream that plays from its start takes the decoder's history from the DSP-ADPCM info, and
 // decodes its blocks as one run of frames. The DSP-ADPCM info's state at the loop's start holds the decoded samples
@@ -77,7 +77,7 @@ struct StreamFile
     // Reads `file`. Throws xsflib::FormatError for a file that isn't a stream file of version 1.0, one without HEAD or
     // DATA, a DSP-ADPCM stream without ADPC, an encoding other than PCM and DSP-ADPCM, settings whose blocks don't add
     // up to the samples, blocks whose pieces hold headers, blocks that run past DATA, entries that run past ADPC, and a
-    // track that plays a channel that the stream lacks.
+    // track that plays a channel missing from the stream.
     static StreamFile Read(std::span<const uint8_t> file);
 
     // The file's bytes, laid out as the tools lay a stream file out. A track's volume and pan go into extended infos
@@ -85,8 +85,8 @@ struct StreamFile
     // samples, blocks of another number of samples than StreamBlockSamples gives, a rate of 0 or past 24 bits, a loop
     // that starts at the end or after it, a DSP-ADPCM channel without its info or a PCM channel with one, channels
     // whose samples or entries of ADPC don't fit the settings, a DSP-ADPCM stream without an interval or a PCM stream
-    // with one, more than 255 tracks or channels in a track, a track that plays a channel that the stream lacks, and a
-    // file past 4 GB.
+    // with one, more than 255 tracks or channels in a track, a track that plays a channel missing from the stream, and
+    // a file past 4 GB.
     std::vector<uint8_t> Write() const;
 
     // The bytes of each channel's piece of every block but the last: 8 KiB in every stream that the tools write.

@@ -102,6 +102,157 @@ struct Command
 // The commands that the ARM9 sends at once. The driver runs each list whole, then counts it in the shared work.
 using CommandList = std::vector<Command>;
 
+// The first argument of kTrackParameter: the player in the low 24 bits, and the value's size in bytes from bit 24 on.
+constexpr uint32_t kTrackParameterPlayerBits = 0x00FFFFFF;
+constexpr int kTrackParameterSizeShift = 24;
+
+// The player that `command` addresses, as the driver reads it: the first argument (its player bits for
+// kTrackParameter), modulo kPlayerCount. It counts for the commands that start, prepare, stop, pause or skip a
+// sequence, and for kPlayerParameter, kTrackParameter, kMuteTrack and kAllocatableChannels.
+constexpr int PlayerOf(const Command& command)
+{
+    const uint32_t player =
+        command.id == CommandId::kTrackParameter ? command.args[0] & kTrackParameterPlayerBits : command.args[0];
+    return static_cast<int>(player % kPlayerCount);
+}
+
+// The offsets of the fields of a player (SNDPlayer) that kPlayerParameter sets: the priority of the player's channels
+// (a byte), its fader (2 bytes) and the ratio of its tempo (2 bytes, 256 for the sequence's tempo).
+constexpr uint32_t kPlayerPriorityOffset = 0x04;
+constexpr uint32_t kPlayerFaderOffset = 0x06;
+constexpr uint32_t kPlayerTempoRatioOffset = 0x1A;
+
+// The offsets of the fields of a track (SNDTrack) that kTrackParameter sets: its fader and its pitch (2 bytes each).
+constexpr uint32_t kTrackFaderOffset = 0x0A;
+constexpr uint32_t kTrackPitchOffset = 0x0C;
+
+// The mask of every track of a player, for kAllocatableChannels, kTrackParameter and kMuteTrack.
+constexpr uint32_t kAllTracks = 0xFFFF;
+
+// The hardware channel that a kSetUpPcmChannel, kSetUpPsgChannel or kSetUpNoiseChannel command sets up.
+constexpr int SetUpChannel(const Command& command)
+{
+    return static_cast<int>(command.args[0] & 0xF);
+}
+
+// What a kSetUpPcmChannel command sets up, as the driver reads its arguments.
+struct PcmChannelSetup
+{
+    friend bool operator==(const PcmChannelSetup&, const PcmChannelSetup&) = default;
+
+    int channel = 0;
+    uint32_t data = 0;   // the address of the samples
+    int format = 0;      // SOUNDxCNT's format: 0 for PCM8, 1 for PCM16, 2 for IMA-ADPCM
+    int loop = 0;        // SOUNDxCNT's repeat mode: 1 loops, 2 plays once
+    int loop_start = 0;  // in words of 4 bytes
+    int loop_length = 0; // the words after the loop's start
+    int volume = 0;
+    int divider = 0;
+    int timer = 0; // the ticks of a sample, at half the system clock
+    int pan = 0;
+};
+
+constexpr PcmChannelSetup ReadPcmChannelSetup(const Command& command)
+{
+    const std::array<uint32_t, 4>& a = command.args;
+    return {.channel = SetUpChannel(command),
+            .data = a[1] & 0x7FFFFFF,
+            .format = static_cast<int>((a[3] >> 24) & 0x3),
+            .loop = static_cast<int>((a[3] >> 26) & 0x3),
+            .loop_start = static_cast<int>(a[3] & 0xFFFF),
+            .loop_length = static_cast<int>(a[2] & 0x3FFFFF),
+            .volume = static_cast<int>((a[2] >> 24) & 0x7F),
+            .divider = static_cast<int>((a[2] >> 22) & 0x3),
+            .timer = static_cast<int>((a[0] >> 16) & 0xFFFF),
+            .pan = static_cast<int>((a[3] >> 16) & 0x7F)};
+}
+
+// What a kSetUpPsgChannel command sets up, as the driver reads its arguments.
+struct PsgChannelSetup
+{
+    friend bool operator==(const PsgChannelSetup&, const PsgChannelSetup&) = default;
+
+    int channel = 0;
+    int duty = 0; // the square wave's duty: SOUNDxCNT's bits 24 to 26
+    int volume = 0;
+    int divider = 0;
+    int timer = 0;
+    int pan = 0;
+};
+
+constexpr PsgChannelSetup ReadPsgChannelSetup(const Command& command)
+{
+    const std::array<uint32_t, 4>& a = command.args;
+    return {.channel = SetUpChannel(command),
+            .duty = static_cast<int>(a[3]),
+            .volume = static_cast<int>(a[1] & 0x7F),
+            .divider = static_cast<int>((a[1] >> 8) & 0x3),
+            .timer = static_cast<int>((a[2] >> 8) & 0xFFFF),
+            .pan = static_cast<int>(a[2] & 0x7F)};
+}
+
+// What a kSetUpNoiseChannel command sets up, as the driver reads its arguments.
+struct NoiseChannelSetup
+{
+    friend bool operator==(const NoiseChannelSetup&, const NoiseChannelSetup&) = default;
+
+    int channel = 0;
+    int volume = 0;
+    int divider = 0;
+    int timer = 0;
+    int pan = 0;
+};
+
+constexpr NoiseChannelSetup ReadNoiseChannelSetup(const Command& command)
+{
+    const std::array<uint32_t, 4>& a = command.args;
+    return {.channel = SetUpChannel(command),
+            .volume = static_cast<int>(a[1] & 0x7F),
+            .divider = static_cast<int>((a[1] >> 8) & 0x3),
+            .timer = static_cast<int>((a[2] >> 8) & 0xFFFF),
+            .pan = static_cast<int>(a[2] & 0x7F)};
+}
+
+namespace detail
+{
+
+// A field of a set-up as the bits of a command's argument.
+constexpr uint32_t CommandBits(int field)
+{
+    return static_cast<uint32_t>(field);
+}
+
+} // namespace detail
+
+// The commands that set up a channel as `setup` says: the inverses of the readers above. Each field goes into its bits
+// without a mask. A field too wide for its bits, or a negative one, also sets bits above them. Only a field that fits
+// reads back the same.
+constexpr Command CommandOf(const PcmChannelSetup& setup)
+{
+    using detail::CommandBits;
+    return {CommandId::kSetUpPcmChannel,
+            {CommandBits(setup.channel) | CommandBits(setup.timer) << 16, setup.data,
+             CommandBits(setup.loop_length) | CommandBits(setup.divider) << 22 | CommandBits(setup.volume) << 24,
+             CommandBits(setup.loop_start) | CommandBits(setup.pan) << 16 | CommandBits(setup.format) << 24 |
+                 CommandBits(setup.loop) << 26}};
+}
+
+constexpr Command CommandOf(const PsgChannelSetup& setup)
+{
+    using detail::CommandBits;
+    return {CommandId::kSetUpPsgChannel,
+            {CommandBits(setup.channel), CommandBits(setup.volume) | CommandBits(setup.divider) << 8,
+             CommandBits(setup.pan) | CommandBits(setup.timer) << 8, CommandBits(setup.duty)}};
+}
+
+constexpr Command CommandOf(const NoiseChannelSetup& setup)
+{
+    using detail::CommandBits;
+    return {CommandId::kSetUpNoiseChannel,
+            {CommandBits(setup.channel), CommandBits(setup.volume) | CommandBits(setup.divider) << 8,
+             CommandBits(setup.pan) | CommandBits(setup.timer) << 8, 0}};
+}
+
 // What differs between the driver's builds. BuildOf reads it from the tables in an ARM7 binary.
 struct Build
 {
@@ -153,6 +304,11 @@ private:
 // The size of the shared work (SNDSharedWork). The ARM9 gives the driver the shared work for the players' and channels'
 // states and the variables.
 constexpr uint32_t kSharedWorkSize = 0x280;
+
+// The words of the shared work that the driver updates each frame: a bit for each player that plays (playerStatus,
+// 32 bits) and a bit for each channel that sounds (channelStatus, 16 bits).
+constexpr uint32_t kPlayerStatus = 0x4;
+constexpr uint32_t kChannelStatus = 0x8;
 
 // Sets up the shared work at the start of `work` as the ARM9's SND_Init does (SNDi_InitSharedWork): the statuses and
 // tick counters at 0, and every player's variables and the global variables at -1.
@@ -354,8 +510,8 @@ public:
     // driver goes on from the same state, with the same memory and registers.
     Driver(std::span<uint8_t> main_memory, Registers& registers, Build build = {});
 
-    // The driver's thread's start: it clears the channels, players and tracks, turns the sound unit's output on and
-    // sets the master volume to 127.
+    // The start of the driver's thread: it clears the channels, players and tracks, turns the sound unit's output on
+    // and sets the master volume to 127.
     void Start();
 
     // Sets the state of the driver's random numbers. The driver starts with 0x12345678. Each random number steps the
@@ -371,11 +527,11 @@ public:
     // For the enhanced mixing mode: when `on`, a note that would take a channel whose note plays and hasn't reached its
     // release, or would get no channel for its priority, takes another channel instead. That's a channel past the
     // console's 16 that plays no more, or a new one, up to kMostChannels. A note in its release gives way to a new
-    // note, as on the console. The new channel takes the part of the channel that the
-    // console's driver chose: a wave channel's, a PSG channel's or a noise channel's. It's the chosen channel's twin.
-    // Its registers lie past the console's (ntr::kGrownChannelRegisters). Only sequences' notes take such channels. The
-    // ARM9's commands reach the console's 16. When it's off, the driver shares out the console's 16 as the game's
-    // driver does. A start of the driver leaves the console's 16.
+    // note, as on the console. The new channel takes the part of the channel that the console's driver chose: a wave
+    // channel's, a PSG channel's or a noise channel's. It's the chosen channel's twin. Its registers are past the
+    // console's (ntr::kGrownChannelRegisters). Only sequences' notes take such channels. The ARM9's commands reach the
+    // console's 16. When it's off, the driver shares out the console's 16 as the game's driver does. A start of the
+    // driver leaves the console's 16.
     void GrowChannels(bool on);
 
     // The channels: the console's 16, then those that have grown.
@@ -396,13 +552,13 @@ public:
     // For a rip tool's length analysis: while `hooks.on_loop` is set, the driver follows each command's place in the
     // order that a player's tracks run them, and whether the command changes the track's sound. A note that a track
     // strikes at -72.3 dB or less, where the channel's volume is 0, changes nothing and counts as no note. A rise of
-    // the level that makes it sound counts as a note at that point. It follows the rules of nwsnd's sequence player (nwsnd/sequence.h, SequenceTrack::CountLoop) with the defaults of
-    // nwsnd::LengthRules. The 3DS takes the same rules. A jump back to a command that the track has run is a loop,
-    // outside a subroutine. So is each pass of a loop whose count is 0 (0xD4 and 0xFC). The counted loops in
-    // `endless_loops` loop for ever, and their passes count too. A loop of the sequence is a pass that changed the
-    // sound, of track 0, of a track that plays notes after tracks that pass idly or wait for ever, or of a track that
-    // holds a note while every other track rests. The driver has no such following. A start of a sequence clears what
-    // the driver has followed of it.
+    // the level that makes it sound counts as a note at that point. It follows the rules of nwsnd's sequence player
+    // (nwsnd/sequence.h, SequenceTrack::CountLoop) with the defaults of nwsnd::LengthRules. The 3DS takes the same
+    // rules. A jump back to a command that the track has run is a loop, outside a subroutine. So is each pass of a loop
+    // whose count is 0 (0xD4 and 0xFC). The counted loops in `endless_loops` loop for ever, and their passes count too.
+    // A loop of the sequence is a pass that changed the sound, of track 0, of a track that plays notes after tracks
+    // that pass idly or wait for ever, or of a track that holds a note while every other track rests. The driver has no
+    // such following. A start of a sequence clears what the driver has followed of it.
     void FollowLengths(LengthHooks hooks, std::set<LoopPlace> endless_loops = {});
 
     // The analysis's tests of player `player`. They hold while the driver follows lengths. A player is settled when

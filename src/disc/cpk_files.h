@@ -15,8 +15,8 @@
 namespace ntdlib::disc::detail
 {
 
-// Reads `size` bytes at `offset` in the file at `path` among a game's files. The range lies inside the file. Throws
-// Error if the read fails.
+// Reads `size` bytes at `offset` in the file at `path` among a game's files. The range is inside the file. Throws Error
+// if the read fails.
 using ReadFileRange = std::function<std::vector<uint8_t>(const std::string& path, uint64_t offset, std::size_t size)>;
 
 // Adds the sound archives (.brsar) inside the CPKs (.cpk) among `out.files` to `out.files`, and wraps `out.read_file`

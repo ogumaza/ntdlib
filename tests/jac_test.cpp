@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/near.h"
 
 #include "ntdlib/jac/bank.h"
 #include "ntdlib/jac/calc.h"
@@ -31,18 +32,19 @@ namespace
 
 namespace jac = ntdlib::jac;
 
-bool Near(float value, double expected)
+// Whether `value` is within a relative 1e-5 of `expected`.
+bool NearRatio(float value, double expected)
 {
-    return std::fabs(static_cast<double>(value) - expected) <= 1e-5 * std::fabs(expected);
+    return Near(value, expected, 1e-5 * std::fabs(expected));
 }
 
 // The pitch of a key against key 60 doubles every 12 keys. A key above 127 reads as 127.
 void TestKeyPitch()
 {
-    XSFLIB_CHECK(Near(jac::KeyPitch(60), 1.0));
-    XSFLIB_CHECK(Near(jac::KeyPitch(72), 2.0));
-    XSFLIB_CHECK(Near(jac::KeyPitch(48), 0.5));
-    XSFLIB_CHECK(Near(jac::KeyPitch(61), std::pow(2.0, 1.0 / 12.0)));
+    XSFLIB_CHECK(NearRatio(jac::KeyPitch(60), 1.0));
+    XSFLIB_CHECK(NearRatio(jac::KeyPitch(72), 2.0));
+    XSFLIB_CHECK(NearRatio(jac::KeyPitch(48), 0.5));
+    XSFLIB_CHECK(NearRatio(jac::KeyPitch(61), std::pow(2.0, 1.0 / 12.0)));
     XSFLIB_CHECK(jac::KeyPitch(1000) == jac::KeyPitch(127));
 }
 
@@ -56,9 +58,9 @@ void TestPitchToCent()
     constexpr float kStep32 = std::bit_cast<float>(0x3f83c7d6u);
     constexpr float kStep48 = std::bit_cast<float>(0x3f85b670u);
 
-    XSFLIB_CHECK(Near(jac::PitchToCent(0.0f, 1.0f), 1.0));
-    XSFLIB_CHECK(Near(jac::PitchToCent(1.0f, 3.0f), 2.0));
-    XSFLIB_CHECK(Near(jac::PitchToCent(-0.5f, 1.5f), std::pow(2.0, -3.0 / 12.0)));
+    XSFLIB_CHECK(NearRatio(jac::PitchToCent(0.0f, 1.0f), 1.0));
+    XSFLIB_CHECK(NearRatio(jac::PitchToCent(1.0f, 3.0f), 2.0));
+    XSFLIB_CHECK(NearRatio(jac::PitchToCent(-0.5f, 1.5f), std::pow(2.0, -3.0 / 12.0)));
     XSFLIB_CHECK(jac::PitchToCent(0.125f, 1.0f) == kStep32);
     XSFLIB_CHECK(jac::PitchToCent(-0.0625f, 1.0f) == kKey59 * kStep48);
 }
@@ -119,8 +121,8 @@ void TestOscillatorMoveThenHold()
     const float fifth = jac::OscToOfs(&data, state);
 
     XSFLIB_CHECK(std::fabs(first) < 1e-6f);
-    XSFLIB_CHECK(Near(second, 0.5 / frames));
-    XSFLIB_CHECK(Near(third, 0.5 * 2.0 / frames));
+    XSFLIB_CHECK(NearRatio(second, 0.5 / frames));
+    XSFLIB_CHECK(NearRatio(third, 0.5 * 2.0 / frames));
     XSFLIB_CHECK(fourth == 0.5f && fifth == 0.5f);
     XSFLIB_CHECK(state.state == jac::OscState::kHold);
 }

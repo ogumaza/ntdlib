@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "cafe/axfx/util.h"
 #include "ntdlib/cafe/axfx/axfx.h"
@@ -52,6 +53,30 @@ float Damping(float damping)
 bool FirstByte(uint32_t word)
 {
     return (word >> 24) != 0;
+}
+
+// Both classes' UpdateBuffer: `kernel` on the first 96 samples of `frame`'s left and right channels, in place on the
+// unthreaded path and through `ring` on the threaded path. A frame of fewer samples, or without both channels, stays as
+// it is. So does every frame while the effect is off (`on` false).
+template <typename Kernel>
+void UpdateBuffer(bool on, bool threaded, FrameRing& ring, const axfx::Buffers& frame, uint32_t samples,
+                  const Kernel& kernel)
+{
+    int32_t* const left = frame[axfx::kLeft];
+    int32_t* const right = frame[axfx::kRight];
+    if (!on || samples < kFrameSamples || left == nullptr || right == nullptr)
+    {
+        return;
+    }
+
+    if (threaded)
+    {
+        ring.Run(left, right, kernel);
+    }
+    else
+    {
+        kernel(left, right);
+    }
 }
 
 // The early reflection's lengths for each index, at 32 kHz (0x10006E00) and at 48 kHz (0x10006E20).
@@ -196,21 +221,11 @@ bool Reverb::Init(std::span<const uint32_t> words)
 
 void Reverb::Process(const axfx::Buffers& frame, uint32_t samples)
 {
-    int32_t* const left = frame[axfx::kLeft];
-    int32_t* const right = frame[axfx::kRight];
-    if (!on_ || samples < kFrameSamples || left == nullptr || right == nullptr)
+    const auto kernel = [this](int32_t* l, int32_t* r)
     {
-        return;
-    }
-
-    if (threaded_)
-    {
-        ring_.Run(left, right, [this](int32_t* l, int32_t* r) { Kernel(l, r); });
-    }
-    else
-    {
-        Kernel(left, right);
-    }
+        Kernel(l, r);
+    };
+    UpdateBuffer(on_, threaded_, ring_, frame, samples, kernel);
 }
 
 void Reverb::Kernel(int32_t* left, int32_t* right)
@@ -303,21 +318,11 @@ bool Delay::Init(std::span<const uint32_t> words)
 
 void Delay::Process(const axfx::Buffers& frame, uint32_t samples)
 {
-    int32_t* const left = frame[axfx::kLeft];
-    int32_t* const right = frame[axfx::kRight];
-    if (!on_ || samples < kFrameSamples || left == nullptr || right == nullptr)
+    const auto kernel = [this](int32_t* l, int32_t* r)
     {
-        return;
-    }
-
-    if (threaded_)
-    {
-        ring_.Run(left, right, [this](int32_t* l, int32_t* r) { Kernel(l, r); });
-    }
-    else
-    {
-        Kernel(left, right);
-    }
+        Kernel(l, r);
+    };
+    UpdateBuffer(on_, threaded_, ring_, frame, samples, kernel);
 }
 
 void Delay::Kernel(int32_t* left, int32_t* right)

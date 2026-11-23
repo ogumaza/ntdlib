@@ -72,40 +72,35 @@ bool ReverbStdExp::Init(const Params& params, uint32_t rate)
 
 bool ReverbStdExp::Settings(const Params& params, uint32_t rate)
 {
-    Off();
-    if (!Init(params, rate))
+    const auto off = [this]
     {
         Off();
-        return false;
-    }
+    };
+    const auto init = [&]
+    {
+        return Init(params, rate);
+    };
 
-    active_ = (active_ | kSkip) & ~kOff;
-
-    return true;
+    return axfx::Settings(active_, off, init);
 }
 
 bool ReverbStdExp::SettingsUpdate(const Params& params, uint32_t rate)
 {
-    // After a Shutdown or a failed Init, the library would set the reverb up on lines it has freed, and its callback
-    // would then run on null lines. The model fails instead.
     params_ = params;
-    active_ |= kOff;
-    if (early_line_[0].empty())
+    const auto off = [this]
     {
         Off();
-        return false;
-    }
-
-    ClearLines();
-    if (!InitParams(rate))
+    };
+    const auto clear = [this]
     {
-        Off();
-        return false;
-    }
+        ClearLines();
+    };
+    const auto init_params = [&]
+    {
+        return InitParams(rate);
+    };
 
-    active_ = (active_ | kSkip) & ~kOff;
-
-    return true;
+    return reverb::SettingsUpdate(active_, !early_line_[0].empty(), off, clear, init_params);
 }
 
 void ReverbStdExp::Shutdown()

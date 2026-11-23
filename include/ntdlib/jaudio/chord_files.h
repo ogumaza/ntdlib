@@ -64,7 +64,7 @@ struct ChordFile
 
 // Reads a chord file (0x8024b778): "CITS" or "CITL", a word, the count of orders and the count of chords (16 bits
 // each), then the offset of each order and of each chord. An order is a count and the chords' indices, a byte each.
-// Throws FormatError if the data isn't a chord file or a part lies outside it.
+// Throws FormatError if the data isn't a chord file or a part is outside it.
 ChordFile ReadChordFile(std::span<const uint8_t> data);
 
 // The tones of a chord, as the game lists them (0x8024a8a8): up to 8 pairs of a pitch class and its interval above
@@ -153,7 +153,7 @@ struct ChordDatabase
 };
 
 // Reads the chord database. The offsets in the result count from the start of `data`. Throws FormatError if the data
-// isn't a chord database or an entry or a part lies outside it.
+// isn't a chord database or an entry or a part is outside it.
 ChordDatabase ReadChordDatabase(std::span<const uint8_t> data);
 
 } // namespace ntdlib::jaudio

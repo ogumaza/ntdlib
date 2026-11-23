@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-#include "ntdlib/nx/audio/renderer.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -13,6 +11,7 @@
 
 #include "ntdlib/nx/audio/delay.h"
 #include "ntdlib/nx/audio/light_limiter.h"
+#include "ntdlib/nx/audio/renderer.h"
 #include "ntdlib/nx/audio/reverb.h"
 #include "ntdlib/rounding.h"
 #include "nx/audio/arithmetic.h"
@@ -59,7 +58,7 @@ uint32_t Renderer::GetRequiredBufferSizeForAuxSendReturnBuffer(const RendererPar
                                                                int channels)
 {
     const int64_t samples = int64_t{channels} * frames * parameter.sample_count;
-    return static_cast<uint32_t>((samples * 4 + 0xBF) & ~int64_t{0x3F});
+    return static_cast<uint32_t>(AlignUp(samples * 4 + 0x80, 0x40));
 }
 
 int Renderer::AddAux(int mix, uint32_t buffer_size)

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "ntdlib/ax/reverb_lines.h"
 #include "ntdlib/rvl/axfx/axfx.h"
 
 namespace ntdlib::rvl::axfx
@@ -91,9 +92,6 @@ private:
     void ClearDelayLines();
     void FreeDelayLines();
 
-    // Calls `function` for every delay line.
-    void ForEachLine(void (*function)(std::vector<float>& line));
-
     Build build_;
     Params params_;
 
@@ -108,29 +106,13 @@ private:
     uint32_t early_length_ = 0;
     std::array<float, kTaps> early_coef_{};
 
-    // The pre-delay. A length of 0 leaves the input undelayed.
-    std::array<std::vector<float>, kChannelCount> pre_delay_line_;
-    uint32_t pre_delay_pos_ = 0;
-    uint32_t pre_delay_length_ = 0;
+    // The pre-delay, the combs, the two allpasses after them and the low-pass.
+    ntdlib::ax::axfx::ReverbLines<kChannelCount, kCombs, kAllpasses> lines_;
 
-    // The combs, by channel and comb.
-    std::array<std::array<std::vector<float>, kCombs>, kChannelCount> comb_line_;
-    std::array<uint32_t, kCombs> comb_pos_{};
-    std::array<uint32_t, kCombs> comb_length_{};
-    std::array<float, kCombs> comb_coef_{};
-
-    // The two allpasses after the combs, by channel and allpass, and the last allpass of each channel.
-    std::array<std::array<std::vector<float>, kAllpasses>, kChannelCount> allpass_line_;
-    std::array<uint32_t, kAllpasses> allpass_pos_{};
-    std::array<uint32_t, kAllpasses> allpass_length_{};
+    // Each channel's last allpass, after the low-pass. It takes the other allpasses' gain.
     std::array<std::vector<float>, kChannelCount> last_allpass_line_;
     std::array<uint32_t, kChannelCount> last_allpass_pos_{};
     std::array<uint32_t, kChannelCount> last_allpass_length_{};
-    float allpass_coef_ = 0.0f;
-
-    // The low-pass between the allpasses.
-    std::array<float, kChannelCount> last_lpf_out_{};
-    float lpf_coef_ = 0.0f;
 };
 
 // AXFXReverbHi (0x801075e8 to 0x801076e0 in Wii Sports): the Exp reverb with six parameters. Init and Settings

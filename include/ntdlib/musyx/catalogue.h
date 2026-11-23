@@ -94,7 +94,7 @@ struct Sound
     std::string name;
     SoundKind kind = SoundKind::kSong;
     uint16_t id = 0;            // MusyX's song ID or effect ID
-    uint16_t song_group = 0;    // a song's group, which sndSeqPlayEx takes
+    uint16_t song_group = 0;    // a song's group, for sndSeqPlayEx
     std::size_t song = kNoSong; // a song's SNG file: its index in Catalogue::songs
     std::vector<PushedGroup> groups;
 

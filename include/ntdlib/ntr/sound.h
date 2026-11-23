@@ -12,14 +12,14 @@
 // sample at its end: the channels' samples aren't interpolated.
 //
 // The two capture units record the mixer's left and right sums into main memory, before the master volume. Capture 0
-// counts with channel 1's timer, and capture 1 with channel 3's. GBATEK gives the registers and the samples' format.
-// It doesn't say when a capture takes its sample, when it writes memory, how far ahead a channel reads its samples, or
+// counts with channel 1's timer, and capture 1 with channel 3's. GBATEK gives the registers and the samples' format. It
+// doesn't say when a capture takes its sample, when it writes memory, how far ahead a channel reads its samples, or
 // what a one-shot capture does at its buffer's end. The model takes a capture's sample at each overflow of its timer,
-// after the channels have stepped, and writes it at once. A channel that plays PCM or IMA-ADPCM reads its words
-// through a queue of 8 words, which it fills as it starts and again as each word ends. A channel that plays a capture's
-// buffer with the same timer therefore plays what the capture recorded one pass of the buffer earlier, as the SDK's
-// reverb requires. A one-shot capture clears its busy bit when its buffer is full. A capture of a channel (bit 1 of
-// SNDCAPxCNT) and the addition of channel 1 or 3 to channel 0 or 2 (bit 0) aren't modelled: the capture still takes
+// after the channels have stepped, and writes it at once. A channel that plays PCM or IMA-ADPCM reads its words through
+// a queue of 8 words. The channel fills the queue as it starts and again as each word ends. A channel that plays a
+// capture's buffer with the same timer therefore plays what the capture recorded one pass of the buffer earlier, as the
+// SDK's reverb requires. A one-shot capture clears its busy bit when its buffer is full. A capture of a channel (bit 1
+// of SNDCAPxCNT) and the addition of channel 1 or 3 to channel 0 or 2 (bit 0) aren't modelled: the capture still takes
 // the mixer, and the channels play as such.
 //
 // A driver that grows its channels (snd::Driver::GrowChannels) gives the unit channels past the console's 16, at
@@ -68,6 +68,13 @@ namespace ntdlib::ntr
 // The ARM7's system clock, in Hz.
 constexpr uint32_t kSystemClockHz = 33513982;
 
+// The display's timing, in cycles of the system clock: 263 lines of 355 dots of 6 cycles. A frame of the screen lasts
+// about 16.7 ms. The vertical blank starts at line 192.
+constexpr uint64_t kLineCycles = 2130;
+constexpr uint64_t kFrameLines = 263;
+constexpr uint64_t kFrameCycles = kLineCycles * kFrameLines;
+constexpr uint64_t kVblankLine = 192;
+
 // A channel's timer counts once each 2 system clocks. The unit makes an output sample each 512 counts.
 constexpr uint32_t kTicksPerSample = 512;
 
@@ -85,9 +92,9 @@ constexpr uint32_t kSoundRegisters = 0x04000400;
 constexpr uint32_t kSoundRegistersEnd = 0x04000520;
 
 // The registers of the channels past the console's 16 that a driver grows in the enhanced mixing mode
-// (snd::Driver::GrowChannels). Channel n's lie at kGrownChannelRegisters + (n - 16) * kGrownChannelBytes, laid out as
-// a channel's at kSoundRegisters. The word at kGrownChannelTwin then gives its twin: the console's channel whose part
-// it takes. The console has no such registers.
+// (snd::Driver::GrowChannels). Channel n's are at kGrownChannelRegisters + (n - 16) * kGrownChannelBytes, laid out as a
+// channel's at kSoundRegisters. The word at kGrownChannelTwin then gives its twin: the console's channel whose part it
+// takes. The console has no such registers.
 constexpr uint32_t kGrownChannelRegisters = 0x04F00000;
 constexpr uint32_t kGrownChannelBytes = 0x20;
 constexpr uint32_t kGrownChannelTwin = 0x10;
@@ -168,7 +175,7 @@ public:
     bool Enhanced() const;
 
     // Runs the timers in the enhanced mode, and appends the output samples whose times pass to `out`: the left and the
-    // right side in turn. Sample n of the mode lies kEnhancedFrameTicks * n / kEnhancedFrameSamples ticks after
+    // right side in turn. Sample n of the mode is kEnhancedFrameTicks * n / kEnhancedFrameSamples ticks after
     // StartEnhanced. Throws std::logic_error outside the mode.
     void Run(uint64_t ticks, std::vector<float>& out);
 
@@ -197,6 +204,9 @@ public:
 
     // Whether channel `channel` plays: bit 31 of its SOUNDxCNT.
     bool Busy(int channel) const;
+
+    // Whether a capture runs: bit 7 of SNDCAP0CNT or SNDCAP1CNT. The SDK's reverb and output effect run both.
+    bool CapturesRun() const;
 
     // The counts since the last output sample, from 0 to kTicksPerSample - 1.
     uint32_t Phase() const;

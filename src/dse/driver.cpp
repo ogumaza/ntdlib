@@ -6,7 +6,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <list>
 #include <map>
 #include <memory>
@@ -20,6 +19,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/text.h"
 
+#include "common/magic.h"
 #include "driver_state.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/tables.h"
@@ -28,7 +28,55 @@
 namespace ntdlib::dse
 {
 
+using ntdlib::detail::HasMagic;
 using ntr::snd::CommandId;
+
+namespace
+{
+
+// Applies the changes that `update` flags to `channel` of `synth`: 0x10 its bend, 0x20 its volume and 0x40 its pan.
+void ApplyUpdate(Channel& channel, const Synth& synth, uint16_t update)
+{
+    if (update & 0x10)
+    {
+        channel.bend =
+            static_cast<uint16_t>(synth.bend + channel.tuning + static_cast<int16_t>(channel.bend_fade.current >> 16));
+    }
+    if (update & 0x20)
+    {
+        const int32_t product =
+            Wrap(int64_t{synth.combined_volume} * ((channel.volume_fade.current >> 16) * channel.expression));
+        channel.volume = static_cast<uint16_t>(product / (127 * 127));
+    }
+    if (update & 0x40)
+    {
+        channel.pan = static_cast<int16_t>(synth.pan - 0x40 + (channel.pan_fade.current >> 16));
+    }
+}
+
+// The volume that the voice update gives `voice`'s hardware channel at envelope level `level` (0x02074194): the
+// product of the channel's volume, the note's volume and the level, divided by 8032, squared and divided by 512.
+int32_t HardwareVolume(const Channel& channel, const Voice& voice, int32_t level)
+{
+    const int32_t note = std::clamp(voice.note_volume + (voice.lfos.outputs[2] >> 6), 0, 0x7F);
+    const int32_t product = Wrap(int64_t{channel.volume} * note * level);
+    const int32_t scaled = product / 8032;
+    return Wrap(int64_t{scaled} * scaled) / 512;
+}
+
+// The values of an LFO's settings.
+LfoValues ValuesOf(const LfoSettings& lfo)
+{
+    return {.type = lfo.type,
+            .output = lfo.output,
+            .waveform = lfo.waveform,
+            .amplitude = lfo.amplitude,
+            .phase_ms = lfo.phase_ms,
+            .delay_ms = lfo.delay_ms,
+            .envelope_ms = lfo.envelope_ms};
+}
+
+} // namespace
 
 void Driver::State::StepVoices()
 {
@@ -57,21 +105,8 @@ uint16_t Driver::State::UpdateChannel(Channel& channel)
 {
     const Synth& synth = *channel.synth;
     const uint16_t update = channel.update | synth.update;
-    if (update & 0x10)
-    {
-        channel.bend =
-            static_cast<uint16_t>(synth.bend + channel.tuning + static_cast<int16_t>(channel.bend_fade.current >> 16));
-    }
-    if (update & 0x20)
-    {
-        const int32_t product =
-            Wrap(int64_t{synth.combined_volume} * ((channel.volume_fade.current >> 16) * channel.expression));
-        channel.volume = static_cast<uint16_t>(product / (127 * 127));
-    }
-    if (update & 0x40)
-    {
-        channel.pan = static_cast<int16_t>(synth.pan - 0x40 + (channel.pan_fade.current >> 16));
-    }
+    ApplyUpdate(channel, synth, update);
+
     return update;
 }
 
@@ -84,21 +119,8 @@ void Driver::State::UpdateChannels(Synth& synth)
         {
             continue;
         }
-        if (update & 0x10)
-        {
-            channel.bend = static_cast<uint16_t>(synth.bend + channel.tuning +
-                                                 static_cast<int16_t>(channel.bend_fade.current >> 16));
-        }
-        if (update & 0x20)
-        {
-            const int32_t product =
-                Wrap(int64_t{synth.combined_volume} * ((channel.volume_fade.current >> 16) * channel.expression));
-            channel.volume = static_cast<uint16_t>(product / (127 * 127));
-        }
-        if (update & 0x40)
-        {
-            channel.pan = static_cast<int16_t>(synth.pan - 0x40 + (channel.pan_fade.current >> 16));
-        }
+
+        ApplyUpdate(channel, synth, update);
         ForEachVoice(channel, [update](Voice& voice) { voice.flags |= update; });
         channel.update = 0;
     }
@@ -118,7 +140,7 @@ void Driver::State::UpdateVoices()
             }
         }
     }
-    if (build == Build::kEarlier)
+    if (Earlier())
     {
         if (song)
         {
@@ -145,10 +167,7 @@ void Driver::State::UpdateVoices()
         }
         if (voice.flags & 0x20)
         {
-            const int32_t level = std::clamp(voice.note_volume + (voice.lfos.outputs[2] >> 6), 0, 0x7F);
-            const int32_t product = Wrap(int64_t{channel.volume} * level * (voice.state & 0xFF));
-            const int32_t scaled = product / 8032;
-            voice.volume = Wrap(int64_t{scaled} * scaled) / 512;
+            voice.volume = HardwareVolume(channel, voice, static_cast<int32_t>(voice.state & 0xFF));
         }
         if (voice.flags & 0x40)
         {
@@ -171,26 +190,32 @@ void Driver::State::WriteCommands(ntr::snd::CommandList& list)
         }
         if (flags & 1)
         {
-            const uint32_t loop = static_cast<int8_t>(voice.sample[5]) != 0 ? 1 : 2;
-            const auto timer = static_cast<uint32_t>(voice.timer);
-            const auto volume = static_cast<uint32_t>(voice.volume);
-            const auto pan = static_cast<uint32_t>(voice.pan);
             switch (voice.Format())
             {
             case 0:
             case 1:
             case 2:
-                list.push_back(
-                    {CommandId::kSetUpPcmChannel,
-                     {voice.index | timer << 16, voice.Address(), xsflib::LoadLe32(&voice.sample[0x1C]) | volume << 24,
-                      xsflib::LoadLe32(&voice.sample[0x18]) | pan << 16 | uint32_t{voice.Format()} << 24 |
-                          loop << 26}});
+                list.push_back(ntr::snd::CommandOf(
+                    ntr::snd::PcmChannelSetup{.channel = voice.index,
+                                              .data = voice.Address(),
+                                              .format = voice.Format(),
+                                              .loop = static_cast<int8_t>(voice.sample[5]) != 0 ? 1 : 2,
+                                              .loop_start = static_cast<int>(xsflib::LoadLe32(&voice.sample[0x18])),
+                                              .loop_length = static_cast<int>(xsflib::LoadLe32(&voice.sample[0x1C])),
+                                              .volume = voice.volume,
+                                              .timer = voice.timer,
+                                              .pan = voice.pan}));
                 break;
             case 3:
-                list.push_back({CommandId::kSetUpPsgChannel, {voice.index, volume, pan | timer << 8, voice.sample[9]}});
+                list.push_back(ntr::snd::CommandOf(ntr::snd::PsgChannelSetup{.channel = voice.index,
+                                                                             .duty = voice.sample[9],
+                                                                             .volume = voice.volume,
+                                                                             .timer = voice.timer,
+                                                                             .pan = voice.pan}));
                 break;
             case 4:
-                list.push_back({CommandId::kSetUpNoiseChannel, {voice.index, volume, pan | timer << 8, 0}});
+                list.push_back(ntr::snd::CommandOf(ntr::snd::NoiseChannelSetup{
+                    .channel = voice.index, .volume = voice.volume, .timer = voice.timer, .pan = voice.pan}));
                 break;
             default:
                 break;
@@ -213,7 +238,9 @@ void Driver::State::WriteCommands(ntr::snd::CommandList& list)
             {
                 list.push_back({CommandId::kChannelVolume, {voice.bit, static_cast<uint32_t>(voice.volume), 0, 0}});
             }
-            if (update & 0x40)
+            // The oldest build's writer sends no pan (0x020C4DDC in Luminous Arc's ARM9 binary). A voice's pan changes
+            // only when the voice starts.
+            if ((update & 0x40) && build != Build::kOldest)
             {
                 list.push_back({CommandId::kChannelPan, {voice.bit, static_cast<uint32_t>(voice.pan), 0, 0}});
             }
@@ -222,17 +249,17 @@ void Driver::State::WriteCommands(ntr::snd::CommandList& list)
     }
 
     last_start_mask = start_mask;
-    if (start_mask != 0 || build == Build::kEarlier)
+    if (start_mask != 0 || Earlier())
     {
         list.push_back({CommandId::kStartTimer, {start_mask, 0, 0, 0}});
         start_mask = 0;
     }
     // The earlier build keeps a freed voice in the stops of the lists that follow until the voice starts again. The
     // other builds send the stop once (0x02076D24 in Luminous Arc 2's ARM9 binary for the middle builds).
-    if ((stop_mask | deallocated_mask) != 0 || build == Build::kEarlier)
+    if ((stop_mask | deallocated_mask) != 0 || Earlier())
     {
         list.push_back({CommandId::kStopTimer, {uint32_t{stop_mask} | deallocated_mask, 0, 0, 0}});
-        if (build != Build::kEarlier)
+        if (!Earlier())
         {
             deallocated_mask = 0;
         }
@@ -487,7 +514,7 @@ void Driver::PlaySong(const Song& song, const StartParameters& parameters)
     s.song = OwnedSequence(std::move(sequence));
 
     // The start of the song from its beginning (0x0206D9BC). The earlier build then resets the channels again, without
-    // a bank (0x02060C04 in Explorers of Time's ARM9 binary).
+    // a bank (0x02060C04 in Explorers of Time's ARM9 binary). The oldest build doesn't (0x020C00AC in Luminous Arc's).
     s.RestartSequence(q);
     if (s.build == Build::kEarlier)
     {
@@ -515,9 +542,9 @@ std::optional<uint16_t> Driver::AddEffects(const SoundEffects& effects)
     {
         // The chunks up to the end chunk: the driver keeps where the seq chunk's data starts.
         std::size_t at = SoundEffects::kHeaderSize;
-        while (at + 16 <= bytes.size() && std::memcmp(bytes.data() + at, "eod ", 4) != 0)
+        while (at + 16 <= bytes.size() && !HasMagic(std::span(bytes).subspan(at), "eod "))
         {
-            if (std::memcmp(bytes.data() + at, "seq ", 4) == 0)
+            if (HasMagic(std::span(bytes).subspan(at), "seq "))
             {
                 bank.sequences = at + 16;
             }
@@ -592,7 +619,7 @@ bool Driver::PlayEffect(uint16_t bank, uint16_t index, const StartParameters& pa
     q.volume.current = 0;
     q.volume.ticks = 0;
     q.unknown9 = kept->unknown18;
-    // The driver's mute (0x0206C688), which the model keeps off, and the bank's byte.
+    // The driver's mute (0x0206C688) and the bank's byte. The model keeps the mute off.
     q.muted = 0;
     q.unknown_a = 1;
     s.StartSequence(q, handle, group, parameters);
@@ -781,14 +808,7 @@ ChannelView Driver::GetChannel(int channel) const
                      .lfo_level = c.lfo_level};
     for (std::size_t i = 0; i < c.lfos.size(); i++)
     {
-        const LfoSettings& lfo = c.lfos[i];
-        view.lfos[i] = {.type = lfo.type,
-                        .output = lfo.output,
-                        .waveform = lfo.waveform,
-                        .amplitude = lfo.amplitude,
-                        .phase_ms = lfo.phase_ms,
-                        .delay_ms = lfo.delay_ms,
-                        .envelope_ms = lfo.envelope_ms};
+        view.lfos[i] = ValuesOf(c.lfos[i]);
     }
     if (c.envelope.use != 0)
     {
@@ -888,6 +908,15 @@ VoiceView Driver::GetVoice(int voice) const
     view.started = static_cast<int8_t>(v.envelope.active) == 1;
     view.releasing = v.envelope.state == kRelease || v.envelope.state == kReleaseEnd;
     view.level = static_cast<uint8_t>(v.state & 0xFF);
+    // StartVoice gives the voice level 0xFF until the next tick steps its envelope. The first update's volume follows
+    // from the level of that step, which a copy of the envelope takes.
+    int32_t volume = v.volume;
+    if ((v.state & 0xFF) == 0xFF)
+    {
+        Envelope next = v.envelope;
+        volume = HardwareVolume(*v.channel, v, std::clamp<int32_t>(next.Tick(state_->tick), 0, 0x7F));
+    }
+    view.volume = static_cast<uint8_t>(std::clamp(volume, 0, 127));
     const Envelope& envelope = v.envelope;
     if (view.releasing)
     {
@@ -902,13 +931,16 @@ VoiceView Driver::GetVoice(int voice) const
     }
     view.key_bend = v.key_bend;
     view.jitter = v.jitter;
+    view.tuning = static_cast<int16_t>(v.key_base - v.jitter);
     view.wave = v.wave;
+    view.format = v.Format();
+    view.rate = xsflib::LoadLe32(&v.sample[0x10]);
     view.key_group = static_cast<uint8_t>(v.channel_key_group & 0xFF);
     view.key_group_voices = v.group_voices;
     return view;
 }
 
-std::array<LfoValues, 4> ProgramLfos(const WaveBank& bank, uint16_t program)
+std::array<LfoValues, 4> ProgramLfos(const WaveBank& bank, uint16_t program, Build build)
 {
     std::array<LfoValues, 4> lfos;
     const auto count = static_cast<int16_t>(xsflib::LoadLe16(&bank.header[0x48]));
@@ -922,16 +954,9 @@ std::array<LfoValues, 4> ProgramLfos(const WaveBank& bank, uint16_t program)
     for (std::size_t k = 0; k < lfos.size(); k++)
     {
         const std::size_t at = 0x10 + 0x10 * k;
-        if (at + 16 <= bytes.size() && bytes[at + 1] != 0)
+        if (at + 16 <= bytes.size() && TakesLfo(build, std::span(bytes).subspan(at, 16)))
         {
-            const LfoSettings lfo = LfoSettings::Read(std::span(bytes).subspan(at, 16));
-            lfos[k] = {.type = lfo.type,
-                       .output = lfo.output,
-                       .waveform = lfo.waveform,
-                       .amplitude = lfo.amplitude,
-                       .phase_ms = lfo.phase_ms,
-                       .delay_ms = lfo.delay_ms,
-                       .envelope_ms = lfo.envelope_ms};
+            lfos[k] = ValuesOf(LfoSettings::Read(std::span(bytes).subspan(at, 16)));
         }
     }
 

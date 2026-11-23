@@ -336,7 +336,7 @@ void PhotoMood::OctaveDown(AuxFrame& frame)
                 }
                 else
                 {
-                    // The others read straight on from the start. Sample 94's second sample can lie past the end of
+                    // The others read straight on from the start. Sample 94's second sample can be past the end of
                     // the ring, in the next ring.
                     pair = Add(rings_[start + k], rings_[start + k + 1]);
                 }

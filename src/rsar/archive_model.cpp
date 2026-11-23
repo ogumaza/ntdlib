@@ -180,8 +180,8 @@ void Check(const ArchiveModel& model)
     CheckNames(model);
 }
 
-// The groups of `model`'s archive: its groups with names, then the last group, which holds the files that the others
-// don't hold, in the order of their IDs.
+// The groups of `model`'s archive: its groups with names, then the last group. The last group holds the files that the
+// others don't hold, in the order of their IDs.
 std::vector<GroupModel> AllGroups(const ArchiveModel& model)
 {
     std::vector<GroupModel> groups = model.groups;
@@ -300,7 +300,7 @@ void PutSymbols(Out& out, const ArchiveModel& model, const Strings& strings)
     out.U32(block + 4, static_cast<uint32_t>(out.Size() - block));
 }
 
-// Where the entry of each group and of each of its items lies in INFO.
+// Where the entry of each group and of each of its items is in INFO.
 struct GroupPlaces
 {
     std::size_t entry = 0;
@@ -407,7 +407,7 @@ void PutFileEntries(Out& out, const ArchiveModel& model, const std::vector<Group
 
 // Appends the table of `groups` and each group's entry and items, with the groups' string indices from `strings`. The
 // reference at `reference` leads to the table. INFO's references count from `base`. Returns where each entry and item
-// lies.
+// is.
 std::vector<GroupPlaces> PutGroupEntries(Out& out, const std::vector<GroupModel>& groups, const Strings& strings,
                                          std::size_t reference, std::size_t base)
 {
@@ -541,7 +541,7 @@ std::string NameAt(const std::vector<std::string>& strings, uint32_t index)
     return strings[index];
 }
 
-// The places of the entries of the table whose reference lies at `ref`. `base` is INFO's payload.
+// The places of the entries of the table whose reference is at `ref`. `base` is INFO's payload.
 std::vector<std::size_t> EntriesOf(const xsflib::Reader& r, std::size_t ref, std::size_t base)
 {
     const Reference table = ReadRef(r, ref);

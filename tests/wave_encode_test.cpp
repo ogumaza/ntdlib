@@ -10,17 +10,17 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/wave/adpcm.h"
 #include "ntdlib/wave/encode.h"
 #include "wave_cases.h"
-
-using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -34,6 +34,7 @@ using ntdlib::wave::DspAdpcmState;
 using ntdlib::wave::DspAdpcmStateAt;
 using ntdlib::wave::DspAdpcmSum;
 using ntdlib::wave::EncodeDspAdpcm;
+using seqlib::testing::Throws;
 
 constexpr std::array<DspAdpcmSum, 4> kSums = {DspAdpcmSum::kWide, DspAdpcmSum::kWrap, DspAdpcmSum::kNw4rCpu,
                                               DspAdpcmSum::kAccelerator};
@@ -169,13 +170,6 @@ double FrameError(std::span<const int16_t> input, std::size_t start, int32_t c1,
     return error;
 }
 
-// Whether `function` throws std::invalid_argument.
-template <typename Function>
-bool Refuses(Function function)
-{
-    return !ErrorOf<std::invalid_argument>(function).empty();
-}
-
 void TestBytes()
 {
     XSFLIB_CHECK(DspAdpcmBytes(0) == 0 && DspAdpcmBytes(1) == 8 && DspAdpcmBytes(14) == 8);
@@ -298,7 +292,7 @@ void TestPairs()
     }
 }
 
-// A growing sine's best pair lies outside the range where the decoder's prediction is stable. The pairs stay inside.
+// A growing sine's best pair is outside the range where the decoder's prediction is stable. The pairs stay inside.
 void TestGrowth()
 {
     std::vector<int16_t> growing(1000);
@@ -311,6 +305,23 @@ void TestGrowth()
     const DspAdpcmChannel channel = EncodeDspAdpcm(growing, 0, DspAdpcmSum::kWrap);
 
     XSFLIB_CHECK(StablePairs(channel));
+}
+
+// The least squared error of the frame of `input` that starts at sample `start`, among the 8 pairs of `coefs` and the
+// 16 scales. The decoder starts from the samples `hist1` and `hist2` before the frame.
+double LeastFrameError(std::span<const int16_t> input, std::size_t start, std::span<const int16_t> coefs, int32_t hist1,
+                       int32_t hist2, DspAdpcmSum sum)
+{
+    double least = std::numeric_limits<double>::infinity();
+    for (std::size_t p = 0; p < 8; p++)
+    {
+        for (int32_t shift = 0; shift < 16; shift++)
+        {
+            least = std::min(least, FrameError(input, start, coefs[2 * p], coefs[2 * p + 1], shift, hist1, hist2, sum));
+        }
+    }
+
+    return least;
 }
 
 // Each nibble gives the decoded sample closest to the input among the 16, with its frame's pair and scale and the
@@ -340,15 +351,9 @@ void TestNearest()
             if (i % 14 == 0)
             {
                 const double chosen = FrameError(input, i, c1, c2, header & 0xF, hist1, hist2, sum);
-                for (std::size_t p = 0; p < 8; p++)
-                {
-                    for (int32_t shift = 0; shift < 16; shift++)
-                    {
-                        least = least && chosen <= FrameError(input, i, channel.coefs[2 * p], channel.coefs[2 * p + 1],
-                                                              shift, hist1, hist2, sum);
-                    }
-                }
+                least = least && chosen <= LeastFrameError(input, i, channel.coefs, hist1, hist2, sum);
             }
+
             const uint8_t pair = channel.data[i / 14 * 8 + 1 + i % 14 / 2];
             const int32_t value = i % 2 == 0 ? pair >> 4 : pair & 0xF;
             const int16_t sample =
@@ -426,7 +431,8 @@ void TestStateAt()
     const uint32_t frames = static_cast<uint32_t>(channel.data.size() / 8);
     const DspAdpcmState last = DspAdpcmStateAt(channel.data, frames * 14 - 1, channel.coefs, 0, 0, DspAdpcmSum::kWrap);
     XSFLIB_CHECK(last.pred_scale == channel.data[channel.data.size() - 8]);
-    XSFLIB_CHECK(Refuses([&] { DspAdpcmStateAt(channel.data, frames * 14, channel.coefs, 0, 0, DspAdpcmSum::kWrap); }));
+    XSFLIB_CHECK(Throws<std::invalid_argument>(
+        [&] { DspAdpcmStateAt(channel.data, frames * 14, channel.coefs, 0, 0, DspAdpcmSum::kWrap); }));
 }
 
 void TestAlign()
@@ -447,13 +453,13 @@ void TestAlign()
     XSFLIB_CHECK(std::equal(inside[0].begin() + 40, inside[0].end(), ramp.begin() + 17));
     XSFLIB_CHECK(wrapped == 14);
     XSFLIB_CHECK(short_loop[0] == std::vector<int16_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 11, 12, 11, 12}));
-    XSFLIB_CHECK(Refuses([&] { AlignDspAdpcmLoop(inside, 51); }));
+    XSFLIB_CHECK(Throws<std::invalid_argument>([&] { AlignDspAdpcmLoop(inside, 51); }));
     const auto align_uneven = [&]
     {
         std::vector<std::vector<int16_t>> uneven = {ramp, {1, 2}};
         AlignDspAdpcmLoop(uneven, 5);
     };
-    XSFLIB_CHECK(Refuses(align_uneven));
+    XSFLIB_CHECK(Throws<std::invalid_argument>(align_uneven));
 }
 
 } // namespace

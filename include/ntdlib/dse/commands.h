@@ -22,12 +22,12 @@
 //   value_bytes  a note's bytes of length, where they aren't the fewest that hold it
 //   repeated     a note leaves its length out
 //
-// value_bytes of 1 on a track's end marks the end that lies in the chunk's padding (Track::end_in_padding). The encoder
-// keeps each of these while it still gives the item's values. A note whose octave lies out of reach of the note before
+// value_bytes of 1 on a track's end marks the end that is in the chunk's padding (Track::end_in_padding). The encoder
+// keeps each of these while it still gives the item's values. A note whose octave is out of reach of the note before
 // starts its bytes with the command that sets the octave (0xA0). So does a new note that follows a loop's start (0x99)
 // or a repeat's start (0x9C) with no such command between. The driver keeps a note's change of octave across a pass.
-// The commands that the common form has no kind for are kOther, with the code in `encoding.opcode` and the arguments
-// in `bytes`.
+// The commands that the common form has no kind for are kOther, with the code in `encoding.opcode` and the arguments in
+// `bytes`.
 
 #pragma once
 
@@ -69,7 +69,7 @@ void SetTrackOpening(commands::Command& opening, const TrackStart& start);
 
 // The bytes of a sequence, and each item's offset in them. `offsets` holds one more entry than the sequence has items:
 // the end. A note that starts its bytes with the command that sets the octave has the offset of its code, where the
-// driver's note event starts. Those two bytes then lie between the two items' offsets.
+// driver's note event starts. Those two bytes are then between the two items' offsets.
 struct Encoded
 {
     std::vector<uint8_t> bytes;

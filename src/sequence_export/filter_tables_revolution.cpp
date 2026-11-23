@@ -14,7 +14,7 @@ namespace
 
 // The low-pass's settings, from tools/sequence_export/filter_tables.py. AX's cutoffs come from NW4R SND's
 // Util::CalcLpfFreq (main.dol 0x8004eb98). AX's one-pole response falls at 6 dB/octave, half the SoundFont slope. The
-// SoundFont cutoffs are the zero-resonance cutoffs closest to that response. They lie well above AX's -3 dB points. The
+// SoundFont cutoffs are the zero-resonance cutoffs closest to that response. They are well above AX's -3 dB points. The
 // SFZ cutoffs are sfizz's lpf_1p cutoffs for the pole that AXGetLpfCoefs (0x801074dc) computes, in cents relative to
 // kSfzLowPassOpen. AX's cutoffs in Hz, arguments 0 to 57.
 constexpr uint16_t kLowPassHz[58] = {

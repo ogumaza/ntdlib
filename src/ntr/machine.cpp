@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// The DS machine: the boot, the runs and calls, the memory map, the BIOS calls, the events, the display, the DMAs, the
-// FIFO and the maths unit. machine_card.cpp contains the card and the SPI bus, and machine_io.cpp the registers.
+// The DS machine: the boot, the runs and calls, the memory map, the BIOS calls, the events and the display.
+// machine_units.cpp contains the DMAs, the FIFO and the maths unit, machine_card.cpp the card and the SPI bus, and
+// machine_io.cpp the registers.
 
 #include "ntdlib/ntr/machine.h"
 
@@ -43,6 +44,30 @@ Machine::Machine(const Rom& rom, const BackupMemory& backup)
         xsflib::StoreLe32(&bios_[4 * i], kBios[i]);
     }
 
+    if (arm7_->DsiMode())
+    {
+        ndma_ = std::make_unique<Ndma>(
+            *this, [this](uint32_t irq) { Request(irq); }, [this](std::string message) { Fail(std::move(message)); });
+        ndma_->on_card_start = [this]
+        {
+            RunCardDmas();
+        };
+        dsi_io_ = std::make_unique<DsiIo>(false, kDsiArm9Extended, arm7_->DsiWram(), ndma_.get());
+        dsi_io_->on_unknown = [this](uint32_t address, int size, bool write)
+        {
+            Unknown(address, size, write);
+        };
+        dsi_io_->on_fail = [this](std::string message)
+        {
+            Fail(std::move(message));
+        };
+        arm7_->DsiWram().on_map_change = [this]
+        {
+            arm7_->Cpu().InvalidatePages();
+            arm9_->InvalidatePages();
+        };
+    }
+
     Boot(rom);
 }
 
@@ -78,8 +103,23 @@ uint64_t Machine::Clock() const
     return arm7_->Clock();
 }
 
+bool Machine::DsiMode() const
+{
+    return dsi_io_ != nullptr;
+}
+
+uint32_t Machine::FromEnd(uint32_t from_end)
+{
+    return kMainMemory + static_cast<uint32_t>(MainMemory().size()) - from_end;
+}
+
 void Machine::Boot(const Rom& rom)
 {
+    // The launcher's state comes first. A binary that covers part of it then replaces that part.
+    if (dsi_io_ != nullptr)
+    {
+        BootDsi(rom);
+    }
     LoadArm9(rom);
 
     const std::span<uint8_t> main = MainMemory();
@@ -87,7 +127,7 @@ void Machine::Boot(const Rom& rom)
     {
         for (int i = 0; i < size; i++)
         {
-            main[(address - kMainBase + static_cast<uint32_t>(i)) & (kMainSize - 1)] =
+            main[(address - kMainMemory + static_cast<uint32_t>(i)) & (main.size() - 1)] =
                 static_cast<uint8_t>(value >> (8 * i));
         }
     };
@@ -99,7 +139,7 @@ void Machine::Boot(const Rom& rom)
         return at + 2 <= image_.size() ? static_cast<uint32_t>(xsflib::LoadLe16(&image_[at])) : 0u;
     };
 
-    for (const uint32_t area : {kBootArea, kBootAreaCopy})
+    for (const uint32_t area : {FromEnd(kBootArea), FromEnd(kBootAreaCopy)})
     {
         put(area, 4, chip_id_);
         put(area + 4, 4, chip_id_);
@@ -107,14 +147,14 @@ void Machine::Boot(const Rom& rom)
         put(area + 0xA, 2, header16(0x6C));
     }
 
-    put(kBootArea + 0x50, 2, kArm7BiosCrc);
-    put(kBootAreaCopy + 0x10, 2, kArm7BiosCrc);
-    put(kBootIndicator, 2, 1);
+    put(FromEnd(kBootArea) + 0x50, 2, kArm7BiosCrc);
+    put(FromEnd(kBootAreaCopy) + 0x10, 2, kArm7BiosCrc);
+    put(FromEnd(kBootIndicator), 2, 1);
 
     const std::array<uint8_t, 0x70> settings = FirmwareUserSettings();
     for (std::size_t i = 0; i < settings.size(); i++)
     {
-        put(kUserSettings + static_cast<uint32_t>(i), 1, settings[i]);
+        put(FromEnd(kUserSettings) + static_cast<uint32_t>(i), 1, settings[i]);
     }
 
     io_[kPostFlag] = 1;
@@ -123,18 +163,62 @@ void Machine::Boot(const Rom& rom)
     ScheduleDisplay();
 }
 
+void Machine::BootDsi(const Rom& rom)
+{
+    const std::span<uint8_t> main = MainMemory();
+    const auto put_bytes = [&main](uint32_t address, std::span<const uint8_t> bytes)
+    {
+        std::copy(bytes.begin(), bytes.end(), main.begin() + (address - kMainMemory));
+    };
+
+    // The headers.
+    const std::span<const uint8_t> header = image_.first(std::min<std::size_t>(image_.size(), kDsiHeaderSize));
+    put_bytes(FromEnd(kDsiCardHeader), header);
+    put_bytes(FromEnd(kDsiHeader), header);
+    put_bytes(FromEnd(kDsiShortHeader), header.first(std::min<std::size_t>(header.size(), kDsiShortHeaderSize)));
+
+    // The game's SCFG_EXT7 setting, and the system settings (GBATEK's "DSi SD/MMC Firmware System Settings Data
+    // Files"): the flags that the launcher sets, the language, and the touch screen's calibration, the favourite
+    // colour, the birthday, the nickname and the message from the firmware's user settings.
+    const uint32_t extended = (kDsiArm7Extended & ~kDsiExtendedFromHeader) |
+                              (xsflib::LoadLe32(&image_[kHeaderExtended]) & kDsiExtendedFromHeader);
+    xsflib::StoreLe32(&main[FromEnd(kDsiExtendedCopy) - kMainMemory], extended);
+    xsflib::StoreLe32(&main[FromEnd(kDsiSettingsPointer) - kMainMemory], kDsiSettings);
+    const std::array<uint8_t, 0x70> user = FirmwareUserSettings();
+    uint8_t* settings = &main[kDsiSettings - kMainMemory];
+    xsflib::StoreLe32(settings, 0x0000000F);
+    settings[0x06] = user[0x64] & 7;
+    std::copy(user.begin() + 0x58, user.begin() + 0x64, settings + 0x30);
+    settings[0x44] = user[0x02];
+    std::copy(user.begin() + 0x03, user.begin() + 0x05, settings + 0x46);
+    std::copy(user.begin() + 0x06, user.begin() + 0x1A, settings + 0x48);
+    std::copy(user.begin() + 0x1C, user.begin() + 0x50, settings + 0x5E);
+
+    // The ARM9i and ARM7i binaries, through each CPU's bus.
+    const auto load = [](arm::Bus& bus, const std::optional<Binary>& binary, std::span<const uint8_t> bytes)
+    {
+        for (uint32_t i = 0; binary && i < bytes.size(); i++)
+        {
+            StoreToBus(bus, binary->ram_address + i, 1, bytes[i]);
+        }
+    };
+    load(*this, rom.Header().arm9i, rom.Arm9i());
+    load(*arm7_, rom.Header().arm7i, rom.Arm7i());
+}
+
 void Machine::LoadArm9(const Rom& rom)
 {
     const Binary& arm9 = rom.Header().arm9;
     const std::span<const uint8_t> binary = rom.Arm9();
-    if (arm9.ram_address < kMainBase || arm9.ram_address - kMainBase + uint64_t{binary.size()} > kMainSize)
+    if (arm9.ram_address < kMainMemory ||
+        arm9.ram_address - kMainMemory + uint64_t{binary.size()} > MainMemory().size())
     {
         throw std::runtime_error("the ARM9 binary doesn't fit in main memory at " +
                                  xsflib::Hex(arm9.ram_address, 8, true));
     }
 
     const std::span<uint8_t> main = MainMemory();
-    uint8_t* at = &main[arm9.ram_address - kMainBase];
+    uint8_t* at = &main[arm9.ram_address - kMainMemory];
     std::memcpy(at, binary.data(), binary.size());
 
     // The firmware decrypts the secure area and marks its start.
@@ -159,10 +243,18 @@ bool Machine::Run(uint64_t until, std::vector<SoundOutput>& out)
             continue;
         }
 
+        if (dsi_io_ != nullptr && NextEvent() <= Clock())
+        {
+            Events();
+            continue;
+        }
+
         polls_ = 0;
         arm9_running_ = true;
+        const uint64_t burst = BurstCycles();
+        burst_end_ = Clock() + burst / Arm9Cycles();
         const uint64_t start = arm9_->Cycles();
-        const arm::StopReason reason = arm9_->Run(kSlice);
+        const arm::StopReason reason = arm9_->Run(burst);
         arm9_running_ = false;
         if (reason == arm::StopReason::kStopAddress)
         {
@@ -197,13 +289,14 @@ bool Machine::Run(uint64_t until, std::vector<SoundOutput>& out)
             }
         }
 
+        const uint64_t ratio = Arm9Cycles();
         if (cycles > 0 && error_.empty())
         {
-            Pass(Clock() + (cycles + 1) / 2, true, out);
+            Pass(Clock() + (cycles + ratio - 1) / ratio, true, out);
         }
         if (wait_cycles_ > 0 && error_.empty())
         {
-            Pass(Clock() + (wait_cycles_ + 1) / 2, false, out);
+            Pass(Clock() + (wait_cycles_ + ratio - 1) / ratio, false, out);
         }
         wait_cycles_ = 0;
     }
@@ -270,9 +363,17 @@ uint8_t* Machine::Page(uint32_t page)
     switch (page >> 24)
     {
     case 0x02:
-        return MainMemory().data() + (page & (kMainSize - 1));
+        return MainMemory().data() + (page & (MainMemory().size() - 1));
     case 0x03:
         {
+            if (dsi_io_ != nullptr)
+            {
+                if (const std::optional<uint8_t*> mapped = arm7_->DsiWram().Page(false, page))
+                {
+                    return *mapped;
+                }
+            }
+
             // WRAMCNT gives the ARM9 all of the shared work memory (0), its second half (1), its first half (2) or
             // none (3).
             const std::span<uint8_t> shared = arm7_->SharedWram();
@@ -304,6 +405,9 @@ uint8_t* Machine::Page(uint32_t page)
         }
     case 0x07:
         return oam_.data();
+    case 0x0C:
+        // DSi mode mirrors main memory here (GBATEK's "DSi Memory Map").
+        return dsi_io_ != nullptr ? MainMemory().data() + (page & (MainMemory().size() - 1)) : nullptr;
     case 0xFF:
         return page >= kBiosBase && page < kBiosBase + kBiosSize ? bios_.data() + (page - kBiosBase) : nullptr;
     default:
@@ -412,9 +516,26 @@ bool Machine::Swi(arm::Cpu& cpu, uint32_t comment)
 
     // In ARM state, the BIOS takes the number from bits 16 to 23 of the comment.
     const uint32_t number = thumb ? comment : (comment >> 16) & 0xFF;
+    const auto load = [&cpu](uint32_t address, int size)
+    {
+        return cpu.Load(address, size);
+    };
+    const auto store = [&cpu](uint32_t address, int size, uint32_t value)
+    {
+        cpu.Store(address, size, value);
+    };
+    const auto fail = [this](std::string message)
+    {
+        Fail(std::move(message));
+    };
+    if (const std::optional<bool> done = bios::SharedCall(cpu, number, dsi_io_ != nullptr, load, store, fail))
+    {
+        return *done;
+    }
+
     switch (number)
     {
-    case kWaitByLoop:
+    case bios::kWaitByLoop:
         {
             const auto loops = static_cast<int32_t>(cpu.Reg(0));
             if (loops > 0)
@@ -425,35 +546,8 @@ bool Machine::Swi(arm::Cpu& cpu, uint32_t comment)
 
             return true;
         }
-    case kIntrWait:
-        return false;
-    case kVBlankIntrWait:
-        cpu.SetReg(0, 1);
-        cpu.SetReg(1, irq::kVblank);
-        return false;
-    case kHalt:
+    case bios::kHalt:
         cpu.Halt();
-        return true;
-    case kDiv:
-        if (!bios::Div(cpu))
-        {
-            Fail("Div with " + xsflib::Hex(cpu.Reg(0), 8, true) + " / " + xsflib::Hex(cpu.Reg(1), 8, true));
-        }
-        return true;
-    case kCpuSet:
-    case kCpuFastSet:
-        bios::CpuSet(
-            cpu, number == kCpuFastSet, [&cpu](uint32_t address, int size) { return cpu.Load(address, size); },
-            [&cpu](uint32_t address, int size, uint32_t value) { cpu.Store(address, size, value); });
-        return true;
-    case kSqrt:
-        bios::Sqrt(cpu);
-        return true;
-    case kGetCrc16:
-        bios::GetCrc16(cpu, [&cpu](uint32_t address, int size) { return cpu.Load(address, size); });
-        return true;
-    case kIsDebugger:
-        cpu.SetReg(0, 0);
         return true;
     case kBitUnPack:
         {
@@ -582,6 +676,30 @@ void Machine::Fail(std::string message)
     }
 
     arm9_->Stop();
+}
+
+uint64_t Machine::Arm9Cycles() const
+{
+    return dsi_io_ != nullptr && dsi_io_->FastArm9() ? 4 : 2;
+}
+
+uint64_t Machine::BurstCycles() const
+{
+    if (dsi_io_ == nullptr)
+    {
+        return kSlice;
+    }
+
+    // The next event is after the clock: Run handles each one when it falls due.
+    return std::min(kSlice, (NextEvent() - Clock()) * Arm9Cycles());
+}
+
+void Machine::EventScheduled()
+{
+    if (dsi_io_ != nullptr && arm9_running_ && NextEvent() < burst_end_)
+    {
+        arm9_->Stop();
+    }
 }
 
 void Machine::Pass(uint64_t until, bool to_arm7_change, std::vector<SoundOutput>& out)
@@ -741,205 +859,6 @@ void Machine::DisplayEvent(uint64_t at)
     }
 
     ScheduleDisplayAfter(at);
-}
-
-void Machine::WriteDmaControl(int channel, uint32_t control)
-{
-    Dma& dma = dmas_[static_cast<std::size_t>(channel)];
-    const bool starts = (dma.control & kDmaEnable) == 0 && (control & kDmaEnable) != 0;
-    dma.control = control;
-    if (!starts)
-    {
-        return;
-    }
-
-    dma.next_source = dma.source;
-    dma.next_destination = dma.destination;
-    dma.left = DmaCount(control);
-
-    switch (DmaTimingOf(control))
-    {
-    case kDmaImmediate:
-    case kDmaGxFifo:
-        // The 3D engine takes the commands at once.
-        RunDma(channel);
-        break;
-    case kDmaCard:
-        RunCardDmas();
-        break;
-    case kDmaHblank:
-        ScheduleDisplay();
-        break;
-    default:
-        // The vertical blank's DMA waits for its event. The display's DMA never starts.
-        break;
-    }
-}
-
-void Machine::RunDma(int channel)
-{
-    Dma& dma = dmas_[static_cast<std::size_t>(channel)];
-    const int size = (dma.control & kDmaWords) != 0 ? 4 : 2;
-    const auto step = [size](uint32_t mode)
-    {
-        return mode == 1 ? -size : mode == 2 ? 0 : size;
-    };
-
-    const int destination_step = step((dma.control >> 21) & 3);
-    const int source_step = step((dma.control >> 23) & 3);
-    uint32_t source = dma.next_source & ~static_cast<uint32_t>(size - 1);
-    uint32_t destination = dma.next_destination & ~static_cast<uint32_t>(size - 1);
-    for (uint32_t i = 0; i < dma.left; i++)
-    {
-        StoreToBus(*this, destination, size, LoadFromBus(*this, source, size));
-        source += static_cast<uint32_t>(source_step);
-        destination += static_cast<uint32_t>(destination_step);
-    }
-
-    dma.next_source = source;
-    dma.next_destination = destination;
-    dma.left = 0;
-    EndDmaBlock(channel);
-}
-
-void Machine::EndDmaBlock(int channel)
-{
-    Dma& dma = dmas_[static_cast<std::size_t>(channel)];
-    const uint32_t timing = DmaTimingOf(dma.control);
-    if ((dma.control & kDmaRepeat) != 0 && timing != kDmaImmediate && timing != kDmaGxFifo)
-    {
-        dma.left = DmaCount(dma.control);
-        if (((dma.control >> 21) & 3) == 3)
-        {
-            dma.next_destination = dma.destination;
-        }
-    }
-    else
-    {
-        dma.control &= ~kDmaEnable;
-    }
-
-    if ((dma.control & kDmaIrq) != 0)
-    {
-        Request(irq::kDma0 << channel);
-    }
-}
-
-void Machine::RunCardDmas()
-{
-    for (int channel = 0; channel < 4; channel++)
-    {
-        Dma& dma = dmas_[static_cast<std::size_t>(channel)];
-        const int size = (dma.control & kDmaWords) != 0 ? 4 : 2;
-        while ((dma.control & kDmaEnable) != 0 && DmaTimingOf(dma.control) == kDmaCard && card_.ready &&
-               card_.position < card_.data.size())
-        {
-            // Each word that the card gives starts a unit of the transfer.
-            const int destination_step = ((dma.control >> 21) & 3) == 1   ? -size
-                                         : ((dma.control >> 21) & 3) == 2 ? 0
-                                                                          : size;
-            StoreToBus(*this, dma.next_destination & ~static_cast<uint32_t>(size - 1), size,
-                       LoadFromBus(*this, dma.next_source, size));
-            dma.next_destination += static_cast<uint32_t>(destination_step);
-            if (--dma.left == 0)
-            {
-                EndDmaBlock(channel);
-            }
-        }
-    }
-}
-
-uint16_t Machine::FifoControl() const
-{
-    uint16_t value = fifo_control_;
-    value |= arm7_->WordsToArm7() == 0 ? kSendEmpty : 0;
-    value |= arm7_->WordsToArm7() == kFifoWords ? kSendFull : 0;
-    value |= arm7_->WordsToArm9() == 0 ? kReceiveEmpty : 0;
-    value |= arm7_->WordsToArm9() == kFifoWords ? kReceiveFull : 0;
-    value |= fifo_error_ ? kFifoError : 0;
-
-    return value;
-}
-
-void Machine::WriteFifoControl(uint16_t value)
-{
-    if ((value & kSendClear) != 0)
-    {
-        arm7_->ClearToArm7();
-    }
-    if ((value & kFifoError) != 0)
-    {
-        fifo_error_ = false;
-    }
-
-    const uint16_t old = fifo_control_;
-    fifo_control_ = static_cast<uint16_t>(value & kFifoWritable);
-    if ((old & kSendEmptyIrq) == 0 && (fifo_control_ & kSendEmptyIrq) != 0 && arm7_->WordsToArm7() == 0)
-    {
-        Request(irq::kIpcSendEmpty);
-    }
-    if ((old & kReceiveIrq) == 0 && (fifo_control_ & kReceiveIrq) != 0 && arm7_->WordsToArm9() != 0)
-    {
-        Request(irq::kIpcReceiveNotEmpty);
-    }
-}
-
-void Machine::Divide()
-{
-    // DIVCNT's mode: 32 bits by 32 (0), 64 by 32 (1 and 3) or 64 by 64 (2).
-    const uint16_t control = Stored(kDivControl);
-    const auto numerator64 = static_cast<int64_t>(xsflib::LoadLe64(&io_[kDivNumerator]));
-    const auto denominator64 = static_cast<int64_t>(xsflib::LoadLe64(&io_[kDivDenominator]));
-    const uint32_t mode = control & 3;
-    const int64_t numerator = mode == 0 ? static_cast<int32_t>(numerator64) : numerator64;
-    const int64_t denominator = mode == 2 ? denominator64 : static_cast<int32_t>(denominator64);
-
-    // A denominator of 0 gives the numerator as the remainder and -1 or 1 as the result, with the high word of the
-    // result inverted in mode 0. The flag in bit 14 looks at all 64 bits of the denominator.
-    int64_t result = 0;
-    int64_t remainder = 0;
-    if (denominator == 0)
-    {
-        remainder = numerator;
-        result = numerator >= 0 ? -1 : 1;
-        if (mode == 0)
-        {
-            result = static_cast<int64_t>(static_cast<uint64_t>(result) ^ 0xFFFFFFFF00000000);
-        }
-    }
-    else if (numerator == std::numeric_limits<int64_t>::min() && denominator == -1)
-    {
-        result = numerator;
-    }
-    else
-    {
-        result = numerator / denominator;
-        remainder = numerator % denominator;
-    }
-
-    xsflib::StoreLe64(&io_[kDivResult], static_cast<uint64_t>(result));
-    xsflib::StoreLe64(&io_[kDivRemainder], static_cast<uint64_t>(remainder));
-    const uint16_t flags = static_cast<uint16_t>((control & 3) | (denominator64 == 0 ? 1u << 14 : 0u));
-    xsflib::StoreLe16(&io_[kDivControl], flags);
-}
-
-void Machine::SquareRoot()
-{
-    // SQRTCNT's mode: a 32-bit parameter (0) or a 64-bit one (1).
-    const uint64_t parameter = (Stored(kSqrtControl) & 1) != 0 ? xsflib::LoadLe64(&io_[kSqrtParameter])
-                                                               : xsflib::LoadLe32(&io_[kSqrtParameter]);
-
-    uint64_t root = 0;
-    for (uint64_t bit = uint64_t{1} << 31; bit != 0; bit >>= 1)
-    {
-        const uint64_t trial = root | bit;
-        if (trial * trial <= parameter)
-        {
-            root = trial;
-        }
-    }
-
-    xsflib::StoreLe32(&io_[kSqrtResult], static_cast<uint32_t>(root));
 }
 
 } // namespace ntdlib::ntr

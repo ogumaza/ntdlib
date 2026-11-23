@@ -204,17 +204,17 @@ inline constexpr auto kJungleBeatWiiStates = []
     return states;
 }();
 
-// A chord layer: the chord effects that an object of the game plays beside a stage's music while the object is near
-// DK, such as a sleeping hog's. The effects follow the chords of the music and repeat until the object stops them. Most
+// A chord layer: the chord effects that an object of the game plays beside a stage's music while the object is near DK,
+// such as a sleeping hog's. The effects follow the chords of the music and repeat until the object stops them. Most
 // objects ask for their effect's record of the chord database once a frame (0x80256fcc in the GameCube release's
-// main.dol, through 0x802301b4 and the helpers at 0x80230264 to 0x802302f4). Objects that share an effect start it
-// once and stop it later, through the audio manager's list at +0x1040 (0x8025751c, from 0x802570f0): the coconut pigs'
-// battle and the attack chance of a stunned enemy, which plays two records. A ripper gives a piece with a layer the
-// piece's sound ID with kChordLayer and bits 0 to 6 of the layer's index in bits 16 to 22. Bit 15 holds bit 7 of the
-// index. A piece's ID holds 0 there, and the bits of the other variants' states stay as they were. The driver starts
-// the music of the stage's row and the effects. A layer of Survival Mode starts the stage's music as Survival Mode
-// does (JungleBeatSurvivalTest). A layer of a boss fight whose demo starts other music than the row gives starts the
-// fight's music through the row of its stage (JungleBeatFightMusic).
+// main.dol, through 0x802301b4 and the helpers at 0x80230264 to 0x802302f4). Objects that share an effect start it once
+// and stop it later, through the audio manager's list at +0x1040 (0x8025751c, from 0x802570f0): the coconut pigs'
+// battle and the attack chance of a stunned enemy. The attack chance plays two records. A ripper gives a piece with a
+// layer the piece's sound ID with kChordLayer and bits 0 to 6 of the layer's index in bits 16 to 22. Bit 15 holds bit 7
+// of the index. A piece's ID holds 0 there, and the bits of the other variants' states stay as they were. The driver
+// starts the music of the stage's row and the effects. A layer of Survival Mode starts the stage's music as Survival
+// Mode does (JungleBeatSurvivalTest). A layer of a boss fight whose demo starts other music than the row gives starts
+// the fight's music through the row of its stage (JungleBeatFightMusic).
 //
 // The layers come from the objects that each stage places (the objinfo of its world/*.arc) and the records that each
 // object's class plays. The Wii release's main.dol names the classes of its nerves (RTTI). The calls of the helpers
@@ -442,12 +442,12 @@ static_assert(kJungleBeatChordLayers[kJungleBeatSecondChordLayers - 1].piece == 
 //
 // Survival Mode's first two layers follow the GameCube's first kJungleBeatFirstChordLayers layers. The GameCube's
 // layers up to kJungleBeatSecondChordLayers follow them, then Survival Mode's later layer, then the GameCube's later
-// layers. Every layer then keeps its index. Survival Mode plays DreadKong01, VsKonfu, VsMiyamoto, VsAkebono
-// and VsFinalKong2 in that order (0x801dc270 starts it, 0x8025fac0 picks the next stage). Of these, only VsFinalKong2
+// layers. Every layer then keeps its index. Survival Mode plays DreadKong01, VsKonfu, VsMiyamoto, VsAkebono and
+// VsFinalKong2 in that order (0x801dc270 starts it, 0x8025fac0 picks the next stage). Of these, only VsFinalKong2
 // (0x58) places objects that play chord effects, and its row gives JA_BGM_MAIN_22. In Survival Mode, start_stage_music
 // (0x80277590) starts JA_BGM_BOSS_FINAL (0x0100004b) in its place, and the objects play their records over that piece.
 // The main game's layers of VsFinalKong2 belong to JA_BGM_MAIN_22: enemy_angry at 0x58, and dk_wait_attack at
-// VsFinalKong (0x56), which places the same object.
+// VsFinalKong (0x56). VsFinalKong places the same object.
 //
 // Survival Mode's dk_wait_attack layer also plays in the main game's final fight. In round 1 at 0x56 and 0x58, the
 // boss's pig asks for the record while DK holds it. The fight's demo has started JA_BGM_BOSS_FINAL by then (0x800e7f0c,
@@ -570,7 +570,7 @@ inline constexpr JungleBeatStateTable kJungleBeatWiiStateTable{0x803ab6b0, 0x803
 
 // A chord layer (`sound_id`, see ChordLayerId) whose piece's first state in `table` turns every track off. That piece
 // is JA_BGM_OP_CEMEMONY, whose tracks the game turns on later. A layer starts the stage's music through the stage's
-// start, which leaves the piece in its first state. Gives the piece's second state written over its first, for the
+// start. That start leaves the piece in its first state. Gives the piece's second state written over its first, for the
 // layer's mini file. The piece's tracks then play from the start, as they do in a rip of the piece alone, where the
 // driver applies the second state at once. Gives nothing for another sound, or for a layer whose piece has no row or
 // starts with a track on. The table is read from the game's main.dol. The driver's code stays the same: a change to

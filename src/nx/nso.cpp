@@ -6,11 +6,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/sha256.h"
 
 #include "ntdlib/nx/lz4.h"
@@ -36,6 +39,42 @@ constexpr std::array<const char*, 3> kSegmentNames = {"text", "rodata", "data"};
 // Every read past the end of the file gives one message.
 constexpr xsflib::ReaderOptions kNsoReaderOptions{.bounds_message = xsflib::BoundsMessage::kFixed,
                                                   .fixed_message = "the NSO is damaged"};
+
+// The module's header (MOD0): the place of its address in the text segment, its tag read little-endian, and the place
+// of the dynamic section's offset in it. The dynamic section's entries, and the tag of the last.
+constexpr uint64_t kMod0At = 4;
+constexpr uint32_t kMod0 = 0x30444f4d;
+constexpr uint64_t kDynamicOffsetAt = 4;
+constexpr std::size_t kDynamicEntry = 16;
+constexpr int64_t kDtNull = 0;
+
+// The `size` bytes at `address` in the segment of `nso` that contains them all, or an empty span if no segment does.
+std::span<const uint8_t> SegmentBytes(const Nso& nso, uint64_t address, std::size_t size)
+{
+    for (const NsoSegment* segment : {&nso.text, &nso.rodata, &nso.data})
+    {
+        if (address >= segment->address && address - segment->address <= segment->bytes.size() &&
+            size <= segment->bytes.size() - (address - segment->address))
+        {
+            return std::span<const uint8_t>(segment->bytes)
+                .subspan(static_cast<std::size_t>(address - segment->address), size);
+        }
+    }
+
+    return {};
+}
+
+// The 32-bit word at `address` of `nso`, or nothing if no segment contains it.
+std::optional<uint32_t> WordAt(const Nso& nso, uint64_t address)
+{
+    const std::span<const uint8_t> bytes = SegmentBytes(nso, address, 4);
+    if (bytes.empty())
+    {
+        return std::nullopt;
+    }
+
+    return xsflib::LoadLe32(bytes.data());
+}
 
 } // namespace
 
@@ -80,6 +119,39 @@ Nso ReadNso(std::span<const uint8_t> file)
     }
 
     return nso;
+}
+
+std::map<int64_t, uint64_t> DynamicEntries(const Nso& nso)
+{
+    const std::optional<uint32_t> mod0 = WordAt(nso, kMod0At);
+    const std::optional<uint32_t> tag = mod0 ? WordAt(nso, *mod0) : std::nullopt;
+    const std::optional<uint32_t> offset = mod0 ? WordAt(nso, *mod0 + kDynamicOffsetAt) : std::nullopt;
+    if (tag != kMod0 || !offset)
+    {
+        throw xsflib::FormatError("the module has no MOD0 header");
+    }
+
+    // The offset is signed. The section can come before the header.
+    std::map<int64_t, uint64_t> entries;
+    for (uint64_t at = *mod0 + static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(*offset)));;
+         at += kDynamicEntry)
+    {
+        const std::span<const uint8_t> entry = SegmentBytes(nso, at, kDynamicEntry);
+        if (entry.empty())
+        {
+            throw xsflib::FormatError("the module's dynamic section runs past the end of a segment");
+        }
+
+        const auto entry_tag = static_cast<int64_t>(xsflib::LoadLe64(entry.data()));
+        if (entry_tag == kDtNull)
+        {
+            break;
+        }
+
+        entries.emplace(entry_tag, xsflib::LoadLe64(entry.data() + 8));
+    }
+
+    return entries;
 }
 
 } // namespace ntdlib::nx

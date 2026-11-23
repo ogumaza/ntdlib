@@ -4,7 +4,7 @@
 //
 // A console converts each voice's wave to its output rate through a filter. It picks the filter by the voice's rate:
 // the wave's sample rate times the voice's pitch ratio, over the output rate. AX on the Wii and the Wii U has three
-// sets of 4-tap filters, which the SDK names 8, 12 and 16 kHz. AX takes the 8 kHz set above a rate of 4/3, the 12 kHz
+// sets of 4-tap filters. The SDK names them 8, 12 and 16 kHz. AX takes the 8 kHz set above a rate of 4/3, the 12 kHz
 // set above 1 and the 16 kHz set otherwise. The Switch's audio renderer holds the same three sets, and picks them by
 // the same thresholds of its step in Q15. The 3DS's DSP has three polyphase kernels whose responses come within 0.1 dB
 // of the sets'. It picks them by the same thresholds. A rate of exactly 1 plays unfiltered there. Each filter acts on
@@ -37,14 +37,13 @@
 // WarioWare: Get It Together!'s main 0xc270b0). The rule's limits give both. A note whose key starts past a limit and
 // whose pitch holds still gets a preset of its own (PresetKey::at_pitch_limits). The preset's keys past a limit take a
 // separate zone or region. That plays every key at the limit: a scale tuning of 0 in the SoundFont and pitch_keytrack=0
-// in the SFZ files. At the Wii U's limit, the filters' cutoffs lie above 45 kHz. At the Switch's floor of 1/16, the
-// rate stays below 1. At its ceiling of 16, the cutoffs lie above 24 kHz for every wave of 9 kHz or more. A span at a
-// limit therefore takes no low-pass. A zone at a limit takes the
-// preset's track low-pass without a fit (zone_low_pass.h): the fit follows each key's pitch. A note whose pitch moves,
-// by a sweep, an LFO in its part's bends or a bend, keeps every key at its pitch. A zone at the limit would move it
-// away from the limit. In the game, the note stays at the limit while its pitch would pass it, and follows its pitch
-// inside the limits. In the files, it plays past the limit. Only a pitch held to the limit in each frame of the part's
-// bends could follow the game.
+// in the SFZ files. At the Wii U's limit, the filters' cutoffs are above 45 kHz. At the Switch's floor of 1/16, the
+// rate stays below 1. At its ceiling of 16, the cutoffs are above 24 kHz for every wave of 9 kHz or more. A span at a
+// limit therefore takes no low-pass. A zone at a limit takes the preset's track low-pass without a fit
+// (zone_low_pass.h): the fit follows each key's pitch. A note whose pitch moves, by a sweep, an LFO in its part's bends
+// or a bend, keeps every key at its pitch. A zone at the limit would move it away from the limit. In the game, the note
+// stays at the limit while its pitch would pass it, and follows its pitch inside the limits. In the files, it plays
+// past the limit. Only a pitch held to the limit in each frame of the part's bends could follow the game.
 
 #pragma once
 

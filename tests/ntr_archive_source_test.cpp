@@ -83,6 +83,7 @@ Bytes ArchiveFile(const Bytes& bytecode = kNote)
         .data = {0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0}};
     spec.files = {files::Sequence(bytecode), files::Bank({{.type = 1, .region = {.wave = 0}}}),
                   files::WaveArchive({wave})};
+
     return files::SoundArchive(spec);
 }
 
@@ -92,6 +93,7 @@ TestSet MakeSet()
     set.files[kArchivePath] = ArchiveFile();
     set.sequence = ntr::SequenceRef{0};
     set.variables.global[2] = 7;
+
     return set;
 }
 
@@ -144,6 +146,7 @@ std::vector<int16_t> Play(TestSet set, const ntr::snd::Build& build, int frames)
     {
         source.RunFrame(out);
     }
+
     return out;
 }
 

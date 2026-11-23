@@ -142,7 +142,7 @@ void TestEffectFormat()
     XSFLIB_CHECK(full.size() == 2 && full[0].volume == 127 && full[1].volume == 127 && full[1].pitch == 1.5f);
 }
 
-// The sequences of TestSequenceIndex: their names and where they lie in a 0x100-byte archive.
+// The sequences of TestSequenceIndex: their names and where they are in a 0x100-byte archive.
 const std::vector<files::AafSequenceSpec> kIndex = {
     {"se.bms", 0, 0x40}, {"Mansion.com", 0x40, 0x80}, {"VeryLongNameOfAPiece.com", 0xc0, 0x40}};
 
@@ -154,7 +154,7 @@ std::string IndexRefusal(std::span<const uint8_t> aaf, std::span<const uint8_t> 
 
 void TestSequenceIndex()
 {
-    // The index's sequences, by their numbers. A name keeps its first 13 characters. The data lies in the archive.
+    // The index's sequences, by their numbers. A name keeps its first 13 characters. The data is in the archive.
     std::vector<uint8_t> archive(0x100);
     for (std::size_t i = 0; i < archive.size(); i++)
     {
@@ -240,6 +240,27 @@ void TestBanks()
     XSFLIB_CHECK(warnings.size() == 1 && warnings[0].starts_with("bank at offset 1792: "));
 }
 
+// The bank list's blocks, in either byte order: each bank's offset, and the wave system that its block gives. The
+// banks aren't read. The first one here can't be.
+void TestBankBlocks()
+{
+    const std::vector<uint8_t> bank = files::BankV0File(0, 100, true, 4, 0);
+    const std::vector<files::BaaBlock> more = {{3, bank}};
+    const std::vector<uint8_t> be = files::AafFile(kSounds, {"a_0.aw"}, 5, {}, true, bank, {}, 1, more);
+    const std::vector<uint8_t> le = files::AafFile(kSounds, {"a_0.aw"}, 5, {}, false, bank, {}, 1, more);
+    const std::size_t second = (0xa00 + bank.size() + 0x1f) & ~std::size_t{0x1f};
+
+    const std::vector<jaudio::AafBankBlock> blocks = jaudio::AafBankBlocks(be);
+    const std::vector<jaudio::AafBankBlock> wide = jaudio::AafBankBlocks(le);
+    const std::vector<jaudio::AafBankBlock> unread = jaudio::AafBankBlocks(files::AafFile(kSounds, {"a_0.aw"}));
+
+    XSFLIB_CHECK(blocks.size() == 2 && blocks[0].offset == 0xa00 && blocks[0].wave_system == 1);
+    XSFLIB_CHECK(blocks.size() == 2 && blocks[1].offset == second && blocks[1].wave_system == 3);
+    XSFLIB_CHECK(wide.size() == 2 && wide[0].offset == 0xa00 && wide[0].wave_system == 1);
+    XSFLIB_CHECK(wide.size() == 2 && wide[1].offset == second && wide[1].wave_system == 3);
+    XSFLIB_CHECK(unread.size() == 1 && unread[0].offset == 1792 && unread[0].wave_system == 0);
+}
+
 void TestNamedWaveSystems()
 {
     const std::vector<files::AafSequenceSpec> no_index;
@@ -280,34 +301,12 @@ void TestNamedWaveSystems()
     XSFLIB_CHECK(!shared.empty() && shared[0].wave_system == 2 && shared[0].named_systems.empty());
 }
 
-// A name file of `sounds`: the 16-byte header with the count, 18 records for the categories, then a record for each
-// sound. A record is a name of up to 28 bytes, then the sound's ID. The count is big-endian in either order.
-std::vector<uint8_t> NameFile(const std::vector<jaudio::AsnSound>& sounds, bool big_endian = true)
-{
-    std::vector<uint8_t> b(16 + (18 + sounds.size()) * 32);
-    xsflib::StoreBe32(b.data() + 12, static_cast<uint32_t>(sounds.size()));
-    for (std::size_t i = 0; i < 18; i++)
-    {
-        const std::string category = std::to_string(i) + " CATEGORY";
-        std::copy(category.begin(), category.end(), b.begin() + static_cast<std::ptrdiff_t>(16 + i * 32));
-    }
-    for (std::size_t i = 0; i < sounds.size(); i++)
-    {
-        const std::size_t at = 16 + (18 + i) * 32;
-        std::copy(sounds[i].name.begin(), sounds[i].name.end(), b.begin() + static_cast<std::ptrdiff_t>(at));
-        big_endian ? xsflib::StoreBe32(b.data() + at + 28, sounds[i].id)
-                   : xsflib::StoreLe32(b.data() + at + 28, sounds[i].id);
-    }
-
-    return b;
-}
-
 void TestAsnSounds()
 {
     // The sounds follow the category records, in the file's order. A name can fill its 28 bytes.
     const std::string kLongest(28, 'N');
     const std::vector<uint8_t> asn =
-        NameFile({{0x80000800, "JA_BGM_SE_SEQUENCE"}, {0x80000001, "JA_BGM_FIELD"}, {0x00000805, kLongest}});
+        files::NameFile({{0x80000800, "JA_BGM_SE_SEQUENCE"}, {0x80000001, "JA_BGM_FIELD"}, {0x00000805, kLongest}});
 
     const std::vector<jaudio::AsnSound> sounds = jaudio::ReadAsnSounds(asn);
 
@@ -324,8 +323,8 @@ void TestAsnSounds()
                  "the name file is too short for its sounds");
 
     // The Switch's release of Pikmin 2 stores its IDs little-endian. The count stays big-endian.
-    const std::vector<uint8_t> le =
-        NameFile({{0x80000800, "JA_BGM_SE_SEQUENCE"}, {0x80000001, "JA_BGM_FIELD"}, {0x00000805, kLongest}}, false);
+    const std::vector<uint8_t> le = files::NameFile(
+        {{0x80000800, "JA_BGM_SE_SEQUENCE"}, {0x80000001, "JA_BGM_FIELD"}, {0x00000805, kLongest}}, false);
     const std::vector<jaudio::AsnSound> from_le = jaudio::ReadAsnSounds(le, false);
     XSFLIB_CHECK(le != asn && from_le.size() == 3);
     for (std::size_t i = 0; i < std::min(from_le.size(), sounds.size()); i++)
@@ -337,6 +336,26 @@ void TestAsnSounds()
     // An effect's name doesn't depend on how long the game plays the effect. A sequence's ID stays whole.
     XSFLIB_CHECK(jaudio::AsnNameKey(0x00001c05) == 0x00001005 && jaudio::AsnNameKey(0x00001405) == 0x00001005);
     XSFLIB_CHECK(jaudio::AsnNameKey(0x80000c01) == 0x80000c01);
+}
+
+// The names by key: an effect's two IDs that differ only in the bits of play length share a key, and the first name
+// counts. A sequence keeps its whole ID as its key, bits 10 and 11 included. Little-endian IDs give the same keys.
+void TestAsnNames()
+{
+    const std::vector<jaudio::AsnSound> sounds = {
+        {0x80000001, "JA_BGM_FIELD"}, {0x00001c05, "JA_SE_FIRST"}, {0x00001405, "JA_SE_SECOND"}, {0x80000c02, ""}};
+    const std::vector<uint8_t> asn = files::NameFile(sounds);
+    const std::vector<uint8_t> le = files::NameFile(sounds, false);
+
+    const std::map<uint32_t, std::string> names = jaudio::ReadAsnNames(asn);
+    const std::map<uint32_t, std::string> from_le = jaudio::ReadAsnNames(le, false);
+
+    const std::map<uint32_t, std::string> expected = {
+        {0x80000001, "JA_BGM_FIELD"}, {0x00001005, "JA_SE_FIRST"}, {0x80000c02, ""}};
+    XSFLIB_CHECK(names == expected);
+    XSFLIB_CHECK(from_le == expected);
+    XSFLIB_CHECK(ErrorOf([&] { jaudio::ReadAsnNames(std::span(asn).first(asn.size() - 1)); }) ==
+                 "the name file is too short for its sounds");
 }
 
 // The text of every field that the readers give for a sound or a wave system, to compare what two archives give.
@@ -502,8 +521,10 @@ int main()
     TestWaveSystems();
     TestIsAaf();
     TestBanks();
+    TestBankBlocks();
     TestNamedWaveSystems();
     TestAsnSounds();
+    TestAsnNames();
     TestLittleEndian();
 
     return xsflib::testing::Summary("aaf");

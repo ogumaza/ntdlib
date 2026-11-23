@@ -2,7 +2,7 @@
 
 // Checks the frames without mixing of the model of AX (System::SetMixing) without game data, against the rules in
 // system.h. Three voices play while a stretch of frames doesn't mix: ADPCM through a 4-tap filter in a loop, PCM16
-// without a conversion in a loop, and PCM16 by linear interpolation, which runs out during the stretch. Their
+// without a conversion in a loop, and PCM16 by linear interpolation. The PCM16 sound runs out during the stretch. Their
 // envelopes, mixes, ratios and mutes change during the stretch and at its ends. An envelope and a mix move all through
 // the stretch. A fourth voice starts during the stretch, and its mix changes as the stretch ends. Outside the enhanced
 // mode, a fifth voice plays through its low-pass at 60 Hz and a biquad low-pass at 150 Hz. In fixed point, their states

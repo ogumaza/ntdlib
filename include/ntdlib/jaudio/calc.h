@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// The random generators and the table of pan rules that JAudio1's and JAudio2's code share. They are inline, so code
-// that reads them requires no link to ntdlib::jaudio.
+// The random generators and the table of pan rules that JAudio1's and JAudio2's code share. They are inline. Code that
+// reads them requires no link to ntdlib::jaudio.
 
 #pragma once
 

@@ -18,8 +18,8 @@ namespace
 {
 
 // main's constants, by their bits.
-const float kPi = std::bit_cast<float>(0x40490fdbu);            // JGeometry's π in single precision
-const float kMonoLevel = std::bit_cast<float>(0x3f34fdf4u);     // 0.707: the auto mixer's level in mono
+const float kPi = std::bit_cast<float>(0x40490fdbu);        // JGeometry's π in single precision
+const float kMonoLevel = std::bit_cast<float>(0x3f34fdf4u); // 0.707: the auto mixer's level in mono
 
 // The LFOs' and the oscillators' steps per sub-frame at a DSP rate of 32028.5 Hz and 48000 Hz.
 constexpr float kLfoRate = 32028.5f;

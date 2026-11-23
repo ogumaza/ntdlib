@@ -195,10 +195,7 @@ bool DelayExp::InitParams(uint32_t rate)
 void DelayExp::Off()
 {
     active_ |= kOff;
-    for (std::vector<int32_t>& line : line_)
-    {
-        line = std::vector<int32_t>();
-    }
+    Free(line_);
 }
 
 } // namespace ntdlib::cafe::axfx

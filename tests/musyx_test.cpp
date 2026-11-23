@@ -350,6 +350,11 @@ void TestSamples()
           "the PCM16 sample's entry");
     Check(directory[2].format == musyx::SampleFormat::kPcm8 && directory[2].offset == 24, "the PCM8 sample's entry");
 
+    // 28 DSP-ADPCM samples take two whole frames of 8 bytes. The PCM samples take 2 bytes and 1 byte each.
+    Check(musyx::SampleDataSize(adpcm) == 16 && musyx::SampleDataSize(directory[1]) == 8 &&
+              musyx::SampleDataSize(directory[2]) == 4,
+          "the bytes of each format's samples");
+
     // The first frame decodes to 2s, and the second counts up from 3. The loop's history matches the first pass's
     // samples 18 and 19 (7 and 8). The decoder then adds no second pass.
     const musyx::DecodedSample first = musyx::DecodeSample(adpcm, files.samples);

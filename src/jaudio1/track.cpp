@@ -527,7 +527,8 @@ bool Tracks::ReadyToParse(Track& track)
 
 void Tracks::ReleaseChannels(uint32_t index)
 {
-    // The release of every channel in the track's list, which then ends the channels' callbacks (~JASTrack's loop).
+    // The release of every channel in the track's list. The release then ends the channels' callbacks (~JASTrack's
+    // loop).
     Track& track = tracks_[index];
     for (const uint32_t channel : track.channel_list)
     {

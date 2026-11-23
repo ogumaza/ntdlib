@@ -52,7 +52,7 @@ public:
     // The processing of an aux bus each frame: the bus's front left, front right, rear left and rear right channels, of
     // `samples` 32-bit samples each, to change in place. A frame holds 160 samples, or 235 in the enhanced mode. It
     // stands for the aux callback that a game registers with nn::snd (RegisterAuxCallback, 0x17f184) and for the SDK's
-    // delay or reverb on the bus, which run in that order (0x18d6a8 and 0x18d5c8).
+    // delay or reverb on the bus. The two run in that order (0x18d6a8 and 0x18d5c8).
     using AuxCallback = std::function<void(const std::array<int32_t*, 4>& channels, std::size_t samples)>;
 
     // Where a DSP voice is in its wave, for a length analysis. A voice plays while it's allocated, its state
@@ -72,7 +72,7 @@ public:
     SoundSystem(const SoundSystem& other);
 
     // Restores a copy of this system. Each voice keeps its address: the nw::snd voices and the snapshots point at them.
-    // The voices that the copy lacks go out of use and stay in their places. Those that only the copy holds come back
+    // The voices missing from the copy go out of use and stay in their places. Those that only the copy holds come back
     // in their places.
     SoundSystem& operator=(const SoundSystem& other);
 

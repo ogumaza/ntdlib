@@ -34,8 +34,8 @@
 // aren't interpolated or filtered. In the enhanced mode, no voice's samples are, and the filters' states in floating
 // point stay as they were. The aux buses' buffers and the upsamplers' histories stay as they were too. Once the frames
 // mix again, an enhanced voice's filter takes a moment to settle. The first frames return what the aux buses held
-// before, and the first frame goes to 48 kHz from the upsamplers' histories of before. The effects lack the tails of
-// what they missed. A host runs such frames to reach a place in a sound quickly.
+// before, and the first frame goes to 48 kHz from the upsamplers' histories of before. The effects don't have the
+// tails of the skipped frames. A host runs such frames to reach a place in a sound quickly.
 
 #pragma once
 
@@ -125,7 +125,7 @@ public:
         return samples_per_frame_;
     }
 
-    // The samples of an aux bus's frame, which its callbacks take: the renderer's frame, or 96 in the enhanced mode.
+    // The samples of an aux bus's frame that its callbacks take: the renderer's frame, or 96 in the enhanced mode.
     int AuxSamplesPerFrame() const
     {
         return enhanced_ != nullptr ? kSamplesPerFrame32k : samples_per_frame_;

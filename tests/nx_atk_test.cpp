@@ -9,6 +9,7 @@
 #include <string>
 
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/near.h"
 
 #include "ntdlib/nx/atk/envelope.h"
 #include "ntdlib/nx/atk/util.h"
@@ -20,11 +21,6 @@ namespace
 
 namespace atk = ntdlib::nx::atk;
 namespace util = ntdlib::nx::atk::util;
-
-bool Near(double a, double b, double tolerance)
-{
-    return std::fabs(a - b) <= tolerance;
-}
 
 void TestPitchAndVolume()
 {

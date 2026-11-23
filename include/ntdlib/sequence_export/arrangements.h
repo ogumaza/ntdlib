@@ -4,18 +4,24 @@
 // arrangement is another state that a game plays a sound in: other tracks, other values of the variables, or other
 // settings of the performance. The sound converts once more for each of its arrangements. WithArrangements lists
 // arrangement k of the sound at index s at the index (k + 1) * n + s. n is the archive's count of sounds. The
-// converter's convert hook turns the index back into the sound and the arrangement (ArrangedSoundAt).
+// converter's convert hook turns the index back into the sound and the arrangement (ArrangedSoundAt), and converts
+// them (ConvertSoundOrPiece).
 
 #pragma once
 
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
 #include "ntdlib/sequence_export/performance.h"
+#include "ntdlib/sequence_export/settings.h"
+#include "ntdlib/sound_pieces.h"
 
 namespace ntdlib::sequence_export
 {
@@ -52,5 +58,18 @@ ArrangedSound ArrangedSoundAt(std::size_t index, std::size_t sounds);
 // Makes the changes of the arrangement `at` to `options` (Arrangement::set_up). Changes nothing for a sound itself.
 // Throws std::runtime_error if the sound has no such arrangement. The listing and the conversion then disagree.
 void SetUpArrangement(const ArrangedSound& at, const ArrangementsOf& arrangements_of, PerformOptions& options);
+
+// Converts the sound or the arrangement `at` of a CSAR or FSAR archive with `options`. For an arrangement, `options`
+// contain the changes of the arrangement already (SetUpArrangement). A sound that starts a piece of `pieces` converts
+// together with the other sequences of the piece, as one piece named after it (ConvertTogether). An arrangement
+// converts its sound alone. So does a sound that starts no piece (ConvertSequence). Throws as those functions do.
+Conversion ConvertSoundOrPiece(const sar::SoundArchive& archive, const ArrangedSound& at,
+                               std::span<const SoundPiece> pieces, const PerformOptions& options,
+                               const Settings& settings, const std::string& program);
+
+// The same for the Wii's RSAR format.
+Conversion ConvertSoundOrPiece(const rsar::SoundArchive& archive, const ArrangedSound& at,
+                               std::span<const SoundPiece> pieces, const PerformOptions& options,
+                               const Settings& settings, const std::string& program);
 
 } // namespace ntdlib::sequence_export

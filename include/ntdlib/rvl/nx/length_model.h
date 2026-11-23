@@ -20,6 +20,7 @@
 
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/nx/archive_model.h"
+#include "ntdlib/rvl/nx/layer.h"
 
 namespace ntdlib::rvl::nx
 {

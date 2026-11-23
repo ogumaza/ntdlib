@@ -17,7 +17,7 @@ namespace ntdlib::commands::detail
 {
 
 // Lays out `items`, whose values are the console's, as bytecode from address `base`. `append(bytes, item, target)`
-// appends the bytes of `item`, whose target lies at address `target`. `reads_back(bytes, start, item, target)` gives
+// appends the bytes of `item`, whose target is at address `target`. `reads_back(bytes, start, item, target)` gives
 // whether `reader` reads the bytes from `start` to the end of `bytes` as `item`. Gives the bytes, and each item's
 // offset and the end's. Throws std::invalid_argument for a target past the items, or for an item whose bytes read as
 // other commands.

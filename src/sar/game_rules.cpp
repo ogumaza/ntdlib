@@ -35,13 +35,13 @@ constexpr uint16_t Track(int t)
     return Tracks(t, t);
 }
 
-// The microgames' sounds of WarioWare: Get It Together!'s Sound_Common.bfsar, by the reverb that each microgame puts on
-// aux bus B. Each record of the game's PetitList.elf (in Archive/Data~GameData.nx.bea) is a microgame. It names the
-// reverb at +0xe0 and the microgame's theme and jingles at +0x70 to +0xc0. A name there that starts with FF_ is the
-// archive's label with BGM_ in place of FF_. A microgame whose code starts its music names BGM_Silence there. Its
-// music's labels start with BGM_P_ and the record's name (BGM_P_Guitar for the record Guitar). The lists hold the
-// labels of the archive's sequences that either way gives and that send to aux bus B on some path through their
-// commands (the commands of the effect sends, 0xd9, 0xda and 0xde).
+// The microgames' sounds of WarioWare: Get It Together!'s common sound archive, by the reverb that each microgame puts
+// on aux bus B. Each record of the game's list of microgames is a microgame. It names the reverb at +0xe0 and the
+// microgame's theme and jingles at +0x70 to +0xc0. A name there that starts with FF_ is the archive's label with BGM_
+// in place of FF_. A microgame whose code starts its music names BGM_Silence there. Its music's labels start with
+// BGM_P_ and the record's name (BGM_P_Guitar for the record Guitar). The lists hold the labels of the archive's
+// sequences that either way gives and that send to aux bus B on some path through their commands (the commands of the
+// effect sends, 0xd9, 0xda and 0xde).
 constexpr std::array<std::string_view, 35> kHallSounds = {
     "BGM_P_Angel",  "BGM_P_Animation",     "BGM_P_Apple",    "BGM_P_Bag",    "BGM_P_Balloon", "BGM_P_Building",
     "BGM_P_Buster", "BGM_P_Candy",         "BGM_P_Cleaner",  "BGM_P_Clock",  "BGM_P_Cockpit", "BGM_P_Cockpit_Success",
@@ -279,8 +279,8 @@ constexpr std::array<std::string_view, 226> kDefaultSounds = {
     "BGM_V_PartyPetitRocket_1",
 };
 
-// The sequences of WarioWare: Get It Together!'s Sound_Common.bfsar that no microgame plays, and that send to aux bus B
-// on some path through their commands (the commands of the effect sends, 0xd9, 0xda and 0xde).
+// The sequences of WarioWare: Get It Together!'s common sound archive that no microgame plays, and that send to aux
+// bus B on some path through their commands (the commands of the effect sends, 0xd9, 0xda and 0xde).
 constexpr std::array<std::string_view, 183> kOutsideSounds = {
     "BGM_B_Result",
     "BGM_B_Stand",
@@ -467,10 +467,10 @@ constexpr std::array<std::string_view, 183> kOutsideSounds = {
     "BGM_V_SuperWarioCo_Space",
 };
 
-// WarioWare: Get It Together!'s Sound_Common.bfsar. The game's code (its main, build
-// e6784f640b1cdff90c8718a11294dbf32271cee9) sets the tracks' volumes through the BGM player's handles (0x7f49c0, which
-// queues nn::atk's SetTrackVolume, command 0x1e, without a fade). A microgame has three levels, 1 to 3 in the game. Its
-// code reads its level from 0x7354a0. The game sets the start state's volumes before the sequence's first tick.
+// WarioWare: Get It Together!'s common sound archive. The game's code (its main, build
+// e6784f640b1cdff90c8718a11294dbf32271cee9) sets the tracks' volumes through the BGM player's handles (0x7f49c0 queues
+// nn::atk's SetTrackVolume, command 0x1e, without a fade). A microgame has three levels, 1 to 3 in the game. Its code
+// reads its level from 0x7354a0. The game sets the start state's volumes before the sequence's first tick.
 ArchiveRules WarioWare()
 {
     ArchiveRules a;
@@ -493,8 +493,8 @@ ArchiveRules WarioWare()
 
     // The windmill microgame (0x5fe690) starts BGM_P_Windmill. Each frame, 0x5fe6b0 gives tracks 13 to 15 the share of
     // the turning done so far, from 0 at the start to 1 at the end. Level 1 turns up only track 15, and level 2 tracks
-    // 14 and 15. At the end, the game starts the sound FF_P_Windmill_Success, which plays BGM_P_Windmill_Success. It
-    // gives that piece's tracks 13 to 15 the levels' volumes at once: track 15 alone on level 1, tracks 14 and 15 on
+    // 14 and 15. At the end, the game starts the sound FF_P_Windmill_Success. That sound plays BGM_P_Windmill_Success.
+    // It gives that piece's tracks 13 to 15 the levels' volumes at once: track 15 alone on level 1, tracks 14 and 15 on
     // level 2, and all three on level 3.
     a.layered.push_back({"BGM_P_Windmill",
                          {{"", Tracks(13, 15)},
@@ -506,14 +506,14 @@ ArchiveRules WarioWare()
     // The dance microgame's success (0x37bc20) stops tracks 5 to 7.
     a.layered.push_back({"BGM_P_Dance", {{"", 0}, {"success", Tracks(5, 7)}}});
 
-    // Super Wario Co's results play on the BGM player's second slot. The result's Next button (0xaec920) runs 0xabfa00,
-    // which stops tracks 3, 7, 11 and 13.
+    // Super Wario Co's results play on the BGM player's second slot. The result's Next button (0xaec920) runs 0xabfa00.
+    // 0xabfa00 stops tracks 3, 7, 11 and 13.
     const auto next = static_cast<uint16_t>(Track(3) | Track(7) | Track(11) | Track(13));
     a.layered.push_back({"BGM_V_SuperWarioCo_GoalResult", {{"", 0}, {"next", next}}});
     a.layered.push_back({"BGM_V_SuperWarioCo_MissResult", {{"", 0}, {"next", next}}});
 
     // Each microgame puts the reverb that its record names on aux bus B (0x768830, through 0x7ece30 with bus 1). Only
-    // 0xb504b0 takes it off again, as a stage ends. The other sounds of a stage therefore start with bus B empty and
+    // 0xb504b0 takes it off again when a stage ends. The other sounds of a stage therefore start with bus B empty and
     // play with the last microgame's reverb after it. The presets' values are those of the game's SoundEffectList
     // sheet, as the game converts them (0x7f10f0): times in seconds, and the ratio and the dry gain as fractions.
     a.bus_b_presets.push_back(
@@ -534,7 +534,7 @@ ArchiveRules WarioWare()
     return a;
 }
 
-// WarioWare: Move It!'s Sound.bfsar. As it starts, the game puts the delay Delay_Waltz on aux bus A, the reverb
+// WarioWare: Move It!'s sound archive. As it starts, the game puts the delay Delay_Waltz on aux bus A, the reverb
 // I3DL2_Waltz on aux bus B and the light limiter Limiter_Waltz on aux bus C (0xc7c1ac in its main), and leaves them
 // there. The values are those of the game's SoundEffectList sheet. The sheet holds the times in milliseconds. The game
 // keeps whole milliseconds of the delay's longest time and of the limiter's four times, and whole microseconds of the
@@ -568,9 +568,9 @@ ReverbPreset ClubhouseReverb(std::string name, int early_mode, float early_gain,
             ReverbType::kReverb};
 }
 
-// Clubhouse Games' AddonAudioProject.bfsar, in Archive/Resident.nx.bea. The piano game's preset ("gam022") puts
-// EFFECT_GAM022 on aux bus B, and the 49 notes of the game's piano send there. The other sounds that send to bus B play
-// in games whose presets leave the bus empty.
+// Clubhouse Games' main sound archive. The piano game's preset ("gam022") puts EFFECT_GAM022 on aux bus B, and the 49
+// notes of the game's piano send there. The other sounds that send to bus B play in games whose presets leave the bus
+// empty.
 ArchiveRules Clubhouse()
 {
     ArchiveRules a;
@@ -590,13 +590,13 @@ ArchiveRules Clubhouse()
     return a;
 }
 
-// Super Mario 3D World + Bowser's Fury's SeData.bfsar. The voices of the player characters call a routine of the
-// sequence file that turns local variable 0, the character, from -1 into 0 (INIT_VAR). It then picks the character's
-// program from the variable (CHECK_CHARA: 0 to 7 give programs from 0, 10, 20, 30, 40, 70, 50 and 60 on). Only
-// Rosalina's actor lists the spin attack's voices (x_Rosetta.byml in AudioEffectDataBase), and the ghosts' actors list
-// their copies. Only character 4's program holds a sample at those voices' key. Only Captain Toad's actor lists his
-// voices (x_KinopioBrigade.byml), and only character 6's program holds a sample at their key. The sequences also give
-// character 6 alone a random pitch bend.
+// Super Mario 3D World + Bowser's Fury's archive of sound effects. The voices of the player characters call a routine
+// of the sequence file that turns local variable 0, the character, from -1 into 0 (INIT_VAR). It then picks the
+// character's program from the variable (CHECK_CHARA: 0 to 7 give programs from 0, 10, 20, 30, 40, 70, 50 and 60 on).
+// Only Rosalina's actor lists the spin attack's voices in the game's database of audio effects, and the ghosts' actors
+// list their copies. Only character 4's program holds a sample at those voices' key. Only Captain Toad's actor lists
+// his voices, and only character 6's program holds a sample at their key. The sequences also give character 6 alone a
+// random pitch bend.
 //
 // A lantern plays its swing with local variable 0 as the volume, and lowers it by 20 a swing until it falls to 40. The
 // lantern's code (0x277e60 in main) starts the sound with the variable at 120 times the swing's angle over 180 degrees
@@ -619,8 +619,8 @@ ArchiveRules SuperMario3DWorld()
     return a;
 }
 
-// The bowling game's sub-archive, subarc_gam005.bfsar in sound~subarc_gam005.nx.bea. Its sounds play only in that
-// game, whose preset ("gam005") puts EFFECT_COMMON_ROOM_00 on aux bus B.
+// The bowling game's sub-archive. Its sounds play only in that game, whose preset ("gam005") puts EFFECT_COMMON_ROOM_00
+// on aux bus B.
 ArchiveRules ClubhouseBowling()
 {
     ArchiveRules a;
@@ -660,9 +660,9 @@ ArchiveRules JamboreeFootsteps()
     return a;
 }
 
-// Super Mario Party Jamboree's subarc_bd01_bd03, a board's sounds. The roulette's train loop sounds only once local
-// variable 15 is set. The board's code (ItemCastleRoulette::PlayRouletteAnim, 0x235e10 in bd01.nro) raises the
-// variable from 0 to 127 over the roulette's animation and then holds it at 127 (0x235fa8).
+// Super Mario Party Jamboree's sub-archive of a board's sounds. The roulette's train loop sounds only once local
+// variable 15 is set. The board's code (ItemCastleRoulette::PlayRouletteAnim, 0x235e10 in bd01.nro) raises the variable
+// from 0 to 127 over the roulette's animation and then holds it at 127 (0x235fa8).
 ArchiveRules JamboreeBd03()
 {
     ArchiveRules a;
@@ -671,13 +671,13 @@ ArchiveRules JamboreeBd03()
     return a;
 }
 
-// Super Mario Party Jamboree's subarc_se_cmn_wtr_bike_1, the sounds of the water bike (mg0703) and the boat (mg1703).
-// Each move loop compares local variable 15 with 0 to 9. The water bike's code writes 5 while it moves forward, 4 once
-// it has stood still for half a second, 6 while it moves back and 7 in another state
-// (RideBaseComponent::UpdateMoveSound, 0x3ccf4 in mg0703.nro), and 8 at the goal (0x3ecf8). The boat's code starts its
-// loop at 0 (Player::SetEnableBoatSound, 0x37dc8 in mg1703.nro), writes 4 as it moves (Player::PlayBoatMove,
-// 0x37464), 2 and 1 as the player steers (0x31980, 0x321c8) and 3 for a surface (0x33b04). The states start with the
-// one that moves. The ambient copies of the two loops (SQ_AMB_*) are played by neither module.
+// Super Mario Party Jamboree's sub-archive of the sounds of the water bike (mg0703) and the boat (mg1703). Each move
+// loop compares local variable 15 with 0 to 9. The water bike's code writes 5 while it moves forward, 4 once it has
+// stood still for half a second, 6 while it moves back and 7 in another state (RideBaseComponent::UpdateMoveSound,
+// 0x3ccf4 in mg0703.nro), and 8 at the goal (0x3ecf8). The boat's code starts its loop at 0
+// (Player::SetEnableBoatSound, 0x37dc8 in mg1703.nro), writes 4 as it moves (Player::PlayBoatMove, 0x37464), 2 and 1 as
+// the player steers (0x31980, 0x321c8) and 3 for a surface (0x33b04). The states start with the one that moves. The
+// ambient copies of the two loops (SQ_AMB_*) are played by neither module.
 ArchiveRules JamboreeWaterRides()
 {
     ArchiveRules a;
@@ -687,8 +687,8 @@ ArchiveRules JamboreeWaterRides()
     return a;
 }
 
-// Super Mario Party Jamboree's subarc_mg0503. The two steam loops play at a volume from local variable 15. The
-// minigame's code starts them at 1 (GameMgr::OnGameStartAfter_Mgr, 0x1fce8 and 0x1fd98 in mg0503.nro). It then
+// Super Mario Party Jamboree's sub-archive of minigame mg0503. The two steam loops play at a volume from local variable
+// 15. The minigame's code starts them at 1 (GameMgr::OnGameStartAfter_Mgr, 0x1fce8 and 0x1fd98 in mg0503.nro). It then
 // writes 127 times a count of the minigame's state over 20, at most 127 (GameMgr::UpdateStreamEffect, 0x1c404 to
 // 0x1c52c). The sequences pass the value through user procedure 5 first. The model doesn't run that procedure.
 ArchiveRules JamboreeSteam()
@@ -702,10 +702,10 @@ ArchiveRules JamboreeSteam()
     return a;
 }
 
-// Super Mario Party Jamboree's subarc_mg0912. The rolling rock's loop plays at a volume from local variable 15. The
-// minigame's code writes the rock's distance a frame over 0.3, times 127, within 0 to 127 (RollOverRock::Update,
-// 0x3c868 to 0x3c8b8 in mg0912.nro). The velocity that the code gives the rock (0x3ca3c), 15 down and 18.6 forward
-// a second, moves it 0.4 a frame. The variable then reaches 127.
+// Super Mario Party Jamboree's sub-archive of minigame mg0912. The rolling rock's loop plays at a volume from local
+// variable 15. The minigame's code writes the rock's distance a frame over 0.3, times 127, within 0 to 127
+// (RollOverRock::Update, 0x3c868 to 0x3c8b8 in mg0912.nro). The velocity that the code gives the rock (0x3ca3c), 15
+// down and 18.6 forward a second, moves it 0.4 a frame. The variable then reaches 127.
 ArchiveRules JamboreeRock()
 {
     ArchiveRules a;

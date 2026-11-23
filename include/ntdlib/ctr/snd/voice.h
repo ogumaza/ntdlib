@@ -12,7 +12,6 @@
 #include <deque>
 #include <functional>
 #include <list>
-#include <utility>
 #include <vector>
 
 #include "ntdlib/ctr/nnsnd/voice.h"
@@ -181,17 +180,6 @@ public:
         return pitch_;
     }
 
-    // The owner's callback (Callback).
-    const Callback& OwnerCallback() const
-    {
-        return callback_;
-    }
-
-    void SetOwnerCallback(Callback callback)
-    {
-        callback_ = std::move(callback);
-    }
-
 private:
     friend class VoiceManager;
 
@@ -280,8 +268,8 @@ class VoiceManager
 {
 public:
     // Pokemon X sets nw::snd's voice count to 23 before the sound system starts (0x1150d0 writes it to 0x5d10c0, where
-    // nw::snd's default is 24), so one of the DSP's 24 voices is never used. In the enhanced mixing mode, the pool can
-    // grow to kEnhancedVoiceCount voices: when every voice is in use, a new place takes the place of a drop.
+    // nw::snd's default is 24). One of the DSP's 24 voices is therefore never used. In the enhanced mixing mode, the
+    // pool can grow to kEnhancedVoiceCount voices: when every voice is in use, a new place takes the place of a drop.
     static constexpr int kVoiceCount = 23;
     static constexpr std::size_t kEnhancedVoiceCount = 1024;
 
@@ -313,7 +301,7 @@ public:
     }
 
     // 0x18dd54: drops the lowest-priority voice (the oldest among equals) unless it outranks `priority`, and tells its
-    // owner. Returns how many DSP voices it had, so 0 if none was dropped.
+    // owner. Returns how many DSP voices it had: 0 if none was dropped.
     int DropLowestPriorityVoice(int priority);
 
     void ChangePriority(VoiceId place);

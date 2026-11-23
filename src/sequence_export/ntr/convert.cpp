@@ -3,11 +3,12 @@
 // The DS's conversion (see convert.h). This file builds the SoundFonts, and sfz.cpp the SFZ files. seqlib writes the
 // MIDI and SoundFont files.
 //
-// Each zone takes its region's keys, sample, root key, pan and envelope. The DS pans linearly, and its level falls off
-// the sides. A zone's attenuation gives the level at its pan against the level at the centre (PanGain). The track's
-// pan's level goes in CC11 (the performer). A zone panned off the centre then plays above full level. The SoundFont's
-// zones all take the cut that the loudest requires, and the SFZ files keep the level. Presets that MIDI channel 10
-// plays also get a copy in bank 128. Synthesizers look for drums there.
+// Each zone takes its region's keys, sample, root key, pan and envelope. A region's keys split into runs that each take
+// the tuning at which the driver's timer plays them (TunedZones). The DS pans linearly, and its level falls off the
+// sides. A zone's attenuation gives the level at its pan against the level at the centre (PanGain). The level of the
+// track's pan goes in CC11 (the performer). A zone panned off the centre then plays above full level. Every zone of
+// every SoundFont takes the cut of a zone panned fully to one side (PanCut), and the SFZ files keep the level. Presets
+// that MIDI channel 10 plays also get a copy in bank 128. Synthesizers look for drums there.
 
 #include "ntdlib/sequence_export/ntr/convert.h"
 
@@ -35,8 +36,10 @@
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sequence_export/conversion.h"
 #include "ntdlib/sequence_export/convert.h"
+#include "ntdlib/sequence_export/linear_pan.h"
 #include "ntdlib/sequence_export/ntr/instruments.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
+#include "sequence_export/ntr/bank_programs.h"
 #include "sequence_export/sf2_build.h"
 
 namespace ntdlib::sequence_export::ntr
@@ -68,7 +71,7 @@ sf2::Zone GlobalZone(const PresetKey& key)
     const bool volume = hz > 0.0 && key.lfo_target == kVolumeTarget;
     global.modulators.push_back({sf2::kSrcModWheel, sf2::kVibLfoToPitch,
                                  sf2::ToAmount(pitch ? kPitchLfoCents * 128.0 / 127.0 * key.lfo_range : 0.0), 0});
-    const int delay = sf2::ToTimecents(key.lfo_delay * kFrameMs, -12000, 5000);
+    const int delay = sf2::ToTimecents(key.lfo_delay * kFrameMs, sf2::kShortestTimecents, sf2::kLongestHoldTimecents);
     if (pitch)
     {
         global.generators.push_back(sf2::Generator::Value(sf2::kFreqVibLfo, sf2::LfoFrequency(hz)));
@@ -99,6 +102,8 @@ sf2::Zone RegionZone(const PresetZone& z, uint16_t sample, bool loop, double qui
     values.sustain = e.sustain;
     values.release = e.release;
     values.root_key = std::min<int>(z.region.root_key, 127);
+    values.coarse_tune = z.tuning / 100;
+    values.fine_tune = z.tuning % 100;
     values.loop = loop;
     values.sample = sample;
 
@@ -138,10 +143,11 @@ private:
     std::map<std::string, std::optional<std::pair<uint16_t, bool>>> samples_;
 };
 
-// The instrument of preset `key`: its global zone, and a zone for each of its regions whose wave reads, `quieter`
-// centibels quieter.
+// The instrument of preset `key`: its global zone, and the tuned zones of each of its regions whose wave reads
+// (TunedZones), `quieter` centibels quieter. Where `keys` is given, only those keys take their tuning.
 sf2::Instrument PresetInstrument(BankSet& banks, SoundFontSamples& samples, const PresetKey& key,
-                                 const std::string& name, double quieter, const snd::Build& build)
+                                 const std::string& name, double quieter, const snd::Build& build,
+                                 const std::set<uint8_t>* keys)
 {
     sf2::Instrument instrument;
     instrument.name = name;
@@ -152,7 +158,10 @@ sf2::Instrument PresetInstrument(BankSet& banks, SoundFontSamples& samples, cons
         {
             if (const auto sample = samples.Get(banks, z.region))
             {
-                instrument.zones.push_back(RegionZone(z, sample->first, sample->second, quieter, build));
+                for (const PresetZone& tuned : TunedZones(z, *banks.Wave(z.region), keys))
+                {
+                    instrument.zones.push_back(RegionZone(tuned, sample->first, sample->second, quieter, build));
+                }
             }
         }
     }
@@ -220,20 +229,12 @@ Conversion ConvertSequence(const sdat::Archive& archive, const ntdlib::ntr::Sequ
     const seqlib::midi::MidiReport midi =
         ntdlib::sequence_export::WriteMidiFile(c, name, {seqlib::midi::FrameTiming::kFrameStart});
 
-    // SoundFont zones can't amplify their samples. A zone above full level makes every zone quieter.
+    // SoundFont zones can't amplify their samples. Every zone takes the cut of a zone panned fully to one side. Only
+    // the keys that the sequence plays take their timer's tuning, and the other keys join their runs (TunedZones). A
+    // zone for each run of keys of one tuning over every key comes near SoundFont's limit of 65,535 generators in a
+    // large sequence.
     BankSet banks(archive, c.performance.bank);
-    double loudest = 0.0;
-    for (const PresetKey& key : c.performance.presets)
-    {
-        if (banks.Bank() != nullptr)
-        {
-            for (const PresetZone& z : PresetZones(*banks.Bank(), key))
-            {
-                loudest = std::max(loudest, ZoneGain(z));
-            }
-        }
-    }
-    const double quieter = ntdlib::sequence_export::CutAboveFullLevel(c, loudest);
+    const double quieter = ntdlib::sequence_export::PanCut();
 
     sf2::SoundFont sf;
     SoundFontSamples samples(sf);
@@ -247,8 +248,10 @@ Conversion ConvertSequence(const sdat::Archive& archive, const ntdlib::ntr::Sequ
             warnings.push_back(names[i] + ": bank " + std::to_string(c.performance.bank) +
                                " has no instrument that plays for program " + std::to_string(key.program));
         }
+        const std::set<uint8_t> none;
+        const std::set<uint8_t>& keys = i < c.performance.preset_keys.size() ? c.performance.preset_keys[i] : none;
         sf2::AddInstrumentPreset(sf, static_cast<uint32_t>(i), names[i],
-                                 PresetInstrument(banks, samples, key, names[i], quieter, options.build));
+                                 PresetInstrument(banks, samples, key, names[i], quieter, options.build, &keys));
     }
     for (const uint32_t index : midi.channel_10_presets)
     {
@@ -278,43 +281,19 @@ ntdlib::sequence_export::BankConversion ConvertBank(const sdat::Archive& archive
         throw xsflib::FormatError("the archive has no bank " + std::to_string(bank));
     }
 
-    // The programs that play something, and the loudest of their zones. A track starts with the regions' envelopes,
-    // at the centre, and with its LFO at a depth of 0.
+    // The programs that play something. A track starts with the regions' envelopes, at the centre, and with its LFO at
+    // a depth of 0.
     ntdlib::sequence_export::BankConversion c;
     BankSet banks(archive, bank);
-    std::vector<uint32_t> playing;
-    double loudest = 0.0;
-    for (const uint32_t p : programs)
+    const auto plays = [&banks](uint32_t p)
     {
-        const std::vector<PresetZone> zones =
-            banks.Bank() != nullptr && p <= 0xFFFF
-                ? PresetZones(*banks.Bank(), PresetKey{.program = static_cast<uint16_t>(p)})
-                : std::vector<PresetZone>();
-        if (zones.empty())
-        {
-            c.warnings.push_back("program " + std::to_string(p) + " of bank " + std::to_string(bank) +
-                                 " plays nothing");
-            continue;
-        }
+        return banks.Bank() != nullptr && p <= 0xFFFF &&
+               !PresetZones(*banks.Bank(), PresetKey{.program = static_cast<uint16_t>(p)}).empty();
+    };
+    const std::vector<uint32_t> playing = detail::PlayingPrograms(programs, bank, plays, c.warnings);
 
-        playing.push_back(p);
-        for (const PresetZone& z : zones)
-        {
-            loudest = std::max(loudest, ZoneGain(z));
-        }
-    }
-
-    // The SoundFonts' runs and the SFZ files' names take the programs in ascending order, each once.
-    std::ranges::sort(playing);
-    playing.erase(std::ranges::unique(playing).begin(), playing.end());
-
-    // SoundFont zones can't amplify their samples. A zone above full level makes every zone quieter.
-    const ntdlib::sequence_export::LevelCut cut = ntdlib::sequence_export::LevelCutOf(loudest);
-    if (!cut.message.empty())
-    {
-        c.warnings.push_back(cut.message);
-    }
-    const double quieter = cut.centibels;
+    // SoundFont zones can't amplify their samples. Every zone takes the cut of a zone panned fully to one side.
+    const double quieter = ntdlib::sequence_export::PanCut();
 
     const auto part = [&](std::span<const uint32_t> run)
     {
@@ -323,9 +302,9 @@ ntdlib::sequence_export::BankConversion ConvertBank(const sdat::Archive& archive
         for (const uint32_t p : run)
         {
             const std::string name = "Program " + std::to_string(p);
-            sf2::AddInstrumentPreset(
-                sf, p, name,
-                PresetInstrument(banks, samples, PresetKey{.program = static_cast<uint16_t>(p)}, name, quieter, build));
+            sf2::AddInstrumentPreset(sf, p, name,
+                                     PresetInstrument(banks, samples, PresetKey{.program = static_cast<uint16_t>(p)},
+                                                      name, quieter, build, nullptr));
         }
 
         return sf;

@@ -25,6 +25,7 @@
 
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "disc/encodings.h"
 #include "disc/file_table.h"
 #include "ntdlib/disc/error.h"
@@ -35,6 +36,7 @@ namespace
 {
 
 using detail::kMaxFileSize;
+using ntdlib::detail::HasMagic;
 
 constexpr char kNotCpk[] = "the data isn't a CPK";
 constexpr char kDamaged[] = "the CPK is damaged";
@@ -108,11 +110,6 @@ uint64_t NonNegative(int64_t value)
     return static_cast<uint64_t>(value);
 }
 
-bool StartsWithUtf(const std::vector<uint8_t>& bytes)
-{
-    return bytes.size() >= 4 && std::equal(bytes.begin(), bytes.begin() + 4, "@UTF");
-}
-
 // Unmasks a table that a CPK stores masked. Each byte is XORed with the low byte of a number. The number starts at
 // 0x655F and is multiplied by 0x4115 after each byte, modulo 2^32.
 void Unmask(std::vector<uint8_t>& bytes)
@@ -132,11 +129,11 @@ public:
     // Parses `bytes`, a chunk's table, after unmasking it if it's masked. Throws Error if the table is damaged.
     explicit UtfTable(std::vector<uint8_t> bytes) : bytes_(std::move(bytes))
     {
-        if (!StartsWithUtf(bytes_))
+        if (!HasMagic(bytes_, "@UTF"))
         {
             Unmask(bytes_);
         }
-        if (bytes_.size() < kTableHeader || !StartsWithUtf(bytes_))
+        if (bytes_.size() < kTableHeader || !HasMagic(bytes_, "@UTF"))
         {
             throw Error(kDamaged);
         }
@@ -349,7 +346,7 @@ UtfTable ReadChunk(const CpkRead& read, uint64_t size, uint64_t offset, std::str
     }
 
     const std::vector<uint8_t> header = read(offset, kChunkHeader);
-    if (header.size() != kChunkHeader || !std::equal(magic.begin(), magic.end(), header.begin()))
+    if (header.size() != kChunkHeader || !HasMagic(header, magic))
     {
         throw Error(wrong);
     }
@@ -464,7 +461,7 @@ std::vector<CpkFile> ListCpk(const CpkRead& read, uint64_t size)
             throw Error(kDamaged);
         }
 
-        // A file whose stored bytes lie outside the archive is left out.
+        // A file whose stored bytes are outside the archive is left out.
         if (base > size || *offset > size - base || *stored > size - base - *offset)
         {
             continue;
@@ -501,7 +498,7 @@ std::vector<uint8_t> ReadCpkFile(const CpkRead& read, const CpkFile& file, std::
 
 bool IsCrilayla(std::span<const uint8_t> data)
 {
-    return data.size() >= 8 && std::equal(data.begin(), data.begin() + 8, kCrilaylaMagic);
+    return HasMagic(data, kCrilaylaMagic);
 }
 
 std::vector<uint8_t> DecompressCrilayla(std::span<const uint8_t> data, std::size_t max_size)

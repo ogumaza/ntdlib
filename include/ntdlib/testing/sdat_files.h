@@ -3,7 +3,7 @@
 // Builders of small DS sound files for the tests: sequences (SSEQ), sequence archives (SSAR), banks (SBNK) with every
 // kind of instrument, waves (SWAV), wave archives (SWAR), streams (STRM) and sound archives (SDAT) with or without
 // names. Each file is little-endian and starts with the 16-byte header that ntdlib/sdat/formats.h describes. A sound
-// archive's files lie in its FILE block, each on a multiple of 32 bytes.
+// archive's files are in its FILE block, each on a multiple of 32 bytes.
 
 #pragma once
 

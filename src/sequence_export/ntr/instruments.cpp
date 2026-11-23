@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "seqlib/sf2/units.h"
+#include "seqlib/sfz/opcodes.h"
 #include "xsflib/binary.h"
 
 #include "ntdlib/ntr/snd/driver.h"
@@ -24,6 +25,8 @@
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
 #include "ntdlib/sequence_export/psg_samples.h"
+#include "ntdlib/sequence_export/sf2_limits.h"
+#include "sequence_export/key_runs.h"
 
 namespace ntdlib::sequence_export::ntr
 {
@@ -40,17 +43,19 @@ constexpr double kFrameMs = 1000.0 * snd::kFrameClocks / ntdlib::ntr::kSystemClo
 // The rate of the sound unit's timers: half the system clock.
 constexpr double kTimerHz = ntdlib::ntr::kSystemClockHz / 2.0;
 
+// The channels' types (snd::Channel::type).
+constexpr uint8_t kPcmChannel = 0;
+constexpr uint8_t kPsgChannel = 1;
+constexpr uint8_t kNoiseChannel = 2;
+
 // The attenuation that an attack starts from, and the driver's unit of it: 1/128 of 0.1 dB.
 constexpr int32_t kStartAttenuation = -92544;
 constexpr double kAttenuationPerDb = 1280.0;
 
 // The fall of 100 dB that SoundFont's decay and release times give, and the fall of e^-8 that SFZ's give, in the
 // driver's unit.
-constexpr double kSf2Fall = 100.0 * kAttenuationPerDb;
-constexpr double kSfzFall = 8.0 * 20.0 / 2.302585092994046 * kAttenuationPerDb;
-
-// SoundFont's slowest decay or release, 8000 timecents, in milliseconds.
-constexpr double kSlowestSf2DecayMs = 101593.6673259648;
+constexpr double kSf2Fall = seqlib::sf2::kEnvelopeFallDb * kAttenuationPerDb;
+constexpr double kSfzFall = seqlib::sfz::kEnvelopeFallDb * kAttenuationPerDb;
 
 // The driver's rate of a decay or a release, in its unit a frame (SND's CalcRelease).
 double DecayRate(int value)
@@ -185,6 +190,64 @@ std::optional<PresetZone> Zone(int low, int high, const sdat::Region& region, co
 
 } // namespace
 
+uint32_t SampleRate(uint8_t channel_type, uint16_t timer)
+{
+    if (channel_type != kPcmChannel)
+    {
+        return kPsgSampleRate;
+    }
+
+    return timer != 0 ? static_cast<uint32_t>(std::lround(kTimerHz / timer)) : 0;
+}
+
+double ChannelCents(uint8_t channel_type, uint16_t timer, int pitch)
+{
+    if (timer == 0)
+    {
+        return 100.0 * pitch / 64.0;
+    }
+
+    // The driver's period (Driver::StepChannels). The PSG and the noise step once a period, kPsgStepSamples samples of
+    // their waves.
+    uint16_t period = snd::Timer(timer, pitch);
+    if (channel_type == kPsgChannel)
+    {
+        period &= 0xFFFC;
+    }
+    const double rate = kTimerHz / period * (channel_type != kPcmChannel ? kPsgStepSamples : 1);
+
+    return 1200.0 * std::log2(rate / SampleRate(channel_type, timer));
+}
+
+int KeyTuning(uint8_t channel_type, uint16_t timer, int root_key, int key)
+{
+    const double nominal = 100.0 * (key - std::min(root_key, 127));
+    return static_cast<int>(std::lround(ChannelCents(channel_type, timer, (key - root_key) * 64) - nominal));
+}
+
+double TimerBend(uint8_t channel_type, uint16_t timer, int root_key, int key, int pitch)
+{
+    const double zone = 100.0 * (key - std::min(root_key, 127)) + KeyTuning(channel_type, timer, root_key, key);
+    return (ChannelCents(channel_type, timer, pitch) - zone) / 100.0;
+}
+
+double TimerRounding(uint8_t channel_type, uint16_t timer, int root_key, int key, int pitch)
+{
+    if (timer == 0)
+    {
+        return 0.0;
+    }
+
+    const double lost = channel_type == kPsgChannel ? 4.0 : 1.0;
+    const auto rounding = [&](int at)
+    {
+        const double period = snd::Timer(timer, at) & (channel_type == kPsgChannel ? 0xFFFC : 0xFFFF);
+        return 12.0 * std::log2((period + lost) / period);
+    };
+
+    return std::max(rounding(pitch), rounding((key - root_key) * 64)) + 0.005;
+}
+
 std::vector<PresetZone> PresetZones(const sdat::Bank& bank, const PresetKey& key)
 {
     if (key.program >= bank.instruments.size())
@@ -242,11 +305,31 @@ std::vector<PresetZone> PresetZones(const sdat::Bank& bank, const PresetKey& key
     return zones;
 }
 
+std::vector<PresetZone> TunedZones(const PresetZone& zone, const Pcm& wave, const std::set<uint8_t>* keys)
+{
+    // A zone without a played key keeps the region's tuning of 0.
+    const auto tuning = [&](int key)
+    {
+        return key >= 0 ? KeyTuning(wave.channel_type, wave.timer, zone.region.root_key, key) : 0;
+    };
+
+    std::vector<PresetZone> zones;
+    for (const KeyRun& r : TuningRuns(zone.low_key, zone.high_key, keys, tuning))
+    {
+        PresetZone& run = zones.emplace_back(zone);
+        run.low_key = static_cast<uint8_t>(r.low_key);
+        run.high_key = static_cast<uint8_t>(r.high_key);
+        run.tuning = tuning(r.tuned_key);
+    }
+
+    return zones;
+}
+
 Sf2Envelope ConvertEnvelope(const Envelope& e, const snd::Build& build)
 {
     using seqlib::sf2::ToTimecents;
     const AttackFit& attack = AttackFitOf(e.attack);
-    const int sustain = std::clamp(-SustainLevel(e.sustain, build), 0, 1440);
+    const int sustain = std::clamp(-SustainLevel(e.sustain, build), 0, seqlib::sf2::kMaxCentibels);
 
     // A decay slower than SoundFont allows gets a longer hold. sequence_export's envelope.cpp gives such a decay the
     // same hold.
@@ -258,11 +341,12 @@ Sf2Envelope ConvertEnvelope(const Envelope& e, const snd::Build& build)
     }
 
     Sf2Envelope out;
-    out.attack = ToTimecents(attack.ramp_ms, -12000, 8000);
-    out.hold = ToTimecents(hold_ms, -12000, 5000);
-    out.decay = ToTimecents(decay_ms, -12000, 8000);
+    out.attack = ToTimecents(attack.ramp_ms, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
+    out.hold = ToTimecents(hold_ms, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestHoldTimecents);
+    out.decay = ToTimecents(decay_ms, seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
     out.sustain = sustain;
-    out.release = ToTimecents(FallMs(e.release, kSf2Fall), -12000, 8000);
+    out.release =
+        ToTimecents(FallMs(e.release, kSf2Fall), seqlib::sf2::kShortestTimecents, seqlib::sf2::kLongestTimecents);
 
     return out;
 }
@@ -371,8 +455,9 @@ const Pcm* BankSet::Wave(const sdat::Region& region)
             const sdat::Wave& wave = parsed->waves[region.wave];
             Pcm& decoded = pcm.emplace();
             decoded.channels.push_back(sdat::DecodeWave(wave));
-            decoded.sample_rate =
-                wave.timer != 0 ? static_cast<uint32_t>(std::lround(kTimerHz / wave.timer)) : wave.sample_rate;
+            decoded.channel_type = kPcmChannel;
+            decoded.timer = wave.timer;
+            decoded.sample_rate = wave.timer != 0 ? SampleRate(kPcmChannel, wave.timer) : wave.sample_rate;
             const auto length = static_cast<uint32_t>(decoded.channels[0].size());
             if (wave.loop == 1 && wave.LoopStartSample() < length)
             {
@@ -388,8 +473,11 @@ const Pcm* BankSet::Wave(const sdat::Region& region)
         }
     }
 
+    // The driver starts the PSG's and the noise's channels with a timer of 8006 (Driver::NoteOn).
     if (pcm && (region.type == InstrumentType::kPsg || region.type == InstrumentType::kNoise))
     {
+        pcm->channel_type = region.type == InstrumentType::kPsg ? kPsgChannel : kNoiseChannel;
+        pcm->timer = 8006;
         pcm->sample_rate = kPsgSampleRate;
         pcm->loop = true;
         pcm->loop_start = 0;

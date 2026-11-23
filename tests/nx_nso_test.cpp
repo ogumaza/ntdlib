@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 // Checks the decoder of LZ4 blocks and the reader of NSO executables on blocks and files built here: copies that
-// overlap their output, numbers that continue in more bytes, the segments of an NSO, and the messages for damaged
-// data.
+// overlap their output, numbers that continue in more bytes, the segments of an NSO, a module's dynamic section, and
+// the messages for damaged data.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -144,6 +147,57 @@ void TestNsoRefusals()
     Check(refusal(damaged) == "the NSO's data segment: the LZ4 block ends early", "a damaged block");
 }
 
+// A module whose MOD0 header is at `mod0` in its text, with the dynamic section at `offset` from the header. The
+// section's entries are `entries`, each a tag and a value, in the data segment at 0x2000 or in the text.
+nx::Nso DynamicModule(uint32_t mod0, int32_t offset, const std::vector<std::pair<uint64_t, uint64_t>>& entries)
+{
+    nx::Nso nso;
+    nso.text.bytes.resize(0x100);
+    nso.data.address = 0x2000;
+    nso.data.bytes.resize(0x100);
+    xsflib::StoreLe32(&nso.text.bytes[4], mod0);
+    std::copy_n("MOD0", 4, nso.text.bytes.begin() + mod0);
+    xsflib::StoreLe32(&nso.text.bytes[mod0 + 4], static_cast<uint32_t>(offset));
+
+    const uint64_t section = mod0 + static_cast<int64_t>(offset);
+    std::vector<uint8_t>& bytes = section >= nso.data.address ? nso.data.bytes : nso.text.bytes;
+    std::size_t at = section >= nso.data.address ? section - nso.data.address : section;
+    for (const auto& [tag, value] : entries)
+    {
+        xsflib::StoreLe64(&bytes[at], tag);
+        xsflib::StoreLe64(&bytes[at + 8], value);
+        at += 16;
+    }
+
+    return nso;
+}
+
+// The entries up to DT_NULL, by tag, with the first value of a tag listed twice. A section before its header. The
+// messages for a module without a MOD0 header and for a section that runs past its segment's end.
+void TestDynamicEntries()
+{
+    const std::map<int64_t, uint64_t> expected = {{7, 0x2100}, {8, 0x48}};
+    const nx::Nso in_data = DynamicModule(0x10, 0x1ff0, {{7, 0x2100}, {8, 0x48}, {7, 0x9999}, {0, 0}, {5, 1}});
+    const nx::Nso in_text = DynamicModule(0x80, -0x60, {{8, 0x48}, {7, 0x2100}, {0, 0}});
+    nx::Nso other_tag = in_data;
+    other_tag.text.bytes[0x13] = '1';
+    nx::Nso outside = in_data;
+    xsflib::StoreLe32(&outside.text.bytes[4], 0x1000);
+    const nx::Nso unended = DynamicModule(0x10, 0x1ff0 + 0xc0, {{7, 0x2100}, {8, 0x48}, {6, 1}, {5, 1}});
+    const auto refusal = [](const nx::Nso& nso)
+    {
+        return ErrorOf([&] { nx::DynamicEntries(nso); });
+    };
+
+    Check(nx::DynamicEntries(in_data) == expected, "a section in the data segment, up to DT_NULL");
+    Check(nx::DynamicEntries(in_text) == expected, "a section before its header");
+    Check(refusal(other_tag) == "the module has no MOD0 header", "a header with another tag");
+    Check(refusal(outside) == "the module has no MOD0 header", "a header outside the segments");
+    Check(refusal(nx::Nso{}) == "the module has no MOD0 header", "a module without segments");
+    Check(refusal(unended) == "the module's dynamic section runs past the end of a segment",
+          "a section without DT_NULL");
+}
+
 } // namespace
 
 int main()
@@ -153,6 +207,7 @@ int main()
     TestLz4Refusals();
     TestNso();
     TestNsoRefusals();
+    TestDynamicEntries();
 
     return xsflib::testing::Summary("nx_nso");
 }

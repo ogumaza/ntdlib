@@ -77,7 +77,7 @@ std::string DecodeShiftJis(std::span<const uint8_t> text)
             continue;
         }
 
-        // For a code that the table lacks, an ASCII second byte decodes as itself.
+        // For a code that the table doesn't contain, an ASCII second byte decodes as itself.
         const uint8_t trail = text[i + 1];
         if (const uint16_t code = Cp932(byte, trail))
         {

@@ -53,7 +53,7 @@ public:
     {
     }
 
-    // Where the structure lies that the reference at `at` names.
+    // Where the structure is that the reference at `at` names.
     std::size_t Follow(std::size_t at) const
     {
         if (r_.U8(at) != 1 || r_.U8(at + 1) != 0 || r_.U16(at + 2) != 0)
@@ -64,7 +64,7 @@ public:
         return base_ + r_.U32(at + 4);
     }
 
-    // Where the entries lie that the table at `at` names.
+    // Where the entries are that the table at `at` names.
     std::vector<std::size_t> Table(std::size_t at) const
     {
         const uint32_t count = r_.U32(at);

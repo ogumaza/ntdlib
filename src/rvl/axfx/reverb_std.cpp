@@ -2,10 +2,15 @@
 
 #include "ntdlib/rvl/axfx/reverb_std.h"
 
+#include <array>
+#include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "ntdlib/fused.h"
+#include "ntdlib/rvl/axfx/axfx.h"
 #include "ntdlib/rvl/axfx/util.h"
+#include "rvl/axfx/reverb_lines.h"
 
 namespace ntdlib::rvl::axfx
 {
@@ -24,9 +29,6 @@ constexpr uint32_t kFilterSizes[kFusedModes + 1][4] = {
     {1789, 1999, 433, 149}, {149, 293, 251, 103},   {947, 1361, 433, 137},  {1279, 1531, 509, 149},
     {1531, 1847, 563, 179}, {1823, 2357, 571, 137}, {1823, 2357, 571, 179},
 };
-
-// The longest pre-delay line that the model allocates (see reverb_hi.cpp).
-constexpr uint32_t kMaxPreDelayLength = 1u << 23;
 
 } // namespace
 
@@ -49,8 +51,8 @@ bool ReverbStdExp::Init(const Params& params)
 {
     params_ = params;
     active_ = kStopped;
-    const uint32_t pre_delay_max_length = ToUnsigned(kSampleRate * params.pre_delay_time_max);
-    if (params.pre_delay_time_max < 0.0f || pre_delay_max_length >= kMaxPreDelayLength)
+    const std::optional<uint32_t> pre_delay_max_length = reverb::PreDelayMaxLength(params.pre_delay_time_max);
+    if (!pre_delay_max_length)
     {
         FreeDelayLines();
         return false;
@@ -58,21 +60,12 @@ bool ReverbStdExp::Init(const Params& params)
 
     // __AllocDelayLine (0x80033954) allocates each line with the longest length that the tables give.
     // __BzeroDelayLines (0x80033a98) then clears it.
-    const uint32_t* longest = kFilterSizes[kFusedModes];
-    for (int channel = 0; channel < kChannelCount; channel++)
+    for (std::vector<float>& line : early_line_)
     {
-        early_line_[channel].assign(kEarlySizes[kEarlyModes - 1], 0.0f);
-        pre_delay_line_[channel].assign(pre_delay_max_length, 0.0f);
-        for (int comb = 0; comb < kCombs; comb++)
-        {
-            comb_line_[channel][comb].assign(longest[comb], 0.0f);
-        }
-
-        for (int allpass = 0; allpass < kAllpasses; allpass++)
-        {
-            allpass_line_[channel][allpass].assign(longest[kCombs + allpass], 0.0f);
-        }
+        line.assign(kEarlySizes[kEarlyModes - 1], 0.0f);
     }
+
+    reverb::Allocate(lines_, *pre_delay_max_length, kFilterSizes[kFusedModes]);
 
     if (!InitParams())
     {
@@ -87,37 +80,35 @@ bool ReverbStdExp::Init(const Params& params)
 
 bool ReverbStdExp::Settings(const Params& params)
 {
-    FreeDelayLines();
-    if (!Init(params))
+    const auto free_lines = [this]
     {
-        return false;
-    }
+        FreeDelayLines();
+    };
+    const auto init = [&]
+    {
+        return Init(params);
+    };
 
-    active_ = (active_ | kSkipFrame) & ~kStopped;
-
-    return true;
+    return reverb::Settings(active_, free_lines, init);
 }
 
 bool ReverbStdExp::SettingsUpdate(const Params& params)
 {
-    // The game's callback would run on null lines after a failed Init or a Shutdown. The model fails here instead.
     params_ = params;
-    active_ |= kStopped;
-    if (comb_line_[0][0].empty())
-    {
-        return false;
-    }
-
-    ClearDelayLines();
-    if (!InitParams())
+    const auto free_lines = [this]
     {
         FreeDelayLines();
-        return false;
-    }
+    };
+    const auto clear = [this]
+    {
+        ClearDelayLines();
+    };
+    const auto init_params = [this]
+    {
+        return InitParams();
+    };
 
-    active_ = (active_ | kSkipFrame) & ~kStopped;
-
-    return true;
+    return reverb::SettingsUpdate(active_, !lines_.comb_line[0][0].empty(), free_lines, clear, init_params);
 }
 
 void ReverbStdExp::Shutdown()
@@ -135,7 +126,7 @@ void ReverbStdExp::Process(AuxFrame& frame)
     }
 
     // The gains that the callback computes once a frame.
-    const float lowpass_gain = 1.0f - lpf_coef_;
+    const float lowpass_gain = 1.0f - lines_.lpf_coef;
     const float early_gain = 0.6f * params_.early_gain;
     const float fused_gain = 0.6f * params_.fused_gain;
     for (int i = 0; i < kSamplesPerFrame; i++)
@@ -159,57 +150,27 @@ float ReverbStdExp::ProcessChannel(int channel, float input, float early_gain, f
     const float early = early_sample;
     early_sample = input + early * early_coef_;
 
-    // The pre-delay.
-    float delayed = input;
-    if (pre_delay_length_ != 0)
-    {
-        float& sample = pre_delay_line_[channel][pre_delay_pos_];
-        delayed = sample;
-        sample = input;
-    }
+    // The pre-delay, two combs in parallel, an allpass, the low-pass and a second allpass.
+    const float delayed = reverb::PreDelay(lines_, channel, input);
+    const float comb0 = reverb::Comb(lines_, channel, 0, delayed);
+    const float comb1 = reverb::Comb(lines_, channel, 1, delayed);
+    const float allpass0 = reverb::Allpass(lines_, channel, 0, comb0 + comb1);
+    const float lowpass = reverb::Lowpass(lines_, channel, allpass0, lowpass_gain);
+    const float allpass1 = reverb::Allpass(lines_, channel, 1, lowpass);
 
-    // Two combs in parallel.
-    std::array<float, kCombs> combs{};
-    for (int comb = 0; comb < kCombs; comb++)
-    {
-        float& sample = comb_line_[channel][comb][comb_pos_[comb]];
-        combs[comb] = sample;
-        sample = delayed + combs[comb] * comb_coef_[comb];
-    }
-
-    // An allpass, the low-pass and a second allpass.
-    const float allpass0 = Allpass(allpass_line_[channel][0][allpass_pos_[0]], combs[0] + combs[1], allpass_coef_);
-    const float lowpass = lowpass_gain * allpass0 + lpf_coef_ * last_lpf_out_[channel];
-    last_lpf_out_[channel] = lowpass;
-    const float allpass1 = Allpass(allpass_line_[channel][1][allpass_pos_[1]], lowpass, allpass_coef_);
     return early * early_gain + allpass1 * fused_gain;
 }
 
 void ReverbStdExp::AdvancePositions()
 {
     Step(early_pos_, early_length_);
-    if (pre_delay_length_ != 0)
-    {
-        Step(pre_delay_pos_, pre_delay_length_);
-    }
-
-    for (int comb = 0; comb < kCombs; comb++)
-    {
-        Step(comb_pos_[comb], comb_length_[comb]);
-    }
-
-    for (int allpass = 0; allpass < kAllpasses; allpass++)
-    {
-        Step(allpass_pos_[allpass], allpass_length_[allpass]);
-    }
+    reverb::StepLines(lines_);
 }
 
 bool ReverbStdExp::InitParams()
 {
     const Params& p = params_;
-    if (p.early_mode >= kEarlyModes || p.pre_delay_time < 0.0f || p.pre_delay_time > p.pre_delay_time_max ||
-        p.fused_mode >= kFusedModes || p.fused_time < 0.0f || OutOfRange(p.coloration) || OutOfRange(p.damping) ||
-        OutOfRange(p.early_gain) || OutOfRange(p.fused_gain) || OutOfRange(p.out_gain) || OutOfRange(p.send_gain))
+    if (reverb::AnyOutOfRange(p, kEarlyModes, kFusedModes))
     {
         return false;
     }
@@ -219,63 +180,27 @@ bool ReverbStdExp::InitParams()
     early_length_ = kEarlySizes[p.early_mode];
     early_coef_ = p.early_mode <= 3 ? -0.33f : 0.33f;
 
-    // The game's pre-delay can be longer than its line only for a NaN time. The game would then write past the line.
-    // The model fails instead.
-    pre_delay_pos_ = 0;
-    pre_delay_length_ = ToUnsigned(kSampleRate * p.pre_delay_time);
-    if (pre_delay_length_ > pre_delay_line_[0].size())
-    {
-        return false;
-    }
-
-    const uint32_t* sizes = kFilterSizes[p.fused_mode];
-    for (int comb = 0; comb < kCombs; comb++)
-    {
-        comb_pos_[comb] = 0;
-        comb_length_[comb] = sizes[comb];
-        comb_coef_[comb] = CombCoef(sizes[comb], p.fused_time);
-    }
-
-    for (int allpass = 0; allpass < kAllpasses; allpass++)
-    {
-        allpass_pos_[allpass] = 0;
-        allpass_length_[allpass] = sizes[kCombs + allpass];
-    }
-
-    // The coloration is the allpasses' gain. The damping sets the low-pass's weight.
-    allpass_coef_ = p.coloration;
-    lpf_coef_ = LowpassCoef(p.damping);
-    last_lpf_out_.fill(0.0f);
-
-    return true;
+    return reverb::SetUp(lines_, p, kFilterSizes[p.fused_mode]);
 }
 
 void ReverbStdExp::ClearDelayLines()
 {
-    ForEachLine(ClearLine);
+    for (std::vector<float>& line : early_line_)
+    {
+        Clear(line);
+    }
+
+    reverb::ClearLines(lines_);
 }
 
 void ReverbStdExp::FreeDelayLines()
 {
-    ForEachLine(ReleaseLine);
-}
-
-void ReverbStdExp::ForEachLine(void (*function)(std::vector<float>& line))
-{
-    for (int channel = 0; channel < kChannelCount; channel++)
+    for (std::vector<float>& line : early_line_)
     {
-        function(early_line_[channel]);
-        function(pre_delay_line_[channel]);
-        for (std::vector<float>& line : comb_line_[channel])
-        {
-            function(line);
-        }
-
-        for (std::vector<float>& line : allpass_line_[channel])
-        {
-            function(line);
-        }
+        line = {};
     }
+
+    reverb::FreeLines(lines_);
 }
 
 uint32_t ReverbStd::GetMemSize(const Params& params)

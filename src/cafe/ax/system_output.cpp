@@ -56,8 +56,8 @@ constexpr int kFirstReturn = kAuxSamples - 32;
 void SendEnhanced(float* sends, const FloatBuses::Channel& sent, std::vector<int32_t>& input, std::size_t at,
                   const wave::SincKernel& down)
 {
-    // The frame's sends, and the 32 kHz frame before this one for the callbacks. The interpolator's window lies inside
-    // the sends that the bus keeps. When they are all 0, so is the frame.
+    // The frame's sends, and the 32 kHz frame before this one for the callbacks. The interpolator's window is inside
+    // the sends that the bus keeps. When they are all 0, the frame is 0 too.
     std::copy(sends + kSendSamples, sends + kSendHistory, sends);
     std::copy_n(sent.begin(), kSendSamples, sends + 2 * kSendSamples);
     if (std::all_of(sends, sends + kSendHistory, IsSilent))

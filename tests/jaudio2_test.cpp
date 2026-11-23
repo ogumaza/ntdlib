@@ -3,19 +3,17 @@
 // The model of JAudio2 (jaudio2) on files built for the test: the load of a game's wave archives into the DSP's memory
 // (LoadWaveSystems), the engine's snapshots, and the wave archives that a sound can play (WaveArchivesOf).
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <map>
 #include <set>
-#include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xsflib/testing/check.h"
 
+#include "jaudio_engine_checks.h"
 #include "ntdlib/jaudio/sequence_walk.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/jaudio2/engine.h"
@@ -28,9 +26,12 @@ namespace
 
 namespace nj = ntdlib::jaudio;
 namespace j2 = ntdlib::jaudio2;
+namespace checks = ntdlib::testing::jaudio_engine_checks;
 
-// Two systems. System 1 lists a.aw and b.aw, and system 2 lists b.aw again and c.aw, which the test doesn't give. Wave
-// 3 of system 1 is at 8 in b.aw.
+using checks::Run;
+
+// Two systems. System 1 lists a.aw and b.aw, and system 2 lists b.aw again and c.aw. The test doesn't give c.aw. Wave 3
+// of system 1 is at 8 in b.aw.
 std::vector<nj::WaveSystem> Systems()
 {
     nj::WaveSystem first{.number = 1};
@@ -104,20 +105,6 @@ std::vector<uint8_t> SnapshotSequence()
     return s.Data();
 }
 
-// The output of `count` sub-frames.
-std::vector<int16_t> Run(j2::Engine& engine, int count)
-{
-    std::vector<int16_t> output;
-    for (int i = 0; i < count; i++)
-    {
-        engine.RunSubframe();
-        const std::span<const int16_t> subframe = engine.Output();
-        output.insert(output.end(), subframe.begin(), subframe.end());
-    }
-
-    return output;
-}
-
 // A snapshot taken in the middle of the sound, with notes sounding and a level moving, and restored after more
 // sub-frames, gives from there the output of a run without the restore, sample for sample. A snapshot of another engine
 // or of an earlier start can't be restored.
@@ -131,35 +118,11 @@ void TestSnapshots()
                               [&aw](const std::string& name) { return name == "test.aw" ? &aw : nullptr; });
     const uint32_t id = game.Archive().Sounds().at(0).Id();
 
-    constexpr int kBefore = 157;
-    constexpr int kAfter = 900;
-    j2::Engine straight(game, {});
-    XSFLIB_CHECK(!straight.Start(id));
-    const std::vector<int16_t> head = Run(straight, kBefore);
-    const std::vector<int16_t> tail = Run(straight, kAfter);
-    XSFLIB_CHECK(std::any_of(tail.begin(), tail.end(), [](int16_t sample) { return sample != 0; }));
-
-    j2::Engine engine(game, {});
-    XSFLIB_CHECK(engine.Save().model == nullptr);
-    XSFLIB_CHECK(!engine.Start(id));
-    XSFLIB_CHECK(Run(engine, kBefore) == head);
-    const j2::Engine::Snapshot snapshot = engine.Save();
-    XSFLIB_CHECK(engine.ActiveChannels() > 0);
-    XSFLIB_CHECK(Run(engine, kAfter) == tail);
-    engine.Restore(snapshot);
-    XSFLIB_CHECK(Run(engine, kAfter) == tail);
-
-    // A second restore of the same snapshot gives the same output again.
-    engine.Restore(snapshot);
-    XSFLIB_CHECK(Run(engine, kAfter) == tail);
-
-    const auto restore = [&snapshot](j2::Engine& e)
+    const auto start = [id](j2::Engine& engine)
     {
-        return ErrorOf<std::logic_error>([&] { e.Restore(snapshot); });
+        return engine.Start(id);
     };
-    XSFLIB_CHECK(!restore(straight).empty());
-    XSFLIB_CHECK(!engine.Start(id));
-    XSFLIB_CHECK(!restore(engine).empty());
+    checks::CheckSnapshots<j2::Engine>(game, start, 157, 900);
 }
 
 // The cursors of the tracks (Cursor), two frames into the snapshot sequence. The root waits at 0x13, after its four

@@ -18,6 +18,7 @@
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
 
+#include "ntdlib/ax/ax.h"
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/render.h"

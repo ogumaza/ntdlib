@@ -29,14 +29,6 @@ namespace ntdlib::dse
 
 using ntr::snd::CommandId;
 
-namespace
-{
-
-// The flags of the voice's parameters that each of an LFO's outputs changes (0x020A9FA0).
-constexpr std::array<uint16_t, 8> kOutputFlags = {0, 0x10, 0x20, 0x40, 0, 0, 0, 0};
-
-} // namespace
-
 int32_t Driver::State::Random()
 {
     auto x = static_cast<int32_t>(seed ^ seed << 17);
@@ -274,223 +266,6 @@ void Driver::State::ReleaseVoices(Channel& channel, uint8_t key)
                          ReleaseVoice(channel, voice);
                      }
                  });
-}
-
-void Driver::State::StartLfos(LfoBank& bank, const std::array<LfoSettings, 4>& settings, int8_t level)
-{
-    const int32_t constant = Wrap(int64_t{Divide(int32_t{level} << 8, 127)} << 16);
-    bank.count = 0;
-    for (std::size_t k = 0; k < 4; k++)
-    {
-        const LfoSettings& s = settings[k];
-        if (s.type == 0)
-        {
-            continue;
-        }
-        Lfo& lfo = bank.lfos[k];
-        lfo.type = s.type;
-        lfo.phase_flags = 0;
-        lfo.output = 0;
-        if (s.type == 1)
-        {
-            lfo.delay = static_cast<uint16_t>(Divide(int32_t{s.delay_ms} * 1000, tick));
-            const int32_t ticks = Divide(int32_t{s.envelope_ms} * 1000, tick);
-            lfo.envelope_ticks = static_cast<uint16_t>(ticks);
-            if (ticks != 0)
-            {
-                lfo.envelope_level = 0;
-                lfo.envelope_delta = Divide(0x1000000, ticks);
-            }
-            else
-            {
-                lfo.envelope_level = 0x1000000;
-                lfo.envelope_delta = 0;
-            }
-        }
-        else
-        {
-            lfo.delay = 0;
-            lfo.envelope_ticks = 0;
-            lfo.envelope_level = constant;
-        }
-        lfo.ticks_until_phase = 0;
-        lfo.delta = 0;
-        if (s.phase_ms == 0)
-        {
-            lfo.ticks_until_phase = 0;
-            lfo.ticks_per_phase = 0;
-        }
-        else
-        {
-            int32_t per = Divide(int32_t{s.phase_ms} * 1000, tick);
-            if (per == 0)
-            {
-                per = 1;
-            }
-            lfo.ticks_per_phase = static_cast<uint16_t>(per);
-            lfo.ticks_until_phase = 0;
-            lfo.amplitude = Wrap(int64_t{s.amplitude} << 10);
-            lfo.delta = Divide(lfo.amplitude, per);
-        }
-        lfo.waveform = s.waveform;
-        lfo.output_index = s.output;
-        lfo.update_flags = s.output < kOutputFlags.size() ? kOutputFlags[s.output] : 0;
-        bank.list[static_cast<std::size_t>(bank.count++)] = static_cast<uint8_t>(k);
-    }
-}
-
-void Driver::State::SetConstantLevels(LfoBank& bank, int8_t level)
-{
-    for (int i = 0; i < bank.count; i++)
-    {
-        Lfo& lfo = bank.lfos[bank.list[static_cast<std::size_t>(i)]];
-        if (lfo.type == 3)
-        {
-            lfo.envelope_level = Wrap(int64_t{Divide(int32_t{level} << 8, 127)} * 0x10000);
-        }
-    }
-}
-
-int32_t Driver::State::Waveform(Lfo& lfo)
-{
-    switch (lfo.waveform)
-    {
-    case 0:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            lfo.output = lfo.output != 0 ? 0 : lfo.amplitude;
-        }
-        lfo.ticks_until_phase--;
-        return lfo.output;
-    case 1:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            lfo.output = (lfo.phase_flags & 2) != 0 ? Wrap(-int64_t{lfo.amplitude}) : lfo.amplitude;
-            lfo.phase_flags ^= 2;
-        }
-        lfo.ticks_until_phase--;
-        return lfo.output;
-    case 2:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            if (lfo.phase_flags & 1)
-            {
-                lfo.delta = Wrap(-int64_t{lfo.delta});
-            }
-            lfo.phase_flags |= 1;
-        }
-        lfo.ticks_until_phase--;
-        lfo.output = Wrap(int64_t{lfo.output} + lfo.delta);
-        return lfo.output;
-    case 3:
-        {
-            uint16_t left = lfo.ticks_until_phase;
-            if (left == 0)
-            {
-                left = lfo.ticks_per_phase;
-                if (lfo.phase_flags & 1)
-                {
-                    lfo.delta = Wrap(-int64_t{lfo.delta});
-                }
-                else
-                {
-                    left /= 2;
-                    if (left < 1)
-                    {
-                        left = 1;
-                    }
-                }
-                lfo.phase_flags |= 1;
-            }
-            lfo.ticks_until_phase = static_cast<uint16_t>(left - 1u);
-            lfo.output = Wrap(int64_t{lfo.output} + lfo.delta);
-            return lfo.output;
-        }
-    case 4:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            lfo.output = 0;
-        }
-        else
-        {
-            lfo.output = Wrap(int64_t{lfo.output} + lfo.delta);
-        }
-        lfo.ticks_until_phase--;
-        return lfo.output;
-    case 5:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            lfo.output = lfo.amplitude;
-        }
-        else
-        {
-            lfo.output = Wrap(int64_t{lfo.output} - lfo.delta);
-        }
-        lfo.ticks_until_phase--;
-        return lfo.output;
-    case 6:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            lfo.output = Wrap(int64_t{lfo.amplitude >> 16} * Random());
-        }
-        lfo.ticks_until_phase--;
-        return lfo.output;
-    case 7:
-        if (lfo.ticks_until_phase == 0)
-        {
-            lfo.ticks_until_phase = lfo.ticks_per_phase;
-            const int32_t amplitude = lfo.amplitude;
-            lfo.output = Wrap(int64_t{amplitude >> 15} * Random() - (amplitude >> 1));
-        }
-        lfo.ticks_until_phase--;
-        return lfo.output;
-    default:
-        lfo.phase_flags = 0;
-        lfo.type = 0;
-        return 0;
-    }
-}
-
-uint16_t Driver::State::StepLfos(LfoBank& bank)
-{
-    uint16_t flags = 0;
-    bank.outputs = {};
-    for (int i = 0; i < bank.count; i++)
-    {
-        Lfo& lfo = bank.lfos[bank.list[static_cast<std::size_t>(i)]];
-        if (lfo.delay != 0)
-        {
-            lfo.delay--;
-            continue;
-        }
-        const int32_t output = Waveform(lfo) >> 8;
-        if (lfo.envelope_ticks != 0)
-        {
-            lfo.envelope_ticks--;
-            if (lfo.envelope_ticks != 0)
-            {
-                lfo.envelope_level = Wrap(int64_t{lfo.envelope_level} + lfo.envelope_delta);
-            }
-            else
-            {
-                lfo.envelope_level = 0x1000000;
-            }
-        }
-        const uint32_t level = static_cast<uint32_t>(output) * (static_cast<uint32_t>(lfo.envelope_level) >> 8);
-        if (lfo.output_index < bank.outputs.size())
-        {
-            int16_t& out = bank.outputs[lfo.output_index];
-            out = static_cast<int16_t>(out + (static_cast<int32_t>(level) >> 16));
-        }
-        flags |= lfo.update_flags;
-    }
-    return flags;
 }
 
 void Driver::State::RandomKey(const Channel& channel, Note& note)
@@ -771,6 +546,11 @@ uint16_t Driver::State::StartNote(Channel& channel, const Note& given)
         StartLfos(voice.lfos, channel.lfos, channel.lfo_level);
         voice.envelope.parameters = EnvelopeParameters::Read(split.Envelope());
         voice.envelope.parameters.use = 1;
+        // The oldest build plays a multiplier of 16 or more as 1 (0x020C44B4 in Luminous Arc's ARM9 binary).
+        if (build == Build::kOldest && voice.envelope.parameters.multiplier >= 0x10)
+        {
+            voice.envelope.parameters.multiplier = 1;
+        }
         if (channel.envelope.use != 0)
         {
             SetEnvelopeOverride(voice.envelope.parameters, channel.envelope);
@@ -847,7 +627,7 @@ void Driver::State::SelectProgram(Channel& channel, uint16_t index)
             for (std::size_t k = 0; k < 4; k++)
             {
                 const std::size_t at = 0x10 + 0x10 * k;
-                if (at + 16 <= program->size() && (*program)[at + 1] != 0)
+                if (at + 16 <= program->size() && TakesLfo(build, std::span(*program).subspan(at, 16)))
                 {
                     channel.lfos[k] = LfoSettings::Read(std::span(*program).subspan(at, 16));
                 }

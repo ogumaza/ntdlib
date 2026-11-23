@@ -157,8 +157,8 @@ void CheckSteadyLoop()
     cpu.Watch({kSteadyLoop}, [&passes](uint32_t) { passes++; });
     cpu.Run(3000);
     Check(cpu.state_.gpr[3] == 0x0102, "the steady loop read its word");
-    Check(passes > 0 && passes <= 4, "the skip ran the steady loop's passes at once: " + std::to_string(passes) +
-                                         " passes started");
+    Check(passes > 0 && passes <= 4,
+          "the skip ran the steady loop's passes at once: " + std::to_string(passes) + " passes started");
 }
 
 } // namespace

@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "ntdlib/nwsnd/console.h"
+#include "ntdlib/nwsnd/nx_policy.h"
 #include "ntdlib/nwsnd/util.h"
 
 namespace ntdlib::nx::atk

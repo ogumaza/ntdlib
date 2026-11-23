@@ -7,9 +7,11 @@
 // with idle values.
 //
 // The system boots the ARM7 binary directly, in the state that the firmware leaves: the binary at its address in main
-// memory, the cartridge's header at 0x027FFE00, and the CPU at the binary's entry. The caller plays the ARM9: it
-// answers the IPC and writes main memory. A system made with an Arm9Link runs beside an ARM9 instead (ntr/machine.h).
-// The ARM9 then answers the IPC and the start-up's handshakes itself.
+// memory, the cartridge's header at 0x027FFE00, and the CPU at the binary's entry. An image that runs only on a DSi
+// (UnitCode::kDsiOnly) runs in DSi mode: main memory has 16 MiB, the area that the firmware fills is at 0x02FFF000, the
+// new shared WRAM and the DSi's registers are mapped (ntr/machine.h), and the BIOS has the DSi's calls. The caller
+// plays the ARM9: it answers the IPC and writes main memory. A system made with an Arm9Link runs beside an ARM9 instead
+// (ntr/machine.h). The ARM9 then answers the IPC and the start-up's handshakes itself.
 //
 // The CPU runs as if it were infinitely fast: the system's clock passes only while the CPU halts. A burst of code that
 // an interrupt starts therefore runs at the interrupt's time, and every register access in it happens then. A burst
@@ -53,13 +55,8 @@ constexpr uint32_t kSpi = 1u << 23;
 
 } // namespace irq
 
-// The ARM7's display timing, in cycles of its clock: 263 lines of 355 dots of 6 cycles. The vertical blank starts at
-// line 192.
-constexpr uint64_t kLineCycles = 2130;
-constexpr uint64_t kFrameLines = 263;
-constexpr uint64_t kFrameCycles = kLineCycles * kFrameLines;
-constexpr uint64_t kVblankLine = 192;
-
+class DsiIo;
+class NewWram;
 class SpiDevices;
 
 // The ARM9's side of the IPC, for a system that runs beside an ARM9. The system calls it when the ARM7's side changes.
@@ -145,6 +142,10 @@ public:
     void SetWramControl(uint8_t value);
     std::span<uint8_t> SharedWram();
 
+    // Whether the system runs in DSi mode, and in DSi mode the new shared WRAM that both CPUs reach.
+    bool DsiMode() const;
+    NewWram& DsiWram();
+
     // Called for each access to the sound unit's registers, with the clock of the access.
     std::function<void(uint32_t address, int size, uint32_t value, bool write)> on_sound_access;
 
@@ -191,6 +192,9 @@ private:
     // The ARM9's answers to the ARM7's writes in the area at main memory's end.
     void AnswerArm9(uint32_t offset, int size);
 
+    // The offset in main memory of the byte `from_end` bytes before the memory's end, where the firmware's area is.
+    uint32_t FromEnd(uint32_t from_end) const;
+
     // Tells the ARM9 of a change on the ARM7's side, and ends Run's burst.
     void LinkEvent();
 
@@ -200,6 +204,7 @@ private:
 
     std::vector<uint8_t> bios_;
     std::vector<uint8_t> main_;
+    uint32_t main_mask_ = 0; // the main memory's size less 1
     std::vector<uint8_t> shared_wram_;
     std::vector<uint8_t> wram_;
     std::vector<uint8_t> vram_;
@@ -207,8 +212,10 @@ private:
     SoundUnit sound_;
     Arm9Link* link_ = nullptr;
     bool link_event_ = false;
-    uint8_t wram_control_ = 3;        // WRAMCNT: 3 gives all of the shared work memory to the ARM7
-    std::unique_ptr<SpiDevices> spi_; // the SPI bus's devices, beside an ARM9 only
+    uint8_t wram_control_ = 3;          // WRAMCNT: 3 gives all of the shared work memory to the ARM7
+    std::unique_ptr<SpiDevices> spi_;   // the SPI bus's devices, beside an ARM9 only
+    std::unique_ptr<NewWram> dsi_wram_; // DSi mode's new shared WRAM, or nullptr
+    std::unique_ptr<DsiIo> dsi_io_;     // DSi mode's registers from 0x04004000, or nullptr
     uint8_t spi_answer_ = 0;
 
     uint64_t clock_ = 0;

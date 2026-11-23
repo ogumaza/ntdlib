@@ -18,6 +18,7 @@
 #include "ntdlib/nwsnd/envelope.h"
 #include "ntdlib/nwsnd/tables.h"
 #include "ntdlib/nwsnd/util.h"
+#include "ntdlib/testing/nwsnd_stand_ins.h"
 
 namespace
 {
@@ -173,34 +174,17 @@ namespace nwsnd_ctr_test
 
 class ChannelTestEngine;
 
+using StandIns = ntdlib::testing::nwsnd_stand_ins::PolicyParts<int, 32728, Ctr::kFxSendCount>;
+
 // A policy with stand-ins for the 3DS's engine, waves and outputs, for the channel's update.
-struct ChannelTestPolicy
+struct ChannelTestPolicy : StandIns
 {
     using Console = Ctr;
     using Engine = ChannelTestEngine;
 
-    struct WaveInfo
-    {
-        int format = 0;
-        uint32_t sample_rate = 32728;
-        bool loop = false;
-    };
-
-    struct Outputs
-    {
-        float volume = 1.0f;
-        uint32_t mix_mode = 0;
-        float pan = 0.0f;
-        float span = 0.0f;
-        float main_send = 0.0f;
-        std::array<float, 2> fx_send{};
-    };
-
-    template <typename Function, typename... Each>
-    static void ForEachOutput(const Function& function, Each&... outputs)
-    {
-        function(outputs...);
-    }
+    using WaveInfo = StandIns::WaveInfo;
+    using Outputs = StandIns::Outputs;
+    using StandIns::ForEachOutput;
 };
 
 using Channel = ntdlib::nwsnd::Channel<ChannelTestPolicy>;

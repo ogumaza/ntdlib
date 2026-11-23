@@ -3,8 +3,6 @@
 // The tracks' notes and oscillators: the notes' start and stop, the gates, the oscillators' set-up and the jumps
 // back, and the parser's notes and their ends (see track.cpp).
 
-#include "ntdlib/jac/track.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -12,6 +10,7 @@
 #include <span>
 
 #include "jac/track_internal.h"
+#include "ntdlib/jac/track.h"
 
 namespace ntdlib::jac
 {
@@ -48,8 +47,8 @@ constexpr OscData kAdsrDef{0, 1.0f, {}, {}, 1.0f, 0.0f};
 
 int32_t Tracks::NoteOn(uint32_t index, uint8_t slot, uint8_t key, uint8_t velocity, int32_t time)
 {
-    // NoteON: a channel from the track's manager, or from the nearest manager up the tree that has a free one, which
-    // moves to the track's manager first. A track of kind 4 plays on its parent's manager.
+    // NoteON: a channel from the track's manager, or from the nearest manager up the tree that has a free one. A
+    // channel from another manager moves to the track's manager first. A track of kind 4 plays on its parent's manager.
     Track& track = tracks_[index];
     if (track.muted && (track.pause_status & Track::kMuteNoNotes) != 0)
     {

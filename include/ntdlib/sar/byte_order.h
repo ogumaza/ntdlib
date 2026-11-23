@@ -2,7 +2,7 @@
 
 // The files of the 3DS's sound archives, the Wii U's and the Switch's hold the same structures. The Wii U's files are
 // big-endian, and the 3DS's and the Switch's are little-endian. The 3DS's magics start with C, and the others' with F.
-// Each console numbers its versions in its own way. A bank file (CBNK or FBNK), a wave sound file (CWSD or FWSD), a
+// Each console numbers its versions differently. A bank file (CBNK or FBNK), a wave sound file (CWSD or FWSD), a
 // wave file (CWAV or FWAV) or a wave archive (CWAR or FWAR) of one console becomes a file of another with these
 // functions. So does a stream (CSTM or FSTM).
 //
@@ -12,8 +12,8 @@
 // parameters. An optional parameter is a field of bits, then a 4-byte value for each bit that is set. A region's
 // parameters can give its original key, volume, pan, pitch, a field of flags and an envelope (bits 0 to 4 and 9). A
 // wave sound's settings can give its pan, its pitch, its filter, its sends and its envelope (bits 0, 1, 2, 8 and 9).
-// The value of an envelope gives where a reference to the envelope's 5 bytes lies. The value of the sends gives where
-// they lie: the main send, the number of effect sends, then each effect send, a byte each.
+// The value of an envelope gives where a reference to the envelope's 5 bytes is. The value of the sends gives where
+// they are: the main send, the number of effect sends, then each effect send, a byte each.
 //
 // A wave's settings and DSP-ADPCM infos hold fields of 1, 2 or 4 bytes too. 16-bit PCM samples take the byte order of
 // the console that the wave goes to. DSP-ADPCM's frames and 8-bit PCM samples stay as they are. The Switch starts each
@@ -34,11 +34,11 @@
 namespace ntdlib::sar
 {
 
-// `file`, a bank file (CBNK or FBNK) or a wave sound file (CWSD or FWSD), as a file of `flavor` with version
-// `version`: with the letter of `flavor`'s magics, in its byte order. The structures keep their places, and so does
-// every other byte. Throws xsflib::FormatError for a file of another kind, a big-endian file of the 3DS, a file without
-// its INFO block, a reference or an option that the walk doesn't know, structures that overlap, and a byte that isn't
-// zero where no structure lies.
+// `file`, a bank file (CBNK or FBNK) or a wave sound file (CWSD or FWSD), as a file of `flavor` with version `version`:
+// with the letter of `flavor`'s magics, in its byte order. The structures keep their places, and so does every other
+// byte. Throws xsflib::FormatError for a file of another kind, a big-endian file of the 3DS, a file without its INFO
+// block, a reference or an option that the walk doesn't support, structures that overlap, and a byte that isn't zero
+// where no structure is.
 std::vector<uint8_t> WithConsole(std::span<const uint8_t> file, Flavor flavor, uint32_t version);
 
 // `file`, a bank file (FBNK) or a wave sound file (FWSD) of the Wii U or the Switch, as a file of the other of the two

@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <limits>
 
+#include "ntdlib/fused.h"
+
 namespace ntdlib::jaudio2
 {
 
@@ -25,7 +27,7 @@ constexpr float kRadiansToIndex = 2607.594482421875f;
 
 // The sine and cosine of `y`, for |y| up to π/4, from their Taylor series in double precision, nested from the
 // highest term: 1 - y²/(n(n - 1)) × (the rest). The terms run up to the 21st power for the sine and the 22nd for the
-// cosine. The series' error then lies far below a double's precision.
+// cosine. The series' error is then far below a double's precision.
 double SinSeries(double y)
 {
     const double y2 = y * y;
@@ -50,27 +52,6 @@ double CosSeries(double y)
     return sum;
 }
 
-// The sine of `x`, for x from 0 to 2π, in double precision: the angle less the nearest multiple of π/2, then the
-// series for that quarter. The multiple of π/2 comes off in two parts. The difference then keeps its precision.
-double Sine(double x)
-{
-    constexpr double kHalfPiHigh = 1.5707963267341256e+00; // π/2 to 33 bits
-    constexpr double kHalfPiLow = 6.0771005065061922e-11;  // the rest of π/2
-    const double quarters = std::floor(x / (kHalfPiHigh + kHalfPiLow) + 0.5);
-    const double y = (x - quarters * kHalfPiHigh) - quarters * kHalfPiLow;
-    switch (static_cast<int>(quarters) & 3)
-    {
-    case 0:
-        return SinSeries(y);
-    case 1:
-        return CosSeries(y);
-    case 2:
-        return -SinSeries(y);
-    default:
-        return -CosSeries(y);
-    }
-}
-
 const std::array<float, kSinTableSize>& SinTable()
 {
     static const std::array<float, kSinTableSize> kTable = []
@@ -92,36 +73,34 @@ const std::array<float, kSinTableSize>& SinTable()
 
 } // namespace
 
+double Sine(double x)
+{
+    // The multiple of π/2 comes off in two parts. The difference then keeps its precision.
+    constexpr double kHalfPiHigh = 1.5707963267341256e+00; // π/2 to 33 bits
+    constexpr double kHalfPiLow = 6.0771005065061922e-11;  // the rest of π/2
+    const double quarters = std::floor(x / (kHalfPiHigh + kHalfPiLow) + 0.5);
+    const double y = (x - quarters * kHalfPiHigh) - quarters * kHalfPiLow;
+    switch (static_cast<int>(quarters) & 3)
+    {
+    case 0:
+        return SinSeries(y);
+    case 1:
+        return CosSeries(y);
+    case 2:
+        return -SinSeries(y);
+    default:
+        return -CosSeries(y);
+    }
+}
+
 int32_t ToInt32(float value)
 {
-    if (std::isnan(value))
-    {
-        return 0;
-    }
-    if (value >= 2147483648.0f)
-    {
-        return std::numeric_limits<int32_t>::max();
-    }
-    if (value <= -2147483648.0f)
-    {
-        return std::numeric_limits<int32_t>::min();
-    }
-
-    return static_cast<int32_t>(value);
+    return ArmToInt32(value);
 }
 
 uint32_t ToUint32(float value)
 {
-    if (std::isnan(value) || value <= 0.0f)
-    {
-        return 0;
-    }
-    if (value >= 4294967296.0f)
-    {
-        return std::numeric_limits<uint32_t>::max();
-    }
-
-    return static_cast<uint32_t>(value);
+    return ArmToUint32(value);
 }
 
 float Pow2(float x)
@@ -133,7 +112,7 @@ float Pow2(float x)
         return std::numeric_limits<float>::infinity();
     }
 
-    // The fraction lies between -1.5 and 1.5. A negative one moves up by a half, and 2^-0.5 makes up for it.
+    // The fraction is between -1.5 and 1.5. A negative one moves up by a half, and 2^-0.5 makes up for it.
     float fraction = x - static_cast<float>(exponent);
     const bool below = fraction < 0.0f;
     fraction = fraction + (below ? 0.5f : 0.0f);

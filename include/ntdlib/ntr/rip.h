@@ -12,6 +12,7 @@
 #include <regex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xsflib/psf/psf.h"
@@ -37,12 +38,15 @@ using ntdlib::ntr::Label;
 // Whether a rip tool's --bgm picks `sequence` as music: a sequence whose label has BGM in it, or one that plays on a
 // music player. Games give their music players names with BGM, MUSIC, SONG or FANFARE among the words that
 // underscores separate (PLAYER_BGM), even where the music's labels don't say so. A player whose name also has the word
-// SE plays sound effects.
-bool IsMusic(const sdat::Archive& archive, const SequenceRef& sequence);
+// SE plays sound effects. DS games also play music on players with FIELD, ME or JINGLE among the words (PLAYER_FIELD,
+// PLAYER_ME), unless a word is SE, SFX, VOICE or PV. A table can list other players by the game, and `game_code` (the 4
+// letters of the cartridge's header, such as "IPKE") picks the game's rows.
+bool IsMusic(const sdat::Archive& archive, const SequenceRef& sequence, std::string_view game_code = {});
 
 // The archive's sequences, then each sequence of each sequence archive, whose labels match `only`, and with `bgm` only
-// those that are music (IsMusic).
-std::vector<Job> SelectSequences(const sdat::Archive& archive, const std::regex& only, bool bgm);
+// those that are music (IsMusic with `game_code`).
+std::vector<Job> SelectSequences(const sdat::Archive& archive, const std::regex& only, bool bgm,
+                                 std::string_view game_code = {});
 
 // What `sequence` requires that the archive doesn't hold: its file, its bank's record and file, and the files of the
 // wave archives that the bank names. Empty when nothing is missing.
@@ -52,9 +56,9 @@ std::vector<std::string> MissingData(const sdat::Archive& archive, const Sequenc
 // keeps its number. The FILE block keeps the files that the sequences play: each sequence's file or sequence archive's
 // file, its bank's file and the files of the wave archives that the bank names. Every other file is empty. The archive
 // is laid out as the SDK's tools lay one out (sdat::BuildArchive). Each kept file is read back from the library and
-// compared with the file in `archive`. Nothing when the two differ, when one of `sequences` lacks data (MissingData),
-// or when the archive's layout isn't the tools' layout (sdat::ReadArchiveModel). The library then holds the whole
-// archive.
+// compared with the file in `archive`. Nothing when the two differ, when data of one of `sequences` is missing
+// (MissingData), or when the archive's layout isn't the tools' layout (sdat::ReadArchiveModel). The library then holds
+// the whole archive.
 std::optional<std::vector<uint8_t>> KeepSequenceData(const sdat::Archive& archive,
                                                      std::span<const SequenceRef> sequences);
 
@@ -81,6 +85,7 @@ std::vector<uint8_t> BuildArchiveLibrary(const std::string& path, std::span<cons
     settings.archive_path = path;
     typename Format::ProgramBuilder program;
     program.AddFileRef(path, archive);
+
     return program.WritePsf(Format::kPsfVersion, settings.Serialize(), tags);
 }
 
@@ -91,6 +96,7 @@ std::vector<uint8_t> BuildMini(const SequenceRef& sequence, const std::string& l
     typename Format::ProgramBuilder program;
     program.AddSound(SoundId(sequence));
     tags["_lib"] = lib_name;
+
     return program.WritePsf(Format::kPsfVersion, {}, tags);
 }
 

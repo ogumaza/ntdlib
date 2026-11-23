@@ -286,7 +286,7 @@ std::vector<uint8_t> WaveFile::Write() const
 {
     Out out = Header("RWAV", version, 2);
 
-    // INFO: the wave's info, which DATA follows.
+    // INFO: the wave's info. DATA follows it.
     const std::size_t info = OpenBlock(out, "INFO");
     const std::size_t wave_info = out.Zeros(detail::WaveInfoSize(encoding, channels.size()));
     out.Align(kBlockAlignment);

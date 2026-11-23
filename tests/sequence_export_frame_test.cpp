@@ -99,7 +99,8 @@ std::string Text(const std::optional<std::vector<uint8_t>>& bytes)
     return bytes ? std::string(bytes->begin(), bytes->end()) : "<none>";
 }
 
-// The made-up converter. Its sequences convert to files that hold their names. A sequence named "bad" fails.
+// The made-up converter. Its sequences convert to files that hold their names. A sequence named "bad" fails, and one
+// named "alone" can't be converted from the input alone.
 // `prepared_loops` and `before_inputs` record what the hooks received.
 struct FakeConverter
 {
@@ -165,6 +166,10 @@ struct FakeConverter
             if (name == "bad")
             {
                 throw std::runtime_error("can't convert it");
+            }
+            if (name == "alone")
+            {
+                throw NotConverted("needs another input");
             }
 
             prepared_loops = perform.loops;
@@ -270,8 +275,8 @@ void TestGroupFilesInSarcs()
 
 void TestGroupFilesOfThe3ds()
 {
-    // A 3DS archive with a group kept outside it, which holds its bank, file 1. A file of the group under the Wii U's
-    // name isn't taken. The 3DS's name is.
+    // A 3DS archive with a group kept outside it. The group holds the archive's bank, file 1. A file of the group under
+    // the Wii U's name isn't taken. The 3DS's name is.
     namespace sar_files = ntdlib::testing::sar_files;
     constexpr ntdlib::sar::Flavor kCtr = ntdlib::sar::Flavor::kCtr;
     sar_files::ArchiveSpec spec;
@@ -403,6 +408,22 @@ void TestBatch()
     Check(Text(ReadFile(out / "sfz" / "samples" / "shared.wav")) == "WAV", "the shared samples go in sfz/samples");
     Check(!fs::exists(out / "bad.mid"), "a sequence that fails writes nothing");
     Check(fake.before_inputs == 1 && fake.prepared_loops == 12, "the hooks run, and prepare sets the options");
+}
+
+void TestNotConverted()
+{
+    // A sequence that the input alone can't convert is listed, and the run still succeeds.
+    const TempFolder folder("sequence_export_frame_test");
+    const fs::path input = folder.Path() / "game.txt";
+    WriteFile(input, std::string("Song\nalone\n"));
+    FakeConverter fake;
+    const fs::path out = folder.Path() / "game_fake";
+
+    const int rc = Run({"fake", "--quiet", Utf8(input)}, fake.converter);
+
+    Check(rc == 0, "a sequence that isn't converted leaves the exit status 0");
+    Check(Text(ReadFile(out / "Song.mid")) == "MIDI Song", "the other sequences convert");
+    Check(!fs::exists(out / "alone.mid"), "a sequence that isn't converted writes nothing");
 }
 
 void TestBatchInputs()
@@ -566,6 +587,47 @@ void TestArchiveSequencesWithPieces()
           "a piece takes its first sequence's place, with its name and labels");
 }
 
+void TestMegaMan9PiecesInAnRsar()
+{
+    // Mega Man 9's table of pieces (main.dol 0x802805c0) gives each piece's four sounds as one name followed by _S1,
+    // _S2, _TR and _NO. In an RSAR, the four make a piece with the name, at the place of the first sound. Three of the
+    // four make no piece. A stream with the first label doesn't start one. Neither does a label that is only the first
+    // suffix.
+    const ntdlib::rsar::SoundArchive archive =
+        ntdlib::rsar::SoundArchive::Load(ntdlib::testing::rsar_files::MakeSoundTable({{"SEQ_TITLE_S1", 1, 0},
+                                                                                      {"SEQ_TITLE_S2", 1, 0},
+                                                                                      {"SEQ_TITLE_TR", 1, 0},
+                                                                                      {"SEQ_TITLE_NO", 1, 0},
+                                                                                      {"SEQ_JINGLE", 1, 0},
+                                                                                      {"SEQ_SHORT_S1", 1, 0},
+                                                                                      {"SEQ_SHORT_S2", 1, 0},
+                                                                                      {"SEQ_SHORT_TR", 1, 0},
+                                                                                      {"STRM_S1", 2, 0},
+                                                                                      {"STRM_S2", 1, 0},
+                                                                                      {"STRM_TR", 1, 0},
+                                                                                      {"STRM_NO", 1, 0},
+                                                                                      {"_S1", 1, 0}},
+                                                                                     {"PLAYER_BGM"}));
+
+    const std::vector<ntdlib::SoundPiece> pieces = ntdlib::FindSoundPieces(archive, ntdlib::kMegaMan9Channels);
+    const std::vector<Sequence> sequences = ArchiveSequences(archive, std::span<const ntdlib::SoundPiece>(pieces));
+
+    std::vector<std::string> names;
+    for (const Sequence& sequence : sequences)
+    {
+        names.push_back(sequence.name);
+    }
+
+    const std::vector<std::string> kNames = {"SEQ_TITLE", "SEQ_JINGLE", "SEQ_SHORT_S1", "SEQ_SHORT_S2", "SEQ_SHORT_TR",
+                                             "STRM_S2",   "STRM_TR",    "STRM_NO",      "_S1"};
+    const std::vector<std::string> kLabels = {"SEQ_TITLE_S1", "SEQ_TITLE_S2", "SEQ_TITLE_TR", "SEQ_TITLE_NO"};
+    Check(pieces.size() == 1 && pieces[0].name == "SEQ_TITLE" && pieces[0].sounds == std::vector<uint32_t>{0, 1, 2, 3},
+          "the four labels of Mega Man 9 make one piece");
+    Check(names == kNames && sequences[0].index == 0 && sequences[0].labels == kLabels && sequences[1].labels.empty(),
+          "the piece takes its first sequence's place, with the four labels");
+    Check(ntdlib::PieceStartingAt(pieces, 0) && !ntdlib::PieceStartingAt(pieces, 1), "the piece starts at sound 0");
+}
+
 void TestArchiveConverters()
 {
     // MakeArchiveConverter makes a converter for each kind of sound archive. It opens an archive and lists its
@@ -669,6 +731,11 @@ void TestUsage()
     Check(text.find("<archive name>_xyz2midi\nbeside the archive. You can also drop archives onto xyz2midi.exe on "
                     "Windows\nor Xyz2midi.app on macOS.\n") != std::string::npos,
           "the output folder, the program and the app take the name");
+    Check(text.find("options:\n"
+                    "  --output DIR   write to DIR (one archive only)\n"
+                    "  --only REGEX   convert matching sequence names (for example --only BGM)\n"
+                    "  --loops N") != std::string::npos,
+          "the --output and --only lines for archives, before --loops");
     Check(text.find("  --seed N       initial game PRNG state (default 0x12345678)\n") != std::string::npos,
           "the --seed line's default wording");
     Check(text.find("repeat for more variables\n  --list") != std::string::npos, "no extra options");
@@ -695,6 +762,17 @@ void TestUsage()
           "the --voices lines with the console's count, before the extra options");
 }
 
+// The help lines of --output and --only take the program's word for an input and its example of a pattern.
+void TestOutputOnlyHelp()
+{
+    const std::string text = OutputOnlyHelp("image or set", "0x19");
+
+    Check(text ==
+              "  --output DIR   write to DIR (one image or set only)\n"
+              "  --only REGEX   convert matching sequence names (for example --only 0x19)\n",
+          "the two lines: " + text);
+}
+
 } // namespace
 
 int main()
@@ -708,15 +786,18 @@ int main()
     TestArchiveOptions();
     TestSwitchHasNoVoices();
     TestBatch();
+    TestNotConverted();
     TestBatchInputs();
     TestFolderInputs();
     TestFolderInputThroughALink();
     TestOnlyPicksAPieceByItsLabels();
     TestArchiveSequencesWithPieces();
+    TestMegaMan9PiecesInAnRsar();
     TestArchiveConverters();
     TestOtherInputs();
     TestRunMain();
     TestUsage();
+    TestOutputOnlyHelp();
 
     return xsflib::testing::Summary("frame");
 }

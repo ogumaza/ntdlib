@@ -62,12 +62,12 @@ public:
     // Decodes blocks up to the last one. Returns false and sets `error` if the stream is corrupt or cut short.
     bool Run(std::string& error)
     {
-        int last;
+        int last = 0;
         do
         {
             last = Bits(1);
             const int type = Bits(2);
-            bool ok;
+            bool ok = false;
             switch (type)
             {
             case 0:
@@ -86,12 +86,13 @@ public:
                 error = "invalid DEFLATE block type";
                 return false;
             }
+
             if (!ok || overrun_)
             {
                 error = overrun_ ? "truncated DEFLATE stream" : "corrupt DEFLATE stream";
                 return false;
             }
-        } while (!last);
+        } while (last == 0);
 
         return true;
     }
@@ -106,14 +107,15 @@ private:
     // The codes RFC 1951 fixes for blocks of type 1: 8 or 9 bits a literal, 7 or 8 a length, and 5 a distance.
     struct FixedCodes
     {
-        Huffman lencode, distcode;
+        Huffman length_code;
+        Huffman distance_code;
     };
 
-    // Reads the next `need` bits of input and returns them, the first bit lowest.
-    int Bits(int need)
+    // Reads the next `count` bits of input and returns them, the first bit lowest.
+    int Bits(int count)
     {
-        uint32_t val = bit_buf_;
-        while (bit_count_ < need)
+        uint32_t value = bit_buf_;
+        while (bit_count_ < count)
         {
             if (pos_ >= size_)
             {
@@ -121,14 +123,14 @@ private:
                 return 0;
             }
 
-            val |= uint32_t(in_[pos_++]) << bit_count_;
+            value |= static_cast<uint32_t>(in_[pos_++]) << bit_count_;
             bit_count_ += 8;
         }
 
-        bit_buf_ = val >> need;
-        bit_count_ -= need;
+        bit_buf_ = value >> count;
+        bit_count_ -= count;
 
-        return int(val & ((1u << need) - 1));
+        return static_cast<int>(value & ((1u << count) - 1));
     }
 
     // Decodes a stored block: its length, the length inverted, and that many bytes as they are.
@@ -143,94 +145,96 @@ private:
             return false;
         }
 
-        const unsigned len = in_[pos_] | (in_[pos_ + 1] << 8);
-        const unsigned nlen = in_[pos_ + 2] | (in_[pos_ + 3] << 8);
+        const unsigned length = in_[pos_] | (in_[pos_ + 1] << 8);
+        const unsigned inverted = in_[pos_ + 2] | (in_[pos_ + 3] << 8);
         pos_ += 4;
 
-        if (len != (~nlen & 0xFFFFu))
+        if (length != (~inverted & 0xFFFFu))
         {
             return false;
         }
-        if (pos_ + len > size_)
+        if (pos_ + length > size_)
         {
             overrun_ = true;
             return false;
         }
 
-        out_.insert(out_.end(), in_ + pos_, in_ + pos_ + len);
-        pos_ += len;
+        out_.insert(out_.end(), in_ + pos_, in_ + pos_ + length);
+        pos_ += length;
 
         return true;
     }
 
-    // Decodes a symbol of code `h`, a bit at a time. Returns -1 for an invalid code or the end of the input.
-    int Decode(const Huffman& h)
+    // Decodes a symbol of `code`, a bit at a time. Returns -1 for an invalid code or the end of the input.
+    int Decode(const Huffman& code)
     {
-        int code = 0, first = 0, index = 0;
-        for (int len = 1; len <= kMaxBits; len++)
+        int bits = 0;
+        int first = 0;
+        int index = 0;
+        for (int length = 1; length <= kMaxBits; length++)
         {
-            code |= Bits(1);
+            bits |= Bits(1);
             if (overrun_)
             {
                 return -1;
             }
 
-            const int count = h.count[len];
-            if (code - count < first)
+            const int count = code.count[length];
+            if (bits - count < first)
             {
-                return h.symbol[index + (code - first)];
+                return code.symbol[index + (bits - first)];
             }
 
             index += count;
             first += count;
             first <<= 1;
-            code <<= 1;
+            bits <<= 1;
         }
 
         return -1;
     }
 
-    // Builds `h` from the code lengths of `n` symbols. Returns <0 for an over-subscribed set, 0 for complete, >0 for
-    // incomplete.
-    static int Construct(Huffman& h, const uint8_t* length, int n)
+    // Builds `code` from the code lengths of `symbols` symbols. Returns <0 for an over-subscribed set, 0 for complete,
+    // >0 for incomplete.
+    static int Construct(Huffman& code, const uint8_t* lengths, int symbols)
     {
-        for (auto& c : h.count)
+        for (uint16_t& count : code.count)
         {
-            c = 0;
+            count = 0;
         }
 
-        for (int s = 0; s < n; s++)
+        for (int symbol = 0; symbol < symbols; symbol++)
         {
-            h.count[length[s]]++;
+            code.count[lengths[symbol]]++;
         }
-        if (h.count[0] == n)
+        if (code.count[0] == symbols)
         {
             return 0;
         }
 
         int left = 1;
-        for (int len = 1; len <= kMaxBits; len++)
+        for (int length = 1; length <= kMaxBits; length++)
         {
             left <<= 1;
-            left -= h.count[len];
+            left -= code.count[length];
             if (left < 0)
             {
                 return left;
             }
         }
 
-        uint16_t offs[kMaxBits + 1];
-        offs[1] = 0;
-        for (int len = 1; len < kMaxBits; len++)
+        uint16_t offsets[kMaxBits + 1];
+        offsets[1] = 0;
+        for (int length = 1; length < kMaxBits; length++)
         {
-            offs[len + 1] = uint16_t(offs[len] + h.count[len]);
+            offsets[length + 1] = static_cast<uint16_t>(offsets[length] + code.count[length]);
         }
 
-        for (int s = 0; s < n; s++)
+        for (int symbol = 0; symbol < symbols; symbol++)
         {
-            if (length[s] != 0)
+            if (lengths[symbol] != 0)
             {
-                h.symbol[offs[length[s]]++] = uint16_t(s);
+                code.symbol[offsets[lengths[symbol]]++] = static_cast<uint16_t>(symbol);
             }
         }
 
@@ -238,21 +242,21 @@ private:
     }
 
     // Decodes literals and length/distance pairs with the given codes, up to the end of the block.
-    bool Codes(const Huffman& lencode, const Huffman& distcode)
+    bool Codes(const Huffman& length_code, const Huffman& distance_code)
     {
-        static const uint16_t kLbase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
-                                            31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
-        static const uint8_t kLext[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
-                                          2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
-        static const uint16_t kDbase[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
-                                            33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
-                                            1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
-        static const uint8_t kDext[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
-                                          6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+        static const uint16_t kLengthBase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                                 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+        static const uint8_t kLengthExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                                 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+        static const uint16_t kDistanceBase[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                                   33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                                   1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+        static const uint8_t kDistanceExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                                   6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
         for (;;)
         {
-            int symbol = Decode(lencode);
+            int symbol = Decode(length_code);
             if (symbol < 0)
             {
                 return false;
@@ -260,7 +264,7 @@ private:
 
             if (symbol < 256)
             {
-                out_.push_back(uint8_t(symbol));
+                out_.push_back(static_cast<uint8_t>(symbol));
             }
             else if (symbol == 256)
             {
@@ -274,21 +278,21 @@ private:
                     return false;
                 }
 
-                const size_t len = kLbase[symbol] + Bits(kLext[symbol]);
-                const int dsym = Decode(distcode);
-                if (dsym < 0 || dsym >= 30)
+                const size_t length = kLengthBase[symbol] + Bits(kLengthExtra[symbol]);
+                const int distance_symbol = Decode(distance_code);
+                if (distance_symbol < 0 || distance_symbol >= 30)
                 {
                     return false;
                 }
 
-                const size_t dist = kDbase[dsym] + Bits(kDext[dsym]);
-                if (overrun_ || dist > out_.size())
+                const size_t distance = kDistanceBase[distance_symbol] + Bits(kDistanceExtra[distance_symbol]);
+                if (overrun_ || distance > out_.size())
                 {
                     return false;
                 }
 
-                const size_t from = out_.size() - dist;
-                for (size_t i = 0; i < len; i++)
+                const size_t from = out_.size() - distance;
+                for (size_t i = 0; i < length; i++)
                 {
                     out_.push_back(out_[from + i]);
                 }
@@ -301,30 +305,30 @@ private:
     {
         FixedCodes codes;
         uint8_t lengths[288];
-        int s = 0;
-        for (; s < 144; s++)
+        int symbol = 0;
+        for (; symbol < 144; symbol++)
         {
-            lengths[s] = 8;
+            lengths[symbol] = 8;
         }
-        for (; s < 256; s++)
+        for (; symbol < 256; symbol++)
         {
-            lengths[s] = 9;
+            lengths[symbol] = 9;
         }
-        for (; s < 280; s++)
+        for (; symbol < 280; symbol++)
         {
-            lengths[s] = 7;
+            lengths[symbol] = 7;
         }
-        for (; s < 288; s++)
+        for (; symbol < 288; symbol++)
         {
-            lengths[s] = 8;
+            lengths[symbol] = 8;
         }
-        Construct(codes.lencode, lengths, 288);
+        Construct(codes.length_code, lengths, 288);
 
-        for (s = 0; s < 30; s++)
+        for (symbol = 0; symbol < 30; symbol++)
         {
-            lengths[s] = 5;
+            lengths[symbol] = 5;
         }
-        Construct(codes.distcode, lengths, 30);
+        Construct(codes.distance_code, lengths, 30);
 
         return codes;
     }
@@ -334,43 +338,47 @@ private:
     {
         // Built on first use. The initialisation of a local static is thread-safe.
         static const FixedCodes kFixed = BuildFixedCodes();
-        return Codes(kFixed.lencode, kFixed.distcode);
+        return Codes(kFixed.length_code, kFixed.distance_code);
     }
 
-    // Decodes a block that carries its own codes, themselves Huffman coded.
+    // Decodes a block with dynamic codes. The block starts with the code lengths, Huffman coded themselves.
     bool Dynamic()
     {
         static const uint8_t kOrder[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
 
         uint8_t lengths[320] = {};
-        const int nlen = Bits(5) + 257;
-        const int ndist = Bits(5) + 1;
-        const int ncode = Bits(4) + 4;
-        if (overrun_ || nlen > 286 || ndist > 30)
+        const int literals = Bits(5) + 257;
+        const int distances = Bits(5) + 1;
+        const int code_lengths = Bits(4) + 4;
+        if (overrun_ || literals > 286 || distances > 30)
         {
             return false;
         }
 
+        // The lengths of the code-length code.
         int index = 0;
-        for (; index < ncode; index++)
+        for (; index < code_lengths; index++)
         {
-            lengths[kOrder[index]] = uint8_t(Bits(3));
+            lengths[kOrder[index]] = static_cast<uint8_t>(Bits(3));
         }
         for (; index < 19; index++)
         {
             lengths[kOrder[index]] = 0;
         }
 
-        Huffman lencode, distcode;
-        if (Construct(lencode, lengths, 19) != 0)
+        Huffman length_code;
+        Huffman distance_code;
+        if (Construct(length_code, lengths, 19) != 0)
         {
             return false;
         }
 
+        // The code lengths of the literal/length code and the distance code. A symbol under 16 is a length. 16 repeats
+        // the last length 3 to 6 times, and 17 and 18 repeat a 0.
         index = 0;
-        while (index < nlen + ndist)
+        while (index < literals + distances)
         {
-            int symbol = Decode(lencode);
+            int symbol = Decode(length_code);
             if (symbol < 0)
             {
                 return false;
@@ -378,11 +386,11 @@ private:
 
             if (symbol < 16)
             {
-                lengths[index++] = uint8_t(symbol);
+                lengths[index++] = static_cast<uint8_t>(symbol);
             }
             else
             {
-                int len = 0;
+                int length = 0;
                 if (symbol == 16)
                 {
                     if (index == 0)
@@ -390,7 +398,7 @@ private:
                         return false;
                     }
 
-                    len = lengths[index - 1];
+                    length = lengths[index - 1];
                     symbol = 3 + Bits(2);
                 }
                 else if (symbol == 17)
@@ -401,14 +409,14 @@ private:
                 {
                     symbol = 11 + Bits(7);
                 }
-                if (index + symbol > nlen + ndist)
+                if (index + symbol > literals + distances)
                 {
                     return false;
                 }
 
                 while (symbol--)
                 {
-                    lengths[index++] = uint8_t(len);
+                    lengths[index++] = static_cast<uint8_t>(length);
                 }
             }
         }
@@ -420,19 +428,19 @@ private:
 
         // Build the literal/length code and the distance code. Either one can only be incomplete if it's a single code
         // of one bit.
-        int err = Construct(lencode, lengths, nlen);
-        if (err < 0 || (err > 0 && nlen != lencode.count[0] + lencode.count[1]))
+        int result = Construct(length_code, lengths, literals);
+        if (result < 0 || (result > 0 && literals != length_code.count[0] + length_code.count[1]))
         {
             return false;
         }
 
-        err = Construct(distcode, lengths + nlen, ndist);
-        if (err < 0 || (err > 0 && ndist != distcode.count[0] + distcode.count[1]))
+        result = Construct(distance_code, lengths + literals, distances);
+        if (result < 0 || (result > 0 && distances != distance_code.count[0] + distance_code.count[1]))
         {
             return false;
         }
 
-        return Codes(lencode, distcode);
+        return Codes(length_code, distance_code);
     }
 
     const uint8_t* in_;
@@ -447,23 +455,24 @@ private:
 // Returns the zlib checksum of `data`. The sums are reduced every 5552 bytes, the most that can't overflow 32 bits.
 uint32_t Adler32(const std::vector<uint8_t>& data)
 {
-    uint32_t a = 1, b = 0;
-    size_t i = 0;
-    while (i < data.size())
+    uint32_t sum = 1;
+    uint32_t sum_of_sums = 0;
+    size_t start = 0;
+    while (start < data.size())
     {
-        const size_t chunk = std::min<size_t>(data.size() - i, 5552);
-        for (size_t k = 0; k < chunk; k++)
+        const size_t chunk = std::min<size_t>(data.size() - start, 5552);
+        for (size_t i = 0; i < chunk; i++)
         {
-            a += data[i + k];
-            b += a;
+            sum += data[start + i];
+            sum_of_sums += sum;
         }
 
-        a %= 65521;
-        b %= 65521;
-        i += chunk;
+        sum %= 65521;
+        sum_of_sums %= 65521;
+        start += chunk;
     }
 
-    return (b << 16) | a;
+    return (sum_of_sums << 16) | sum;
 }
 
 } // namespace
@@ -478,6 +487,7 @@ bool DecodeDeflate(std::span<const uint8_t> in, std::vector<uint8_t>& out, std::
     }
 
     used = inflater.BytePosition();
+
     return true;
 }
 
@@ -491,13 +501,14 @@ bool ZlibDecompress(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
         return false;
     }
 
-    const unsigned cmf = data[0], flg = data[1];
-    if ((cmf & 0x0F) != 8 || ((cmf << 8) | flg) % 31 != 0)
+    const unsigned method = data[0];
+    const unsigned flags = data[1];
+    if ((method & 0x0F) != 8 || ((method << 8) | flags) % 31 != 0)
     {
         error = "not a zlib stream";
         return false;
     }
-    if (flg & 0x20)
+    if ((flags & 0x20) != 0)
     {
         error = "zlib preset dictionaries aren't supported";
         return false;
@@ -516,8 +527,8 @@ bool ZlibDecompress(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
         return false;
     }
 
-    const uint32_t expected =
-        (uint32_t(data[end]) << 24) | (uint32_t(data[end + 1]) << 16) | (uint32_t(data[end + 2]) << 8) | data[end + 3];
+    const uint32_t expected = (static_cast<uint32_t>(data[end]) << 24) | (static_cast<uint32_t>(data[end + 1]) << 16) |
+                              (static_cast<uint32_t>(data[end + 2]) << 8) | data[end + 3];
     if (expected != Adler32(out))
     {
         error = "zlib checksum mismatch";

@@ -101,10 +101,10 @@ struct PerformOptions
     // Main loop repetitions, at least 1. The default plays the intro and one loop, with MIDI loop markers.
     int loops = 1;
 
-    // The state the game's random generator starts in (JMath::TRandom_fast_, which JAudio2's register command seeds
-    // with 0). A JAudio1 sequence draws from JAudio1's generator instead. That one starts in the game's state at
-    // start-up, and the seed doesn't change it (see SequenceSound::draws). A sound with SequenceSound::timed_random
-    // draws from JAudio2's generator.
+    // The state the game's random generator starts in (JMath::TRandom_fast_). JAudio2's register command seeds it with
+    // 0. A JAudio1 sequence draws from JAudio1's generator instead. That one starts in the game's state at start-up,
+    // and the seed doesn't change it (see SequenceSound::draws). A sound with SequenceSound::timed_random draws from
+    // JAudio2's generator.
     uint32_t seed = 0;
 
     // Values for the sequence's ports (0-15), set before it starts. Games write ports to steer their music, and some
@@ -240,6 +240,12 @@ struct SequenceSound
     // volume. GameRules::child_volumes sets these.
     std::map<uint8_t, float> child_volumes = {};
 
+    // The pitch ratios that the game's code gives tracks of a JAudio2 sequence through the sound's handle
+    // (JAISoundParamsMove::movePitch on the handle's child, 0x8049a24c in Super Mario Galaxy's main.dol), by the index
+    // of child_volumes. A ratio multiplies the pitch of the track and of the tracks below it, each time the sequence
+    // opens the track. GameRules::arrangements sets these.
+    std::map<uint8_t, float> child_pitches = {};
+
     // The tempo ratio that the game's code gives the sound (JAISound::setTempoProportion, 0x80298acc). The ticks run
     // that much faster.
     float tempo_ratio = 1.0f;
@@ -252,7 +258,8 @@ struct SequenceSound
 
     // The statuses that the game's code writes to port 9 of the root track in each of its frames, by the value of port
     // 10. A sequence may give its section on port 10. Z2SeqMgr::fieldBgmFramework (0x802b594c) works this way. A game
-    // that starts a sound writes in the same frame, so the first tick reads a status for port 10's first value, 0.
+    // that starts a sound writes in the same frame. The first tick therefore reads a status for port 10's first value,
+    // 0.
     std::map<uint16_t, uint16_t> status_by_section = {};
 
     // The game's frames over which the sound fades in from silence as its sequence starts, or 0 for none. A start can

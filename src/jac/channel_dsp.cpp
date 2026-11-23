@@ -3,11 +3,10 @@
 // The DSP channels (dspdriver): their allocation, their release and their update in each frame, with the writes
 // into their blocks (dspinterface) (see channel.cpp).
 
-#include "ntdlib/jac/channel.h"
-
 #include <cstdint>
 
 #include "jac/channel_internal.h"
+#include "ntdlib/jac/channel.h"
 #include "ntdlib/jaudio2/calc.h"
 
 namespace ntdlib::jac

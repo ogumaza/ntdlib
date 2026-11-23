@@ -106,9 +106,9 @@ void TestDspAdpcmPredictsFromHistory()
 
 void TestDspAdpcmLargePredictions()
 {
-    // Two coefficients and two history samples at -32768 sum to 2^31 + 1024. In 64 bits that clamps to 32767. AX's and
-    // the Switch's audio renderer's 32-bit sum wraps that round to a negative number before the shift. So do NW4R SND's
-    // decoder on the CPU and the DSP's accelerator.
+    // Two coefficients and two history samples at -32768 sum to 2^31 + 1024. In 64 bits that clamps to 32767. The
+    // 32-bit sums of AX and of the Switch's audio renderer wrap that round to a negative number before the shift. So do
+    // NW4R SND's decoder on the CPU and the DSP's accelerator.
     const int16_t kCoefs[16] = {-32768, -32768};
     const std::vector<uint8_t> kFrame = {0x00, 0x00, 0, 0, 0, 0, 0, 0};
 

@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
@@ -31,6 +32,7 @@
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sar_tools.h"
 
+using seqlib::testing::Throws;
 using xsflib::testing::ErrorOf;
 
 namespace
@@ -198,12 +200,6 @@ std::vector<uint8_t> TestArchive(Flavor flavor)
     return Archive(flavor, Strings(flavor), Info(flavor, nx ? 56 : 24, nx ? 120 : 88));
 }
 
-template <class Error, class Call>
-bool Throws(Call call)
-{
-    return !ErrorOf<Error>(call).empty();
-}
-
 // Checks that `archive` holds files 0 and 3 at `start0` and `start3`, as its tables say, and that its header gives its
 // blocks' places and its size.
 void CheckFiles(const std::vector<uint8_t>& archive, Flavor flavor, std::size_t file_block, std::size_t start0,
@@ -368,7 +364,7 @@ void TestRefusals()
     Store(short_block, 448 + 4, kFlavor, 32, 4);
     XSFLIB_CHECK(refused(short_block));
 
-    // Files whose locations lie outside their entries, or before the first file.
+    // Files whose locations are outside their entries, or before the first file.
     InfoBlock outside = grown;
     Store(outside.files[0], 4, kFlavor, 100, 4);
     XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithTables(good, kFlavor, strings, outside); }));
@@ -377,7 +373,7 @@ void TestRefusals()
     XSFLIB_CHECK(Throws<xsflib::FormatError>([&] { WithTables(good, kFlavor, strings, before); }));
 }
 
-// The archive of the tests of new items: sequence sounds A and B, which play file 0, wave sound C in file 1, a bank, a
+// The archive of the tests of new items: sequence sounds A and B on file 0, wave sound C in file 1, a bank, a
 // wave archive without a name, a group that the game keeps outside the archive, a player, and four files. ntdlib reads
 // no players on the 3DS.
 sar_files::ArchiveSpec ItemsSpec(bool names)
@@ -607,7 +603,7 @@ void TestFileBytes(Flavor flavor)
                  "an archive laid out another way: file 2 runs past its end, or bytes other than zeros pad it");
 }
 
-// Two file IDs that name the same bytes both take the new bytes. A file that lies inside another keeps the other file
+// Two file IDs that name the same bytes both take the new bytes. A file that is inside another keeps the other file
 // as it is, unless the call gives the inner file a new offset. The inner file then moves there.
 void TestSharedFileBytes(Flavor flavor)
 {
@@ -1569,8 +1565,8 @@ void TestNewItemRefusals()
 // A new group's file holds no files and lists no items. The archive comes out as sar_tools.h lays out an archive with
 // the group after the others, with names and without. The group's file follows the last file up to the end of its INFX
 // block's entries. The reader and the model read the new group. A file and an item then go into it, and a second new
-// group follows the first. On the 3DS, the group's file takes version 1.0.0.0, which lists no items, and the model
-// form takes no archive.
+// group follows the first. On the 3DS, the group's file takes version 1.0.0.0, a version that lists no items, and the
+// model form takes no archive.
 void TestNewGroup(Flavor flavor)
 {
     const sar_tools::GroupSpec empty;
@@ -1626,8 +1622,8 @@ void TestNewGroup(Flavor flavor)
     CheckNames(second, flavor, {"SEQ_A", "SEQ_B", "WSD_C", "BANK_A", "GROUP_A", "GROUP_NEW", "GROUP_NEW2", "PLAYER_A"});
 }
 
-// On the 3DS, a new group's file takes the highest version of the archive's groups' files: 1.1.0.0, which lists items,
-// beside 1.0.0.0.
+// On the 3DS, a new group's file takes the highest version of the archive's groups' files: 1.1.0.0, a version with
+// items, beside 1.0.0.0.
 void TestNewCtrGroup()
 {
     const sar_tools::GroupSpec kNewer = {.files = {{0, std::nullopt}}, .ctr_version = 0x01010000};
@@ -1799,8 +1795,8 @@ void TestValuePlaceRefusals()
 
     // Sound 0's entry with an option of bit 4, with its details at its start, and with an option of bit 2 in its
     // details. Without the priorities, the sound's options hold its string index 24 bytes in, the pan's value 28 bytes
-    // in and the offset of the 3D settings 32 bytes in. The offset of the details lies 16 bytes in. Without the channel
-    // priority, the details' options hold the start 16 bytes into the details. The offset of the list of banks lies 4
+    // in and the offset of the 3D settings 32 bytes in. The offset of the details is 16 bytes in. Without the channel
+    // priority, the details' options hold the start 16 bytes into the details. The offset of the list of banks is 4
     // bytes into the details.
     const Flavor kFlavor = Flavor::kNx;
     const std::vector<uint8_t> archive = sar_tools::Archive(kFlavor, ItemsSpec(false));

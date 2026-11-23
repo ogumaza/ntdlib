@@ -5,21 +5,25 @@
 
 #include "ntdlib/jaudio/chord_player.h"
 
-#include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <vector>
 
+#include "seqlib/testing/check.h"
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/near.h"
 
 #include "ntdlib/jaudio/chord_layer.h"
 
 using namespace ntdlib::jaudio;
+using xsflib::testing::Near;
 
 namespace
 {
+
+using seqlib::testing::Throws;
 
 void Put32(std::vector<uint8_t>& data, uint32_t value)
 {
@@ -62,11 +66,6 @@ std::vector<uint8_t> MakeDatabase(const std::vector<uint8_t>& steps, const std::
     return data;
 }
 
-bool Near(float a, float b)
-{
-    return std::fabs(a - b) < 1e-6f;
-}
-
 struct Fixture
 {
     std::vector<uint8_t> data;
@@ -93,13 +92,13 @@ void TestSteps()
     std::vector<ChordStep> steps = f.player.Event(0.9f, f.moment, f.random);
     XSFLIB_REQUIRE(steps.size() == 1);
     XSFLIB_CHECK(steps[0].action == ChordStep::Action::kStart && steps[0].step == 1);
-    XSFLIB_CHECK(Near(steps[0].level, 0.5f));
+    XSFLIB_CHECK(Near(steps[0].level, 0.5f, 1e-6));
     XSFLIB_CHECK(steps[0].keys == std::vector<int>{60});
     XSFLIB_CHECK(f.player.NextStep() == 2 && f.player.Waiting() == 0);
 
     steps = f.player.Event(0.7f, f.moment, f.random);
     XSFLIB_REQUIRE(steps.size() == 1);
-    XSFLIB_CHECK(Near(steps[0].level, 64.0f / 127.0f * 0.5f));
+    XSFLIB_CHECK(Near(steps[0].level, 64.0f / 127.0f * 0.5f, 1e-6));
 
     steps = f.player.Event(1.0f, f.moment, f.random);
     XSFLIB_REQUIRE(steps.size() == 1);
@@ -117,7 +116,7 @@ void TestAccent()
     XSFLIB_CHECK(f.player.Waiting() == 1);
     const std::vector<ChordStep> steps = f.player.Event(0.9f, f.moment, f.random);
     XSFLIB_REQUIRE(steps.size() == 1);
-    XSFLIB_CHECK(Near(steps[0].level, 64.0f / 127.0f * 0.9f));
+    XSFLIB_CHECK(Near(steps[0].level, 64.0f / 127.0f * 0.9f, 1e-6));
 }
 
 void TestAtOnce()
@@ -126,7 +125,7 @@ void TestAtOnce()
     Fixture f({1, 0x04, 0x00, 0x00, 0x40}, 0, 1.0f);
     std::vector<ChordStep> steps = f.player.Start(f.moment, f.random);
     XSFLIB_REQUIRE(steps.size() == 1);
-    XSFLIB_CHECK(steps[0].step == 1 && Near(steps[0].level, 64.0f / 127.0f));
+    XSFLIB_CHECK(steps[0].step == 1 && Near(steps[0].level, 64.0f / 127.0f, 1e-6));
     XSFLIB_CHECK(!f.player.Waiting() && f.player.Playing());
     XSFLIB_CHECK(f.player.Event(1.0f, f.moment, f.random).empty());
     steps = f.player.Jump(0, f.moment, f.random);
@@ -162,7 +161,7 @@ void TestEndAndHold()
 void TestStartStep()
 {
     // A record that starts at step 1 waits by step 0's flow and plays step 2 first. The step leaves the effect playing:
-    // the part, which starts at block 1, has one block.
+    // the part starts at block 1 and has one block.
     Fixture f({2, 0x02, 0x00, 0x00, 0x00, 0x00, 0x02}, 1, 1.0f);
     f.player.Start(f.moment, f.random);
     XSFLIB_CHECK(f.player.Waiting() == 2);
@@ -183,11 +182,11 @@ void TestRhythm()
     rhythm.Note(ChordRhythm::kAccentKey, 110);
     std::vector<ChordBeat> beats = rhythm.Frame();
     XSFLIB_REQUIRE(beats.size() == 4);
-    XSFLIB_CHECK(beats[0].wait == 3 && Near(beats[0].accent, 0.9f));
+    XSFLIB_CHECK(beats[0].wait == 3 && Near(beats[0].accent, 0.9f, 1e-6));
     XSFLIB_CHECK(rhythm.TimerThreeRunning());
-    XSFLIB_CHECK(beats[1].wait == 0 && Near(beats[1].accent, 0.9f));
-    XSFLIB_CHECK(beats[2].wait == 1 && Near(beats[2].accent, 0.7f));
-    XSFLIB_CHECK(beats[3].wait == 2 && Near(beats[3].accent, 0.7f));
+    XSFLIB_CHECK(beats[1].wait == 0 && Near(beats[1].accent, 0.9f, 1e-6));
+    XSFLIB_CHECK(beats[2].wait == 1 && Near(beats[2].accent, 0.7f, 1e-6));
+    XSFLIB_CHECK(beats[3].wait == 2 && Near(beats[3].accent, 0.7f, 1e-6));
 
     // The marks clear each frame. A velocity of 0 and other keys mark nothing.
     XSFLIB_CHECK(rhythm.Frame().empty());
@@ -199,10 +198,11 @@ void TestRhythm()
     rhythm.Note(ChordRhythm::kAccentKey, 64);
     rhythm.Note(0x2a, 1);
     beats = rhythm.Frame();
-    XSFLIB_CHECK(beats.size() == 1 && beats[0].wait == 1 && Near(beats[0].accent, 1.0f));
+    XSFLIB_CHECK(beats.size() == 1 && beats[0].wait == 1 && Near(beats[0].accent, 1.0f, 1e-6));
 }
 
-// A layer of record 0, which plays the entry as effect 0x50001, over a chord file with one chord (C major) in order 0.
+// A layer of record 0 over a chord file with one chord (C major) in order 0. Record 0 plays the entry as effect
+// 0x50001.
 struct LayerFixture
 {
     std::vector<uint8_t> data;
@@ -233,7 +233,7 @@ void TestLayer()
     std::vector<ChordLayerSound> sounds = f.layer.Frame(std::nullopt);
     XSFLIB_REQUIRE(sounds.size() == 1);
     XSFLIB_CHECK(sounds[0].action == ChordLayerSound::Action::kStart && sounds[0].effect == 0);
-    XSFLIB_CHECK(sounds[0].sound == 0x50001 && Near(sounds[0].level, 1.0f));
+    XSFLIB_CHECK(sounds[0].sound == 0x50001 && Near(sounds[0].level, 1.0f, 1e-6));
     XSFLIB_CHECK(sounds[0].ports == (std::map<uint8_t, uint16_t>{{0xb, 60}}));
 
     // Step 2 starts the effect again. Step 3 leaves it playing.
@@ -280,15 +280,7 @@ void TestLayerStages()
     // A record past the table throws.
     const std::vector<uint8_t> data = MakeDatabase({1, 0x00, 0x00, 0x00, 0x40});
     const std::vector<uint32_t> records = {0};
-    bool threw = false;
-    try
-    {
-        ChordLayer(data, ChordFile{}, 1, records);
-    }
-    catch (const xsflib::FormatError&)
-    {
-        threw = true;
-    }
+    const bool threw = Throws<xsflib::FormatError>([&] { ChordLayer(data, ChordFile{}, 1, records); });
 
     XSFLIB_CHECK(threw);
 }

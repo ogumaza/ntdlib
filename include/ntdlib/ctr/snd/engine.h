@@ -23,6 +23,7 @@
 #include "ntdlib/ctr/snd/sequence.h"
 #include "ntdlib/ctr/snd/sound_players.h"
 #include "ntdlib/ctr/snd/voice.h"
+#include "ntdlib/nwsnd/engine_host.h"
 #include "ntdlib/nwsnd/length_hooks.h"
 #include "ntdlib/nwsnd/sound_players.h"
 #include "ntdlib/nwsnd/util.h"
@@ -137,9 +138,9 @@ public:
                                        const std::optional<std::array<uint32_t, 4>>& banks = std::nullopt);
 
     // Starts wave sound `index` in the same way. The player plays the wave of the sound's first note (see
-    // sound_players.h). Returns the player, or nullptr if there's no such wave sound, or if the archive lacks its wave
-    // sound file or the file lacks the sound. A missing wave leaves the player nothing to play: it finishes in its
-    // first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
+    // sound_players.h). Returns the player, or nullptr if there's no such wave sound, or if its wave sound file is
+    // missing from the archive or the sound from the file. A missing wave leaves the player nothing to play: it
+    // finishes in its first frame. Throws xsflib::FormatError for a wave sound file that ntdlib can't read.
     WaveSoundPlayer* StartWaveSound(uint32_t index);
 
     // Starts stream sound `index` in the same way, with `file`: the bytes of the stream file that the sound's file
@@ -152,7 +153,7 @@ public:
     StreamSoundPlayer* StartStreamSound(uint32_t index, std::span<const uint8_t> file,
                                         uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
-    // The same for a stream sound of `info`, which the archive needn't hold.
+    // The same for a stream sound of `info`. The archive needn't hold the sound.
     StreamSoundPlayer* StartStreamSound(const ntdlib::sar::SoundInfo& info, std::span<const uint8_t> file,
                                         uint16_t tracks = ntdlib::nwsnd::kAllStreamTracks);
 
@@ -196,8 +197,8 @@ public:
     void MeterTracks(int player);
     std::array<int32_t, 2> TrackPeaks(int track) const;
 
-    // The global sequence variables, which the game keeps in one table for every sequence player (initialized by
-    // code.bin 0x13739c). Each engine has its own, so that engines on different threads don't share them.
+    // The global sequence variables. The game keeps them in one table for every sequence player (initialized by
+    // code.bin 0x13739c). Each engine keeps a separate table. Engines on different threads then don't share one.
     std::array<int16_t, 16>& GlobalVariables()
     {
         return global_vars_;
@@ -264,8 +265,8 @@ private:
     std::array<int16_t, 16> global_vars_;
 
     std::set<std::pair<int, uint32_t>> endless_loops_;
-    std::set<std::pair<int, int>> muted_tracks_; // each a player and a track (MuteTrack)
-    int metered_player_ = -1;                    // the player whose tracks have meters (MeterTracks)
+    ntdlib::nwsnd::TrackMutes muted_tracks_; // the host's mutes (MuteTrack)
+    int metered_player_ = -1;                // the player whose tracks have meters (MeterTracks)
 
     // The frames that RunFrame has run, and the variables that change in later frames.
     uint64_t frames_ = 0;
@@ -301,10 +302,10 @@ struct ArchiveModel
 
     explicit ArchiveModel(DspKind dsp_kind = DspKind::kModel);
 
-    // Starts the DSP and then the engine on `archive`, which has to outlive the engine, with `output_mode` (0 mono, 1
-    // stereo, 2 surround). Teakra runs `firmware`, and the model needs none. On the model in its enhanced mode, the
-    // engine runs in the enhanced mode too. Returns false if the firmware didn't start, or if Teakra has no firmware to
-    // run.
+    // Starts the DSP and then the engine on `archive` with `output_mode` (0 mono, 1 stereo, 2 surround). `archive` has
+    // to outlive the engine. Teakra runs `firmware`, and the model requires none. On the model in its enhanced mode,
+    // the engine runs in the enhanced mode too. Returns false if the firmware didn't start, or if Teakra has no
+    // firmware to run.
     bool Start(const ntdlib::sar::SoundArchive& archive, uint8_t output_mode = 1);
     bool Start(std::span<const uint8_t> firmware, const ntdlib::sar::SoundArchive& archive, uint8_t output_mode = 1);
 

@@ -3,11 +3,11 @@
 // Checks the frames without mixing of the model of the audio renderer (Renderer::SetMixing) without game data, against
 // the rules in the renderer's header. Three voices play while a stretch of frames doesn't mix: DSP-ADPCM converted from
 // 32 kHz at high quality in a loop, PCM16 at the renderer's rate without a conversion in a loop, and PCM16 converted
-// from 22.05 kHz at low quality, which runs out during the stretch. Their volumes, mixes, pitches, qualities and mutes
-// change during the stretch and at its ends. A second, short stretch follows. A fourth voice stops in the frame before
-// the stretch, and the depop fades into it. A fifth starts during the stretch, and its mix changes as the stretch ends.
-// In both mixing modes, the frames of the stretches are silent, and the voices report the samples played that a
-// renderer reports when every frame mixes. The frames after each stretch give that renderer's samples.
+// from 22.05 kHz at low quality. That voice runs out during the stretch. Their volumes, mixes, pitches, qualities and
+// mutes change during the stretch and at its ends. A second, short stretch follows. A fourth voice stops in the frame
+// before the stretch, and the depop fades into it. A fifth starts during the stretch, and its mix changes as the
+// stretch ends. In both mixing modes, the frames of the stretches are silent, and the voices report the samples played
+// that a renderer reports when every frame mixes. The frames after each stretch give that renderer's samples.
 
 #include <algorithm>
 #include <array>

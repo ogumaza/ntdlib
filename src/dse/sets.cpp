@@ -18,7 +18,9 @@
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 
+#include "common/magic.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/file_paths.h"
 
 namespace ntdlib::dse
 {
@@ -30,27 +32,9 @@ constexpr std::size_t kBankHeaderSize = 0x50;
 constexpr uint8_t kMainBank = 1;
 constexpr uint8_t kWavesInMainBank = 2;
 
-bool StartsWith(std::span<const uint8_t> bytes, const char* magic)
-{
-    return bytes.size() >= 4 && std::memcmp(bytes.data(), magic, 4) == 0;
-}
-
-// The folder of `path`, with its last '/', and its name without the extension.
-std::string FolderOf(const std::string& path)
-{
-    const std::size_t slash = path.rfind('/');
-    return slash == std::string::npos ? "" : path.substr(0, slash + 1);
-}
-
-std::string StemOf(const std::string& path)
-{
-    std::string name = path.substr(FolderOf(path).size());
-    if (const std::size_t dot = name.rfind('.'); dot != std::string::npos && dot > 0)
-    {
-        name.erase(dot);
-    }
-    return name;
-}
+using ntdlib::detail::FolderOf;
+using ntdlib::detail::HasMagic;
+using ntdlib::detail::StemOf;
 
 // The songs and the wave banks of a game's files, with each song's bank.
 class Index
@@ -60,11 +44,11 @@ public:
     {
         for (std::size_t i = 0; i < files.size(); i++)
         {
-            if (StartsWith(files[i].bytes, "smdl"))
+            if (HasMagic(files[i].bytes, "smdl"))
             {
                 songs_.push_back(i);
             }
-            else if (StartsWith(files[i].bytes, "swdl") && files[i].bytes.size() >= kBankHeaderSize)
+            else if (HasMagic(files[i].bytes, "swdl") && files[i].bytes.size() >= kBankHeaderSize)
             {
                 banks_.push_back(i);
             }
@@ -159,7 +143,7 @@ public:
     std::optional<std::size_t> NextBank(std::size_t song) const
     {
         const std::size_t next = song + 1;
-        if (next >= files_.size() || !StartsWith(files_[next].bytes, "swdl") ||
+        if (next >= files_.size() || !HasMagic(files_[next].bytes, "swdl") ||
             files_[next].bytes.size() < kBankHeaderSize || files_[next].bytes[0x4B] == kMainBank ||
             FolderOf(files_[next].path) != FolderOf(files_[song].path) || IdOf(next) != IdOf(song))
         {
@@ -261,7 +245,7 @@ std::vector<EffectSet> FindEffectSets(std::span<const NamedFile> files)
     std::vector<EffectSet> sets;
     for (std::size_t i = 0; i < files.size(); i++)
     {
-        if (!StartsWith(files[i].bytes, "sedl"))
+        if (!HasMagic(files[i].bytes, "sedl"))
         {
             continue;
         }

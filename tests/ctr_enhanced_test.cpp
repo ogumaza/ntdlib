@@ -217,7 +217,7 @@ void TestSteps(const sar::SoundArchive& archive)
 // The sine plays at the console's pitch and level. Its wave plays at the DSP's rate, at a period of 32 samples. The
 // sine's frequency is therefore a 32nd of the DSP's rate. The enhanced mode's output takes 235 samples in the time of
 // the DSP's 160. The firmware's resampler and limiter change the sine's level by less than 0.1 dB. Nothing else
-// sounds: the harmonics lie 60 dB below the sine.
+// sounds: the harmonics are 60 dB below the sine.
 void TestSine(const sar::SoundArchive& archive)
 {
     Model strict(DspKind::kModel, archive);
@@ -386,7 +386,7 @@ std::vector<double> Difference(const std::vector<T>& a, const std::vector<T>& b)
     return difference;
 }
 
-// The first frame of `frame` values in which `samples` don't all lie within `floor` of 0, or -1.
+// The first frame of `frame` values in which `samples` aren't all within `floor` of 0, or -1.
 template <typename T>
 int FirstFrame(std::span<const T> samples, std::size_t frame, double floor)
 {
@@ -402,7 +402,7 @@ int FirstFrame(std::span<const T> samples, std::size_t frame, double floor)
 }
 
 // The aux buses of the enhanced mode take frames of 235 samples. A bus's samples reach its callback on the firmware's
-// scale: the sine on each bus lies at the console's level, within 0.1 dB. The buses come back at the return volume two
+// scale: the sine on each bus is at the console's level, within 0.1 dB. The buses come back at the return volume two
 // frames after their mix, at the console's level against the main bus. A callback's changes come back, and without a
 // callback the bus adds nothing. A restore of a snapshot plays the buses' frames again, sample for sample.
 void TestAux(const sar::SoundArchive& archive)

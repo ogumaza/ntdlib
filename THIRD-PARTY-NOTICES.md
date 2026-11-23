@@ -46,7 +46,7 @@ them. The notice is at the end of this file. `src/disc/cp932.h` has the SPDX ide
 - [yuzu](https://github.com/yuzu-emu/yuzu) (GPL-3.0) and [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) are
   references for how the Switch's audio renderer behaves (`ntdlib::nx`). No code is taken from them. The model of the
   renderer was written from a description of their behaviour and from a study of the renderer's build for the CPU that
-  games' `sdk` modules hold. The writer hadn't read their source for that part.
+  games' `sdk` modules contain. The writer hadn't read their source for that part.
 - [Cemu](https://github.com/cemu-project/Cemu) (MPL-2.0) and [decaf-emu](https://github.com/decaf-emu/decaf-emu)
   (GPL-3.0) are references for how the Wii U's AX behaves (`ntdlib::cafe`). No code is taken from them. Where the model
   follows their behaviour, the code was written from a description of that behaviour. The writer hadn't read their
@@ -69,27 +69,27 @@ them. The notice is at the end of this file. `src/disc/cp932.h` has the SPDX ide
 ## Console data
 
 Nothing in ntdlib licenses game data. Rips contain a game's code or sound archive. These belong to their copyright
-holders. ntdlib holds no DSP firmware of the 3DS. `ntdlib::ctr` plays on the model of the firmware, which requires
-none. Teakra runs a firmware that the program supplies, such as a game's `dspaudio.cdc`.
+holders. ntdlib contains no DSP firmware of the 3DS. `ntdlib::ctr` plays on the model of the firmware. The model requires
+no firmware. Teakra runs a firmware that the program supplies, such as a game's `dspaudio.cdc`.
 
-`include/ntdlib/nwsnd/tables.h` holds the numeric tables of NintendoWare's sound libraries: powers of two, decibel
+`include/ntdlib/nwsnd/tables.h` contains the numeric tables of NintendoWare's sound libraries: powers of two, decibel
 levels, envelope attack multipliers, pan curves, low-pass cutoffs, biquad filter coefficients and sines. The models use
-the exact values to reproduce the consoles' output. `src/sequence_export/filter_tables_*.cpp` hold each console's
-filters fitted to SoundFont 2 and SFZ settings. `src/nx/audio/tables.h` holds the Switch's audio renderer's tables:
-the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early reflections, powers of ten and
-sines. The model uses the exact values to reproduce the console's output.
+the exact values to reproduce the consoles' output. `src/sequence_export/filter_tables_*.cpp` contain each console's
+filters fitted to SoundFont 2 and SFZ settings. `src/nx/audio/tables.h` contains the tables of the Switch's audio
+renderer: the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early reflections, powers of
+ten and sines. The model uses the exact values to reproduce the console's output.
 
-`src/cafe/ax/system.cpp` holds the taps of the FIR filter that the Wii U system's sound library uses to convert its
-output to 48 kHz. `src/cafe/axfx/reverb_tables.h` holds the lengths of the library's reverb lines, and the early taps
+`src/cafe/ax/system_output.cpp` contains the taps of the FIR filter that the Wii U system's sound library uses to convert its
+output to 48 kHz. `src/cafe/axfx/reverb_tables.h` contains the lengths of the library's reverb lines, and the early taps
 and gains of its high-quality reverb. The models use the library's exact values to reproduce its output.
 
-`include/ntdlib/dsp/coef_rom.h` holds the DSP's coefficient ROM. Every GameCube and Wii has the same ROM. The ROM holds
+`include/ntdlib/dsp/coef_rom.h` contains the DSP's coefficient ROM. Every GameCube and Wii has the same ROM. The ROM contains
 4-tap filters: 128 phases for each of three cutoffs. DSP programs that resample, such as the SDK's AX, read them. The
 DSP uses the exact values to reproduce the console's output. The Wii U's DSP is taken to share the ROM's filters
-(`ntdlib::cafe`). The 3DS's DSP audio firmware holds the same filters for its polyphase resampler. The model of the
+(`ntdlib::cafe`). The 3DS's DSP audio firmware contains the same filters for its polyphase resampler. The model of the
 firmware takes them from the ROM's first 0x600 words.
 
-`src/ctr/dsp/firmware_audio.cpp` and `src/ctr/dsp/firmware_audio.h` hold a few of the 3DS's DSP audio firmware's
+`src/ctr/dsp/firmware_audio.cpp` and `src/ctr/dsp/firmware_audio.h` contain a few of the 3DS's DSP audio firmware's
 constants: the factors of the DSP-ADPCM decoder's nibbles, the limiter's constants, the mix's first pointers to its
 channels, the addresses of the structures that the firmware shares with the ARM11, and the steps of its ramps of the
 gains and of the declick. The model uses the firmware's exact values to reproduce its output.

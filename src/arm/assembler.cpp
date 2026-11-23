@@ -34,6 +34,7 @@ constexpr uint16_t kThumbNop = 0x46C0;
 uint32_t RotateRight(uint32_t value, uint32_t bits)
 {
     bits &= 31;
+
     return bits == 0 ? value : (value >> bits) | (value << (32 - bits));
 }
 
@@ -68,7 +69,7 @@ std::optional<uint32_t> RotatedImmediate(uint32_t value)
 {
     for (uint32_t rotate = 0; rotate < 16; rotate++)
     {
-        // value = imm8 rotated right by 2 * rotate, so imm8 = value rotated left by as much.
+        // value = imm8 rotated right by 2 * rotate. imm8 is then value rotated left by as much.
         const uint32_t imm8 = RotateRight(value, 32 - 2 * rotate);
         if (imm8 <= 0xFF)
         {
@@ -95,6 +96,7 @@ uint32_t ArmAssembler::Here() const
 int ArmAssembler::NewLabel()
 {
     labels_.emplace_back();
+
     return int(labels_.size()) - 1;
 }
 

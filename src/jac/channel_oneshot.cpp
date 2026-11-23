@@ -3,8 +3,6 @@
 // The sounds that the tracks start and stop (oneshot's Play_1shot functions): the notes, the percussion, the
 // oscillators' sounds, the gates and the releases (see channel.cpp).
 
-#include "ntdlib/jac/channel.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -12,6 +10,7 @@
 #include <vector>
 
 #include "jac/channel_internal.h"
+#include "ntdlib/jac/channel.h"
 #include "ntdlib/jaudio1/instruments.h"
 #include "ntdlib/jaudio2/instruments.h"
 

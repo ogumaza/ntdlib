@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // An assembler of the few ARM instructions that a stub uses: a short program, written into a game's memory, that calls
-// the game's routines. The instructions are the ARM7TDMI's (ARMv4T), which the ARM946E-S runs too. The encodings follow
+// the game's routines. The instructions are the ARM7TDMI's (ARMv4T). The ARM946E-S runs them too. The encodings follow
 // ARM's architecture reference manual. Constants that an instruction can't hold go in a literal pool after the code.
 
 #pragma once
@@ -129,12 +129,12 @@ public:
     // A word of data.
     void Word(uint32_t value);
 
-    // Puts the literal pool here, in place of after the code, so that data after it stays out of the loads' way. The
+    // Puts the literal pool here, in place of after the code. Data after the pool then stays out of the loads' way. The
     // pool holds the literals of the loads so far, and no load can follow. Throws std::logic_error for a second pool.
     void Pool();
 
     // The code, with the literal pool after it unless Pool() placed it. Throws std::logic_error for a label that isn't
-    // bound, or for a literal or a branch that lies out of reach.
+    // bound, or for a literal or a branch that is out of reach.
     std::vector<uint8_t> Finish();
 
 private:

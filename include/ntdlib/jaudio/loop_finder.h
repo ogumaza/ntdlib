@@ -2,7 +2,8 @@
 
 // The length analysis's view of a JAudio1 or JAudio2 sound's tracks in game mode (see game_lengths.h). The analysis
 // watches the game's sequence parser and passes on what each track does: the start of each command, and each jump.
-// LoopFinder works out from them when a track's loop has played twice, which tracks idle, and when the sound holds.
+// LoopFinder works out from them three things: when a track's loop has played twice, which tracks idle, and when the
+// sound holds.
 
 #pragma once
 
@@ -112,6 +113,10 @@ public:
     // Whether the sound holds at frame `now`: a track idles, every track has settled, and no track has moved for 10 s.
     bool Holds(uint64_t now) const;
 
+    // The frames of one pass of the loop that the last kLoops verdict found: from the end of the loop's first counted
+    // pass to the end of its second. 0 before a kLoops verdict.
+    uint64_t PassFrames() const;
+
 private:
     // A loop, from the command that its jump back goes to up to the jump back. Its commands run at `depth`: 0 outside
     // any call.
@@ -144,7 +149,9 @@ private:
         uint64_t pass_start = 0;     // the frame at which the track last reached the command that it jumps back to
         std::optional<Loop> counted; // the loop whose passes the track counts
         int loops = 0;
-        int restarts = 0; // with restarts_as_passes: the passes of the whole track that count, in a row
+        uint64_t counted_end = 0; // the frame at which the track's last pass that counted ended
+        int restarts = 0;         // with restarts_as_passes: the passes of the whole track that count, in a row
+        uint64_t restart_end = 0; // with restarts_as_passes: the frame at which the last of those passes ended
         bool finished = false;
         TrackWait wait = {};
         std::optional<uint64_t> wait_since; // from TakeWaits with a time: the frame at which the wait last changed
@@ -173,7 +180,8 @@ private:
 
     std::vector<uint32_t> order_;
     std::map<uint32_t, Track> tracks_;
-    uint64_t taken_ = 0; // the events taken so far
+    uint64_t taken_ = 0;       // the events taken so far
+    uint64_t pass_frames_ = 0; // the pass of the last kLoops verdict (PassFrames)
     uint32_t sample_rate_;
     bool (*changes_sound_)(uint8_t command);
     bool idle_in_calls_;

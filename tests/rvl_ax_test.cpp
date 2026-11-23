@@ -5,12 +5,14 @@
 // PB, and the voices that a frame drops when they would push it over its DSP cycles. The tests of the build of October
 // 2006 check its command list, its PBs of 0x120 bytes, its 64 voices and the cycles that it counts.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/ax/ax.h"
 #include "ntdlib/dsp/memory.h"
 #include "ntdlib/rvl/ax/pb.h"
 #include "ntdlib/rvl/ax/system.h"

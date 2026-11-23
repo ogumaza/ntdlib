@@ -20,6 +20,7 @@
 
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/sets.h"
+#include "ntdlib/file_paths.h"
 
 namespace ntdlib::dse::rip
 {
@@ -31,16 +32,7 @@ constexpr std::size_t kBankHeaderSize = 0x50;
 constexpr uint8_t kWavesInMainBank = 2;
 constexpr uint32_t kIdBits = 0xFFFF;
 
-std::string StemOf(const std::string& path)
-{
-    const std::size_t slash = path.rfind('/');
-    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
-    if (const std::size_t dot = name.rfind('.'); dot != std::string::npos && dot > 0)
-    {
-        name.erase(dot);
-    }
-    return name;
-}
+using ntdlib::detail::StemOf;
 
 // Whether the slot `slot` of the bank of sound effects `file` holds a sequence. A bank that can't be read holds none.
 bool HoldsEffect(std::span<const uint8_t> file, std::size_t slot)

@@ -173,9 +173,10 @@ SongLength MeasureSong(const Song& song, bool loop, uint64_t max_ticks)
         return {walk.Updates(), 0};
     }
 
-    // A pass starts where the update reads the restart order's first row. The tracks' waits start again there, so the
-    // speed is the walk's only state that a pass carries over. The song repeats from the first pass that starts at the
-    // speed of the next one. Three passes after the first have to agree, as the walk's state then repeats.
+    // A pass starts where the update reads the restart order's first row. The tracks' waits start again there. The
+    // speed is therefore the only state of the walk that goes on from one pass to the next. The song repeats from the
+    // first pass that starts at the speed of the next one. Three passes after the first have to agree. The state of the
+    // walk then repeats.
     const auto next_pass = [&]
     {
         run_while([&] { return walk.Order() != song.restart || walk.Row() != 0 || !walk.ReadsRowNext(); });

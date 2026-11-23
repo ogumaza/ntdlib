@@ -1,172 +1,42 @@
 // SPDX-License-Identifier: MIT
 
-// Tests of the conversion of the DS's sound archives (ntdlib/sequence_export/ntr), on archives that sdat::BuildArchive
-// lays out and on a cartridge image that testing/nds_files.h builds. The expected values are worked out by hand from
-// the sound unit and the driver: the mixer's linear pan, the timers' rate, the PSG's duties, the noise's shift
-// register, the driver's tempo, its rates of attack, decay and release, and its table of levels.
+// Tests of the conversion of the DS's sound archives (ntdlib/sequence_export/ntr): the pan law, the envelopes, the
+// presets, the waves, the timers' tuning, the pan LFO and the performance of a sequence on archives that
+// sdat::BuildArchive lays out. The expected values are worked out by hand from the sound unit and the driver: the
+// mixer's linear pan, the timers' rate, the periods that the driver's timer drops the fraction of, the PSG's duties,
+// the noise's shift register, the driver's tempo, its rates of attack, decay and release, and its table of levels.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <map>
 #include <numbers>
-#include <optional>
+#include <set>
 #include <string>
-#include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-#include "seqlib/midi/reader.h"
-#include "seqlib/sf2/reader.h"
-#include "seqlib/sf2/soundfont.h"
-#include "xsflib/binary.h"
-#include "xsflib/bytes.h"
+#include "seqlib/midi/performance.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/ntr/archive_player.h"
-#include "ntdlib/sdat/formats.h"
-#include "ntdlib/sdat/layout.h"
 #include "ntdlib/sequence_export/frame.h"
-#include "ntdlib/sequence_export/ntr/archive_input.h"
 #include "ntdlib/sequence_export/ntr/convert.h"
 #include "ntdlib/sequence_export/ntr/instruments.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
-#include "ntdlib/testing/dse_song_files.h"
-#include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "ntdlib/testing/sequence_export_check.h"
-#include "ntdlib/testing/universomo_files.h"
-#include "temp_folder.h"
+#include "sequence_export_ntr_cases.h"
 
 namespace
 {
 
-namespace dse_song_files = ntdlib::testing::dse_song_files;
-namespace universomo_files = ntdlib::testing::universomo_files;
-namespace files = ntdlib::testing::sdat_files;
-namespace fs = std::filesystem;
-namespace nds_files = ntdlib::testing::nds_files;
-namespace sdat = ntdlib::sdat;
-using namespace ntdlib::sequence_export::ntr;
-using files::Bytes;
-using seqlib::midi::EventKind;
-using xsflib::testing::Check;
-
-constexpr uint16_t kNone = 0xFFFF;
-
-// The name that the conversions' files give the program.
-constexpr char kProgram[] = "xyz2midi";
+using namespace sequence_export_ntr_cases;
 
 // A frame of the driver in milliseconds: 2728 * 64 cycles of the system clock of 33,513,982 Hz.
 constexpr double kFrameMs = 1000.0 * 2728 * 64 / 33513982.0;
-
-// The bank's instruments, by program:
-//   0: wave 0, a PCM8 square that loops
-//   1: the PSG at duty 3, at root key 69
-//   2: the noise
-//   3: a drum set from key 36: wave 0, the PSG at duty 1 and the noise
-//   4: a key split up to keys 48, 40 and 127: wave 0, wave 1 and the PSG at duty 0. The second region never plays.
-//   5: a wave at an address that the game's code sets
-//   6: none
-//   7: wave 1 with an attack of 100, a decay of 30, a sustain of 64, a release of 0xFF and a pan of 0
-Bytes TestBank()
-{
-    return files::Bank({
-        {.type = 1, .region = {.wave = 0}},
-        {.type = 2, .region = {.wave = 3, .root_key = 69}},
-        {.type = 3},
-        {.type = 16, .min_key = 36, .regions = {{.wave = 0, .root_key = 36}, {.type = 2, .wave = 1}, {.type = 3}}},
-        {.type = 17, .split_keys = {48, 40, 127}, .regions = {{.wave = 0}, {.wave = 1}, {.type = 2, .wave = 0}}},
-        {.type = 4},
-        {},
-        {.type = 1, .region = {.wave = 1, .attack = 100, .decay = 30, .sustain = 64, .release = 0xFF, .pan = 0}},
-    });
-}
-
-// The waves: 0, a PCM8 square at about 32,768 Hz that loops from its start, and 1, eight PCM16 samples at about
-// 16,384 Hz that play once. A wave's length is its loop's start and length, in 32-bit words.
-Bytes TestWaveArchive()
-{
-    const files::Wave square{
-        .loop = 1,
-        .loop_length = 4,
-        .data = {0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0}};
-    files::Wave ramp{.encoding = 1, .sample_rate = 16384, .loop_length = 4};
-    for (int i = 0; i < 8; i++)
-    {
-        files::Append16(ramp.data, static_cast<uint32_t>(i * 0x1000));
-    }
-
-    return files::WaveArchive({square, ramp});
-}
-
-// An archive whose sequence 0, `name`, plays `bytecode` on `bank`, on player 0, at volume `volume`. The player may
-// take the channels of `channels`, or any channel for 0.
-Bytes TestArchiveBytes(const Bytes& bytecode, const std::string& name = "BGM_TEST", uint16_t channels = 0,
-                       uint8_t volume = 127, const Bytes& bank = TestBank())
-{
-    sdat::ArchiveModel model;
-    sdat::Symbols symbols;
-    symbols.names[0] = {name};
-    symbols.names[2] = {"BANK_TEST"};
-    symbols.names[3] = {"WAVE_TEST"};
-    symbols.names[4] = {"PLAYER_BGM"};
-    model.symbols = symbols;
-    model.sequences = {sdat::SequenceInfo{0, 0, volume, 64, 64, 0, 0, ""}};
-    model.banks = {sdat::BankInfo{1, {0, kNone, kNone, kNone}, ""}};
-    model.wave_archives = {sdat::WaveArchiveInfo{2, ""}};
-    model.players = {sdat::PlayerInfo{1, 0, channels, 0, ""}};
-    model.files = {files::Sequence(bytecode), bank, TestWaveArchive()};
-
-    return sdat::BuildArchive(model);
-}
-
-struct TestArchive
-{
-    explicit TestArchive(const Bytes& bytecode, uint16_t channels = 0, uint8_t volume = 127)
-        : bytes(TestArchiveBytes(bytecode, "BGM_TEST", channels, volume)), archive(sdat::Archive::Parse(bytes))
-    {
-    }
-
-    Bytes bytes;
-    sdat::Archive archive;
-};
-
-// Note 60 at velocity 127 for 48 ticks, a wait of 48 ticks, and the end.
-const Bytes kOneNote = {0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF};
-
-// Note 60 for 24 ticks and a wait of 24 ticks, in a loop: a jump to the start.
-const Bytes kLoop = {0x3C, 0x7F, 0x18, 0x80, 0x18, 0x94, 0x00, 0x00, 0x00};
-
-// A program change to the program in variable 0 (the prefix 0xA1 takes the argument from a variable), then note 60 for
-// 48 ticks, a wait of 48 ticks and the end.
-const Bytes kProgramFromVariable = {0xA1, 0x81, 0x00, 0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF};
-
-// The driver's command that a game's code sends for NNS_SndPlayerSetTrackVolume: the tracks of `tracks` of player 0
-// take the fader `level` (SND_CalcDecibel's level of the volume, in 0.1 dB). Pokémon Black's code at 0x02005F24 sends
-// the command in that form: {0x02000000, tracks, 0x0A, 0xFFFF8000} for volume 0, and 0 in place of 0xFFFF8000 for
-// 127.
-ntdlib::ntr::snd::Command TrackVolume(uint32_t tracks, int16_t level)
-{
-    return {.id = ntdlib::ntr::snd::CommandId::kTrackParameter,
-            .args = {0x02000000, tracks, 0x0A, static_cast<uint32_t>(static_cast<int32_t>(level))}};
-}
-
-// A track's events of `kind`.
-std::vector<seqlib::midi::TrackEvent> EventsOf(const Performance& p, int track, EventKind kind)
-{
-    std::vector<seqlib::midi::TrackEvent> events;
-    for (const seqlib::midi::TrackEvent& e : p.tracks[static_cast<std::size_t>(track)])
-    {
-        if (e.kind == kind)
-        {
-            events.push_back(e);
-        }
-    }
-
-    return events;
-}
 
 // The pan law. The DS's mixer plays the left side at (128 - p) / 128 and the right at p / 128, and the right at 128/128
 // for a pan of 127. The sin/cos law at PanPosition, times PanGain, gives those levels.
@@ -341,6 +211,241 @@ void TestWaves()
           "a missing wave archive and a missing wave give warnings");
 }
 
+// The tuning of a key at its timer's rate. Wave 1's timer is 1022, and its sample plays at 16,756,991 / 1022 Hz,
+// 16,396 rounded. The driver's period at n octaves above the root key is 1022 / 2^n without its fraction: 255 two
+// octaves up, 127 three and 63 four. The PSG's timer of 8006 two octaves up gives 2001, and the PSG drops the low two
+// bits: 2000. Its sample plays 16 times the steps of 8006 at the root key, at 33,489 Hz.
+void TestTimerTuning()
+{
+    const auto cents = [](double period, double rate)
+    {
+        return 1200.0 * std::log2(16756991.0 / period / rate);
+    };
+    Check(KeyTuning(0, 1022, 60, 60) == 0 && KeyTuning(0, 1022, 60, 84) == std::lround(cents(255, 16396 * 4.0)) &&
+              KeyTuning(0, 1022, 60, 96) == std::lround(cents(127, 16396 * 8.0)) &&
+              KeyTuning(0, 1022, 60, 108) == std::lround(cents(63, 16396 * 16.0)),
+          "a key takes the cents by which its period plays sharp: 0, 3, 10 and 24");
+    Check(KeyTuning(0, 1022, 60, 108) == 24 &&
+              KeyTuning(1, 8006, 69, 93) == std::lround(cents(2000, 33489 * 4.0 / 16)) &&
+              KeyTuning(2, 8006, 69, 93) == std::lround(cents(2001, 33489 * 4.0 / 16)) &&
+              KeyTuning(1, 8006, 69, 93) == 1 && KeyTuning(2, 8006, 69, 93) == 0,
+          "the PSG's period loses its low two bits, and the noise's doesn't");
+
+    // A note of key 84 bent up an octave plays the period of key 96. Its zone gives key 84 3 cents.
+    const double bend = TimerBend(0, 1022, 60, 84, 36 * 64);
+    Check(std::abs(bend - (cents(127, 16396) - 2400.0 - 3.0) / 100.0) < 1e-9, "a bend to the period of key 96");
+    Check(std::abs(TimerBend(0, 0, 60, 84, 36 * 64) - 12.0) < 1e-9, "a wave without a timer bends by the semitones");
+
+    // TimerBend differs from the bend by up to the rounding of the bent period or of the key's period, and half a cent
+    // for the zone's whole cents. Key 84 bent an octave plays period 127. That period can round by 1200 log2(128 / 127)
+    // cents. Key 84 itself plays period 255, the larger rounding where the bend goes an octave down. The PSG's period
+    // of 2000 at key 93 can lose up to four counts.
+    const auto lost = [](double period, double counts)
+    {
+        return 12.0 * std::log2((period + counts) / period) + 0.005;
+    };
+    Check(std::abs(TimerRounding(0, 1022, 60, 84, 36 * 64) - lost(127, 1)) < 1e-9 &&
+              std::abs(TimerRounding(0, 1022, 60, 84, 12 * 64) - lost(255, 1)) < 1e-9 &&
+              std::abs(TimerRounding(1, 8006, 69, 93, 24 * 64) - lost(2000, 4)) < 1e-9 &&
+              TimerRounding(0, 0, 60, 84, 36 * 64) == 0.0,
+          "the timer's rounding: the larger period's loss, and none without a timer");
+
+    // Wave 1's region over every key: runs of keys, each at the tuning of every key in it.
+    const TestArchive test(kOneNote);
+    BankSet banks(test.archive, 0);
+    sdat::Region region;
+    region.wave = 1;
+    region.root_key = 60;
+    const Pcm* ramp = banks.Wave(region);
+    const std::vector<PresetZone> zones =
+        ramp != nullptr ? TunedZones(PresetZone{.region = region}, *ramp) : std::vector<PresetZone>();
+    bool runs = !zones.empty() && zones.front().low_key == 0 && zones.back().high_key == 127;
+    for (std::size_t i = 0; runs && i < zones.size(); i++)
+    {
+        runs = (i == 0 || (zones[i].low_key == zones[i - 1].high_key + 1 && zones[i].tuning != zones[i - 1].tuning));
+        for (int key = zones[i].low_key; runs && key <= zones[i].high_key; key++)
+        {
+            runs = KeyTuning(0, 1022, 60, key) == zones[i].tuning;
+        }
+    }
+    Check(ramp != nullptr && ramp->channel_type == 0 && ramp->timer == 1022 && runs,
+          "a region's keys in runs of one tuning");
+
+    // A sequence that plays keys 84 and 108 only: those keys take 3 and 24 cents. The keys below 84 and up to 107 join
+    // key 84's run, and the keys above 108 join key 108's.
+    const std::set<uint8_t> played = {84, 108};
+    const std::vector<PresetZone> sparse =
+        ramp != nullptr ? TunedZones(PresetZone{.region = region}, *ramp, &played) : std::vector<PresetZone>();
+    const auto zone = [](uint8_t low, uint8_t high, int tuning)
+    {
+        return std::tuple<uint8_t, uint8_t, int>(low, high, tuning);
+    };
+    std::vector<std::tuple<uint8_t, uint8_t, int>> found;
+    for (const PresetZone& z : sparse)
+    {
+        found.push_back(zone(z.low_key, z.high_key, z.tuning));
+    }
+    Check(found == std::vector{zone(0, 107, 3), zone(108, 127, 24)},
+          "only the keys that a sequence plays take their tuning, and the other keys join their runs");
+
+    // The zone's edges: a played key at a zone's low key or top key alone tunes the zone, as each played key of a drum
+    // set's zones of one key does. A zone without a played key keeps the region's tuning of 0.
+    const auto tuned = [&](uint8_t low, uint8_t high, const std::set<uint8_t>& keys)
+    {
+        PresetZone edges{.region = region};
+        edges.low_key = low;
+        edges.high_key = high;
+        std::vector<std::tuple<uint8_t, uint8_t, int>> runs_found;
+        if (ramp != nullptr)
+        {
+            for (const PresetZone& z : TunedZones(edges, *ramp, &keys))
+            {
+                runs_found.push_back(zone(z.low_key, z.high_key, z.tuning));
+            }
+        }
+        return runs_found;
+    };
+    Check(tuned(108, 108, {108}) == std::vector{zone(108, 108, 24)}, "a zone of one key, played");
+    Check(tuned(84, 108, {84}) == std::vector{zone(84, 108, 3)}, "a zone whose low key alone is played");
+    Check(tuned(84, 108, {108}) == std::vector{zone(84, 108, 24)}, "a zone whose top key alone is played");
+    Check(tuned(0, 83, {84, 108}) == std::vector{zone(0, 83, 0)}, "a zone without a played key keeps the tuning 0");
+}
+
+// A pan LFO: a sine of 127 * 127 / 16384 of the pan's 64 steps a side at a depth of 127 and a range of 1, 63 steps
+// either way, on wave 0. Wave 0 loops. A note that sounds alone on its part takes its channel's pan in CC10 and the
+// pan's level in CC11, frame by frame, with CC1 at 0. SoundFont has no LFO that moves the pan, and CC1 at 0 stills the
+// SFZ files' LFO. Two notes that overlap on a part keep the track's pan, with CC1 at the depth for the SFZ files.
+void TestPanLfo()
+{
+    const auto controls = [](const Performance& p, EventKind kind, uint32_t until)
+    {
+        std::vector<int> values;
+        for (const seqlib::midi::TrackEvent& e : EventsOf(p, 0, kind))
+        {
+            if (e.tick < until)
+            {
+                values.push_back(e.value);
+            }
+        }
+        return values;
+    };
+
+    // 0: the LFO moves the pan; 2: a depth of 127; 4: note 60 for 48 ticks; 7: a wait of 48 ticks; 9: the end.
+    const TestArchive alone({0xCC, 0x02, 0xCA, 0x7F, 0x3C, 0x7F, 0x30, 0x80, 0x30, 0xFF});
+    const Performance p = Perform(alone.archive, {0});
+    const std::vector<int> pans = controls(p, EventKind::kPan, 48);
+    const std::vector<int> levels = controls(p, EventKind::kExpression, 48);
+    const std::set<int> distinct(pans.begin(), pans.end());
+    Check(distinct.size() > 10 && *distinct.begin() <= ntdlib::sequence_export::PanController(8) &&
+              *distinct.rbegin() >= ntdlib::sequence_export::PanController(120),
+          "CC10 follows the pan of a note alone on its part, from side to side");
+    Check(!levels.empty() && *std::max_element(levels.begin(), levels.end()) > levels.front(),
+          "CC11 follows the level of the pan");
+    Check(controls(p, EventKind::kModulation, 48) == std::vector<int>{0} && p.approximations.empty(),
+          "CC1 is 0 while the note plays alone");
+
+    // 0: no note waits; then the same with notes 60 and 64 together.
+    const TestArchive together(
+        {0xC7, 0x00, 0xCC, 0x02, 0xCA, 0x7F, 0x3C, 0x7F, 0x30, 0x40, 0x7F, 0x30, 0x80, 0x30, 0xFF});
+    const Performance q = Perform(together.archive, {0});
+    Check(controls(q, EventKind::kPan, 48) == std::vector<int>{64} &&
+              controls(q, EventKind::kModulation, 48) == std::vector<int>{127} &&
+              q.approximations ==
+                  std::map<std::string, uint32_t>{
+                      {"pan LFO on a note that overlaps another on its part (omitted from SoundFont)", 2}},
+          "two notes on a part keep the track's pan, and the SFZ files' LFO");
+
+    // 0: no note waits; 4: a release of 100, 2.3 s; then notes 60 and 64, each for 48 ticks. Note 64 starts while note
+    // 60's release still sounds, with an LFO of its own.
+    const TestArchive in_release({0xC7, 0x00, 0xCC, 0x02, 0xCA, 0x7F, 0xD3, 0x64, 0x3C, 0x7F, 0x30, 0x80, 0x30, 0x40,
+                                  0x7F, 0x30, 0x80, 0x30, 0xFF});
+    const Performance r = Perform(in_release.archive, {0});
+    std::vector<int> late_pans;
+    for (const seqlib::midi::TrackEvent& e : EventsOf(r, 0, EventKind::kPan))
+    {
+        if (e.tick >= 48 && e.tick < 96)
+        {
+            late_pans.push_back(e.value);
+        }
+    }
+    Check(late_pans == std::vector<int>{64} &&
+              r.approximations ==
+                  std::map<std::string, uint32_t>{
+                      {"pan LFO on a note that overlaps another on its part (omitted from SoundFont)", 2}},
+          "a note that starts in another note's release keeps the track's pan");
+
+    // 4: a release of 100; note 60 for 24 ticks and a wait of 12; then an expression of 32 during the release, a wait
+    // of 36 and the end. The driver keeps a released channel's volume. CC11 therefore keeps the level of expression
+    // 127. The pan still moves.
+    const TestArchive quieter_tail(
+        {0xCC, 0x02, 0xCA, 0x7F, 0xD3, 0x64, 0x3C, 0x7F, 0x18, 0x80, 0x0C, 0xD5, 0x20, 0x80, 0x24, 0xFF});
+    const Performance t = Perform(quieter_tail.archive, {0});
+    std::vector<int> tail_levels;
+    std::set<int> tail_pans;
+    for (const seqlib::midi::TrackEvent& e : t.tracks[0])
+    {
+        if (e.tick >= 36 && e.tick < 72 && e.kind == EventKind::kExpression)
+        {
+            tail_levels.push_back(e.value);
+        }
+        if (e.tick >= 36 && e.tick < 72 && e.kind == EventKind::kPan)
+        {
+            tail_pans.insert(e.value);
+        }
+    }
+    Check(
+        !tail_levels.empty() && *std::min_element(tail_levels.begin(), tail_levels.end()) > 90 && tail_pans.size() > 5,
+        "a release tail keeps its level from the release, and its pan follows the LFO");
+}
+
+// The value of `kind` that the first note-on of `key` on track `track` starts with, in the order of time that the MIDI
+// file plays: the last event of `kind` before the note-on, by tick and `after`. Events at the same time keep their
+// order. -1 without such an event.
+int ValueAtNote(const Performance& p, int track, EventKind kind, uint8_t key)
+{
+    std::vector<seqlib::midi::TrackEvent> events = p.tracks[static_cast<std::size_t>(track)];
+    std::ranges::stable_sort(events, {}, [](const seqlib::midi::TrackEvent& e) { return std::pair(e.tick, e.after); });
+
+    int value = -1;
+    for (const seqlib::midi::TrackEvent& e : events)
+    {
+        if (e.kind == EventKind::kNoteOn && e.key == key)
+        {
+            return value;
+        }
+        if (e.kind == kind)
+        {
+            value = e.value;
+        }
+    }
+
+    return -1;
+}
+
+// A note that follows its pan LFO ends in a later frame of a tick. The tempo of 30 gives a tick every eight frames.
+// The part goes back to the track's pan and level at that frame, after the LFO's values of the tick's earlier frames,
+// and the next note starts at them.
+void TestPanLfoEndsLateInATick()
+{
+    // 0: a tempo of 30; 3: a pan of 32; 5: a wait of 1 tick; 7: the LFO moves the pan; 9: a depth of 127; 11: a
+    // release of 126; 13: note 60 for 2 ticks; 16: a wait of 16; 18: a depth of 0; 20: note 64 for 2 ticks; 23: a wait
+    // of 16; 25: the end. Note 60 releases at tick 3, and its channel stops in the tick's fifth frame.
+    const TestArchive test({0xE1, 0x1E, 0x00, 0xC0, 0x20, 0x80, 0x01, 0xCC, 0x02, 0xCA, 0x7F, 0xD3, 0x7E,
+                            0x3C, 0x7F, 0x02, 0x80, 0x10, 0xCA, 0x00, 0x40, 0x7F, 0x02, 0x80, 0x10, 0xFF});
+    const Performance p = Perform(test.archive, {0});
+    const std::vector<seqlib::midi::TrackEvent> pans = EventsOf(p, 0, EventKind::kPan);
+    const std::vector<seqlib::midi::TrackEvent> levels = EventsOf(p, 0, EventKind::kExpression);
+    const bool late_in_tick = std::ranges::any_of(
+        pans, [](const seqlib::midi::TrackEvent& e) { return e.tick == 3 && e.after > 0.25 && e.after < 1.0; });
+
+    Check(late_in_tick, "the release tail follows its LFO into a later frame of tick 3");
+    Check(pans.size() > 2 && pans.front().tick == 0 && ValueAtNote(p, 0, EventKind::kPan, 64) == pans.front().value,
+          "a note after a pan LFO that ends late in a tick starts at the track's pan");
+    Check(!levels.empty() && levels.front().tick == 0 &&
+              ValueAtNote(p, 0, EventKind::kExpression, 64) == levels.front().value,
+          "and at the track's level");
+}
+
 // The performer. The driver's tempo of 120 adds 120 a frame, and a tick takes 240: a tick every two frames.
 void TestPerform()
 {
@@ -356,6 +461,15 @@ void TestPerform()
     Check(!p.tempo.empty() && std::abs(p.tempo[0].bpm - 60000.0 / (96.0 * kFrameMs)) < 1e-9 && p.timebase == 48,
           "the tempo: a tick every two frames");
     Check(!p.loop && p.loops == 0 && !p.truncated, "the sequence ends");
+
+    // CC91 from the start: 0 without a game's reverb, and the reverb's volume with one. A synth that follows General
+    // MIDI 2 gives a channel without CC91 a send of 40.
+    const std::vector<seqlib::midi::TrackEvent> dry = EventsOf(p, 0, EventKind::kReverb);
+    const std::vector<seqlib::midi::TrackEvent> wet =
+        EventsOf(Perform(one_note.archive, {0}, {.reverb = ntdlib::ntr::Reverb{.volume = 80}}), 0, EventKind::kReverb);
+    Check(dry.size() == 1 && dry[0].tick == 0 && dry[0].value == 0, "no reverb: CC91 0 at tick 0");
+    Check(wet.size() == 1 && wet[0].tick == 0 && wet[0].value == 80, "a reverb at volume 80: CC91 80 at tick 0");
+    Check(ntdlib::testing::ReverbBeforeNotes(p.tracks[0]), "CC91 before the first note-on of its tick");
 
     // A track that ends more than 10 s after its last sound has died away: the note, a wait of 2000 ticks (20.9 s) and
     // the end. The performance ends where the sound dies away. After a wait of 900 ticks (9.4 s), it ends with the
@@ -396,6 +510,28 @@ void TestPerform()
     const Performance slow = Perform(one_note.archive, {0}, {.commands = {half_tempo}});
     Check(!slow.tempo.empty() && std::abs(slow.tempo[0].bpm - 60000.0 / (192.0 * kFrameMs)) < 1e-9,
           "a game's tempo ratio of 128 after the start: a tick every four frames");
+
+    // A game's commands once the sequence has run some ticks: the note's track goes silent, then back to full volume.
+    // At a tempo of 120, tick k runs in the driver's frame 2k, and frame f follows the ticks 0 to (f - 1) / 2. The
+    // game's frame n, of one frame of the screen (560,190 clocks), goes before the driver's first frame f at or after
+    // it: f * 174,592 >= n * 560,190. Its frame 14 goes before frame 45 and reads 23 ticks. Its frame 15 goes before
+    // frame 49 and reads 25 ticks, a count equal to the tick, and starts the lists. Its frame 16 goes before frame 52,
+    // after tick 25, and sends the first list. Its frame 17 goes before frame 55, after tick 27, and sends the second.
+    // A rule that required a count above the tick would send them at ticks 27 and 29. A tick that the sequence never
+    // reaches sends nothing.
+    const std::vector<seqlib::midi::TrackEvent> dipped =
+        EventsOf(Perform(one_note.archive, {0},
+                         {.tick_commands = {{.tick = 25,
+                                             .video_frames = 1,
+                                             .frames = {{TrackVolume(0x0001, -32768)}, {TrackVolume(0x0001, 0)}}}}}),
+                 0, EventKind::kExpression);
+    const std::vector<seqlib::midi::TrackEvent> never = EventsOf(
+        Perform(one_note.archive, {0}, {.tick_commands = {{.tick = 1000, .frames = {{TrackVolume(0x0001, -32768)}}}}}),
+        0, EventKind::kExpression);
+    Check(dipped.size() == 3 && dipped[0].tick == 0 && dipped[0].value == 107 && dipped[1].tick == 25 &&
+              dipped[1].value == 0 && dipped[2].tick == 27 && dipped[2].value == 107,
+          "a game's commands after 25 ticks, a frame of the screen apart: CC11 0 from tick 25, and 107 from tick 27");
+    Check(never.size() == 1 && never[0].value == 107, "a game's commands after a tick that never comes: none");
 
     // A game's channels for the tracks: a track that may take no channel plays no note. The mask of another track
     // leaves track 0 alone.
@@ -459,9 +595,9 @@ void TestPerform()
           "a track of silent notes doesn't own the loop");
 
     // Track 0 strikes note 60 at velocity 127 and volume 0 every 10 ticks, in an endless loop. Track 1 waits 190 ticks,
-    // then plays note 64 for 24 ticks and waits 742 ticks, in a loop of 766 ticks. 766 isn't a multiple of 10. The
-    // markers go on track 1's first pass, from tick 190 to 956. That pass ends at 9.96 s, short of 10 s. The second
-    // pass ends at tick 1722.
+    // then plays note 64 for 24 ticks and waits 742 ticks, in a loop of 766 ticks. 766 isn't a multiple of 10. No
+    // single pass of track 1 repeats. The two loops come round together every 3,830 ticks, 5 of track 1's passes. The
+    // markers go on those 5 passes, from tick 190 to 4020.
     const TestArchive misaligned({
         0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
         0x93, 0x01, 0x11, 0x00, 0x00, // 3: track 1 starts at 0x11
@@ -476,11 +612,59 @@ void TestPerform()
         0x94, 0x14, 0x00, 0x00,       // 26: back to 20
     });
     const Performance offset = Perform(misaligned.archive, {0});
-    Check(offset.loop && offset.loop->start == 190 && offset.loop->end == 956 && offset.loops == 2 &&
-              offset.end_tick == 1722 && !offset.truncated,
-          "a silent loop of 10 ticks beside a loop of 766: the markers on the loop of 766");
+    Check(offset.loop && offset.loop->start == 190 && offset.loop->end == 4020 && offset.loops == 1 &&
+              offset.end_tick == 4020 && !offset.truncated,
+          "a silent loop of 10 ticks beside a loop of 766: the markers on the 5 passes of their whole period");
 
-    // A note at velocity 1 and volume 100 lies at -76.3 dB, and plays at a volume of 0. The loop goes straight back to
+    // Track 0's silent loop plays keys 60 to 68 for 383 ticks each: 3,447 ticks, 4.5 of track 1's passes. No pass of
+    // track 1 repeats the next. Track 0's loop ends at tick 3447, and the main loop's passes count again from track 1's
+    // pass that holds that tick, from 3254 (OnLoop). The loops come round together after 9 passes, from 3254 to 10148.
+    const TestArchive nine_keys({
+        0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+        0x93, 0x01, 0x31, 0x00, 0x00, // 3: track 1 starts at 0x31
+        0xC1, 0x00,                   // 8: the volume takes 0
+        0xD4, 0x00,                   // 10: an endless loop
+        0x3C, 0x7F, 0x82, 0x7F,       // 12: key 60 for 383 ticks
+        0x3D, 0x7F, 0x82, 0x7F,       // 16: key 61
+        0x3E, 0x7F, 0x82, 0x7F,       // 20: key 62
+        0x3F, 0x7F, 0x82, 0x7F,       // 24: key 63
+        0x40, 0x7F, 0x82, 0x7F,       // 28: key 64
+        0x41, 0x7F, 0x82, 0x7F,       // 32: key 65
+        0x42, 0x7F, 0x82, 0x7F,       // 36: key 66
+        0x43, 0x7F, 0x82, 0x7F,       // 40: key 67
+        0x44, 0x7F, 0x82, 0x7F,       // 44: key 68
+        0xFC,                         // 48: the loop's end
+        0x80, 0x81, 0x3E,             // 49: a wait of 190 ticks
+        0x40, 0x7F, 0x18,             // 52: note 64 for 24 ticks
+        0x80, 0x85, 0x66,             // 55: a wait of 742 ticks
+        0x94, 0x34, 0x00, 0x00,       // 58: back to 52
+    });
+    const Performance nine = Perform(nine_keys.archive, {0});
+    Check(nine.loop && nine.loop->start == 3254 && nine.loop->end == 10148 && nine.loops == 1,
+          "a silent loop of 4.5 passes beside a loop of 766: the markers on the 9 passes of their whole period");
+
+    // Track 0's silent loop lasts 761 ticks. The loops come round together only after 761 of track 1's passes, past the
+    // file's limit. The markers stay on track 1's first pass, and the approximations say why.
+    const TestArchive apart({
+        0xFE, 0x03, 0x00,             // 0: tracks 0 and 1
+        0x93, 0x01, 0x11, 0x00, 0x00, // 3: track 1 starts at 0x11
+        0xC1, 0x00,                   // 8: the volume takes 0
+        0xD4, 0x00,                   // 10: an endless loop
+        0x3C, 0x7F, 0x85, 0x79,       // 12: note 60 for 761 ticks
+        0xFC,                         // 16: the loop's end
+        0x80, 0x81, 0x3E,             // 17: a wait of 190 ticks
+        0x40, 0x7F, 0x18,             // 20: note 64 for 24 ticks
+        0x80, 0x85, 0x66,             // 23: a wait of 742 ticks
+        0x94, 0x14, 0x00, 0x00,       // 26: back to 20
+    });
+    const Performance unaligned = Perform(apart.archive, {0});
+    const auto approximation =
+        unaligned.approximations.find("tracks loop at other lengths (their loops line up every 761 passes)");
+    Check(unaligned.loop && unaligned.loop->start == 190 && unaligned.loop->end == 956 &&
+              approximation != unaligned.approximations.end() && approximation->second > 0,
+          "loops that come round together past the file's limit: the first pass, and an approximation");
+
+    // A note at velocity 1 and volume 100 is at -76.3 dB, and plays at a volume of 0. The loop goes straight back to
     // it. The first pass ends at tick 24. It changed nothing and played no note that sounds, and nothing sounds. The
     // sequence ends there, without loop markers.
     const Bytes faint_sequence = {
@@ -598,12 +782,12 @@ void TestPerform()
           "the seed draws the wait: " + std::to_string(first) + " and " + std::to_string(second));
 }
 
-// A note whose channel another note takes. The player has channel 0 alone. Track 0 plays note 60 for 96 ticks. At
-// tick 24, track 1 plays note 64 at a higher priority, and takes the channel. Track 0's note ends at once. Nothing else
-// of track 0 sounds on its part. CC120 then stops the note in the synthesizer.
-// A game's changes of a variable while the sequence plays. The track plays a note in each pass where variable 0 holds
-// 5. A tick runs every second frame. A change at frame 3,000, about 15.6 s in, comes at tick 1,500. That lies past the
-// 10 s after which the performer stops at a steady pass without a change.
+// A note whose channel another note takes. The player has channel 0 alone. Track 0 plays note 60 for 96 ticks. At tick
+// 24, track 1 plays note 64 at a higher priority, and takes the channel. Track 0's note ends at once. Nothing else of
+// track 0 sounds on its part. CC120 then stops the note in the synthesizer. A game's changes of a variable while the
+// sequence plays. The track plays a note in each pass where variable 0 holds 5. A tick runs every second frame. A
+// change at frame 3,000, about 15.6 s in, comes at tick 1,500. That is past the 10 s after which the performer stops at
+// a steady pass without a change.
 void TestChanges()
 {
     const TestArchive sometimes({
@@ -681,508 +865,6 @@ void TestStolenChannel()
           "the release that the synthesizer plays counts as an approximation");
 }
 
-// A track's pitch events from `tick` on, in semitones.
-std::vector<float> PitchesFrom(const Performance& p, int track, uint32_t tick)
-{
-    std::vector<float> pitches;
-    for (const seqlib::midi::TrackEvent& e : EventsOf(p, track, EventKind::kPitch))
-    {
-        if (e.tick >= tick)
-        {
-            pitches.push_back(e.semitones);
-        }
-    }
-
-    return pitches;
-}
-
-// A tie that starts the channel's sweep again. With a portamento time of 8, a sweep of p 64ths of a semitone runs for
-// 64 * |p| >> 11 frames. Each frame's update plays p * (length - counter) / length and steps the counter. A tick runs
-// every second frame, and the notes last 24 ticks.
-void TestTiedSweeps()
-{
-    // 0: ties on; 2: a portamento time of 8; 4: a sweep of 32; 7: note 60; 10: a sweep of 128; 13: note 60; 16: end.
-    // The first sweep has a length of 1. It plays half a semitone in the note's first frame, and its counter stays at
-    // 1. The tie's sweep has a length of 4, and its counter starts at 0 again. Its first frame steps the counter to 1.
-    // The sweep plays 2, 1.5, 1 and 0.5 semitones, then ends.
-    const TestArchive restarted(
-        {0xC8, 0x01, 0xCF, 0x08, 0xE3, 0x20, 0x00, 0x3C, 0x7F, 0x18, 0xE3, 0x80, 0x00, 0x3C, 0x7F, 0x18, 0xFF});
-    const Performance p = Perform(restarted.archive, {0});
-    Check(PitchesFrom(p, 0, 0) == std::vector<float>{0.5f, 0.0f, 2.0f, 1.5f, 1.0f, 0.5f, 0.0f} &&
-              PitchesFrom(p, 0, 24) == std::vector<float>{2.0f, 1.5f, 1.0f, 0.5f, 0.0f},
-          "a tie's sweep plays from its first frame, whatever the count of the sweep before");
-    Check(EventsOf(p, 0, EventKind::kNoteOn).size() == 1 && p.approximations.empty(), "and the tie starts no note");
-
-    // The same with sweeps of 64 and 16. The first has a length of 2: 1 and 0.5 semitones. The tie's sweep has a
-    // length of 0, and the driver plays none of it. The performer divides by no length of 0.
-    const TestArchive without_length(
-        {0xC8, 0x01, 0xCF, 0x08, 0xE3, 0x40, 0x00, 0x3C, 0x7F, 0x18, 0xE3, 0x10, 0x00, 0x3C, 0x7F, 0x18, 0xFF});
-    const Performance q = Perform(without_length.archive, {0});
-    Check(PitchesFrom(q, 0, 0) == std::vector<float>{1.0f, 0.5f, 0.0f} && PitchesFrom(q, 0, 24).empty(),
-          "a tie's sweep of no length plays nothing");
-}
-
-// A conversion's files pass seqlib's checks, and each tick's frame starts no earlier than the tick, within a frame of
-// it: half a tick at a tempo of 120. The driver runs a tick at the start of the frame after the tick's time.
-// sequence_export's other consoles run it before (ntdlib::testing::CheckConversion).
-void CheckFiles(const Conversion& c, const std::string& name)
-{
-    const std::vector<std::string> midi = seqlib::midi::Problems(c.midi);
-    const std::vector<std::string> sf2 = seqlib::sf2::Check(c.sf2);
-    const std::string sfz =
-        midi.empty() ? ntdlib::testing::SfzProblem(c.sfz, seqlib::midi::TrackNames(seqlib::midi::Read(c.midi))) : "";
-    Check(midi.empty() && sf2.empty() && sfz.empty(),
-          name + ": seqlib's checks: " + (midi.empty() ? "" : midi[0]) + (sf2.empty() ? "" : sf2[0]) + sfz);
-
-    const std::vector<double>& frames = c.performance.frame_ticks;
-    bool ordered = !frames.empty();
-    for (std::size_t k = 0; k < frames.size(); k++)
-    {
-        ordered = ordered && frames[k] > static_cast<double>(k) - 1e-9 &&
-                  frames[k] < static_cast<double>(k) + 0.5 + 1e-9 && (k == 0 || frames[k] >= frames[k - 1]);
-    }
-    Check(ordered, name + ": each tick's frame");
-}
-
-// The conversion of a sequence that plays every kind of instrument, with each kind of LFO and a sweep. Program 7's
-// region plays full left, 3 dB above the centre. The SoundFont's zones are then 3 dB quieter.
-void TestConvert()
-{
-    // clang-format off
-    const Bytes every = {
-        0x81, 0x00, 0x3C, 0x7F, 0x18, 0x80, 0x18,                               // wave 0
-        0x81, 0x01, 0x45, 0x7F, 0x18, 0x80, 0x18,                               // the PSG
-        0x81, 0x02, 0x3C, 0x7F, 0x18, 0x80, 0x18,                               // the noise
-        0x81, 0x03, 0x24, 0x7F, 0x0C, 0x25, 0x7F, 0x0C, 0x26, 0x7F, 0x0C, 0x80, 0x18, // the drum set
-        0x81, 0x04, 0x30, 0x7F, 0x0C, 0x80, 0x0C, 0x48, 0x7F, 0x0C, 0x80, 0x0C, // the key split
-        0x81, 0x07, 0xD3, 0x7F, 0xC0, 0x20, 0xCA, 0x40, 0xCB, 0x10, 0xCD, 0x02, // release 127, pan 32, a pitch LFO
-        0x3C, 0x7F, 0x30, 0x80, 0x30,
-        0xCC, 0x01, 0xCA, 0x7F, 0x3C, 0x7F, 0x30, 0x80, 0x30,                   // a volume LFO
-        0xCC, 0x02, 0x3C, 0x7F, 0x30, 0x80, 0x30,                               // a pan LFO
-        0xCA, 0x00, 0xE3, 0x40, 0x00, 0x3C, 0x7F, 0x30, 0x80, 0x30,             // a sweep
-        0xFF,
-    };
-    // clang-format on
-    const TestArchive test(every);
-    const Conversion c = ConvertSequence(test.archive, {0}, "BGM_TEST", {}, kProgram);
-    CheckFiles(c, "every instrument");
-
-    // CC11's level is (v / 127)^2. It takes the gain of the track's pan: 127 * sqrt(PanGain(64)) = 106.8 at the
-    // centre, and 127 * sqrt(PanGain(32)) = 112.9 at 32. CC10 at 32 is 64 + 64 * PanPosition(32) = 26.2.
-    std::vector<std::pair<uint32_t, int>> controls;
-    for (const seqlib::midi::TrackEvent& e : c.performance.tracks[0])
-    {
-        if (e.kind == EventKind::kExpression || e.kind == EventKind::kPan)
-        {
-            controls.emplace_back(e.tick, e.kind == EventKind::kPan ? 1000 + e.value : e.value);
-        }
-    }
-    Check(controls == std::vector<std::pair<uint32_t, int>>{{0, 107}, {0, 1064}, {252, 113}, {252, 1026}},
-          "CC11 holds the pan's gain, and CC10 the pan");
-
-    // The LFO at speed 16 steps through 512 / 16 frames a cycle: 5.998625 Hz. At CC1's 127 and range 2, the pitch
-    // swings by 127 * 127 * 2 / 16384 semitones, and the volume by 60 times that in 0.1 dB. SoundFont's CC1 gives
-    // 127/128 of a modulator's amount. Program 7's region plays full left, 3.01 dB above the centre.
-    const std::string& text = c.sfz.files.empty() ? std::string() : c.sfz.files[0].text;
-    Check(text.find("lfo1_freq=5.998625 lfo1_pitch_oncc1=196.887207") != std::string::npos &&
-              text.find("lfo1_volume_oncc1=11.813232") != std::string::npos &&
-              text.find("lfo1_pan_oncc1=196.887207") != std::string::npos,
-          "SFZ's LFOs");
-    Check(text.find("<region> sample=w0_1.wav lokey=0 hikey=127 pitch_keycenter=60 sample_quality=0 volume=3.01 "
-                    "pan=-100 ") != std::string::npos,
-          "SFZ's region full left");
-    const seqlib::sf2::Records records = seqlib::sf2::Read(c.sf2);
-    bool pitch = false;
-    bool volume = false;
-    for (std::size_t i = 0; i < records.Count("imod", 10); i++)
-    {
-        const uint8_t* r = records.Record("imod", 10, i);
-        const auto field = [r](int at)
-        {
-            return xsflib::LoadLe16(r + at);
-        };
-        pitch = pitch || (field(0) == 0x0081 && field(2) == 6 && field(4) == 198);
-        volume = volume || (field(0) == 0x0081 && field(2) == 13 && field(4) == 119);
-    }
-    Check(pitch && volume, "SoundFont's modulators from CC1: 198.4 cents and 119.1 cB");
-
-    // Program 7's zones pan full left (-500). The other zones stay at the centre.
-    std::size_t left = 0;
-    std::size_t panned = 0;
-    for (std::size_t z = 0; z + 1 < records.Count("ibag", 4); z++)
-    {
-        const std::map<uint16_t, uint16_t> generators = records.ZoneGens(z);
-        if (const auto pan = generators.find(seqlib::sf2::kPan); pan != generators.end() && pan->second != 0)
-        {
-            panned++;
-            left += static_cast<int16_t>(pan->second) == -500 ? 1 : 0;
-        }
-    }
-    Check(panned == 3 && left == 3, "SoundFont's zones of program 7's three presets pan full left");
-
-    // Wave 0, wave 1, the PSG at duties 3, 1 and 0, and the noise.
-    Check(c.samples == 6 && c.sfz.samples.size() == 6, "a sample for each wave, and a WAV file for each");
-    Check(c.warnings.empty(), "no warnings");
-    Check(c.performance.approximations ==
-              std::map<std::string, uint32_t>{
-                  {"instrument volume above full level (SoundFont attenuated by 3.0 dB; SFZ keeps the level)", 12},
-                  {"pan LFO (omitted from SoundFont)", 1}},
-          "the cut of the SoundFont, and the pan LFO in SFZ alone");
-
-    // A sequence that the archive gives a volume of 0 plays silent in the game. The report says why its files are
-    // silent.
-    const TestArchive muted(kOneNote, 0, 0);
-    Check(ConvertSequence(muted.archive, {0}, "BGM_TEST", {}, kProgram).warnings ==
-              std::vector<std::string>{
-                  "volume 0 in the sound archive. The game plays it silent, and so does the conversion."},
-          "a sequence of volume 0: one line in the report");
-
-    const TestArchive loop(kLoop);
-    CheckFiles(ConvertSequence(loop.archive, {0}, "BGM_LOOP", {.loops = 2}, kProgram), "a loop");
-    const TestArchive one_note(kOneNote);
-    CheckFiles(ConvertSequence(one_note.archive, {0}, "BGM_TEST", {}, kProgram), "one note");
-}
-
-// The phdr records of SoundFont `sf2`: each preset's bank and program, in order, without the terminal record.
-std::vector<std::pair<uint16_t, uint16_t>> PresetsOf(const std::vector<uint8_t>& sf2)
-{
-    const seqlib::sf2::Records records = seqlib::sf2::Read(sf2);
-    std::vector<std::pair<uint16_t, uint16_t>> presets;
-    for (std::size_t i = 0; i + 1 < records.Count("phdr", 38); i++)
-    {
-        const uint8_t* r = records.Record("phdr", 38, i);
-        presets.emplace_back(xsflib::LoadLe16(r + 22), xsflib::LoadLe16(r + 20));
-    }
-
-    return presets;
-}
-
-// The conversion of the test bank's instruments by themselves. Programs 5 and 6 play nothing, and neither does a
-// program past the bank. Program 7's region plays full left, 3 dB above the centre, and the SoundFont's zones are then
-// 3 dB quieter. A program past 127 takes a preset in bank 1. Programs given out of order, or twice, convert in
-// ascending order, once each.
-void TestConvertBank()
-{
-    const TestArchive test(kOneNote);
-    const std::vector<uint32_t> every = {0, 1, 2, 3, 4, 5, 6, 7, 200};
-    const ntdlib::sequence_export::BankConversion c =
-        ConvertBank(test.archive, 0, every, ntdlib::ntr::snd::Build{}, kProgram);
-    Check(c.sound_fonts.size() == 1 && c.sound_fonts[0].first == 0 && c.sound_fonts[0].last == 7,
-          "a bank: one SoundFont of programs 0 to 7");
-    const std::vector<uint8_t>& sf2 = c.sound_fonts.empty() ? std::vector<uint8_t>() : c.sound_fonts[0].sf2;
-    Check(seqlib::sf2::Check(sf2).empty(), "a bank: seqlib's check of the SoundFont");
-    Check(PresetsOf(sf2) == std::vector<std::pair<uint16_t, uint16_t>>{{0, 0}, {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 7}},
-          "a bank: a preset at each program that plays");
-
-    // The zones of programs 0 to 4 play at the centre, 3 dB quieter. The drum set has three, and the key split two.
-    // Program 7's zone plays full left, at full level.
-    const seqlib::sf2::Records records = seqlib::sf2::Read(sf2);
-    std::map<uint16_t, std::size_t> attenuations;
-    for (std::size_t z = 0; z + 1 < records.Count("ibag", 4); z++)
-    {
-        const std::map<uint16_t, uint16_t> generators = records.ZoneGens(z);
-        if (generators.contains(seqlib::sf2::kSampleId))
-        {
-            const auto found = generators.find(seqlib::sf2::kInitialAttenuation);
-            attenuations[found != generators.end() ? found->second : 0]++;
-        }
-    }
-    Check(attenuations.size() == 2 && attenuations.begin()->first == 0 && attenuations.begin()->second == 1 &&
-              attenuations.rbegin()->second == 8,
-          "a bank: the SoundFont's zones take the cut, but for the zone full left");
-
-    // Wave 0, wave 1, the PSG at duties 3, 1 and 0, and the noise.
-    Check(!c.sound_fonts.empty() && c.sound_fonts[0].samples == 6 && c.sfz.samples.size() == 6,
-          "a bank: a sample for each wave, and a WAV file for each");
-    std::vector<std::string> names = {"conductor"};
-    for (const seqlib::sfz::File& file : c.sfz.files)
-    {
-        names.push_back(file.name.substr(0, file.name.size() - 4));
-    }
-    Check(names == std::vector<std::string>{"conductor", "BANK_TEST_0", "BANK_TEST_1", "BANK_TEST_2", "BANK_TEST_3",
-                                            "BANK_TEST_4", "BANK_TEST_7"},
-          "a bank: an SFZ file of each program that plays");
-    Check(ntdlib::testing::SfzProblem(c.sfz, names).empty(), "a bank: the SFZ files' samples and loops");
-    const std::string& seventh = c.sfz.files.size() == 6 ? c.sfz.files[5].text : std::string();
-    Check(seventh.find("<region> sample=w0_1.wav lokey=0 hikey=127 pitch_keycenter=60 sample_quality=0 volume=3.01 "
-                       "pan=-100 ") != std::string::npos &&
-              seventh.find("bend_up=200 bend_down=-200") != std::string::npos &&
-              seventh.find("// Program 7 of BANK_TEST, converted by xyz2midi.") == 0,
-          "a bank: program 7's file plays its region full left, with a track's starting bend range");
-    const std::string& drums = c.sfz.files.size() == 6 ? c.sfz.files[3].text : std::string();
-    std::size_t regions = 0;
-    for (std::size_t at = drums.find("<region> "); at != std::string::npos; at = drums.find("<region> ", at + 1))
-    {
-        regions++;
-    }
-    Check(regions == 3 && drums.find("lokey=37 hikey=37") != std::string::npos, "a bank: the drum set's three keys");
-    Check(
-        c.warnings == std::vector<std::string>{"program 5 of bank 0 plays nothing", "program 6 of bank 0 plays nothing",
-                                               "program 200 of bank 0 plays nothing",
-                                               "instrument volume above full level (SoundFont attenuated by 3.0 dB; "
-                                               "SFZ keeps the level)"},
-        "a bank: the programs that play nothing, and the cut of the SoundFont");
-
-    // Program 7 by itself, then program 130 of a bank of 131 programs.
-    const ntdlib::sequence_export::BankConversion seventh_only =
-        ConvertBank(test.archive, 0, std::vector<uint32_t>{7}, ntdlib::ntr::snd::Build{}, kProgram);
-    Check(seventh_only.sound_fonts.size() == 1 &&
-              PresetsOf(seventh_only.sound_fonts[0].sf2) == std::vector<std::pair<uint16_t, uint16_t>>{{0, 7}} &&
-              seventh_only.sfz.files.size() == 1 && seventh_only.sfz.files[0].name == "BANK_TEST_7.sfz" &&
-              seventh_only.sfz.samples.size() == 1,
-          "a bank: one program by itself");
-    std::vector<files::Instrument> many(131);
-    many.back() = {.type = 1, .region = {.wave = 1}};
-    const Bytes large_bytes = TestArchiveBytes(kOneNote, "BGM_TEST", 0, 127, files::Bank(many));
-    const sdat::Archive large = sdat::Archive::Parse(large_bytes);
-    const ntdlib::sequence_export::BankConversion past =
-        ConvertBank(large, 0, std::vector<uint32_t>{9, 130}, ntdlib::ntr::snd::Build{}, kProgram);
-    Check(past.sound_fonts.size() == 1 &&
-              PresetsOf(past.sound_fonts[0].sf2) == std::vector<std::pair<uint16_t, uint16_t>>{{1, 2}} &&
-              past.sfz.files.size() == 1 && past.sfz.files[0].name == "BANK_TEST_130.sfz",
-          "a bank: program 130 takes preset 2 of bank 1");
-    const ntdlib::sequence_export::BankConversion unsorted =
-        ConvertBank(large, 0, std::vector<uint32_t>{130, 9, 130}, ntdlib::ntr::snd::Build{}, kProgram);
-    Check(unsorted.sound_fonts.size() == 1 && unsorted.sound_fonts[0].first == 130 &&
-              PresetsOf(unsorted.sound_fonts[0].sf2) == std::vector<std::pair<uint16_t, uint16_t>>{{1, 2}} &&
-              unsorted.sfz.files.size() == 1 && unsorted.sfz.files[0].name == "BANK_TEST_130.sfz",
-          "a bank: a program given twice converts once");
-    const ntdlib::sequence_export::BankConversion repeated =
-        ConvertBank(test.archive, 0, std::vector<uint32_t>{7, 0, 7}, ntdlib::ntr::snd::Build{}, kProgram);
-    std::vector<std::string> repeated_names;
-    for (const seqlib::sfz::File& file : repeated.sfz.files)
-    {
-        repeated_names.push_back(file.name);
-    }
-    Check(repeated.sound_fonts.size() == 1 && repeated.sound_fonts[0].first == 0 && repeated.sound_fonts[0].last == 7 &&
-              PresetsOf(repeated.sound_fonts[0].sf2) == std::vector<std::pair<uint16_t, uint16_t>>{{0, 0}, {0, 7}} &&
-              repeated_names == std::vector<std::string>{"BANK_TEST_0.sfz", "BANK_TEST_7.sfz"},
-          "a bank: programs out of order convert in ascending order");
-    many[7] = many.back();
-    const Bytes wide_bytes = TestArchiveBytes(kOneNote, "BGM_TEST", 0, 127, files::Bank(many));
-    const sdat::Archive wide = sdat::Archive::Parse(wide_bytes);
-    const ntdlib::sequence_export::BankConversion widths =
-        ConvertBank(wide, 0, std::vector<uint32_t>{130, 7}, ntdlib::ntr::snd::Build{}, kProgram);
-    std::vector<std::string> width_names;
-    for (const seqlib::sfz::File& file : widths.sfz.files)
-    {
-        width_names.push_back(file.name);
-    }
-    Check(widths.sound_fonts.size() == 1 &&
-              PresetsOf(widths.sound_fonts[0].sf2) == std::vector<std::pair<uint16_t, uint16_t>>{{0, 7}, {1, 2}} &&
-              width_names == std::vector<std::string>{"BANK_TEST_007.sfz", "BANK_TEST_130.sfz"},
-          "a bank: programs of one and three digits, given from the highest");
-
-    bool threw = false;
-    try
-    {
-        ConvertBank(test.archive, 1, every, ntdlib::ntr::snd::Build{}, kProgram);
-    }
-    catch (const xsflib::FormatError&)
-    {
-        threw = true;
-    }
-    Check(threw, "a bank that the archive lacks");
-}
-
-// The command line on a cartridge image with two sound archives in one file and a third in another, on a loose sound
-// archive, on a file that is neither, and on cartridge images with DSE's songs and sound effects and with
-// Universomo's songs.
-void TestFrame()
-{
-    const ntdlib::testing::TempFolder folder("sequence_export_ntr_test");
-    const Bytes one_note = TestArchiveBytes(kOneNote);
-    const Bytes loop = TestArchiveBytes(kLoop, "BGM_LOOP");
-    Bytes pack = {'J', 'U', 'N', 'K', 0, 0, 0, 0};
-    pack.insert(pack.end(), loop.begin(), loop.end());
-    files::Align(pack, 4);
-    pack.insert(pack.end(), one_note.begin(), one_note.end());
-
-    nds_files::Image spec;
-    spec.files = {{"sound/sound_data.sdat", one_note}, {"data/pack.bin", pack}, {"data/readme.txt", {'h', 'i'}}};
-    const fs::path image = folder.Write("game.nds", nds_files::BuildImage(spec).first);
-    const fs::path loose = folder.Write("loose.sdat", one_note);
-    const fs::path neither = folder.Write("neither.bin", {1, 2, 3, 4, 5, 6, 7, 8});
-
-    ArchiveConverter converter;
-    converter.program = kProgram;
-    converter.version_line = "xyz2midi 1.0";
-    const auto run = [&converter](const fs::path& input)
-    {
-        return RunArchiveConverter({kProgram, "--quiet", ntdlib::sequence_export::Utf8(input)}, converter);
-    };
-
-    // Each file's archives go to folders named after the file: a second archive in the file takes _1.
-    const fs::path out = folder.Path() / "game_xyz2midi";
-    Check(run(image) == 0, "the image converts");
-    const auto passes = [](const fs::path& stem)
-    {
-        const std::optional<std::vector<uint8_t>> midi =
-            ntdlib::sequence_export::ReadFile(fs::path(stem).replace_extension(".mid"));
-        const std::optional<std::vector<uint8_t>> sf2 =
-            ntdlib::sequence_export::ReadFile(fs::path(stem).replace_extension(".sf2"));
-        return midi && sf2 && seqlib::midi::Problems(*midi).empty() && seqlib::sf2::Check(*sf2).empty();
-    };
-    Check(passes(out / "sound_data" / "BGM_TEST") && passes(out / "pack" / "BGM_LOOP") &&
-              passes(out / "pack_1" / "BGM_TEST"),
-          "each archive's files, which pass seqlib's checks");
-    Check(fs::exists(out / "pack" / "sfz" / "BGM_LOOP" / "Track 0.sfz") && fs::exists(out / "pack" / "sfz" / "samples"),
-          "and its SFZ files");
-
-    Check(run(loose) == 0 && passes(folder.Path() / "loose_xyz2midi" / "BGM_TEST"), "a loose archive converts");
-
-    // DSE's songs and sound effects: each folder of them goes to a folder of its name. A sound effect takes the name
-    // of its bank of sound effects and its slot. The image's ARM9 binary holds no build of DSE's driver that a model
-    // covers: its songs convert only on the model that --dse-model names.
-    nds_files::Image dse;
-    dse.files = {
-        {"SOUND/BGM/bgm0001.smd", dse_song_files::SongFile()},
-        {"SOUND/BGM/bgm0001.swd", dse_song_files::BankFile()},
-        {"SOUND/BGM/bgm.swd", dse_song_files::MainBankFile()},
-        {"SOUND/SE/fx.sed",
-         dse_song_files::EffectsFile(
-             {std::nullopt,
-              dse_song_files::Effect{.tracks = {dse_song_files::Join({{1, 0, 0, 0},
-                                                                      {0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xE0, 0x7F},
-                                                                      dse_song_files::Note(0x60, 0, 0, 0x18, 1),
-                                                                      {0x92, 0x18, 0x98}})}}},
-             5)},
-        {"SOUND/SE/fx.swd", dse_song_files::BankFile()}};
-    const fs::path dse_image = folder.Write("dse.nds", nds_files::BuildImage(dse).first);
-    const fs::path dse_out = folder.Path() / "dse_xyz2midi";
-    Check(run(dse_image) == 1 && !fs::exists(dse_out), "DSE's songs don't convert on a build that no model covers");
-    Check(RunArchiveConverter({kProgram, "--quiet", "--dse-model", "later", ntdlib::sequence_export::Utf8(dse_image)},
-                              converter) == 0 &&
-              passes(dse_out / "BGM" / "bgm0001") && passes(dse_out / "SE" / "fx_001") &&
-              fs::exists(dse_out / "SE" / "sfz" / "fx_001" / "Track 0.sfz"),
-          "DSE's songs and sound effects convert on the model that --dse-model names");
-
-    // Universomo's songs: the songs beside the bank go to the folder universomo, each named after its file. --only
-    // picks songs by name.
-    nds_files::Image ums;
-    ums.files = {{"data/samplebank.usb", universomo_files::BankFile()},
-                 {"data/au81.ums", universomo_files::SongFile()},
-                 {"data/au82.ums", universomo_files::SongFile()}};
-    const Bytes ums_bytes = nds_files::BuildImage(ums).first;
-    const fs::path ums_out = folder.Path() / "ums_xyz2midi" / "universomo";
-    Check(run(folder.Write("ums.nds", ums_bytes)) == 0 && passes(ums_out / "au81") && passes(ums_out / "au82") &&
-              fs::exists(ums_out / "sfz" / "au81"),
-          "Universomo's songs convert");
-    const fs::path only_out = folder.Path() / "ums_only_xyz2midi" / "universomo";
-    Check(RunArchiveConverter({kProgram, "--quiet", "--only", "^au82$",
-                               ntdlib::sequence_export::Utf8(folder.Write("ums_only.nds", ums_bytes))},
-                              converter) == 0 &&
-              passes(only_out / "au82") && !fs::exists(only_out / "au81.mid"),
-          "--only picks Universomo's songs by name");
-    Check(run(neither) == 1 && !fs::exists(folder.Path() / "neither_xyz2midi"), "a file that is neither fails");
-
-    // A game's profile: its settings give a sequence's program through variable 0, and an arrangement gives another
-    // program. Without a value, the program is -1 and the sequence plays nothing.
-    const fs::path voices = folder.Write("voices.sdat", TestArchiveBytes(kProgramFromVariable, "SE_VOICE"));
-    ArchiveConverter profiled = converter;
-    profiled.game_settings = [](const ArchiveInput&, const ntdlib::ntr::SequenceRef&, PerformOptions& perform)
-    {
-        perform.variables.try_emplace(0, 0);
-    };
-    profiled.arrangements = [](const ArchiveInput&, const ntdlib::ntr::SequenceRef&)
-    {
-        return std::vector<Arrangement>{{.suffix = "_PROGRAM7", .variables = {{0, 7}}}};
-    };
-    const auto convert =
-        [&voices, &folder](const ArchiveConverter& c, const std::string& subfolder, const std::string& var = "")
-    {
-        std::vector<std::string> args = {kProgram, "--quiet", "--output",
-                                         ntdlib::sequence_export::Utf8(folder.Path() / subfolder)};
-        if (!var.empty())
-        {
-            args.insert(args.end(), {"--var", var});
-        }
-        args.push_back(ntdlib::sequence_export::Utf8(voices));
-        return RunArchiveConverter(args, c);
-    };
-    // The samples of a SoundFont that the converter wrote: its smpl chunk.
-    const auto samples = [&folder](const std::string& subfolder, const std::string& name)
-    {
-        const std::optional<std::vector<uint8_t>> sf2 =
-            ntdlib::sequence_export::ReadFile(folder.Path() / subfolder / (name + ".sf2"));
-        const std::string_view text(reinterpret_cast<const char*>(sf2 ? sf2->data() : nullptr), sf2 ? sf2->size() : 0);
-        const std::size_t at = text.find("smpl");
-        if (at == std::string_view::npos || at + 8 > text.size())
-        {
-            return std::string();
-        }
-        const uint32_t size = xsflib::LoadLe32(sf2->data() + at + 4);
-        return std::string(text.substr(at + 8, size));
-    };
-    // The number of its samples: its shdr chunk's records but the last, which ends the list. A SoundFont without
-    // samples still holds the 46 zero points that follow each sample.
-    const auto sample_count = [&folder](const std::string& subfolder, const std::string& name)
-    {
-        const std::optional<std::vector<uint8_t>> sf2 =
-            ntdlib::sequence_export::ReadFile(folder.Path() / subfolder / (name + ".sf2"));
-        return sf2 ? seqlib::sf2::Read(*sf2).Count("shdr", 46) - 1 : 0;
-    };
-    Check(convert(converter, "plain") == 0 && convert(profiled, "profiled") == 0 &&
-              convert(profiled, "given", "0=7") == 0 && convert(profiled, "below", "0=0") == 0,
-          "the profiled archive converts");
-    Check(passes(folder.Path() / "profiled" / "SE_VOICE") && passes(folder.Path() / "profiled" / "SE_VOICE_PROGRAM7") &&
-              !fs::exists(folder.Path() / "plain" / "SE_VOICE_PROGRAM7.mid"),
-          "an arrangement converts beside its sequence");
-    Check(sample_count("plain", "SE_VOICE") == 0 && sample_count("profiled", "SE_VOICE") == 1 &&
-              sample_count("profiled", "SE_VOICE_PROGRAM7") == 1 &&
-              samples("profiled", "SE_VOICE") != samples("profiled", "SE_VOICE_PROGRAM7"),
-          "the game's settings and the arrangement give their programs");
-    Check(samples("given", "SE_VOICE") == samples("profiled", "SE_VOICE_PROGRAM7") &&
-              samples("given", "SE_VOICE_PROGRAM7") == samples("profiled", "SE_VOICE_PROGRAM7") &&
-              samples("below", "SE_VOICE") == samples("profiled", "SE_VOICE") &&
-              samples("below", "SE_VOICE_PROGRAM7") == samples("profiled", "SE_VOICE"),
-          "the command line's value stays over both");
-    const std::optional<std::vector<uint8_t>> arranged =
-        ntdlib::sequence_export::ReadFile(folder.Path() / "profiled" / "SE_VOICE_PROGRAM7.sf2");
-    Check(arranged && std::string_view(reinterpret_cast<const char*>(arranged->data()), arranged->size())
-                              .find("from sequence SE_VOICE_PROGRAM7.") != std::string_view::npos,
-          "an arrangement's files take its name");
-
-    // A game's profile with commands: its settings give track 0 a volume of 0 once the sequence starts, and an
-    // arrangement gives it 127 again. The arrangement's commands follow the settings'.
-    ArchiveConverter commanded = converter;
-    commanded.game_settings = [](const ArchiveInput&, const ntdlib::ntr::SequenceRef&, PerformOptions& perform)
-    {
-        perform.commands.push_back(TrackVolume(0x0001, -32768));
-    };
-    commanded.arrangements = [](const ArchiveInput&, const ntdlib::ntr::SequenceRef&)
-    {
-        return std::vector<Arrangement>{{.suffix = "_FULL", .commands = {TrackVolume(0x0001, 0)}}};
-    };
-    const std::vector<std::string> args = {kProgram, "--quiet", "--output",
-                                           ntdlib::sequence_export::Utf8(folder.Path() / "commanded"),
-                                           ntdlib::sequence_export::Utf8(loose)};
-    // The value of the first CC11 in a MIDI file that the converter wrote, or -1.
-    const auto first_expression = [&folder](const std::string& name)
-    {
-        const std::optional<std::vector<uint8_t>> midi =
-            ntdlib::sequence_export::ReadFile(folder.Path() / "commanded" / (name + ".mid"));
-        if (!midi)
-        {
-            return -1;
-        }
-        for (const seqlib::midi::Track& track : seqlib::midi::Read(*midi).tracks)
-        {
-            for (const seqlib::midi::Event& e : track.events)
-            {
-                if (e.bytes.size() == 3 && (e.bytes[0] & 0xF0) == 0xB0 && e.bytes[1] == 11)
-                {
-                    return static_cast<int>(e.bytes[2]);
-                }
-            }
-        }
-        return -1;
-    };
-    Check(RunArchiveConverter(args, commanded) == 0 && first_expression("BGM_TEST") == 0 &&
-              first_expression("BGM_TEST_FULL") == 107,
-          "the game's settings' commands and an arrangement's after them");
-}
-
 } // namespace
 
 int main()
@@ -1191,13 +873,12 @@ int main()
     TestEnvelopes();
     TestPresetZones();
     TestWaves();
+    TestTimerTuning();
+    TestPanLfo();
+    TestPanLfoEndsLateInATick();
     TestPerform();
     TestChanges();
     TestStolenChannel();
-    TestTiedSweeps();
-    TestConvert();
-    TestConvertBank();
-    TestFrame();
 
     return xsflib::testing::Summary("DS conversion");
 }
