@@ -3,6 +3,8 @@
 #include "ntdlib/ctr/snd/sequence.h"
 
 #include <array>
+#include <cstdint>
+#include <optional>
 #include <span>
 
 #include "ntdlib/ctr/snd/engine.h"
@@ -10,6 +12,7 @@
 #include "ntdlib/ctr/snd/voice.h"
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/channel_impl.h"
+#include "ntdlib/nwsnd/mute_modes.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
 
@@ -56,25 +59,28 @@ void ApplyVariables(Engine& engine, SequenceSoundPlayer& player, std::span<const
     }
 }
 
+void ApplyMutesAndSeed(Engine& engine, SequenceSoundPlayer& player, uint16_t muted, uint16_t silenced,
+                       std::optional<uint32_t> seed)
+{
+    if (seed)
+    {
+        engine.Rng() = ntdlib::nwsnd::Random(*seed);
+    }
+
+    if (muted != 0)
+    {
+        player.SetTrackMute(engine, muted, ntdlib::nwsnd::kMuteNoStop);
+    }
+    if (silenced != 0)
+    {
+        player.SetTrackSilence(engine, silenced, true, 0);
+    }
+}
+
 void ApplySequenceStart(Engine& engine, SequenceSoundPlayer& player, const SequenceStart& start)
 {
     ApplyVariables(engine, player, start.variables);
-
-    if (start.seed)
-    {
-        engine.Rng() = ntdlib::nwsnd::Random(*start.seed);
-    }
-
-    // SeqTrack::SetMute's modes: 1 is SEQ_MUTE_NO_STOP.
-    constexpr int kMuteNoStop = 1;
-    if (start.muted != 0)
-    {
-        player.SetTrackMute(engine, start.muted, kMuteNoStop);
-    }
-    if (start.silenced != 0)
-    {
-        player.SetTrackSilence(engine, start.silenced, true, 0);
-    }
+    ApplyMutesAndSeed(engine, player, start.muted, start.silenced, start.seed);
 
     // The volumes that the game gives the tracks through the sound's handle (SequenceSoundHandle::SetTrackVolume). The
     // driver multiplies each into the volume of the track's channels (UpdateChannelParam, 0x31de18).

@@ -11,10 +11,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <initializer_list>
 #include <map>
 #include <random>
-#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -713,27 +711,29 @@ void TestShortFileIsReported()
                                                    "bad CWAV: too short to be a CWAV file"));
 }
 
-// The tests that apply to every console, the Wii included: those that build no archive. The tests on the Wii build RSAR
-// archives (sequence_export_revolution_test.h).
+// The tests that hold on every console, the Wii included.
 const Test kEveryConsoleTests[] = {
-    TestInstantEnvelopeIsAnOrgan,  TestDecayTakesTheGamesTime,        TestSlowDecaySplitsItsError,
-    TestSfzDecayTakesTheGamesTime, TestNoteIsQuietOnlyAfterItsAttack,
+    TestInstantEnvelopeIsAnOrgan,
+    TestDecayTakesTheGamesTime,
+    TestSlowDecaySplitsItsError,
+    TestSfzDecayTakesTheGamesTime,
+    TestNoteIsQuietOnlyAfterItsAttack,
+    TestEnvelopeValuesMatchTheGame,
+    TestSoundFontFilterStandsInForTheGames,
+    TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays,
+    TestVariableSetAfterAJumpBackBelongsToTheNewPass,
+    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
 };
 
 // The tests that hold on the Wii U, the Switch and the 3DS.
 const Test kWiiUSwitchAndCtrTests[] = {
-    TestEnvelopeValuesMatchTheGame,
     TestEnvelopeSimulationSustainsAndReleases,
     TestTrackFiltersFollowTheGame,
-    TestSoundFontFilterStandsInForTheGames,
     TestSfzFilterFollowsTheGame,
     TestMissingBlockIsReported,
     TestShortFileIsReported,
     TestTrackStartsNoMoreNotesATickThanTheGameHasVoices,
-    TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays,
     TestTrackPlayingANoteEachTimeAVariableIsSetGoesOn,
-    TestVariableSetAfterAJumpBackBelongsToTheNewPass,
-    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
     TestCountdownInsideALoopIsAnInnerLoop,
     TestTrackThatLeavesItsLoopForAnIdleLoopEnds,
     TestLoopOfAnEndedTrackIsNoLoop,
@@ -761,18 +761,6 @@ const Test kWiiUAndCtrTests[] = {
 const Test kWiiUOnlyTests[] = {
     TestNoteWithoutAFreeChannelIsDropped,
 };
-
-// The tests of `lists`, in order.
-std::vector<Test> Join(std::initializer_list<std::span<const Test>> lists)
-{
-    std::vector<Test> tests;
-    for (const std::span<const Test> list : lists)
-    {
-        tests.insert(tests.end(), list.begin(), list.end());
-    }
-
-    return tests;
-}
 
 } // namespace
 

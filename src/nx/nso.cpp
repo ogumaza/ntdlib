@@ -48,32 +48,16 @@ constexpr uint64_t kDynamicOffsetAt = 4;
 constexpr std::size_t kDynamicEntry = 16;
 constexpr int64_t kDtNull = 0;
 
-// The `size` bytes at `address` in the segment of `nso` that contains them all, or an empty span if no segment does.
-std::span<const uint8_t> SegmentBytes(const Nso& nso, uint64_t address, std::size_t size)
-{
-    for (const NsoSegment* segment : {&nso.text, &nso.rodata, &nso.data})
-    {
-        if (address >= segment->address && address - segment->address <= segment->bytes.size() &&
-            size <= segment->bytes.size() - (address - segment->address))
-        {
-            return std::span<const uint8_t>(segment->bytes)
-                .subspan(static_cast<std::size_t>(address - segment->address), size);
-        }
-    }
-
-    return {};
-}
-
 // The 32-bit word at `address` of `nso`, or nothing if no segment contains it.
 std::optional<uint32_t> WordAt(const Nso& nso, uint64_t address)
 {
-    const std::span<const uint8_t> bytes = SegmentBytes(nso, address, 4);
-    if (bytes.empty())
+    const std::optional<std::span<const uint8_t>> bytes = SegmentBytes(nso, address, 4);
+    if (!bytes)
     {
         return std::nullopt;
     }
 
-    return xsflib::LoadLe32(bytes.data());
+    return xsflib::LoadLe32(bytes->data());
 }
 
 } // namespace
@@ -121,6 +105,21 @@ Nso ReadNso(std::span<const uint8_t> file)
     return nso;
 }
 
+std::optional<std::span<const uint8_t>> SegmentBytes(const Nso& nso, uint64_t address, std::size_t size)
+{
+    for (const NsoSegment* segment : {&nso.text, &nso.rodata, &nso.data})
+    {
+        if (address >= segment->address && address - segment->address <= segment->bytes.size() &&
+            size <= segment->bytes.size() - (address - segment->address))
+        {
+            return std::span<const uint8_t>(segment->bytes)
+                .subspan(static_cast<std::size_t>(address - segment->address), size);
+        }
+    }
+
+    return std::nullopt;
+}
+
 std::map<int64_t, uint64_t> DynamicEntries(const Nso& nso)
 {
     const std::optional<uint32_t> mod0 = WordAt(nso, kMod0At);
@@ -136,19 +135,19 @@ std::map<int64_t, uint64_t> DynamicEntries(const Nso& nso)
     for (uint64_t at = *mod0 + static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(*offset)));;
          at += kDynamicEntry)
     {
-        const std::span<const uint8_t> entry = SegmentBytes(nso, at, kDynamicEntry);
-        if (entry.empty())
+        const std::optional<std::span<const uint8_t>> entry = SegmentBytes(nso, at, kDynamicEntry);
+        if (!entry)
         {
             throw xsflib::FormatError("the module's dynamic section runs past the end of a segment");
         }
 
-        const auto entry_tag = static_cast<int64_t>(xsflib::LoadLe64(entry.data()));
+        const auto entry_tag = static_cast<int64_t>(xsflib::LoadLe64(entry->data()));
         if (entry_tag == kDtNull)
         {
             break;
         }
 
-        entries.emplace(entry_tag, xsflib::LoadLe64(entry.data() + 8));
+        entries.emplace(entry_tag, xsflib::LoadLe64(entry->data() + 8));
     }
 
     return entries;

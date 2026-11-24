@@ -45,7 +45,7 @@ namespace
 
 // An archive of the sequences `commands`, labelled A, B, C and so on, that play one bank. A sequence after the first
 // has the pan mode of `second_pan_mode`.
-SoundArchive PieceArchive(const std::vector<std::vector<uint8_t>>& commands, uint8_t second_pan_mode = 0)
+TestArchive PieceArchive(const std::vector<std::vector<uint8_t>>& commands, uint8_t second_pan_mode = 0)
 {
     std::vector<ArchiveFile> files;
     ArchiveLists lists;
@@ -62,7 +62,42 @@ SoundArchive PieceArchive(const std::vector<std::vector<uint8_t>>& commands, uin
     lists.banks = {static_cast<uint32_t>(commands.size())};
     lists.wave_archives = {static_cast<uint32_t>(commands.size() + 1)};
 
-    return SoundArchive::Load(Fsar(files, lists), console->settings.archive);
+    return LoadTestArchive(Fsar(files, lists));
+}
+
+// Performs sounds `indices` of `archive` together, as one piece (PerformTogether), with the banks of the first.
+Performance PerformPiece(const TestArchive& archive, const std::vector<uint32_t>& indices)
+{
+    if (archive.rsar_archive)
+    {
+        return WiiPerformPiece(*archive.rsar_archive, indices);
+    }
+
+    BankSet banks(*archive.sar_archive, archive.sar_archive->Sounds().at(0), console->settings);
+    return PerformTogether(*archive.sar_archive, indices, banks, {}, console->settings);
+}
+
+// Converts sounds `indices` of `archive` together, as the piece `name` (ConvertTogether).
+Conversion ConvertPiece(const TestArchive& archive, const std::vector<uint32_t>& indices, const std::string& name)
+{
+    if (archive.rsar_archive)
+    {
+        return WiiConvertPiece(*archive.rsar_archive, indices, name);
+    }
+
+    return ConvertTogether(*archive.sar_archive, indices, name, {}, console->settings, console->program);
+}
+
+// Converts the sound or the piece that `at` picks in `archive`, with `pieces` (ConvertSoundOrPiece).
+Conversion ConvertArranged(const TestArchive& archive, const ArrangedSound& at,
+                           const std::vector<ntdlib::SoundPiece>& pieces)
+{
+    if (archive.rsar_archive)
+    {
+        return WiiConvertArranged(*archive.rsar_archive, at, pieces);
+    }
+
+    return ConvertSoundOrPiece(*archive.sar_archive, at, pieces, {}, console->settings, console->program);
 }
 
 // A plays key 60 on track 0. B waits a tick and plays key 64. C plays nothing.
@@ -92,11 +127,10 @@ void TestPieceOfSequencesKeepsTheirTracksWithNotes()
     // The piece holds A's track 0 and B's, in that order, named after their sequences and tracks. C plays no note and
     // adds no track. Both notes play the bank's instrument with the same settings. They share one preset. B's note
     // keeps its tick.
-    const SoundArchive archive = PieceArchive(kPieceOfTwoNotes);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = PieceArchive(kPieceOfTwoNotes);
     const std::vector<uint32_t> kAll = {0, 1, 2};
 
-    const Performance p = PerformTogether(archive, kAll, banks, {}, console->settings);
+    const Performance p = PerformPiece(archive, kAll);
 
     const std::vector<std::pair<uint32_t, int>> kFirst = {{0, 60}};
     const std::vector<std::pair<uint32_t, int>> kSecond = {{1, 64}};
@@ -109,11 +143,11 @@ void TestPieceOfSequencesConvertsToOneSetOfFiles()
 {
     // The piece's MIDI tracks and SFZ files take the names of its tracks. The SoundFont's comment lists the sequences
     // and the banks. A sequence converted alone keeps its comment.
-    const SoundArchive archive = PieceArchive(kPieceOfTwoNotes);
+    const TestArchive archive = PieceArchive(kPieceOfTwoNotes);
     const std::vector<uint32_t> kTwo = {0, 1};
 
-    const Conversion c = ConvertTogether(archive, kTwo, "Piece", {}, console->settings, console->program);
-    const Conversion alone = ConvertSequence(archive, 0);
+    const Conversion c = ConvertPiece(archive, kTwo, "Piece");
+    const Conversion alone = ConvertSound(archive, 0);
 
     const std::vector<std::string> tracks = seqlib::midi::TrackNames(seqlib::midi::Read(c.midi));
     std::vector<std::string> files;
@@ -140,21 +174,21 @@ void TestSoundThatStartsAPieceConvertsWithThePiece()
 {
     // A and B form a piece. A converts together with B. B starts no piece and converts alone. An arrangement of A
     // converts alone too.
-    const SoundArchive archive = PieceArchive(kPieceOfTwoNotes);
+    const TestArchive archive = PieceArchive(kPieceOfTwoNotes);
     const std::vector<ntdlib::SoundPiece> pieces = {{"Piece", {0, 1}}};
     const std::vector<uint32_t> kTwo = {0, 1};
     const auto convert = [&archive, &pieces](const ArrangedSound& at)
     {
-        return ConvertSoundOrPiece(archive, at, pieces, {}, console->settings, console->program);
+        return ConvertArranged(archive, at, pieces);
     };
 
     const Conversion first = convert({0, std::nullopt});
     const Conversion second = convert({1, std::nullopt});
     const Conversion arranged = convert({0, 0});
 
-    const Conversion together = ConvertTogether(archive, kTwo, "Piece", {}, console->settings, console->program);
-    const Conversion a = ConvertSequence(archive, 0);
-    const Conversion b = ConvertSequence(archive, 1);
+    const Conversion together = ConvertPiece(archive, kTwo, "Piece");
+    const Conversion a = ConvertSound(archive, 0);
+    const Conversion b = ConvertSound(archive, 1);
     XSFLIB_CHECK(together.midi != a.midi && together.sf2 != a.sf2);
     XSFLIB_CHECK(first.midi == together.midi && first.sf2 == together.sf2);
     XSFLIB_CHECK(second.midi == b.midi && second.sf2 == b.sf2);
@@ -164,11 +198,10 @@ void TestSoundThatStartsAPieceConvertsWithThePiece()
 void TestPieceOfSequencesRequiresOneBankListAndPanMode()
 {
     // A and B play one bank, but B's sound places stereo waves in another pan mode. A piece also requires a sequence.
-    const SoundArchive archive = PieceArchive({{0x3c, 0x64, 0x30, 0xff}, {0x3c, 0x64, 0x30, 0xff}}, 1);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-    const auto message = [&archive, &banks](const std::vector<uint32_t>& indices)
+    const TestArchive archive = PieceArchive({{0x3c, 0x64, 0x30, 0xff}, {0x3c, 0x64, 0x30, 0xff}}, 1);
+    const auto message = [&archive](const std::vector<uint32_t>& indices)
     {
-        return ErrorOf<std::invalid_argument>([&] { PerformTogether(archive, indices, banks, {}, console->settings); });
+        return ErrorOf<std::invalid_argument>([&] { PerformPiece(archive, indices); });
     };
 
     XSFLIB_CHECK(message({0, 1}) == "A and B differ in banks or pan mode");
@@ -400,11 +433,15 @@ void TestCompanionThatDoesNotHandOverIsReported()
     XSFLIB_CHECK(message == "Ctl doesn't hand over to Piece within 30 seconds");
 }
 
+// The tests that hold on every console, the Wii included.
+const Test kEveryConsoleTests[] = {
+    TestSoundThatStartsAPieceConvertsWithThePiece,
+};
+
 // The tests that hold on the Wii U, the Switch and the 3DS.
 const Test kWiiUSwitchAndCtrTests[] = {
     TestPieceOfSequencesKeepsTheirTracksWithNotes,
     TestPieceOfSequencesConvertsToOneSetOfFiles,
-    TestSoundThatStartsAPieceConvertsWithThePiece,
     TestPieceOfSequencesRequiresOneBankListAndPanMode,
     TestCompanionPlaysBesideThePiece,
     TestCompanionTrackWithoutNotesIsLeftOut,
@@ -418,9 +455,10 @@ const Test kWiiUSwitchAndCtrTests[] = {
 
 int main()
 {
-    RunOn(WiiU(), kWiiUSwitchAndCtrTests);
-    RunOn(Switch(), kWiiUSwitchAndCtrTests);
-    RunOn(Ctr(), kWiiUSwitchAndCtrTests);
+    RunOn(WiiU(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests}));
+    RunOn(Switch(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests}));
+    RunOn(Ctr(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests}));
+    RunOn(Wii(), kEveryConsoleTests);
 
     return xsflib::testing::Summary("sequence_export_pieces");
 }

@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "ntdlib/ctr/snd/starting_tracks.h"
@@ -79,13 +80,20 @@ using SequenceSoundPlayer = ntdlib::nwsnd::SequenceSoundPlayer<Policy>;
 // entries that set no variable (SequenceVariable::kNone).
 void ApplyVariables(Engine& engine, SequenceSoundPlayer& player, std::span<const SequenceVariable> variables);
 
+// Quiets the tracks that a game quiets through the sound's handle as a sequence starts, and seeds the engine's random
+// generator. Without a seed, the generator's state stays the same. It mutes the tracks of `muted`, bit N for track N,
+// in the mode that keeps their channels sounding (SEQ_MUTE_NO_STOP): none of their notes starts. It silences the tracks
+// of `silenced` at once: their notes start and take their voices, at a volume of 0. Call it after the sequence's start
+// and before its first tick.
+void ApplyMutesAndSeed(Engine& engine, SequenceSoundPlayer& player, uint16_t muted, uint16_t silenced,
+                       std::optional<uint32_t> seed);
+
 // Starts `player` as `start` gives, as a game does through the sound's handle. It sets the variables of frame 0 and
-// schedules the later ones (Engine::ScheduleVariable). With a seed, it sets the engine's random generator. It quiets
-// the muted tracks in the mode that keeps their channels sounding (SEQ_MUTE_NO_STOP), and the silenced tracks at once.
-// It gives the other tracks their volumes (the player's SetTrackVolume). It sets the tempo ratio, the pitch, the
-// low-pass and the player's sends on the aux buses. Call it after the sequence's start and before its first tick.
-// Neither kind of quieted track then starts a note that sounds. The silenced tracks' notes take their voices. The
-// start's banks go to Engine::StartSequence. The caller applies the start's volume to the output.
+// schedules the later ones (Engine::ScheduleVariable). It applies the start's mutes, silences and seed
+// (ApplyMutesAndSeed). It gives the other tracks their volumes (the player's SetTrackVolume). It sets the tempo ratio,
+// the pitch, the low-pass and the player's sends on the aux buses. Call it after the sequence's start and before its
+// first tick. Neither kind of quieted track then starts a note that sounds. The silenced tracks' notes take their
+// voices. The start's banks go to Engine::StartSequence. The caller applies the start's volume to the output.
 void ApplySequenceStart(Engine& engine, SequenceSoundPlayer& player, const SequenceStart& start);
 
 } // namespace ntdlib::ctr::snd

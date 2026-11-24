@@ -13,6 +13,7 @@
 
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/nwsnd/mute_modes.h"
 #include "ntdlib/nwsnd/sequence.h"
 
 namespace ntdlib::nwsnd
@@ -244,21 +245,21 @@ void SequenceTrack<Policy>::SetMute(Player& player, Engine& engine, int mode)
 {
     switch (mode)
     {
-    case 0:
+    case kMuteOff:
         mute_ = false;
         break;
 
-    case 1:
+    case kMuteNoStop:
         mute_ = true;
         break;
 
-    case 2:
+    case kMuteRelease:
         ReleaseAllChannel(player, engine, -1);
         FreeAllChannel(player, engine);
         mute_ = true;
         break;
 
-    case 3:
+    case kMuteStop:
         if constexpr (requires { engine.OnStopAll(player, index_); })
         {
             engine.OnStopAll(player, index_);

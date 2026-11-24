@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 // Checks the decoder of LZ4 blocks and the reader of NSO executables on blocks and files built here: copies that
-// overlap their output, numbers that continue in more bytes, the segments of an NSO, a module's dynamic section, and
-// the messages for damaged data.
+// overlap their output, numbers that continue in more bytes, the segments of an NSO and the bytes in them, a module's
+// dynamic section, and the messages for damaged data.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -172,6 +173,28 @@ nx::Nso DynamicModule(uint32_t mod0, int32_t offset, const std::vector<std::pair
     return nso;
 }
 
+// SegmentBytes finds bytes in the segment that contains them all: in the text and the data segments, but not past a
+// segment's end or between segments. A size of 0 gives an empty span at a segment's end, and nothing past it.
+void TestSegmentBytes()
+{
+    nx::Nso nso;
+    nso.text = {0, {1, 2, 3, 4}};
+    nso.data = {0x10, {5, 6}};
+
+    const auto found = [&nso](uint64_t address, std::size_t size, const std::vector<uint8_t>& bytes)
+    {
+        const std::optional<std::span<const uint8_t>> span = nx::SegmentBytes(nso, address, size);
+        return span && std::ranges::equal(*span, bytes);
+    };
+
+    Check(found(1, 2, {2, 3}), "bytes in the text segment");
+    Check(found(0x10, 2, {5, 6}), "bytes in the data segment");
+    Check(!nx::SegmentBytes(nso, 3, 2), "bytes past a segment's end");
+    Check(!nx::SegmentBytes(nso, 8, 1), "bytes between the segments");
+    Check(found(0x12, 0, {}), "no bytes at a segment's end");
+    Check(!nx::SegmentBytes(nso, 0x13, 0), "no bytes past a segment's end");
+}
+
 // The entries up to DT_NULL, by tag, with the first value of a tag listed twice. A section before its header. The
 // messages for a module without a MOD0 header and for a section that runs past its segment's end.
 void TestDynamicEntries()
@@ -207,6 +230,7 @@ int main()
     TestLz4Refusals();
     TestNso();
     TestNsoRefusals();
+    TestSegmentBytes();
     TestDynamicEntries();
 
     return xsflib::testing::Summary("nx_nso");

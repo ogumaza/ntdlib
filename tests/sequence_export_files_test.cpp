@@ -9,10 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <initializer_list>
 #include <optional>
 #include <set>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -522,9 +520,15 @@ void TestSfzResonanceAmountFitsTheType()
 
 // The archive of the tests of a bank's conversion. Its sequence plays program 0 at key 60, then program 2 at key 64.
 // Program 1 of the bank holds no instrument. Program 0 plays a mono wave. Program 2 plays a stereo wave, at its
-// original key, volume, pan and envelope. `volume` is program 2's volume.
-SoundArchive BankTestArchive(uint8_t volume = 100)
+// original key, volume, pan and envelope. `volume` is program 2's volume. On the Wii, BankTestRsar builds the archive.
+// Program 1 then holds an instrument whose region has no wave.
+TestArchive BankTestArchive(uint8_t volume = 100)
 {
+    if (OnWii())
+    {
+        return {.rsar_archive = WiiBankTestArchive(volume)};
+    }
+
     const auto table = [](const files::Region& region)
     {
         const files::VelocityTable velocities{files::VelocityTable::kDirect, 0, {{127, region}}};
@@ -544,49 +548,46 @@ SoundArchive BankTestArchive(uint8_t volume = 100)
     archive_files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true),
                                   Pcm16Fwav(32, std::vector<int16_t>(32, -2000), 2, true)});
 
-    return SoundArchive::Load(
-        Fsar(archive_files, {.sequences = {{.banks = {0x03000000}}}, .banks = {1}, .wave_archives = {2}}),
-        console->settings.archive);
+    return LoadTestArchive(
+        Fsar(archive_files, {.sequences = {{.banks = {0x03000000}}}, .banks = {1}, .wave_archives = {2}}));
+}
+
+// Converts bank `bank` of `archive`. On the Wii, the bank's stereo waves play as in BankTestRsar's first sound, in pan
+// mode 1.
+BankConversion ConvertTestBank(const TestArchive& archive, std::size_t bank)
+{
+    if (archive.rsar_archive)
+    {
+        return WiiConvertBank(*archive.rsar_archive, bank, 1);
+    }
+
+    return ConvertBank(*archive.sar_archive, bank, console->settings, console->program);
+}
+
+// The name of the first bank of `archive`.
+std::string FirstBankName(const TestArchive& archive)
+{
+    return archive.rsar_archive ? archive.rsar_archive->Banks().at(0).name : archive.sar_archive->Banks().at(0).name;
 }
 
 // A bank's SoundFont holds each instrument at its program. Each instrument's zones and samples are those of a sequence
 // that plays the instrument with a track's starting settings.
 void TestBankSoundFontHoldsEachInstrumentAtItsProgram()
 {
-    const SoundArchive archive = BankTestArchive();
+    const TestArchive archive = BankTestArchive();
 
-    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
-    const Conversion sequence = ConvertSequence(archive, 0);
+    const BankConversion bank = ConvertTestBank(archive, 0);
+    const Conversion sequence = ConvertSound(archive, 0);
 
-    XSFLIB_CHECK(bank.sound_fonts.size() == 1);
-    if (bank.sound_fonts.size() != 1)
-    {
-        return;
-    }
-
-    const BankSoundFont& sound_font = bank.sound_fonts[0];
-    const seqlib::sf2::Records v = seqlib::sf2::Read(sound_font.sf2);
-    const seqlib::sf2::Records w = seqlib::sf2::Read(sequence.sf2);
-    XSFLIB_CHECK(Sf2Problem(sound_font.sf2).empty() && bank.warnings.empty() && sound_font.samples == 3);
-    XSFLIB_CHECK(sound_font.first == 0 && sound_font.last == 2 && v.Count("phdr", 38) == 3);
-    XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 0))) == "Program 0");
-    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 0) + 20) == 0 &&
-                 xsflib::LoadLe16(v.Record("phdr", 38, 0) + 22) == 0);
-    XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 1))) == "Program 2");
-    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 1) + 20) == 2 &&
-                 xsflib::LoadLe16(v.Record("phdr", 38, 1) + 22) == 0);
-    for (const char* chunk : {"ibag", "igen", "imod", "shdr", "smpl"})
-    {
-        XSFLIB_CHECK(v.chunks.at(chunk) == w.chunks.at(chunk));
-    }
+    CheckBankSoundFontHoldsEachInstrument(bank, sequence);
 }
 
 // A bank's SFZ files play each instrument by itself, under the bank's name and the program. Each file's regions and
 // samples are those of a sequence's track file that plays the instrument with a track's starting settings.
 void TestBankSfzFilesPlayEachInstrumentByItself()
 {
-    const SoundArchive archive = BankTestArchive();
-    const std::string& name = archive.Banks()[0].name;
+    const TestArchive archive = BankTestArchive();
+    const std::string name = FirstBankName(archive);
 
     // A preset's text in a track's file runs from its <master> line to the next preset's comment. In an instrument's
     // file, it follows <global>. A track's file numbers the presets in the order that the sequence plays them. Program
@@ -604,8 +605,8 @@ void TestBankSfzFilesPlayEachInstrumentByItself()
         return text.substr(start, end == std::string::npos ? end : end - start);
     };
 
-    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
-    const Conversion sequence = ConvertSequence(archive, 0);
+    const BankConversion bank = ConvertTestBank(archive, 0);
+    const Conversion sequence = ConvertSound(archive, 0);
 
     XSFLIB_CHECK(bank.sfz.files.size() == 2 && sequence.sfz.files.size() == 1);
     if (bank.sfz.files.size() != 2 || sequence.sfz.files.size() != 1)
@@ -675,17 +676,21 @@ void TestBankProgramsAbove127TakeTheNextBank()
 // volume a range up to 6 dB.
 void TestLoudBankIsAttenuatedAndAMissingBankThrows()
 {
-    const SoundArchive archive = BankTestArchive(254);
+    const TestArchive archive = BankTestArchive(254);
 
-    const BankConversion bank = ConvertBank(archive, 0, console->settings, console->program);
-    const Conversion sequence = ConvertSequence(archive, 0);
-    const bool threw =
-        !ErrorOf<std::out_of_range>([&] { ConvertBank(archive, 1, console->settings, console->program); }).empty();
+    const BankConversion bank = ConvertTestBank(archive, 0);
+    const Conversion sequence = ConvertSound(archive, 0);
+    const bool threw = !ErrorOf<std::out_of_range>([&] { ConvertTestBank(archive, 1); }).empty();
 
     XSFLIB_CHECK(bank.warnings ==
                  std::vector<std::string>{
                      "region volume exceeds 127 (SoundFont attenuated by 6.0 dB; SFZ keeps the original volume)"});
-    XSFLIB_CHECK(bank.sfz.files.size() == 2 && bank.sfz.files[1].text.find(" volume=6 ") != std::string::npos);
+    // On the Wii the bank plays in balance pan mode. It attenuates each channel zone of the stereo wave by the pan, and
+    // the SFZ volume isn't 6 there.
+    if (!OnWii())
+    {
+        XSFLIB_CHECK(bank.sfz.files.size() == 2 && bank.sfz.files[1].text.find(" volume=6 ") != std::string::npos);
+    }
     XSFLIB_CHECK(seqlib::sf2::Read(bank.sound_fonts.at(0).sf2).chunks.at("igen") ==
                  seqlib::sf2::Read(sequence.sf2).chunks.at("igen"));
     XSFLIB_CHECK(threw);
@@ -941,12 +946,27 @@ void TestSfzKeyGroupFadesAtTheGamesRate()
                  alone.find("off_") == std::string::npos);
 }
 
+// Builds the SFZ files of `perf` without banks, as BuildSfz does. On the Wii, the stereo waves play in pan mode 1.
+SfzInstruments BuildSfzWithoutBanks(const Performance& perf, const MidiReport& midi, const std::string& title,
+                                    const std::vector<std::string>& preset_names)
+{
+    if (OnWii())
+    {
+        const ntdlib::rsar::SoundArchive archive = ntdlib::rsar::SoundArchive::Load(Fsar({}));
+        RsarBankSet banks(archive, ntdlib::rsar::SoundInfo{}, console->settings);
+        return ntdlib::sequence_export::BuildSfz(perf, midi, banks, title, preset_names, true, console->settings,
+                                                 console->program);
+    }
+
+    const SoundArchive archive = SoundArchive::Load(Fsar({}), console->settings.archive);
+    BankSet banks(archive, SoundInfo{}, console->settings);
+    return BuildSfz(perf, midi, banks, title, preset_names);
+}
+
 void TestSfzCommentKeepsTheNameOnItsLine()
 {
     // A newline in a sequence name could end its comment and inject SFZ opcodes. Test without banks. Any region would
     // then have come from the name.
-    const SoundArchive archive = SoundArchive::Load(Fsar({}), console->settings.archive);
-    BankSet banks(archive, SoundInfo{}, console->settings);
     Performance p;
     p.presets.resize(1);
     TrackEvent preset;
@@ -955,7 +975,7 @@ void TestSfzCommentKeepsTheNameOnItsLine()
     MidiReport midi;
     midi.bend_ranges[0] = 2;
 
-    const SfzInstruments sfz = BuildSfz(p, midi, banks, "A\r\n<region> sample=x.wav", {"b0 p0"});
+    const SfzInstruments sfz = BuildSfzWithoutBanks(p, midi, "A\r\n<region> sample=x.wav", {"b0 p0"});
 
     XSFLIB_CHECK(sfz.files.size() == 1);
     for (const SfzFile& f : sfz.files)
@@ -986,8 +1006,7 @@ void TestLengthCasesWriteVariableLengthNumbersAsSeqlib()
     }
 }
 
-// The tests that apply to every console, the Wii included: those that build no archive. The tests on the Wii build RSAR
-// archives (sequence_export_revolution_test.h).
+// The tests that hold on every console, the Wii included.
 const Test kEveryConsoleTests[] = {
     TestSoundFontWriterOutputIsValid,
     TestSoundFontWithoutSamplesHasSampleData,
@@ -999,40 +1018,24 @@ const Test kEveryConsoleTests[] = {
     TestMidiEventsGoOnSoundFrames,
     TestMidiWriterSendsTheFilterToEveryLayer,
     TestMidiWriterListsChannel10Presets,
+    TestSfzCommentKeepsTheNameOnItsLine,
+    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
+    TestBankSfzFilesPlayEachInstrumentByItself,
+    TestLoudBankIsAttenuatedAndAMissingBankThrows,
 };
 
 // The tests that hold on the Wii U, the Switch and the 3DS.
 const Test kWiiUSwitchAndCtrTests[] = {
-    TestSfzFileHasTheTracksPresetsAndFilters,
-    TestSfzResonanceAmountFitsTheType,
-    TestSfzKeyGroupFadesAtTheGamesRate,
-    TestDirectVelocityTableTakesVelocitiesAbove127,
-    TestSfzCommentKeepsTheNameOnItsLine,
-    TestBankSoundFontHoldsEachInstrumentAtItsProgram,
-    TestBankSfzFilesPlayEachInstrumentByItself,
-    TestProgramSuffixPadsToTheLastProgram,
-    TestBankProgramsAbove127TakeTheNextBank,
-    TestLoudBankIsAttenuatedAndAMissingBankThrows,
-    TestLargeBankSplitsItsSoundFont,
-    TestLargeSequenceKeepsThePlayedZones,
+    TestSfzFileHasTheTracksPresetsAndFilters, TestSfzResonanceAmountFitsTheType,
+    TestSfzKeyGroupFadesAtTheGamesRate,       TestDirectVelocityTableTakesVelocitiesAbove127,
+    TestProgramSuffixPadsToTheLastProgram,    TestBankProgramsAbove127TakeTheNextBank,
+    TestLargeBankSplitsItsSoundFont,          TestLargeSequenceKeepsThePlayedZones,
 };
 
 // The tests of the Wii U alone.
 const Test kWiiUOnlyTests[] = {
     TestSfzRegionFollowsLinearInterpolation,
 };
-
-// The tests of `lists`, in order.
-std::vector<Test> Join(std::initializer_list<std::span<const Test>> lists)
-{
-    std::vector<Test> tests;
-    for (const std::span<const Test> list : lists)
-    {
-        tests.insert(tests.end(), list.begin(), list.end());
-    }
-
-    return tests;
-}
 
 } // namespace
 

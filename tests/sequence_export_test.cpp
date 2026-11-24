@@ -12,8 +12,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <initializer_list>
-#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -239,11 +237,9 @@ void TestSequenceStartingPastItsEndPlaysNothing()
     // not wrap to the command at the start of the data.
     std::vector<ArchiveFile> files(1);
     files[0].data = Fseq(Code({0xfe, U16(0x0003), 0xff}));
-    const SoundArchive archive =
-        SoundArchive::Load(Fsar(files, {.sequences = {{0, 0xfffffffe}}}), console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(Fsar(files, {.sequences = {{0, 0xfffffffe}}}));
 
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformSound(archive, 0);
 
     XSFLIB_CHECK(p.end_tick == 0 && p.presets.empty() && p.warnings.empty());
 }
@@ -273,21 +269,18 @@ void TestOnlyAJumpBackToPlayedCommandsIsALoop()
 {
     // First sequence: skip a FIN, wait one tick and jump back to the unvisited FIN. Second: play key 60 for a tick and
     // loop to the start until the performance reaches 10 s. Its 960th tick ends a pass at 10 s by the tempo, but on the
-    // Wii U and the Switch ticks come a little early: at 9,999.99 ms. That pass is the last. On the 3DS no tick comes
-    // early, and the performance ends at the first tick past 10 s.
+    // Wii U and the Switch ticks come a little early: at 9,999.99 ms. That pass is the last. On the 3DS and the Wii no
+    // tick comes early, and the performance ends at the first tick past 10 s.
     std::vector<ArchiveFile> files(4);
     files[0].data = Fseq(Code({0x89, U24(0x000005), 0xff, 0x80, 0x01, 0x89, U24(0x000004)}));
     files[1].data = Fseq({0x3c, 0x64, 0x01, 0x89, 0x00, 0x00, 0x00});
     files[2].data = OneRegionFbnk({{0x05000000, 0}});
     files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, {0x03000000}}, {1, 0, {0x03000000}}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet once_banks(archive, archive.Sounds()[0], console->settings);
-    BankSet looping_banks(archive, archive.Sounds()[1], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, {0x03000000}}, {1, 0, {0x03000000}}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance once = Perform(archive, 0, once_banks, {});
-    const Performance looping = Perform(archive, 1, looping_banks, {});
+    const Performance once = PerformSound(archive, 0);
+    const Performance looping = PerformSound(archive, 1);
 
     XSFLIB_CHECK(!once.loop && once.loops == 0);
     XSFLIB_CHECK(looping.loop && looping.loop->start == 0 && looping.loop->end == 1);
@@ -367,8 +360,8 @@ void TestLegatoOnAnotherRegionKeepsTheFirstsVolume()
 void TestRisingLegatoCarriesItsNoteOn()
 {
     // With tie on and note wait off, play key 60 at velocity 40, then key 62 at 100 at tick 10 and key 60 at 70 at tick
-    // 20, and finish at tick 30. nw::snd and nn::atk play one channel throughout. Its sample runs on, and so does the
-    // MIDI note. The note starts at velocity 100, the highest the legatos reach. Until then, CC11 takes it down to 40.
+    // 20, and finish at tick 30. The game plays one channel throughout. Its sample runs on, and so does the MIDI note.
+    // The note starts at velocity 100, the highest the legatos reach. Until then, CC11 takes it down to 40.
     const Performance p = PerformOnBank({0xc8, 0x01, 0xc7, 0x00, 0x3c, 0x28, 0x00, 0x80, 0x0a, 0x3e,
                                          0x64, 0x00, 0x80, 0x0a, 0x3c, 0x46, 0x00, 0x80, 0x0a, 0xff},
                                         OneRegionFbnk({{0x05000000, 0}}));
@@ -474,10 +467,10 @@ void TestPartLeftTakesTheBendInItsTick()
 void TestBiquadSwitchedLaterInTheFrameReachesItsNotes()
 {
     // At timebase 96 and tempo 999 a tick lasts 0.63 ms. Ticks 0 and 1 then share a sound frame. A frame lasts 3 ms on
-    // the Wii U, 5 ms on the Switch and 4.9 ms on the 3DS. With note wait off, play key 60 at tick 0 and switch the
-    // biquad on (low-pass, 64) at tick 1. Or start with it on and switch it off at tick 1. The game gives the note the
-    // biquad that the frame ends with. The SFZ file selects the note's region at note-on. That value must come before
-    // the note. Switched on 10 ticks later, in another frame, the biquad doesn't reach the note.
+    // the Wii and the Wii U, 5 ms on the Switch and 4.9 ms on the 3DS. With note wait off, play key 60 at tick 0 and
+    // switch the biquad on (low-pass, 64) at tick 1. Or start with it on and switch it off at tick 1. The game gives
+    // the note the biquad that the frame ends with. The SFZ file selects the note's region at note-on. That value must
+    // come before the note. Switched on 10 ticks later, in another frame, the biquad doesn't reach the note.
     auto biquad_at_note_on = [](const std::vector<uint8_t>& switching)
     {
         std::vector<uint8_t> commands = Code({0xb0, 0x60, 0xe1, U16(0x03e7), 0xc7, 0x00});
@@ -523,8 +516,9 @@ void TestLegatoAfterAnEnvelopeResetCarriesOn()
 void TestLegatoOnADecayedNoteStaysSilent()
 {
     // With tie on, decay 127 and sustain 0, play key 60 on a region that ignores note-off, and tie key 62 on 480 ticks
-    // (5 s) later. The bank's default hold, 127, keeps the note at full level for 4.1 s, and then it decays at once. A
-    // legato doesn't start the envelope again. No MIDI note starts.
+    // (5 s) later. The bank's default hold, 127, keeps the note at full level for 4.1 s, and then it decays at once. On
+    // the Wii the region has no hold, and the note decays at once. A legato doesn't start the envelope again. No MIDI
+    // note starts.
     const Performance p =
         PerformOnBank({0xc8, 0x01, 0xd1, 0x7f, 0xd2, 0x00, 0x3c, 0x64, 0x83, 0x60, 0x3e, 0x64, 0x30, 0xff},
                       OneRegionFbnk({{0x05000000, 0}}, 127, 64, true));
@@ -817,13 +811,11 @@ void TestNoteReleasedBeforeItsFirstFrameIsSilent()
     files[2].data = OneRegionFbnk({{0x05000000, 0}});
     files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance at_once = Perform(archive, 0, banks, {});
-    const Performance later = Perform(archive, 1, banks, {});
+    const Performance at_once = PerformSound(archive, 0);
+    const Performance later = PerformSound(archive, 1);
 
     std::vector<std::pair<uint32_t, EventKind>> notes;
     for (const TrackEvent& e : later.tracks[0])
@@ -856,13 +848,11 @@ void TestWhatMidiCantSeparateIsReported()
     files[2].data = OneRegionFbnk({{0x05000000, 0}}, 127, 100);
     files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks, 0, 0, 0xffff}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, kBanks, 0, 0, 0xffff}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance detached = Perform(archive, 0, banks, {});
-    const Performance panned = Perform(archive, 1, banks, {});
+    const Performance detached = PerformSound(archive, 0);
+    const Performance panned = PerformSound(archive, 1);
 
     const std::string kDetached = "detached notes (still receive track controller changes in MIDI)";
     const std::string kPans = "combined region and track pan (using the synth pan law)";
@@ -912,10 +902,9 @@ void TestTicksFallInTheGamesSoundFrames()
     std::vector<ArchiveFile> files(1);
     files[0].data =
         Fseq(ctr ? Code({0xe1, U16(229), 0x80, 0x85, 0x73, 0xff}) : Code({0xe1, U16(65), 0x80, 0x27, 0xff}));
-    const SoundArchive archive = SoundArchive::Load(Fsar(files, {.sequences = {{0, 0}}}), console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(Fsar(files, {.sequences = {{0, 0}}}));
 
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformSound(archive, 0);
 
     const double frame = ctr ? 842.0 : std::round(750.0 / console->settings.frame_ms) - 1.0;
     const double frame_start = frame * console->settings.frame_ms / (60000.0 / (48 * tempo));
@@ -934,22 +923,19 @@ void TestOddArgumentsAreReadAsTheGameReadsThem()
     files[3].data = OneRegionFbnk({{0x05000000, 0}});
     files[4].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files,
-             {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}, {2, 0, kBanks}}, .banks = {3}, .wave_archives = {4}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(Fsar(
+        files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}, {2, 0, kBanks}}, .banks = {3}, .wave_archives = {4}}));
 
-    const Performance ramp = Perform(archive, 0, banks, {});
-    const Performance wait = Perform(archive, 1, banks, {});
-    const Performance timebase = Perform(archive, 2, banks, {});
+    const Performance ramp = PerformSound(archive, 0);
+    const Performance wait = PerformSound(archive, 1);
+    const Performance timebase = PerformSound(archive, 2);
 
-    std::vector<int> volumes;
+    std::vector<std::pair<uint32_t, int>> volumes;
     for (const TrackEvent& e : ramp.tracks[0])
     {
         if (e.kind == EventKind::kVolume)
         {
-            volumes.push_back(e.value);
+            volumes.emplace_back(e.tick, e.value);
         }
     }
 
@@ -959,8 +945,10 @@ void TestOddArgumentsAreReadAsTheGameReadsThem()
     };
     const auto waited = std::ranges::find_if(wait.tracks[0], note_on);
 
-    XSFLIB_CHECK(volumes == std::vector<int>{64});
-    XSFLIB_CHECK(waited != wait.tracks[0].end() && waited->tick == 128);
+    const std::vector<std::pair<uint32_t, int>> kVolume = {{0, 64}};
+    XSFLIB_CHECK(volumes == kVolume);
+    XSFLIB_CHECK(waited != wait.tracks[0].end() && waited->tick == 128 && waited->key == 60 && waited->value == 100);
+    XSFLIB_CHECK(std::ranges::count_if(wait.tracks[0], note_on) == 1);
     const std::vector<std::string> kStopped = {"timebase 0: the sequence stops advancing"};
     XSFLIB_CHECK(timebase.warnings == kStopped && timebase.end_tick == 0 && timebase.timebase == 48);
 }
@@ -980,14 +968,13 @@ void TestSequenceThatStopsAdvancingPlaysOut()
     files[5].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
     const std::vector<SequenceSound> kSounds = {{0, 0, kBanks}, {1, 0, kBanks}, {2, 0, kBanks}, {3, 0, kBanks}};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = kSounds, .banks = {4}, .wave_archives = {5}}), console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive =
+        LoadTestArchive(Fsar(files, {.sequences = kSounds, .banks = {4}, .wave_archives = {5}}));
 
-    const Performance held = Perform(archive, 0, banks, {});
-    const Performance released = Perform(archive, 1, banks, {});
-    const Performance ending = Perform(archive, 2, banks, {});
-    const Performance unstopped = Perform(archive, 3, banks, {});
+    const Performance held = PerformSound(archive, 0);
+    const Performance released = PerformSound(archive, 1);
+    const Performance ending = PerformSound(archive, 2);
+    const Performance unstopped = PerformSound(archive, 3);
 
     const std::vector<std::string> kStopped = {"tempo 0: the sequence stops advancing"};
     XSFLIB_CHECK(held.warnings == kStopped && held.holds && held.end_tick == 961 && held.tracks[0].back().tick == 961);
@@ -1007,13 +994,11 @@ void TestTieLoopThatHoldsEndsAsAHeldSound()
     files[2].data = OneRegionFbnk({{0x05000000, 0}});
     files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance tied = Perform(archive, 0, banks, {});
-    const Performance struck = Perform(archive, 1, banks, {});
+    const Performance tied = PerformSound(archive, 0);
+    const Performance struck = PerformSound(archive, 1);
 
     XSFLIB_CHECK(tied.holds && !tied.loop && std::fabs(tied.seconds - 10.0) < 0.02);
     XSFLIB_CHECK(!struck.holds && struck.loop && struck.loop->start == 0 && struck.loop->end == 2400);
@@ -1028,24 +1013,18 @@ void TestTieLoopOverAOneShotWaveStaysALoop()
     files[1].data = OneRegionFbnk({{0x05000000, 0}});
     files[2].data = Fwar({Pcm16Fwav(30 * 32000, std::vector<int16_t>(30 * 32000, 1000))});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}}, .banks = {1}, .wave_archives = {2}}), console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive =
+        LoadTestArchive(Fsar(files, {.sequences = {{0, 0, kBanks}}, .banks = {1}, .wave_archives = {2}}));
 
-    const Performance p = Perform(archive, 0, banks, {});
+    const Performance p = PerformSound(archive, 0);
 
     XSFLIB_CHECK(!p.holds && p.loop && p.loop->end == 2400);
 }
 
-// The tests that hold on the Wii U, the Switch and the 3DS.
-const Test kWiiUSwitchAndCtrTests[] = {
-    TestBrokenBankAndWaveReferencesAreReported,
-    TestNotesKeepTheirCommands,
+// The tests that hold on every console, the Wii included.
+const Test kEveryConsoleTests[] = {
     TestSequenceStartingPastItsEndPlaysNothing,
-    TestBankSlotPastTheFourthHasNoBank,
     TestOnlyAJumpBackToPlayedCommandsIsALoop,
-    TestMainLoopWaitsForAFadeTooLoudForMidi,
-    TestMainLoopWaitsForALegatosFade,
     TestRisingLegatoCarriesItsNoteOn,
     TestRisingLegatoBesideATailTakesAnotherPart,
     TestDetachedTailKeepsItsSettings,
@@ -1058,21 +1037,30 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestSilentLegatoIsNotReported,
     TestSilentNoteLeavesTheTailItsPitch,
     TestTieGivesTheTailTheTicksVolume,
-    TestNoteAboveVelocity127TakesItsLevel,
     TestMuteStopLeavesDetachedTails,
     TestRisingLegatoKeepsToItsRegion,
-    TestLevelCutFitsTheRunThatsKept,
     TestTiedNoteTakesPartInTheMainLoop,
     TestSilentLegatoCarriesItsNoteOn,
     TestLegatosChangeOfKeyIsNoChangeOfTheTracks,
     TestMonoLegatoTakesItsLengthWithTieOn,
     TestNoteReleasedBeforeItsFirstFrameIsSilent,
     TestWhatMidiCantSeparateIsReported,
-    TestTicksFallInTheGamesSoundFrames,
     TestOddArgumentsAreReadAsTheGameReadsThem,
     TestSequenceThatStopsAdvancingPlaysOut,
     TestTieLoopThatHoldsEndsAsAHeldSound,
     TestTieLoopOverAOneShotWaveStaysALoop,
+};
+
+// The tests that hold on the Wii U, the Switch and the 3DS.
+const Test kWiiUSwitchAndCtrTests[] = {
+    TestBrokenBankAndWaveReferencesAreReported,
+    TestNotesKeepTheirCommands,
+    TestBankSlotPastTheFourthHasNoBank,
+    TestMainLoopWaitsForAFadeTooLoudForMidi,
+    TestMainLoopWaitsForALegatosFade,
+    TestNoteAboveVelocity127TakesItsLevel,
+    TestLevelCutFitsTheRunThatsKept,
+    TestTicksFallInTheGamesSoundFrames,
 };
 
 // The tests that hold on the Wii U and the Switch.
@@ -1092,25 +1080,14 @@ const Test kWiiUOnlyTests[] = {
     TestOneShotWaveEndsAsAxPlaysIt,
 };
 
-// The tests of `lists`, in order.
-std::vector<Test> Join(std::initializer_list<std::span<const Test>> lists)
-{
-    std::vector<Test> tests;
-    for (const std::span<const Test> list : lists)
-    {
-        tests.insert(tests.end(), list.begin(), list.end());
-    }
-
-    return tests;
-}
-
 } // namespace
 
 int main()
 {
-    RunOn(WiiU(), Join({kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests, kWiiUOnlyTests}));
-    RunOn(Switch(), Join({kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
-    RunOn(Ctr(), kWiiUSwitchAndCtrTests);
+    RunOn(WiiU(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests, kWiiUOnlyTests}));
+    RunOn(Switch(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
+    RunOn(Ctr(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests}));
+    RunOn(Wii(), kEveryConsoleTests);
 
     return xsflib::testing::Summary("sequence_export");
 }

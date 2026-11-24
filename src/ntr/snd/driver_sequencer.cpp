@@ -743,17 +743,17 @@ void Driver::MuteTrack(Track& track, const Player& player, int mode)
 {
     switch (mode)
     {
-    case 0:
+    case kMuteOff:
         track.muted = false;
         break;
-    case 1:
+    case kMuteNoStop:
         track.muted = true;
         break;
-    case 2:
+    case kMuteRelease:
         track.muted = true;
         ReleaseTrackChannels(track, player, -1);
         break;
-    case 3:
+    case kMuteStop:
         track.muted = true;
         ReleaseTrackChannels(track, player, 127);
         FreeTrackChannels(track);

@@ -47,45 +47,6 @@ using namespace ntdlib::sequence_export::wii_tests;
 
 namespace
 {
-
-void TestBiquadSwitchedLaterInTheFrameReachesItsNotes()
-{
-    // At timebase 96 and tempo 999 a tick lasts 0.63 ms. Ticks 0 and 1 then share a 3 ms sound frame. With note wait
-    // off, play key 60 at tick 0 and switch the biquad on (low-pass, 64) at tick 1. Or start with it on and switch it
-    // off at tick 1. The game gives the note the biquad that the frame ends with. The SFZ file selects the note's
-    // region at note-on. That value must come before the note. Switched on 10 ticks later, in another frame, the biquad
-    // doesn't reach the note.
-    auto biquad_at_note_on = [](const std::vector<uint8_t>& switching)
-    {
-        std::vector<uint8_t> commands = {0xb0, 0x60, 0xe1, 0x03, 0xe7, 0xc7, 0x00};
-        commands.insert(commands.end(), switching.begin(), switching.end());
-        commands.insert(commands.end(), {0x80, 0x60, 0xff});
-        const Performance p = PerformCommands(commands);
-
-        int value = 0;
-        for (const TrackEvent& e : p.tracks[0])
-        {
-            if (e.kind == EventKind::kNoteOn)
-            {
-                return value;
-            }
-
-            if (e.kind == kSfzBiquadEvent)
-            {
-                value = e.value;
-            }
-        }
-
-        return -1;
-    };
-
-    const int on = biquad_at_note_on({0x3c, 0x64, 0x30, 0x80, 0x01, 0xb4, 0x01, 0xb5, 0x40});
-    const int off = biquad_at_note_on({0xb4, 0x01, 0xb5, 0x40, 0x3c, 0x64, 0x30, 0x80, 0x01, 0xb5, 0x00});
-    const int later = biquad_at_note_on({0x3c, 0x64, 0x30, 0x80, 0x0a, 0xb4, 0x01, 0xb5, 0x40});
-
-    XSFLIB_CHECK(on == SfzBiquadValue(1, 64) && off == 0 && later == 0);
-}
-
 void TestBuildsFrom2008PlayTheBiquad()
 {
     // A biquad filter (type 1, value 64) plays in builds from 2008: the SoundFont preset takes the biquad low-pass's
@@ -115,106 +76,6 @@ void TestBuildsFrom2008PlayTheBiquad()
     XSFLIB_CHECK(early.presets.size() == 1 && early.presets[0].release == 10);
     XSFLIB_CHECK(early.presets[0].filter == SoundFontFilter{} && early.biquad_types[0] == 0);
 }
-
-void TestLfoSetAfterANoteInItsTickReachesItsPreset()
-{
-    // With note wait off and LFO depth 40, play key 60, then set the LFO speed to 10 in the same tick. The game gives
-    // the note the track's LFO settings at the end of the sound frame. The note's preset has speed 10, and nothing is
-    // reported.
-    const Performance p = PerformCommands({0xc7, 0x00, 0xca, 0x28, 0x3c, 0x64, 0x60, 0xcb, 0x0a, 0x80, 0x60, 0xff});
-
-    const PresetKey* preset = FirstNotePreset(p);
-
-    XSFLIB_CHECK(preset && preset->lfo_speed == 10 && p.approximations.empty());
-}
-
-void TestVolumeLfoChangedAtDepth0IsReportedWhenHeard()
-{
-    // With note wait off, a volume LFO and LFO depth 0, play key 60 for 192 ticks. 48 ticks in, set the LFO speed to
-    // 10, and 48 ticks later raise the depth to 40. The note's preset keeps speed 16. The game plays the note's LFO at
-    // speed 10. The difference is reported once.
-    const Performance p = PerformCommands({0xc7, 0x00, 0xcc, 0x01, 0xca, 0x00, 0x3c, 0x64, 0x81, 0x40, 0x80,
-                                           0x30, 0xcb, 0x0a, 0x80, 0x30, 0xca, 0x28, 0x80, 0x60, 0xff});
-
-    const PresetKey* preset = FirstNotePreset(p);
-    const auto moved = p.approximations.find("LFO parameters changed during a note (using its note-on settings)");
-
-    XSFLIB_CHECK(preset && preset->lfo_speed == 16 && moved != p.approximations.end() && moved->second == 1);
-}
-
-void TestPitchLfoChangedDuringANoteGoesOutAsPitchBends()
-{
-    // As in TestVolumeLfoChangedAtDepth0IsReportedWhenHeard, with a pitch LFO. The note plays on a part of its own,
-    // with a preset without an LFO. The part's pitch bends follow the game's LFO, and nothing is reported. The game's
-    // LFO peaks at depth / 128 * range semitones: 40 / 128 at range 1. Taken once a sound frame, the 3.90625 Hz sine
-    // comes within 1% of its peak. The bends start once the depth is up, 96 ticks in.
-    const Performance p = PerformCommands({0xc7, 0x00, 0xca, 0x00, 0x3c, 0x64, 0x81, 0x40, 0x80, 0x30, 0xcb, 0x0a, 0x80,
-                                           0x30, 0xca, 0x28, 0x80, 0x60, 0xff});
-
-    const PresetKey* preset = FirstNotePreset(p);
-    // The pitch bends of the note's part, and the first tick at which they leave 0.
-    int part = -1;
-    for (const TrackEvent& e : p.tracks[0])
-    {
-        if (e.kind == EventKind::kNoteOn)
-        {
-            part = e.part;
-            break;
-        }
-    }
-    float high = 0.0f;
-    float low = 0.0f;
-    uint32_t first = 0;
-    for (const TrackEvent& e : p.tracks[0])
-    {
-        if (e.kind == EventKind::kPitch && e.part == part && e.semitones != 0.0f)
-        {
-            first = first == 0 ? e.tick : first;
-            high = std::max(high, e.semitones);
-            low = std::min(low, e.semitones);
-        }
-    }
-    const bool reported = std::ranges::any_of(
-        p.approximations, [](const auto& approximation) { return approximation.first.starts_with("LFO parameters"); });
-    const float kPeak = 40.0f / 128.0f;
-
-    XSFLIB_CHECK(preset && preset->lfo_type == 3 && !reported);
-    XSFLIB_CHECK(first >= 96 && high > kPeak * 0.99f && high < kPeak * 1.001f && low < -kPeak * 0.99f &&
-                 low > -kPeak * 1.001f);
-}
-
-void TestDeepTremoloIsKeptTo6dB()
-{
-    // A volume LFO (type 1) at depth 127 swings 6 dB per unit of range. The game can't raise a note more than 6 dB. At
-    // range 2, CC1 drops from 64 to 32. That swings 6 dB in the SoundFont, and the cap is reported. At range 1, CC1
-    // stays at 64. A pitch LFO at range 2 keeps 64 too.
-    const SoundArchive archive = SequenceArchive({{0xcc, 0x01, 0xcd, 0x02, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff},
-                                                  {0xcc, 0x01, 0xcd, 0x01, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff},
-                                                  {0xcc, 0x00, 0xcd, 0x02, 0xca, 0x7f, 0x3c, 0x64, 0x30, 0xff}});
-
-    const Performance deep = PerformSound(archive, 0);
-    const Performance shallow = PerformSound(archive, 1);
-    const Performance vibrato = PerformSound(archive, 2);
-
-    auto modulation = [](const Performance& p)
-    {
-        std::vector<int> values;
-        for (const TrackEvent& e : p.tracks[0])
-        {
-            if (e.kind == EventKind::kModulation)
-            {
-                values.push_back(e.value);
-            }
-        }
-
-        return values;
-    };
-    const char* const kReport = "volume LFO deeper than 6 dB (limited to 6 dB: it dips less than in the game)";
-    XSFLIB_CHECK(modulation(deep) == std::vector<int>{32} && deep.approximations.count(kReport) == 1);
-    XSFLIB_CHECK(modulation(shallow) == std::vector<int>{64} && shallow.approximations.count(kReport) == 0);
-    XSFLIB_CHECK(modulation(vibrato) == std::vector<int>{64} && vibrato.approximations.count(kReport) == 0);
-}
-
 void TestVolumeLfoAboveFullLevelIsReported()
 {
     // A volume LFO at depth 127 and range 1 swings almost 6 dB. At sustain 127, the envelope's gain is at full level.
@@ -360,30 +221,6 @@ void TestTrackLowPassFitsEachZone()
                      std::abs(tracking[1] + 72 * slope - 7965) <= 15);
     }
 }
-
-void TestNoteReleasedInItsAttackKeepsTheGamesLevel()
-{
-    // With attack 20, key 60 plays for 5 ticks. The note is released 51 ms into its attack. The game is at -37.8 dB
-    // then. The SoundFont attack, 331 ms long, has reached -16 dB. A second sequence plays the note for 200 ticks, past
-    // the attack. A SoundFont attack that ramps up over 51 ms * 10^(-L / 20) reaches the game's level L dB at the
-    // release. Only the first note gets such an attack.
-    const SoundArchive archive =
-        SequenceArchive({{0xd0, 0x14, 0x3c, 0x64, 0x05, 0xff}, {0xd0, 0x14, 0x3c, 0x64, 0x81, 0x48, 0xff}});
-
-    const Performance early = PerformSound(archive, 0);
-    const Performance late = PerformSound(archive, 1);
-
-    EnvelopeValues env;
-    env.attack = 20;
-    const int64_t kFrames = 17; // 5 ticks of 10.4 ms, in 3 ms frames from the note-on frame
-    const double level_db = HeldLevel(env, kFrames) / 10.0;
-    const double attack_ms = static_cast<double>(kFrames) * kFrameMs * std::pow(10.0, -level_db / 20.0);
-    XSFLIB_CHECK(level_db < -30.0 && attack_ms > Sf2AttackMs(env));
-    XSFLIB_CHECK(early.presets.size() == 1 && early.presets[0].attack_timecents &&
-                 *early.presets[0].attack_timecents == ToTimecents(attack_ms, -12000, 8000));
-    XSFLIB_CHECK(late.presets.size() == 1 && !late.presets[0].attack_timecents);
-}
-
 void TestTrackWaitingForeverEnds()
 {
     // After a note, a wait takes its length from player variable 0. The variable is -1, and a negative wait waits for
@@ -392,27 +229,10 @@ void TestTrackWaitingForeverEnds()
 
     XSFLIB_CHECK(!p.truncated && !p.holds && p.seconds < 1.0);
 }
-
-void TestHeldNoteHoldsUntilStopped()
+void TestLongestHoldMatchesTheGame()
 {
-    // Key 60 for 10,000 ticks with note wait on: 104 s at tempo 120. A note of 9,600 ticks or more is one the game
-    // stops itself. The sequence holds and ends 10 s after it last changes. A note of 9,599 ticks plays out.
-    const SoundArchive archive = SequenceArchive({{0x3c, 0x64, 0xce, 0x10, 0xff}, {0x3c, 0x64, 0xca, 0x7f, 0xff}});
-
-    const Performance held = PerformSound(archive, 0);
-    const Performance played = PerformSound(archive, 1);
-
-    XSFLIB_CHECK(held.holds && !held.truncated && held.seconds >= 10.0 && held.seconds < 10.1);
-    XSFLIB_CHECK(!played.holds && played.seconds > 99.0);
-}
-
-void TestEnvelopeValuesMatchTheGame()
-{
-    XSFLIB_CHECK(AttackMs(127) == 1.0);
-    XSFLIB_CHECK(AttackMs(0) > 13000.0 && AttackMs(0) < 13300.0); // 13.1 s: the slowest attack
-    XSFLIB_CHECK(DecayRate(127) == 65535.0 && DecayRate(126) == 24.0);
-    XSFLIB_CHECK(DecibelSquare(127) == 0.0f && DecibelSquare(0) == -723.0f);
-    XSFLIB_CHECK(HoldMs(0) == 0 && HoldMs(1) == 1 && HoldMs(127) == 4096);
+    // The shared TestEnvelopeValuesMatchTheGame checks the other values of the envelope.
+    XSFLIB_CHECK(HoldMs(127) == 4096);
 }
 
 void TestRegionsHoldComesWith2008()
@@ -519,10 +339,11 @@ void TestLaterBuildsMoveTheBendOverATimePrefix()
     XSFLIB_CHECK(Pitches(moving) == kMoving && Pitches(jumping) == kJumping);
 }
 
-void TestSoundFontFilterStandsInForTheGames()
+void TestEachLowPassStepMovesTheSoundFontCutoff()
 {
-    // No filter leaves the SoundFont's open; lower settings give lower cutoffs, without resonance.
-    XSFLIB_CHECK(ToSoundFont(0x40, 0, 0) == SoundFontFilter{} && ToSoundFont(58, 0, 0) == SoundFontFilter{});
+    // The shared TestSoundFontFilterStandsInForTheGames checks the rest. On the Wii, low-pass 58 leaves the SoundFont's
+    // filter open, without resonance. Each lower setting gives a cutoff strictly lower than the one above it.
+    XSFLIB_CHECK(ToSoundFont(58, 0, 0) == SoundFontFilter{});
     XSFLIB_CHECK(ToSoundFont(30, 0, 0).cutoff < kFilterOpen && ToSoundFont(30, 0, 0).resonance == 0);
     int rising = 0;
     for (int arg = 1; arg < 58; arg++)
@@ -531,10 +352,6 @@ void TestSoundFontFilterStandsInForTheGames()
     }
 
     XSFLIB_CHECK(rising == 0);
-
-    // Each controller step lowers the cutoff by 75 cents.
-    XSFLIB_CHECK(FilterControllerValue(kFilterOpen) == 0 && FilterControllerValue(kFilterOpen - 75) == 1);
-    XSFLIB_CHECK(FilterControllerValue(kFilterOpen - 75 * 111) == 111 && FilterControllerValue(0) == 127);
 }
 
 void TestSfzFilterFollowsTheGame()
@@ -581,12 +398,12 @@ void TestStereoWavesKeepTheirSidesInBalanceMode()
 void TestMissingBlockIsReported()
 {
     // An RWAV whose header has an INFO block but no DATA block.
-    Writer w = FileHeader("RWAV", 0x0102, 2);
-    const std::size_t info = StartBlock(w, "INFO");
-    w.Add(WaveInfoSize(1));
-    Block(w, 0, info);
+    std::vector<uint8_t> rwav = Header("RWAV", 0x0102, 2);
+    const std::size_t info = Block(rwav, "INFO", 0);
+    Grow(rwav, WaveInfoSize(1));
+    EndBlock(rwav, info, 0);
 
-    const std::string message = ErrorOf<xsflib::FormatError>([&] { Wave::ParseFile(w.bytes); });
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { Wave::ParseFile(rwav); });
 
     XSFLIB_CHECK(message == "no INFO or DATA block");
 }
@@ -603,29 +420,22 @@ void TestShortFileIsReported()
 const Test kTests[] = {
     TestMissingBlockIsReported,
     TestShortFileIsReported,
-    TestEnvelopeValuesMatchTheGame,
+    TestLongestHoldMatchesTheGame,
     TestRegionsHoldComesWith2008,
     TestEnvelopeSimulationSustainsAndReleases,
     TestTrackFilterFollowsTheGame,
     TestLaterBuildsTakeTheLowPassFromTheTable,
     TestNovember2008LowPassSteps,
     TestLaterBuildsMoveTheBendOverATimePrefix,
-    TestSoundFontFilterStandsInForTheGames,
+    TestEachLowPassStepMovesTheSoundFontCutoff,
     TestSfzFilterFollowsTheGame,
     TestStereoWavesKeepTheirSidesInBalanceMode,
     TestBuildsFrom2008PlayTheBiquad,
-    TestBiquadSwitchedLaterInTheFrameReachesItsNotes,
-    TestLfoSetAfterANoteInItsTickReachesItsPreset,
-    TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
-    TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,
-    TestDeepTremoloIsKeptTo6dB,
     TestVolumeLfoAboveFullLevelIsReported,
     TestVolumeLfoAboveFullLevelIsFitted,
     TestLaterBuildsLetTheVolumeLfoPassFullLevel,
     TestTrackLowPassFitsEachZone,
-    TestNoteReleasedInItsAttackKeepsTheGamesLevel,
     TestTrackWaitingForeverEnds,
-    TestHeldNoteHoldsUntilStopped,
 };
 
 } // namespace

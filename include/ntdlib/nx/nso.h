@@ -9,8 +9,10 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -32,11 +34,25 @@ struct Nso
     NsoSegment data;
 };
 
+// The tags of the entries of the dynamic section (DynamicEntries) that locate the relocations of a module (Elf64_Rela):
+// DT_RELA, their address, and DT_RELASZ, their size in bytes.
+constexpr int64_t kDtRela = 7;
+constexpr int64_t kDtRelaSize = 8;
+
+// A relocation (Elf64_Rela) is 24 bytes long: the address that it writes to, its info and its addend. The low 32 bits
+// of the info are its type. A relative relocation (R_AARCH64_RELATIVE) writes the base of the module plus the addend.
+constexpr std::size_t kRelocationSize = 24;
+constexpr uint32_t kRelocationRelative = 1027;
+
 // The segments of the NSO `file`, each decompressed. A segment whose flag of a hash is set must match that hash. Throws
 // FormatError if `file` isn't an NSO, if it's damaged, or if a segment doesn't match its hash.
 Nso ReadNso(std::span<const uint8_t> file);
 
-// The entries of the dynamic section of the module `nso`, by tag, such as DT_RELA (7) and DT_RELASZ (8). The word at
+// Returns the `size` bytes at `address` of `nso`, in the segment that contains them all, or nothing if no segment does.
+// The span points into `nso`. A size of 0 returns an empty span at any address from the start of a segment to its end.
+std::optional<std::span<const uint8_t>> SegmentBytes(const Nso& nso, uint64_t address, std::size_t size);
+
+// The entries of the dynamic section of the module `nso`, by tag, such as kDtRela and kDtRelaSize. The word at
 // address 4 of the text segment is the address of the module's MOD0 header. The header starts with "MOD0", and its
 // word at 4 is the dynamic section's address, counted from the header. Each entry of the section takes 16 bytes: the
 // tag, then the value. The entry with tag 0 (DT_NULL) ends the section. A tag that the section lists twice keeps its

@@ -12,6 +12,7 @@
 #include <deque>
 #include <functional>
 #include <list>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/ctr/nnsnd/voice.h"
@@ -178,6 +179,17 @@ public:
     float Pitch() const
     {
         return pitch_;
+    }
+
+    // The owner's callback (Callback). A test that logs why each voice ends wraps it with SetOwnerCallback.
+    const Callback& OwnerCallback() const
+    {
+        return callback_;
+    }
+
+    void SetOwnerCallback(Callback callback)
+    {
+        callback_ = std::move(callback);
     }
 
 private:

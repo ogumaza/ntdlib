@@ -47,44 +47,6 @@ using namespace ntdlib::sequence_export::wii_tests;
 
 namespace
 {
-
-void TestClosingTickReachesTheReleaseTail()
-{
-    // Release 100 and key 60 for one tick, then volume 0 and FIN in the next. Like the end of a tick, closing the track
-    // gives the released note the track's settings. The tail is then silent in the game. MIDI requires CC7 0 for that.
-    const Performance p = PerformCommands({0xd3, 0x64, 0x3c, 0x64, 0x01, 0xc1, 0x00, 0xff});
-
-    const std::vector<std::pair<uint32_t, int>> volumes = Controls(p, EventKind::kVolume);
-    XSFLIB_CHECK(std::ranges::find(volumes, std::pair<uint32_t, int>{1, 0}) != volumes.end());
-}
-
-void TestSilenceAtTheTimeLimitEndsWithTheLastSound()
-{
-    // Key 60 plays for 48 ticks (0.5 s), then the track waits 100,000 ticks (17 minutes), past the 15-minute limit. The
-    // track has been silent since the note. The performance therefore treats the sequence as finished and ends with the
-    // note.
-    const Performance p = PerformCommands({0x3c, 0x64, 0x30, 0x80, 0x86, 0x8d, 0x20, 0xff});
-
-    XSFLIB_CHECK(!p.truncated && !p.holds && p.seconds < 1.0);
-}
-
-void TestOneShotWavePlaysOutAtItsPitch()
-{
-    // Bend key 60 up by 127/128 of a 12-semitone range. The bend plays a one-shot wave of 4 s in about 2 s. With note
-    // wait off, waiting for the wave and setting tempo 0 at once end the wave at the same time.
-    const std::vector<int16_t> kSamples(4 * 32000, 1000);
-    const SoundArchive archive =
-        SequenceArchive({{0xc5, 0x0c, 0xc4, 0x7f, 0x3c, 0x64, 0x00, 0xff},
-                         {0xc7, 0x00, 0xc5, 0x0c, 0xc4, 0x7f, 0x3c, 0x64, 0x00, 0xe1, 0x00, 0x00, 0x80, 0x30, 0xff}},
-                        {.wave = Rwav(4 * 32000, kSamples)});
-
-    const Performance waited = PerformSound(archive, 0);
-    const Performance stopped = PerformSound(archive, 1);
-
-    XSFLIB_CHECK(waited.seconds > 2.0 && waited.seconds < 2.1 && !stopped.holds &&
-                 std::fabs(stopped.seconds - waited.seconds) < 0.011);
-}
-
 // The banks of a recording: every note plays `region` and its one-shot wave of `samples` silent samples at
 // `sample_rate`.
 class OneRegion
@@ -253,72 +215,6 @@ void TestRecordingSetsANoteUpAsTheWiiDoes()
     XSFLIB_CHECK(early.key_group == 0 && !early.ignore_note_off);
     XSFLIB_CHECK(late.key_group == 3 && late.ignore_note_off);
 }
-
-void TestTimedSweepGlidesOnWhenTheSequenceStops()
-{
-    // With note wait off, hold key 60 with about 1 s of portamento from key 48, then set tempo 0. The sweep, timed in
-    // milliseconds, goes on. The second sequence holds key 60, plays key 72 for a tick at release 127 with about 2 s of
-    // portamento from key 48, and stops its timing at tick 1. Key 72 has ended by then. Its sweep stops too.
-    const SoundArchive archive =
-        SequenceArchive({{0xc7, 0x00, 0xc9, 0x30, 0xcf, 0x17, 0x3c, 0x64, 0x00, 0xe1, 0x00, 0x00, 0x80, 0x30, 0xff},
-                         {0xc7, 0x00, 0x3c, 0x64, 0x00, 0xd3, 0x7f, 0xc9, 0x30, 0xcf, 0x17,
-                          0x48, 0x64, 0x01, 0x80, 0x01, 0xe1, 0x00, 0x00, 0x80, 0x30, 0xff}});
-
-    const Performance gliding = PerformSound(archive, 0);
-    const Performance ended = PerformSound(archive, 1);
-
-    const std::vector<std::pair<uint32_t, float>> glide = Pitches(gliding);
-    const std::vector<std::pair<uint32_t, float>> after_end = Pitches(ended);
-    XSFLIB_CHECK(gliding.holds && glide.size() > 50 && glide.front().second == -12.0f && glide.back().second == 0.0f &&
-                 glide.back().first < 100);
-    XSFLIB_CHECK(ended.holds && !after_end.empty() && after_end.back().second == 0.0f && after_end.back().first <= 2);
-}
-
-void TestTimedSweepMovesEveryFrame()
-{
-    // With note wait off, hold key 60 with 120 ms of portamento from key 48 (time 8). A tick at tempo 120 takes 10.4
-    // ms, over three of the game's 3 ms sound frames, and the sweep moves on in each: every frame from the note's frame
-    // to the one in which it reaches the key sends a pitch, placed where the frame starts.
-    const Performance p = PerformCommands({0xc7, 0x00, 0xc9, 0x30, 0xcf, 0x08, 0x3c, 0x64, 0x00, 0x80, 0x30, 0xff});
-
-    const std::vector<std::pair<double, float>> pitches = PitchPlaces(p);
-
-    XSFLIB_CHECK(GlidesEveryFrame(pitches) && !pitches.empty() && pitches[0].first == 0.0);
-}
-
-void TestTimedSweepGoesOnAfterItsTrackCloses()
-{
-    // Track 0 opens track 1 and waits 48 ticks. Track 1 holds key 60 at release 100 with 120 ms of portamento from key
-    // 48. Track 1 closes 2 ticks later. That releases the note. The tail goes on gliding to the key. The game's
-    // channels do the same. The second sequence is track 1's alone. Track 1 ends the sequence when it closes, and the
-    // tail's pitches go on after the last tick.
-    const std::vector<uint8_t> kGlide = {0xc7, 0x00, 0xc9, 0x30, 0xcf, 0x08, 0xd3,
-                                         0x64, 0x3c, 0x64, 0x00, 0x80, 0x02, 0xff};
-    std::vector<uint8_t> with_track_0 = {0x88, 0x01, 0x00, 0x00, 0x08, 0x80, 0x30, 0xff};
-    with_track_0.insert(with_track_0.end(), kGlide.begin(), kGlide.end());
-    const SoundArchive archive = SequenceArchive({with_track_0, kGlide}, {.track_flags = 3});
-
-    const Performance closed = PerformSound(archive, 0);
-    const Performance ended = PerformSound(archive, 1);
-
-    XSFLIB_CHECK(GlidesEveryFrame(PitchPlaces(closed, 1)));
-    const std::vector<std::pair<double, float>> after_end = PitchPlaces(ended);
-    XSFLIB_CHECK(GlidesEveryFrame(after_end) && after_end.back().first > 2.0 && ended.end_tick >= 12);
-}
-
-void TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays()
-{
-    // Track 0 opens track 1 and then only waits 2 ticks and jumps back. Track 1 plays key 60 every 48 ticks, 30 times,
-    // for 15 s, and ends. Track 0's passes change nothing while track 1 plays. They aren't passes of the main loop
-    // until track 1 has ended. The sequence plays all of track 1. The idle loop after it sounds nothing (SilentLoop).
-    // The sequence therefore ends with track 1's last note and has no loop markers.
-    const Performance p = PerformCommands({0x88, 0x01, 0x00, 0x00, 0x0b, 0x80, 0x02, 0x89, 0x00, 0x00, 0x05,
-                                           0xc7, 0x00, 0xd4, 0x1e, 0x3c, 0x64, 0x18, 0x80, 0x30, 0xfc, 0xff},
-                                          {.track_flags = 3});
-
-    XSFLIB_CHECK(NoteOns(p, 1).size() == 30 && !p.loop && p.loops == 0 && p.seconds > 14.75 && p.seconds < 15.0);
-}
-
 void TestTrackSettingAVariableAnotherReadsOwnsTheLoop()
 {
     // Track 0 opens track 1, then waits 48 ticks and sets player variable 0 to 1, over and over. Track 1 checks the
@@ -343,224 +239,6 @@ void TestTrackSettingAVariableAnotherReadsOwnsTheLoop()
     XSFLIB_CHECK(p.warnings.empty() && note_ons.size() == 19 && every_48);
     XSFLIB_CHECK(p.loop && p.loop->end - p.loop->start == 48);
 }
-
-void TestVariableSetAfterAJumpBackBelongsToTheNewPass()
-{
-    // As in TestTrackSettingAVariableAnotherReadsOwnsTheLoop, but track 0 sets the variable first in each pass, in the
-    // tick it jumps back. That change belongs to the pass that the jump starts. Track 0's 48-tick passes still own the
-    // main loop, not track 1's one-tick polls.
-    const Performance p =
-        PerformCommands({0x88, 0x01, 0x00, 0x00, 0x10, 0xf0, 0x80, 0x00, 0x00, 0x01, 0x80, 0x30, 0x89, 0x00,
-                         0x00, 0x05, 0xc7, 0x00, 0x80, 0x01, 0xf0, 0x95, 0x00, 0x00, 0x01, 0xa2, 0x89, 0x00,
-                         0x00, 0x12, 0xf0, 0x80, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0x89, 0x00, 0x00, 0x12},
-                        {.track_flags = 3});
-
-    XSFLIB_CHECK(p.loop && p.loop->end - p.loop->start == 48);
-}
-
-void TestTrackWaitingInSilenceDoesNotHoldOffTheLoop()
-{
-    // Track 0 opens track 1, holds key 60 for 2,000 ticks with note wait off, and then only waits 2 ticks and jumps
-    // back. Track 1 plays key 60 for 24 ticks, then waits 3,000 ticks (31 s) in silence and ends. A track that has
-    // sounded nothing and changed nothing for 10 s doesn't count as playing on. Track 0's idle passes count from then.
-    // The sequence stops about 10 s after track 1's note. Its loop is one of those passes. Track 0's note still sounds
-    // there. The loop therefore isn't silent (SilentLoop).
-    const Performance p =
-        PerformCommands({0x88, 0x01, 0x00, 0x00, 0x11, 0xc7, 0x00, 0x3c, 0x64, 0x8f, 0x50, 0x80, 0x02,
-                         0x89, 0x00, 0x00, 0x0b, 0xc7, 0x00, 0x3c, 0x64, 0x18, 0x80, 0x97, 0x38, 0xff},
-                        {.track_flags = 3});
-
-    XSFLIB_CHECK(p.seconds < 15.0 && p.loop && p.loop->start > 24 && p.loop->end - p.loop->start == 2);
-}
-
-void TestPollAfterTheSoundIsNoLoop()
-{
-    // Track 0 opens track 1, then checks each tick whether variable 0 is 1, and leaves the loop when it is. Nothing
-    // sets the variable. Track 1 plays key 60 for 12 ticks and ends. Once the note has ended, track 0's passes count as
-    // the main loop. They sound nothing (SilentLoop). The performance therefore ends with the note and has no loop
-    // markers. When track 1 holds a note of 9,600 ticks instead, the same passes are the main loop under the note.
-    const std::vector<uint8_t> kRoot = {0x88, 0x01, 0x00, 0x00, 0x16, 0x80, 0x01, 0xf0, 0x90, 0x00, 0x00,
-                                        0x01, 0xa2, 0x89, 0x00, 0x00, 0x15, 0x89, 0x00, 0x00, 0x05, 0xff};
-    std::vector<uint8_t> one_shot = kRoot;
-    one_shot.insert(one_shot.end(), {0x3c, 0x64, 0x0c, 0xff});
-    std::vector<uint8_t> held = kRoot;
-    held.insert(held.end(), {0x3c, 0x64, 0xcb, 0x00, 0xff});
-
-    const Performance after = PerformCommands(one_shot, {.track_flags = 3});
-    const Performance under = PerformCommands(held, {.track_flags = 3});
-
-    XSFLIB_CHECK(!after.loop && after.loops == 0 && !after.truncated && NoteCount(after) == 1);
-    XSFLIB_CHECK(after.seconds < 1.0);
-    XSFLIB_CHECK(under.loop && under.loop->end == under.loop->start + 1 && under.seconds > 9.0);
-}
-
-void TestSilentPassesThatChangeSettingsEndWithTheSound()
-{
-    // Play key 60 for 12 ticks, then set the volume to 127 and to 64 in passes of 48 ticks. The passes change the track
-    // and sound nothing (SilentLoop). The performance ends with the note. The volume changes after it are left out.
-    const Performance p =
-        PerformCommands({0x3c, 0x64, 0x0c, 0xc1, 0x7f, 0x80, 0x18, 0xc1, 0x40, 0x80, 0x18, 0x89, 0x00, 0x00, 0x03});
-
-    const auto after_end = [&p](const TrackEvent& e)
-    {
-        return e.tick > p.end_tick;
-    };
-    XSFLIB_CHECK(!p.loop && p.loops == 0 && NoteCount(p) == 1 && p.seconds < 1.0);
-    XSFLIB_CHECK(std::ranges::none_of(p.tracks[0], after_end));
-}
-
-void TestSequenceWithoutNotesEndsAtItsStart()
-{
-    // A sequence that only waits a tick and jumps back sounds nothing (SilentLoop). It ends at tick 0 with no loop
-    // markers. Its MIDI file and SoundFont are still valid.
-    const SoundArchive archive = SequenceArchive({{0x80, 0x01, 0x89, 0x00, 0x00, 0x00}});
-
-    const Conversion c = ConvertSequence(archive, 0);
-
-    const seqlib::midi::File m = seqlib::midi::Read(c.midi);
-    const auto at_start = [](const seqlib::midi::Track& track)
-    {
-        return track.end_tick == 0;
-    };
-    XSFLIB_CHECK(!c.performance.loop && c.performance.loops == 0 && c.performance.end_tick == 0);
-    XSFLIB_CHECK(c.performance.seconds == 0.0 && !c.performance.truncated);
-    XSFLIB_CHECK(seqlib::midi::Problems(c.midi).empty() && !m.tracks.empty() &&
-                 std::ranges::all_of(m.tracks, at_start));
-    XSFLIB_CHECK(seqlib::sf2::Check(c.sf2).empty());
-}
-
-void TestLoopStartSendsTheVolumeTheGameRestores()
-{
-    // With note wait off, set volume 100, play key 60 for 6 ticks and wait 12. The loop then sets volume 100 again,
-    // plays key 60, and after half its length sets volume 50. The first pass requires no volume event at its start, but
-    // the game goes back to 100 there. The loop start therefore sends it for a MIDI player that loops on the markers.
-    // The first loop is 48 ticks long and passes on to the next pass; the second is 10 s long, and the performance
-    // stops at its end.
-    const SoundArchive archive =
-        SequenceArchive({{0xc7, 0x00, 0xc1, 0x64, 0x3c, 0x64, 0x06, 0x80, 0x0c, 0xc1, 0x64, 0x3c,
-                          0x64, 0x18, 0x80, 0x18, 0xc1, 0x32, 0x80, 0x18, 0x89, 0x00, 0x00, 0x09},
-                         {0xc7, 0x00, 0xc1, 0x64, 0x3c, 0x64, 0x06, 0x80, 0x0c, 0xc1, 0x64, 0x3c, 0x64,
-                          0x18, 0x80, 0x83, 0x60, 0xc1, 0x32, 0x80, 0x83, 0x60, 0x89, 0x00, 0x00, 0x09}});
-
-    const Performance short_loop = PerformSound(archive, 0);
-    const Performance long_loop = PerformSound(archive, 1);
-
-    auto sent_at_start = [](const Performance& p)
-    {
-        std::vector<uint8_t> at_zero;
-        std::vector<uint8_t> at_start;
-        for (const TrackEvent& e : p.tracks[0])
-        {
-            if (e.kind == EventKind::kVolume && e.tick == 0)
-            {
-                at_zero.push_back(e.value);
-            }
-            else if (e.kind == EventKind::kVolume && p.loop && e.tick == p.loop->start)
-            {
-                at_start.push_back(e.value);
-            }
-        }
-
-        return p.loop && p.loop->start == 12 && at_zero.size() == 1 && at_start == at_zero;
-    };
-    XSFLIB_CHECK(sent_at_start(short_loop));
-    XSFLIB_CHECK(sent_at_start(long_loop) && long_loop.loop->end == 972);
-}
-
-void TestLoopMarksAPassThatPlaysAsTheNext()
-{
-    // With note wait off, set volume 127 before the loop. The loop plays key 60, sets volume 64 halfway through and
-    // jumps back. Its first pass plays the note at 127 and later passes at 64. The first pass sends 127 at its start. A
-    // MIDI player that loops on that pass therefore plays every repeat too loud. The second pass plays as the next
-    // does. In the first sequence a pass is 48 ticks, and the performance runs on to 10 s anyway. In the second a pass
-    // is 10 s. The second pass plays as the third. The performance therefore plays the second pass there too.
-    const SoundArchive archive = SequenceArchive(
-        {{0xc7, 0x00, 0xc1, 0x7f, 0x3c, 0x64, 0x18, 0x80, 0x18, 0xc1, 0x40, 0x80, 0x18, 0x89, 0x00, 0x00, 0x04},
-         {0xc7, 0x00, 0xc1, 0x7f, 0x3c, 0x64, 0x18, 0x80, 0x83, 0x60, 0xc1, 0x40, 0x80, 0x83, 0x60, 0x89, 0x00, 0x00,
-          0x04}});
-
-    const Performance short_loop = PerformSound(archive, 0);
-    const Performance long_loop = PerformSound(archive, 1);
-
-    XSFLIB_CHECK(short_loop.loop && short_loop.loop->start == 48 && short_loop.loop->end == 96);
-    XSFLIB_CHECK(long_loop.loop && long_loop.loop->start == 960 && long_loop.loop->end == 1920 &&
-                 long_loop.loops == 1 && long_loop.seconds > 20.0 && long_loop.seconds < 21.0);
-}
-
-void TestLoopDoesNotStrikeATiedNoteAgain()
-{
-    // Turn tie on. The loop ties key 60 for a tick, pans left, ties it again for a tick, pans right and jumps back. The
-    // first pass strikes the note, and later passes only tie it again. The loop is therefore the second pass. A MIDI
-    // player repeats that pass without striking the note every 2 ticks.
-    const Performance p = PerformCommands(
-        {0xc8, 0x01, 0x3c, 0x64, 0x01, 0xc0, 0x20, 0x3c, 0x64, 0x01, 0xc0, 0x60, 0x89, 0x00, 0x00, 0x02});
-
-    const auto note_ons =
-        std::ranges::count_if(p.tracks[0], [](const TrackEvent& e) { return e.kind == EventKind::kNoteOn; });
-
-    XSFLIB_CHECK(note_ons == 1 && p.loop && p.loop->start == 2 && p.loop->end == 4);
-}
-
-void TestLoopThatNoPassRepeatsKeepsItsFirstPass()
-{
-    // Track 0 opens track 1, then plays key 60 every 960 ticks (10 s); track 1 plays key 64 every 959. Track 1's notes
-    // come a tick earlier in each of track 0's passes. No pass therefore plays as the next. The loop stays on the first
-    // pass, and the performance doesn't play another pass to find one.
-    const Performance p =
-        PerformCommands({0x88, 0x01, 0x00, 0x00, 0x11, 0xc7, 0x00, 0x3c, 0x64, 0x18, 0x80, 0x87, 0x40, 0x89, 0x00,
-                         0x00, 0x07, 0xc7, 0x00, 0x40, 0x64, 0x18, 0x80, 0x87, 0x3f, 0x89, 0x00, 0x00, 0x13},
-                        {.track_flags = 3});
-
-    XSFLIB_CHECK(p.loop && p.loop->start == 0 && p.loop->end == 960 && p.seconds < 12.0);
-}
-
-void TestPassOnAnotherPartPlaysAsTheNext()
-{
-    // With attack and release 122, glide from key 67 to key 83 over 30 ticks, wait 10 and jump back. Each note glides
-    // while the last one's release still sounds. The notes therefore take turns on two parts, and a part that a note
-    // moves to takes every setting again. The note of a pass and the note of the next pass are on different parts with
-    // the same settings. So the first pass plays as the next.
-    const Performance p =
-        PerformCommands({0xd0, 0x7a, 0xd3, 0x7a, 0xc9, 0x43, 0x53, 0x5a, 0x1e, 0x80, 0x0a, 0x89, 0x00, 0x00, 0x00});
-
-    const std::vector<int> parts = NoteParts(p);
-    XSFLIB_CHECK(parts.size() > 3 && parts[0] == 0 && parts[1] == 1 && parts[2] == 0);
-    XSFLIB_CHECK(p.loop && p.loop->start == 0 && p.loop->end == 40);
-}
-
-void TestSequenceThatFinishesHasNoLoop()
-{
-    // Set variable 0 to 0. Play key 60 for 24 ticks, add 1 to the variable, and jump back while it's below 3, then end.
-    // The passes count as a loop on the way, but the sequence ends after three notes. It therefore has no loop.
-    const Performance p = PerformCommands({0xf0, 0x80, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0xf0, 0x81, 0x00, 0x00,
-                                           0x01, 0xf0, 0x94, 0x00, 0x00, 0x03, 0xa2, 0x89, 0x00, 0x00, 0x05, 0xff});
-
-    const auto note_ons =
-        std::ranges::count_if(p.tracks[0], [](const TrackEvent& e) { return e.kind == EventKind::kNoteOn; });
-
-    XSFLIB_CHECK(note_ons == 3 && !p.loop && p.loops == 0);
-}
-
-void TestVariableOptionSetsAVariableBeforeTheStart()
-{
-    // Wait a tick and check again while player variable 0 isn't 1, then play key 60 and end. Variables start at -1. The
-    // sequence therefore plays nothing until the game sets the variable. PerformOptions::variables sets it first.
-    const SoundArchive archive = SequenceArchive(
-        {{0xf0, 0x95, 0x00, 0x00, 0x01, 0xa2, 0x80, 0x01, 0xa2, 0x89, 0x00, 0x00, 0x00, 0x3c, 0x64, 0x18, 0xff}});
-    BankSet banks(archive, archive.Sounds()[0]);
-    PerformOptions options;
-    options.variables[0] = 1;
-
-    const Performance unset = Perform(archive, 0, banks, {});
-    const Performance set = Perform(archive, 0, banks, options);
-
-    auto note_ons = [](const Performance& p)
-    {
-        return std::ranges::count_if(p.tracks[0], [](const TrackEvent& e) { return e.kind == EventKind::kNoteOn; });
-    };
-    XSFLIB_CHECK(note_ons(unset) == 0 && note_ons(set) == 1);
-}
-
 void TestRetryWithoutAWaitIsNoLoop()
 {
     // Draw variable 0 at random from 0 to 3. While it's 0, jump back without a wait and draw again. Then play a 48-tick
@@ -632,7 +310,7 @@ void TestSoundsPanCurveAndModeAreReported()
     // Pan a note left with four sound settings: pan curve 2, balance mode with a mono wave (which it doesn't affect),
     // balance mode with a stereo wave, and the default curve and mode.
     std::vector<ArchiveFile> files(3);
-    files[0].data = Rseq({0xc0, 0x20, 0x3c, 0x64, 0x30, 0xff});
+    files[0].data = MakeSequence({0xc0, 0x20, 0x3c, 0x64, 0x30, 0xff}, {});
     files[1].data = Rbnk({TestInstrument{}});
     files[1].wave_data = Rwar({Rwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     files[2].data = Rbnk({TestInstrument{}});
@@ -805,29 +483,10 @@ void TestBuildOf2006StopsAReleaseAtVolume0()
 
 // The tests on the Wii.
 const Test kTests[] = {
-    TestClosingTickReachesTheReleaseTail,
-    TestSilenceAtTheTimeLimitEndsWithTheLastSound,
-    TestOneShotWavePlaysOutAtItsPitch,
     TestRecordingEndsAOneShotNoteAsTheWiiDoes,
     TestRecordingSetsANoteUpAsTheWiiDoes,
     TestNoteTakesAVoiceFromAPlayingChannel,
-    TestTimedSweepGlidesOnWhenTheSequenceStops,
-    TestTimedSweepMovesEveryFrame,
-    TestTimedSweepGoesOnAfterItsTrackCloses,
-    TestIdleTrackDoesNotOwnTheLoopWhileAnotherPlays,
     TestTrackSettingAVariableAnotherReadsOwnsTheLoop,
-    TestVariableSetAfterAJumpBackBelongsToTheNewPass,
-    TestTrackWaitingInSilenceDoesNotHoldOffTheLoop,
-    TestPollAfterTheSoundIsNoLoop,
-    TestSilentPassesThatChangeSettingsEndWithTheSound,
-    TestSequenceWithoutNotesEndsAtItsStart,
-    TestLoopStartSendsTheVolumeTheGameRestores,
-    TestLoopMarksAPassThatPlaysAsTheNext,
-    TestLoopDoesNotStrikeATiedNoteAgain,
-    TestLoopThatNoPassRepeatsKeepsItsFirstPass,
-    TestPassOnAnotherPartPlaysAsTheNext,
-    TestSequenceThatFinishesHasNoLoop,
-    TestVariableOptionSetsAVariableBeforeTheStart,
     TestRetryWithoutAWaitIsNoLoop,
     TestVariablesStartAsTheGamesDo,
     TestTrackStartsMoreNotesATickThanTheGameHasVoices,

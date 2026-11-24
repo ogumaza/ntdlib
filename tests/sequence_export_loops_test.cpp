@@ -8,7 +8,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <optional>
 #include <span>
 #include <utility>
@@ -75,13 +74,11 @@ void TestOneShotWavePlaysOutAtItsPitch()
     files[2].data = OneRegionFbnk({{0x05000000, 0}});
     files[3].data = Fwar({Pcm16Fwav(4 * 32000, std::vector<int16_t>(4 * 32000, 1000))});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance waited = Perform(archive, 0, banks, {});
-    const Performance stopped = Perform(archive, 1, banks, {});
+    const Performance waited = PerformSound(archive, 0);
+    const Performance stopped = PerformSound(archive, 1);
 
     XSFLIB_CHECK(waited.seconds > 2.0 && waited.seconds < 2.1 && !stopped.holds &&
                  std::fabs(stopped.seconds - waited.seconds) < 0.011);
@@ -99,13 +96,11 @@ void TestTimedSweepGlidesOnWhenTheSequenceStops()
     files[2].data = OneRegionFbnk({{0x05000000, 0}});
     files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance gliding = Perform(archive, 0, banks, {});
-    const Performance ended = Perform(archive, 1, banks, {});
+    const Performance gliding = PerformSound(archive, 0);
+    const Performance ended = PerformSound(archive, 1);
 
     auto pitch = [](const Performance& p)
     {
@@ -131,10 +126,10 @@ void TestTimedSweepGlidesOnWhenTheSequenceStops()
 void TestTimedSweepMovesEveryFrame()
 {
     // With note wait off, hold key 60 with portamento from key 48 over 120 ms (time 8). Each sound frame moves the
-    // sweep on by an envelope step. A step is 3 ms on the Wii U and 5 ms on the Switch and the 3DS. The glide therefore
-    // takes 40 frames on the Wii U and 24 on the others. A tick at tempo 120 takes 10.4 ms, over several of the game's
-    // frames, and the sweep moves on in each. Every frame from the note's frame to the one in which it reaches the key
-    // sends a pitch, placed where the frame starts.
+    // sweep on by an envelope step. A step is 3 ms on the Wii and the Wii U, and 5 ms on the Switch and the 3DS. The
+    // glide therefore takes 40 frames on the Wii and the Wii U, and 24 on the others. A tick at tempo 120 takes 10.4
+    // ms, over several of the game's frames, and the sweep moves on in each. Every frame from the note's frame to the
+    // one in which it reaches the key sends a pitch, placed where the frame starts.
     const Performance p = PerformOnBank({0xc7, 0x00, 0xc9, 0x30, 0xcf, 0x08, 0x3c, 0x64, 0x00, 0x80, 0x30, 0xff},
                                         OneRegionFbnk({{0x05000000, 0}}));
 
@@ -159,13 +154,11 @@ void TestTimedSweepGoesOnAfterItsTrackCloses()
     files[2].data = OneRegionFbnk({{0x05000000, 0}});
     files[3].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
     const std::vector<uint32_t> kBanks = {0x03000000};
-    const SoundArchive archive = SoundArchive::Load(
-        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
+    const TestArchive archive = LoadTestArchive(
+        Fsar(files, {.sequences = {{0, 0, kBanks}, {1, 0, kBanks}}, .banks = {2}, .wave_archives = {3}}));
 
-    const Performance closed = Perform(archive, 0, banks, {});
-    const Performance ended = Perform(archive, 1, banks, {});
+    const Performance closed = PerformSound(archive, 0);
+    const Performance ended = PerformSound(archive, 1);
 
     XSFLIB_CHECK(GlidesEveryFrame(PitchPlaces(closed, 1)));
     const std::vector<std::pair<double, float>> after_end = PitchPlaces(ended);
@@ -335,13 +328,13 @@ void TestLfoSetAfterANoteInItsTickReachesItsPreset()
 {
     // With note wait off and LFO depth 40, play key 60, then set the LFO speed to 10 in the same tick. The game gives
     // the note the track's LFO settings at the end of the sound frame. The note's preset therefore has speed 10
-    // (3.90625 Hz), and nothing is reported. The 3DS's presets keep the speed as the sequence gives it. The other
-    // consoles' presets keep it in hertz.
+    // (3.90625 Hz), and nothing is reported. The presets of the 3DS and the Wii keep the speed as the sequence gives
+    // it. The other consoles' presets keep it in hertz.
     const Performance p = PerformOnBank({0xc7, 0x00, 0xca, 0x28, 0x3c, 0x64, 0x60, 0xcb, 0x0a, 0x80, 0x60, 0xff},
                                         OneRegionFbnk({{0x05000000, 0}}));
 
     const PresetKey* preset = FirstNotePreset(p);
-    const float speed = console->settings.engine == Engine::kCtr ? 10.0f : 3.90625f;
+    const float speed = console->settings.engine == Engine::kCtr || OnWii() ? 10.0f : 3.90625f;
 
     XSFLIB_CHECK(preset && preset->lfo_speed == speed && p.approximations.empty());
 }
@@ -350,15 +343,15 @@ void TestVolumeLfoChangedAtDepth0IsReportedWhenHeard()
 {
     // With note wait off, a volume LFO and LFO depth 0, play key 60 for 192 ticks. 48 ticks in, set the LFO speed to
     // 10, and 48 ticks later raise the depth to 40. The note's preset keeps speed 16 (6.25 Hz), and the game plays its
-    // LFO at speed 10. That is reported once. The 3DS's presets keep the speed as the sequence gives it. The other
-    // consoles' presets keep it in hertz.
+    // LFO at speed 10. That is reported once. The presets of the 3DS and the Wii keep the speed as the sequence gives
+    // it. The other consoles' presets keep it in hertz.
     const Performance p = PerformOnBank({0xc7, 0x00, 0xcc, 0x01, 0xca, 0x00, 0x3c, 0x64, 0x81, 0x40, 0x80,
                                          0x30, 0xcb, 0x0a, 0x80, 0x30, 0xca, 0x28, 0x80, 0x60, 0xff},
                                         OneRegionFbnk({{0x05000000, 0}}));
 
     const PresetKey* preset = FirstNotePreset(p);
     const auto moved = p.approximations.find("LFO parameters changed during a note (using its note-on settings)");
-    const float speed = console->settings.engine == Engine::kCtr ? 16.0f : 6.25f;
+    const float speed = console->settings.engine == Engine::kCtr || OnWii() ? 16.0f : 6.25f;
 
     XSFLIB_CHECK(preset && preset->lfo_speed == speed && moved != p.approximations.end() && moved->second == 1);
 }
@@ -565,7 +558,8 @@ void TestLoopMarksAPassThatPlaysAsTheNext()
     // MIDI player that loops on that pass therefore plays every repeat too loud. The second pass plays as the next
     // does. In the first sequence a pass is 48 ticks, and the performance runs on to 10 s anyway. In the second a pass
     // is 10 s. The second pass plays as the third. The performance therefore plays the second pass there too. The
-    // second pass ends a little before 20 s. On the Wii U and the Switch, ticks come early (UpdateTick).
+    // second pass ends a little before 20 s. On the Wii U and the Switch, ticks come early (UpdateTick). On the Wii it
+    // ends after 20 s.
     const std::vector<uint8_t> bank = OneRegionFbnk({{0x05000000, 0}});
     const Performance short_loop = PerformOnBank(
         Code({0xc7, 0x00, 0xc1, 0x7f, 0x3c, 0x64, 0x18, 0x80, 0x18, 0xc1, 0x40, 0x80, 0x18, 0x89, U24(0x000004)}),
@@ -575,8 +569,9 @@ void TestLoopMarksAPassThatPlaysAsTheNext()
                                                 bank);
 
     XSFLIB_CHECK(short_loop.loop && short_loop.loop->start == 48 && short_loop.loop->end == 96);
+    const double earliest_end = OnWii() ? 20.0 : 19.99;
     XSFLIB_CHECK(long_loop.loop && long_loop.loop->start == 960 && long_loop.loop->end == 1920 &&
-                 long_loop.loops == 1 && long_loop.seconds > 19.99 && long_loop.seconds < 21.0);
+                 long_loop.loops == 1 && long_loop.seconds > earliest_end && long_loop.seconds < 21.0);
 }
 
 void TestLoopDoesNotStrikeATiedNoteAgain()
@@ -994,7 +989,8 @@ void TestLegatoBelowHearingKeepsItsMidiNote()
     XSFLIB_CHECK(at_ms(kInaudibleSustain) < 100 * kTickMs && 100 * kTickMs < at_ms(kFadedAttenuation));
     XSFLIB_CHECK(NoteCount(released) == 1 &&
                  !released.approximations.contains("legato (tie or mono) played as a new note"));
-    XSFLIB_CHECK(NoteCount(louder) == 1 && on != louder.tracks[0].end() && on->value == 100);
+    XSFLIB_CHECK(NoteCount(louder) == 1 && on != louder.tracks[0].end() && on->tick == 0 && on->key == 60 &&
+                 on->value == 100);
 }
 
 void TestPollAfterTheSoundIsNoLoop()
@@ -1041,9 +1037,9 @@ void TestSequenceWithoutNotesEndsAtItsStart()
     // markers. Its MIDI file and SoundFont are still valid.
     std::vector<ArchiveFile> files(1);
     files[0].data = Fseq({0x80, 0x01, 0x89, 0x00, 0x00, 0x00});
-    const SoundArchive archive = SoundArchive::Load(Fsar(files, {.sequences = {{0, 0}}}), console->settings.archive);
+    const TestArchive archive = LoadTestArchive(Fsar(files, {.sequences = {{0, 0}}}));
 
-    const Conversion c = ConvertSequence(archive, 0);
+    const Conversion c = ConvertSound(archive, 0);
 
     const MidiView m = ParseMidi(c.midi);
     const auto at_start = [](uint64_t end)
@@ -1056,8 +1052,8 @@ void TestSequenceWithoutNotesEndsAtItsStart()
     XSFLIB_CHECK(Sf2Problem(c.sf2).empty());
 }
 
-// The tests that hold on the Wii U, the Switch and the 3DS.
-const Test kWiiUSwitchAndCtrTests[] = {
+// The tests that hold on every console, the Wii included.
+const Test kEveryConsoleTests[] = {
     TestClosingTickReachesTheReleaseTail,
     TestSilenceAtTheTimeLimitEndsWithTheLastSound,
     TestOneShotWavePlaysOutAtItsPitch,
@@ -1065,14 +1061,11 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestTimedSweepMovesEveryFrame,
     TestTimedSweepGoesOnAfterItsTrackCloses,
     TestHeldNoteHoldsUntilStopped,
-    TestLateChangeAfterTheSoundIsLeftOut,
-    TestReverbOutOfTheSearchesMovesNoEnd,
     TestLfoSetAfterANoteInItsTickReachesItsPreset,
     TestVolumeLfoChangedAtDepth0IsReportedWhenHeard,
     TestPitchLfoChangedDuringANoteGoesOutAsPitchBends,
     TestDeepTremoloIsKeptTo6dB,
     TestNoteReleasedInItsAttackKeepsTheGamesLevel,
-    TestTrackWaitingForAVariableGoesOn,
     TestLoopStartSendsTheVolumeTheGameRestores,
     TestLoopMarksAPassThatPlaysAsTheNext,
     TestLoopDoesNotStrikeATiedNoteAgain,
@@ -1080,6 +1073,17 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestPassOnAnotherPartPlaysAsTheNext,
     TestSequenceThatFinishesHasNoLoop,
     TestVariableOptionSetsAVariableBeforeTheStart,
+    TestLegatoBelowHearingKeepsItsMidiNote,
+    TestPollAfterTheSoundIsNoLoop,
+    TestSilentPassesThatChangeSettingsEndWithTheSound,
+    TestSequenceWithoutNotesEndsAtItsStart,
+};
+
+// The tests that hold on the Wii U, the Switch and the 3DS.
+const Test kWiiUSwitchAndCtrTests[] = {
+    TestLateChangeAfterTheSoundIsLeftOut,
+    TestReverbOutOfTheSearchesMovesNoEnd,
+    TestTrackWaitingForAVariableGoesOn,
     TestTrackVariableOptionSetsATracksVariableBeforeTheStart,
     TestTrackVariableOptionSetsTheTracksVariable,
     TestVariableChangeComesBeforeTheTicksOfItsFrame,
@@ -1092,10 +1096,6 @@ const Test kWiiUSwitchAndCtrTests[] = {
     TestCountedLoopPastTheTimeLimitPlaysAsAnEndlessLoop,
     TestNestedCountedLoopsPastTheTimeLimit,
     TestTiedMelodyBelowHearingIsNoLoop,
-    TestLegatoBelowHearingKeepsItsMidiNote,
-    TestPollAfterTheSoundIsNoLoop,
-    TestSilentPassesThatChangeSettingsEndWithTheSound,
-    TestSequenceWithoutNotesEndsAtItsStart,
 };
 
 // The tests that hold on the Wii U and the Switch.
@@ -1105,25 +1105,14 @@ const Test kWiiUAndSwitchTests[] = {
     TestRandomLfoCurveInPitchBendsIsReportedOnce,
 };
 
-// The tests of `lists`, in order.
-std::vector<Test> Join(std::initializer_list<std::span<const Test>> lists)
-{
-    std::vector<Test> tests;
-    for (const std::span<const Test> list : lists)
-    {
-        tests.insert(tests.end(), list.begin(), list.end());
-    }
-
-    return tests;
-}
-
 } // namespace
 
 int main()
 {
-    RunOn(WiiU(), Join({kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
-    RunOn(Switch(), Join({kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
-    RunOn(Ctr(), kWiiUSwitchAndCtrTests);
+    RunOn(WiiU(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
+    RunOn(Switch(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests, kWiiUAndSwitchTests}));
+    RunOn(Ctr(), Join({kEveryConsoleTests, kWiiUSwitchAndCtrTests}));
+    RunOn(Wii(), kEveryConsoleTests);
 
     return xsflib::testing::Summary("sequence_export_loops");
 }

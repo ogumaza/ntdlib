@@ -130,6 +130,10 @@ void TestArchive()
     XSFLIB_CHECK(!rip::IsMusic(archive, 4)); // a stream
     XSFLIB_CHECK(!rip::IsMusic(archive, 6)); // past the sounds
 
+    // rip_archive_library_test counts an archive with a wave sound.
+    const rip::SoundCounts counts = rip::CountSounds(archive);
+    XSFLIB_CHECK(counts.sequences == 5 && counts.wave_sounds == 0 && counts.streams == 1);
+
     // The players' names alone, in any case.
     XSFLIB_CHECK(rip::IsMusicPlayerName("Music_2") && rip::IsMusicPlayerName("FANFARE"));
     XSFLIB_CHECK(!rip::IsMusicPlayerName("PLAYER") && !rip::IsMusicPlayerName("") && !rip::IsMusicPlayerName("SE_BGM"));

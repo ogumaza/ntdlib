@@ -129,6 +129,15 @@ constexpr uint32_t kTrackPitchOffset = 0x0C;
 // The mask of every track of a player, for kAllocatableChannels, kTrackParameter and kMuteTrack.
 constexpr uint32_t kAllTracks = 0xFFFF;
 
+// The modes of a track's mute (SNDSeqMute), for kMuteTrack's third argument and the sequence's mute command (0xD7).
+// kMuteOff plays the track again. kMuteNoStop starts none of its notes from the next one on, and its channels sound on.
+// kMuteRelease also releases its channels, and kMuteStop also stops them at once (Driver::MuteTrack). NW4R SND and its
+// successors keep the same four modes in their driver (nwsnd/mute_modes.h).
+constexpr int kMuteOff = 0;
+constexpr int kMuteNoStop = 1;
+constexpr int kMuteRelease = 2;
+constexpr int kMuteStop = 3;
+
 // The hardware channel that a kSetUpPcmChannel, kSetUpPsgChannel or kSetUpNoiseChannel command sets up.
 constexpr int SetUpChannel(const Command& command)
 {

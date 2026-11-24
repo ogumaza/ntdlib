@@ -36,6 +36,7 @@
 #include "ntdlib/ctr/snd/sar_options.h"
 #include "ntdlib/ctr/snd/sound_players.h"
 #include "ntdlib/ctr/snd/starting_tracks.h"
+#include "ntdlib/ctr/snd/voice.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
 #include "ntdlib/testing/fnv1a.h"
@@ -860,6 +861,24 @@ void TestStartingStreamTracks()
     XSFLIB_CHECK(StartingStreamTracks("0000000000000000000000000000000000000000", "STRM_CN_UNDERGROUND_N") == kAll);
 }
 
+// OwnerCallback gives back the callback that SetOwnerCallback set. A caller wraps a voice's callback this way to log
+// why the voice ends.
+void TestOwnerCallback()
+{
+    using ntdlib::ctr::snd::Voice;
+    using ntdlib::ctr::snd::VoiceCallbackStatus;
+    using ntdlib::ctr::snd::VoiceId;
+    Voice voice;
+    std::vector<std::pair<VoiceId, VoiceCallbackStatus>> calls;
+
+    voice.SetOwnerCallback([&calls](VoiceId id, VoiceCallbackStatus status) { calls.emplace_back(id, status); });
+    voice.OwnerCallback()(3, VoiceCallbackStatus::kDropDsp);
+
+    XSFLIB_CHECK(calls.size() == 1);
+    XSFLIB_CHECK(calls.front().first == 3);
+    XSFLIB_CHECK(calls.front().second == VoiceCallbackStatus::kDropDsp);
+}
+
 // The model plays sound `sound` as Teakra running `firmware` plays it, sample for sample, for 3 s. The frames' ends can
 // fall a few samples apart: the model's frames end at about the firmware's times. Every sound sounds but the stream on
 // the bus of two channels. Teakra's samples also hash to the record.
@@ -957,6 +976,7 @@ int main()
     TestStreams(archive);
     TestStreamTrackVolumes(archive);
     TestStartingStreamTracks();
+    TestOwnerCallback();
 
     for (const auto& [sound, hash] : kFirmwareHashes)
     {

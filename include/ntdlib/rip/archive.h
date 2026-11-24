@@ -398,6 +398,70 @@ std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::Soun
                                                                  std::span<const uint32_t> sounds,
                                                                  std::span<const uint32_t> start_banks = {});
 
+// The files of a sound archive and of the group files beside it that a library contains (KeepLibraryFiles). A group
+// file is a FileChunk: its path and its data.
+template <typename FileChunk>
+struct LibraryFiles
+{
+    std::vector<uint8_t> archive;
+    std::vector<FileChunk> groups;
+};
+
+// The part of `archive` that a library of the sequence sounds `sounds` contains, with the banks `start_banks`
+// (KeepSequenceData), and the group files of `groups` that contain copies of the files that they play. `archive` is
+// the archive at `archive_path`, with the group files of `groups` added in their order. With `cut_group_copies`, those
+// group files are cut down to the copies (KeepGroupCopies). Nothing after a warning when the files can't be cut out of
+// the archive: the library then contains the whole archive and every group file. When only the copies can't be cut
+// out of the group files, a warning says that the library contains those group files whole.
+template <typename FileChunk>
+std::optional<LibraryFiles<FileChunk>> KeepLibraryFiles(const sar::SoundArchive& archive,
+                                                        const std::string& archive_path,
+                                                        const std::vector<FileChunk>& groups,
+                                                        std::span<const uint32_t> sounds,
+                                                        std::span<const uint32_t> start_banks, bool cut_group_copies)
+{
+    std::optional<LibraryArchive> kept = KeepSequenceData(archive, sounds, start_banks);
+    if (!kept)
+    {
+        std::fprintf(stderr,
+                     "warning: the files that the sequences play can't be cut out of %s. The library holds the whole "
+                     "archive\n",
+                     archive_path.c_str());
+        return std::nullopt;
+    }
+
+    std::optional<std::vector<std::vector<uint8_t>>> cut;
+    if (cut_group_copies)
+    {
+        cut = KeepGroupCopies(archive, *kept, sounds, start_banks);
+        if (!cut)
+        {
+            std::fprintf(stderr,
+                         "warning: the copies that the sequences play can't be cut out of the group files. The "
+                         "library holds the group files that hold them whole\n");
+        }
+    }
+
+    LibraryFiles<FileChunk> files{std::move(kept->archive), {}};
+    for (std::size_t i = 0; i < kept->group_files.size(); i++)
+    {
+        const FileChunk& group = groups[kept->group_files[i]];
+        files.groups.push_back(FileChunk{group.path, cut ? std::move((*cut)[i]) : group.data});
+    }
+
+    return files;
+}
+
+// The numbers of an archive's sounds of each type.
+struct SoundCounts
+{
+    std::size_t sequences = 0;
+    std::size_t wave_sounds = 0;
+    std::size_t streams = 0;
+};
+
+SoundCounts CountSounds(const sar::SoundArchive& archive);
+
 // The archive that a game mode's library holds for the sequence sounds `sounds`. The game's sound library reads the
 // archive's header and its INFO block. For each sound that it loads, it then reads the files that the sound plays: the
 // sequence file, the files of the banks in its slots and the files of the wave archives that those banks name. It reads

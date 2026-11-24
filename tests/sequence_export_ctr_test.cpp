@@ -98,9 +98,9 @@ std::vector<std::tuple<int, uint32_t, uint32_t>> PlayedNotes(const Performance& 
 void TestLegatoLeavesOutTheRegionsVolume()
 {
     // With volume2 64 and tie enabled, play key 60 at velocity 100 on a volume-64 region, then key 62 at 100 and key 64
-    // at 127. nw::snd continues the channel with velocity gain but without region volume. The MIDI note starts at 127,
-    // the highest velocity the legatos reach, with CC11 taking it down to 100. The note continues through both legatos.
-    // There CC11 also compensates for the zone's region volume by 127 / 64 in power.
+    // at 127. nw::snd and NW4R SND continue the channel with velocity gain but without region volume. The MIDI note
+    // starts at 127, the highest velocity the legatos reach, with CC11 taking it down to 100. The note continues
+    // through both legatos. There CC11 also compensates for the zone's region volume by 127 / 64 in power.
     const Performance p =
         PerformOnBank({0xd5, 0x40, 0xc8, 0x01, 0x3c, 0x64, 0x30, 0x3e, 0x64, 0x30, 0x40, 0x7f, 0x30, 0xff},
                       OneRegionFbnk({{0x05000000, 0}}, 64));
@@ -496,8 +496,13 @@ void TestStartBanksReplaceTheArchives()
     XSFLIB_CHECK(started.sf2 != archives.sf2);
 }
 
-const Test kTests[] = {
+// The tests that hold on the 3DS and the Wii.
+const Test kCtrAndWiiTests[] = {
     TestLegatoLeavesOutTheRegionsVolume,
+};
+
+// The tests of the 3DS alone.
+const Test kTests[] = {
     TestLegatoKeepsTheChannelsEnvelope,
     TestOneShotWaveEndsAsTheDspPlaysIt,
     TestRecordingEngineEndsTheOneShotAtTheSameFrame,
@@ -518,7 +523,8 @@ const Test kTests[] = {
 
 int main()
 {
-    RunOn(Ctr(), kTests);
+    RunOn(Ctr(), Join({kCtrAndWiiTests, kTests}));
+    RunOn(Wii(), kCtrAndWiiTests);
 
     return xsflib::testing::Summary("sequence_export_ctr");
 }

@@ -205,8 +205,8 @@ void TestNewSuperMarioBros()
               muteki.arrangements[0].commands == kHurry,
           "_HURRY sets the tempo ratio to 358");
 
-    const snd::CommandList kMuted = {{.id = CommandId::kMuteTrack, .args = {0, 0x0102, 1}}};
-    const snd::CommandList kFull = {{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, 0}}};
+    const snd::CommandList kMuted = {{.id = CommandId::kMuteTrack, .args = {0, 0x0102, snd::kMuteNoStop}}};
+    const snd::CommandList kFull = {{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, snd::kMuteOff}}};
     Check(world8.commands == kMuted, "BGM_WORLD8 starts with tracks 1 and 8 muted");
     Check(world8.arrangements.size() == 1 && world8.arrangements[0].suffix == "_FULL" &&
               world8.arrangements[0].commands == kFull,
@@ -458,10 +458,10 @@ void TestSpiritTracksTrainIntro()
     Check(mix.level == -36 && mix.tempo_ratio == 256u &&
               std::ranges::all_of(mix.faders, [](const std::optional<int32_t>& f) { return f == 0; }),
           "SEQ_18_INTRO plays its intro at state 1's level and tempo, with every track at full volume");
-    Check(intro->commands.back() == snd::Command{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, 0}},
+    Check(intro->commands.back() == snd::Command{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, snd::kMuteOff}},
           "SEQ_18_INTRO starts with every track unmuted, as state 2 sets");
-    const snd::CommandList kStanding = {{.id = CommandId::kMuteTrack, .args = {0, 0x02E2, 0}},
-                                        {.id = CommandId::kMuteTrack, .args = {0, 0x3101, 3}}};
+    const snd::CommandList kStanding = {{.id = CommandId::kMuteTrack, .args = {0, 0x02E2, snd::kMuteOff}},
+                                        {.id = CommandId::kMuteTrack, .args = {0, 0x3101, snd::kMuteStop}}};
     Check(standing.tick == 0 && standing.video_frames == 2 && standing.frames.size() == 61 &&
               standing.frames.back() == kStanding &&
               std::all_of(standing.frames.begin(), standing.frames.end() - 1,

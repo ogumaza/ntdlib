@@ -812,6 +812,19 @@ std::optional<std::vector<std::vector<uint8_t>>> KeepGroupCopies(const sar::Soun
     }
 }
 
+SoundCounts CountSounds(const sar::SoundArchive& archive)
+{
+    SoundCounts counts;
+    for (const sar::SoundInfo& sound : archive.Sounds())
+    {
+        counts.sequences += sound.type == sar::SoundType::kSequence;
+        counts.wave_sounds += sound.type == sar::SoundType::kWaveSound;
+        counts.streams += sound.type == sar::SoundType::kStream;
+    }
+
+    return counts;
+}
+
 std::optional<std::vector<uint8_t>> KeepLoadedFiles(const sar::SoundArchive& archive, std::span<const uint32_t> sounds,
                                                     std::size_t read_alignment)
 {

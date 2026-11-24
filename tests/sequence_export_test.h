@@ -6,7 +6,8 @@
 //
 // A test reads the current console through `console`. RunOn sets it while it runs a console's tests.
 // sequence_export_test.cpp and the tests named sequence_export_<topic>_test.cpp list each test once, with the consoles
-// that it applies to. The tests on the Wii are in sequence_export_revolution*_test.cpp.
+// that it applies to. On the Wii, the builders of archives build RSAR files (sequence_export_rsar_files.h), and a
+// TestArchive holds what rsar reads. The tests that only the Wii has are in sequence_export_revolution*_test.cpp.
 
 #pragma once
 
@@ -33,10 +34,13 @@
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/units.h"
 #include "seqlib/wav.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/arrangements.h"
 #include "ntdlib/sequence_export/consoles.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/envelope.h"
@@ -44,10 +48,13 @@
 #include "ntdlib/sequence_export/instruments.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sequence_export/performer.h"
+#include "ntdlib/sequence_export/rsar_instruments.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/sound_build.h"
+#include "ntdlib/sound_pieces.h"
 #include "ntdlib/testing/sar_files.h"
+#include "sequence_export_rsar_files.h"
 
 namespace ntdlib::sequence_export::tests
 {
@@ -97,6 +104,12 @@ inline Console Wii(const SndBuild& build = {})
 // The console that the tests run on now. RunOn sets it.
 inline const Console* console = nullptr;
 
+// Whether the tests run on the Wii now. The Wii's archives are RSAR files. ntdlib's rsar reads them.
+inline bool OnWii()
+{
+    return console->settings.engine == Engine::kRevolution;
+}
+
 // A figure that differs by console: the figure of the Wii U, the Switch or the 3DS, whichever the tests run on now.
 template <typename T>
 T ByConsole(T wii_u, T nx, T ctr)
@@ -135,6 +148,18 @@ inline void RunOn(const Console& on, std::span<const Test> tests)
     {
         std::fprintf(stderr, "%d check(s) failed on the %s\n", xsflib::testing::failures - before, on.name.c_str());
     }
+}
+
+// The tests of `lists`, in order.
+inline std::vector<Test> Join(std::initializer_list<std::span<const Test>> lists)
+{
+    std::vector<Test> tests;
+    for (const std::span<const Test> list : lists)
+    {
+        tests.insert(tests.end(), list.begin(), list.end());
+    }
+
+    return tests;
 }
 
 // PCM as sar decodes it.
@@ -240,6 +265,33 @@ inline std::string Sf2Problem(const std::vector<uint8_t>& d)
 {
     const std::vector<std::string> problems = seqlib::sf2::Check(d);
     return problems.empty() ? "" : problems.front();
+}
+
+// Checks the SoundFont of `bank`, a conversion of the bank of the bank tests. It holds programs 0 and 2, with the zones
+// and samples of `sequence`, a conversion of a sound that plays both programs.
+inline void CheckBankSoundFontHoldsEachInstrument(const BankConversion& bank, const Conversion& sequence)
+{
+    XSFLIB_CHECK(bank.sound_fonts.size() == 1);
+    if (bank.sound_fonts.size() != 1)
+    {
+        return;
+    }
+
+    const BankSoundFont& sound_font = bank.sound_fonts[0];
+    const seqlib::sf2::Records v = seqlib::sf2::Read(sound_font.sf2);
+    const seqlib::sf2::Records w = seqlib::sf2::Read(sequence.sf2);
+    XSFLIB_CHECK(Sf2Problem(sound_font.sf2).empty() && bank.warnings.empty() && sound_font.samples == 3);
+    XSFLIB_CHECK(sound_font.first == 0 && sound_font.last == 2 && v.Count("phdr", 38) == 3);
+    XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 0))) == "Program 0");
+    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 0) + 20) == 0 &&
+                 xsflib::LoadLe16(v.Record("phdr", 38, 0) + 22) == 0);
+    XSFLIB_CHECK(std::string(reinterpret_cast<const char*>(v.Record("phdr", 38, 1))) == "Program 2");
+    XSFLIB_CHECK(xsflib::LoadLe16(v.Record("phdr", 38, 1) + 20) == 2 &&
+                 xsflib::LoadLe16(v.Record("phdr", 38, 1) + 22) == 0);
+    for (const char* chunk : {"ibag", "igen", "imod", "shdr", "smpl"})
+    {
+        XSFLIB_CHECK(v.chunks.at(chunk) == w.chunks.at(chunk));
+    }
 }
 
 // An instrument zone of a SoundFont that plays a sample: its keys, its initialFilterFc generator, and the source and
@@ -437,7 +489,8 @@ inline std::vector<uint8_t> Code(std::initializer_list<CodePiece> pieces)
 namespace files = ntdlib::testing::sar_files;
 
 // Builds a PCM16 FWAV declaring `length` samples at `sample_rate`, in the format of `flavor`, or in the console's
-// format without one. Each of `channels` channels uses `samples`. If `loops` is set, the entire wave loops.
+// format without one. Each of `channels` channels uses `samples`. If `loops` is set, the entire wave loops. On the Wii
+// it builds an RWAV, whatever `flavor`.
 inline std::vector<uint8_t> Pcm16Fwav(uint32_t length, const std::vector<int16_t>& samples, uint32_t channels = 1,
                                       bool loops = false, uint32_t sample_rate = 32000,
                                       sar::Flavor flavor = console->settings.archive.flavor)
@@ -449,6 +502,11 @@ inline std::vector<uint8_t> Pcm16Fwav(uint32_t length, const std::vector<int16_t
         const auto v = static_cast<uint16_t>(s);
         data.push_back(static_cast<uint8_t>(big_endian ? v >> 8 : v));
         data.push_back(static_cast<uint8_t>(big_endian ? v : v >> 8));
+    }
+
+    if (OnWii())
+    {
+        return wii_tests::Rwav(length, samples, channels, loops, sample_rate);
     }
 
     files::WaveSpec spec;
@@ -463,10 +521,25 @@ inline std::vector<uint8_t> Pcm16Fwav(uint32_t length, const std::vector<int16_t
 
 // Builds a one-instrument FBNK with one region covering all keys and velocities. It plays wave table entry 0 at
 // `volume` and `pan`, ignores note-off if `ignore_note_off`, and selects `interpolation` on AX. `waves` supplies (wave
-// archive item ID, wave index) pairs.
+// archive item ID, wave index) pairs. On the Wii it builds an RBNK whose region plays the wave of entry 0's index in
+// the bank's wave data. The Wii's regions select no interpolation.
 inline std::vector<uint8_t> OneRegionFbnk(const std::vector<std::pair<uint32_t, uint32_t>>& waves, uint8_t volume = 127,
                                           uint8_t pan = 64, bool ignore_note_off = false, uint8_t interpolation = 0)
 {
+    if (OnWii())
+    {
+        if (interpolation != 0)
+        {
+            throw std::logic_error("the Wii's regions select no interpolation");
+        }
+
+        const wii_tests::TestRegion region{.wave_index = static_cast<int32_t>(waves.at(0).second),
+                                           .note_off_type = static_cast<uint8_t>(ignore_note_off ? 1 : 0),
+                                           .volume = volume,
+                                           .pan = pan};
+        return wii_tests::Rbnk({wii_tests::TestInstrument{{region}}});
+    }
+
     files::Region region;
     region.volume = volume;
     region.pan = pan;
@@ -484,11 +557,25 @@ inline std::vector<uint8_t> OneRegionFbnk(const std::vector<std::pair<uint32_t, 
 
 // Builds a one-instrument FBNK whose regions split the velocities. Region k takes those up to `upper_velocities[k]` at
 // pan `pans[k]` and volume `volumes[k]`, or 127 without `volumes`. Every region plays wave table entry 0, of `waves`.
+// On the Wii it builds an RBNK, as OneRegionFbnk does.
 inline std::vector<uint8_t> VelocitySplitFbnk(const std::vector<std::pair<uint32_t, uint32_t>>& waves,
                                               const std::vector<uint8_t>& upper_velocities,
                                               const std::vector<uint8_t>& pans,
                                               const std::vector<uint8_t>& volumes = {})
 {
+    if (OnWii())
+    {
+        wii_tests::TestInstrument instrument{.regions = {}, .upper_velocities = upper_velocities};
+        for (std::size_t k = 0; k < upper_velocities.size(); k++)
+        {
+            instrument.regions.push_back({.wave_index = static_cast<int32_t>(waves.at(0).second),
+                                          .volume = volumes.empty() ? uint8_t{127} : volumes[k],
+                                          .pan = pans[k]});
+        }
+
+        return wii_tests::Rbnk({instrument});
+    }
+
     files::VelocityTable velocities{files::VelocityTable::kRange, 0, {}};
     for (std::size_t k = 0; k < upper_velocities.size(); k++)
     {
@@ -503,9 +590,14 @@ inline std::vector<uint8_t> VelocitySplitFbnk(const std::vector<std::pair<uint32
     return files::Bank(console->settings.archive.flavor, {waves, {keys}});
 }
 
-// Builds a FWAR containing FWAV files `waves`.
+// Builds a FWAR containing FWAV files `waves`, or on the Wii an RWAR.
 inline std::vector<uint8_t> Fwar(const std::vector<std::vector<uint8_t>>& waves)
 {
+    if (OnWii())
+    {
+        return wii_tests::Rwar(waves);
+    }
+
     return files::WaveArchive(console->settings.archive.flavor, waves);
 }
 
@@ -535,11 +627,75 @@ struct ArchiveLists
     std::vector<std::string> names = {}; // the sequences' labels, in order
 };
 
+// The tracks that the alloctrack command (0xfe and a mask of 16 bits) allocates at `start` in the commands of `rseq`,
+// an RSEQ that Fseq built, or 0 where no alloctrack starts the sound.
+inline uint32_t RseqAllocatedTracks(const std::vector<uint8_t>& rseq, uint32_t start)
+{
+    const std::size_t at = wii_tests::kRseqCommands + start;
+    if (start >= rseq.size() || at + 3 > rseq.size() || rseq[at] != 0xfe)
+    {
+        return 0;
+    }
+
+    return xsflib::LoadBe16(&rseq[at + 1]);
+}
+
+// Builds the Wii's RSAR for Fsar. A bank's file takes the wave archive as its wave data: on the Wii, a bank's waves
+// come with its file. The wave archive stays in the archive as a file of its own. Nothing plays it. A sound has one
+// bank, an index into `lists.banks`. NW4R SND allocates only the tracks of the sound's flags. The Wii's tools write a
+// sequence's alloctrack into the flags of its sounds, and so does WiiFsar.
+inline std::vector<uint8_t> WiiFsar(const std::vector<ArchiveFile>& archive_files, const ArchiveLists& lists)
+{
+    if (lists.wave_archives.size() > 1)
+    {
+        throw std::logic_error("Fsar takes one wave archive on the Wii");
+    }
+
+    std::vector<wii_tests::ArchiveFile> rsar_files;
+    for (const ArchiveFile& f : archive_files)
+    {
+        rsar_files.push_back({f.data});
+    }
+
+    for (const uint32_t bank : lists.banks)
+    {
+        if (!lists.wave_archives.empty())
+        {
+            rsar_files.at(bank).wave_data = archive_files.at(lists.wave_archives[0]).data;
+        }
+    }
+
+    wii_tests::ArchiveLists rsar_lists{.banks = lists.banks, .names = lists.names};
+    for (const SequenceSound& s : lists.sequences)
+    {
+        if (s.banks.size() > 1 || (!s.banks.empty() && s.banks[0] >> 24 != 0x03) || s.channel_priority)
+        {
+            throw std::logic_error("Fsar takes at most one bank and no channel priority in a sound on the Wii");
+        }
+
+        rsar_lists.sequences.push_back(
+            {.file_id = s.file_id,
+             .start_offset = s.start_offset,
+             .bank = s.banks.empty() ? 0 : s.banks[0] & 0x00ffffff,
+             .pan_mode = s.pan_mode,
+             .pan_curve = s.pan_curve,
+             .allocate_track_flags =
+                 s.track_flags | RseqAllocatedTracks(archive_files.at(s.file_id).data, s.start_offset)});
+    }
+
+    return wii_tests::Rsar(rsar_files, rsar_lists);
+}
+
 // Builds a sound archive with `archive_files` in order and metadata from `lists`. Each sequence plays at volume 127,
 // with its pan mode and curve, its start offset, its banks and the channel priority that it sets, if any. Without
-// `lists.names`, the archive has no names.
+// `lists.names`, the archive has no names. On the Wii it builds an RSAR (WiiFsar).
 inline std::vector<uint8_t> Fsar(const std::vector<ArchiveFile>& archive_files, const ArchiveLists& lists = {})
 {
+    if (OnWii())
+    {
+        return WiiFsar(archive_files, lists);
+    }
+
     files::ArchiveSpec spec;
     spec.names = !lists.names.empty();
     for (std::size_t i = 0; i < lists.sequences.size(); i++)
@@ -583,10 +739,130 @@ inline std::vector<uint8_t> Fsar(const std::vector<ArchiveFile>& archive_files, 
     return files::Archive(console->settings.archive.flavor, spec);
 }
 
-// Builds a FSEQ containing `commands` in DATA.
+// Builds a FSEQ containing `commands` in DATA, or on the Wii an RSEQ.
 inline std::vector<uint8_t> Fseq(const std::vector<uint8_t>& commands)
 {
+    if (OnWii())
+    {
+        return ntdlib::testing::rsar_files::MakeSequence(commands, {});
+    }
+
     return files::Sequence(console->settings.archive.flavor, commands, {});
+}
+
+// A test archive in the console's format: one that sar reads, or on the Wii an RSAR that rsar reads. A test that runs
+// on every console reaches the archive through LoadTestArchive, PerformSound and ConvertSound.
+struct TestArchive
+{
+    std::optional<SoundArchive> sar_archive;
+    std::optional<rsar::SoundArchive> rsar_archive;
+};
+
+// Reads the archive `bytes` that Fsar built.
+inline TestArchive LoadTestArchive(const std::vector<uint8_t>& bytes)
+{
+    TestArchive archive;
+    if (OnWii())
+    {
+        archive.rsar_archive = rsar::SoundArchive::Load(bytes);
+    }
+    else
+    {
+        archive.sar_archive = SoundArchive::Load(bytes, console->settings.archive);
+    }
+
+    return archive;
+}
+
+// The settings that the Wii's `archive` plays with: the Wii's, for `build` of NW4R SND, or else for the build that the
+// archive's version gives (BuildOfRsarVersion). A converter plays an archive so when the game's main.dol isn't at hand.
+inline Settings WiiSettingsFor(const rsar::SoundArchive& archive, std::optional<SndBuild> build = std::nullopt)
+{
+    return Wii(build.value_or(BuildOfRsarVersion(archive.Version()))).settings;
+}
+
+// The Wii's route through sequence_export in the tests. Each function plays the Wii's `archive` with
+// WiiSettingsFor(archive, build), reads the banks with the settings of Wii() and writes the program of Wii(). The Wii's
+// tests and the dispatchers of TestArchive both call them.
+
+// Performs sound `index` of `archive` with `banks` and `options`.
+inline Performance WiiPerform(const rsar::SoundArchive& archive, uint32_t index, RsarBankSet& banks,
+                              const PerformOptions& options = {}, std::optional<SndBuild> build = std::nullopt)
+{
+    return sequence_export::Perform(archive, index, banks, options, WiiSettingsFor(archive, build));
+}
+
+// Performs sound `index` of `archive` with the banks of the sound and `options`.
+inline Performance WiiPerformSound(const rsar::SoundArchive& archive, uint32_t index,
+                                   const PerformOptions& options = {}, std::optional<SndBuild> build = std::nullopt)
+{
+    RsarBankSet banks(archive, archive.Sounds().at(index), Wii().settings);
+    return WiiPerform(archive, index, banks, options, build);
+}
+
+// Converts sound `index` of `archive` with `options` (ConvertSequence).
+inline Conversion WiiConvertSound(const rsar::SoundArchive& archive, uint32_t index, const PerformOptions& options = {},
+                                  std::optional<SndBuild> build = std::nullopt)
+{
+    return sequence_export::ConvertSequence(archive, index, options, WiiSettingsFor(archive, build), Wii().program);
+}
+
+// Performs sounds `indices` of `archive` together, as one piece (PerformTogether), with the banks of the first.
+inline Performance WiiPerformPiece(const rsar::SoundArchive& archive, const std::vector<uint32_t>& indices,
+                                   const PerformOptions& options = {}, std::optional<SndBuild> build = std::nullopt)
+{
+    RsarBankSet banks(archive, archive.Sounds().at(indices.at(0)), Wii().settings);
+    return sequence_export::PerformTogether(archive, indices, banks, options, WiiSettingsFor(archive, build));
+}
+
+// Converts sounds `indices` of `archive` together, as the piece `name` (ConvertTogether).
+inline Conversion WiiConvertPiece(const rsar::SoundArchive& archive, const std::vector<uint32_t>& indices,
+                                  const std::string& name, std::optional<SndBuild> build = std::nullopt)
+{
+    return sequence_export::ConvertTogether(archive, indices, name, {}, WiiSettingsFor(archive, build), Wii().program);
+}
+
+// Converts the sound or the piece that `at` picks in `archive`, with `pieces` (ConvertSoundOrPiece).
+inline Conversion WiiConvertArranged(const rsar::SoundArchive& archive, const ArrangedSound& at,
+                                     const std::vector<SoundPiece>& pieces)
+{
+    return ConvertSoundOrPiece(archive, at, pieces, {}, WiiSettingsFor(archive), Wii().program);
+}
+
+// Converts bank `bank` of `archive`, with its stereo waves as in a sound of pan mode `pan_mode` (ConvertBank).
+inline BankConversion WiiConvertBank(const rsar::SoundArchive& archive, std::size_t bank, uint8_t pan_mode,
+                                     std::optional<SndBuild> build = std::nullopt)
+{
+    return sequence_export::ConvertBank(archive, bank, pan_mode, WiiSettingsFor(archive, build), Wii().program);
+}
+
+// The archive of the bank tests on the Wii (BankTestRsar).
+inline rsar::SoundArchive WiiBankTestArchive(uint8_t volume = 100)
+{
+    return rsar::SoundArchive::Load(wii_tests::BankTestRsar(volume));
+}
+
+// Performs sound `index` of `archive` with `options`, with the banks of the sound read with the console's settings.
+inline Performance PerformSound(const TestArchive& archive, uint32_t index, const PerformOptions& options = {})
+{
+    if (archive.rsar_archive)
+    {
+        return WiiPerformSound(*archive.rsar_archive, index, options);
+    }
+
+    BankSet banks(*archive.sar_archive, archive.sar_archive->Sounds().at(index), console->settings);
+    return Perform(*archive.sar_archive, index, banks, options);
+}
+
+// Converts sound `index` of `archive` with `options`.
+inline Conversion ConvertSound(const TestArchive& archive, uint32_t index, const PerformOptions& options = {})
+{
+    if (archive.rsar_archive)
+    {
+        return WiiConvertSound(*archive.rsar_archive, index, options);
+    }
+
+    return ConvertSequence(*archive.sar_archive, index, options);
 }
 
 // Performs `commands` as the one sequence of an archive with `bank`, with `options`. The bank's wave table entry 0 is a
@@ -598,12 +874,11 @@ inline Performance PerformOnBank(const std::vector<uint8_t>& commands, const std
     files[0].data = Fseq(commands);
     files[1].data = bank;
     files[2].data = Fwar({Pcm16Fwav(64, std::vector<int16_t>(64, 1000), 1, true)});
-    const SoundArchive archive = SoundArchive::Load(
+    const TestArchive archive = LoadTestArchive(
         Fsar(files,
-             {.sequences = {{.banks = {0x03000000}, .track_flags = track_flags}}, .banks = {1}, .wave_archives = {2}}),
-        console->settings.archive);
-    BankSet banks(archive, archive.Sounds()[0], console->settings);
-    return Perform(archive, 0, banks, options);
+             {.sequences = {{.banks = {0x03000000}, .track_flags = track_flags}}, .banks = {1}, .wave_archives = {2}}));
+
+    return PerformSound(archive, 0, options);
 }
 
 // The keys of the notes `p` plays on track 0, in order.

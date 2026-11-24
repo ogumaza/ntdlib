@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -650,19 +651,21 @@ long long LengthOf(const Analyze& analyze, const std::string& name)
     return timing ? timing->length_ms : -1;
 }
 
-// An archive for the console of `flavor` with one sequence sound, `name`, of `code`'s commands, on the tracks in
-// `tracks`. As in the cases, program 0 plays a wave of 1 s that ends.
-inline std::vector<uint8_t> SequenceArchive(sar::Flavor flavor, const std::string& name, const Code& code,
-                                            uint32_t tracks = 1)
+// An archive for the console of `flavor` with one sequence sound, `name`, of the commands `bytecode`, on the tracks in
+// `tracks`. Program 0 plays `wave`, or else, as in the cases, a wave of 1 s that ends (sar_files::ConstantWave).
+inline std::vector<uint8_t> SequenceArchive(sar::Flavor flavor, const std::string& name,
+                                            const std::vector<uint8_t>& bytecode, uint32_t tracks = 1,
+                                            const std::optional<sar_files::WaveSpec>& wave = std::nullopt)
 {
     sar_files::ArchiveSpec spec;
     spec.banks = {{"BANK", 0}};
     spec.wave_archives = {{"WARC", 1}};
     spec.players = {{"PLAYER", 1}};
-    const std::vector<uint8_t> wave = sar_files::Wave(flavor, sar_files::ConstantWave(sar_files::BigEndian(flavor)));
+    const std::vector<uint8_t> wave_file =
+        sar_files::Wave(flavor, wave ? *wave : sar_files::ConstantWave(sar_files::BigEndian(flavor)));
     spec.files = {{sar_files::Bank(flavor, sar_files::OneRegionBank()), "", false},
-                  {sar_files::WaveArchive(flavor, {wave}), "", false},
-                  {sar_files::Sequence(flavor, code.Bytes(), {{"Start", 0}}), "", false}};
+                  {sar_files::WaveArchive(flavor, {wave_file}), "", false},
+                  {sar_files::Sequence(flavor, bytecode, {{"Start", 0}}), "", false}};
     sar_files::SoundSpec sound;
     sound.name = name;
     sound.volume = 127;
@@ -674,11 +677,20 @@ inline std::vector<uint8_t> SequenceArchive(sar::Flavor flavor, const std::strin
     return sar_files::Archive(flavor, spec);
 }
 
+// The same archive with `code`'s commands.
+inline std::vector<uint8_t> SequenceArchive(sar::Flavor flavor, const std::string& name, const Code& code,
+                                            uint32_t tracks = 1,
+                                            const std::optional<sar_files::WaveSpec>& wave = std::nullopt)
+{
+    return SequenceArchive(flavor, name, code.Bytes(), tracks, wave);
+}
+
 // The archive for the Wii U, or for the Switch.
 inline std::vector<uint8_t> SequenceArchive(bool big_endian, const std::string& name, const Code& code,
-                                            uint32_t tracks = 1)
+                                            uint32_t tracks = 1,
+                                            const std::optional<sar_files::WaveSpec>& wave = std::nullopt)
 {
-    return SequenceArchive(sar_files::FlavorOf(big_endian), name, code, tracks);
+    return SequenceArchive(sar_files::FlavorOf(big_endian), name, code.Bytes(), tracks, wave);
 }
 
 // SEQ_COUNTED_LOOP: a loop of 64 passes, each C4 for 250 ms and a rest, 10 s in all. The passes take 640 s, past the

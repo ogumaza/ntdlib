@@ -234,23 +234,13 @@ void KeepJobsData(const sar::SoundArchive& archive, const std::vector<Job>& jobs
     }
     sounds.insert(sounds.end(), more_sounds.begin(), more_sounds.end());
 
-    std::optional<LibraryArchive> kept = KeepSequenceData(archive, sounds);
-    if (!kept)
+    std::optional<LibraryFiles<typename Format::FileChunk>> kept =
+        KeepLibraryFiles(archive, to_rip.archive.path, to_rip.groups, sounds, {}, false);
+    if (kept)
     {
-        std::fprintf(stderr,
-                     "warning: the files that the sequences play can't be cut out of %s. The library holds the whole "
-                     "archive\n",
-                     to_rip.archive.path.c_str());
-        return;
+        to_rip.archive.data = std::move(kept->archive);
+        to_rip.groups = std::move(kept->groups);
     }
-
-    to_rip.archive.data = std::move(kept->archive);
-    std::vector<typename Format::FileChunk> groups;
-    for (const std::size_t group : kept->group_files)
-    {
-        groups.push_back(std::move(to_rip.groups[group]));
-    }
-    to_rip.groups = std::move(groups);
 }
 
 // Rips one sound archive into `out_dir`, and adds the number of jobs that --only and --bgm picked to `matched`.
@@ -379,18 +369,11 @@ inline std::string DescribeArchive(std::vector<uint8_t> bytes, const sar::Option
     try
     {
         const sar::SoundArchive archive = sar::SoundArchive::Load(std::move(bytes), options);
-        std::size_t sequences = 0, wave_sounds = 0, streams = 0;
-        for (const sar::SoundInfo& sound : archive.Sounds())
-        {
-            sequences += sound.type == sar::SoundType::kSequence;
-            wave_sounds += sound.type == sar::SoundType::kWaveSound;
-            streams += sound.type == sar::SoundType::kStream;
-        }
-
+        const SoundCounts counts = CountSounds(archive);
         const uint32_t v = archive.Version();
         char text[160];
         std::snprintf(text, sizeof(text), "FSAR %u.%u.%u, %zu sequences, %zu wave sounds, %zu streams%s",
-                      v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF, sequences, wave_sounds, streams,
+                      v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF, counts.sequences, counts.wave_sounds, counts.streams,
                       archive.Truncated() ? ", truncated" : "");
 
         return text;

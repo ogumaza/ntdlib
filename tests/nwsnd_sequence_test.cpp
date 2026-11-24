@@ -16,15 +16,15 @@
 #include <utility>
 #include <vector>
 
-#include "xsflib/testing/check.h"
-
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/nwsnd/mute_modes.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nwsnd/sequence_impl.h"
 #include "ntdlib/nwsnd/util.h"
 #include "ntdlib/sound_build.h"
+#include "xsflib/testing/check.h"
 
 // The test's types are in a named namespace. Templates explicitly instantiated on a type in an unnamed namespace have
 // internal linkage, and GCC then warns about each of their members that no test calls.
@@ -1670,7 +1670,7 @@ void TestTrackMuteAndSilence(const std::string& name)
     const typename Policy::SoundInfo kInfo;
     const std::vector<uint8_t> data = KeyGroupSequence(Console::kLittleEndianArguments, false);
 
-    for (const int mode : {1, 2, 3})
+    for (const int mode : {ntdlib::nwsnd::kMuteNoStop, ntdlib::nwsnd::kMuteRelease, ntdlib::nwsnd::kMuteStop})
     {
         typename Policy::Engine engine;
         Player player(0, kInfo, data);
@@ -1687,7 +1687,7 @@ void TestTrackMuteAndSilence(const std::string& name)
         Player player(0, kInfo, data);
         engine.player = &player;
         player.Start();
-        player.SetTrackMute(engine, 0x2, 1);
+        player.SetTrackMute(engine, 0x2, ntdlib::nwsnd::kMuteNoStop);
         player.SetTrackSilence(engine, 0x2, true, 0);
         player.Update(engine);
         xsflib::testing::Check(engine.pool.channels.size() == 2 && engine.pool.channels[1].silence_to == 255,

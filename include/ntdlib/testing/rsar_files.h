@@ -395,31 +395,36 @@ inline Bytes MakeWaveSoundFile(uint16_t version, const std::vector<WaveSoundSpec
     return file;
 }
 
-// A sequence file holding `commands`, with labels at 0 and 8.
-inline Bytes MakeSequence(const Bytes& commands)
+// A sequence file holding `commands`, with label i of `labels`, at most 8 characters, at offset 8 * i. Without labels
+// the file has its DATA block alone and no LABL block.
+inline Bytes MakeSequence(const Bytes& commands, const std::vector<const char*>& labels = {"SEQ_A", "SEQ_BB"})
 {
-    Bytes file = Header("RSEQ", 0x0100, 2);
+    Bytes file = Header("RSEQ", 0x0100, labels.empty() ? 1 : 2);
     const size_t data = Block(file, "DATA", 0);
     xsflib::StoreBe32(&file[Grow(file, 4)], 0xC);
     const size_t at = Grow(file, commands.size());
     std::memcpy(&file[at], commands.data(), commands.size());
 
     EndBlock(file, data, 0);
-    const size_t labels = Block(file, "LABL", 1);
+    if (labels.empty())
+    {
+        return file;
+    }
+
+    const size_t block = Block(file, "LABL", 1);
     const size_t base = file.size();
-    xsflib::StoreBe32(&file[Grow(file, 4)], 2);
-    const size_t offsets = Grow(file, 8);
-    const char* const kNames[] = {"SEQ_A", "SEQ_BB"};
-    for (uint32_t i = 0; i < 2; ++i)
+    xsflib::StoreBe32(&file[Grow(file, 4)], static_cast<uint32_t>(labels.size()));
+    const size_t offsets = Grow(file, labels.size() * 4);
+    for (size_t i = 0; i < labels.size(); ++i)
     {
         xsflib::StoreBe32(&file[offsets + i * 4], static_cast<uint32_t>(file.size() - base));
         const size_t label = Grow(file, 8 + 8);
-        xsflib::StoreBe32(&file[label], i * 8);
-        xsflib::StoreBe32(&file[label + 4], static_cast<uint32_t>(std::strlen(kNames[i])));
-        std::memcpy(&file[label + 8], kNames[i], std::strlen(kNames[i]));
+        xsflib::StoreBe32(&file[label], static_cast<uint32_t>(i * 8));
+        xsflib::StoreBe32(&file[label + 4], static_cast<uint32_t>(std::strlen(labels[i])));
+        std::memcpy(&file[label + 8], labels[i], std::strlen(labels[i]));
     }
 
-    EndBlock(file, labels, 1);
+    EndBlock(file, block, 1);
 
     return file;
 }

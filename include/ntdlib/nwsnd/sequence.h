@@ -79,6 +79,7 @@
 #include "ntdlib/nwsnd/channel.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/envelope.h"
+#include "ntdlib/nwsnd/mute_modes.h"
 
 namespace ntdlib::nwsnd
 {
@@ -915,10 +916,11 @@ public:
         }
     }
 
-    // Mutes each allocated track whose bit is set in `track_flags`, bit 0 for track 0, in `mode` (SeqTrack::SetMute): 0
-    // plays the track again, 1 skips its notes from the next one on, 2 also releases its channels, and 3 also stops
-    // them at once. A game sets it through the sound's handle (SequenceSoundHandle::SetTrackMute). Set it after Start.
-    // Start allocates the tracks. Before the first tick, each mode keeps every note of the track from starting.
+    // Mutes each allocated track whose bit is set in `track_flags`, bit 0 for track 0, in `mode` (SeqTrack::SetMute):
+    // kMuteOff plays the track again, kMuteNoStop skips its notes from the next one on, kMuteRelease also releases its
+    // channels, and kMuteStop also stops them at once (nwsnd/mute_modes.h). A game sets it through the sound's handle
+    // (SequenceSoundHandle::SetTrackMute). Set it after Start. Start allocates the tracks. Before the first tick, each
+    // mode keeps every note of the track from starting.
     void SetTrackMute(Engine& engine, uint32_t track_flags, int mode)
     {
         for (int i = 0; i < kTrackCount; ++i)

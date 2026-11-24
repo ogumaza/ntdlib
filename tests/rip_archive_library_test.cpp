@@ -926,6 +926,58 @@ void TestKeepGroupCopies()
     }
 }
 
+// The files of a library: the cut archive, and the group files that hold the copies that a model reads, under their
+// paths. They are cut down to those copies only when the rip asks for it, and kept whole when they can't be cut.
+// Nothing when the archive can't be cut. CountSounds counts the archive's sequences and its wave sound.
+void TestKeepLibraryFiles()
+{
+    for (const Console& console : kConsoles)
+    {
+        const sar::Flavor flavor = console.flavor;
+        const std::vector<Chunk> groups = {{"COMMON", CommonGroup(flavor)}, {"STAGE", StageGroup(flavor)}};
+        sar::SoundArchive archive = sar::SoundArchive::Load(CopiesBeside(flavor), StrictRules(flavor));
+        for (const Chunk& group : groups)
+        {
+            archive.AddGroupFile(group.data);
+        }
+
+        const std::vector<uint32_t> sounds = {1};
+        const std::string name = console.name;
+
+        const rip::SoundCounts counts = rip::CountSounds(archive);
+        Check(counts.sequences == 2 && counts.wave_sounds == 1 && counts.streams == 0, name + ": the sounds' counts");
+
+        const std::optional<rip::LibraryFiles<Chunk>> cut =
+            rip::KeepLibraryFiles(archive, "archive", groups, sounds, {}, true);
+        const std::optional<rip::LibraryFiles<Chunk>> whole =
+            rip::KeepLibraryFiles(archive, "archive", groups, sounds, {}, false);
+        const std::optional<CutWithGroups> expected = CutWithGroupsOf(archive, sounds);
+
+        Check(cut && expected && cut->archive == expected->library.archive &&
+                  Paths(cut->groups) == std::vector<std::string>{"STAGE"} &&
+                  cut->groups.at(0).data == expected->groups.at(0),
+              name + ": the cut archive and SEQ_B's group file, cut down to its copies");
+        Check(whole && expected && whole->archive == expected->library.archive &&
+                  Paths(whole->groups) == std::vector<std::string>{"STAGE"} &&
+                  whole->groups.at(0).data == groups[1].data,
+              name + ": SEQ_B's group file whole without the cut of copies");
+
+        // A group file whose INFX block overlaps its FILE block stays whole.
+        std::vector<Chunk> overlapping = {groups[0]};
+        PutField32(overlapping[0].data, flavor, kThirdBlockEntry + 4,
+                   static_cast<uint32_t>(BlockIn(overlapping[0].data, flavor, kGroupFileBlock).value().first + 8));
+        sar::SoundArchive with_overlap = sar::SoundArchive::Load(CopiesBeside(flavor), StrictRules(flavor));
+        with_overlap.AddGroupFile(overlapping[0].data);
+        const std::optional<rip::LibraryFiles<Chunk>> uncut =
+            rip::KeepLibraryFiles(with_overlap, "archive", overlapping, std::vector<uint32_t>{0}, {}, true);
+        Check(uncut && uncut->groups.size() == 1 && uncut->groups[0].data == overlapping[0].data,
+              name + ": a group file that can't be cut stays whole");
+
+        Check(!rip::KeepLibraryFiles(archive, "archive", groups, std::vector<uint32_t>{0, 9}, {}, true),
+              name + ": nothing for a sound past the end");
+    }
+}
+
 } // namespace
 
 int main()
@@ -942,6 +994,7 @@ int main()
     TestKeepLoadedFilesRefuses();
     TestGroupsOfThe3ds();
     TestKeepGroupCopies();
+    TestKeepLibraryFiles();
 
     return xsflib::testing::Summary("rip_archive_library");
 }

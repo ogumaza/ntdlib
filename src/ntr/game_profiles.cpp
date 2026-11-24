@@ -62,11 +62,11 @@ snd::CommandList TrackCommands(const TrackState& state)
     }
     if (state.muted != 0)
     {
-        commands.push_back({.id = CommandId::kMuteTrack, .args = {0, state.muted, 1}});
+        commands.push_back({.id = CommandId::kMuteTrack, .args = {0, state.muted, snd::kMuteNoStop}});
     }
     if (state.unmuted != 0)
     {
-        commands.push_back({.id = CommandId::kMuteTrack, .args = {0, state.unmuted, 0}});
+        commands.push_back({.id = CommandId::kMuteTrack, .args = {0, state.unmuted, snd::kMuteOff}});
     }
 
     return commands;
@@ -222,17 +222,16 @@ constexpr SceneState kSpiritTracksScenes[] = {
 snd::CommandList Seq18Mutes(uint8_t state)
 {
     using snd::CommandId;
-    constexpr uint32_t kMuteOn = 3;
     switch (state)
     {
     case 1:
-        return {{.id = CommandId::kMuteTrack, .args = {0, 0xFFDF, 0}},
-                {.id = CommandId::kMuteTrack, .args = {0, 0x0020, kMuteOn}}};
+        return {{.id = CommandId::kMuteTrack, .args = {0, 0xFFDF, snd::kMuteOff}},
+                {.id = CommandId::kMuteTrack, .args = {0, 0x0020, snd::kMuteStop}}};
     case 2:
-        return {{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, 0}}};
+        return {{.id = CommandId::kMuteTrack, .args = {0, 0xFFFF, snd::kMuteOff}}};
     case 3:
-        return {{.id = CommandId::kMuteTrack, .args = {0, 0x02E2, 0}},
-                {.id = CommandId::kMuteTrack, .args = {0, 0x3101, kMuteOn}}};
+        return {{.id = CommandId::kMuteTrack, .args = {0, 0x02E2, snd::kMuteOff}},
+                {.id = CommandId::kMuteTrack, .args = {0, 0x3101, snd::kMuteStop}}};
     default:
         return {};
     }
@@ -741,7 +740,7 @@ void AddSeaModes(const Place& place, GameProfile& profile)
         snd::CommandList stopped = {
             {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x033A, snd::kTrackFaderOffset, fader(64)}},
             {.id = CommandId::kTrackParameter, .args = {kTwoBytes, 0x04D5, snd::kTrackFaderOffset, fader(0)}},
-            {.id = CommandId::kMuteTrack, .args = {0, 0x04D5, 3}},
+            {.id = CommandId::kMuteTrack, .args = {0, 0x04D5, snd::kMuteStop}},
             {.id = CommandId::kPlayerParameter, .args = {0, snd::kPlayerTempoRatioOffset, 250, 2}},
         };
         profile.arrangements.push_back({.suffix = "_STOPPED", .commands = std::move(stopped)});
