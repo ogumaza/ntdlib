@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 
 // Checks of a conversion's output for tests: a sequence's SFZ instruments, a sequence's conversion, every sequence of
-// an archive, and the order of a track's reverb sends. The MIDI files and SoundFonts are checked with seqlib's readers.
+// an archive, the order of a track's reverb sends, and a SoundFont zone's attenuation and volume LFO. It also holds
+// the measures of a volume LFO in a render: the mean power of the changes of level, and a square's two levels. The MIDI
+// files and SoundFonts are checked with seqlib's readers.
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <map>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -20,6 +25,7 @@
 #include "seqlib/midi/reader.h"
 #include "seqlib/read_error.h"
 #include "seqlib/sf2/reader.h"
+#include "seqlib/sf2/soundfont.h"
 #include "seqlib/wav.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
@@ -308,6 +314,57 @@ inline int RunArchiveCheck(int argc, char** argv, const sequence_export::Setting
     std::puts("all checks passed");
 
     return 0;
+}
+
+// The initialAttenuation and the modLfoToVolume generators of the first instrument zone of `sf2` that plays a sample,
+// each 0 where the zone leaves it out, or {0, 0} without such a zone.
+inline std::pair<int, int> AttenuationAndVolumeLfo(const std::vector<uint8_t>& sf2)
+{
+    const seqlib::sf2::Records records = seqlib::sf2::Read(sf2);
+    for (std::size_t z = 0; z + 1 < records.Count("ibag", seqlib::sf2::kBagSize); z++)
+    {
+        const std::map<uint16_t, uint16_t> gens = records.ZoneGens(z);
+        if (!gens.contains(seqlib::sf2::kSampleId))
+        {
+            continue;
+        }
+
+        const auto gen = [&](uint16_t op)
+        {
+            const auto found = gens.find(op);
+            return found != gens.end() ? static_cast<int16_t>(found->second) : 0;
+        };
+        return {gen(seqlib::sf2::kInitialAttenuation), gen(seqlib::sf2::kModLfoToVolume)};
+    }
+
+    return {0, 0};
+}
+
+// The mean power in dB of `changes`, each a level in dB against a reference: 10 log10 of the mean of 10^(change / 10).
+inline double PowerMeanDb(std::span<const double> changes)
+{
+    double power = 0.0;
+    for (const double change : changes)
+    {
+        power += std::pow(10.0, change / 10.0);
+    }
+
+    return 10.0 * std::log10(power / static_cast<double>(std::max<std::size_t>(changes.size(), 1)));
+}
+
+// The low and the high level of a square in `changes`, levels in dB in any order, of which a share of `pure` sits at
+// one level or the other. The rest, such as a window in which the square jumps, holds some of each. Each level is the
+// middle of its values among the changes in order: a quarter of `pure` from each end.
+inline std::pair<double, double> SquareLevels(std::vector<double> changes, double pure)
+{
+    std::ranges::sort(changes);
+    const auto at = [&](double share)
+    {
+        const auto index = static_cast<std::size_t>(share * static_cast<double>(changes.size()));
+        return changes[std::min(index, changes.size() - 1)];
+    };
+
+    return {at(pure / 4.0), at(1.0 - pure / 4.0)};
 }
 
 } // namespace ntdlib::testing

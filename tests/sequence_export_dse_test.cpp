@@ -5,6 +5,7 @@
 // worked out by hand from the files and from the driver's model: its keys, its envelopes' levels and its timers.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "seqlib/sfz/track_file.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "ntdlib/dse/driver.h"
@@ -480,20 +483,30 @@ void TestCuts()
           "a release of no ticks doesn't count");
 }
 
-// The ticks of the driver from the start of the song or the sound effect of `files`, `ticks` of them, with whether
-// dse::Player's render is silent in each: every sample at the bias.
-std::vector<bool> SilentTicks(const SequenceFiles& files, int ticks)
+// dse::Player's render of the song or the sound effect of `files`: the samples of each of the driver's ticks from the
+// start, `ticks` of them.
+std::vector<std::vector<ntdlib::ntr::SoundOutput>> TickRenders(const SequenceFiles& files, int ticks)
 {
     ntdlib::dse::Player player;
     player.LoadBanks(files);
     player.Start(files);
 
-    std::vector<bool> silent;
-    std::vector<ntdlib::ntr::SoundOutput> out;
-    for (int t = 0; t < ticks; t++)
+    std::vector<std::vector<ntdlib::ntr::SoundOutput>> renders(static_cast<std::size_t>(ticks));
+    for (std::vector<ntdlib::ntr::SoundOutput>& out : renders)
     {
-        out.clear();
         player.RunTick(out);
+    }
+
+    return renders;
+}
+
+// The ticks of the driver from the start of the song or the sound effect of `files`, `ticks` of them, with whether
+// dse::Player's render is silent in each: every sample at the bias.
+std::vector<bool> SilentTicks(const SequenceFiles& files, int ticks)
+{
+    std::vector<bool> silent;
+    for (const std::vector<ntdlib::ntr::SoundOutput>& out : TickRenders(files, ticks))
+    {
         const auto at_bias = [](const ntdlib::ntr::SoundOutput& s)
         {
             return s.left == 0x200 && s.right == 0x200;
@@ -634,6 +647,200 @@ void TestLoopOverAMute()
     Check(p.loop && p.loop->start == 0 && p.loop->end == 96, "a loop whose passes start silent: the first pass");
 }
 
+// The level of each of the driver's ticks of a sound effect in dB: the RMS of dse::Player's render about the bias,
+// both channels.
+std::vector<double> TickLevels(const TestFiles& test, const ntdlib::dse::SoundEffects& effects, int ticks)
+{
+    SequenceFiles effect = test.Song();
+    effect.song = nullptr;
+    effect.effects = &effects;
+    std::vector<double> levels;
+    for (const std::vector<ntdlib::ntr::SoundOutput>& out : TickRenders(effect, ticks))
+    {
+        double sum = 0.0;
+        for (const ntdlib::ntr::SoundOutput& s : out)
+        {
+            sum += std::pow(s.left - 0x200, 2) + std::pow(s.right - 0x200, 2);
+        }
+        levels.push_back(sum > 0.0 ? 10.0 * std::log10(sum / (2.0 * static_cast<double>(out.size()))) : -200.0);
+    }
+
+    return levels;
+}
+
+// The value of opcode `opcode` in the first region of `sfz`'s files, such as " volume=", or 0 where the region leaves
+// it out.
+double RegionOpcode(const seqlib::sfz::Instruments& sfz, const std::string& opcode)
+{
+    for (const seqlib::sfz::File& file : sfz.files)
+    {
+        const std::size_t region = file.text.find("<region>");
+        if (region == std::string::npos)
+        {
+            continue;
+        }
+
+        const std::size_t end = file.text.find('\n', region);
+        const std::string line = file.text.substr(region, end == std::string::npos ? std::string::npos : end - region);
+        const std::size_t found = line.find(opcode);
+        return found != std::string::npos ? std::stod(line.substr(found + opcode.size())) : 0.0;
+    }
+
+    return 0.0;
+}
+
+// What dse::Player plays of a volume LFO: the shift and the swing in dB of the straight line that fits the level of
+// each tick against `reference`, the direction in which the level first moves, the lowest and the highest change, and
+// the mean power of the changes in dB.
+struct PlayedSwing
+{
+    double shift = 0.0;
+    double swing = 0.0;
+    double first_move = 0.0;
+    double lowest = 0.0;
+    double highest = 0.0;
+    double power_mean = 0.0;
+};
+
+// The swing of `levels` against `reference` from tick `from`. A triangle spends as long at each value of its swing.
+// The changes in order, against values spread evenly from -1 to 1, therefore give the straight line that fits them
+// best. A `square` spends half of each cycle at each end, and the line runs through its two levels (SquareLevels). A
+// tick in which the square jumps holds some of each level, and the middles of the halves leave such ticks out.
+// The first move is the sum of the changes over the first `first_ticks` ticks that sound. The mean power takes every
+// tick from `from`.
+PlayedSwing PlayedSwingOf(const std::vector<double>& levels, const std::vector<double>& reference, std::size_t from,
+                          std::size_t first_ticks, bool square)
+{
+    PlayedSwing played;
+    const auto sounds = std::ranges::find_if(reference, [](double level) { return level > -200.0; });
+    const auto start = static_cast<std::size_t>(sounds - reference.begin());
+    for (std::size_t t = start; t < std::min(levels.size(), start + first_ticks); t++)
+    {
+        played.first_move += levels[t] - reference[t];
+    }
+
+    std::vector<double> changes;
+    for (std::size_t t = from; t < levels.size(); t++)
+    {
+        changes.push_back(levels[t] - reference[t]);
+    }
+    played.power_mean = ntdlib::testing::PowerMeanDb(changes);
+    std::ranges::sort(changes);
+    played.lowest = changes.front();
+    played.highest = changes.back();
+
+    if (square)
+    {
+        const auto [low, high] = ntdlib::testing::SquareLevels(changes, 1.0);
+        played.shift = (low + high) / 2.0;
+        played.swing = (high - low) / 2.0;
+        return played;
+    }
+
+    const auto count = static_cast<double>(changes.size());
+    double sum = 0.0;
+    double sum_w = 0.0;
+    for (std::size_t i = 0; i < changes.size(); i++)
+    {
+        const double w = (2.0 * static_cast<double>(i) + 1.0) / count - 1.0;
+        sum += changes[i];
+        sum_w += changes[i] * w;
+    }
+    played.shift = sum / count;
+    played.swing = 3.0 * sum_w / count;
+    return played;
+}
+
+// The driver adds a volume LFO to the note's level and holds the sum from 0 to 127 before it squares it (0x02074194).
+// Program 0's split plays at 110 of 127. An LFO of waveform 2 swings over 1,024 / 16 = 64 steps of the level, from 0 to
+// the side of its amplitude, in phases of 100 ms. With an amplitude of 1,024, the level rises first, from 110 up to
+// 174, and the driver holds it at 127. With -1,024, it falls first, from 110 down to 46. Waveform 1 is a square that
+// jumps between the amplitude above and below 0: with 1,024, the level jumps from 110 up to 174, held at 127, and down
+// to 46. In the last case the split plays at 127, and the square of -1,024 jumps between 63 and 191, held at 127: only
+// the hold makes the shift. Each note sounds at velocity 127 for 192 ticks.
+//
+// dse::Player's render anchors the swing: the level of each tick against the same note without the LFO, over the six
+// cycles from tick 60, where the envelope sustains (PlayedSwingOf). Its peaks are the levels that the driver holds:
+// 127, and 46 or 63. The mean of the line and half its swing are the shift of the zone's level and the depth of its
+// LFO, in the SoundFont and in the SFZ file. The LFO's depth takes the direction in which the render first moves: both
+// formats' LFOs start by rising. The approximations list the waveform, which SoundFont plays as a triangle. For a
+// target that plays no volume LFO (PerformOptions::volume_lfos_as_mean_power), the SoundFont's zone plays at the
+// render's mean power, without an LFO, and the approximations list the LFO at its mean level instead.
+void TestVolumeLfoSwing()
+{
+    const Bytes track = files::Join({{1, 0, 0, 0},
+                                     {0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xE0, 0x7F, 0xE8, 0x40},
+                                     files::Note(0x7F, 0, 0, 0xC0, 1),
+                                     {0x92, 0xC0, 0x98}});
+    const ntdlib::dse::SoundEffects effects =
+        ntdlib::dse::SoundEffects::Parse(files::EffectsFile({files::Effect{.tracks = {track}}}, 5));
+    const std::string triangle = "LFO waveform other than a triangle (a triangle in SoundFont)";
+    const std::string mean_level = "volume LFO (played at its mean level)";
+
+    struct Case
+    {
+        uint8_t waveform;
+        int32_t amplitude;
+        uint8_t volume; // the split's
+    };
+    for (const Case& lfo_case : {Case{2, 1024, 0x6E}, Case{2, -1024, 0x6E}, Case{1, 1024, 0x6E}, Case{1, -1024, 0x7F}})
+    {
+        const auto& [waveform, amplitude, volume] = lfo_case;
+        TestFiles plain;
+        plain.bank.instruments->programs.at(0)->splits.at(0)[ntdlib::dse::SplitView::kVolume] = volume;
+        const std::vector<double> reference = TickLevels(plain, effects, 180);
+        const Conversion plain_conversion = ConvertEffect(plain, track);
+        const std::pair<int, int> reference_zone = ntdlib::testing::AttenuationAndVolumeLfo(plain_conversion.sf2);
+        const double reference_volume = RegionOpcode(plain_conversion.sfz, " volume=");
+        Check(reference_zone.second == 0 && RegionOpcode(plain_conversion.sfz, " lfo1_volume=") == 0.0,
+              "a program without a volume LFO");
+
+        TestFiles test = plain;
+        std::array<uint8_t, 0x10>& lfo = test.bank.instruments->programs.at(0)->lfos.at(0);
+        lfo = {0x00, 1, 2, waveform};
+        xsflib::StoreLe32(&lfo[4], static_cast<uint32_t>(amplitude));
+        xsflib::StoreLe16(&lfo[8], 100);
+        const PlayedSwing played = PlayedSwingOf(TickLevels(test, effects, 180), reference, 60, 5, waveform == 1);
+        const double direction = played.first_move > 0.0 ? 1.0 : -1.0;
+        const std::string name = "the volume LFO of waveform " + std::to_string(waveform) + " and amplitude " +
+                                 std::to_string(amplitude) + " at " + std::to_string(volume);
+        Check(amplitude > 0 ? played.first_move > 0.5 : played.first_move < -0.5,
+              name + ": dse::Player's level first moves with the amplitude");
+        const double top = 40.0 * std::log10(std::min(volume + 64.0, 127.0) / volume);
+        const double bottom = 40.0 * std::log10((volume - 64.0) / volume);
+        Check(std::abs(played.highest - (amplitude > 0 || waveform == 1 ? top : 0.0)) < 0.5 &&
+                  std::abs(played.lowest - (amplitude > 0 && waveform != 1 ? 0.0 : bottom)) < 0.5,
+              name + ": dse::Player's peaks");
+
+        // Players apply 0.4 of the attenuation generator (seqlib::sf2::ToZoneAttenuation).
+        const Conversion c = ConvertEffect(test, track);
+        const std::pair<int, int> zone = ntdlib::testing::AttenuationAndVolumeLfo(c.sf2);
+        const double sf2_shift = 0.4 * (reference_zone.first - zone.first) / 10.0;
+        const double sf2_swing = zone.second / 10.0;
+        Check(std::abs(played.shift - sf2_shift) < 0.3 && std::abs(direction * played.swing - sf2_swing) < 0.3,
+              name + ": the SoundFont's level and swing are dse::Player's");
+        Check(c.performance.approximations.contains(triangle) && !c.performance.approximations.contains(mean_level),
+              name + ": the SoundFont plays the LFO as a triangle");
+
+        const double sfz_shift = RegionOpcode(c.sfz, " volume=") - reference_volume;
+        const double sfz_swing = RegionOpcode(c.sfz, " lfo1_volume=");
+        Check(std::abs(played.shift - sfz_shift) < 0.3 && std::abs(direction * played.swing - sfz_swing) < 0.3,
+              name + ": the SFZ file's level and swing are dse::Player's");
+
+        SequenceFiles effect = test.Song();
+        effect.song = nullptr;
+        effect.effects = &effects;
+        const Conversion mean = ConvertSequence(effect, "fx_000", {.volume_lfos_as_mean_power = true}, kProgram);
+        const std::pair<int, int> mean_zone = ntdlib::testing::AttenuationAndVolumeLfo(mean.sf2);
+        const double mean_shift = 0.4 * (reference_zone.first - mean_zone.first) / 10.0;
+        Check(std::abs(played.power_mean - mean_shift) < 0.3 && mean_zone.second == 0,
+              name + ": without volume LFOs, the SoundFont's level is dse::Player's mean power");
+        Check(
+            mean.performance.approximations.contains(mean_level) && !mean.performance.approximations.contains(triangle),
+            name + ": without volume LFOs, the approximations list the LFO at its mean level");
+    }
+}
+
 } // namespace
 
 int main()
@@ -650,6 +857,7 @@ int main()
     TestCuts();
     TestSilentVoices();
     TestLoopOverAMute();
+    TestVolumeLfoSwing();
 
     return xsflib::testing::Summary("DSE conversion");
 }

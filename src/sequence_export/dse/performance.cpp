@@ -327,10 +327,23 @@ void Performer::OnNote(const NoteEvent& e)
     key.lfo_level = channel.lfo_level;
     key.build = options_.build;
 
-    // SoundFont holds a pitch LFO and a volume LFO, each a triangle without a fade (convert.h).
+    // SoundFont holds a pitch LFO and a volume LFO, each a triangle without a fade (convert.h). A zone's level takes
+    // the shift of its volume LFOs from the note's start (VolumeShiftDb). For a target that plays no volume LFO, the
+    // zone plays at the LFOs' mean power instead, without them (PerformOptions::volume_lfos_as_mean_power).
     std::set<uint8_t> outputs;
     for (const LfoShape& lfo : PresetLfos(key, options_.tick_microseconds))
     {
+        if (lfo.output == kVolumeOutput && options_.volume_lfos_as_mean_power)
+        {
+            Approximate("volume LFO (played at its mean level)");
+            continue;
+        }
+
+        if (lfo.output == kVolumeOutput && lfo.delay > 0.0)
+        {
+            Approximate("volume LFO's shift of the level before the LFO's delay ends (from the note's start)");
+        }
+
         if (lfo.output == kPanOutput)
         {
             Approximate("pan LFO (omitted from SoundFont)");

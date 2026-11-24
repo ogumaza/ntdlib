@@ -81,9 +81,6 @@ constexpr double kSettledLengthShare = 1.0 / 8.0;
 constexpr int kVoices = ntdlib::dse::Driver::kVoices;
 constexpr int kMidiTracks = 16;
 
-// An LFO's output that changes the pan (LfoValues::output).
-constexpr uint8_t kPanOutput = 3;
-
 // The event that ends a pass of a repeat.
 constexpr uint8_t kRepeatEnd = 0x9D;
 

@@ -129,6 +129,11 @@ struct PerformOptions
     // and SFZ players. CC10 then contains the pan of the driver, and CC11 contains no level of the pan (linear_pan.h).
     // ConvertSequence writes the pans of the splits into the zones with no level of the pan. It builds no SFZ files.
     bool linear_pans = false;
+
+    // Whether the SoundFont is for a target that plays no volume LFO, such as a console's bank made from it. Each zone
+    // then plays at the mean power of the level that its volume LFOs give (VolumeSwing::power_mean), in place of their
+    // shift, and the SoundFont holds no volume LFO. The SFZ files keep the volume LFOs.
+    bool volume_lfos_as_mean_power = false;
 };
 
 // Plays the song or the sound effect of `files` and records it. Throws std::invalid_argument for files with neither.

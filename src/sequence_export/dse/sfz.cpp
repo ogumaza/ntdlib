@@ -77,11 +77,11 @@ std::string LfoOpcodes(const PresetZone& z, const std::vector<LfoShape>& shapes)
         std::string target;
         switch (shape.output)
         {
-        case 1:
+        case kPitchOutput:
             target = lfo + "_pitch=" + Number(shape.depth, 3);
             break;
-        case 2:
-            target = lfo + "_volume=" + Number(VolumeLfoDb(shape.depth, z), 3);
+        case kVolumeOutput:
+            target = lfo + "_volume=" + Number(VolumeSwingOf(shape, z).swing, 3);
             break;
         default:
             target = lfo + "_pan=" + Number(std::clamp(shape.depth / 64.0 * 100.0, -100.0, 100.0), 3);
@@ -132,7 +132,7 @@ std::string RegionLine(const TunedZone& tuned, const SfzSamples::Wave& wave, dou
     s += " sample_quality=0";
 
     const double level = ZoneLevel(z);
-    const double volume = level > 0.0 ? 20.0 * std::log10(level) + gain_db : -144.0;
+    const double volume = level > 0.0 ? 20.0 * std::log10(level) + VolumeShiftDb(shapes, z) + gain_db : -144.0;
     s += seqlib::sfz::VolumeOpcode(volume);
 
     const double pan = std::clamp(100.0 * PanPosition(z.pan), -100.0, 100.0);

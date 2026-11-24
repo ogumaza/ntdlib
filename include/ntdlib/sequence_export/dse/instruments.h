@@ -86,10 +86,16 @@ struct SfzEnvelope
 // The same in SFZ's terms.
 SfzEnvelope ConvertEnvelopeForSfz(const ntdlib::dse::EnvelopeValues& e, int tick_microseconds);
 
+// The outputs of an LFO (LfoValues::output and LfoShape::output).
+constexpr uint8_t kPitchOutput = 1;
+constexpr uint8_t kVolumeOutput = 2;
+constexpr uint8_t kPanOutput = 3;
+
 // An LFO of a preset in the units that SoundFont and SFZ take: its rate in Hz, its delay and fade in seconds, and half
 // its swing: in cents of pitch, in steps of the note's level from 0 to 127, or in steps of the pan from 0 to 127.
-// `triangle` is set when the driver's waveform is the triangle that swings from 0 up to the top first and around 0,
-// as SoundFont's LFOs do.
+// `offset` is the middle of the swing in the same units. It is 0 for a waveform that swings around 0, and `depth` or
+// -`depth` for one that swings from 0 to one side. `triangle` is set when the driver's waveform is the triangle that
+// swings from 0 up to the top first and around 0, as SoundFont's LFOs do.
 struct LfoShape
 {
     uint8_t output = 0; // 1 the pitch, 2 the volume and 3 the pan
@@ -99,15 +105,38 @@ struct LfoShape
     double fade = 0.0;
     double depth = 0.0;
     bool triangle = false;
+    double offset = 0.0;
 };
 
 // The preset's LFOs that change the sound, in the order of their slots, with a tick of `tick_microseconds` in the
 // game's settings.
 std::vector<LfoShape> PresetLfos(const PresetKey& key, int tick_microseconds);
 
+// A volume LFO in dB, at the level of the zone's notes at a velocity of 127. The driver adds the LFO to the note's
+// level and holds the sum from 0 to 127 before it squares it (0x02074194). `shift` is the change of the zone's level
+// and `swing` half the LFO's swing in dB, with the sign of the LFO's depth: the straight line in dB that fits the
+// driver's level best. `power_mean` is the mean power of the driver's level against the zone's in dB: 10 log10 of the
+// mean of (held / level)^4. It is the level of a target that plays no volume LFO
+// (PerformOptions::volume_lfos_as_mean_power).
+struct VolumeSwing
+{
+    double shift = 0.0;
+    double swing = 0.0;
+    double power_mean = 0.0;
+};
+VolumeSwing VolumeSwingOf(const LfoShape& lfo, const PresetZone& zone);
+
 // The swing of a volume LFO of `depth` steps of the note's level in dB, at the level of the zone's notes at a velocity
-// of 127: half the difference between its two peaks. The driver adds the LFO to the level before it squares it.
+// of 127: half the difference between its two peaks around the zone's level, held from 1 to 127. It leaves out the
+// LFO's offset and the shift of the zone's level. The converter takes VolumeSwingOf, and this stays for the API of
+// 7.0.0.
 double VolumeLfoDb(double depth, const PresetZone& zone);
+
+// The sum of the shifts of the preset's volume LFOs in `shapes` for `zone`, in dB (VolumeSwing::shift).
+double VolumeShiftDb(const std::vector<LfoShape>& shapes, const PresetZone& zone);
+
+// The sum of the mean powers of the preset's volume LFOs in `shapes` for `zone`, in dB (VolumeSwing::power_mean).
+double VolumeMeanDb(const std::vector<LfoShape>& shapes, const PresetZone& zone);
 
 // The zone's root key and tuning in SoundFont's and SFZ's terms, for a sample of `sample_rate`: the voice's rate at
 // the root key, without a bend, gives the tuning. The root key is the zone's key nearest to middle C. With `key`, the

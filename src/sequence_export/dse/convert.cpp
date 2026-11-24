@@ -11,7 +11,9 @@
 // in CC11 (the performer). A zone panned off the centre then plays above full level. Every zone of every SoundFont
 // takes the cut of a zone at full volume panned fully to one side (PanCut), and the SFZ files keep the level. For a
 // mixer that pans linearly (PerformOptions::linear_pans), a zone keeps the pan of its split and plays at its volume,
-// with no cut. Presets that MIDI channel 10 plays also get a copy in bank 128. Synthesizers look for drums there.
+// with no cut. For a target that plays no volume LFO (PerformOptions::volume_lfos_as_mean_power), a zone plays at the
+// mean power of the level that its volume LFOs give, and the SoundFont holds no volume LFO. Presets that MIDI channel
+// 10 plays also get a copy in bank 128. Synthesizers look for drums there.
 
 #include "ntdlib/sequence_export/dse/convert.h"
 
@@ -55,10 +57,6 @@ namespace sf2 = seqlib::sf2;
 namespace
 {
 
-// The LFOs' outputs (LfoValues::output).
-constexpr uint8_t kPitchOutput = 1;
-constexpr uint8_t kVolumeOutput = 2;
-
 // The first of `shapes` with `output`, or null.
 const LfoShape* FirstOf(const std::vector<LfoShape>& shapes, uint8_t output)
 {
@@ -66,10 +64,17 @@ const LfoShape* FirstOf(const std::vector<LfoShape>& shapes, uint8_t output)
     return found != shapes.end() ? &*found : nullptr;
 }
 
+// The target of a SoundFont's zones (PerformOptions).
+struct ZoneTarget
+{
+    bool linear_pans = false;
+    bool volume_lfos_as_mean_power = false;
+};
+
 // The preset's global zone: seqlib's kGlobalZoneModulators, and the rates and delays of its first pitch LFO and its
 // first volume LFO. The pitch LFO's depth goes here. The volume LFO's depth depends on the zone's level, and goes in
-// each zone.
-sf2::Zone GlobalZone(const std::vector<LfoShape>& shapes)
+// each zone. A target that plays no volume LFO takes none.
+sf2::Zone GlobalZone(const std::vector<LfoShape>& shapes, ZoneTarget target)
 {
     sf2::Zone global;
     global.modulators.assign(sf2::kGlobalZoneModulators.begin(), sf2::kGlobalZoneModulators.end());
@@ -82,7 +87,8 @@ sf2::Zone GlobalZone(const std::vector<LfoShape>& shapes)
         global.generators.push_back(
             sf2::Generator::Value(sf2::kVibLfoToPitch, std::clamp<int>(sf2::ToAmount(pitch->depth), -12000, 12000)));
     }
-    if (const LfoShape* volume = FirstOf(shapes, kVolumeOutput))
+    const LfoShape* volume = FirstOf(shapes, kVolumeOutput);
+    if (volume != nullptr && !target.volume_lfos_as_mean_power)
     {
         global.generators.push_back(sf2::Generator::Value(sf2::kFreqModLfo, sf2::LfoFrequency(volume->hz)));
         global.generators.push_back(sf2::Generator::Value(
@@ -100,21 +106,24 @@ double VolumeLevel(const PresetZone& zone)
 }
 
 // The zone of `tuned` with sample `sample`, `quieter` centibels quieter, for a driver whose ticks take
-// `tick_microseconds`. With `linear_pans`, the zone keeps the pan of the split for a mixer that pans linearly. Its
-// level is then the square of its volume alone (PerformOptions::linear_pans).
+// `tick_microseconds`. With `target.linear_pans`, the zone keeps the pan of the split for a mixer that pans linearly.
+// Its level is then the square of its volume alone. With `target.volume_lfos_as_mean_power`, the zone plays at the
+// mean power of its volume LFOs, and holds no volume LFO.
 sf2::Zone RegionZone(const TunedZone& tuned, uint16_t sample, bool loop, double quieter,
-                     const std::vector<LfoShape>& shapes, int tick_microseconds, bool linear_pans)
+                     const std::vector<LfoShape>& shapes, int tick_microseconds, ZoneTarget target)
 {
     const PresetZone& z = tuned.zone;
     const ZoneTuning& tuning = tuned.tuning;
     const Sf2Envelope e = ConvertEnvelope(z.envelope, tick_microseconds);
-    const double level = linear_pans ? VolumeLevel(z) : ZoneLevel(z);
-    const double position = linear_pans ? LinearPanPosition(z.pan) : PanPosition(z.pan);
+    const double level = target.linear_pans ? VolumeLevel(z) : ZoneLevel(z);
+    const double position = target.linear_pans ? LinearPanPosition(z.pan) : PanPosition(z.pan);
+    const double lfo_db = target.volume_lfos_as_mean_power ? VolumeMeanDb(shapes, z) : VolumeShiftDb(shapes, z);
     sf2::ZoneValues values;
     values.keys = {z.low_key, z.high_key};
     values.velocities = {z.low_velocity, z.high_velocity};
-    values.attenuation = level > 0.0 ? std::clamp<double>(quieter - 200.0 * std::log10(level), 0.0, sf2::kMaxCentibels)
-                                     : double{sf2::kMaxCentibels};
+    values.attenuation =
+        level > 0.0 ? std::clamp<double>(quieter - 200.0 * std::log10(level) - 10.0 * lfo_db, 0.0, sf2::kMaxCentibels)
+                    : double{sf2::kMaxCentibels};
     values.pan = std::clamp(static_cast<int>(std::lround(500.0 * position)), -500, 500);
     values.attack = e.attack;
     values.hold = e.hold;
@@ -129,10 +138,11 @@ sf2::Zone RegionZone(const TunedZone& tuned, uint16_t sample, bool loop, double 
     values.sample = sample;
 
     sf2::Zone zone = sf2::RegionZone(values);
-    if (const LfoShape* volume = FirstOf(shapes, kVolumeOutput))
+    const LfoShape* volume = FirstOf(shapes, kVolumeOutput);
+    if (volume != nullptr && !target.volume_lfos_as_mean_power)
     {
         sf2::AddGenerator(zone, sf2::kModLfoToVolume,
-                          std::clamp<int>(sf2::ToAmount(10.0 * VolumeLfoDb(volume->depth, z)), -960, 960));
+                          std::clamp<int>(sf2::ToAmount(10.0 * VolumeSwingOf(*volume, z).swing), -960, 960));
     }
     return zone;
 }
@@ -215,6 +225,8 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
     // one side. A zone for a mixer that pans linearly plays at its volume, and takes none.
     BankSet banks(files);
     const double quieter = options.linear_pans ? 0.0 : ntdlib::sequence_export::PanCut();
+    const ZoneTarget target{.linear_pans = options.linear_pans,
+                            .volume_lfos_as_mean_power = options.volume_lfos_as_mean_power};
 
     sf2::SoundFont sf;
     SoundFontSamples samples(sf);
@@ -226,7 +238,7 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
         const std::vector<LfoShape> shapes = PresetLfos(key, c.performance.tick_microseconds);
         sf2::Instrument instrument;
         instrument.name = names[i];
-        instrument.zones.push_back(GlobalZone(shapes));
+        instrument.zones.push_back(GlobalZone(shapes, target));
         const ntdlib::dse::WaveBank* bank = banks.Bank(key.bank);
         const std::vector<PresetZone> zones = bank != nullptr ? PresetZones(*bank, key) : std::vector<PresetZone>{};
         if (zones.empty())
@@ -243,7 +255,7 @@ Conversion ConvertSequence(const SequenceFiles& files, const std::string& name, 
                 for (const TunedZone& tuned : TunedZones(z, sample->rate, &keys))
                 {
                     instrument.zones.push_back(RegionZone(tuned, sample->id, sample->loop, quieter, shapes,
-                                                          c.performance.tick_microseconds, options.linear_pans));
+                                                          c.performance.tick_microseconds, target));
                 }
             }
         }
@@ -309,7 +321,7 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
             const std::string preset = "Program " + std::to_string(p);
             sf2::Instrument instrument;
             instrument.name = preset;
-            instrument.zones.push_back(GlobalZone(shapes));
+            instrument.zones.push_back(GlobalZone(shapes, {}));
             for (const PresetZone& z : PresetZones(bank, key))
             {
                 if (const auto sample = samples.Get(banks, id, z.wave))
@@ -317,7 +329,7 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::dse::WaveBank&
                     for (const TunedZone& tuned : TunedZones(z, sample->rate))
                     {
                         instrument.zones.push_back(
-                            RegionZone(tuned, sample->id, sample->loop, quieter, shapes, tick_microseconds, false));
+                            RegionZone(tuned, sample->id, sample->loop, quieter, shapes, tick_microseconds, {}));
                     }
                 }
             }

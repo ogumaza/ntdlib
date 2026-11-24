@@ -313,6 +313,21 @@ std::optional<double> KeyCents(const PresetZone& zone, uint32_t sample_rate, int
     return PitchCents(zone.format, sample_rate, static_cast<uint16_t>(zone.tuning + (key << 8)));
 }
 
+// The sum of `value` of the volume swings of the volume LFOs in `shapes` for `zone`, in dB.
+double SumOfVolumeLfos(const std::vector<LfoShape>& shapes, const PresetZone& zone, double VolumeSwing::* value)
+{
+    double sum = 0.0;
+    for (const LfoShape& shape : shapes)
+    {
+        if (shape.output == kVolumeOutput)
+        {
+            sum += VolumeSwingOf(shape, zone).*value;
+        }
+    }
+
+    return sum;
+}
+
 } // namespace
 
 std::vector<PresetZone> PresetZones(const ntdlib::dse::WaveBank& bank, const PresetKey& key)
@@ -418,27 +433,29 @@ std::vector<LfoShape> PresetLfos(const PresetKey& key, int tick_microseconds)
     // A voice's LFOs (0x020752F8): the waveform's value over 256 times the LFO's level. The fade raises the level to
     // full for an LFO of type 1, and event 0xBE sets it for the others. The waveforms (0x020753AC to 0x020755B8) swing
     // over the LFO's amplitude times 1,024 in each phase of `phase_ms`. Waveform 3 rises to half of it in half a phase,
-    // then swings between its two halves. Waveform 1 jumps between the full amplitude above and below 0, and waveform 6
-    // holds random values up to half of it. The others swing between 0 and the full amplitude. Waveforms 4 to 7 take a
-    // phase for a cycle, the others two. A phase lasts phase_ms * 1000 / tick whole ticks, at least one (0x020750B4).
+    // then swings between its two halves. Waveform 1 jumps between the full amplitude above and below 0. Waveform 6
+    // holds random values from 0 up to half of it, and waveform 7 random values within half of it around 0. The others
+    // swing between 0 and the full amplitude. Waveforms 4 to 7 take a phase for a cycle, the others two. A phase lasts
+    // phase_ms * 1000 / tick whole ticks, at least one (0x020750B4).
     std::vector<LfoShape> shapes;
     for (const ntdlib::dse::LfoValues& lfo : key.lfos)
     {
-        if (lfo.type == 0 || lfo.output < 1 || lfo.output > 3 || lfo.phase_ms == 0 || lfo.amplitude == 0 ||
-            lfo.waveform > 7)
+        if (lfo.type == 0 || lfo.output < kPitchOutput || lfo.output > kPanOutput || lfo.phase_ms == 0 ||
+            lfo.amplitude == 0 || lfo.waveform > 7)
         {
             continue;
         }
 
         const double level = lfo.type == 1 ? 1.0 : std::trunc(key.lfo_level * 256.0 / 127.0) / 256.0;
         // The oldest build's waveform 3 swings between 0 and twice the amplitude, in four phases after its first
-        // cycle (0x020C572C in Luminous Arc's ARM9 binary). SoundFont's LFO keeps the swing but not its offset.
+        // cycle (0x020C572C in Luminous Arc's ARM9 binary). SoundFont's LFO keeps the swing around 0, and `offset`
+        // keeps the rest.
         const bool oldest_triangle = key.build == ntdlib::dse::Build::kOldest && lfo.waveform == 3;
         const double swing = lfo.waveform == 1 || oldest_triangle ? 4.0 : lfo.waveform == 6 ? 1.0 : 2.0;
         double depth = swing * lfo.amplitude * level;
         switch (lfo.output)
         {
-        case 1:
+        case kPitchOutput:
             depth *= 100.0 / 256.0; // cents
             break;
         default:
@@ -459,11 +476,59 @@ std::vector<LfoShape> PresetLfos(const PresetKey& key, int tick_microseconds)
         shape.delay = lfo.type == 1 ? lfo.delay_ms / 1000.0 : 0.0;
         shape.fade = lfo.type == 1 ? lfo.envelope_ms / 1000.0 : 0.0;
         shape.depth = depth;
+        // Waveforms 1, 3 and 7 swing around 0. In the oldest build, waveform 3 swings from 0 to twice the amplitude,
+        // and waveform 7 takes its values from the whole amplitude below 0 (0x020C5808). The others swing from 0 to
+        // the side of the amplitude.
+        const bool oldest = key.build == ntdlib::dse::Build::kOldest;
+        if (lfo.waveform == 7)
+        {
+            shape.offset = oldest ? -depth : 0.0;
+        }
+        else if (lfo.waveform != 1 && (lfo.waveform != 3 || oldest_triangle))
+        {
+            shape.offset = depth;
+        }
         shape.triangle = lfo.waveform == 3;
         shapes.push_back(shape);
     }
 
     return shapes;
+}
+
+VolumeSwing VolumeSwingOf(const LfoShape& lfo, const PresetZone& zone)
+{
+    // The driver's level over the swing is v + offset + depth * w for w from -1 to 1, held from 0 to 127 and squared.
+    // A held level stays at 127 or 0 for part of each cycle. The shift and the swing are the straight line in dB over w
+    // that fits the driver's level best, by least squares. Waveforms 0 and 1 are squares (0x020753AC): the level sits
+    // at w = -1 and at w = 1 for half a cycle each, and the line runs through both. The other waveforms take every w
+    // between them. A level of 0 is silent, and the fit counts a level more than 40 dB below the zone's at 40 dB below.
+    // The mean power takes the same values of w, and counts a level of 0 as silent.
+    constexpr int kPoints = 256;
+    constexpr double kLowestDb = -40.0;
+    const bool square = lfo.waveform == 0 || lfo.waveform == 1;
+    const int points = square ? 2 : kPoints;
+    const double level = std::max<double>(zone.volume, 1.0);
+
+    double sum = 0.0;
+    double sum_w = 0.0;
+    double sum_ww = 0.0;
+    double power = 0.0;
+    for (int i = 0; i < points; i++)
+    {
+        const double w = square ? (i == 0 ? -1.0 : 1.0) : (2.0 * i + 1.0) / points - 1.0;
+        const double held = std::clamp(level + lfo.offset + lfo.depth * w, 0.0, 127.0);
+        const double db = held > 0.0 ? std::max(40.0 * std::log10(held / level), kLowestDb) : kLowestDb;
+        sum += db;
+        sum_w += db * w;
+        sum_ww += w * w;
+        power += std::pow(held / level, 4.0);
+    }
+
+    VolumeSwing out;
+    out.shift = sum / points;
+    out.swing = sum_w / sum_ww;
+    out.power_mean = power > 0.0 ? 10.0 * std::log10(power / points) : kLowestDb;
+    return out;
 }
 
 double VolumeLfoDb(double depth, const PresetZone& zone)
@@ -473,6 +538,16 @@ double VolumeLfoDb(double depth, const PresetZone& zone)
     const double low = std::max(level - std::abs(depth), 1.0);
     const double db = 20.0 * std::log10(high / low);
     return depth < 0.0 ? -db : db;
+}
+
+double VolumeShiftDb(const std::vector<LfoShape>& shapes, const PresetZone& zone)
+{
+    return SumOfVolumeLfos(shapes, zone, &VolumeSwing::shift);
+}
+
+double VolumeMeanDb(const std::vector<LfoShape>& shapes, const PresetZone& zone)
+{
+    return SumOfVolumeLfos(shapes, zone, &VolumeSwing::power_mean);
 }
 
 ZoneTuning TuningOf(const PresetZone& zone, uint32_t sample_rate)
