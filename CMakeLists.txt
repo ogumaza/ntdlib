@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-project(ntdlib VERSION 7.2.0 LANGUAGES C CXX)
+project(ntdlib VERSION 7.3.0 LANGUAGES C CXX)
 
 # CMake 3.20 has no PROJECT_IS_TOP_LEVEL. ntdlib is the top-level project when the build starts in its folder.
 if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -146,6 +146,7 @@ xsflib_add_project_test(ntdlib loop_finder ntdlib::jaudio)
 xsflib_add_project_test(ntdlib game_lengths ntdlib::jaudio xsflib::rip)
 xsflib_add_project_test(ntdlib chord_files ntdlib::jaudio)
 xsflib_add_project_test(ntdlib chord_keys ntdlib::jaudio)
+xsflib_add_project_test(ntdlib luigis_mansion_states ntdlib::jaudio)
 xsflib_add_project_test(ntdlib chord_player ntdlib::jaudio)
 xsflib_add_project_test(ntdlib jaudio_games ntdlib::jaudio)
 

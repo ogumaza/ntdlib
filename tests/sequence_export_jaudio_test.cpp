@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -32,8 +33,10 @@
 #include "xsflib/sha1.h"
 #include "xsflib/testing/check.h"
 
+#include "luigis_mansion_runs.h"
 #include "ntdlib/disc/game.h"
 #include "ntdlib/jaudio/galaxy_states.h"
+#include "ntdlib/jaudio/luigis_mansion_states.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/conversion.h"
@@ -55,6 +58,9 @@ namespace
 {
 
 using namespace ntdlib::sequence_export::jaudio;
+using luigis_mansion_runs::BossRun;
+using luigis_mansion_runs::kBossRuns;
+using luigis_mansion_runs::PlayingOf;
 using xsflib::testing::Check;
 using xsflib::testing::ErrorOf;
 
@@ -2041,8 +2047,8 @@ void TestGameRules()
                luigi.arrangements[i].state.tracks == kEveryTrack &&
                std::abs(luigi.arrangements[i].state.tempo_ratio - tempo_ratio) < 1e-6f;
     };
-    Check(luigi.arrangements.size() == 13 && luigi.only_arranged == std::vector<uint32_t>{0x80000007},
-          "Luigi's Mansion plays LuigiSings only in its 13 states");
+    Check(luigi.arrangements.size() == 22 && luigi.only_arranged == std::vector<uint32_t>{0x80000007},
+          "Luigi's Mansion plays LuigiSings only in its 16 states, and its boss pieces in 6 more states");
     Check(state(0, "hallway_100_HP", 0xf81f, 1.0f) && state(1, "hallway_70_HP", 0xf82f, 0.88f) &&
               state(2, "hallway_40_HP", 0xf84f, 0.76f),
           "in the hallways, children 0 to 3 and 11 play with the tune of Luigi's health");
@@ -2050,6 +2056,44 @@ void TestGameRules()
               state(11, "unaccompanied_40_HP", 0xf040, 0.76f),
           "the rooms play children 8 and 10, outdoors child 9, and the others no accompaniment");
     Check(state(12, "lit_room", 0xf080, 0.9f), "a lit room plays child 7 alone at 0.9 of the tempo");
+    // With the byte at 0x804d91b9 held at 1, the game muted children 4 to 7 (a Dolphin run of the USA release).
+    Check(state(13, "hallway_100_HP_no_humming", 0xf80f, 1.0f) && state(14, "room_100_HP_no_humming", 0xf500, 1.0f) &&
+              state(15, "outdoors_100_HP_no_humming", 0xf200, 1.0f),
+          "the hallways, the rooms and outdoors play their accompaniment without the tune at 100 HP");
+
+    // The boss pieces: the children that each state plays and its tempo, as Dolphin runs of the USA release read them
+    // once the game's code had set the state (luigis_mansion_runs.h). TelesaBattle's tempo in state 1 comes from the
+    // header's count of the first call (kTelesaBattleFirstCount). State 0 starts the piece, and each other state is an
+    // arrangement named "state_" and the number.
+    const auto boss_state = [&](const BossRun& run) -> const SequenceState*
+    {
+        if (run.state == 0)
+        {
+            const auto start = luigi.start_states.find(run.sound);
+            return start == luigi.start_states.end() ? nullptr : &start->second;
+        }
+
+        const std::string suffix = "state_" + std::to_string(run.state);
+        const auto found = std::ranges::find_if(
+            luigi.arrangements, [&](const Arrangement& a) { return a.sound == run.sound && a.suffix == suffix; });
+        return found == luigi.arrangements.end() ? nullptr : &found->state;
+    };
+    const auto tempo_bits = [](const BossRun& run)
+    {
+        namespace luigis_mansion = ntdlib::jaudio::luigis_mansion;
+        const bool telesa_state_1 = run.sound == 0x80000031 && run.state == 1;
+        return telesa_state_1
+                   ? std::bit_cast<uint32_t>(luigis_mansion::TelesaBattleTempo(luigis_mansion::kTelesaBattleFirstCount))
+                   : run.tempo_bits;
+    };
+    const auto plays_run = [&](const BossRun& run)
+    {
+        const SequenceState* played = boss_state(run);
+        return played && mask(*played) == PlayingOf(run) && played->tracks == kEveryTrack &&
+               std::bit_cast<uint32_t>(played->tempo_ratio) == tempo_bits(run);
+    };
+    Check(std::ranges::all_of(kBossRuns, plays_run) && luigi.start_states.size() == 4,
+          "each boss piece starts in state 0, and its other states convert as arrangements named after the number");
     Check(!luigi.effect_parameters && usa.effect_parameters && wind_waker.effect_parameters,
           "Luigi's Mansion plays its effects at full volume, whatever the sound table gives them");
     Check(!luigi.squared_track_volume && wind_waker.squared_track_volume,

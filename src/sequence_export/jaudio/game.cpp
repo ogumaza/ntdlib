@@ -41,6 +41,7 @@
 #include "ntdlib/jaudio/jac_effects.h"
 #include "ntdlib/jaudio/jmap.h"
 #include "ntdlib/jaudio/jungle_beat_states.h"
+#include "ntdlib/jaudio/luigis_mansion_states.h"
 #include "ntdlib/jaudio/pikmin2_pieces.h"
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio/z2_starts.h"
@@ -92,6 +93,29 @@ void SetState(SequenceSound& seq, const SequenceState& state)
     seq.clear_child_15 = state.clears_child_15;
 }
 
+// The volumes of the root track's children that `silent` names (bit n for child n): 0 for each
+// (SequenceState::child_volumes).
+std::map<uint8_t, float> SilentChildren(uint16_t silent)
+{
+    std::map<uint8_t, float> volumes;
+    for (uint8_t child = 0; child < 16; child++)
+    {
+        if ((silent >> child & 1) != 0)
+        {
+            volumes[child] = 0.0f;
+        }
+    }
+
+    return volumes;
+}
+
+// An arrangement's suffix for a label: the label with each space replaced by "_".
+std::string SuffixOf(std::string label)
+{
+    std::ranges::replace(label, ' ', '_');
+    return label;
+}
+
 // The states in which The Wind Waker's code plays its music, and the other states that it gives the same pieces
 // (GameRules::start_states and arrangements). The addresses are in the GameCube's main.dol (USA). The Wind Waker HD's
 // executable has the same code: bgmStart at 0x0202204c, subBgmStart at 0x0201de00, bgmNowBattle at 0x0202879c, bgmMute
@@ -133,15 +157,7 @@ void AddWindWakerMusicStates(GameRules& rules, bool gamecube)
     // The volumes of a mask of the root track's children: 0 for each child whose bit is clear.
     const auto volumes = [](uint16_t children)
     {
-        std::map<uint8_t, float> silent;
-        for (uint8_t child = 0; child < 16; child++)
-        {
-            if ((children >> child & 1) == 0)
-            {
-                silent[child] = 0.0f;
-            }
-        }
-        return silent;
+        return SilentChildren(static_cast<uint16_t>(~children));
     };
 
     // subBgmStart starts music without a fade for 13 pieces (14 in The Wind Waker HD), and fades every other piece in
@@ -321,14 +337,7 @@ void AddStarts(std::span<const ntdlib::jaudio::MutedStart> starts, GameRules& ru
 {
     for (const ntdlib::jaudio::MutedStart& start : starts)
     {
-        SequenceState state;
-        for (uint8_t child = 0; child < 16; child++)
-        {
-            if ((start.muted_children >> child & 1) != 0)
-            {
-                state.child_volumes[child] = 0.0f;
-            }
-        }
+        const SequenceState state{.child_volumes = SilentChildren(start.muted_children)};
         if (start.suffix.empty())
         {
             rules.start_states[start.sound] = state;
@@ -825,53 +834,45 @@ GameRules RulesOf(const std::string& archive_sha1, const GameOptions& options)
 
     if (archive_sha1 == kLuigisMansion)
     {
-        // The game starts LuigiSings (0x80000007) through 0x8018c274 in the USA release's main.dol. That function and
-        // the game's frame (0x8018bd84) pick the root's children that play from the game's state. Children 4 to 7 hold
-        // the tune. One of them plays, and 0x80198e4c mutes the others: child 4 while Luigi has more than 70 of his
-        // 100 points of health, child 5 while he has more than 40, and child 6 below that. Child 7 plays while the
-        // room's lights are on, unless the room is outdoors. The others then keep a volume of 0. Otherwise 0x80189488
-        // gives the accompaniment a volume of 1 and the rest 0: children 0 to 3 and 11 in the hallways, child 9
-        // outdoors, and children 8 and 10 in the other rooms. Rooms 19, 32 and 65 have none. The frame also sets the
-        // piece's tempo: 0.6 + 0.4 x the health / 100. With the lights on, it scales that by the time between Luigi's
-        // steps: 12 / 16 x 1.2 while he stands still. The game never plays the piece with every child. A state takes
-        // the most health of its band.
-        constexpr uint16_t kHallway = 0xf | 1u << 11;
-        constexpr uint16_t kRoom = 1u << 8 | 1u << 10;
-        constexpr uint16_t kOutdoors = 1u << 9;
-        const std::array<std::pair<std::string_view, uint16_t>, 4> places{
-            {{"hallway", kHallway}, {"room", kRoom}, {"outdoors", kOutdoors}, {"unaccompanied", 0}}};
-        const std::array<std::pair<int, uint16_t>, 3> healths{{{100, 1u << 4}, {70, 1u << 5}, {40, 1u << 6}}};
-        // The volumes of a state whose children 0 to 11 play only where `playing` has their bits. Children 12 to 15
-        // play in every state.
-        const auto silent_children = [](uint16_t playing)
+        // The game starts LuigiSings through 0x8018c274 in the USA release's main.dol. That function and the game's
+        // frame pick the root's children that play and the tempo from the game's state (kSingingStates in
+        // jaudio/luigis_mansion_states.h). The game never plays the piece with every child. Each state gets an
+        // arrangement, named after the state's label, except the shrunk states.
+        namespace luigis_mansion = ntdlib::jaudio::luigis_mansion;
+        for (const luigis_mansion::SingingState& singing : luigis_mansion::kSingingStates)
         {
-            std::map<uint8_t, float> volumes;
-            for (uint8_t child = 0; child < 12; child++)
+            if (singing.shrunk)
             {
-                if ((playing >> child & 1) == 0)
-                {
-                    volumes[child] = 0.0f;
-                }
+                continue;
             }
-            return volumes;
-        };
-        for (const auto& [place, accompaniment] : places)
+
+            // The children that don't play get a volume of 0.
+            rules.arrangements.push_back(
+                {.sound = luigis_mansion::kLuigiSings,
+                 .suffix = SuffixOf(luigis_mansion::LabelOf(singing)),
+                 .state = {.child_volumes = SilentChildren(static_cast<uint16_t>(~singing.Playing())),
+                           .tempo_ratio = singing.Tempo()}});
+        }
+
+        rules.only_arranged.push_back(luigis_mansion::kLuigiSings);
+
+        // The game's start of a boss piece applies the piece's state 0, and the fight's code sets the others
+        // (kBossStates). Each state gives the children that it silences a volume of 0, and sets the tempo. A piece
+        // converts in state 0. Each other state converts as an arrangement, named after the state's label, such as
+        // BabyBattle_state_1. The game changes the tracks at once.
+        for (const luigis_mansion::BossState& boss : luigis_mansion::kBossStates)
         {
-            for (const auto& [health, tune] : healths)
+            const SequenceState state{.child_volumes = SilentChildren(boss.silent), .tempo_ratio = boss.tempo};
+            if (boss.state == 0)
+            {
+                rules.start_states[boss.sound] = state;
+            }
+            else
             {
                 rules.arrangements.push_back(
-                    {.sound = 0x80000007,
-                     .suffix = std::string(place) + "_" + std::to_string(health) + "_HP",
-                     .state = {.child_volumes = silent_children(accompaniment | tune),
-                               .tempo_ratio = 0.6f + 0.4f * static_cast<float>(health) / 100.0f}});
+                    {.sound = boss.sound, .suffix = SuffixOf(luigis_mansion::LabelOf(boss)), .state = state});
             }
         }
-        rules.arrangements.push_back(
-            {.sound = 0x80000007,
-             .suffix = "lit_room",
-             .state = {.child_volumes = silent_children(1u << 7),
-                       .tempo_ratio = 12.0f / 16.0f * 1.2f * (0.6f + 0.4f * 100.0f / 100.0f)}});
-        rules.only_arranged.push_back(0x80000007);
 
         // The game's sound class (its vtable at 0x8038ef60) replaces JAIBasic::setSeExtParameter (0x801908d8) with
         // 0x8018d714. That function gives sequences and streams the parameters of their entries in the sound table. It
